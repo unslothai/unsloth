@@ -1072,11 +1072,28 @@ class _SlowPages:
 
 
 class _Response:
+    """A whole body, in one piece, however it is asked for.
+
+    ``read(amt)`` and ``read1`` are what an ``HTTPResponse`` offers and what the
+    chunked reader uses; a fake that only answers ``read()`` would make the
+    reader untestable rather than the code wrong.
+    """
+
     def __init__(self, body: bytes):
         self.body = body
+        self.pos = 0
 
-    def read(self):
-        return self.body
+    def read(self, amt = None):
+        if amt is None or amt < 0:
+            chunk, self.pos = self.body[self.pos :], len(self.body)
+            return chunk
+        return self.read1(amt)
+
+    def read1(self, amt = -1):
+        end = len(self.body) if amt is None or amt < 0 else self.pos + amt
+        chunk = self.body[self.pos : end]
+        self.pos += len(chunk)
+        return chunk
 
     def __enter__(self):
         return self
@@ -1178,6 +1195,135 @@ def test_a_slow_notebook_download_cannot_outlast_the_evidence_budget(monkeypatch
     assert spent <= launch.EVIDENCE_BUDGET_SEC, f"downloads spent {spent}s"
     assert len(evidence["notebooks"]) < len(files)
     assert evidence["truncated"] is True
+
+
+class _Socket:
+    """The live socket under a response, recording every re-clamp."""
+
+    def __init__(self):
+        self.timeouts: list[float] = []
+
+    def settimeout(self, seconds):
+        self.timeouts.append(seconds)
+
+
+class _Trickle:
+    """A response that keeps returning bytes instead of stalling.
+
+    The case a socket timeout cannot see. `urlopen(timeout=...)` bounds each
+    blocking socket operation, so an endpoint that answers every read -- slowly,
+    but with data -- renews it forever and never trips it. Each chunk here
+    advances the clock by `per_chunk`; a whole-body `read()` advances by all of
+    them at once, which is what one unbounded `resp.read()` costs.
+    """
+
+    def __init__(self, clock, body: bytes, chunks: int, per_chunk: float):
+        self.clock = clock
+        self.body = body
+        self.size = max(1, len(body) // chunks)
+        self.per_chunk = per_chunk
+        self.pos = 0
+        self.reads = 0
+        self.fp = type("fp", (), {"raw": type("raw", (), {"_sock": _Socket()})()})()
+
+    def read(self, amt = None):
+        if amt is None or amt < 0:
+            # The unbounded read: the socket kept feeding it, so it returned
+            # only once the whole body was through.
+            self.clock.advance(self.per_chunk * (len(self.body) / self.size))
+            self.pos = len(self.body)
+            return self.body
+        return self.read1(amt)
+
+    def read1(self, amt = -1):
+        self.reads += 1
+        if self.pos >= len(self.body):
+            return b""
+        take = self.size if amt is None or amt < 0 else min(amt, self.size)
+        chunk = self.body[self.pos : self.pos + take]
+        self.pos += len(chunk)
+        self.clock.advance(self.per_chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _trickled_listing(
+    clock,
+    files,
+    chunks = 20,
+    per_chunk = 60.0,
+):
+    body = json.dumps({"files": files, "log": "x"}).encode()
+    # JSON tolerates trailing whitespace, so padding buys chunks without
+    # changing what parses.
+    return _Trickle(clock, body + b" " * (chunks * len(body)), chunks, per_chunk)
+
+
+def test_a_trickling_output_listing_cannot_outlast_the_evidence_budget(monkeypatch, tmp_path):
+    """The deadline has to hold DURING the read, not only before it.
+
+    Every check was on the near side of `urlopen`, and the timeout it takes is
+    a per-socket-operation one, so a body arriving slowly enough renews it
+    indefinitely: 20 chunks a minute apart is 1200s of `resp.read()` against a
+    600s budget, spent before release() gets to delete anything. The kernels
+    bill for all of it.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(launch.time, "time", clock)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    resp = _trickled_listing(clock, [])
+    monkeypatch.setattr(launch.urllib.request, "urlopen", lambda req, timeout = None: resp)
+
+    started = clock()
+    listing = launch.list_outputs(
+        "someuser/k", timeout = 120, deadline = started + launch.EVIDENCE_BUDGET_SEC
+    )
+    spent = clock() - started
+    assert spent <= launch.EVIDENCE_BUDGET_SEC, f"the listing read spent {spent}s"
+    assert listing["truncated"] is True, "an abandoned listing must say it is incomplete"
+    assert resp.pos < len(resp.body), "the read was abandoned, not completed"
+    # And the live socket was re-clamped as the budget drained, so a read that
+    # starts just inside the deadline cannot block for a full socket timeout
+    # past it.
+    clamps = resp.fp.raw._sock.timeouts
+    assert clamps and all(t <= launch.EVIDENCE_BUDGET_SEC for t in clamps), clamps
+    assert clamps == sorted(clamps, reverse = True), clamps
+
+
+def test_a_trickling_notebook_download_cannot_outlast_the_evidence_budget(monkeypatch, tmp_path):
+    """The same hole on the download, where the bodies are unbounded.
+
+    Kaggle caps neither the size nor the count of a kernel's outputs, so this
+    is the read most able to run long, and a partial file must not be published
+    as evidence either.
+    """
+    clock = _Clock()
+    monkeypatch.setattr(launch.time, "time", clock)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    files = [{"fileName": f"nb{launch.OUTPUT_SUFFIX}", "url": "https://example.invalid/nb"}]
+    payload = json.dumps({"cells": []}).encode()
+    download = _Trickle(clock, payload + b" " * (20 * len(payload)), 20, 60.0)
+
+    def urlopen(req, timeout = None):
+        if "kernels/output" in getattr(req, "full_url", ""):
+            return _Response(json.dumps({"files": files, "log": "x"}).encode())
+        return download
+
+    monkeypatch.setattr(launch.urllib.request, "urlopen", urlopen)
+    started = clock()
+    evidence = launch.fetch_evidence(
+        "someuser/k", tmp_path / "k", deadline = started + launch.EVIDENCE_BUDGET_SEC
+    )
+    spent = clock() - started
+    assert spent <= launch.EVIDENCE_BUDGET_SEC, f"the download spent {spent}s"
+    assert evidence["notebooks"] == [], evidence
+    assert evidence["truncated"] is True
+    assert not list((tmp_path / "k").glob("*.part")), "a half-written download was left behind"
 
 
 def test_main_bounds_the_whole_evidence_phase_it_is_budgeted_for(monkeypatch, tmp_path):

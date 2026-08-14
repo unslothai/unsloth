@@ -441,11 +441,26 @@ jobs:
       # adapter checks, which ask PEFT itself whether the written
       # adapter_config.json can be rebuilt into an adapter -- without it those
       # tests importorskip, and a skipped check is one that cannot fail.
-      # Measured in a bare venv with exactly these four: 315 passed.
+      # Measured in a bare venv with exactly these four: 323 passed.
+      #
+      # CPU torch goes FIRST, before anything that depends on torch. pip "prefers
+      # to leave the installed version as-is unless --upgrade is specified"
+      # (pip.pypa.io/en/stable/cli/pip_install), so peft installed first pulls
+      # the default-index CUDA torch to satisfy its own dependency and the
+      # CPU-index line that follows then finds the requirement already satisfied
+      # and installs nothing: the multi-gigabyte CUDA set is downloaded onto the
+      # runner, and the reordering costs nothing. version-compat-ci.yml orders it
+      # this way for the same reason.
+      #
+      # Then the ordering is CHECKED rather than trusted, because it is invisible
+      # when it goes wrong: a CUDA build here still passes the suites, just after
+      # spending the setup window on wheels. torch.version.cuda is None is what
+      # "the CPU wheel" means, and is what the order exists to secure.
       - name: Test the harness
         run: |
-          python -m pip install --quiet pytest transformers peft
           python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install --quiet pytest transformers peft
+          python -c "import torch, sys; sys.exit(None if torch.version.cuda is None else 'torch %s is built for CUDA %s: the CPU-index install was skipped as already satisfied' % (torch.__version__, torch.version.cuda))"
           python -m pytest tests/kaggle -q
 
       # The ref the kernels install and test: for a pull request the head SHA

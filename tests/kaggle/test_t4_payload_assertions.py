@@ -473,6 +473,62 @@ def test_a_reference_that_records_no_hardware_is_unchecked_not_a_mismatch(tmp_pa
     assert reference_failures(verdict, 0.10) == []
 
 
+@pytest.mark.parametrize(
+    "environment",
+    [
+        pytest.param({"error": "RuntimeError: no CUDA driver"}, id = "probe_raised"),
+        pytest.param({"python": "3.12.13", "torch": "2.10.0"}, id = "probe_saw_no_gpu"),
+        pytest.param({}, id = "empty"),
+        pytest.param(None, id = "not_supplied"),
+        pytest.param({"gpu_name": "Tesla T4", "gpu_capability": None}, id = "one_key_missing"),
+    ],
+)
+def test_a_run_that_cannot_name_its_card_is_refused_not_waved_through(tmp_path, environment):
+    """The hardware gate must not switch itself off when the probe fails.
+
+    main() records ``environment = {"error": ...}`` for the whole block when
+    environment_fingerprint() raises, and the fingerprint omits every gpu_* key
+    outright when torch.cuda.is_available() is False. Either way the live values
+    are absent while the reference still names Tesla T4 / sm_75, and treating
+    that as "not compared" let the control leg report an ``ok`` reference check
+    without ever establishing the card the trace belongs to -- the gate defeated
+    by exactly the failure it exists to catch. What the REFERENCE does not say
+    stays a skip; what the RUN cannot say about a key the reference does name is
+    a refusal.
+    """
+    from run_t4_smoke import check_reference, reference_failures
+
+    ref = tmp_path / "ref.json"
+    ref.write_text(
+        json.dumps(
+            {
+                "config": REFERENCE_CONFIG,
+                "model": "unsloth/Qwen2.5-0.5B-Instruct",
+                "environment": {"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
+                "metrics": [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    # Metrics identical to the reference, so nothing else can be what fails.
+    observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
+    verdict = check_reference(
+        observed,
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+        config = REFERENCE_CONFIG,
+        model = "unsloth/Qwen2.5-0.5B-Instruct",
+        environment = environment,
+    )
+    assert verdict["status"] == "hardware_unverified", verdict
+    assert verdict["deviations"] == [], "refused before any number was compared"
+    assert "gpu_name" not in verdict["config_unchecked"], verdict
+    failures = reference_failures(verdict, 0.10)
+    assert failures and "not for this run" in failures[0], failures
+
+
 def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
     """The gate is derived from the file, so the file has to carry it.
 

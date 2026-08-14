@@ -153,13 +153,21 @@ DELETE_SUBPROCESS_TIMEOUT_SEC = 180
 # finish() -> release() ran, leaving billable kernels up. That is the exact
 # outcome the deadline exists to prevent.
 #
-# Enforcement is "start no new work past the deadline", and each call's own
-# timeout is clamped to what remains, so neither a page nor a download can run
-# past it. Evidence is best effort by design -- whatever arrived is reported
-# and the collection is marked truncated -- because the alternative is spending
-# the deletion window on it.
+# Enforcement is "start no new work past the deadline", each call's own timeout
+# is clamped to what remains, AND the body is read in chunks against the same
+# absolute deadline. The last part is not redundant: the timeout urllib takes is
+# a per-socket-operation timeout ("a timeout in seconds for blocking operations
+# like the connection attempt" -- docs.python.org/3/library/urllib.request.html),
+# not a ceiling on the transfer, so an endpoint that keeps returning bytes
+# resets it forever and a single `resp.read()` outlasts the whole budget while
+# every deadline check sits before the call. Evidence is best effort by design
+# -- whatever arrived is reported and the collection is marked truncated --
+# because the alternative is spending the deletion window on it.
 EVIDENCE_BUDGET_SEC = 600
 OUTPUT_PAGE_LIMIT = 20
+# Per read. Small enough that the deadline is re-checked often against a slow
+# stream, large enough not to syscall per kilobyte on a fast one.
+READ_CHUNK_BYTES = 1 << 16
 
 
 def _log(msg: str) -> None:
@@ -466,6 +474,60 @@ def _time_left(deadline: float, timeout: int) -> int | None:
     return min(timeout, remaining)
 
 
+def _clamp_socket(resp, seconds: float) -> None:
+    """Tighten the live socket's timeout to what is left of the budget.
+
+    The timeout handed to ``urlopen`` is fixed when the response opens, so a
+    read that starts just inside the deadline may still block for all of it.
+    Re-clamping per chunk bounds the overshoot by one chunk rather than by one
+    socket timeout. Best effort: the loop below stops at the deadline whether or
+    not the socket can be reached.
+    """
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    setter = getattr(sock, "settimeout", None)
+    if setter is None:
+        return
+    try:
+        setter(max(seconds, 1.0))
+    except OSError:
+        pass
+
+
+def _read_within(
+    resp,
+    deadline: float,
+    sink = None,
+) -> bytes:
+    """Read a response body under the ABSOLUTE deadline, not a socket timeout.
+
+    ``urlopen(timeout=...)`` bounds each blocking socket operation, so a server
+    that keeps trickling bytes renews it indefinitely and ``resp.read()`` runs
+    as long as it likes -- past the evidence budget, into the wall clock
+    ``release()`` needs, with billable kernels still up. Checking the deadline
+    only before opening the response therefore bounds nothing about the read.
+
+    So: one chunk at a time, deadline re-checked before each, and ``read1`` so a
+    chunk is at most ONE underlying socket read (``read(n)`` loops until it has
+    n bytes, which a slow trickle can stretch arbitrarily). ``sink`` streams
+    straight to disk, which also keeps a response nobody sized out of memory.
+    """
+    reader = getattr(resp, "read1", None) or resp.read
+    chunks: list[bytes] = []
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            raise TimeoutError("the evidence budget expired while reading the response")
+        _clamp_socket(resp, left)
+        chunk = reader(READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        if sink is None:
+            chunks.append(chunk)
+        else:
+            sink.write(chunk)
+    return b"".join(chunks)
+
+
 def list_outputs(
     slug: str,
     timeout: int = 120,
@@ -496,8 +558,14 @@ def list_outputs(
                 "User-Agent": "unsloth-kaggle-t4-ci/1.0",
             },
         )
-        with urllib.request.urlopen(req, timeout = call_timeout) as resp:
-            data = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout = call_timeout) as resp:
+                data = json.loads(_read_within(resp, deadline))
+        except TimeoutError:
+            # The budget ran out mid-body. Same answer as running out between
+            # pages: stop, and say the listing is incomplete.
+            _log(f"evidence budget spent while reading a page of {slug}")
+            break
         files.extend(f for f in data.get("files") or [] if f.get("fileName"))
         log = log or (data.get("log") or "")
         token = data.get("nextPageToken") or ""
@@ -559,8 +627,8 @@ def fetch_evidence(
         part = dest.with_suffix(dest.suffix + ".part")
         try:
             req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-kaggle-t4-ci/1.0"})
-            with urllib.request.urlopen(req, timeout = call_timeout) as resp:
-                part.write_bytes(resp.read())
+            with urllib.request.urlopen(req, timeout = call_timeout) as resp, part.open("wb") as fh:
+                _read_within(resp, deadline, sink = fh)
             # Only publish once it parses: a download killed mid-write leaves a
             # file of plausible size, which is evidence that looks present and
             # is not.
@@ -568,8 +636,13 @@ def fetch_evidence(
             part.replace(dest)
             fetched.append(dest.name)
         except Exception as exc:  # noqa: BLE001
+            # A listed notebook that did not land is missing evidence, whether
+            # the budget ran out mid-body or the transfer failed, so the
+            # collection is incomplete and has to say so rather than read as a
+            # complete set that happens to be short.
             _log(f"could not fetch {name}: {type(exc).__name__}")
             part.unlink(missing_ok = True)
+            truncated = True
     log_path = outdir / "kernel.log"
     if listing.get("log"):
         log_path.write_text(listing["log"], encoding = "utf-8")

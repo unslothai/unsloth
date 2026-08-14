@@ -780,12 +780,16 @@ def check_reference(
     reports a hardware difference as a code regression. The requirement is
     DERIVED from the reference's own environment block rather than restated as
     "must be a T4", so a reference recaptured on other hardware moves the gate
-    with it.
+    with it. A reference that DOES name its card and a run that cannot name its
+    own is ``hardware_unverified`` rather than a skip, because the alternative
+    is a gate that switches itself off exactly when the probe fails.
 
-    All of them are optional and default to not-compared, so an older caller and
-    an older reference both keep working: a key the reference does not carry is
-    listed in ``config_unchecked`` rather than treated as a mismatch. "It does
-    not say" is neither "it differs" nor "it matches".
+    The settings are optional and default to not-compared, so an older caller
+    and an older reference both keep working: a key the reference does not carry
+    is listed in ``config_unchecked`` rather than treated as a mismatch. "It
+    does not say" is neither "it differs" nor "it matches" -- but that is what
+    the REFERENCE does not say. What the run does not say about hardware the
+    reference does name is a refusal.
     """
     if not reference_path.exists():
         return {"status": "absent", "path": str(reference_path)}
@@ -834,16 +838,48 @@ def check_reference(
     # reported as a regression. Only the count of GPUs was ever checked, on the
     # kernel, which cannot see this file at all.
     ref_env = ref.get("environment") if isinstance(ref.get("environment"), dict) else {}
+    live_env = environment if isinstance(environment, dict) else {}
     hardware_pairs: list[tuple[str, Any, Any]] = []
+    unverified: list[str] = []
     for key in ("gpu_name", "gpu_capability"):
         expected = ref_env.get(key)
-        observed = (environment or {}).get(key)
-        if expected is None and observed is None:
+        observed = live_env.get(key)
+        if expected is None:
+            # The reference does not say, which is not "it differs": an older
+            # trace captured before the block carried a card keeps working, and
+            # the skip is recorded rather than silent.
+            if observed is not None:
+                verdict["config_unchecked"].append(key)
             continue
-        if expected is None or observed is None:
-            verdict["config_unchecked"].append(key)
+        # The reference DOES say. From here the requirement is the reference's
+        # own, so a run that cannot show what it ran on has not met it.
+        if observed is None:
+            unverified.append(key)
             continue
         hardware_pairs.append((key, expected, observed))
+    # A live probe that produced no card is a refusal, not a skip. main()
+    # records environment = {"error": ...} when environment_fingerprint()
+    # raises, and the fingerprint omits every gpu_* key outright when
+    # torch.cuda.is_available() is False, so both of those -- and a caller that
+    # hands over no environment at all -- used to land in config_unchecked and
+    # let the band check report "ok" without establishing the card. That is the
+    # hardware gate above disabled by the one failure it most needs to survive.
+    if unverified:
+        verdict["status"] = "hardware_unverified"
+        verdict["config_differences"] = [
+            f"{key}: reference {ref_env.get(key)!r}, this run reported nothing"
+            for key in unverified
+        ]
+        verdict["note"] = (
+            f"{reference_path.name} was captured on "
+            f"{ref_env.get('gpu_name')} ({ref_env.get('gpu_capability')}) and "
+            f"this run did not report {', '.join(unverified)}: "
+            f"{live_env.get('error') or 'no live hardware fingerprint'}. The "
+            "trace is of that card, so without knowing this run's card nothing "
+            "here can be compared. Fix the environment probe on the kernel, or "
+            "recapture the reference (references/README.md)."
+        )
+        return verdict
     hardware_differences = [
         f"{key}: reference {expected!r}, this run {observed!r}"
         for key, expected, observed in hardware_pairs
@@ -1043,6 +1079,10 @@ def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
         # band checked across hardware succeeds arithmetically and means
         # nothing, and its deviations read as a code regression.
         "hardware_mismatch",
+        # And the same rule when the card is unreadable rather than wrong: a
+        # reference that names its hardware is only comparable against a run
+        # that can name its own.
+        "hardware_unverified",
     ):
         return [
             "refusing to band-check against a reference that is not for "

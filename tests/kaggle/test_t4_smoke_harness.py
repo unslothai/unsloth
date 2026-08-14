@@ -863,13 +863,29 @@ def _committed_steps() -> int:
     return reference_step_count(_committed_reference())
 
 
+def _committed_env() -> dict:
+    """The card the committed reference was captured on.
+
+    check_reference refuses a reference that names its hardware against a run
+    that cannot name its own, so a comparison against the committed file has to
+    say which card it is standing in for. These tests exercise the band
+    arithmetic, so they stand in for the reference's own.
+    """
+    return _committed_reference()["environment"]
+
+
 def test_the_committed_reference_matches_itself(tmp_path):
     """The floor under the next test: an unperturbed comparison is clean."""
     from run_t4_smoke import check_reference, reference_failures
 
     metrics = _committed_reference()["metrics"]
     verdict = check_reference(
-        metrics, COMMITTED_REFERENCE, 0.10, 0.05, max_steps = _committed_steps()
+        metrics,
+        COMMITTED_REFERENCE,
+        0.10,
+        0.05,
+        max_steps = _committed_steps(),
+        environment = _committed_env(),
     )
     assert verdict["status"] == "ok", verdict["deviations"]
     assert reference_failures(verdict, 0.10) == []
@@ -889,7 +905,14 @@ def test_perturbing_the_committed_reference_turns_the_check_red():
                 continue
             checked += 1
             moved = _perturb(metrics, i, field)
-            verdict = check_reference(moved, COMMITTED_REFERENCE, 0.10, 0.05, max_steps = steps)
+            verdict = check_reference(
+                moved,
+                COMMITTED_REFERENCE,
+                0.10,
+                0.05,
+                max_steps = steps,
+                environment = _committed_env(),
+            )
             assert verdict["status"] == "out_of_band", (i, field, verdict)
             assert reference_failures(verdict, 0.10), (i, field)
             assert any(
@@ -2287,6 +2310,37 @@ def test_the_harness_suite_runs_before_any_kernel_is_pushed():
     names = [s.get("name") for s in steps]
     assert names.index("Test the harness") < names.index("Build the kernel notebooks")
     assert "python -m pytest tests/kaggle -q" in steps[names.index("Test the harness")]["run"]
+
+
+def test_the_cpu_torch_wheel_is_installed_before_anything_that_depends_on_it():
+    """Order decides which torch the runner ends up with, silently.
+
+    peft depends on torch, so installing it first lets pip satisfy that from the
+    default index -- the CUDA build and its multi-gigabyte dependency set -- and
+    pip then "prefers to leave the installed version as-is unless --upgrade is
+    specified" (pip.pypa.io/en/stable/cli/pip_install), so the CPU-index line
+    that follows finds the requirement satisfied and installs nothing. The
+    suites still pass, having spent the setup window reserved before the push on
+    wheels this job never uses. version-compat-ci.yml puts CPU torch first for
+    the same reason.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    lines = [
+        l.strip() for l in steps[names.index("Test the harness")]["run"].splitlines() if l.strip()
+    ]
+    installs = [l for l in lines if "pip install" in l]
+    assert installs, lines
+    assert "download.pytorch.org/whl/cpu" in installs[0], (
+        "the CPU-index torch install must be the FIRST pip install in the step: " f"{installs}"
+    )
+    assert "torch" in installs[0]
+    # And the outcome is checked, not just the order: a CUDA build satisfies
+    # every import here, so nothing else in this job would ever notice.
+    guard = [l for l in lines if "torch.version.cuda" in l]
+    assert guard, lines
+    run_suites = [l for l in lines if l.startswith("python -m pytest")]
+    assert run_suites and lines.index(guard[0]) < lines.index(run_suites[0]), lines
 
 
 def test_every_cpu_suite_in_the_directory_is_collected_by_that_step():
