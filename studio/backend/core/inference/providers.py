@@ -639,10 +639,18 @@ _dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 _dns_cache_lock = threading.Lock()
 # A lookup that times out is abandoned, not cancelled, so its thread lives until
 # the platform resolver gives up. Rotating hostnames defeat the cache and would
-# otherwise pile those up one per request. Past this many in flight the check
-# reports no answer instead of starting another, which is what this file did
-# before it resolved anything.
-_DNS_MAX_IN_FLIGHT = 8
+# otherwise pile those up one per request, so the number in flight is capped and
+# a caller waits its turn up to the same deadline rather than being waved
+# through the moment the pool is busy.
+#
+# Saturating the pool still ends in "no answer", which the default path allows.
+# That is the same decision this file makes for a lookup that times out, and it
+# is deliberate: refusing instead would mean any resolver trouble, or any caller
+# willing to stall a few lookups, could stop the operator configuring a provider
+# at all. The check is a bound on what a caller-supplied URL may resolve to, not
+# a guarantee about what the socket will later connect to -- see the transport
+# note on _resolve_host.
+_DNS_MAX_IN_FLIGHT = 32
 _dns_in_flight = threading.BoundedSemaphore(_DNS_MAX_IN_FLIGHT)
 
 # Hostnames of the providers this build ships. They are hard-coded destinations,
@@ -726,7 +734,7 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
     # Bound to a local: a worker abandoned at the deadline may outlive the
     # global, and BoundedSemaphore raises if it releases one it never took.
     in_flight = _dns_in_flight
-    if not in_flight.acquire(blocking = False):
+    if not in_flight.acquire(timeout = _DNS_TIMEOUT_SECONDS):
         return None
 
     resolved: list[str] = []
