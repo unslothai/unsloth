@@ -75,6 +75,9 @@ _CRASH_MARKERS = ("string_at(0)", "os.abort()", "_sigsegv(")
 # idiom and must not be flagged.
 _SIGNAL_DIRECTED = ("raise_signal(", "os.kill(", ".kill(")
 _DIRECTED_NAMES = {"raise_signal", "kill"}
+# Which argument carries the signal. Checking every argument read the PID in
+# `os.kill(11, signal.SIGKILL)` as SIGSEGV and failed CI over a call that cannot dump.
+_SIGNAL_ARG_INDEX = {"raise_signal": 0, "kill": 1}
 
 # A signal aimed at self dumps core only for these. SIGKILL, SIGTERM and SIGINT do not,
 # which is why SIGKILL is the recommended way to make a child vanish.
@@ -173,28 +176,66 @@ def _fold(node, env):
     return None, set()
 
 
-def _string_env(tree):
-    """Every name bound to a foldable string, anywhere in the file.
+def _assigned_pair(node):
+    """`(target, value)` for a single-name assignment, else None."""
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target, value = node.targets[0], node.value
+    elif isinstance(node, ast.AnnAssign) and node.value is not None:
+        target, value = node.target, node.value
+    else:
+        return None
+    return (target, value) if isinstance(target, ast.Name) else None
 
-    Walked rather than restricted to `tree.body` so an annotated constant
-    (`SCRIPT: str = ...`) or one assembled inside a test function is folded too.
-    Without this, the halves are checked separately and a script that does suppress
-    its core is reported because the crash literal is seen on its own.
+
+def _string_env(tree):
+    """Name to foldable string, per scope, so same-named locals cannot collide.
+
+    One flat map let an unrelated function's `SCRIPT = "print(1)"` overwrite a
+    module-level `SCRIPT` that really does crash, and the executed script then went
+    unchecked. Functions are seeded from the module bindings and shadow them locally.
+    Annotated constants and strings assembled inside a test are folded either way,
+    so `_SAFE = _SUPPRESS + "ctypes.string_at(0)"` is still judged as what it becomes.
     """
-    env = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target, value = node.targets[0], node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            target, value = node.target, node.value
-        else:
+    owner = _enclosing_scopes(tree)
+    module_env, scoped = {}, {}
+    for module_pass in (True, False):
+        for node in ast.walk(tree):
+            pair = _assigned_pair(node)
+            if pair is None:
+                continue
+            scope = owner.get(id(node), tree)
+            if (scope is tree) != module_pass:
+                continue
+            env = module_env if module_pass else scoped.setdefault(id(scope), dict(module_env))
+            folded, _ = _fold(pair[1], env)
+            if folded is not None:
+                env[pair[0].id] = folded
+    return owner, module_env, scoped
+
+
+def _iter_executable(scope):
+    """Nodes that run when `scope` runs, skipping bodies that need a separate call.
+
+    Walking everything treated a call inside an uninvoked nested `def` as having
+    already run, so a helper that suppresses cores blessed a crash it never covered.
+    """
+    for child in ast.iter_child_nodes(scope):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
             continue
-        if not isinstance(target, ast.Name):
-            continue
-        folded, _ = _fold(value, env)
-        if folded is not None:
-            env[target.id] = folded
-    return env
+        yield child
+        yield from _iter_executable(child)
+
+
+def _rebound_names(scope):
+    """Names this scope binds itself, which therefore no longer mean the import."""
+    out = set()
+    for node in ast.walk(scope):
+        pair = _assigned_pair(node)
+        if pair is not None:
+            out.add(pair[0].id)
+        elif isinstance(node, ast.arg):
+            out.add(node.arg)
+    return out
 
 
 def _snippets(tree):
@@ -206,31 +247,40 @@ def _snippets(tree):
     ordinary expectation such as `assert "ctypes.string_at(0)" in text` was reported as
     a deliberate crash, which would fail CI over a string nothing executes.
     """
-    env = _string_env(tree)
+    owner, module_env, scoped = _string_env(tree)
     out = []
 
-    def collect(node):
+    def collect(node, env):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             out.append(node.value)
+        elif isinstance(node, ast.JoinedStr):
+            # An f-string reaches the child as a script like any other. Keep its
+            # literal parts: the interpolations cannot be known here, and dropping the
+            # whole thing let `f"import os; os.abort(); print({v})"` through unread.
+            out.append("".join(
+                part.value for part in node.values
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            ))
         elif isinstance(node, ast.Name):
             if node.id in env:
                 out.append(env[node.id])
         elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             for element in node.elts:
-                collect(element)
+                collect(element, env)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             folded, _ = _fold(node, env)
             if folded is not None:
                 out.append(folded)
             else:
-                collect(node.left)
-                collect(node.right)
+                collect(node.left, env)
+                collect(node.right, env)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
+        env = scoped.get(id(owner.get(id(node), tree)), module_env)
         for argument in list(node.args) + [kw.value for kw in node.keywords]:
-            collect(argument)
+            collect(argument, env)
     return out
 
 
@@ -275,14 +325,19 @@ def _is_crash_call(node, aliases = frozenset()) -> bool:
         return True
     if name not in _DIRECTED_NAMES:
         return False
-    rendered = ast.unparse(node)
+    index = _SIGNAL_ARG_INDEX[name]
+    if len(node.args) <= index:
+        return False
+    # Only the signal argument, so a PID never reads as a signal.
+    signal_argument = node.args[index]
+    rendered = ast.unparse(signal_argument)
     if any(s in rendered for s in _FATAL_SIGNALS):
         return True
     # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the
     # same core as the named forms, so matching only symbolic names missed them.
-    return any(
-        isinstance(argument, ast.Constant) and argument.value in _FATAL_SIGNAL_NUMBERS
-        for argument in node.args
+    return (
+        isinstance(signal_argument, ast.Constant)
+        and signal_argument.value in _FATAL_SIGNAL_NUMBERS
     )
 
 
@@ -310,42 +365,69 @@ def _functions_by_name(tree):
     }
 
 
-def _clears_dumpable_before(scope, line) -> bool:
-    """A prctl(4, 0, ...) in this scope that runs before `line`.
+def _position(node):
+    """Source order of a node. Line alone ties on a one-line `-c` script, where
+    `prctl(4, 0, ...); ctypes.string_at(0)` really does suppress the crash after it."""
+    return (node.lineno, node.col_offset)
+
+
+_AFTER_EVERYTHING = (float("inf"), 0)
+
+
+def _clears_dumpable_before(scope, position) -> bool:
+    """A prctl(4, 0, ...) on this scope's own path that runs before `position`.
 
     Order matters. Suppression placed after the fault does nothing, so accepting it
     anywhere in the scope blessed a child that still dumps.
     """
-    return any(_prctl_clears_dumpable(node) and node.lineno < line for node in ast.walk(scope))
+    return any(
+        _prctl_clears_dumpable(node) and _position(node) < position
+        for node in _iter_executable(scope)
+    )
 
 
 def _suppressed(node, scope, functions) -> bool:
     """Whether this crash call is covered, directly or by a helper it calls first."""
-    if _clears_dumpable_before(scope, node.lineno):
+    position = _position(node)
+    if _clears_dumpable_before(scope, position):
         return True
     # Following one level of local helper covers `suppress_core()` then the fault,
     # which is the natural shape once more than one test needs this.
-    for called in ast.walk(scope):
-        if not isinstance(called, ast.Call) or called.lineno >= node.lineno:
+    for called in _iter_executable(scope):
+        if not isinstance(called, ast.Call) or _position(called) >= position:
             continue
         target = functions.get(_called_name(called))
-        if target is not None and _clears_dumpable_before(target, float("inf")):
+        if target is not None and _clears_dumpable_before(target, _AFTER_EVERYTHING):
             return True
     return False
 
 
+def _live_aliases(aliases, scope, rebound):
+    """The imported crash names still in force where this call sits.
+
+    A scope that binds the name itself no longer means the import, so a test that
+    does `abort = mock` before calling it is not crashing anything.
+    """
+    if not aliases or scope is None:
+        return aliases
+    if id(scope) not in rebound:
+        rebound[id(scope)] = _rebound_names(scope)
+    return aliases - rebound[id(scope)]
+
+
 def _unsuppressed_crashes(tree):
     """Crash calls in this tree whose core dump is not suppressed first."""
-    owner = None
+    owner = _enclosing_scopes(tree)
     functions = None
     aliases = _crash_aliases(tree)
+    rebound = {}
     out = []
     for node in ast.walk(tree):
-        if not _is_crash_call(node, aliases):
-            continue
-        if owner is None:
-            owner, functions = _enclosing_scopes(tree), _functions_by_name(tree)
         scope = owner.get(id(node), tree)
+        if not _is_crash_call(node, _live_aliases(aliases, scope, rebound)):
+            continue
+        if functions is None:
+            functions = _functions_by_name(tree)
         if not _suppressed(node, scope, functions):
             out.append((node, scope))
     return out
@@ -353,10 +435,45 @@ def _unsuppressed_crashes(tree):
 
 def _tree_crashes(tree) -> bool:
     aliases = _crash_aliases(tree)
-    return any(_is_crash_call(node, aliases) for node in ast.walk(tree))
+    owner = _enclosing_scopes(tree)
+    rebound = {}
+    return any(
+        _is_crash_call(node, _live_aliases(aliases, owner.get(id(node), tree), rebound))
+        for node in ast.walk(tree)
+    )
 
 
-def _snippet_state(snippet: str):
+_NESTED_EXEC = {"exec", "eval"}
+_MAX_SNIPPET_DEPTH = 5
+
+
+def _nested_scripts(tree):
+    """Source a snippet hands to exec/eval, or on to another child interpreter.
+
+    `SCRIPT = 'exec("import os; os.abort()")'` parses cleanly and holds no crash call
+    of its own, so without this the crash one level down was never looked at.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if _called_name(node) in _NESTED_EXEC:
+            argument = node.args[0] if node.args else None
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                yield argument.value
+        else:
+            yield from _snippets_of_call(node)
+
+
+def _snippets_of_call(node):
+    """Script strings passed to a nested subprocess call, e.g. a `-c` argument."""
+    for argument in list(node.args) + [kw.value for kw in node.keywords]:
+        if isinstance(argument, (ast.List, ast.Tuple)):
+            for element in argument.elts:
+                if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                    yield element.value
+
+
+def _snippet_state(snippet: str, depth: int = 0):
     """`(crashes, violates)` for a child script.
 
     The snippet is Python, so parse it and reuse the same call detector rather than
@@ -376,7 +493,13 @@ def _snippet_state(snippet: str):
         )
         suppressed = "prctl(4, 0" in snippet or "PR_SET_DUMPABLE, 0" in snippet
         return crashes, crashes and not suppressed
-    return _tree_crashes(tree), bool(_unsuppressed_crashes(tree))
+    crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree))
+    if depth < _MAX_SNIPPET_DEPTH:
+        for nested in _nested_scripts(tree):
+            inner_crashes, inner_violates = _snippet_state(nested, depth + 1)
+            crashes = crashes or inner_crashes
+            violates = violates or inner_violates
+    return crashes, violates
 
 
 @lru_cache(maxsize = None)
@@ -543,6 +666,54 @@ _FIXTURES = {
     "unrelated_abort_methods": (
         "def go(route, task):\n    route.abort('failed')\n    task.abort()\n",
         False,  # Playwright and friends share the name and crash nothing
+    ),
+    # Seven more the detector got wrong, each found by reading it rather than by a
+    # failing run. Four let a real core dump through; three failed CI on safe code.
+    "a_pid_that_looks_like_a_signal": (
+        "import os, signal\ndef stop():\n    os.kill(11, signal.SIGKILL)\n",
+        False,  # 11 is the PID here, and SIGKILL never dumps
+    ),
+    "same_name_bound_in_two_scopes": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes\\nctypes.string_at(0)\\n"\n'
+        "def unrelated():\n"
+        '    SCRIPT = "print(1)"\n'
+        "    return SCRIPT\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # a local of the same name must not overwrite the script that runs
+    ),
+    "suppression_earlier_on_the_same_line": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        'ctypes.string_at(0)"\n'
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # a one-line -c script still has an order, given by the column
+    ),
+    "helper_called_only_from_an_uninvoked_def": (
+        "import ctypes\n"
+        "def suppress_core():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "def child():\n"
+        "    def configure():\n"
+        "        suppress_core()\n"
+        "    ctypes.string_at(0)\n",
+        True,  # configure() is never called, so nothing suppressed the fault
+    ),
+    "script_built_as_an_f_string": (
+        "import subprocess, sys\n"
+        'subprocess.run([sys.executable, "-c", f"import os; os.abort(); '
+        'print({sys.argv})"])\n',
+        True,  # an f-string reaches the child as a script like any other
+    ),
+    "imported_name_rebound_before_the_call": (
+        "from os import abort\ndef test_it(mock):\n    abort = mock\n    abort()\n",
+        False,  # only the mock runs, so there is no crash to suppress
+    ),
+    "crash_nested_inside_an_exec": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"exec('import os; os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the SIGABRT is one level down, and dumps just the same
     ),
 }
 
