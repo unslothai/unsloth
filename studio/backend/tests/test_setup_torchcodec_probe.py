@@ -103,16 +103,17 @@ def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
     # would. Reporting that as absent leaves a damaged install with no warning.
     assert _probe(_raising("ModuleNotFoundError('no numpy', name = 'numpy')")) == "broken"
     # ...and the submodule form still belongs to torchcodec itself.
-    assert (
-        _probe(_raising("ModuleNotFoundError('gone', name = 'torchcodec.decoders')")) == "absent"
-    )
+    assert _probe(_raising("ModuleNotFoundError('gone', name = 'torchcodec.decoders')")) == "absent"
 
 
 def test_the_state_is_read_as_a_line_not_as_all_of_stdout():
     # Importing torch can print to stdout, and a state read as the whole buffer then
     # matches none of the arms, so setup silently drops the report.
     noisy = "import sys; print('banner from a startup hook'); "
-    assert _probe(noisy + _raising("ModuleNotFoundError('no torchcodec', name = 'torchcodec')")) == "absent"
+    assert (
+        _probe(noisy + _raising("ModuleNotFoundError('no torchcodec', name = 'torchcodec')"))
+        == "absent"
+    )
 
 
 def test_an_unrelated_import_failure_is_not_blamed_on_ffmpeg():
@@ -183,7 +184,7 @@ def test_both_installers_read_the_state_as_a_line(script):
     text = script.read_text(encoding = "utf-8")
     probe = text.index("TORCHCODEC=")
     after = text[probe : text.index('step "torchcodec"', probe)]
-    assert 's/^TORCHCODEC=//p' in after or "(?m)^TORCHCODEC=" in after
+    assert "s/^TORCHCODEC=//p" in after or "(?m)^TORCHCODEC=" in after
 
 
 def test_the_two_installers_ship_the_same_probe():
