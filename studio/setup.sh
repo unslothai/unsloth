@@ -1896,6 +1896,9 @@ def _vkey(c):
     # the epoch orders above everything in the release: 1!0.1 > 2.0
     nums = [_epoch] + nums
     rest = v[m.end():].lower()
+    # the local label is split off before the stage matchers so it cannot hide
+    # behind them, and ordered last, exactly where PEP 440 puts it
+    rest, _, _local = rest.partition('+')
     # Carry the stage AND its number, not just the class. An interrupted upgrade leaves
     # .post1 and .post2 side by side; ranking both as "post" tied their keys, and max()
     # keeps whichever enumerated first, so the verifier could confirm the stale one.
@@ -1923,7 +1926,11 @@ def _vkey(c):
     # 1.0rc1.dev1 < 1.0rc1 < 1.0rc1.post1
     _tm = re.search(r'(dev|post)[-._]?(\d*)', rest[_end:]) if _end else None
     _trail = ((-1 if _tm.group(1) == 'dev' else 1), int(_tm.group(2) or 0)) if _tm else (0, 0)
-    return (0, (nums, rank + _trail))
+    # PEP 440 local ordering: dot-separated segments, a numeric segment above an
+    # alphanumeric one, and more segments wins when the rest is equal. An absent
+    # label is the empty list, which sorts below any label (1.0 < 1.0+cpu).
+    _lk = [(1, int(_s), '') if _s.isdigit() else (0, 0, _s) for _s in _local.split('.') if _s]
+    return (0, (nums, rank + _trail, _lk))
 if not cands:
     print('POSTVER=__MISSING__')
     sys.exit(0)
@@ -2255,7 +2262,10 @@ except Exception:
         return (0, 0, n) + trail
     # equal numeric prefixes: pre/dev orders BELOW the final release and post
     # ABOVE it, on either side -- an announced 1.0.post1 is not satisfied by an
-    # installed 1.0, and within a class the trailing number decides
+    # installed 1.0, and within a class the trailing number decides. No local
+    # label handling here, unlike _vkey: PEP 440 forbids local versions on a
+    # public index, so the announced side never carries one, and an installed
+    # 1.0+cu121 already answers "at least 1.0" through the tie.
     ok = a > b or (a == b and rank(ra) >= rank(rb))
 sys.exit(0 if ok else 1)
 " "$POST_VER" "$LATEST_VER" 2>/dev/null; then
