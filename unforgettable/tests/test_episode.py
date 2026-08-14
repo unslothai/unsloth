@@ -626,6 +626,88 @@ def test_episode_skip_standing(tmp_path: Path):
     assert rec["id"] in stats[0]["retrieved_ids"].split(",")
 
 
+def test_episode_re_retrieve_on_enter_sim(tmp_path: Path):
+    class RecordingHost(FakeHost):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.generate_messages: list = []
+
+        async def generate(self, req: GenerateRequest) -> GenerateResult:
+            self.generate_messages.append(req.messages)
+            return await super().generate(req)
+
+    def _seed(db):
+        sim_fix = insert_record(
+            kind="error_fix",
+            title="Sim clone tests failed on import",
+            body="When tests fail in the clone, patch the import before retrying.",
+            provenance="sim",
+            db_path=db,
+        )
+        world_claim = insert_record(
+            kind="claim",
+            title="World tests always use pytest",
+            body="The world run the tests with pytest.",
+            provenance="world",
+            db_path=db,
+        )
+        return sim_fix, world_claim
+
+    sim_fix, world_claim = _seed(tmp_path / "memory.db")
+    host = RecordingHost(
+        tmp_path,
+        [_fail_world(), _ok("fixed in sim", "sim"), _ok("works in world", "world")],
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "run the tests"}],
+                stakes="high",
+                confirm_retry=False,
+            ),
+        )
+    )
+    assert Action.ENTER_SIM in outcome.actions
+    world_system = host.generate_messages[0][0]["content"]
+    sim_system = host.generate_messages[1][0]["content"]
+    assert sim_fix["title"] in sim_system
+    assert world_claim["title"] in world_system
+    stats = list_inject_stats(db_path=host.db)
+    contacts = [row["contact"] for row in stats]
+    assert "sim" in contacts
+    assert "world" in contacts
+    sim_uses = {
+        row["record_id"]
+        for row in list_retrieve_uses(
+            episode_id=outcome.state.episode_id, db_path=host.db
+        )
+        if row["contact"] == "sim"
+    }
+    assert sim_fix["id"] in sim_uses
+
+    phrase_root = tmp_path / "phrase"
+    phrase_root.mkdir()
+    _seed(phrase_root / "memory.db")
+    phrase_host = FakeHost(
+        phrase_root,
+        [GenerateResult(text="in sim", finished=False)],
+    )
+    asyncio.run(
+        run(
+            phrase_host,
+            EpisodeRequest(messages=[{"role": "user", "content": "that failed"}]),
+        )
+    )
+    phrase_system = " ".join(
+        str(m.get("content"))
+        for m in (phrase_host.last_messages or [])
+        if m.get("role") == "system"
+    )
+    assert "user declared failure" in phrase_system
+    assert phrase_host.calls[0].startswith("sim-")
+
+
 def test_episode_standing_overflow_still_retrieved(tmp_path: Path):
     db = tmp_path / "memory.db"
     older = insert_record(

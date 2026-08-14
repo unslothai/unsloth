@@ -32,6 +32,8 @@ DEFAULT_MAX_TWIN_NOTES = 1
 STALE_AGE_DAYS = 30
 
 HIGH_STAKES_PROVENANCE = ("world", "mixed", "human")
+_SIM_LESSON_KINDS = frozenset({"error_fix", "twin_note"})
+_SIM_LESSON_PROVENANCE = frozenset({"sim", "mixed"})
 
 _INJECT_HEADER = "Durable memories relevant to this task:"
 _ELLIPSIS = "..."
@@ -44,6 +46,7 @@ class RetrievePolicy:
     snippet_chars: int = DEFAULT_SNIPPET_CHARS
     high_stakes: bool = False
     max_twin_notes: int = DEFAULT_MAX_TWIN_NOTES
+    contact: str = "world"  # world | sim
     exclude_ids: frozenset[str] = frozenset()
 
 
@@ -53,7 +56,12 @@ def retrieve(
     if not (query or "").strip():
         return []
     policy = policy or RetrievePolicy()
-    provenances = HIGH_STAKES_PROVENANCE if policy.high_stakes else None
+    # Rehearsal needs sim lessons; high-stakes provenance drop is world-acting only.
+    provenances = (
+        HIGH_STAKES_PROVENANCE
+        if policy.high_stakes and policy.contact == "world"
+        else None
+    )
     hits = search_records(
         query,
         top_k=policy.max_records,
@@ -61,10 +69,24 @@ def retrieve(
         provenances=provenances,
         db_path=db_path,
     )
+    if policy.exclude_ids:
+        hits = [rec for rec in hits if rec.get("id") not in policy.exclude_ids]
     capped = _cap_twin_notes(hits, policy.max_twin_notes)
-    if not policy.exclude_ids:
-        return capped
-    return [rec for rec in capped if rec.get("id") not in policy.exclude_ids]
+    if policy.contact == "sim":
+        return _prefer_sim_lessons(capped)
+    return capped
+
+
+def _is_sim_lesson(rec: dict[str, Any]) -> bool:
+    return (
+        rec.get("kind") in _SIM_LESSON_KINDS
+        and rec.get("provenance") in _SIM_LESSON_PROVENANCE
+    )
+
+
+def _prefer_sim_lessons(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Stable: sim/mixed error_fix and twin_note first; world procedures keep FTS order.
+    return sorted(records, key=lambda rec: 0 if _is_sim_lesson(rec) else 1)
 
 
 def _cap_twin_notes(

@@ -137,20 +137,24 @@ def _inject_bundle(
     skip_standing: bool,
     episode_id: str,
     db_path: str,
+    contact: str = "world",
 ) -> str:
     standing_rows = [] if skip_standing else list_standing(db_path)
     standing_text, kept_rows = pack_standing(standing_rows)
     compiled_ids = {row["id"] for row in kept_rows}
+    high_stakes = stakes == "high" and contact == "world"
     policy = RetrievePolicy(
-        high_stakes=stakes == "high",
+        high_stakes=high_stakes,
+        contact=contact,
         exclude_ids=frozenset(compiled_ids),
+        max_twin_notes=3 if contact == "sim" else 1,
     )
     retrieved = retrieve(query, policy=policy, db_path=db_path)
     retrieve_text = format_inject(retrieved, policy=policy)
     trajectories = retrieve_trajectories(
         query,
-        contact="world",
-        high_stakes=stakes == "high",
+        contact=contact,
+        high_stakes=high_stakes,
         db_path=db_path,
     )
     traj_text = format_trajectories(trajectories)
@@ -165,12 +169,12 @@ def _inject_bundle(
         insert_retrieve_use(
             episode_id=episode_id,
             record_id=record_id,
-            contact="world",
+            contact=contact,
             db_path=db_path,
         )
     insert_inject_stats(
         episode_id=episode_id,
-        contact="world",
+        contact=contact,
         standing_chars=len(standing_text),
         retrieve_chars=len(retrieve_text),
         trajectory_chars=len(traj_text),
@@ -198,6 +202,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             skip_standing=request.skip_standing,
             episode_id=episode_id,
             db_path=db_path,
+            contact="world",
         )
         messages = _with_system(request.messages, inject)
         generated = False
@@ -267,6 +272,14 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     db_path=db_path,
                     tree=host.sandbox_path(sim_id),
                 )
+                inject = _inject_bundle(
+                    last_user_text(request.messages),
+                    stakes=request.stakes,
+                    skip_standing=request.skip_standing,
+                    episode_id=episode_id,
+                    db_path=db_path,
+                    contact="sim",
+                )
                 messages = _with_system(
                     request.messages,
                     inject
@@ -283,6 +296,14 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                         actions.append(action)
                         if action == Action.RETRY_WORLD:
                             state.enter_world()
+                            inject = _inject_bundle(
+                                last_user_text(request.messages),
+                                stakes=request.stakes,
+                                skip_standing=request.skip_standing,
+                                episode_id=episode_id,
+                                db_path=db_path,
+                                contact="world",
+                            )
                             messages = _with_system(
                                 request.messages,
                                 inject + "\n\nRetry in the world with the repaired plan.",
@@ -303,6 +324,14 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 continue
             if action == Action.RETRY_WORLD:
                 state.enter_world()
+                inject = _inject_bundle(
+                    last_user_text(request.messages),
+                    stakes=request.stakes,
+                    skip_standing=request.skip_standing,
+                    episode_id=episode_id,
+                    db_path=db_path,
+                    contact="world",
+                )
                 messages = _with_system(
                     request.messages,
                     inject + "\n\nRetry in the world with the repaired plan.",

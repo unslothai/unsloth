@@ -128,6 +128,89 @@ def test_second_twin_note_dropped(db_path):
     assert any(hit["title"] == "Deploy window" for hit in hits)
 
 
+def test_sim_contact_high_stakes_keeps_sim_error_fix(db_path):
+    sim = insert_record(
+        kind="error_fix",
+        title="Sim traceback lesson",
+        body="clone pytest failed on import of app",
+        provenance="sim",
+        db_path=db_path,
+    )
+    world = insert_record(
+        kind="claim",
+        title="World traceback note",
+        body="world pytest failed on import of app",
+        provenance="world",
+        db_path=db_path,
+    )
+    hits = retrieve(
+        "pytest failed import",
+        policy=RetrievePolicy(contact="sim", high_stakes=True),
+        db_path=db_path,
+    )
+    ids = {hit["id"] for hit in hits}
+    assert sim["id"] in ids
+    assert world["id"] in ids
+    assert hits[0]["id"] == sim["id"]
+
+
+def test_world_contact_high_stakes_drops_sim(db_path):
+    sim = insert_record(
+        kind="error_fix",
+        title="Sim traceback lesson",
+        body="clone pytest failed on import of app",
+        provenance="sim",
+        db_path=db_path,
+    )
+    world = insert_record(
+        kind="claim",
+        title="World traceback note",
+        body="world pytest failed on import of app",
+        provenance="world",
+        db_path=db_path,
+    )
+    hits = retrieve(
+        "pytest failed import",
+        policy=RetrievePolicy(contact="world", high_stakes=True),
+        db_path=db_path,
+    )
+    ids = {hit["id"] for hit in hits}
+    assert world["id"] in ids
+    assert sim["id"] not in ids
+
+
+def test_sim_policy_keeps_three_twin_notes(db_path):
+    twins = []
+    for index, when in enumerate(
+        (
+            "2020-01-01T00:00:00+00:00",
+            "2022-01-01T00:00:00+00:00",
+            "2024-06-01T00:00:00+00:00",
+        )
+    ):
+        rec = insert_record(
+            kind="twin_note",
+            title=f"Twin {index}",
+            body="twin note about deploy window",
+            provenance="world",
+            db_path=db_path,
+        )
+        _set_updated_at(rec["id"], when, db_path)
+        twins.append(rec)
+    one = retrieve(
+        "deploy", policy=RetrievePolicy(max_twin_notes=1), db_path=db_path
+    )
+    one_twins = [hit for hit in one if hit["kind"] == "twin_note"]
+    assert [twin["id"] for twin in one_twins] == [twins[-1]["id"]]
+    three = retrieve(
+        "deploy",
+        policy=RetrievePolicy(contact="sim", max_twin_notes=3),
+        db_path=db_path,
+    )
+    three_ids = {hit["id"] for hit in three if hit["kind"] == "twin_note"}
+    assert three_ids == {twin["id"] for twin in twins}
+
+
 def test_exclude_ids_drops_from_inject_not_search(db_path):
     compiled = insert_record(
         kind="procedure",
