@@ -8070,9 +8070,7 @@ async def _load_model_impl(
                     # without --kv-unified serves one slot however many were
                     # requested, and refusing a batch of 2 against it is a 400 on a
                     # command that would have run.
-                    _effective_parallel_slots(
-                        _n_parallel, diffusion_kind = placement.diffusion_kind
-                    ),
+                    _effective_parallel_slots(_n_parallel, diffusion_kind = placement.diffusion_kind),
                 )
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
@@ -8828,7 +8826,6 @@ async def validate_model(
                 check_batch_floor,
                 validate_extra_args,
             )
-
             try:
                 validate_extra_args(effective_extra_args)
                 check_batch_floor(

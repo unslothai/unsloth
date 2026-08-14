@@ -106,7 +106,14 @@ class TestValidateRefusesWhatLoadWouldRefuse(unittest.TestCase):
     list /load would answer 400 on has to be refused here instead: a refusal leaves
     the current model alone, a failed switch does not."""
 
-    def _validate(self, route, *, extra_args, n_parallel = None, diffusion_kind = False):
+    def _validate(
+        self,
+        route,
+        *,
+        extra_args,
+        n_parallel = None,
+        diffusion_kind = False,
+    ):
         request = ValidateModelRequest(
             model_path = "someone/gguf",
             llama_extra_args = extra_args,
