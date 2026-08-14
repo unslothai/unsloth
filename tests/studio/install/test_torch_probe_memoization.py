@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """The torch classification probe runs once per install run, not once per repair path.
 
 _ensure_cuda_torch / _ensure_xpu_torch / _ensure_rocm_torch / _ensure_cpu_torch all need
