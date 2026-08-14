@@ -75,7 +75,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
-from utils.datasets_availability import require_datasets_http
+from utils.datasets_availability import require_datasets_http, require_datasets_sync
 
 from utils.utils import (
     canonical_model_repo_id,
@@ -4221,12 +4221,6 @@ async def import_diffusion_dataset_example(
     as-is rather than re-downloaded."""
     _require_diffusion_dataset_mutable()
     entry = _example_by_id(body.id)
-    # After resolving the example, and only for the loader that needs it:
-    # _materialize_hf_dataset() runs `from datasets import load_dataset`, which without
-    # this surfaces as a 502 from the generic handler rather than the tier's 503. The
-    # imagefolder_jsonl loader uses huggingface_hub and file copies, so it still works.
-    if entry.get("loader") == "hf_dataset":
-        await require_datasets_http()
     folder = _resolve_dataset_folder(body.name or entry["id"], must_exist = False)
 
     def do_import() -> DiffusionDatasetImportResponse:
@@ -4286,6 +4280,13 @@ async def import_diffusion_dataset_example(
                     if entry["loader"] == "imagefolder_jsonl":
                         imported = _materialize_imagefolder_jsonl(entry, staging, cap)
                     else:
+                        # Here rather than on the route: _materialize_hf_dataset() runs
+                        # `from datasets import load_dataset`, which without this
+                        # surfaces as a 502 from the generic handler rather than the
+                        # tier's 503. Only once the folder is known to be empty, or the
+                        # tier would refuse the idempotent no-op above -- returning an
+                        # already-materialized dataset needs nothing from the library.
+                        require_datasets_sync()
                         imported = _materialize_hf_dataset(entry, staging, cap)
                 except HTTPException:
                     raise

@@ -1145,13 +1145,28 @@ class TestArm64SkipListParity:
 
     @staticmethod
     def _python_set() -> set[str]:
+        """Both halves. The PowerShell list runs only on native ARM64, so it is the
+        union: the data stack the tier drops everywhere, plus the wheel gap Python
+        drops only on this interpreter."""
         source = STACK_PY.read_text(encoding = "utf-8")
-        index = source.index("NO_DATASETS_SKIP_PACKAGES = {")
-        block = source[index : source.index("}", index)]
-        return {name.strip().strip('"').lower() for name in re.findall(r'"[^"]+"', block)}
+        names: set[str] = set()
+        for start in ("NO_DATASETS_SKIP_PACKAGES = {", "WIN_ARM64_SKIP_PACKAGES = {"):
+            index = source.index(start)
+            block = source[index : source.index("\n}", index)]
+            names |= {name.strip().strip('"').lower() for name in re.findall(r'"[^"]+"', block)}
+        return names
 
     def test_lists_match(self):
         assert self._powershell_list() == self._python_set()
+
+    def test_the_python_side_splits_the_two_reasons(self):
+        """The tier is supported on x64, where the wheel gap does not exist: dropping
+        sqlite-vec, ddgs or whisper there removes working features."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        index = source.index("NO_DATASETS_SKIP_PACKAGES = {")
+        tier_only = source[index : source.index("\n}", index)]
+        for name in ("sqlite-vec", "ddgs", "openai-whisper", "librosa"):
+            assert name not in tier_only, name
 
     def test_list_covers_the_known_gaps(self):
         """Pinned by name: each has been checked against PyPI and publishes no

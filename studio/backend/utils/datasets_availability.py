@@ -194,6 +194,18 @@ def is_inference_only_tier() -> bool:
         return False
 
 
+def require_datasets_sync() -> None:
+    """The same 503, for callers that are not FastAPI dependencies.
+
+    Some paths only learn that they need the library after work that cannot be done
+    on the event loop (a filesystem scan under a lock, say), and a gate placed before
+    that work refuses requests the library was never needed for.
+    """
+    if not datasets_available():
+        from fastapi import HTTPException
+        raise HTTPException(status_code = 503, detail = _UNAVAILABLE_MSG)
+
+
 async def require_datasets_http() -> None:
     """FastAPI dependency: 503 with a stated reason when datasets is absent.
 

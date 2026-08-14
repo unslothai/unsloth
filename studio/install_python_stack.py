@@ -1852,8 +1852,7 @@ def _hsa_spoofed_physical_gfx(
         re-probe."""
         if physical == [inferred_gfx]:
             _safe_print(
-                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the "
-                f"physical arch.\n"
+                f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the physical arch.\n"
             )
             return inferred_gfx
         # Say so rather than leaving "Checking whether..." hanging: on a real gfx1100
@@ -2437,8 +2436,7 @@ def _ensure_cuda_torch() -> None:
         if _target_span is None or not _span_covers(_target_span, _sms):
             return
         _why = (
-            f"torch is {_family} but this host has GPUs outside its "
-            f"sm_{_span[0]}-{_span[1]} range"
+            f"torch is {_family} but this host has GPUs outside its sm_{_span[0]}-{_span[1]} range"
         )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
@@ -3784,14 +3782,23 @@ def _extras_sdist_only_packages() -> tuple[str, ...]:
 # _utils.py runs it unconditionally, so `from unsloth import FastLanguageModel` --
 # the first line of studio/backend/core/inference/inference.py -- raises
 # ModuleNotFoundError without trl, and this tier advertises chat.
+# Two different reasons live below, and only the first travels off ARM64.
+# NO_DATASETS_SKIP_PACKAGES is the data stack itself: the tier is defined by not
+# having it, on every platform. WIN_ARM64_SKIP_PACKAGES is the win_arm64 wheel gap,
+# which is a property of the interpreter, not of the tier -- UNSLOTH_NO_DATASETS=1 on
+# x64 Windows or Linux installs all of it, and dropping it there would take away RAG,
+# web search, speech-to-text and the export helpers from a host that can run them.
 NO_DATASETS_SKIP_PACKAGES = {
     "datasets",
+    "pandas",
+}
+
+WIN_ARM64_SKIP_PACKAGES = {
     "sqlite-vec",
     "tiktoken",
     "openai-whisper",
     "hf-transfer",
     "ddgs",
-    "pandas",
     # Optional extras in the same position: a compiled package with no win_arm64
     # wheel at any version. pytorch-tokenizers and torch-c-dlpack-ext are ExecuTorch
     # /DLPack helpers used by specific export paths, MeCab is the Japanese tokenizer
@@ -3827,7 +3834,9 @@ NO_DATASETS_SKIP_PACKAGES = {
 # two pins that sit below the first release with a win_arm64 wheel. The lifts live in
 # single-env/overrides-win-arm64.txt; a constraint cannot be lifted by an override,
 # only removed, so the ceiling has to come off here for the floor there to apply.
-_WIN_ARM64_UNCONSTRAINED = NO_DATASETS_SKIP_PACKAGES | {"pyarrow", "av", "pymupdf"}
+_WIN_ARM64_UNCONSTRAINED = (
+    NO_DATASETS_SKIP_PACKAGES | WIN_ARM64_SKIP_PACKAGES | {"pyarrow", "av", "pymupdf"}
+)
 
 
 def _select_flash_attn_version(torch_mm: str) -> str | None:
@@ -4342,6 +4351,10 @@ def pip_install(
         temp_reqs.append(actual_req)
     if actual_req is not None and NO_DATASETS and NO_DATASETS_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_DATASETS_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
+    # The wheel gap, not the tier: only where the wheels are actually missing.
+    if actual_req is not None and IS_WINDOWS_ARM64_PYTHON and WIN_ARM64_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, WIN_ARM64_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
     if actual_req is not None and NO_DATASETS and IS_WINDOWS_ARM64_PYTHON:
         _lifts = _win_arm64_lifts()

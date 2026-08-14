@@ -79,9 +79,17 @@ LATE_TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = ("single-env/overrides-win-arm
 NO_DATASETS_OMITTED_REQUIREMENTS: Tuple[str, ...] = (
     "datasets",
     "pandas",
+    "trl",
+)
+
+# Omitted for the wheel gap rather than for the tier, so only on the interpreter that
+# has the gap. UNSLOTH_NO_DATASETS=1 on x64 installs every one of these, and excusing
+# them there would let a genuinely incomplete install verify clean. Kept in step with
+# install_python_stack.WIN_ARM64_SKIP_PACKAGES; only the members studio.txt names
+# matter here, because studio.txt is the one file verify_install() checks.
+WIN_ARM64_OMITTED_REQUIREMENTS: Tuple[str, ...] = (
     "sqlite-vec",
     "ddgs",
-    "trl",
     "tiktoken",
     "hf-transfer",
     "tensorboard",
@@ -537,6 +545,11 @@ def verify_install(
     # between tiers is judged by the rule it was built under.
     tier = bool(recorded_no_datasets(root))
     omit = NO_DATASETS_OMITTED_REQUIREMENTS if tier else None
+    # The wheel-gap omissions follow the interpreter, the way the lifts below do: an
+    # x64 tier install has all of them, so excusing them there would pass an install
+    # that really is missing packages.
+    if omit and _is_windows_arm64_python(manifest):
+        omit = omit + WIN_ARM64_OMITTED_REQUIREMENTS
     # And the pins the tier LIFTED rather than dropped, or a correctly installed
     # PyMuPDF 1.28.x reads as missing against studio.txt's ==1.27.2.3 for ever.
     # Gated on the interpreter too, as the install side is: UNSLOTH_NO_DATASETS=1

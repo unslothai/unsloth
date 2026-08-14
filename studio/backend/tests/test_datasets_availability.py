@@ -191,9 +191,9 @@ class TestStartupDoesNotNeedDatasets:
             tree = ast.parse(source)
             for node in tree.body:
                 if isinstance(node, ast.ImportFrom) and node.module:
-                    assert (
-                        "core.training.trainer" not in node.module
-                    ), f"{relative} imports the training worker at module scope"
+                    assert "core.training.trainer" not in node.module, (
+                        f"{relative} imports the training worker at module scope"
+                    )
 
 
 class TestRoutesAreGated:
@@ -414,11 +414,13 @@ class TestCompatibilityRoutersAreGated:
 
     def test_import_example_reaches_the_gate(self):
         """_materialize_hf_dataset() runs `from datasets import load_dataset`, so an
-        ungated import surfaces as a 502 rather than the tier's 503. Inside the
-        handler now, per loader: see TestGatesFollowTheLoader."""
+        ungated import surfaces as a 502 rather than the tier's 503. At the call
+        itself now, not on the route: see TestGatesFollowTheLoader."""
         source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
         index = source.index('"/diffusion/dataset/import-example"')
-        assert "require_datasets_http" in source[index : index + 2000]
+        # To the call itself, not a fixed window: the handler grew past one.
+        call = source.index("_materialize_hf_dataset(entry, staging, cap)", index)
+        assert "require_datasets_sync()" in source[index:call]
 
     def test_mcp_start_training_enforces_the_gate(self):
         """mcp_server calls start_training() directly, so FastAPI never runs the
@@ -572,14 +574,18 @@ class TestGatesFollowTheLoader:
     nothing. The curated diffusion examples are two loaders, and only one of them
     reaches datasets."""
 
-    def test_the_example_import_gates_inside_not_on_the_route(self):
+    def test_the_example_import_gates_at_the_materialize_call(self):
+        """Not on the route and not on the loader either: the endpoint is idempotent,
+        and returning a folder that already holds images needs nothing from the
+        library, so the gate sits where load_dataset is actually about to run."""
         source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
         index = source.index('"/diffusion/dataset/import-example"')
         decorator = source[index : index + 220]
         assert "require_datasets_http" not in decorator
-        body = source[index : index + 2000]
-        assert 'entry.get("loader") == "hf_dataset"' in body
-        assert "await require_datasets_http()" in body
+        call = source.index("_materialize_hf_dataset(entry, staging, cap)")
+        assert "require_datasets_sync()" in source[call - 700 : call]
+        # And after the emptiness check that makes the no-op path a no-op.
+        assert source.index("existing.image_count == 0 and existing.clip_count == 0") < call
 
     def test_the_imagefolder_example_is_not_gated(self):
         """tarot-1920 materializes through huggingface_hub and file copies."""
@@ -745,6 +751,65 @@ class TestTheGatesHoldOnEveryCaller:
         assert keep < compare
         # Initialised before the branch, so a strict-mode read is never on an unset name.
         assert source.index("$_keepMigratedVenv = $false") < keep
+
+
+class TestTheWheelGapIsNotTheTier:
+    """UNSLOTH_NO_DATASETS=1 is supported on x64 too, where it means "no training
+    stack", not "no wheels". Dropping the win_arm64 gap set there takes away RAG, web
+    search, speech-to-text and the export helpers from a host that can run them."""
+
+    @staticmethod
+    def _set(name: str) -> set:
+        import re
+
+        source = (_BACKEND.parents[1] / "studio" / "install_python_stack.py").read_text(
+            encoding = "utf-8"
+        )
+        match = re.search(rf"^{name} = \{{.*?^\}}", source, re.S | re.M)
+        assert match, name
+        namespace: dict = {}
+        exec(match.group(0), namespace)  # noqa: S102 - our own source, read from disk
+        return namespace[name]
+
+    def test_the_tier_set_is_only_the_data_stack(self):
+        assert self._set("NO_DATASETS_SKIP_PACKAGES") == {"datasets", "pandas"}
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "sqlite-vec",
+            "ddgs",
+            "openai-whisper",
+            "librosa",
+            "pytorch-tokenizers",
+            "tiktoken",
+            "tensorboard",
+        ],
+    )
+    def test_the_wheel_gap_names_are_arm64_only(self, name):
+        assert name in self._set("WIN_ARM64_SKIP_PACKAGES")
+        assert name not in self._set("NO_DATASETS_SKIP_PACKAGES")
+
+    def test_the_two_sets_do_not_overlap(self):
+        assert not (self._set("NO_DATASETS_SKIP_PACKAGES") & self._set("WIN_ARM64_SKIP_PACKAGES"))
+
+    def test_the_arm64_filter_is_keyed_off_the_interpreter(self):
+        source = (_BACKEND.parents[1] / "studio" / "install_python_stack.py").read_text(
+            encoding = "utf-8"
+        )
+        index = source.index("_filter_requirements(actual_req, WIN_ARM64_SKIP_PACKAGES)")
+        assert "IS_WINDOWS_ARM64_PYTHON" in source[index - 200 : index]
+        assert "NO_DATASETS and" not in source[index - 200 : index]
+
+    def test_verification_omits_the_gap_names_only_on_arm64(self):
+        """An x64 tier install has them, so excusing them there would pass an install
+        that really is missing packages."""
+        source = (_BACKEND.parents[1] / "studio" / "install_manifest.py").read_text(
+            encoding = "utf-8"
+        )
+        assert "WIN_ARM64_OMITTED_REQUIREMENTS" in source
+        index = source.index("omit = omit + WIN_ARM64_OMITTED_REQUIREMENTS")
+        assert "_is_windows_arm64_python(manifest)" in source[index - 200 : index]
 
 
 class TestTheTierRemovesTrainingNotTheDevice:
