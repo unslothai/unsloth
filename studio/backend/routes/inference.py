@@ -2827,8 +2827,15 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # to route it to, so honouring the flag would only skip the confirmation
     # guard on the way to the same passthrough.
     if getattr(payload, "run_tools_locally", None) is True:
+        # Intersected with the selection, exactly as hosted_only_tools does: a
+        # stand-in only stands in when this request actually asked for it.
+        # code_execution maps to python/terminal, but naming code_execution alone
+        # selects neither, and Studio has no code_execution of its own, so the
+        # local catalog for such a request comes back empty and the turn falls
+        # back to the same passthrough with the confirmation guard skipped.
+        selected = {name for name in enabled if isinstance(name, str)}
         return not any(
-            LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name) for name in enabled if isinstance(name, str)
+            LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name, frozenset()) & selected for name in selected
         )
     return True
 

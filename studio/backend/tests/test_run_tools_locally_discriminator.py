@@ -135,6 +135,53 @@ def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_ty
 
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(provider_type):
+    """code_execution has a stand-in mapping, but this request selects neither half.
+
+    python/terminal run on this machine; code_execution runs in the provider's
+    own sandbox and Studio ships no tool by that name, so a request naming only
+    code_execution has nothing for the loop to execute. Reading the flag off the
+    mere existence of the mapping enters the loop, finds an empty catalog, falls
+    back to the same passthrough, and skips the confirmation rejection on the
+    way -- the caller asked to confirm and the provider ran the sandbox anyway.
+    """
+    from core.inference.providers import LOCAL_STANDINS_FOR_HOSTED_TOOLS
+    from core.inference.tools import ALL_TOOLS
+    from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
+
+    # The premise, derived rather than asserted: a mapping exists, but nothing it
+    # points at was selected, and Studio has no code_execution of its own.
+    assert LOCAL_STANDINS_FOR_HOSTED_TOOLS["code_execution"] == frozenset({"python", "terminal"})
+    assert "code_execution" not in {tool["function"]["name"] for tool in ALL_TOOLS}
+
+    payload = _payload(
+        enabled_tools = ["code_execution"],
+        run_tools_locally = True,
+        confirm_tool_calls = True,
+    )
+    # The local catalog this request would take into the loop: empty, so the loop
+    # cannot run and the flag has nothing to route to.
+    assert _drive(_select_request_tools(payload, tools_on = True, mcp_allowed = False)) == []
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is True
+
+
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_code_execution_beside_a_selected_stand_in_still_takes_the_loop(provider_type):
+    """The other half of the rule: name a stand-in and the loop is right again.
+
+    web_search is Studio's to run here, and code_execution rides along to the
+    provider, so this must not be swept up by the check above.
+    """
+    from routes.inference import _selects_only_provider_hosted_tools
+
+    payload = _payload(
+        enabled_tools = ["web_search", "code_execution"],
+        run_tools_locally = True,
+    )
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is False
+
+
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_a_mixed_selection_with_the_flag_still_takes_the_loop(provider_type):
     """One name Studio can run is enough; the hosted one rides along as a flag."""
     from routes.inference import _selects_only_provider_hosted_tools
