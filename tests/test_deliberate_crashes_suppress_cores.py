@@ -257,10 +257,13 @@ def _snippets(tree):
             # An f-string reaches the child as a script like any other. Keep its
             # literal parts: the interpolations cannot be known here, and dropping the
             # whole thing let `f"import os; os.abort(); print({v})"` through unread.
-            out.append("".join(
-                part.value for part in node.values
-                if isinstance(part, ast.Constant) and isinstance(part.value, str)
-            ))
+            out.append(
+                "".join(
+                    part.value
+                    for part in node.values
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                )
+            )
         elif isinstance(node, ast.Name):
             if node.id in env:
                 out.append(env[node.id])
@@ -336,8 +339,7 @@ def _is_crash_call(node, aliases = frozenset()) -> bool:
     # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the
     # same core as the named forms, so matching only symbolic names missed them.
     return (
-        isinstance(signal_argument, ast.Constant)
-        and signal_argument.value in _FATAL_SIGNAL_NUMBERS
+        isinstance(signal_argument, ast.Constant) and signal_argument.value in _FATAL_SIGNAL_NUMBERS
     )
 
 
