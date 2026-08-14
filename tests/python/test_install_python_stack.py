@@ -497,11 +497,13 @@ class TestHardenedPipConfigRelaxation:
         """The mirror image: NO_BINARY forces a source BUILD of whatever the pin
         fetches, i.e. compiling torch from source. More untrusted execution, not less,
         so it goes under strict policy too."""
-        forced = {"PIP_NO_BINARY": ":all:", "UV_NO_BINARY": ":all:", "UV_NO_BINARY_PACKAGE": "torch"}
+        forced = {
+            "PIP_NO_BINARY": ":all:",
+            "UV_NO_BINARY": ":all:",
+            "UV_NO_BINARY_PACKAGE": "torch",
+        }
         for strict in ("0", "1"):
-            with mock.patch.dict(
-                os.environ, dict(forced, UNSLOTH_STRICT_PM_POLICY = strict)
-            ):
+            with mock.patch.dict(os.environ, dict(forced, UNSLOTH_STRICT_PM_POLICY = strict)):
                 env = ips._install_env_for_cmd(
                     ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
                 )
@@ -564,9 +566,7 @@ class TestStrictPmPolicyOptOut:
 
     def test_pinned_cmd_keeps_policy_and_config_discovery(self):
         """The index scrub is what the pin needs and stays; the policy overrides go."""
-        with mock.patch.dict(
-            os.environ, dict(self.HOSTILE, UV_INDEX = "https://mirror.corp/simple")
-        ):
+        with mock.patch.dict(os.environ, dict(self.HOSTILE, UV_INDEX = "https://mirror.corp/simple")):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
@@ -612,7 +612,11 @@ class TestPmPolicyRelaxationIsReported:
     a hardened host -- but it says which policy it overrode and which switch enforces it.
     """
 
-    def _sources(self, env: dict, pip_config: str = "") -> list[str]:
+    def _sources(
+        self,
+        env: dict,
+        pip_config: str = "",
+    ) -> list[str]:
         result = mock.Mock(returncode = 0, stdout = pip_config)
         with (
             mock.patch.dict(os.environ, env, clear = True),
