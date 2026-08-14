@@ -148,7 +148,9 @@ function oaiMessagesToRecords(
           const name = typeof fn.name === "string" ? fn.name : "unknown";
           const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
           let args: unknown = {};
-          try { args = JSON.parse(argsStr); } catch { /* keep empty */ }
+          // _raw matches what the stream adapter and the backend keep for
+          // arguments the model did not emit as valid JSON.
+          try { args = JSON.parse(argsStr); } catch { args = { _raw: argsStr }; }
           const result = toolResults.get(tcId);
           parts.push({
             type: "tool-call",
