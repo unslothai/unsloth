@@ -1207,30 +1207,41 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
     if mod is None:
         return []
 
-    devices = []
+    inventory = []
+    driver_total_ordinals = []
     for ordinal, phys_idx in enumerate(device_indices):
         try:
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
             props = mod.get_device_properties(ordinal)
-            total_bytes = props.total_memory
             if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
-                try:
-                    total_bytes = mod.mem_get_info(ordinal)[1]
-                except Exception as e:
-                    # Keep the carve-out rather than dropping the device: an
-                    # understated total still beats no device at all.
-                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
-            devices.append(
-                {
-                    "index": phys_idx,
-                    "visible_ordinal": ordinal,
-                    "name": props.name,
-                    "total_gb": round(total_bytes / (1024**3), 2),
-                    "used_gb": None,
-                }
-            )
+                driver_total_ordinals.append(ordinal)
+            inventory.append((ordinal, phys_idx, props))
         except Exception as e:
             logger.debug("torch inventory probe failed for ordinal %d: %s", ordinal, e)
+
+    driver_totals: dict[int, int] = {}
+    if driver_total_ordinals:
+        try:
+            from utils.torch_device_probe import rocm_memory_totals
+
+            driver_totals = rocm_memory_totals(driver_total_ordinals)
+        except Exception as e:
+            # Keep the carve-out rather than dropping the device: an understated
+            # total still beats no device at all.
+            logger.debug("ROCm APU child memory-total probe failed: %s", e)
+
+    devices = []
+    for ordinal, phys_idx, props in inventory:
+        total_bytes = driver_totals.get(ordinal, props.total_memory)
+        devices.append(
+            {
+                "index": phys_idx,
+                "visible_ordinal": ordinal,
+                "name": props.name,
+                "total_gb": round(total_bytes / (1024**3), 2),
+                "used_gb": None,
+            }
+        )
     return devices
 
 
@@ -2271,13 +2282,23 @@ def _apply_unified_memory_correction(
         )
 
 
+def _rocm_reconciliation_device_info(device_indices: list[int]) -> list[Dict[str, Any]]:
+    """Read the fields needed to correct amd-smi without unsafe Windows occupancy."""
+    if platform.system() == "Windows":
+        # Windows ROCm reports free == total, so occupancy is unknown even on a healthy
+        # runtime. Inventory preserves the useful total and keeps mem_get_info in the
+        # crash-contained child instead of the long-lived backend.
+        return _torch_get_device_inventory(device_indices)
+    return _torch_get_per_device_info(device_indices)
+
+
 def _reconcile_rocm_unified_memory(utilization: Dict[str, Any], device_indices: list[int]) -> None:
     """Fix amd-smi VRAM for ROCm unified-memory GPUs (e.g. Strix Halo).
 
     amd-smi reports only the dedicated slice; torch sees the full GTT pool. When
     torch total > smi total, overwrite per-device VRAM fields with the real value.
     """
-    torch_devices = _torch_get_per_device_info(device_indices)
+    torch_devices = _rocm_reconciliation_device_info(device_indices)
     if not torch_devices:
         return
     torch_by_index = {td["index"]: td for td in torch_devices}
@@ -2302,7 +2323,7 @@ def _reconcile_primary_rocm_unified_memory(
         return
     else:
         primary_idx = [int(numeric_ids[0])]
-    torch_devices = _torch_get_per_device_info(primary_idx)
+    torch_devices = _rocm_reconciliation_device_info(primary_idx)
     if not torch_devices:
         return
     _apply_unified_memory_correction(utilization, torch_devices[0])

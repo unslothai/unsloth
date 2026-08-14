@@ -58,6 +58,7 @@ _maybe_stub("structlog", _build_structlog_stub)
 import pytest
 
 import utils.hardware.hardware as hw  # noqa: E402
+from utils import torch_device_probe  # noqa: E402
 
 
 def _has_cuda() -> bool:
@@ -309,12 +310,72 @@ def test_rocm_apu_inventory_keeps_the_gtt_total(monkeypatch):
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "rocm_windows_free_is_untrusted", lambda: False)
+    monkeypatch.setattr(
+        torch_device_probe, "rocm_memory_totals", lambda ordinals: {0: _APU_GTT_TOTAL}
+    )
+
+    def _parent_abort(_ordinal):
+        raise AssertionError("mem_get_info must run only in the child probe")
+
+    inventory_mod = _apu_mod()
+    inventory_mod.mem_get_info = _parent_abort
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (inventory_mod, "cuda"))
 
     inventory = hw._torch_get_device_inventory([0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
     occupancy = hw._torch_get_per_device_info([0])
 
     assert inventory[0]["total_gb"] == occupancy[0]["total_gb"] == 100.0
     assert inventory[0]["total_gb"] != round(_APU_CARVE_OUT / (1024**3), 2)
+
+
+def test_windows_rocm_reconciliation_never_uses_parent_occupancy(monkeypatch):
+    expected = [
+        {
+            "index": 0,
+            "visible_ordinal": 0,
+            "name": "AMD Radeon 8060S Graphics",
+            "total_gb": 100.0,
+            "used_gb": None,
+        }
+    ]
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_torch_get_device_inventory", lambda indices: expected)
+    monkeypatch.setattr(
+        hw,
+        "_torch_get_per_device_info",
+        lambda indices: pytest.fail("Windows telemetry must not call mem_get_info in the parent"),
+    )
+
+    visible = {
+        "devices": [
+            {"index": 0, "vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
+        ]
+    }
+    hw._reconcile_rocm_unified_memory(visible, [0])
+    assert visible["devices"][0]["vram_total_gb"] == 100.0
+    assert visible["devices"][0]["vram_used_gb"] == 2.0
+
+    primary = {"vram_total_gb": 8.0, "vram_used_gb": 2.0, "vram_utilization_pct": 25.0}
+    hw._reconcile_primary_rocm_unified_memory(primary, {"numeric_ids": [0]})
+    assert primary["vram_total_gb"] == 100.0
+    assert primary["vram_used_gb"] == 2.0
+
+
+def test_non_windows_rocm_reconciliation_keeps_live_occupancy(monkeypatch):
+    expected = [
+        {
+            "index": 0,
+            "visible_ordinal": 0,
+            "name": "AMD Radeon 8060S Graphics",
+            "total_gb": 100.0,
+            "used_gb": 12.0,
+        }
+    ]
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_torch_get_per_device_info", lambda indices: expected)
+
+    assert hw._rocm_reconciliation_device_info([0]) == expected
 
 
 class _FakeRocmProps(_FakeProps):
@@ -361,13 +422,9 @@ def test_an_apu_shaped_name_on_cuda_stays_context_free(monkeypatch):
 def test_rocm_apu_keeps_the_carve_out_when_the_driver_total_fails(monkeypatch):
     # Degraded, not dropped: the device still has to appear in the inventory.
     mod = _apu_mod()
-
-    def _fail(o):
-        raise RuntimeError("hipMemGetInfo unavailable")
-
-    mod.mem_get_info = _fail
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(torch_device_probe, "rocm_memory_totals", lambda ordinals: {})
     assert [d["total_gb"] for d in hw._torch_get_device_inventory([0])] == [8.0]
 
 
@@ -378,6 +435,9 @@ def test_rocm_apu_sysfs_overlay_still_declines_against_the_gtt_total(monkeypatch
     mod = _apu_mod()
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        torch_device_probe, "rocm_memory_totals", lambda ordinals: {0: _APU_GTT_TOTAL}
+    )
     monkeypatch.setattr(hw, "platform", types.SimpleNamespace(system = lambda: "Linux"))
     monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
     monkeypatch.setattr(hw, "_rocm_visibility_mask_active", lambda: False)
@@ -419,6 +479,9 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_on_an_older_runtime(monkey
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 1))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        torch_device_probe, "rocm_memory_totals", lambda ordinals: {0: _APU_GTT_TOTAL}
+    )
     assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
 
 
@@ -429,6 +492,9 @@ def test_rocm_unclassified_apu_keeps_the_driver_total_without_the_flag(monkeypat
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        torch_device_probe, "rocm_memory_totals", lambda ordinals: {0: _APU_GTT_TOTAL}
+    )
     assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
 
 
@@ -445,6 +511,9 @@ def test_rocm_props_that_cannot_be_classified_keep_the_driver_total(monkeypatch)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "_hip_runtime_version", lambda: (6, 4))
     monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(
+        torch_device_probe, "rocm_memory_totals", lambda ordinals: {0: _APU_GTT_TOTAL}
+    )
     assert hw._torch_get_device_inventory([0])[0]["total_gb"] == 100.0
 
 

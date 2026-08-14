@@ -1,19 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe torch allocation in a child so driver crashes do not kill the backend.
+"""Probe native torch operations in a child so driver crashes do not kill the backend.
 
-Only a child that ran cleanly to the end marks an accelerator usable. A crash, a hang, a
-kill and a probe that could not run or be read all leave it unusable, since the allocation
-this stands in front of ends the process rather than raising. Ordinary Python errors are
-the exception: the child ran and reported, so the in-process loader raises the same error
-and describes it better. CPU takes the opposite default, because it cannot fault a driver
-and condemning it would change the embedding backend. Set
-``UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE=1`` to skip the probe.
+The allocation probe marks an accelerator usable only when its child runs cleanly to the
+end. The memory-total probe gives unified-memory telemetry the same native-fault boundary
+and falls back to device properties when it cannot return a trustworthy total. Set
+``UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE=1`` to skip the allocation probe.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -47,6 +45,7 @@ _SIGALRM_NUMBER = 14
 # an NTSTATUS, so nothing else here would recognise it. Same value LlamaCppBackend
 # ._is_abort_exit already matches for GGML_ASSERT deaths.
 _WINDOWS_ABORT_EXIT_STATUS = 3
+_MEMORY_TOTAL_RESULT_PREFIX = "UNSLOTH_ROCM_MEMORY_TOTALS="
 
 # Anything that changes which physical device a device string names, or which kernels the
 # runtime emits for it. A change invalidates a cached verdict, since the same "cuda" or
@@ -109,6 +108,59 @@ import torch
 device = sys.argv[1]
 tensor = torch.ones((8, 8), dtype = torch.float16, device = device)
 (tensor @ tensor).sum().item()
+"""
+
+# ``mem_get_info`` is not an exception boundary: a broken HIP runtime can abort the
+# interpreter from inside the native call. The system endpoint still needs its total on a
+# unified-memory APU because device properties expose only the dedicated carve-out. Query
+# it in a disposable process, then perform a tiny synchronized allocation so a deferred
+# runtime fault happens before the child reports success.
+_ROCM_MEMORY_TOTAL_PROBE_SCRIPT = f"""
+import json
+import os
+import signal
+import sys
+import threading
+
+_deadline = float(sys.argv[2])
+if hasattr(signal, "alarm"):
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    if hasattr(signal, "pthread_sigmask"):
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {{signal.SIGALRM}})
+    signal.alarm(int(_deadline) or 1)
+else:
+    _watchdog = threading.Timer(_deadline, lambda: os._exit(70))
+    _watchdog.daemon = True
+    _watchdog.start()
+
+if sys.platform == "win32":
+    _handles = []
+    for _directory in os.environ.get(
+        "UNSLOTH_STUDIO_PROBE_ROCM_DLL_DIRS", ""
+    ).split(os.pathsep):
+        if _directory and os.path.isdir(_directory):
+            try:
+                _handles.append(os.add_dll_directory(_directory))
+            except (OSError, AttributeError):
+                pass
+
+import torch
+
+_totals = {{}}
+for _ordinal in json.loads(sys.argv[1]):
+    try:
+        _ordinal = int(_ordinal)
+        _total = int(torch.cuda.mem_get_info(_ordinal)[1])
+        _tensor = torch.ones((1,), dtype = torch.float16, device = f"cuda:{{_ordinal}}")
+        _tensor.sum().item()
+        _totals[str(_ordinal)] = _total
+    except Exception:
+        _totals[str(_ordinal)] = None
+
+print(
+    "{_MEMORY_TOTAL_RESULT_PREFIX}" + json.dumps(_totals, sort_keys = True),
+    flush = True,
+)
 """
 
 
@@ -214,6 +266,14 @@ def _identity_key() -> tuple[str | None, ...]:
     return tuple(os.environ.get(name) for name in _DEVICE_IDENTITY_ENV_VARS)
 
 
+def _probe_env() -> dict[str, str]:
+    env = child_env_without_native_path_secret()
+    dll_directories = _rocm_dll_directories()
+    if dll_directories:
+        env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
+    return utf8_child_env(env)
+
+
 def device_can_allocate(device: str) -> bool:
     """Return false unless the device is known to be usable.
 
@@ -235,11 +295,6 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return True
 
-    env = child_env_without_native_path_secret()
-    dll_directories = _rocm_dll_directories()
-    if dll_directories:
-        env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_directories)
-
     try:
         process = subprocess.Popen(
             [sys.executable, "-c", _PROBE_SCRIPT, device, str(_CHILD_SELF_LIMIT_SECONDS)],
@@ -248,7 +303,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            env = utf8_child_env(env),
+            env = _probe_env(),
             # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when
             # this multithreaded backend forks and executes Python before exec.
             **windows_hidden_subprocess_kwargs(),
@@ -315,6 +370,126 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             forget_pid(process.pid)
 
 
+def rocm_memory_totals(device_ordinals: list[int] | tuple[int, ...]) -> dict[int, int]:
+    """Return HIP memory totals without letting a native abort kill the backend.
+
+    Results, including failure, are cached for the backend lifetime. Device capacity is
+    fixed, and retrying a probe that already crashed would only make every system poll pay
+    the same cold torch import and native fault again.
+    """
+    ordinals = tuple(dict.fromkeys(int(ordinal) for ordinal in device_ordinals if ordinal >= 0))
+    return dict(_rocm_memory_totals_cached(ordinals, _identity_key()))
+
+
+@lru_cache(maxsize = None)
+def _rocm_memory_totals_cached(
+    device_ordinals: tuple[int, ...], _identity: tuple[str | None, ...]
+) -> tuple[tuple[int, int], ...]:
+    if not device_ordinals:
+        return ()
+
+    try:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _ROCM_MEMORY_TOTAL_PROBE_SCRIPT,
+                json.dumps(device_ordinals),
+                str(_CHILD_SELF_LIMIT_SECONDS),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = _probe_env(),
+            # See the allocation probe above: no preexec_fn in a threaded backend.
+            **windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:  # noqa: BLE001 - telemetry falls back to the carve-out
+        logger.warning(
+            "ROCm memory-total probe could not run; using device-property totals",
+            exc_info = True,
+        )
+        return ()
+
+    from utils.process_lifetime import adopt_pid, forget_pid
+
+    adopt_pid(process.pid)
+    try:
+        try:
+            stdout, stderr = process.communicate(timeout = PROBE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            stderr = _terminate_and_drain(process)
+            tail = (stderr or "").strip()[-_STDERR_TAIL_CHARS:]
+            logger.warning(
+                "ROCm memory-total probe did not finish in %.0fs; using device-property "
+                "totals%s",
+                PROBE_TIMEOUT_SECONDS,
+                f": {tail}" if tail else "",
+            )
+            return ()
+        except Exception:  # noqa: BLE001 - telemetry falls back to the carve-out
+            _terminate_and_drain(process)
+            logger.warning(
+                "ROCm memory-total probe could not be read; using device-property totals",
+                exc_info = True,
+            )
+            return ()
+
+        if process.returncode != 0:
+            tail = (stderr or "").strip()[-_STDERR_TAIL_CHARS:]
+            logger.warning(
+                "ROCm memory-total probe exited with status %s; using device-property "
+                "totals%s",
+                process.returncode,
+                f": {tail}" if tail else "",
+            )
+            return ()
+
+        result_line = next(
+            (
+                line[len(_MEMORY_TOTAL_RESULT_PREFIX) :]
+                for line in reversed((stdout or "").splitlines())
+                if line.startswith(_MEMORY_TOTAL_RESULT_PREFIX)
+            ),
+            None,
+        )
+        if result_line is None:
+            logger.warning(
+                "ROCm memory-total probe returned no result; using device-property totals"
+            )
+            return ()
+        try:
+            payload = json.loads(result_line)
+            expected = set(device_ordinals)
+            totals = tuple(
+                sorted(
+                    (int(raw_ordinal), int(raw_total))
+                    for raw_ordinal, raw_total in payload.items()
+                    if int(raw_ordinal) in expected
+                    and type(raw_total) is int
+                    and raw_total > 0
+                )
+            )
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            logger.warning(
+                "ROCm memory-total probe returned malformed data; using device-property totals"
+            )
+            return ()
+        missing = expected - {ordinal for ordinal, _total in totals}
+        if missing:
+            logger.warning(
+                "ROCm memory-total probe could not query ordinals %s; using device-property "
+                "totals for them",
+                sorted(missing),
+            )
+        return totals
+    finally:
+        if process.returncode is not None:
+            forget_pid(process.pid)
+
+
 def _terminate_and_drain(process: subprocess.Popen) -> str:
     """Bound cleanup after timeout and retain an unkillable child for reaping.
 
@@ -370,5 +545,10 @@ def _clear_probe_cache() -> None:
     _device_can_allocate_cached.cache_clear()
 
 
+def _clear_memory_total_probe_cache() -> None:
+    _rocm_memory_totals_cached.cache_clear()
+
+
 # Preserve the cache-control hook used by existing tests and callers.
 device_can_allocate.cache_clear = _clear_probe_cache  # type: ignore[attr-defined]
+rocm_memory_totals.cache_clear = _clear_memory_total_probe_cache  # type: ignore[attr-defined]

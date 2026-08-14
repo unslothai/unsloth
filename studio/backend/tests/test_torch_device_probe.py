@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the out-of-process torch allocation probe."""
+"""Tests for the out-of-process native torch probes."""
 
 import ast
+import json
 import os
 import signal
 import subprocess
@@ -39,8 +40,10 @@ def _fresh_probe(monkeypatch):
     monkeypatch.setattr(process_lifetime, "adopt_pid", lambda _pid: None)
     monkeypatch.setattr(process_lifetime, "forget_pid", lambda _pid: None)
     torch_device_probe.device_can_allocate.cache_clear()
+    torch_device_probe.rocm_memory_totals.cache_clear()
     yield
     torch_device_probe.device_can_allocate.cache_clear()
+    torch_device_probe.rocm_memory_totals.cache_clear()
 
 
 class _FakeProcess:
@@ -48,11 +51,13 @@ class _FakeProcess:
         self,
         *,
         returncode = 0,
+        stdout = "",
         stderr = "",
         timeouts = 0,
     ):
         self.returncode = returncode
         self.pid = 4242
+        self.stdout = stdout
         self.stderr = stderr
         self.timeouts = timeouts
         self.calls: list[str] = []
@@ -62,7 +67,7 @@ class _FakeProcess:
         if self.timeouts:
             self.timeouts -= 1
             raise subprocess.TimeoutExpired("probe", timeout or 0)
-        return None, self.stderr
+        return self.stdout, self.stderr
 
     def terminate(self):
         self.calls.append("terminate")
@@ -100,6 +105,87 @@ def test_probe_script_initializes_blas_and_synchronizes():
     assert "torch.ones" in script
     assert "tensor @ tensor" in script
     assert ".item()" in script
+
+
+def test_rocm_memory_total_script_is_valid_and_synchronizes():
+    script = torch_device_probe._ROCM_MEMORY_TOTAL_PROBE_SCRIPT
+    compile(script, "<memory-total-probe>", "exec")
+    assert "torch.cuda.mem_get_info" in script
+    assert "torch.ones" in script
+    assert ".item()" in script
+    assert torch_device_probe._MEMORY_TOTAL_RESULT_PREFIX in script
+
+
+def test_rocm_memory_totals_parse_and_cache_a_clean_child(monkeypatch):
+    calls: list = []
+    prefix = torch_device_probe._MEMORY_TOTAL_RESULT_PREFIX
+    process = _FakeProcess(
+        stdout = "torch banner\n" + prefix + json.dumps({"0": 100 << 30, "1": 24 << 30}) + "\n"
+    )
+    _patch_popen(monkeypatch, process, calls)
+
+    expected = {0: 100 << 30, 1: 24 << 30}
+    assert torch_device_probe.rocm_memory_totals([0, 1]) == expected
+    assert torch_device_probe.rocm_memory_totals([0, 1]) == expected
+    assert len(calls) == 1
+    assert json.loads(calls[0][0][-2]) == [0, 1]
+    assert calls[0][1]["stdout"] is subprocess.PIPE
+
+
+def test_rocm_memory_total_cache_follows_device_identity(monkeypatch):
+    calls: list = []
+    prefix = torch_device_probe._MEMORY_TOTAL_RESULT_PREFIX
+    _patch_popen(
+        monkeypatch,
+        _FakeProcess(stdout = prefix + json.dumps({"0": 100 << 30}) + "\n"),
+        calls,
+    )
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+
+    assert torch_device_probe.rocm_memory_totals([0]) == {0: 100 << 30}
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert torch_device_probe.rocm_memory_totals([0]) == {0: 100 << 30}
+    assert len(calls) == 2
+
+
+def test_rocm_memory_total_child_abort_is_contained_and_cached(monkeypatch):
+    calls: list = []
+    _patch_popen(
+        monkeypatch,
+        _FakeProcess(returncode = torch_device_probe._WINDOWS_ABORT_EXIT_STATUS),
+        calls,
+    )
+
+    assert torch_device_probe.rocm_memory_totals([0]) == {}
+    assert torch_device_probe.rocm_memory_totals([0]) == {}
+    assert len(calls) == 1
+
+
+def test_real_rocm_memory_total_child_crash_does_not_kill_parent(monkeypatch):
+    monkeypatch.setattr(torch_device_probe, "_ROCM_MEMORY_TOTAL_PROBE_SCRIPT", _CRASHING_SCRIPT)
+    assert torch_device_probe.rocm_memory_totals([0]) == {}
+
+
+def test_rocm_memory_total_timeout_is_terminated(monkeypatch):
+    process = _FakeProcess(returncode = None, timeouts = 1)
+    _patch_popen(monkeypatch, process)
+    monkeypatch.setattr(torch_device_probe, "PROBE_TIMEOUT_SECONDS", 0.01)
+
+    assert torch_device_probe.rocm_memory_totals([0]) == {}
+    assert "terminate" in process.calls
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "UNSLOTH_ROCM_MEMORY_TOTALS=not-json\n",
+        'UNSLOTH_ROCM_MEMORY_TOTALS={"0": true}\n',
+    ],
+)
+def test_rocm_memory_total_malformed_result_falls_back(monkeypatch, stdout):
+    _patch_popen(monkeypatch, _FakeProcess(stdout = stdout))
+    assert torch_device_probe.rocm_memory_totals([0]) == {}
 
 
 def test_child_that_crashes_marks_the_device_unusable(monkeypatch):
