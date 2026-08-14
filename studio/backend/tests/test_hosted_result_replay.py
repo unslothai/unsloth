@@ -187,7 +187,7 @@ def test_a_hosted_result_reaches_the_follow_up_request(executed):
                         "type": "tool_end",
                         "tool_call_id": "hosted-1",
                         "tool_name": "web_search",
-                        "result": "Title: Unsloth\nURL: https://unsloth.ai",
+                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
                     }
                 ),
                 _text("Let me also compute that."),
@@ -200,7 +200,7 @@ def test_a_hosted_result_reaches_the_follow_up_request(executed):
     )
     _run(transport)
     replayed = _replayed(transport)
-    assert "https://unsloth.ai" in replayed, "the hosted result was dropped"
+    assert "gradient checkpointing lands" in replayed, "the hosted result was dropped"
     assert "LOCAL<web_search>" in replayed, "the local result was dropped"
 
 
@@ -557,7 +557,7 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
                         "type": "tool_end",
                         "tool_call_id": "hosted-1",
                         "tool_name": "web_search",
-                        "result": "Title: Unsloth\nURL: https://unsloth.ai",
+                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
                     }
                 ),
                 _text("Let me check that."),
@@ -569,7 +569,7 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
     )
     _run(transport)
     assert len(transport.requests) > 1, "the stall reprompt never happened"
-    assert "https://unsloth.ai" in json.dumps(transport.requests[1]["messages"])
+    assert "gradient checkpointing lands" in json.dumps(transport.requests[1]["messages"])
 
 
 def test_a_stalled_continuation_stays_one_assistant_turn(executed):
@@ -587,7 +587,7 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
                         "type": "tool_end",
                         "tool_call_id": "hosted-1",
                         "tool_name": "web_search",
-                        "result": "Title: Unsloth\nURL: https://unsloth.ai",
+                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
                     }
                 ),
                 _text(" Let me check that."),
@@ -634,7 +634,7 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
     resumed = [m for m in messages if m["role"] == "assistant"]
     assert len(resumed) == 1
     assert resumed[0]["content"].startswith("The answer is Let me check that.")
-    assert "https://unsloth.ai" in resumed[0]["content"]
+    assert "gradient checkpointing lands" in resumed[0]["content"]
 
 
 # ── the label is the operation, not the transport's plumbing ─────────
@@ -952,7 +952,7 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
                         "type": "tool_end",
                         "tool_call_id": "hosted-1",
                         "tool_name": "web_search",
-                        "result": "Title: Unsloth\nURL: https://unsloth.ai",
+                        "result": "Title: Unsloth\nSnippet: gradient checkpointing lands",
                     }
                 ),
                 "data: "
@@ -980,7 +980,7 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
     stalled = [
         m
         for m in reprompted
-        if m["role"] == "assistant" and "https://unsloth.ai" in str(m.get("content"))
+        if m["role"] == "assistant" and "gradient checkpointing lands" in str(m.get("content"))
     ]
     assert stalled, "the hosted result never reached the reprompt"
     assert stalled[0].get("extra_content") == {"google": {"thought_signature": signature}}
