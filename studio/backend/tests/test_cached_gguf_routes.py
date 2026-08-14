@@ -5151,3 +5151,39 @@ def test_the_listing_probe_reads_a_vendor_or_prerelease_version(monkeypatch):
     installed[0] = "unknown"
     assert family_pipeline_available(h3) is True
     assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+
+def test_every_listing_probe_class_has_a_version_gate():
+    """An unlisted class reads as available, so every probed class needs an entry."""
+    from core.inference.diffusion_families import (
+        _FAMILIES,
+        _PIPELINE_MIN_DIFFUSERS,
+        family_probe_class,
+    )
+    from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
+
+    # Exported before any diffusers still in play, so no entry can make the answer more true.
+    predates_every_release = {"StableDiffusionXLPipeline"}
+    probed = {family_probe_class(fam) for fam in (*_FAMILIES, *_VIDEO_FAMILIES)}
+    ungated = sorted(name for name in probed if name and name not in _PIPELINE_MIN_DIFFUSERS)
+    assert set(ungated) <= predates_every_release, ungated
+
+
+def test_the_listing_probe_hides_a_class_the_installed_diffusers_predates(monkeypatch):
+    """A family whose class the install predates must not reach the picker."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available, family_probe_class
+    from core.inference.video_families import detect_video_family
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and family_probe_class(wan) == "WanPipeline"
+
+    installed = ["0.32.0"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(wan) is False  # WanPipeline arrived in 0.33.0
+    installed[0] = "0.33.0"
+    assert family_pipeline_available(wan) is True
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"

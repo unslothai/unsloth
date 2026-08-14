@@ -1003,7 +1003,8 @@ _DIFFUSERS_DROPPED_PY39 = "0.37.0"
 # First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at
 # the upstream tags and cross-checked against each release's requires-python on PyPI. An unlisted
 # class gets a version-free "a newer diffusers" instead of a number, since the ones left out are
-# older than any release in play. This exists so the remedy is true: telling a
+# older than any release in play -- and ``family_pipeline_available`` reads one as available, so
+# every class the listing probes belongs here. This exists so the remedy is true: telling a
 # 3.9 host that Z-Image needs Python >= 3.10 sends it to upgrade the interpreter when
 # ``pip install -U diffusers`` (0.36.0 there) would have been enough.
 _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
@@ -1028,6 +1029,13 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImagePipeline": "0.35.0",
     "QwenImageImg2ImgPipeline": "0.35.0",
     "QwenImageInpaintPipeline": "0.35.0",
+    "FluxKontextPipeline": "0.35.0",
+    "HiDreamImagePipeline": "0.34.0",
+    # WanPipeline arrived with Wan2.1 in 0.33.0; the shipped Wan2.2 family wants the newer
+    # weights that 0.35 supports, but the gate answers class presence, which is what the
+    # attribute probe answered before it.
+    "WanPipeline": "0.33.0",
+    "Lumina2Pipeline": "0.33.0",
     "FluxPipeline": "0.30.0",
     "FluxImg2ImgPipeline": "0.30.0",
     "FluxInpaintPipeline": "0.30.0",
