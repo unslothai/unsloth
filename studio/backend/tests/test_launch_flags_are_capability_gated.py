@@ -366,10 +366,12 @@ def _flagless_v_cache_fixup(*, known_off: bool, cmd: list, env: dict) -> tuple:
         node
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.If)
-        and "_reset_quantized_v_cache"
-        in {a.attr for a in ast.walk(node) if isinstance(a, ast.Attribute)}
+        and {a.attr for a in ast.walk(node) if isinstance(a, ast.Attribute)}
+        & {"_reset_quantized_v_cache", "_drop_env_quantized_v_cache"}
+        and "_flash_attn_known_off"
+        in {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
     ]
-    assert len(blocks) == 1, f"expected one V-cache fixup block, found {len(blocks)}"
+    assert len(blocks) == 2, f"expected two V-cache fixup blocks, found {len(blocks)}"
     scope = {
         "self": LlamaCppBackend,
         "logger": logging.getLogger(__name__),
@@ -431,3 +433,9 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
     def test_an_unquantized_v_cache_is_left_alone(self, value):
         cmd = [c if c != "q8_0" else value for c in self.CMD]
         assert _flagless_v_cache_fixup(known_off = True, cmd = cmd, env = {})[0] == cmd
+
+    def test_the_reset_lands_before_the_launch_is_logged(self):
+        """Otherwise "Starting llama-server: ..." names a V cache type the child
+        never runs, and the log is the only record of what was launched."""
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert src.index("_reset_quantized_v_cache") < src.index("Starting llama-server")

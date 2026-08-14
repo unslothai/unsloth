@@ -14880,6 +14880,18 @@ class LlamaCppBackend:
                 if _pv_device_pin:
                     cmd.extend(_pv_device_pin)
 
+                # A build with no --flash-attn cannot run a quantized V cache
+                # either: llama.cpp aborts init with "V cache quantization
+                # requires flash_attn", and the KV type is emitted from the
+                # user's setting with no flash-attn coupling. The crash-recovery
+                # rung resets V for exactly that abort, but it only fires when
+                # the argv had a flag to turn off, so on a build that never had
+                # one nothing would catch it. Before the log below, so what is
+                # logged is what launches; length is preserved, so _spec_start
+                # still indexes the same tokens.
+                if _flash_attn_known_off:
+                    cmd = self._reset_quantized_v_cache(cmd, "this build has no --flash-attn")
+
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
@@ -14945,18 +14957,13 @@ class LlamaCppBackend:
                     logger.info(
                         "Dropped inherited LLAMA_ARG_FLASH_ATTN: this build has no --flash-attn."
                     )
-                # The same build cannot run a quantized V cache either, and the
-                # KV type is emitted from the user's setting with no flash-attn
-                # coupling. The crash-recovery rung resets V for exactly this
-                # abort, but it only fires when the argv had a flag to turn off,
-                # so on a build that never had one nothing would catch it.
-                if _flash_attn_known_off:
-                    cmd = self._reset_quantized_v_cache(cmd, "this build has no --flash-attn")
-                    if self._drop_env_quantized_v_cache(env):
-                        logger.info(
-                            "Dropped inherited quantized V-cache env: this build "
-                            "has no --flash-attn."
-                        )
+                # Same for an env-only quantized V cache, which the argv reset
+                # above cannot reach.
+                if _flash_attn_known_off and self._drop_env_quantized_v_cache(env):
+                    logger.info(
+                        "Dropped inherited quantized V-cache env: this build has "
+                        "no --flash-attn."
+                    )
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
