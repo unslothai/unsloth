@@ -134,3 +134,39 @@ def test_probes_run_world_failing_command_exits_1(tmp_path, db_path):
     world = tmp_path / "world"
     world.mkdir()
     assert main(["probes", "--run", "--world", str(world), "--db", str(db_path)]) == 1
+
+
+def test_compile_uncompile_round_trip_and_probe_refused(db_path, capsys):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    probe = insert_record(
+        kind="procedure",
+        title="Probe: old login",
+        body="echo login\n",
+        provenance="human",
+        db_path=db_path,
+    )
+    assert main(["compile", rec["id"], "--db", str(db_path)]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert first["source_record_id"] == rec["id"]
+    assert first["explicit"] == 1
+    assert main(["compile", rec["id"], "--db", str(db_path)]) == 0
+    again = json.loads(capsys.readouterr().out)
+    assert again["source_record_id"] == rec["id"]
+    assert again["explicit"] == 1
+    assert main(["compiled", "--db", str(db_path)]) == 0
+    listed = capsys.readouterr().out
+    assert rec["id"][:8] in listed
+    assert rec["title"] in listed
+    assert "yes" in listed
+    assert main(["uncompile", rec["id"], "--db", str(db_path)]) == 0
+    dropped = json.loads(capsys.readouterr().out)
+    assert dropped["source_record_id"] == rec["id"]
+    assert main(["compiled", "--db", str(db_path)]) == 0
+    assert rec["title"] not in capsys.readouterr().out
+    assert main(["compile", probe["id"], "--db", str(db_path)]) == 2

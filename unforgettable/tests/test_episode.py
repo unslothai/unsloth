@@ -33,6 +33,7 @@ from unforgettable.host import (
 )
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run
+from unforgettable.store.compile import pin_compiled
 from unforgettable.store.records import (
     get_record,
     insert_record,
@@ -538,3 +539,59 @@ def test_episode_confirm_cancel_escalates(tmp_path: Path):
     assert Action.RETRY_WORLD not in outcome.actions
     assert len(host.calls) == 2
     assert host.confirm_calls == 1
+
+
+def test_episode_standing_excludes_from_retrieve(tmp_path: Path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body=("Always run ruff, then pytest.\n" * 20),
+        provenance="world",
+        db_path=tmp_path / "memory.db",
+    )
+    insert_record(
+        kind="claim",
+        title="Formatter config",
+        body="ruff settings live in pyproject.",
+        provenance="world",
+        db_path=tmp_path / "memory.db",
+    )
+    pin_compiled(rec["id"], explicit=True, db_path=tmp_path / "memory.db")
+    host = FakeHost(tmp_path, [_ok("ok", "world")])
+    asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "how do we run the formatter"}]
+            ),
+        )
+    )
+    system = host.last_messages[0]["content"]
+    assert f"Source: {rec['id']}" in system
+    assert system.count(rec["title"]) == 1
+    header = "Durable memories relevant to this task:"
+    if header in system:
+        assert rec["title"] not in system.split(header, 1)[1]
+
+
+def test_episode_skip_standing(tmp_path: Path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff, then pytest.",
+        provenance="world",
+        db_path=tmp_path / "memory.db",
+    )
+    pin_compiled(rec["id"], explicit=True, db_path=tmp_path / "memory.db")
+    host = FakeHost(tmp_path, [_ok("ok", "world")])
+    asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "how do we run the formatter"}],
+                skip_standing=True,
+            ),
+        )
+    )
+    system = host.last_messages[0]["content"]
+    assert "Standing procedures" not in system

@@ -406,3 +406,117 @@ def list_rollouts(*, episode_id: str, db_path=None) -> list[dict[str, Any]]:
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def insert_retrieve_use(
+    *,
+    episode_id: str,
+    record_id: str,
+    contact: str,
+    use_id: Optional[str] = None,
+    db_path=None,
+) -> dict[str, Any]:
+    if contact not in ROLLOUT_CONTACTS:
+        raise ValueError(f"unknown retrieve contact: {contact}")
+    rid = use_id or str(uuid.uuid4())
+    now = _now()
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO retrieve_uses(
+                id, episode_id, record_id, contact, created_at
+            ) VALUES(?,?,?,?,?)
+            """,
+            (rid, episode_id, record_id, contact, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    found = _get_retrieve_use(rid, db_path=db_path)
+    if found is None:
+        raise RuntimeError("retrieve_use insert did not persist")
+    return found
+
+
+def _get_retrieve_use(use_id: str, db_path=None) -> Optional[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM retrieve_uses WHERE id = ?", (use_id,)
+        ).fetchone()
+        return _row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def insert_inject_stats(
+    *,
+    episode_id: str,
+    contact: str,
+    standing_chars: int,
+    retrieve_chars: int,
+    trajectory_chars: int,
+    total_chars: int,
+    compiled_ids: str,
+    retrieved_ids: str,
+    stats_id: Optional[str] = None,
+    db_path=None,
+) -> dict[str, Any]:
+    if contact not in ROLLOUT_CONTACTS:
+        raise ValueError(f"unknown inject contact: {contact}")
+    rid = stats_id or str(uuid.uuid4())
+    now = _now()
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO inject_stats(
+                id, episode_id, contact, standing_chars, retrieve_chars,
+                trajectory_chars, total_chars, compiled_ids, retrieved_ids,
+                created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                rid,
+                episode_id,
+                contact,
+                standing_chars,
+                retrieve_chars,
+                trajectory_chars,
+                total_chars,
+                compiled_ids,
+                retrieved_ids,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    found = _get_inject_stats(rid, db_path=db_path)
+    if found is None:
+        raise RuntimeError("inject_stats insert did not persist")
+    return found
+
+
+def _get_inject_stats(stats_id: str, db_path=None) -> Optional[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM inject_stats WHERE id = ?", (stats_id,)
+        ).fetchone()
+        return _row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_inject_stats(*, limit: int = 20, db_path=None) -> list[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM inject_stats ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()

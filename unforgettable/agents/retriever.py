@@ -44,6 +44,7 @@ class RetrievePolicy:
     snippet_chars: int = DEFAULT_SNIPPET_CHARS
     high_stakes: bool = False
     max_twin_notes: int = DEFAULT_MAX_TWIN_NOTES
+    exclude_ids: frozenset[str] = frozenset()
 
 
 def retrieve(
@@ -60,7 +61,10 @@ def retrieve(
         provenances=provenances,
         db_path=db_path,
     )
-    return _cap_twin_notes(hits, policy.max_twin_notes)
+    capped = _cap_twin_notes(hits, policy.max_twin_notes)
+    if not policy.exclude_ids:
+        return capped
+    return [rec for rec in capped if rec.get("id") not in policy.exclude_ids]
 
 
 def _cap_twin_notes(

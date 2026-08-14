@@ -17,6 +17,7 @@ from __future__ import annotations
 from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
 from unforgettable.store.db import get_connection
 from unforgettable.store.records import insert_record
+from unforgettable.store.search import search_records
 
 _INJECT_HEADER = "Durable memories relevant to this task:"
 
@@ -125,3 +126,30 @@ def test_second_twin_note_dropped(db_path):
     twins = [hit for hit in hits if hit["kind"] == "twin_note"]
     assert [twin["id"] for twin in twins] == [newer["id"]]
     assert any(hit["title"] == "Deploy window" for hit in hits)
+
+
+def test_exclude_ids_drops_from_inject_not_search(db_path):
+    compiled = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff then pytest.",
+        provenance="world",
+        db_path=db_path,
+    )
+    other = insert_record(
+        kind="claim",
+        title="Formatter config",
+        body="ruff settings live in pyproject.",
+        provenance="world",
+        db_path=db_path,
+    )
+    hits = retrieve(
+        "formatter",
+        policy=RetrievePolicy(exclude_ids=frozenset({compiled["id"]})),
+        db_path=db_path,
+    )
+    text = format_inject(hits)
+    assert compiled["title"] not in text
+    assert other["title"] in text
+    found = search_records("formatter", db_path=db_path)
+    assert any(hit["id"] == compiled["id"] for hit in found)

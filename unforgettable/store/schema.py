@@ -78,6 +78,37 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_rollouts_episode ON rollouts(episode_id);
+
+        CREATE TABLE IF NOT EXISTS compiled (
+            source_record_id TEXT NOT NULL PRIMARY KEY,
+            explicit INTEGER NOT NULL DEFAULT 0,
+            compiled_at TEXT NOT NULL,
+            FOREIGN KEY (source_record_id) REFERENCES records(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS retrieve_uses (
+            id TEXT NOT NULL PRIMARY KEY,
+            episode_id TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            contact TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_retrieve_uses_record ON retrieve_uses(record_id);
+        CREATE INDEX IF NOT EXISTS idx_retrieve_uses_episode ON retrieve_uses(episode_id);
+
+        CREATE TABLE IF NOT EXISTS inject_stats (
+            id TEXT NOT NULL PRIMARY KEY,
+            episode_id TEXT NOT NULL,
+            contact TEXT NOT NULL,
+            standing_chars INTEGER NOT NULL,
+            retrieve_chars INTEGER NOT NULL,
+            trajectory_chars INTEGER NOT NULL,
+            total_chars INTEGER NOT NULL,
+            compiled_ids TEXT NOT NULL,
+            retrieved_ids TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_inject_stats_episode ON inject_stats(episode_id);
         """
     )
     _add_missing_columns(conn)

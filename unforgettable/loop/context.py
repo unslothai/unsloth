@@ -37,6 +37,7 @@ class EpisodeRequest:
     permission_mode: Optional[str] = None
     max_clones: Optional[int] = None
     max_sim_turns: Optional[int] = None
+    skip_standing: bool = False
 
 
 @dataclass

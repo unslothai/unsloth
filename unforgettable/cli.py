@@ -28,6 +28,12 @@ from unforgettable.constants import KINDS, STATUSES
 from unforgettable.eyes.gate import contradictions
 from unforgettable.eyes.probes import list_probes, run_probes
 from unforgettable.store.compact import run_compact
+from unforgettable.store.compile import (
+    get_compiled,
+    list_compiled,
+    pin_compiled,
+    unpin_compiled,
+)
 from unforgettable.store.db import default_db_path
 from unforgettable.store.records import (
     get_record,
@@ -238,6 +244,44 @@ def _cmd_compact(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _cmd_compiled(_args: argparse.Namespace, db_path: Path) -> int:
+    rows = list_compiled(db_path=db_path)
+    _print_aligned(
+        ("id", "hits", "explicit", "title"),
+        [
+            (
+                rec["id"][:TABLE_ID_CHARS],
+                str(rec.get("hits") or 0),
+                "yes" if rec.get("explicit") else "no",
+                rec["title"],
+            )
+            for rec in rows
+        ],
+    )
+    return 0
+
+
+def _cmd_compile(args: argparse.Namespace, db_path: Path) -> int:
+    if get_record(args.id, db_path=db_path) is None:
+        return _unknown_id(args.id)
+    try:
+        row = pin_compiled(args.id, explicit=True, db_path=db_path)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    _print_json(row)
+    return 0
+
+
+def _cmd_uncompile(args: argparse.Namespace, db_path: Path) -> int:
+    row = get_compiled(args.id, db_path=db_path)
+    if row is None:
+        return _unknown_id(args.id)
+    unpin_compiled(args.id, db_path=db_path)
+    _print_json(row)
+    return 0
+
+
 def _cmd_probes(args: argparse.Namespace, db_path: Path) -> int:
     if not args.run:
         _print_probe_table(list_probes(db_path=db_path))
@@ -369,6 +413,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="World tree to clone when running probes (default: cwd).",
     )
     probes_p.set_defaults(func=_cmd_probes)
+
+    compiled_p = sub.add_parser(
+        "compiled",
+        help="List procedures in the standing compile cache.",
+    )
+    _add_db_flag(compiled_p)
+    compiled_p.set_defaults(func=_cmd_compiled)
+
+    compile_p = sub.add_parser(
+        "compile",
+        help="Pin an admitted procedure into the standing prompt cache.",
+    )
+    _add_db_flag(compile_p)
+    compile_p.add_argument("id")
+    compile_p.set_defaults(func=_cmd_compile)
+
+    uncompile_p = sub.add_parser(
+        "uncompile",
+        help="Drop a procedure from the standing compile cache.",
+    )
+    _add_db_flag(uncompile_p)
+    uncompile_p.add_argument("id")
+    uncompile_p.set_defaults(func=_cmd_uncompile)
 
     return parser
 
