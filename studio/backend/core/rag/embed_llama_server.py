@@ -213,17 +213,24 @@ class LlamaServerBackend:
         key = None,
         require_variant = False,
     ):
-        """Non-mmproj GGUF pick from `names`, by variant then shortest name; `key` reads the
-        comparable name off each entry.
+        """GGUF pick from `names`, by variant then shortest name; `key` reads the comparable
+        name off each entry.
 
         `require_variant` refuses the fallback to another variant. Falling back on a hub
         listing means the variant is not published; falling back on a cache would serve
         whatever happened to be fetched under an earlier setting."""
+        from utils.models.model_config import _is_mtp_drafter
+
         name_of = key or (lambda n: n)
         usable = [
             n
             for n in names
-            if name_of(n).lower().endswith(".gguf") and "mmproj" not in name_of(n).lower()
+            if name_of(n).lower().endswith(".gguf")
+            and "mmproj" not in name_of(n).lower()
+            # A drafter is a companion, never a model in its own right, so it must be
+            # excluded everywhere mmproj is. A cache holding only the companion would
+            # otherwise be read as holding the embedder.
+            and not _is_mtp_drafter(name_of(n))
         ]
         if not usable:
             return None
@@ -233,7 +240,9 @@ class LlamaServerBackend:
             if require_variant:
                 return None
             match = usable
-        return sorted(match, key = lambda n: len(name_of(n)))[0]
+        # Name breaks a length tie: a directory scan yields no guaranteed order, and among
+        # equal-length shard names that would otherwise decide which shard is picked.
+        return sorted(match, key = lambda n: (len(name_of(n)), name_of(n)))[0]
 
     @staticmethod
     def _cached_snapshot_dir(repo_id: str) -> Path | None:
@@ -248,8 +257,12 @@ class LlamaServerBackend:
         republished weights would leave an index answering one model's queries with another
         model's documents."""
         from utils.hf_cache_settings import active_hf_hub_cache
+        from utils.paths import resolve_cached_repo_id_case
 
-        repo_dir = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}"
+        # A repo id typed with different casing than the cache folder is still that repo;
+        # missing it here would re-download, or fail outright with the hub unreachable.
+        cased = resolve_cached_repo_id_case(repo_id)
+        repo_dir = Path(active_hf_hub_cache()) / f"models--{cased.replace('/', '--')}"
         try:
             rev = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
         except (OSError, ValueError):
@@ -267,6 +280,8 @@ class LlamaServerBackend:
         ``_model_path`` is per-process, so without this every restart re-lists the repo to
         name a file it already holds -- unbounded on a host whose route to the hub
         blackholes."""
+        from utils.models.model_config import colocated_split_shards
+
         snapshot = LlamaServerBackend._cached_snapshot_dir(repo_id)
         if snapshot is None:
             return None
@@ -276,13 +291,24 @@ class LlamaServerBackend:
             files = [p for p in snapshot.rglob("*") if p.is_file()]
         except OSError:
             return None
-        pick = LlamaServerBackend._pick_gguf(
-            files,
-            key = lambda p: p.relative_to(snapshot).as_posix(),
-            require_variant = require_variant,
-        )
-        # Guards only the window since the scan; is_file() already dropped evicted blobs.
-        return str(pick) if pick is not None and pick.exists() else None
+        # llama-server opens sibling shards implicitly, so a split set is servable only when
+        # it is whole. An unservable winner is dropped and the pick retried rather than
+        # failing the lookup, or an incomplete family would shadow a complete one simply by
+        # sorting ahead of it. Verified per winner, not per file: a plain file is a complete
+        # one-file set, and a whole-cache filter would walk siblings for every shard present.
+        while files:
+            pick = LlamaServerBackend._pick_gguf(
+                files,
+                key = lambda p: p.relative_to(snapshot).as_posix(),
+                require_variant = require_variant,
+            )
+            # exists() guards only the window since the scan; is_file() dropped evicted blobs.
+            if pick is None or not pick.exists():
+                return None
+            if colocated_split_shards(pick)[1]:
+                return str(pick)
+            files = [p for p in files if p != pick]
+        return None
 
     def _resolve_model_path(self) -> str:
         """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
@@ -304,10 +330,12 @@ class LlamaServerBackend:
         model = config.effective_embedding_model()
         if model != repo:
             candidates.append(model)
-        for candidate in candidates:
-            cached = self._resolve_cached_gguf(candidate)
-            if cached is not None:
-                return self._adopt_model_path(cached, desired)
+        # Only the preferred repo. A file cached under the fallback candidate must not
+        # pre-empt a companion repo the hub can still resolve, which is the order the
+        # listing follows; offline, the relaxed pass below still reaches both.
+        cached = self._resolve_cached_gguf(desired)
+        if cached is not None:
+            return self._adopt_model_path(cached, desired)
         return self._resolve_uncached_model_path(desired, candidates)
 
     def _adopt_model_path(self, path: str, desired: str) -> str:

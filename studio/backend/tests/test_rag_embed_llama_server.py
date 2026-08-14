@@ -764,6 +764,28 @@ def test_cached_gguf_skips_mmproj_and_honours_the_variant(monkeypatch, tmp_path)
     assert LlamaServerBackend._resolve_cached_gguf(repo).endswith("bge-small-en-v1.5-F16.gguf")
 
 
+def test_the_pick_is_stable_whatever_order_the_names_arrive_in(monkeypatch):
+    """A directory scan has no guaranteed order, unlike a hub listing. Among equal-length
+    shard names that order would otherwise decide the answer, and only the first shard
+    carries the metadata llama-server needs."""
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    shards = ["model-F16-00001-of-00002.gguf", "model-F16-00002-of-00002.gguf"]
+    assert LlamaServerBackend._pick_gguf(shards) == shards[0]
+    assert LlamaServerBackend._pick_gguf(list(reversed(shards))) == shards[0]
+
+
+def test_an_mtp_drafter_is_never_taken_for_the_embedder(monkeypatch):
+    """A drafter is a companion, not a model. A cache holding only the companion must read
+    as no embedder rather than as the embedder, and the name sorts ahead of the real weight
+    often enough that the length tiebreak alone would not save it."""
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "BF16")
+    assert LlamaServerBackend._pick_gguf(["MTP/mtp-model-BF16.gguf"]) is None
+    assert (
+        LlamaServerBackend._pick_gguf(["MTP/mtp-model-BF16.gguf", "model-BF16.gguf"])
+        == "model-BF16.gguf"
+    )
+
+
 def test_cached_gguf_is_found_in_a_subdirectory(monkeypatch, tmp_path):
     """Quant-per-directory layouts are common, so a snapshot-root-only scan would
     re-download a model that is already cached."""
@@ -772,6 +794,62 @@ def test_cached_gguf_is_found_in_a_subdirectory(monkeypatch, tmp_path):
     _use_cache_root(monkeypatch, tmp_path / "hub")
     resolved = LlamaServerBackend._resolve_cached_gguf(repo)
     assert resolved is not None and resolved.endswith("F16/bge-small.gguf")
+
+
+def test_an_incomplete_cached_shard_set_is_not_a_hit(monkeypatch, tmp_path):
+    """llama-server opens sibling shards implicitly and only the first carries the metadata,
+    so a snapshot holding a trailing shard alone cannot serve the model. Treating it as a
+    hit would skip the hub that still has the rest."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["model-F16-00002-of-00002.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None
+
+
+def test_a_complete_cached_shard_set_resolves_to_its_first_shard(monkeypatch, tmp_path):
+    """Whole on disk, it is servable -- and must be handed over as shard 1 whatever order
+    the scan produced."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(
+        tmp_path / "hub",
+        repo,
+        ["model-F16-00002-of-00002.gguf", "model-F16-00001-of-00002.gguf"],
+    )
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    resolved = LlamaServerBackend._resolve_cached_gguf(repo)
+    assert resolved is not None and resolved.endswith("model-F16-00001-of-00002.gguf")
+
+
+def test_an_incomplete_set_does_not_shadow_a_complete_one(monkeypatch, tmp_path):
+    """Completeness has to narrow the candidates, not veto the winner: the short name wins
+    the tiebreak, so vetoing it afterwards would report no hit while a servable family sat
+    beside it."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(
+        tmp_path / "hub",
+        repo,
+        [
+            "a-F16-00001-of-00002.gguf",  # shorter, incomplete: no sibling shard
+            "embedding-model-F16-00001-of-00002.gguf",
+            "embedding-model-F16-00002-of-00002.gguf",
+        ],
+    )
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    resolved = LlamaServerBackend._resolve_cached_gguf(repo)
+    assert resolved is not None
+    assert resolved.endswith("embedding-model-F16-00001-of-00002.gguf")
+
+
+def test_an_incomplete_variant_match_does_not_hide_a_whole_other_variant(monkeypatch, tmp_path):
+    """Offline, the relaxed pass takes any variant. An unservable F16 must not stand in the
+    way of a Q8 that is whole -- the difference between a working embedder and none."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["model-F16-00002-of-00002.gguf", "model-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None  # strict: no whole F16
+    relaxed = LlamaServerBackend._resolve_cached_gguf(repo, require_variant = False)
+    assert relaxed is not None and relaxed.endswith("model-Q8_0.gguf")
 
 
 def test_cached_gguf_uses_only_the_revision_refs_main_names(monkeypatch, tmp_path):
@@ -824,6 +902,28 @@ def test_an_unreachable_hub_falls_back_to_whatever_variant_is_cached(monkeypatch
     )
     backend = LlamaServerBackend()
     assert backend._resolve_model_path().endswith("bge-Q8_0.gguf")
+
+
+def test_an_unreachable_hub_still_reaches_the_fallback_repo_s_cache(monkeypatch, tmp_path):
+    """The cache-first pass consults only the preferred repo, to keep a reachable companion
+    ahead of the fallback. Offline that ordering is moot and the fallback repo's cache is
+    all there is, so the relaxed pass must still look there."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/foo")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/foo-GGUF")
+    _seed_cache(tmp_path / "hub", "org/foo", ["fallback-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("offline mode is enabled")),
+    )
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path().endswith("fallback-F16.gguf")
 
 
 def test_a_reachable_hub_is_preferred_over_a_cached_other_variant(monkeypatch, tmp_path):
@@ -897,6 +997,48 @@ def test_the_adopted_path_is_tagged_with_the_repo_it_was_resolved_for(monkeypatc
     backend._resolve_model_path()
     assert backend._model_repo == repo
     assert not backend._current()  # the new setting reads as stale, forcing a respawn
+
+
+def test_a_cached_fallback_repo_does_not_pre_empt_the_preferred_one(monkeypatch, tmp_path):
+    """A custom model resolves through its "-GGUF" companion first and only falls back to
+    the model repo when the companion has none. A file cached under the fallback must not
+    reorder that, or the backend serves the wrong weights and tags them as current."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: "org/foo")
+    monkeypatch.setattr(config, "effective_gguf_repo", lambda: "org/foo-GGUF")
+    _seed_cache(tmp_path / "hub", "org/foo", ["fallback-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda repo_id, **k: ["preferred-F16.gguf"] if repo_id == "org/foo-GGUF" else [],
+    )
+    monkeypatch.setattr(
+        huggingface_hub, "hf_hub_download", lambda **kw: "/cache/preferred-F16.gguf"
+    )
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path() == "/cache/preferred-F16.gguf"
+
+
+def test_the_cache_folder_is_named_from_the_resolved_repo_casing(monkeypatch, tmp_path):
+    """Settings takes a repo id as typed, while the cache folder carries whatever casing
+    downloaded it. Missing that match re-downloads, and fails outright when offline.
+
+    The resolver's answer is deliberately a different id, not a case variant: on a
+    case-insensitive filesystem a variant would resolve either way and prove nothing."""
+    import utils.paths as paths_pkg
+
+    _seed_cache(tmp_path / "hub", "Cached/Spelling-GGUF", ["bge-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(
+        paths_pkg, "resolve_cached_repo_id_case", lambda name: "Cached/Spelling-GGUF"
+    )
+    resolved = LlamaServerBackend._resolve_cached_gguf("as/typed-GGUF")
+    assert resolved is not None and resolved.endswith("bge-F16.gguf")
 
 
 def test_the_listing_cannot_outlive_its_deadline(monkeypatch, tmp_path):
