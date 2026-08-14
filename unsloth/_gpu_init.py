@@ -36,6 +36,7 @@ from .import_fixes import (
     configure_amdgpu_asic_id_table_path,
     fix_bitsandbytes_rocm_arch_detection,
     torchvision_compatibility_check,
+    disable_torchaudio_if_cuda_mismatched,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
@@ -87,6 +88,14 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
+# Ahead of `import unsloth_zoo` below, not with the other import fixes further
+# down. unsloth_zoo's temporary_patches reach transformers.processing_utils,
+# which imports transformers.audio_utils, which imports torchaudio -- so a
+# torchaudio that raises at extension init takes the whole unsloth import down
+# roughly 95 lines before the late block would have neutralised it. Measured:
+# Kaggle-Muse_Glimmer_(30B)-GRPO died at cell 4 with the guard present but not
+# yet run.
+disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
@@ -285,6 +294,7 @@ del fix_executorch
 del patch_vllm_for_notebooks
 del patch_torchcodec_audio_decoder
 del disable_torchcodec_if_broken
+del disable_torchaudio_if_cuda_mismatched
 del disable_broken_wandb
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
@@ -293,7 +303,20 @@ del fix_peft_stale_torchao_import_error
 del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 is the documented way to import on a host that has a
+    # CUDA-built torch and no usable device (driverless container, CI runner, a
+    # laptop with the runtime and no card). get_device_type() deliberately keeps
+    # DEVICE_TYPE at "cuda" there, so this branch is entered with nothing to
+    # query and torch.cuda.get_device_capability() raises out of _lazy_init().
+    # Ask whether a device is present before asking what it can do.
+    #
+    # No device means no capability to report, so claim the conservative answer.
+    # SUPPORTS_BFLOAT16 = False only costs float32; True would fail at the first
+    # cast. is_bf16_supported() is stubbed to match rather than left to raise.
+    SUPPORTS_BFLOAT16 = False
+    torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = major_version >= 8
 
@@ -350,7 +373,15 @@ if DEVICE_TYPE == "cuda":
         cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
         libcuda_dirs()
     except:
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
+        if not torch.cuda.is_available():
+            # UNSLOTH_ALLOW_CPU=1 on a driverless host. DEVICE_TYPE is "cuda"
+            # only because the caller asked the import to survive without a
+            # device, so a missing libcuda is the expected state, not broken
+            # linkage. Repairing it would ldconfig the host's linker cache (this
+            # branch runs as root, the default in a container) through an
+            # unguarded `ls` subprocess, to link a device that is not there.
+            pass
+        elif hasattr(os, "geteuid") and os.geteuid() == 0:
             warnings.warn("Unsloth: Running `ldconfig /usr/lib64-nvidia` to link CUDA.")
 
             if os.path.exists("/usr/lib64-nvidia"):

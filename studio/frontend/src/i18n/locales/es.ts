@@ -17,7 +17,6 @@ export const es = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origen del modelo",
     hubSectionAriaLabel: "Sección del Hub",
-    pickModelFile: "Elegir un archivo de modelo del disco",
     modelDropped: "Ya no se ofrece",
     modelDroppedByProvider: "{provider} · ya no se ofrece",
     modelDisabled: "No activado",
@@ -158,7 +157,32 @@ export const es = {
       about: "Acerca de",
       data: "Datos",
       agents: "Agentes",
+      debugging: "Registros",
       voice: "Voz",
+    },
+    debugging: {
+      logSection: "Archivo de registro",
+      source: "Archivo de registro",
+      sourceHint: "Los ejecutores de modelos escriben sus propios registros, así que un fallo al cargar o al generar suele explicarse ahí y no en el registro del servidor.",
+      path: "Ubicación",
+      pathCopy: "Copiar ruta",
+      refreshSection: "Actualización",
+      mode: "Modo",
+      modeLive: "En vivo",
+      modeInterval: "Cada 3 segundos",
+      modeManual: "Manual",
+      refreshNow: "Actualizar ahora",
+      privacyNote: "Las credenciales se enmascaran en esta vista. El archivo en disco no está enmascarado.",
+      copyVisible: "Copiar el registro visible",
+      empty: "Todavía no se ha registrado nada.",
+      disabled: "El registro en archivo está desactivado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "No se encontró ningún archivo de registro.",
+      unreadable: "No se pudo leer el archivo de registro.",
+      timeout: "La solicitud del registro agoto el tiempo de espera. Puede que el servidor no este accesible.",
+      droppedNotice: "Se omitieron algunas líneas: el registro se escribió más rápido de lo que se podía leer.",
+      morePending: "Aun se estan leyendo mas lineas; llegaran en la proxima actualizacion.",
+      staleSession: "El registro en archivo esta desactivado, por lo que esta es una sesion anterior y no se actualizara.",
+      keywords: "depuracion depurar registro registros log logs error errores fallo traza diagnostico solucion de problemas debug",
     },
     voice: {
       title: "Voz",
@@ -379,6 +403,14 @@ export const es = {
           "Libera la VRAM después de este número de segundos de inactividad. El valor 0 mantiene el modelo cargado; el mínimo es 60.",
         idleSecondsAriaLabel:
           "Segundos de inactividad antes de liberar el modelo",
+        mediaIdleUnload:
+          "Liberar imagen y vídeo automáticamente por inactividad",
+        mediaIdleUnloadDescription:
+          "Libera la VRAM descargando los modelos de imagen y vídeo después de este número de segundos de inactividad. Es una configuración independiente: la de arriba solo afecta al modelo de chat. El valor 0 los mantiene cargados; el mínimo es 60.",
+        mediaIdleSecondsAriaLabel:
+          "Segundos de inactividad antes de liberar los modelos de imagen y vídeo",
+        mediaIdlePaused:
+          "En pausa mientras «Mantener el modelo en la memoria de la GPU» o «Liberar solo los modelos cargados por la API» esté activado.",
         idleNeedsEnable: "Activa primero «Cambiar de modelo según la solicitud».",
         idleActiveViaEnv:
           "La descarga automática por inactividad está activa mediante la variable de entorno UNSLOTH_MODEL_IDLE_TTL.",
@@ -432,6 +464,12 @@ export const es = {
         launchAtLogin: "Ejecutar Unsloth al iniciar sesión",
         launchAtLoginDescription:
           "Inicia Unsloth en segundo plano cuando inicias sesión. Permanece en la barra de menús o en la bandeja del sistema hasta que lo abras.",
+
+        closeToTray: "Cerrar en la bandeja del sistema",
+        closeToTrayDescription:
+          "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",
+        closeToTraySaveError:
+          "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
@@ -735,6 +773,39 @@ export const es = {
         free: "Libre: {value}",
         total: "{value} en total",
       },
+      llamaBackend: {
+        title: "Motor de inferencia GGUF",
+        label: "Backend de cómputo",
+        description: "El backend que llama.cpp usa para ejecutar modelos GGUF.",
+        runningOn: "llama.cpp se ejecuta actualmente en {backend}.",
+        hint: "Instala la compilación de llama.cpp para este backend y la mantiene entre actualizaciones. Útil cuando la elección automática falla o el controlador de tu GPU no la admite. Solo se listan los backends con una compilación para este equipo; el entrenamiento no se ve afectado.",
+        autoWith: "Automático ({backend})",
+        apply: "Aplicar",
+        applying: "Instalando...",
+        applyHint: "Descarga la nueva compilación y reinicia llama.cpp. Se descargará el modelo que esté cargado.",
+        applyHintWithSize: "Descarga {size} y reinicia llama.cpp. Se descargará el modelo que esté cargado.",
+        switchedTo: "llama.cpp ahora se ejecuta en {backend}.",
+        switchFailed: "No se pudo cambiar el backend de llama.cpp.",
+        switchInterrupted: "El cambio se interrumpió antes de completarse.",
+        envLocked: "Fijado en {backend} por la variable de entorno UNSLOTH_LLAMA_CPP_BACKEND, que tiene prioridad sobre este ajuste.",
+        backends: {
+          auto: "Automático",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "No se encontró una instalación de llama.cpp gestionada, así que no hay backend que cambiar.",
+          localLink: "llama.cpp es un directorio local que enlazaste tú, así que Unsloth no lo reemplazará.",
+          sourceBuild: "Este llama.cpp se compiló desde el código fuente, así que su backend no se puede cambiar desde aquí.",
+          unresolved: "No se pudieron consultar los backends disponibles. Revisa tu conexión e inténtalo de nuevo.",
+        },
+        // No se muestra: términos adicionales para la búsqueda de ajustes.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inferencia cuda rocm hip vulkan metal cpu gpu acelerador prebuilt cambiar motor",
+      },
       modelMemory: {
         title: "Memoria del modelo",
         keepResident: "Mantener el modelo en la memoria de la GPU",
@@ -951,11 +1022,13 @@ export const es = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importa una exportación JSONL, NDJSON o CSV a Recientes.",
+        "Importa una exportación de Open WebUI, JSONL, NDJSON o CSV a Recientes.",
       importChatsAction: "Importar",
       importNoConversations: "No se encontraron conversaciones en el archivo.",
       importedOneChat: "Se importó 1 conversación a Recientes.",
       importedChatCount: "Se importaron {count} conversaciones a Recientes.",
+      importingChats: "Importando chats: {count} hasta ahora ({percent}%)...",
+      importedChatCountPartial: "Se importaron {count} conversaciones a Recientes; {failed} no se pudieron guardar.",
       importFailed: "La importación falló.",
       clearHistory: "Borrar historial de chat",
       clearHistoryDescription: "Elimina el historial de chat de este dispositivo.",
@@ -1289,6 +1362,12 @@ export const es = {
         "Este conjunto de datos aún no está en el dispositivo. Se descargará automáticamente al iniciar el entrenamiento.",
       noticeDatasetPartial:
         "El entrenamiento completará la descarga parcial del conjunto de datos antes de leerlo.",
+      noticeTransformersUpgrade:
+        "Ninguna versión instalada de transformers admite todavía esta arquitectura. Al iniciar la ejecución se ofrecerá instalar transformers {version} primero.",
+      noticeSixteenBitOnly:
+        "Esta arquitectura se entrena en LoRA de 16 bits: 4 bits no está disponible, así que la ejecución necesita mucha más VRAM que QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Instalar esa versión en lugar de conservar el código propio del modelo cambia esta ejecución a LoRA de 16 bits, que necesita mucha más VRAM que QLoRA.",
       advancedSettings: "Ajustes avanzados",
       defaultAdvancedSettings: "Valores predeterminados",
       nonDefaultAdvancedSettings: "{count} no predeterminados",

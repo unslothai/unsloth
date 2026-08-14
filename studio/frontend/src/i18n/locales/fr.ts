@@ -17,7 +17,6 @@ export const fr = {
     searchAriaLabel: "Rechercher des {noun}",
     modelSourceAriaLabel: "Source du modèle",
     hubSectionAriaLabel: "Section du Hub",
-    pickModelFile: "Choisir un fichier de modèle sur le disque",
     modelDropped: "N'est plus proposé",
     modelDroppedByProvider: "{provider} · n'est plus proposé",
     modelDisabled: "Non activé",
@@ -159,7 +158,32 @@ export const fr = {
       about: "À propos",
       data: "Données",
       agents: "Agents",
+      debugging: "Journaux",
       voice: "Voix",
+    },
+    debugging: {
+      logSection: "Fichier journal",
+      source: "Fichier journal",
+      sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
+      path: "Emplacement",
+      pathCopy: "Copier le chemin",
+      refreshSection: "Actualisation",
+      mode: "Mode",
+      modeLive: "En direct",
+      modeInterval: "Toutes les 3 secondes",
+      modeManual: "Manuel",
+      refreshNow: "Actualiser maintenant",
+      privacyNote: "Les identifiants sont masqués dans cette vue. Dans le fichier sur le disque, ils ne le sont pas.",
+      copyVisible: "Copier le journal visible",
+      empty: "Rien n'a encore été consigné.",
+      disabled: "La journalisation dans un fichier est désactivée (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Aucun fichier journal n'a été trouvé.",
+      unreadable: "Le fichier journal n'a pas pu être lu.",
+      timeout: "La demande du journal a expire. Le serveur est peut-etre injoignable.",
+      droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
+      morePending: "D'autres lignes sont encore en cours de lecture ; elles arriveront au prochain rafraichissement.",
+      staleSession: "La journalisation dans un fichier est desactivee : il s'agit d'une session anterieure, qui ne sera pas mise a jour.",
+      keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
       title: "Voix",
@@ -381,6 +405,14 @@ export const fr = {
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
         idleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique, en secondes",
+        mediaIdleUnload:
+          "Déchargement automatique en cas d’inactivité pour l’image et la vidéo",
+        mediaIdleUnloadDescription:
+          "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. Réglage distinct : celui du dessus ne concerne que le modèle de discussion. 0 les maintient chargés ; le minimum est 60.",
+        mediaIdleSecondsAriaLabel:
+          "Délai d’inactivité avant le déchargement automatique de l’image et de la vidéo, en secondes",
+        mediaIdlePaused:
+          "En pause tant que « Conserver le modèle dans la mémoire du GPU » ou « Décharger uniquement les modèles chargés par l'API » est activé.",
         idleNeedsEnable:
           "Activez d’abord « Changer de modèle par requête ».",
         idleActiveViaEnv: "Actif via UNSLOTH_MODEL_IDLE_TTL.",
@@ -434,6 +466,12 @@ export const fr = {
         launchAtLogin: "Lancer Unsloth à la connexion",
         launchAtLoginDescription:
           "Démarre Unsloth en arrière-plan lorsque vous vous connectez. Il reste dans la barre de menus ou la zone de notification jusqu'à ce que vous l'ouvriez.",
+
+        closeToTray: "Fermer dans la zone de notification",
+        closeToTrayDescription:
+          "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
+        closeToTraySaveError:
+          "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
@@ -739,6 +777,39 @@ export const fr = {
         free: "Disponible : {value}",
         total: "{value} au total",
       },
+      llamaBackend: {
+        title: "Moteur d'inférence GGUF",
+        label: "Backend de calcul",
+        description: "Le backend utilisé par llama.cpp pour exécuter les modèles GGUF.",
+        runningOn: "llama.cpp fonctionne actuellement sur {backend}.",
+        hint: "Installe la version de llama.cpp pour ce backend et la conserve lors des mises à jour. Utile si le choix automatique plante ou si votre pilote GPU ne le prend pas en charge. Seuls les backends disposant d'une version pour cette machine sont proposés ; l'entraînement n'est pas affecté.",
+        autoWith: "Automatique ({backend})",
+        apply: "Appliquer",
+        applying: "Installation...",
+        applyHint: "Télécharge la nouvelle version et redémarre llama.cpp. Un modèle chargé sera déchargé.",
+        applyHintWithSize: "Télécharge {size} et redémarre llama.cpp. Un modèle chargé sera déchargé.",
+        switchedTo: "llama.cpp fonctionne maintenant sur {backend}.",
+        switchFailed: "Impossible de changer le backend llama.cpp.",
+        switchInterrupted: "Le changement a été interrompu avant d’être terminé.",
+        envLocked: "Fixé à {backend} par la variable d'environnement UNSLOTH_LLAMA_CPP_BACKEND, qui prévaut sur ce réglage.",
+        backends: {
+          auto: "Automatique",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Aucune installation llama.cpp gérée n'a été trouvée, il n'y a donc pas de backend à changer.",
+          localLink: "llama.cpp est un dossier local que vous avez lié vous-même ; Unsloth ne le remplacera pas.",
+          sourceBuild: "Ce llama.cpp a été compilé depuis les sources, son backend ne peut pas être changé ici.",
+          unresolved: "Impossible de vérifier les backends disponibles. Vérifiez votre connexion et réessayez.",
+        },
+        // Non affiché : termes supplémentaires pour la recherche dans les réglages.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inférence cuda rocm hip vulkan metal cpu gpu accélérateur prebuilt changer moteur",
+      },
       modelMemory: {
         title: "Mémoire du modèle",
         keepResident: "Conserver le modèle dans la mémoire du GPU",
@@ -957,11 +1028,13 @@ export const fr = {
       exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
-        "Importer un export JSONL, NDJSON ou CSV dans Récents.",
+        "Importez un export Open WebUI, JSONL, NDJSON ou CSV dans Récents.",
       importChatsAction: "Importer",
       importNoConversations: "Aucune conversation trouvée dans le fichier.",
       importedOneChat: "1 conversation importée dans Récents.",
       importedChatCount: "{count} conversations importées dans Récents.",
+      importingChats: "Import des discussions : {count} jusqu'ici ({percent}%)...",
+      importedChatCountPartial: "{count} conversations importées dans Récents ; {failed} n'ont pas pu être enregistrées.",
       importFailed: "Échec de l'importation.",
       clearHistory: "Effacer l'historique des discussions",
       clearHistoryDescription:
@@ -1298,6 +1371,12 @@ export const fr = {
         "Ce jeu de données n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
       noticeDatasetPartial:
         "L'entraînement terminera le téléchargement partiel du jeu de données avant de le lire.",
+      noticeTransformersUpgrade:
+        "Aucune version installée de transformers ne prend encore en charge cette architecture. Au démarrage, l'installation de transformers {version} sera proposée d'abord.",
+      noticeSixteenBitOnly:
+        "Cette architecture s'entraîne en LoRA 16 bits : le 4 bits n'est pas disponible, donc l'exécution demande beaucoup plus de VRAM que QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installer cette version au lieu de conserver le code propre au modèle fait passer cette exécution en LoRA 16 bits, qui demande beaucoup plus de VRAM que QLoRA.",
       advancedSettings: "Paramètres avancés",
       defaultAdvancedSettings: "Valeurs par défaut",
       nonDefaultAdvancedSettings: "{count} non standard",

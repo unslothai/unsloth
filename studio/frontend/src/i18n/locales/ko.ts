@@ -16,7 +16,6 @@ export const ko = {
     searchAriaLabel: "{noun} 검색",
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
-    pickModelFile: "디스크에서 모델 파일 선택",
     modelDropped: "더 이상 제공되지 않음",
     modelDroppedByProvider: "{provider} · 더 이상 제공되지 않음",
     modelDisabled: "사용 안 함",
@@ -155,7 +154,32 @@ export const ko = {
       about: "정보",
       data: "데이터",
       agents: "에이전트",
+      debugging: "로그",
       voice: "음성",
+    },
+    debugging: {
+      logSection: "로그 파일",
+      source: "로그 파일",
+      sourceHint: "모델 러너는 각자 자체 로그를 기록하므로, 로드나 생성이 실패한 이유는 서버 로그가 아니라 그쪽에 남아 있는 경우가 많습니다.",
+      path: "위치",
+      pathCopy: "경로 복사",
+      refreshSection: "새로 고침",
+      mode: "모드",
+      modeLive: "실시간",
+      modeInterval: "3초마다",
+      modeManual: "수동",
+      refreshNow: "지금 새로 고침",
+      privacyNote: "이 화면에서는 자격 증명이 가려집니다. 디스크에 저장된 파일에서는 가려지지 않습니다.",
+      copyVisible: "표시된 로그 복사",
+      empty: "아직 기록된 내용이 없습니다.",
+      disabled: "파일 로깅이 꺼져 있습니다 (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "로그 파일을 찾을 수 없습니다.",
+      unreadable: "로그 파일을 읽을 수 없습니다.",
+      timeout: "로그 요청 시간이 초과되었습니다. 서버에 연결할 수 없을 수 있습니다.",
+      droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
+      morePending: "아직 더 많은 줄을 읽고 있습니다. 다음 새로 고침에 표시됩니다.",
+      staleSession: "파일 로깅이 꺼져 있으므로 이것은 이전 세션이며 업데이트되지 않습니다.",
+      keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
     },
     voice: {
       title: "음성",
@@ -367,6 +391,13 @@ export const ko = {
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         idleSecondsAriaLabel: "유휴 시 자동 해제까지의 시간(초)",
+        mediaIdleUnload: "이미지와 동영상의 유휴 시 자동 해제",
+        mediaIdleUnloadDescription:
+          "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 별도의 설정입니다. 위 설정은 채팅 모델에만 적용됩니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
+        mediaIdleSecondsAriaLabel:
+          "이미지와 동영상의 유휴 시 자동 해제까지의 시간(초)",
+        mediaIdlePaused:
+          "‘모델을 GPU 메모리에 유지’ 또는 ‘API가 불러온 모델만 해제’가 켜져 있는 동안 일시 중지됩니다.",
         idleNeedsEnable: "먼저 ‘요청에 따라 모델 전환’을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
@@ -416,6 +447,11 @@ export const ko = {
         launchAtLogin: "로그인 시 Unsloth 실행",
         launchAtLoginDescription:
           "로그인하면 Unsloth를 백그라운드에서 시작합니다. 열기 전까지 메뉴 막대 또는 시스템 트레이에 남아 있습니다.",
+
+        closeToTray: "시스템 트레이로 닫기",
+        closeToTrayDescription:
+          "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
+        closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
@@ -713,6 +749,39 @@ export const ko = {
         free: "{value} 여유",
         total: "총 {value}",
       },
+      llamaBackend: {
+        title: "GGUF 추론 엔진",
+        label: "연산 백엔드",
+        description: "llama.cpp가 GGUF 모델을 실행할 때 사용하는 백엔드입니다.",
+        runningOn: "llama.cpp가 현재 {backend}에서 실행 중입니다.",
+        hint: "이 백엔드용 llama.cpp 빌드를 설치하고 업데이트 후에도 유지합니다. 자동 선택이 충돌하거나 GPU 드라이버가 지원하지 않을 때 유용합니다. 이 컴퓨터용 빌드가 있는 백엔드만 표시되며 학습에는 영향이 없습니다.",
+        autoWith: "자동 ({backend})",
+        apply: "적용",
+        applying: "설치 중...",
+        applyHint: "새 빌드를 내려받고 llama.cpp를 다시 시작합니다. 로드된 모델은 언로드됩니다.",
+        applyHintWithSize: "{size}를 내려받고 llama.cpp를 다시 시작합니다. 로드된 모델은 언로드됩니다.",
+        switchedTo: "이제 llama.cpp가 {backend}에서 실행됩니다.",
+        switchFailed: "llama.cpp 백엔드를 변경하지 못했습니다.",
+        switchInterrupted: "전환이 완료되기 전에 중단되었습니다.",
+        envLocked: "환경 변수 UNSLOTH_LLAMA_CPP_BACKEND가 {backend}(으)로 고정했으며, 이 설정보다 우선합니다.",
+        backends: {
+          auto: "자동",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "관리되는 llama.cpp 설치를 찾을 수 없어 전환할 백엔드가 없습니다.",
+          localLink: "llama.cpp는 직접 연결한 로컬 디렉터리이므로 Unsloth가 교체하지 않습니다.",
+          sourceBuild: "이 llama.cpp는 소스에서 빌드되어 여기서 백엔드를 전환할 수 없습니다.",
+          unresolved: "사용 가능한 백엔드를 확인하지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
+        },
+        // 표시되지 않음: 설정 검색용 추가 키워드.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
+      },
       modelMemory: {
         title: "모델 메모리",
         keepResident: "모델을 GPU 메모리에 유지",
@@ -925,11 +994,13 @@ export const ko = {
       exportPerChatSuffix: "(채팅별)",
       importChats: "채팅 가져오기",
       importChatsDescription:
-        "JSONL, NDJSON 또는 CSV 내보내기 파일을 최근 항목으로 가져옵니다.",
+        "Open WebUI, JSONL, NDJSON 또는 CSV 내보내기 파일을 최근 항목으로 가져옵니다.",
       importChatsAction: "가져오기",
       importNoConversations: "파일에서 대화를 찾을 수 없습니다.",
       importedOneChat: "1개의 대화를 최근 항목으로 가져왔습니다.",
       importedChatCount: "{count}개의 대화를 최근 항목으로 가져왔습니다.",
+      importingChats: "채팅 가져오는 중: 현재 {count}개({percent}%)...",
+      importedChatCountPartial: "{count}개의 대화를 최근 항목으로 가져왔습니다. {failed}개는 저장하지 못했습니다.",
       importFailed: "가져오기에 실패했습니다.",
       clearHistory: "채팅 기록 지우기",
       clearHistoryDescription: "이 기기에서 채팅 기록을 삭제합니다.",
@@ -1253,6 +1324,12 @@ export const ko = {
         "이 데이터셋은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
       noticeDatasetPartial:
         "데이터셋을 읽기 전에 완료되지 않은 다운로드를 마칩니다.",
+      noticeTransformersUpgrade:
+        "설치된 transformers 중 이 아키텍처를 지원하는 버전이 없습니다. 실행을 시작하면 먼저 transformers {version} 설치를 제안합니다.",
+      noticeSixteenBitOnly:
+        "이 아키텍처는 16비트 LoRA로 학습합니다. 4비트를 사용할 수 없어 QLoRA보다 훨씬 많은 VRAM이 필요합니다.",
+      noticeInstallSwitchesSixteenBit:
+        "모델 자체 코드를 유지하는 대신 해당 릴리스를 설치하면 이 실행은 16비트 LoRA로 전환되어 QLoRA보다 훨씬 많은 VRAM이 필요합니다.",
       advancedSettings: "고급 설정",
       defaultAdvancedSettings: "기본값",
       nonDefaultAdvancedSettings: "기본값이 아닌 설정 {count}개",
