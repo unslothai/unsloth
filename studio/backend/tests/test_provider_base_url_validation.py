@@ -137,6 +137,7 @@ def test_dns_alias_verdict_is_cached(monkeypatch):
 
 def test_unresolvable_names_stay_allowed(monkeypatch):
     """docker-compose / service-discovery names resolve in the client's netns."""
+
     def _unresolvable(*args, **kwargs):
         raise socket.gaierror("not resolvable here")
 
