@@ -55,10 +55,12 @@ def test_start_vite_picks_the_platform_process_group(monkeypatch, no_signals, os
     captured: dict = {}
     monkeypatch.setattr(robust.os, "name", osname)
     monkeypatch.setattr(robust, "_port_is_taken", lambda port, host: False)
-    monkeypatch.setattr(robust.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda self: None})())
-    monkeypatch.setattr(robust.subprocess, "Popen",
-                        lambda cmd, **kw: captured.update(cmd = cmd, kw = kw) or _FakeProc())
+    monkeypatch.setattr(
+        robust.threading, "Thread", lambda **kw: type("T", (), {"start": lambda self: None})()
+    )
+    monkeypatch.setattr(
+        robust.subprocess, "Popen", lambda cmd, **kw: captured.update(cmd = cmd, kw = kw) or _FakeProc()
+    )
     if osname == "nt":
         monkeypatch.setattr(robust.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising = False)
 
@@ -104,6 +106,7 @@ def test_teardown_never_raises_over_the_failure_that_called_it(monkeypatch, no_s
 def test_teardown_tolerates_a_process_that_already_vanished(monkeypatch, no_signals) -> None:
     def gone(pid, sig):
         raise ProcessLookupError
+
     monkeypatch.setattr(robust.os, "name", "posix")
     monkeypatch.setattr(robust.os, "killpg", gone)
     robust.stop_process(_FakeProc())
@@ -119,15 +122,18 @@ def test_an_occupied_port_is_refused_rather_than_measured(monkeypatch, no_signal
 
 def test_readiness_gives_up_as_soon_as_our_server_dies(monkeypatch, no_signals) -> None:
     """Otherwise a dead server costs the full timeout, three times over, per CI run."""
+
     class Dead:
         returncode = 1
         vite_tail = ["Port 5199 is already in use"]
+
         def poll(self):
             return 1
 
     with pytest.raises(RuntimeError, match = "vite exited with code 1") as caught:
-        robust.wait_for_smoke_page("http://127.0.0.1:5199/x.html", "x.tsx",
-                                   proc = Dead(), timeout_s = 30.0)
+        robust.wait_for_smoke_page(
+            "http://127.0.0.1:5199/x.html", "x.tsx", proc = Dead(), timeout_s = 30.0
+        )
     assert "already in use" in str(caught.value), "vite's own reason should be surfaced"
 
 
@@ -140,6 +146,7 @@ def test_ports_do_not_collide_and_are_overridable(harness) -> None:
 
 def test_every_harness_picks_a_different_default_port() -> None:
     import re
+
     ports = {}
     for harness in HARNESSES:
         src = (Path(__file__).resolve().parent / f"{harness}.py").read_text()
@@ -152,6 +159,7 @@ def test_an_empty_smoke_base_url_means_unset(harness, monkeypatch) -> None:
     """Exported-but-empty is common in shell wrappers. `in os.environ` would call it external
     and then drive "" as the base URL."""
     import importlib
+
     monkeypatch.setenv("SMOKE_BASE_URL", "")
     module = importlib.reload(importlib.import_module(harness))
     try:
@@ -166,6 +174,7 @@ def test_an_external_smoke_base_url_is_still_honoured(harness, monkeypatch) -> N
     """The documented pre-existing invocation. A harness that started its own server anyway
     would fail on the busy-port check."""
     import importlib
+
     monkeypatch.setenv("SMOKE_BASE_URL", "http://127.0.0.1:9999")
     module = importlib.reload(importlib.import_module(harness))
     try:

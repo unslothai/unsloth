@@ -377,7 +377,9 @@ def main() -> int:
         info(f"starting vite dev server on port {PORT}")
         vite = start_vite(PORT)
     try:
-        wait_for_smoke_page(f"{BASE}/smoke-research.html", "smoke-research-main.tsx", proc = vite, info = info)
+        wait_for_smoke_page(
+            f"{BASE}/smoke-research.html", "smoke-research-main.tsx", proc = vite, info = info
+        )
         results = run()
     finally:
         if vite is not None:

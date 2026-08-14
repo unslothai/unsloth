@@ -254,7 +254,9 @@ def wait_for_smoke_page(
         # polling out the full timeout, and rather than binding to whoever else holds the port.
         if proc is not None and proc.poll() is not None:
             tail = "\n".join(getattr(proc, "vite_tail", []))
-            raise RuntimeError(f"vite exited with code {proc.returncode} before serving {url}\n{tail}")
+            raise RuntimeError(
+                f"vite exited with code {proc.returncode} before serving {url}\n{tail}"
+            )
         try:
             with urllib.request.urlopen(url, timeout = 3.0) as r:
                 body = r.read().decode("utf-8", errors = "replace")
