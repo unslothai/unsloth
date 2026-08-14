@@ -5279,7 +5279,7 @@ exit 0
                 # --no-deps above installed unsloth WITHOUT its declared dependencies,
                 # and pydantic is not one of the ones that matter first: the `unsloth`
                 # console script imports typer at the top of unsloth_cli/__init__.py, so
-                # `& $UnslothExe studio setup` below would exit ModuleNotFoundError
+                # the studio setup handoff below would exit ModuleNotFoundError
                 # before install_python_stack.py could install anything. The two other
                 # --no-deps branches already lay down no-torch-runtime.txt for exactly
                 # this reason; the ARM filter drops the entries with no win_arm64 wheel.
