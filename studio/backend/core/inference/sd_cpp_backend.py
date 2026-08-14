@@ -35,7 +35,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
-from core.inference.diffusion_device import resolve_diffusion_device_target
+from core.inference.diffusion_device import (
+    resolve_diffusion_device_target,
+    resolve_selected_cuda_ordinal,
+)
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -62,8 +65,10 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     build_img_gen_request,
+    device_backend_flags,
     is_ggml_unsupported_op_abort,
     offload_flags,
+    without_device_backend_flags,
 )
 from core.inference.sd_cpp_engine import (
     NATIVE_GENERATION_TIMEOUT_S,
@@ -71,7 +76,9 @@ from core.inference.sd_cpp_engine import (
     SdCppEngine,
     find_sd_cpp_binary,
     find_sd_server_binary,
+    help_text_identifies_sd_cpp,
     is_managed_binary,
+    legacy_sibling_install_root,
     managed_install_root,
     owning_managed_root,
     runtime_env,
@@ -293,7 +300,49 @@ def sd_cpp_supports_minimax_h3(binary: str) -> bool:
     text = _sd_cpp_probe_output(binary, "--help")
     if text is None:
         return True
-    return _H3_HELP_MARKER in text
+    return help_text_supports_minimax_h3(text)
+
+
+def help_text_supports_minimax_h3(help_text: str) -> bool:
+    """``sd_cpp_supports_minimax_h3``'s verdict on ``--help`` output that is already in hand."""
+    return _H3_HELP_MARKER in help_text
+
+
+def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
+    """Both of ``ensure_h3_sd_cpp_binary``'s questions against a live binary, on ONE ``--help``.
+
+    The capability marker cannot stand alone here. ``--ref-video`` is a plain option name that
+    unrelated reference-video tools expose too, so a caller re-checking only capability would
+    accept a program the gate itself would have refused on identity -- the difference between
+    "an sd.cpp build too old for H3" and "not sd.cpp at all" (#8507).
+
+    Same conservative default as ``sd_cpp_supports_minimax_h3``: an unreadable ``--help`` is
+    "could not tell", and the caller's own ``version()`` gate already refuses a binary that will
+    not run."""
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None:
+        return True
+    return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
+
+
+# The ``--help`` tokens marking a build with the graph-cut executor; both are required, since --stream-layers does nothing without --max-vram.
+_GRAPH_CUT_HELP_MARKERS: tuple[str, ...] = ("--max-vram", "--stream-layers")
+
+
+def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
+    """True only when ``binary``'s ``--help`` advertises the graph-cut executor.
+
+    The opposite default to ``sd_cpp_supports_minimax_h3``, and for the same reason each is safe:
+    that gate refuses a build, so "cannot tell" has to keep it, while this one ADDS flags, and
+    sd-cli exits non-zero on an option it does not know. Guessing yes from an unreadable ``--help``
+    would therefore break every generation on an older build instead of merely leaving it as slow
+    as it is today."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None:
+        return False
+    return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
 
 
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
@@ -310,13 +359,89 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     is nothing to run on the GPU at all."""
     if not binary:
         return False
+    verdict = sd_cpp_accelerator_device_verdict(binary)
+    return True if verdict is None else verdict
+
+
+def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
+    """``sd_cpp_lists_accelerator_device`` without the conservative default: None means the probe
+    said nothing usable, rather than being folded into "assume it has one".
+
+    A caller COMPARING two readings needs that apart. Against a recorded decision, the collapsed
+    True is indistinguishable from a real accelerator, so an unreadable re-probe would read as a
+    build that changed underneath the load and refuse it."""
     text = _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
-        return True
+        return None
     names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
     if not names:
-        return True
+        return None
     return any(name.upper() != "CPU" for name in names)
+
+
+# ggml device-name prefixes indexed by CUDA physical ordinal (ggml names its HIP backend either way); Vulkan is excluded, its ordinals are another namespace.
+_PHYSICAL_INDEX_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM")
+
+
+def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]) -> Optional[str]:
+    """The ``--list-devices`` name for CUDA/ROCm physical index ``ordinal``, or None.
+
+    None whenever the answer is not certain -- no selection, an unreadable probe, a build whose
+    devices are in another namespace, an index it does not list -- since the fallback is sd.cpp's
+    own device choice, i.e. today's behaviour.
+    """
+    if not binary or ordinal is None:
+        return None
+    text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is not None:
+        for line in text.splitlines():
+            name = line.split("\t", 1)[0].strip()
+            head = name.rstrip("0123456789")
+            if head.upper() not in _PHYSICAL_INDEX_DEVICE_PREFIXES:
+                continue
+            if name[len(head) :] == str(ordinal):
+                return name
+    # Said out loud rather than dropped in silence: the load still runs, on whichever device this
+    # build picks for itself, which is what happens today for every native load. Refusing instead
+    # would take the GPU selection from "not honoured here" to "cannot load at all" on any build
+    # older than the one that added --list-devices, including a user's own SD_CLI_PATH copy, since
+    # sd.cpp treats an unknown argument as fatal.
+    logger.warning(
+        "sd_cpp.device_pin_unresolved: this build does not report a CUDA/ROCm device %s "
+        "(--list-devices %s), so the graph runs on its own default device",
+        ordinal,
+        "was unreadable" if text is None else "does not list it",
+    )
+    return None
+
+
+def _h3_replacement_hint(binary: str) -> str:
+    """The trailing "or delete it" clause of the H3 refusal, or "" when there is nothing to delete.
+
+    Only a binary in a layout the installer writes to can be recovered by clearing that layout:
+    ``install()`` refuses a non-empty unmarked target, so an empty one is what lets the next load
+    put the pinned prebuilt there. Anything PATH or an env var named is elsewhere entirely. The
+    refusal used to end with "or remove that directory" whatever the binary was, which for the
+    ``/usr/bin/sd`` PATH discovery picks up read as "remove /usr/bin".
+
+    MOVE, never remove. Only the caller's unowned branch reaches this, so a root that matches here
+    necessarily carries no ownership marker -- it is the user's own build sitting at the path the
+    installer would use, which ``is_managed_binary`` documents as a supported thing to do, and
+    which a ``git clone`` of leejet's repo produces verbatim. Moving it aside frees the path
+    without destroying anything, and the user can put it back.
+
+    ``in_tree_install_root`` is not consulted at all: the installer never writes to
+    ``<repo_root>/stable-diffusion.cpp``, so clearing it would buy nothing."""
+    roots = [managed_install_root(), legacy_sibling_install_root()]
+    for root in roots:
+        if root is None:
+            continue
+        try:
+            Path(binary).resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        return f", or move {root} aside so Studio can install the pinned prebuilt there"
+    return ""
 
 
 def ensure_h3_sd_cpp_binary(
@@ -327,28 +452,69 @@ def ensure_h3_sd_cpp_binary(
 
     ``ensure_sd_cpp_binary`` hands back whatever ``find_sd_cpp_binary`` locates and only probes
     runnability, so an install that predates H3 (an upgraded Studio still carrying an older managed
-    sd-cli) is returned unchanged, the H3 load reports ready on it, and the first generation fails
-    only AFTER the multi-tens-of-GB bundle has downloaded. Only this path is stricter: image
-    generation must keep working on any user-supplied build.
+    sd-cli) is returned unchanged, the H3 load reports ready on it, and the first generation fails.
+    Only this path is stricter: image generation must keep working on any user-supplied build. Its
+    caller runs it BEFORE resolving the H3 assets, so a refusal costs no download.
 
     A stale copy we own is deleted so the installer puts the pinned prebuilt back; a user's own
     build is left alone and the load fails with a message naming it, the same ownership split
     ``_usable_or_discard_managed`` makes. Returns None when no H3-capable binary can be produced.
+
+    A user-supplied binary that is not stable-diffusion.cpp AT ALL gets its own message: "no H3
+    options" is true of every unrelated program, and reporting it as an outdated build is what sent
+    #8507 looking for a newer stable-diffusion.cpp that was never installed.
     """
     binary = ensure_sd_cpp_binary(allow_install = allow_install, accelerator = accelerator)
-    if not binary or sd_cpp_supports_minimax_h3(binary):
+    if not binary:
         return binary
+    # ONE --help, two questions: is this stable-diffusion.cpp, and does this build carry H3. A
+    # second spawn would double the cost of the refusal path and could read a different build than
+    # the one just judged. None is "could not tell", which stays conservative on both counts.
+    #
+    # Conservative HERE means keeping the binary, the opposite of the engine's identity probe, which
+    # rejects on an unreadable one. Not an inconsistency to iron out: this decides whether to refuse
+    # a binary the user chose, where a probe failure must not take native video away from a working
+    # build, while the engine decides whether to ADOPT an ambiguously named PATH candidate on no
+    # evidence at all. Opposite questions, so opposite safe defaults.
+    help_text = _sd_cpp_probe_output(binary, "--help")
+    if help_text is None:
+        return binary
+    # Identity BEFORE capability, never the marker alone. --ref-video is a plain option name that
+    # unrelated reference-video tools also expose, so returning early on it would readmit exactly
+    # the class of program #8507 was about -- through SD_CLI_PATH instead of PATH. Upstream added
+    # H3 eight months after print_usage started with the project banner, so a genuine H3 build
+    # always answers both.
+    identified = help_text_identifies_sd_cpp(help_text)
+    if identified and help_text_supports_minimax_h3(help_text):
+        return binary
+    # What is wrong with it, for the log lines on the managed path below: a managed copy that is not
+    # sd.cpp at all is still deleted and reinstalled, but calling it an old build would be false.
+    fault = "does not advertise MiniMax-H3 support" if identified else "is not stable-diffusion.cpp"
     if not is_managed_binary(binary):
+        # Not an old sd.cpp -- not sd.cpp at all. Worth its own message: the H3 marker is missing
+        # from EVERY program that is not stable-diffusion.cpp, so reporting the capability verdict
+        # here sent users hunting for a newer build of something they never installed (#8507, where
+        # the binary was Debian/Ubuntu's `sd` find-and-replace tool). Discovery already skips an
+        # unrelated PATH `sd`, so what reaches this line came from somewhere the identity gate does
+        # not cover -- an SD_CLI_PATH / UNSLOTH_SD_CPP_PATH override, an in-tree developer build, or
+        # a PATH `sd-cli`. None of them is ours to overwrite, so all four say so and stop.
+        if not identified:
+            raise RuntimeError(
+                f"The executable at {binary} is not stable-diffusion.cpp: its --help output does "
+                f"not identify the project. Point SD_CLI_PATH at a stable-diffusion.cpp build from "
+                f"master-812-ea7f0c8 or newer, or UNSLOTH_SD_CPP_PATH at the directory holding one"
+                f"{_h3_replacement_hint(binary)}."
+            )
         raise RuntimeError(
-            f"The stable-diffusion.cpp build at {binary} predates MiniMax-H3 support (its --help "
-            f"does not list the H3 options), so generation would fail after the whole H3 bundle "
-            f"has downloaded. Point SD_CLI_PATH / UNSLOTH_SD_CPP_PATH at a build from "
-            f"master-812-ea7f0c8 or newer, or remove that directory so Studio installs the "
-            f"pinned prebuilt."
+            f"The stable-diffusion.cpp binary at {binary} does not advertise MiniMax-H3 support "
+            f"(its --help does not list the H3 options), so generation would fail on it. "
+            f"Point SD_CLI_PATH at a build from master-812-ea7f0c8 or "
+            f"newer, or UNSLOTH_SD_CPP_PATH at the directory holding one"
+            f"{_h3_replacement_hint(binary)}."
         )
     if not allow_install:
         # Ours, but replacing it is exactly what auto-install is switched off for.
-        logger.warning("managed sd.cpp binary %s predates MiniMax-H3 support", binary)
+        logger.warning("managed sd.cpp binary %s %s", binary, fault)
         return None
     # Deleting it is a WRITE to the managed tree, so it takes the same admission an install does.
     # An image one-shot may be executing this very file: on Linux the running child survives the
@@ -358,14 +524,16 @@ def ensure_h3_sd_cpp_binary(
     with _tree_claimed_for_install() as claimed:
         if not claimed:
             logger.warning(
-                "managed sd.cpp binary %s predates MiniMax-H3 support, but something is still "
-                "running out of the managed install; retrying on a later load",
+                "managed sd.cpp binary %s %s, but something is still running out of the "
+                "managed install; retrying on a later load",
                 binary,
+                fault,
             )
             return None
         logger.warning(
-            "managed sd.cpp binary %s predates MiniMax-H3 support; removing it so it reinstalls",
+            "managed sd.cpp binary %s %s; removing it so it reinstalls",
             binary,
+            fault,
         )
         try:
             Path(binary).unlink()
@@ -716,6 +884,16 @@ class _SdState:
     sd_accelerator: Optional[str] = None
 
 
+def _offload_with_device_pin_impl(
+    offload: tuple[str, ...] | list[str], binary: Optional[str], ordinal: Optional[int]
+) -> list[str]:
+    """``offload`` plus the ``--backend`` pin for whichever build is about to run it."""
+    flags = list(offload)
+    if ordinal is None:
+        return flags
+    return [*flags, *device_backend_flags(sd_cpp_device_name_for_ordinal(binary, ordinal), flags)]
+
+
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
     """Map the diffusers memory knobs onto an sd-cli offload policy. Only meaningful
     off-CPU (forced sd_cpp / MPS); on CPU everything is resident in RAM anyway."""
@@ -989,10 +1167,24 @@ class SdCppDiffusionBackend:
         model_kind: Optional[str] = None,
         # Parity with the diffusers load-time LoRA bake; native applies LoRA per generation, so a load-time selection is ignored.
         loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        # Same fallback the diffusers and video backends take: the route ranks the selection and
+        # passes the winner, but a direct caller (an MCP client, a test, a plugin) hands over
+        # gpu_ids alone, and without this the native engine is the one engine that would drop the
+        # pick silently. Re-ranked only when nobody has, so a route-resolved winner is never
+        # second-guessed against free VRAM that has moved since.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
@@ -1071,6 +1263,7 @@ class SdCppDiffusionBackend:
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1089,6 +1282,7 @@ class SdCppDiffusionBackend:
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
+        gpu_ordinal: Optional[int] = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
     ) -> None:
@@ -1195,6 +1389,11 @@ class SdCppDiffusionBackend:
             offload: tuple[str, ...] = ()
             if device != "cpu":
                 offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
+            # The device pin is NOT folded in here: the binary can still change below, through the
+            # deferred accelerator install, the post-download re-resolve, or a server start that
+            # falls back to one-shot, and the ggml device names come from whichever build ends up
+            # running. It is added at each point the flags are handed to a binary instead.
+            gpu_ordinal = gpu_ordinal if device == "cuda" else None
             native_speed = _native_speed_for(speed_mode)
 
             # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for a generation started during
@@ -1330,7 +1529,9 @@ class SdCppDiffusionBackend:
                         server.start(
                             files,
                             vae_format = fam.sd_cpp_vae_format,
-                            offload = list(offload),
+                            offload = _offload_with_device_pin_impl(
+                                offload, server_binary, gpu_ordinal
+                            ),
                             native_speed = native_speed,
                             # Pin to physical cores (sd.cpp's default oversubscribes; see _default_threads).
                             threads = _default_threads(),
@@ -1399,7 +1600,15 @@ class SdCppDiffusionBackend:
                     files = files,
                     vae_format = fam.sd_cpp_vae_format,
                     native_speed = native_speed,
-                    offload_flags = offload,
+                    # Pinned against the binary this load COMMITTED to, which a deferred install or
+                    # a one-shot fallback may have changed since the policy was built.
+                    offload_flags = tuple(
+                        _offload_with_device_pin_impl(
+                            offload,
+                            server_binary if mode == "server" else getattr(engine, "binary", None),
+                            gpu_ordinal,
+                        )
+                    ),
                     # One-shot sd-cli reads this per generation; pin to physical cores.
                     threads = _default_threads(),
                     sampling_method = fam.sd_cpp_sampling_method,
@@ -1968,7 +2177,11 @@ class SdCppDiffusionBackend:
                     "transformer_quant": None,
                     "text_encoder_quant": None,
                     "memory_mode": None,
-                    "offload_policy": "active" if state.offload_flags else "none",
+                    # The POLICY flags only: a --backend pin says which card ran the graph, not
+                    # that anything was offloaded, and a `fast` load carries no policy flags at all.
+                    "offload_policy": (
+                        "active" if without_device_backend_flags(state.offload_flags) else "none"
+                    ),
                 }
             except SdCppCancelled as exc:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
@@ -2139,7 +2352,11 @@ class SdCppDiffusionBackend:
             server.start(
                 state.files,
                 vae_format = state.vae_format,
-                offload = list(state.offload_flags),
+                # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec
+                # instead of replacing, and an explicit diffusion=CUDA0 outranks the bare `cpu`
+                # default, so leaving the pin on would restart the server onto the very backend
+                # that just aborted.
+                offload = without_device_backend_flags(state.offload_flags),
                 native_speed = state.native_speed,
                 threads = state.threads,
                 extra_args = list(CPU_BACKEND_FLAGS),
@@ -2392,9 +2609,12 @@ class SdCppDiffusionBackend:
             "gguf_variant": extract_quant_token(state.gguf_filename)
             if state.gguf_filename
             else None,
-            # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none").
-            "cpu_offload": bool(state.offload_flags),
-            "offload_policy": "active" if state.offload_flags else "none",
+            # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none"), minus
+            # the --backend device pin, which is a card choice rather than an offload decision.
+            "cpu_offload": bool(without_device_backend_flags(state.offload_flags)),
+            "offload_policy": (
+                "active" if without_device_backend_flags(state.offload_flags) else "none"
+            ),
             "vae_tiling": False,
             "memory_mode": None,
             "speed_mode": state.native_speed,

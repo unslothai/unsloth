@@ -783,6 +783,7 @@ def apply_memory_plan(
     plan: MemoryPlan,
     *,
     device: str,
+    placement_device: Optional[str] = None,
     logger: Any = None,
 ) -> tuple[str, bool]:
     """Apply ``plan`` to a built diffusers pipeline: enable the VAE savers then place / offload
@@ -790,7 +791,15 @@ def apply_memory_plan(
 
     Returns the ``(offload_policy, vae_tiling)`` ACTUALLY engaged, which can differ from the plan:
     tiling is a no-op where there's no tiling control, and group / sequential offload fall back to
-    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39)."""
+    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39).
+
+    ``placement_device`` is the INDEXED string when a card was selected ("cuda:1"), and is what
+    every diffusers handoff below receives. A bare "cuda" is not equivalent to the CPU-offload
+    APIs: ``enable_model_cpu_offload`` reads the index off the device and, finding none, falls
+    back to ``_offload_gpu_id = 0`` and onloads to cuda:0 (pipeline_utils.py, diffusers 0.39), so
+    the modules would page onto the very card the selection existed to avoid while generation ran
+    on another. ``device`` stays bare for anything reading it as a policy string."""
+    placement = placement_device or device
     tiling_engaged = False
     if plan.vae_tiling:
         tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
@@ -800,28 +809,28 @@ def apply_memory_plan(
     def _fallback_to_model_offload() -> None:
         # The GROUP plan set vae_tiling=False (the VAE stays resident). Dropping to whole-module offload is the low-VRAM case where the decode spike can OOM, so turn tiling on now.
         nonlocal tiling_engaged
-        pipe.enable_model_cpu_offload(device = device)
+        pipe.enable_model_cpu_offload(device = placement)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
-        pipe.enable_model_cpu_offload(device = device)
+        pipe.enable_model_cpu_offload(device = placement)
     elif policy == OFFLOAD_GROUP:
         # getattr, not attribute access: manually built / duck-typed plans predate this field.
         if not _apply_group_offload(
             pipe,
-            device,
+            placement,
             logger,
             stream_text_encoders = bool(getattr(plan, "stream_text_encoders", False)),
         ):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
-        _apply_streaming_offload(pipe, device, logger)
+        _apply_streaming_offload(pipe, placement, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
-            pipe.enable_sequential_cpu_offload(device = device)
+            pipe.enable_sequential_cpu_offload(device = placement)
         except Exception as exc:  # noqa: BLE001 — keep the model loadable
             if logger is not None:
                 logger.warning(
@@ -832,7 +841,7 @@ def apply_memory_plan(
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
-        pipe.to(device)
+        pipe.to(placement)
     return policy, tiling_engaged
 
 
@@ -1013,9 +1022,15 @@ def image_activation_shortfall_message(
     batch_size: int = 1,
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+    source_driven: bool = False,
 ) -> Optional[str]:
     """A user-facing refusal when this generation's ACTIVATIONS plus the flat base overhead
     cannot fit the free device budget, else None.
+
+    ``source_driven`` says the refused size comes from an UPLOADED image rather than the
+    Resolution control (inpaint / extend / upscale / edit). Telling those callers to "generate at
+    a smaller resolution" points them at a control that cannot change the number in the refusal.
+    Same verdict either way; only the remedy sentence differs.
 
     Why this is a refusal and not another tuning knob: weights can be offloaded, activations
     cannot. Every offload tier moves WEIGHTS between host and device; the latents, attention
@@ -1108,7 +1123,8 @@ def image_activation_shortfall_message(
         # Only when the batch is what was budgeted. A refusal measured on ONE image cannot be
         # answered by asking for fewer, and pointing there sends the caller at the one change
         # that provably will not help.
-        f"Generate at a smaller resolution{' or a smaller batch size' if batch > 1 else ''}, "
+        f"{'Upload a smaller source image (this workflow takes its output size from the image, not the Resolution setting)' if source_driven else 'Generate at a smaller resolution'}"
+        f"{' or a smaller batch size' if batch > 1 else ''}, "
         "free device memory by closing other applications, or set "
         f"{OVERSIZED_GENERATE_ENV}=1 to attempt it anyway."
     )
@@ -1122,6 +1138,7 @@ def raise_on_image_activation_shortfall(
     batch_size: int = 1,
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+    source_driven: bool = False,
     logger: Any = None,
 ) -> None:
     """Refuse a generation whose activations cannot fit the free device budget. No-op whenever
@@ -1138,6 +1155,7 @@ def raise_on_image_activation_shortfall(
         batch_size = batch_size,
         family = family,
         base_overhead_mib = base_overhead_mib,
+        source_driven = source_driven,
     )
     if message is None:
         return

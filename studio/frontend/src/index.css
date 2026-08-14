@@ -1286,7 +1286,7 @@ html[data-chat-font] .aui-root {
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 	}
 
-	/* Crossfade Images settings into its in-flow action footer. Multiple alpha stops
+	/* Crossfade media settings into their in-flow action footers. Multiple alpha stops
 	   approximate a smooth 48px ease without painting a separate footer overlay. */
 	.panel-scroll-fade-action.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
