@@ -212,8 +212,9 @@ def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch,
     works on hosted providers too."""
     # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function
     # body, so it is never an attribute of ``routes.inference``: patching the route set a dead
-    # name, and ``raising = False`` hid that while the real function spawned stdio MCP servers
-    # and wrote discovery cache and cool-off state. Default ``raising`` catches a future move.
+    # name, and ``raising = False`` hid that while the real function ran instead. On this job
+    # it reads an empty settings DB and short-circuits before spawning anything, but nothing
+    # here held it to that. Default ``raising`` catches a future move.
     monkeypatch.setattr(
         "core.inference.tools.get_enabled_mcp_tools",
         lambda: _noop_mcp(),
