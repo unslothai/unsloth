@@ -433,7 +433,7 @@ def _position(node):
 _AFTER_EVERYTHING = (float("inf"), 0)
 
 
-_BRANCHING = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try)
+_BRANCHING = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match)
 
 
 def _dumpable_writes(scope, certain = True):
@@ -555,6 +555,9 @@ def _bindings_before(tree, scope, position):
             if pair is None or _position(node) >= position:
                 continue
             folded, _ids = _fold(pair[1], env)
+            # Rebinding to something unfoldable still replaces the old value, so the
+            # previous script must not go on answering for the name.
+            env.pop(pair[0].id, None)
             if folded is not None:
                 env[pair[0].id] = folded
     return env
@@ -571,7 +574,8 @@ def _nested_scripts(tree):
         if not isinstance(node, ast.Call):
             continue
         scope = owner.get(id(node), tree)
-        if _called_name(node) in _NESTED_EXEC:
+        # A bare name only: `Runner().exec(...)` is not the builtin.
+        if isinstance(node.func, ast.Name) and node.func.id in _NESTED_EXEC:
             argument = node.args[0] if node.args else None
             # Bindings AT the exec, so a name reused afterwards is not what runs.
             env = _bindings_before(tree, scope, _position(node))
@@ -970,6 +974,27 @@ _FIXTURES = {
         "    ctypes.CDLL(None).prctl(4, 2, 0, 0, 0)\n"
         "    ctypes.string_at(0)\n",
         False,  # PR_SET_DUMPABLE takes 0 or 1; 2 is EINVAL and changes nothing
+    ),
+    "restore_inside_an_unmatched_case": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    match 0:\n        case 1:\n"
+        "            ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a match arm is a branch, so it may never run
+    ),
+    "method_named_exec_is_not_the_builtin": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nRunner().exec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # only a bare exec/eval runs the string it is handed
+    ),
+    "payload_rebound_to_something_unfoldable": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nINNER = str('pass')\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # the rebind wins even when its value cannot be folded
     ),
 }
 
