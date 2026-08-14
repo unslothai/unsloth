@@ -19,11 +19,25 @@ class WindowsSymlinkPrivilegeError(PermissionError):
     winerror = 1314
 
 
+class WindowsSymlinkPrivilegeOSError(OSError):
+    """1314 is unmapped in CPython's errmap, so native Windows raises plain OSError."""
+
+    winerror = 1314
+
+
 def _install_fake_datasets(monkeypatch, load_dataset):
     module = types.ModuleType("datasets")
     module.load_dataset = load_dataset
     monkeypatch.setitem(sys.modules, "datasets", module)
     monkeypatch.setattr("loggers.config.quiet_third_party_progress_bars", lambda: None)
+
+
+def _isolate_hub_symlink_state(monkeypatch):
+    """Keep _disable_hf_symlinks_for_process from leaking into other tests."""
+    from huggingface_hub import constants, file_download
+
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
+    monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})
 
 
 def test_windows_symlink_privilege_failure_retries_with_regular_files(monkeypatch):
@@ -127,6 +141,54 @@ def test_permission_error_still_retries_in_studio_cache(monkeypatch, tmp_path):
         (("Org/Data",), {"cache_dir": fallback}, fallback),
     ]
     assert os.environ["HF_DATASETS_CACHE"] == "original"
+
+
+def test_repeated_symlink_failure_falls_back_to_studio_cache(monkeypatch, tmp_path):
+    calls = []
+    fallback = str(tmp_path / "fallback")
+
+    def load_dataset(*args, **kwargs):
+        calls.append((args, kwargs.copy()))
+        if len(calls) == 1:
+            raise WindowsSymlinkPrivilegeError("symlink denied")
+        if len(calls) == 2:
+            raise WindowsSymlinkPrivilegeOSError("symlink denied again")
+        return {"loaded": True}
+
+    _install_fake_datasets(monkeypatch, load_dataset)
+    monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
+    monkeypatch.setattr(cache_safe, "studio_datasets_cache", lambda: fallback)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    _isolate_hub_symlink_state(monkeypatch)
+
+    assert cache_safe.load_dataset_cache_safe("Org/Data") == {"loaded": True}
+    assert calls == [
+        (("Org/Data",), {}),
+        (("Org/Data",), {}),
+        (("Org/Data",), {"cache_dir": fallback}),
+    ]
+
+
+def test_unrelated_error_on_symlink_retry_is_raised(monkeypatch):
+    calls = []
+
+    class UnrelatedError(OSError):
+        pass
+
+    def load_dataset(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            raise WindowsSymlinkPrivilegeError("symlink denied")
+        raise UnrelatedError("unrelated")
+
+    _install_fake_datasets(monkeypatch, load_dataset)
+    monkeypatch.setattr(cache_safe, "_is_native_windows", lambda: True)
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    _isolate_hub_symlink_state(monkeypatch)
+
+    with pytest.raises(UnrelatedError, match = "unrelated"):
+        cache_safe.load_dataset_cache_safe("Org/Data")
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(

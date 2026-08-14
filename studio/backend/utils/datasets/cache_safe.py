@@ -11,8 +11,8 @@ Retry such loads in an Unsloth-owned cache so the run proceeds; the worst case
 is one rebuild of the dataset in the fallback location.
 
 On Windows, huggingface_hub's concurrent symlink capability probe can also
-briefly publish a false-positive result and raise WinError 1314. Only after
-that exact failure, retry with its regular-file cache mode for this worker.
+publish a brief false positive and raise WinError 1314; only then, retry in
+its regular-file cache mode for this worker.
 """
 
 import logging
@@ -35,19 +35,23 @@ def _is_windows_symlink_privilege_error(error: OSError) -> bool:
     )
 
 
+def _is_retryable_cache_error(error: OSError) -> bool:
+    return isinstance(error, PermissionError) or _is_windows_symlink_privilege_error(error)
+
+
 def _disable_hf_symlinks_for_process() -> None:
     """Switch an affected worker to HF's regular-file cache fallback."""
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
-    # datasets has already imported huggingface_hub by the time a cache link
-    # fails, so update its live state before retrying too. Hub 1.x exposes a
-    # disable constant; the Python 3.9 pin (0.36.2) does not and decides from
-    # this per-directory capability cache instead.
+    # huggingface_hub is already imported, so update its live state too: Hub 1.x
+    # reads this constant, the Python 3.9 pin (0.36.2) only its capability cache.
     from huggingface_hub import constants, file_download
 
     if hasattr(constants, "HF_HUB_DISABLE_SYMLINKS"):
         constants.HF_HUB_DISABLE_SYMLINKS = True
     symlink_support = getattr(file_download, "_are_symlinks_supported_in_dir", None)
     if isinstance(symlink_support, dict):
+        # Every probed dir, not just this one; unprivileged Windows cannot link
+        # in any of them, so the rest would fail the same way.
         for cache_dir in tuple(symlink_support):
             symlink_support[cache_dir] = False
 
@@ -72,8 +76,7 @@ def load_dataset_cache_safe(*args, **kwargs):
     try:
         return load_dataset(*args, **kwargs)
     except OSError as error:
-        # Classify the exact Windows failure before generic PermissionError:
-        # OSError's selected subclass for winerror=1314 varies by Python/runtime.
+        # Classify winerror 1314 first: the subclass Python picks for it varies.
         if _is_windows_symlink_privilege_error(error):
             logger.warning(
                 "Windows denied a Hugging Face cache symlink (%s); retrying with regular files",
@@ -82,8 +85,12 @@ def load_dataset_cache_safe(*args, **kwargs):
             _disable_hf_symlinks_for_process()
             try:
                 return load_dataset(*args, **kwargs)
-            except PermissionError as retry_error:
-                return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
+            except OSError as retry_error:
+                # A second 1314 means a cache dir HF had not probed yet; the
+                # Unsloth-owned cache is probed fresh, so it clears both cases.
+                if _is_retryable_cache_error(retry_error):
+                    return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
+                raise
         if isinstance(error, PermissionError):
             return _retry_in_studio_cache(load_dataset, args, kwargs, error)
         raise
