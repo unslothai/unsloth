@@ -2526,7 +2526,7 @@ def test_a_dispatched_ref_is_resolved_to_one_commit():
     # a moving branch, exactly as an unresolvable zoo commit does.
     assert "stand_down=true" in ref["run"]
     for name in (
-        "Pin the zoo revision and read the reference",
+        "Pin the zoo revision",
         "Build the kernel notebooks",
         "Recheck the Kaggle account",
     ):
@@ -2952,7 +2952,7 @@ def test_every_leg_installs_one_pinned_zoo_commit():
     """
     steps = _workflow()["jobs"]["t4-smoke"]["steps"]
     names = [s.get("name") for s in steps]
-    pins = steps[names.index("Pin the zoo revision and read the reference")]
+    pins = steps[names.index("Pin the zoo revision")]
     assert "git ls-remote" in pins["run"]
     build = steps[names.index("Build the kernel notebooks")]
     assert "--zoo-ref '${{ steps.pins.outputs.zoo_ref }}'" in build["run"]
@@ -2969,7 +2969,7 @@ def test_an_unresolvable_zoo_commit_stands_the_run_down():
     """
     steps = _workflow()["jobs"]["t4-smoke"]["steps"]
     names = [s.get("name") for s in steps]
-    pins = steps[names.index("Pin the zoo revision and read the reference")]
+    pins = steps[names.index("Pin the zoo revision")]
     assert "ZOO_REF=main" not in pins["run"], "the mutable branch fallback is back"
     assert "stand_down=true" in pins["run"]
     # A single blip is not a verdict.
@@ -3041,10 +3041,123 @@ def test_the_dispatched_step_count_is_checked_before_a_kernel_is_paid_for():
     # Through the environment, and only after the check: the dispatched value is
     # free text, so interpolating it into a step's shell puts it in the command
     # line rather than in an argument.
-    for step in (check, steps[names.index("Build the kernel notebooks")]):
-        assert step["env"]["MAX_STEPS"].startswith("${{ inputs.max_steps")
+    build = steps[names.index("Build the kernel notebooks")]
+    assert check["env"]["MAX_STEPS"].startswith("${{ inputs.max_steps")
+    for step in (check, build):
         assert "inputs.max_steps" not in step["run"]
-    assert "--max-steps $MAX_STEPS" in steps[names.index("Build the kernel notebooks")]["run"]
+    assert "--max-steps $MAX_STEPS" in build["run"]
+    # Where the build step takes its count FROM is asserted by executing it:
+    # test_an_alternate_spelling_of_the_step_count_keeps_the_reference_band.
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "the step is a bash script")
+def test_an_alternate_spelling_of_the_step_count_keeps_the_reference_band(tmp_path):
+    """EXECUTE the build step, on the count the VALIDATOR produced.
+
+    The band is the only thing in this workflow that compares a run against a
+    committed trace, and the only way it goes off silently is this comparison
+    saying two identical step counts differ. `check_steps.parse_steps` accepts
+    `+10`, `010` and surrounding whitespace as the ten they are -- so does the
+    payload's argparse, which is what actually runs -- so a raw string compare
+    here dropped the band from a run that was the reference's run, and said so
+    in a warning naming a step count that was not different.
+
+    Every arm goes through the real code path: the step's own `env:` block says
+    where each value comes from, the count is whatever running check_steps.py
+    writes to GITHUB_OUTPUT, and the assertion is on the argv the step hands
+    build_kernel.py. Reading the wiring rather than supplying it is the point --
+    a build step that goes back to the raw dispatch string fails here.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    step = steps[names.index("Build the kernel notebooks")]
+    script, wiring = step["run"], step["env"]
+    checker = REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "check_steps.py"
+    cases = iter(range(1000))
+
+    def resolve(key: str, validated: dict, skip_band: str) -> str:
+        """What GitHub would put in `key`, from the step's own env block."""
+        expr = str(wiring[key]).strip()
+        inner = expr.removeprefix("${{").removesuffix("}}").strip()
+        if inner == "inputs.skip_reference_band":
+            return skip_band
+        source, _, name = inner.rpartition(".")
+        if source == "steps.stepcount.outputs":
+            return validated.get(name, "")
+        raise AssertionError(
+            f"the build step takes {key} from {expr}. The step count it builds with, "
+            f"and the reference count it compares against, have to be the ones the "
+            f"validator parsed: any second reading of the dispatched string is a "
+            f"second answer to how long this run is, and the band goes off when the "
+            f"two disagree."
+        )
+
+    def validate(raw: str) -> dict:
+        """The validator step, run for real, and the outputs it wrote."""
+        out = tmp_path / f"validated{next(cases)}"
+        out.write_text("", encoding = "utf-8")
+        done = subprocess.run(
+            [sys.executable, str(checker), "--max-steps", raw, "--payload-dir", str(SMOKE_DIR)],
+            env = dict(os.environ, GITHUB_OUTPUT = str(out)),
+            capture_output = True,
+            text = True,
+        )
+        assert done.returncode == 0, done.stderr
+        return dict(line.split("=", 1) for line in out.read_text().splitlines() if "=" in line)
+
+    def build(raw: str, skip_band: str = "false") -> tuple[list[str], str]:
+        """The build step's shell on those outputs; build_kernel's argv and the log."""
+        validated = validate(raw)
+        assert validated["stand_down"] == "false", raw
+        work = tmp_path / f"build{next(cases)}"
+        stub = work / "bin"
+        stub.mkdir(parents = True)
+        argv = work / "argv"
+        (stub / "python").write_text(
+            f'#!/bin/sh\nfor arg in "$@"; do printf "%s\\n" "$arg"; done > "{argv}"\n'
+        )
+        (stub / "python").chmod(0o755)
+        done = subprocess.run(
+            ["bash", "-c", script],
+            env = dict(
+                os.environ,
+                PATH = f"{stub}:{os.environ['PATH']}",
+                **{key: resolve(key, validated, skip_band) for key in wiring},
+            ),
+            capture_output = True,
+            text = True,
+        )
+        assert done.returncode == 0, done.stderr
+        return argv.read_text().splitlines(), done.stdout
+
+    sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"))
+    import check_steps
+
+    committed = check_steps.reference_steps(SMOKE_DIR)
+    assert committed, "the committed reference declares no step count"
+
+    # The count the reference was captured at, however it is spelled, keeps the
+    # band. Derived from the committed file rather than written out here, so a
+    # recapture at another count moves this test with it.
+    for spelling in (str(committed), f"+{committed}", f"0{committed}", f" {committed} "):
+        args, log = build(spelling)
+        assert "--skip-reference" not in args, (spelling, args)
+        assert args[args.index("--smoke-args") + 1] == f"--max-steps {committed}", args
+        assert "Reference band check" not in log, (spelling, log)
+
+    # And a run that really is a different length still drops it, with the
+    # warning. This is the arm a comparison that always says "same" would take
+    # away, leaving every custom step count compared against a curve it has
+    # nothing to do with.
+    other = committed + 1
+    args, log = build(str(other))
+    assert "--skip-reference" in args, args
+    assert "::warning title=Reference band check skipped" in log, log
+
+    # The dispatch switch is untouched by any of it.
+    args, log = build(str(committed), skip_band = "true")
+    assert "--skip-reference" in args, args
+    assert "::warning title=Reference band check disabled" in log, log
 
 
 def test_an_evidence_upload_outage_cannot_colour_the_check_red():

@@ -626,10 +626,7 @@ jobs:
       # reproducible has nothing to say, which is infrastructure: a warning and
       # a green job, like the concurrency stand-down. The ls-remote
       # is retried first, a single blip not being a verdict.
-      #
-      # Also reads the step count the committed reference was captured at, so
-      # the build step below can tell whether the band check applies at all.
-      - name: Pin the zoo revision and read the reference
+      - name: Pin the zoo revision
         id: pins
         if: steps.ref.outputs.stand_down != 'true'
         run: |
@@ -647,9 +644,6 @@ jobs:
           fi
           echo "zoo_ref=$ZOO_REF" >> "$GITHUB_OUTPUT"
           echo "testing against unslothai/unsloth-zoo@$ZOO_REF"
-          REF_STEPS="$(python -c "import json,sys; print(json.load(open('tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json')).get('config',{}).get('max_steps',''))")"
-          echo "reference_max_steps=$REF_STEPS" >> "$GITHUB_OUTPUT"
-          echo "committed reference was captured at max_steps=$REF_STEPS"
 
       # BEFORE anything is built, and long before anything is pushed. max_steps
       # is free text on a dispatch and both ways of getting it wrong end as RED
@@ -689,8 +683,15 @@ jobs:
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
         env:
           SKIP_BAND: ${{ inputs.skip_reference_band }}
-          MAX_STEPS: ${{ inputs.max_steps || 10 }}
-          REF_STEPS: ${{ steps.pins.outputs.reference_max_steps }}
+          # The VALIDATED, normalised count from the step above, not the raw
+          # dispatch string. check_steps.parse_steps accepts "+10", "010" and
+          # surrounding whitespace as ten, as the payload's argparse does, so
+          # comparing the raw string here read an identical run as a different
+          # one and silently dropped the committed band from it. Both sides of
+          # that comparison now come from the validator, which reads the
+          # reference's count through the payload's own reference_step_count.
+          MAX_STEPS: ${{ steps.stepcount.outputs.steps }}
+          REF_STEPS: ${{ steps.stepcount.outputs.reference_steps }}
         run: |
           SKIP=''
           if [ "$SKIP_BAND" = "true" ]; then

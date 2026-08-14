@@ -81,6 +81,33 @@ def parse_steps(raw: str) -> int | None:
     return steps if steps > 0 else None
 
 
+def reference_steps(payload_dir: Path, leg: str = "control") -> int | None:
+    """The step count the committed reference declares, read the payload's way.
+
+    The build step drops the band when this run's count is not the reference's,
+    and ``check_reference`` refuses the same pairing from the other side, so the
+    two have to mean the same thing by "the reference's count". This calls the
+    payload's own ``reference_step_count`` rather than reading the JSON a second
+    time, and finds the file through the leg registry rather than naming it.
+
+    None when it cannot be established, which the build step already treats as
+    not comparable: the payload's answer for a reference that does not say is
+    ``reference_step_count_unknown``, a hard failure, so a band left on here
+    would be red for the reference rather than for the code.
+    """
+    try:
+        name = LEGS[leg].reference
+        if not name:
+            return None
+        sys.path.insert(0, str(payload_dir))
+        from run_t4_smoke import reference_step_count
+
+        data = json.loads((payload_dir / "references" / name).read_text(encoding = "utf-8"))
+        return reference_step_count(data)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def reference_metrics(payload_dir: Path, leg: str = "control") -> list[dict]:
     """The committed trace the floor is measured from.
 
@@ -174,6 +201,21 @@ def main() -> int:
         _log(reason)
     _out("stand_down", "true" if stand_down else "false")
     _out("reason", reason)
+
+    # The PARSED value, for everything downstream, so that the one place which
+    # normalises the dispatched string is the one place that validated it.
+    # parse_steps deliberately accepts "+10", "010" and surrounding whitespace
+    # as the ten they are, and the payload's argparse agrees, so the build step
+    # comparing the raw string against the reference's count used to read those
+    # as a different run and drop the reference band from it: a green run with
+    # the committed band never applied, announced as a step count that was not
+    # actually different. The reference's own count comes from here too, for
+    # the same reason -- one definition, the payload's.
+    steps = parse_steps(args.max_steps)
+    if steps is not None:
+        _out("steps", str(steps))
+    ref_steps = reference_steps(Path(args.payload_dir))
+    _out("reference_steps", "" if ref_steps is None else str(ref_steps))
     return 0
 
 
