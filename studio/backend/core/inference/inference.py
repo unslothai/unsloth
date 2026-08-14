@@ -2034,6 +2034,7 @@ class InferenceBackend:
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         instructions: Optional[str] = None,
+        language: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         """Generate audio from text for TTS models.
@@ -2041,7 +2042,7 @@ class InferenceBackend:
         """
         # Reserved for native audio architectures; codec-backed TTS models do
         # not currently expose scene instructions or deterministic seeding.
-        del instructions, seed
+        del instructions, language, seed
         if not self.active_model_name:
             raise RuntimeError("No active model")
 

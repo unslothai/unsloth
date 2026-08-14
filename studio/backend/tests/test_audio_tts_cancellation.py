@@ -410,7 +410,7 @@ def test_tts_route_bounds_public_token_budget():
     assert inference_route._tts_max_new_tokens(payload) == 8192
 
 
-def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
+def test_audio_worker_command_uses_the_bounded_token_budget_and_forwards_language(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     sent = []
@@ -434,11 +434,16 @@ def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
 
     monkeypatch.setattr(orchestrator, "_direct_reader", direct_reader)
 
-    assert orchestrator.generate_audio_response("hello", max_new_tokens = 10**310) == (
+    assert orchestrator.generate_audio_response(
+        "hello",
+        max_new_tokens = 10**310,
+        language = "French",
+    ) == (
         b"RIFFfake",
         24000,
     )
     assert sent[0]["max_new_tokens"] == 8192
+    assert sent[0]["language"] == "French"
 
 
 def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch):
@@ -700,7 +705,7 @@ def test_dispatched_generation_rechecks_tts_reservation_before_registration(monk
     assert orchestrator._mailboxes == {}
 
 
-def test_worker_audio_forwards_shared_cancel_event():
+def test_worker_audio_forwards_shared_cancel_event_and_language():
     cancel = threading.Event()
     captured = {}
 
@@ -712,12 +717,13 @@ def test_worker_audio_forwards_shared_cancel_event():
     responses = queue.Queue()
     _handle_generate_audio(
         _Backend(),
-        {"request_id": "audio-1", "text": "hello"},
+        {"request_id": "audio-1", "text": "hello", "language": "French"},
         responses,
         cancel,
     )
 
     assert captured["cancel_event"] is cancel
+    assert captured["language"] == "French"
     assert responses.get_nowait()["type"] == "audio_done"
 
 

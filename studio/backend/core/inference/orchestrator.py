@@ -2102,6 +2102,7 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         instructions: Optional[str] = None,
+        language: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
@@ -2159,6 +2160,8 @@ class InferenceOrchestrator:
                     cmd["use_adapter"] = use_adapter
                 if instructions is not None:
                     cmd["instructions"] = instructions
+                if language is not None:
+                    cmd["language"] = language
                 if seed is not None:
                     cmd["seed"] = int(seed)
 

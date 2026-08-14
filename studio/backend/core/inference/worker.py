@@ -749,6 +749,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             use_adapter = cmd.get("use_adapter"),
             cancel_event = cancel_event,
             instructions = cmd.get("instructions"),
+            language = cmd.get("language"),
             seed = cmd.get("seed"),
         )
 
