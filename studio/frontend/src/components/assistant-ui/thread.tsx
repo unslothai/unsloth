@@ -110,6 +110,8 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
+import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
+import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   incompleteLabel,
@@ -125,6 +127,7 @@ import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-me
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   PLUS_MENU_ORDER,
   CONVERSATION_MARKDOWN_LABEL,
@@ -169,7 +172,10 @@ import {
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import { updateStoredChatThread } from "@/features/chat/utils/chat-history-storage";
+import {
+  getStoredChatThread,
+  updateStoredChatThread,
+} from "@/features/chat/utils/chat-history-storage";
 import {
   dictationSendBlocked,
   shouldSubmitDictation,
@@ -207,6 +213,7 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
+  BookOpen01Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
@@ -6197,9 +6204,11 @@ async function exportMessageMarkdown(content: string): Promise<void> {
   }
 }
 const AssistantActionBar: FC = () => {
+  const aui = useAui();
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
   const researchActive = useThreadResearchActive();
+  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -6281,6 +6290,55 @@ const AssistantActionBar: FC = () => {
                 Export as markdown
               </ActionBarMorePrimitive.Item>
             </ActionBarPrimitive.ExportMarkdown>
+            {activeProjectId && (
+              <ActionBarMorePrimitive.Item
+                onSelect={() => {
+                  // Not getCopyText: it joins text parts alone, so a reply's
+                  // reasoning, tool calls and citations would be dropped and a
+                  // tool-only reply would read as empty. Same conversion the
+                  // whole-chat save runs.
+                  const text = replySourceMarkdown(
+                    aui.message().getState().content,
+                    toolResultModelText,
+                  );
+                  if (!text.trim()) {
+                    toast.info("No content to save.");
+                    return;
+                  }
+                  const state = aui.threadListItem().getState();
+                  // The list item's title belongs to the whole chat, so mark the
+                  // reply apart or saving both lists two identical names.
+                  const title = state.title ? `${state.title} - reply` : "reply";
+                  // activeProjectId can lag a thread switch while the stored
+                  // thread loads; resolve the destination from this thread.
+                  const remoteId =
+                    state.remoteId ||
+                    useChatRuntimeStore.getState().activeThreadId;
+                  void (async () => {
+                    const thread = remoteId
+                      ? await getStoredChatThread(remoteId).catch(() => null)
+                      : null;
+                    if (!thread?.projectId) {
+                      toast.info("This chat isn't in a project.");
+                      return;
+                    }
+                    await saveMarkdownAsProjectSource(
+                      thread.projectId,
+                      text,
+                      title,
+                    );
+                  })();
+                }}
+                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+              >
+                <HugeiconsIcon
+                  icon={BookOpen01Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                Save to project sources
+              </ActionBarMorePrimitive.Item>
+            )}
             <ActionBarMorePrimitive.Item
               onSelect={() => setDetailsOpen(true)}
               className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
