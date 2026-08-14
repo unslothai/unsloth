@@ -29,6 +29,8 @@ from unforgettable.constants import (
 
 from .db import get_connection
 
+DEFAULT_ADMISSIONS_LIMIT = 50
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -166,6 +168,7 @@ def list_records(
     namespace_id: Optional[str] = None,
     statuses: Optional[Iterable[str]] = None,
     kinds: Optional[Iterable[str]] = None,
+    limit: Optional[int] = None,
     db_path=None,
 ) -> list[dict[str, Any]]:
     clauses = []
@@ -182,11 +185,13 @@ def list_records(
         clauses.append(f"kind IN ({','.join('?' * len(kind_list))})")
         args.extend(kind_list)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"SELECT * FROM records {where} ORDER BY updated_at DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        args.append(limit)
     conn = get_connection(db_path)
     try:
-        rows = conn.execute(
-            f"SELECT * FROM records {where} ORDER BY updated_at DESC", args
-        ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
@@ -277,3 +282,67 @@ def log_admission(
         conn.commit()
     finally:
         conn.close()
+
+
+def list_admissions(
+    *,
+    limit: int = DEFAULT_ADMISSIONS_LIMIT,
+    decision: Optional[str] = None,
+    db_path=None,
+) -> list[dict[str, Any]]:
+    clauses = []
+    args: list[Any] = []
+    if decision:
+        clauses.append("decision = ?")
+        args.append(decision)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    args.append(limit)
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM admissions_log {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+            args,
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_record_status(
+    record_id: str,
+    status: str,
+    *,
+    reason: Optional[str] = None,
+    db_path=None,
+) -> dict[str, Any]:
+    if status not in STATUSES:
+        raise ValueError(f"unknown status: {status}")
+    rec = get_record(record_id, db_path=db_path)
+    if rec is None:
+        raise KeyError(record_id)
+    now = _now()
+    body = rec["body"]
+    if reason and status == "deprecated":
+        body = f"{body}\n\n[deprecated] {reason}"
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE records SET status = ?, body = ?, updated_at = ? WHERE id = ?",
+            (status, body, now, record_id),
+        )
+        if body != rec["body"]:
+            _rewrite_fts(conn, record_id, rec["title"], body)
+        conn.commit()
+    finally:
+        conn.close()
+    if reason is not None:
+        log_admission(
+            record_id=record_id,
+            decision=status,
+            reason=reason,
+            db_path=db_path,
+        )
+    found = get_record(record_id, db_path=db_path)
+    if found is None:
+        raise RuntimeError("status update did not persist")
+    return found

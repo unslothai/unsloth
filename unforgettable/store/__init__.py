@@ -20,7 +20,9 @@ from .records import (
     get_namespace,
     get_record,
     insert_record,
+    list_admissions,
     list_records,
+    set_record_status,
     supersede_record,
 )
 from .search import search_records
@@ -34,7 +36,9 @@ __all__ = [
     "get_namespace",
     "get_record",
     "insert_record",
+    "list_admissions",
     "list_records",
     "search_records",
+    "set_record_status",
     "supersede_record",
 ]
