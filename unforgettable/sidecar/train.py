@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +33,10 @@ from unforgettable.sidecar.pack import (
 from unforgettable.store.db import default_db_path
 
 FAKE_BASE_MODEL = "fake"
-UNSLOTH_NOT_IMPLEMENTED = "UnslothTrainBackend is not implemented"
+FULL_FINETUNE_REFUSED = (
+    "sidecar refuses full fine-tune; unset UNSLOTH_ENABLE_FULL_FINETUNING"
+)
+PREFERENCE_NEEDS_DPO = "preference recipe needs trl.DPOTrainer"
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,36 @@ def _user_assistant(example: Any) -> tuple[str, str]:
     return user, assistant
 
 
+def _refuse_full_finetune() -> None:
+    if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING") == "1":
+        raise RuntimeError(FULL_FINETUNE_REFUSED)
+
+
+def _sft_text(example: Any, tokenizer: Any) -> str:
+    messages = _example_messages(example)
+    apply = getattr(tokenizer, "apply_chat_template", None)
+    if callable(apply) and messages:
+        try:
+            return apply(messages, tokenize=False, add_generation_prompt=False)
+        except (TypeError, ValueError):
+            pass
+    user, assistant = _user_assistant(example)
+    return f"user\n{user}\nassistant\n{assistant}"
+
+
+def _prompt_text(messages: list[dict], tokenizer: Any) -> str:
+    apply = getattr(tokenizer, "apply_chat_template", None)
+    if callable(apply) and messages:
+        try:
+            return apply(messages, tokenize=False, add_generation_prompt=True)
+        except (TypeError, ValueError):
+            pass
+    user, assistant = _user_assistant(messages)
+    if assistant:
+        return f"user\n{user}\nassistant\n{assistant}"
+    return f"user\n{user}\nassistant\n"
+
+
 class FakeTrainBackend:
     name = "fake"
 
@@ -151,7 +185,59 @@ class UnslothTrainBackend:
         base_model: str,
         recipe: str = "sft",
     ) -> None:
-        raise NotImplementedError(UNSLOTH_NOT_IMPLEMENTED)
+        _refuse_full_finetune()
+        if recipe == "preference":
+            raise RuntimeError(PREFERENCE_NEEDS_DPO)
+        from unsloth import FastLanguageModel
+        from trl import SFTTrainer, SFTConfig
+        from datasets import Dataset
+
+        self._base_model = base_model
+        dest = Path(output_dir)
+        dest.mkdir(parents=True, exist_ok=True)
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            base_model,
+            max_seq_length=2048,
+            load_in_4bit=True,
+            full_finetuning=False,
+        )
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=16,
+            lora_alpha=16,
+            lora_dropout=0.0,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=3407,
+        )
+        ds = Dataset.from_dict(
+            {"text": [_sft_text(example, tokenizer) for example in examples]}
+        )
+        sft_args = SFTConfig(
+            output_dir=str(dest),
+            per_device_train_batch_size=2,
+            num_train_epochs=1,
+            logging_steps=1,
+            seed=3407,
+            report_to=[],
+        )
+        try:
+            trainer = SFTTrainer(
+                model=model,
+                processing_class=tokenizer,
+                train_dataset=ds,
+                args=sft_args,
+            )
+        except TypeError:
+            trainer = SFTTrainer(
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=ds,
+                args=sft_args,
+            )
+        trainer.train()
+        model.save_pretrained(dest)
+        tokenizer.save_pretrained(dest)
 
     def complete(
         self,
@@ -160,7 +246,26 @@ class UnslothTrainBackend:
         adapter_path: Optional[str],
         max_tokens: int = 80,
     ) -> str:
-        raise NotImplementedError(UNSLOTH_NOT_IMPLEMENTED)
+        _refuse_full_finetune()
+        from unsloth import FastLanguageModel
+
+        load_name = adapter_path or getattr(self, "_base_model", None)
+        if not load_name:
+            return ""
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            load_name,
+            max_seq_length=2048,
+            load_in_4bit=True,
+            full_finetuning=False,
+        )
+        FastLanguageModel.for_inference(model)
+        inputs = tokenizer(_prompt_text(messages, tokenizer), return_tensors="pt")
+        device = getattr(model, "device", None)
+        if device is not None and hasattr(inputs, "to"):
+            inputs = inputs.to(device)
+        outputs = model.generate(**inputs, max_new_tokens=max_tokens)
+        prompt_len = int(inputs["input_ids"].shape[-1])
+        return tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
 
 
 def _backend_name(backend: TrainBackend) -> str:

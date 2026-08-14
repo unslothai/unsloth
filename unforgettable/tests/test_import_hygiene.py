@@ -14,9 +14,16 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+_HEAVY_IMPORT_PREFIXES = (
+    "import unsloth",
+    "from unsloth",
+    "import torch",
+    "from torch",
+)
 
 
 def test_package_does_not_import_studio():
@@ -39,10 +46,22 @@ def test_sidecar_has_no_eager_unsloth_or_torch():
     offenders = []
     for path in sidecar.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        for line in text.splitlines():
+        for lineno, line in enumerate(text.splitlines(), 1):
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            if stripped.startswith(("import unsloth", "from unsloth", "import torch", "from torch")):
-                offenders.append(f"{path}: {stripped}")
+            is_heavy = stripped.startswith(_HEAVY_IMPORT_PREFIXES)
+            if path.name != "train.py":
+                if is_heavy or "unsloth" in stripped.lower():
+                    offenders.append(f"{path}:{lineno}: {stripped}")
+                continue
+            if is_heavy and line[:1] not in (" ", "\t"):
+                offenders.append(f"{path}:{lineno}: {stripped}")
     assert offenders == []
+
+
+def test_importing_sidecar_does_not_load_unsloth_or_torch():
+    import unforgettable.sidecar  # noqa: F401
+
+    assert "unsloth" not in sys.modules
+    assert "torch" not in sys.modules

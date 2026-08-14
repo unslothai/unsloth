@@ -377,7 +377,21 @@ def test_train_unsloth_without_base_exits_2(db_path):
     assert main(["train", "--backend", "unsloth", "--db", str(db_path)]) == 2
     import sys
 
+    assert "unsloth" not in sys.modules
     assert "torch" not in sys.modules
+
+
+def test_train_help_names_public_unsloth_apis(capsys):
+    try:
+        main(["train", "--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("train --help should exit")
+    out = capsys.readouterr().out
+    assert "FastLanguageModel.from_pretrained" in out
+    assert "get_peft_model" in out
+    assert "SFTTrainer" in out
 
 
 def test_promote_without_force_exits_2(db_path, capsys):

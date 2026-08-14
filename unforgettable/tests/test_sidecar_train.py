@@ -21,7 +21,11 @@ import pytest
 
 from unforgettable.sidecar.adapters import get_adapter
 from unforgettable.sidecar.pack import pack_from_admitted_b
-from unforgettable.sidecar.train import FakeTrainBackend, train_pack
+from unforgettable.sidecar.train import (
+    FakeTrainBackend,
+    UnslothTrainBackend,
+    train_pack,
+)
 from unforgettable.store.records import insert_record, insert_retrieve_use, insert_rollout
 
 
@@ -116,3 +120,33 @@ def test_train_pack_fake_writes_shadow_adapter(db_path):
         [{"role": "user", "content": "Playbook 1"}],
         adapter_path=None,
     ) == ""
+
+
+def test_unsloth_backend_refuses_full_finetune(monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "1")
+    backend = UnslothTrainBackend()
+    with pytest.raises(RuntimeError, match="full fine-tune"):
+        backend.train(
+            [{"messages": [{"role": "user", "content": "u"}]}],
+            output_dir=tmp_path / "out",
+            base_model="dummy",
+        )
+    assert "unsloth" not in sys.modules
+    assert "torch" not in sys.modules
+
+
+def test_unsloth_backend_preference_raises_before_import(tmp_path):
+    import sys
+
+    backend = UnslothTrainBackend()
+    with pytest.raises(RuntimeError, match="preference"):
+        backend.train(
+            [{"messages": [{"role": "user", "content": "u"}]}],
+            output_dir=tmp_path / "out",
+            base_model="dummy",
+            recipe="preference",
+        )
+    assert "unsloth" not in sys.modules
+    assert "torch" not in sys.modules

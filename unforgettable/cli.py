@@ -407,7 +407,7 @@ def _cmd_train(args: argparse.Namespace, db_path: Path) -> int:
         )
     except KeyError:
         return _unknown_id(pack_id)
-    except (ValueError, NotImplementedError) as exc:
+    except (ValueError, RuntimeError, NotImplementedError) as exc:
         print(str(exc), file=sys.stderr)
         return UNKNOWN_ID_EXIT
     _print_json(asdict(result))
@@ -702,7 +702,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     train_p = sub.add_parser(
         "train",
-        help="Train a shadow adapter from a pack (fake backend in tests).",
+        help=(
+            "Train a shadow adapter from a pack. Unsloth uses "
+            "FastLanguageModel.from_pretrained, get_peft_model, SFTTrainer."
+        ),
     )
     _add_db_flag(train_p)
     train_p.add_argument("--pack", default=None, help="Pack id (default: latest pack).")
@@ -710,7 +713,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=TRAIN_BACKENDS,
         default=None,
-        help="Training backend (default: unsloth if importable, else fake).",
+        help=(
+            "Training backend (default: unsloth if importable, else fake). "
+            "unsloth calls FastLanguageModel.from_pretrained, get_peft_model, "
+            "SFTTrainer."
+        ),
     )
     train_p.add_argument(
         "--base",
