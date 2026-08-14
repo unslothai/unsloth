@@ -669,14 +669,22 @@ def test_episode_re_retrieve_on_enter_sim(tmp_path: Path):
         )
     )
     assert Action.ENTER_SIM in outcome.actions
+    assert Action.RETRY_WORLD in outcome.actions
+    assert len(host.generate_messages) == 3
     world_system = host.generate_messages[0][0]["content"]
     sim_system = host.generate_messages[1][0]["content"]
+    retry_system = host.generate_messages[2][0]["content"]
     assert sim_fix["title"] in sim_system
+    assert sim_fix["title"] not in world_system
     assert world_claim["title"] in world_system
+    assert "Retry in the world with the repaired plan." in retry_system
+    assert sim_fix["title"] not in retry_system
     stats = list_inject_stats(db_path=host.db)
-    contacts = [row["contact"] for row in stats]
-    assert "sim" in contacts
-    assert "world" in contacts
+    assert len(stats) == 3
+    contacts = [
+        row["contact"] for row in sorted(stats, key=lambda row: row["created_at"])
+    ]
+    assert contacts == ["world", "sim", "world"]
     sim_uses = {
         row["record_id"]
         for row in list_retrieve_uses(
