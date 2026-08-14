@@ -116,11 +116,23 @@ def test_find_falls_back_to_scan_when_vswhere_absent(monkeypatch):
     monkeypatch.setenv("ProgramFiles(x86)", r"C:\PFx86")
     monkeypatch.setenv("ProgramFiles", r"C:\PF")
     newest = os.path.join(
-        r"C:\PF", "Microsoft Visual Studio", "18", "BuildTools", "VC", "Auxiliary", "Build",
+        r"C:\PF",
+        "Microsoft Visual Studio",
+        "18",
+        "BuildTools",
+        "VC",
+        "Auxiliary",
+        "Build",
         "vcvarsall.bat",
     )
     older = os.path.join(
-        r"C:\PF", "Microsoft Visual Studio", "2019", "Community", "VC", "Auxiliary", "Build",
+        r"C:\PF",
+        "Microsoft Visual Studio",
+        "2019",
+        "Community",
+        "VC",
+        "Auxiliary",
+        "Build",
         "vcvarsall.bat",
     )
     _fake_fs(monkeypatch, [newest, older])
