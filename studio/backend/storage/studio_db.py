@@ -361,11 +361,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "settings_json" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_json TEXT")
-    # Orders the snapshot writes. A tab closing sends its last edit keepalive, which can
-    # overtake a PATCH already accepted by the server, and no client-side cancel reaches
-    # a handler that is already running: the older write has to be refused here.
+    # Orders one writer's snapshot writes against its own earlier ones. A tab closing
+    # sends its last edit keepalive, which can overtake a PATCH already accepted by the
+    # server, and no client-side cancel reaches a handler that is already running: the
+    # older write has to be refused here. Scoped to the writer that sent it, so two
+    # browsers are never ordered against each other; see write_chat_thread_settings.
     if "settings_seq" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_seq INTEGER")
+    if "settings_writer" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_writer TEXT")
     if "project_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
@@ -1751,6 +1755,7 @@ def update_chat_thread(
     patch: dict,
     expected_title: Optional[str] = None,
     expected_opening_message_id: Optional[str] = None,
+    settings_write: Optional[dict] = None,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row
     still holds that title, so a concurrent rename wins instead of being lost.
@@ -1792,11 +1797,14 @@ def update_chat_thread(
         if key in patch:
             assignments.append(f"{column} = ?")
             values.append(value)
-    if not assignments:
+    if not assignments and settings_write is None:
         return get_chat_thread(id)
 
     conn = get_connection()
     try:
+        # The snapshot rides in the same transaction as the guarded metadata write, or a
+        # rejected precondition returns 409 with the settings change already committed.
+        conn.execute("BEGIN IMMEDIATE")
         # Guards ride in the WHERE clause, so check and write are one statement.
         where = ["id = ?"]
         guard: list = [id]
@@ -1807,20 +1815,92 @@ def update_chat_thread(
             where.append(_OPENING_USER_MESSAGE)
             guard += [id, expected_opening_message_id]
         guarded = expected_title is not None or expected_opening_message_id is not None
-        cursor = conn.execute(
-            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE {' AND '.join(where)}",
-            (*values, *guard),
-        )
-        applied = cursor.rowcount
+        applied = 1
+        if assignments:
+            cursor = conn.execute(
+                f"UPDATE chat_threads SET {', '.join(assignments)} WHERE {' AND '.join(where)}",
+                (*values, *guard),
+            )
+            applied = cursor.rowcount
+        if guarded and applied == 0:
+            conn.rollback()
+            if conn.execute(
+                "SELECT 1 FROM chat_threads WHERE id = ?", (id,)
+            ).fetchone() is None:
+                return None
+            raise ChatThreadPreconditionFailed(id)
+        if settings_write is not None:
+            if _write_chat_thread_settings_in_conn(conn, id, **settings_write) is None:
+                conn.rollback()
+                return None
         conn.commit()
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
         if row is None:
             return None
-        if guarded and applied == 0:
-            raise ChatThreadPreconditionFailed(id)
         return _chat_thread_from_row(row)
     finally:
         conn.close()
+
+
+def _write_chat_thread_settings_in_conn(
+    conn,
+    id: str,
+    *,
+    replace: Optional[dict] = None,
+    merge: Optional[dict] = None,
+    clear: bool = False,
+    seq: Optional[int] = None,
+    writer: Optional[str] = None,
+    keep_unreadable = None,
+) -> Optional[bool]:
+    """The snapshot write itself, on a connection whose transaction the caller owns.
+
+    None when the row is gone. True when it wrote, False when an older write from the
+    same writer was refused; both leave the caller's transaction usable, so a PATCH
+    carrying settings AND guarded metadata can apply them together or not at all.
+    """
+    row = conn.execute(
+        "SELECT settings_json, settings_seq, settings_writer FROM chat_threads WHERE id = ?",
+        (id,),
+    ).fetchone()
+    if row is None:
+        return None
+    keys = row.keys()
+    stored_seq = row["settings_seq"] if "settings_seq" in keys else None
+    stored_writer = row["settings_writer"] if "settings_writer" in keys else None
+    if (
+        seq is not None
+        and writer is not None
+        and stored_seq is not None
+        and stored_writer == writer
+        and seq <= stored_seq
+    ):
+        # This writer has already had a newer snapshot stored; this one is the straggler.
+        return False
+    stored = _json_loads(row["settings_json"], None)
+    stored = stored if isinstance(stored, dict) else {}
+    if clear:
+        settings_json = None
+    else:
+        if merge is not None:
+            base = stored
+            changes = merge
+        else:
+            base = keep_unreadable(stored) if keep_unreadable else {}
+            changes = replace or {}
+        settings_json = json.dumps({**base, **changes})
+    conn.execute(
+        """UPDATE chat_threads
+           SET settings_json = ?, settings_seq = ?, settings_writer = ?
+           WHERE id = ?""",
+        (
+            settings_json,
+            seq if seq is not None else stored_seq,
+            writer if writer is not None else stored_writer,
+            id,
+        ),
+    )
+    return True
 
 
 def write_chat_thread_settings(
@@ -1830,6 +1910,7 @@ def write_chat_thread_settings(
     merge: Optional[dict] = None,
     clear: bool = False,
     seq: Optional[int] = None,
+    writer: Optional[str] = None,
     keep_unreadable = None,
 ) -> Optional[dict]:
     """Write a thread's settings snapshot, reading and merging in one transaction.
@@ -1839,9 +1920,13 @@ def write_chat_thread_settings(
     replacement built from the same stale snapshot, and the second one lands on top. The
     read, the merge and the write have to be one transaction, so they are.
 
-    `seq` orders the writes. It is the client's timestamp for the edit, and a write whose
-    seq is older than the one already stored is dropped: an aborted fetch does not stop a
-    handler the server has already started, so the ordering has to be enforced here.
+    `writer` and `seq` order the writes, and only ever against the same writer's own
+    earlier ones: a write is dropped when it comes from the writer whose snapshot is
+    already stored and carries a seq no newer than it. Two browsers are never compared,
+    because their clocks and counters have nothing to do with each other and the one that
+    happened to be behind would have every edit silently refused. Within one writer the
+    ordering is real, which is the case that needs it: an aborted fetch does not stop a
+    handler the server has already started.
 
     `keep_unreadable(stored) -> dict` names the part of the stored snapshot the caller
     could not read, which a replacement carries forward rather than deleting. Passed in
@@ -1851,33 +1936,19 @@ def write_chat_thread_settings(
     try:
         # IMMEDIATE takes the write lock up front, so the read below cannot be overtaken.
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT settings_json, settings_seq FROM chat_threads WHERE id = ?", (id,)
-        ).fetchone()
-        if row is None:
+        applied = _write_chat_thread_settings_in_conn(
+            conn,
+            id,
+            replace = replace,
+            merge = merge,
+            clear = clear,
+            seq = seq,
+            writer = writer,
+            keep_unreadable = keep_unreadable,
+        )
+        if applied is None:
             conn.rollback()
             return None
-        stored_seq = row["settings_seq"] if "settings_seq" in row.keys() else None
-        if seq is not None and stored_seq is not None and seq <= stored_seq:
-            # A newer snapshot is already stored; this one is the straggler.
-            conn.rollback()
-            return get_chat_thread(id)
-        stored = _json_loads(row["settings_json"], None)
-        stored = stored if isinstance(stored, dict) else {}
-        if clear:
-            settings_json = None
-        else:
-            if merge is not None:
-                base = stored
-                changes = merge
-            else:
-                base = keep_unreadable(stored) if keep_unreadable else {}
-                changes = replace or {}
-            settings_json = json.dumps({**base, **changes})
-        conn.execute(
-            "UPDATE chat_threads SET settings_json = ?, settings_seq = ? WHERE id = ?",
-            (settings_json, seq if seq is not None else stored_seq, id),
-        )
         conn.commit()
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
         return _chat_thread_from_row(row) if row is not None else None

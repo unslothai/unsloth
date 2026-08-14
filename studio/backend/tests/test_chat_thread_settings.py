@@ -23,7 +23,7 @@ from routes.chat_history import (  # noqa: E402
     ChatThread,
     ChatThreadPatch,
     ChatThreadSettings,
-    _apply_settings_write,
+    _settings_write_from_patch,
     thread_from_row,
 )
 from storage import studio_db  # noqa: E402
@@ -323,7 +323,8 @@ def test_a_downgraded_client_cannot_delete_what_it_could_not_read(tmp_path, monk
 
     # the client writes back everything it knows about
     patch = {"settings": {"toolsEnabled": False}}
-    _apply_settings_write("thread-1", patch)
+    settings_write = _settings_write_from_patch(patch)
+    studio_db.update_chat_thread("thread-1", patch, settings_write = settings_write)
 
     raw = _raw_settings()
     assert "voiceModeEnabled" in raw
@@ -339,8 +340,10 @@ def test_a_merge_touches_only_the_fields_it_names(tmp_path, monkeypatch):
         "thread-1", {"settings": {"toolsEnabled": True, "permissionMode": "ask"}}
     )
 
-    patch = ChatThreadPatch(settingsPatch = {"codeToolsEnabled": True}).model_dump(exclude_unset = True)
-    _apply_settings_write("thread-1", patch)
+    payload = ChatThreadPatch(settingsPatch = {"codeToolsEnabled": True})
+    patch = payload.model_dump(exclude_unset = True)
+    settings_write = _settings_write_from_patch(patch)
+    studio_db.update_chat_thread("thread-1", patch, settings_write = settings_write)
 
     got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
     assert got.codeToolsEnabled is True
@@ -353,8 +356,10 @@ def test_a_merge_also_spares_an_unreadable_key(tmp_path, monkeypatch):
     studio_db.upsert_chat_thread(_thread())
     _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true}')
 
-    patch = ChatThreadPatch(settingsPatch = {"toolsEnabled": False}).model_dump(exclude_unset = True)
-    _apply_settings_write("thread-1", patch)
+    payload = ChatThreadPatch(settingsPatch = {"toolsEnabled": False})
+    patch = payload.model_dump(exclude_unset = True)
+    settings_write = _settings_write_from_patch(patch)
+    studio_db.update_chat_thread("thread-1", patch, settings_write = settings_write)
 
     assert "voiceModeEnabled" in _raw_settings()
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is False
@@ -367,7 +372,8 @@ def test_clearing_still_clears_the_whole_column(tmp_path, monkeypatch):
     _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true}')
 
     patch = {"settings": None}
-    _apply_settings_write("thread-1", patch)
+    settings_write = _settings_write_from_patch(patch)
+    studio_db.update_chat_thread("thread-1", patch, settings_write = settings_write)
 
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings is None
     assert _raw_settings() in (None, "", "null")
@@ -379,7 +385,8 @@ def test_a_merge_of_nothing_leaves_the_row_alone(tmp_path, monkeypatch):
     studio_db.update_chat_thread("thread-1", {"settings": {"toolsEnabled": True}})
 
     patch = {"title": "renamed", "settingsPatch": None}
-    _apply_settings_write("thread-1", patch)
+    settings_write = _settings_write_from_patch(patch)
+    studio_db.update_chat_thread("thread-1", patch, settings_write = settings_write)
     assert "settings" not in patch
     studio_db.update_chat_thread("thread-1", patch)
 
@@ -401,9 +408,13 @@ def test_an_older_write_cannot_overtake_a_newer_one(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
-    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 200)
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": True}, seq = 200, writer = "tab-a"
+    )
     # the straggler, carrying what the user had moved away from
-    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": False}, seq = 100)
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": False}, seq = 100, writer = "tab-a"
+    )
 
     got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
     assert got.toolsEnabled is True
@@ -414,8 +425,12 @@ def test_the_same_seq_is_not_applied_twice(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
-    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 500)
-    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": False}, seq = 500)
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": True}, seq = 500, writer = "tab-a"
+    )
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": False}, seq = 500, writer = "tab-a"
+    )
 
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is True
 
@@ -425,7 +440,9 @@ def test_a_write_without_a_seq_still_applies(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
-    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 900)
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": True}, seq = 900, writer = "tab-a"
+    )
     studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": False})
 
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is False
@@ -457,5 +474,60 @@ def test_the_seq_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
         conn.close()
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
-    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 1)
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": True}, seq = 1, writer = "tab-a"
+    )
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is True
+
+
+def test_two_browsers_are_never_ordered_against_each_other(tmp_path, monkeypatch):
+    # The seq is a client's own counter. Comparing one machine's against another's means
+    # the browser whose clock or counter is behind has every edit silently refused, while
+    # the server still answers 200 and the user believes it saved.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": True}, seq = 9_000, writer = "laptop"
+    )
+    # a second machine, far behind on the same counter, still gets its edit
+    studio_db.write_chat_thread_settings(
+        "thread-1", replace = {"toolsEnabled": False}, seq = 12, writer = "desktop"
+    )
+
+    assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is False
+
+
+def test_a_failed_precondition_does_not_commit_the_settings(tmp_path, monkeypatch):
+    # PATCH allows settings and a guarded rename together; a 409 must leave neither.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.update_chat_thread("thread-1", {"settings": {"toolsEnabled": True}})
+
+    with pytest.raises(studio_db.ChatThreadPreconditionFailed):
+        studio_db.update_chat_thread(
+            "thread-1",
+            {"title": "renamed"},
+            expected_title = "Not The Current Title",
+            settings_write = {"replace": {"toolsEnabled": False}},
+        )
+
+    got = thread_from_row(studio_db.get_chat_thread("thread-1"))
+    assert got.title == "Test Chat"
+    assert got.settings.toolsEnabled is True
+
+
+def test_settings_and_a_passing_guard_both_land(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+
+    studio_db.update_chat_thread(
+        "thread-1",
+        {"title": "renamed"},
+        expected_title = "Test Chat",
+        settings_write = {"replace": {"toolsEnabled": True}},
+    )
+
+    got = thread_from_row(studio_db.get_chat_thread("thread-1"))
+    assert got.title == "renamed"
+    assert got.settings.toolsEnabled is True

@@ -176,40 +176,41 @@ def _unreadable_thread_settings(stored: dict) -> dict:
     return {k: v for k, v in stored.items() if k not in readable}
 
 
-def _apply_settings_write(thread_id: str, patch: dict) -> bool:
-    """Take `settings` / `settingsPatch` out of `patch` and write them. True if it wrote.
+def _settings_write_from_patch(patch: dict) -> Optional[dict]:
+    """Take `settings` / `settingsPatch` out of `patch` and describe the write they ask for.
 
     `settings` replaces the snapshot, `settingsPatch` applies only the fields it names,
-    for a client that knows what changed but not what else the row holds. The read and
-    the write are one transaction in storage; doing them here would let two tabs each
-    turn a partial patch into a replacement built from the same stale snapshot.
+    for a client that knows what changed but not what else the row holds. The result is
+    handed to storage rather than executed here: the read, the merge and the guarded
+    metadata write all have to be one transaction, or two tabs each build a replacement
+    from the same stale row, or a rejected precondition returns 409 having already
+    committed the settings.
     """
     replace = "settings" in patch
     merge = "settingsPatch" in patch
+    seq = patch.pop("settingsSeq", None)
+    writer = patch.pop("settingsWriter", None)
     if not (replace or merge):
-        return False
+        return None
     incoming = patch.pop("settingsPatch", None)
     if merge:
         # A merge is the more specific instruction; sending both is a client bug.
         patch.pop("settings", None)
     else:
         incoming = patch.pop("settings")
-    seq = patch.pop("settingsSeq", None)
     if incoming is None:
         # Clearing is the one instruction that means the whole column. A merge of
         # nothing is not an instruction at all, so it leaves the row alone.
         if replace and not merge:
-            write_chat_thread_settings(thread_id, clear = True, seq = seq)
-            return True
-        return False
-    write_chat_thread_settings(
-        thread_id,
-        merge = incoming if merge else None,
-        replace = None if merge else incoming,
-        seq = seq,
-        keep_unreadable = _unreadable_thread_settings,
-    )
-    return True
+            return {"clear": True, "seq": seq, "writer": writer}
+        return None
+    return {
+        "merge": incoming if merge else None,
+        "replace": None if merge else incoming,
+        "seq": seq,
+        "writer": writer,
+        "keep_unreadable": _unreadable_thread_settings,
+    }
 
 
 class ChatThreadPatch(BaseModel):
@@ -232,9 +233,11 @@ class ChatThreadPatch(BaseModel):
     # Applies just the fields it names. For the writer that knows what changed but not
     # what else the row holds, which is any write made before the row has been read.
     settingsPatch: Optional[ChatThreadSettings] = None
-    # Orders the snapshot writes against each other. The client's clock at the moment of
-    # the edit; a write older than the one already stored is dropped rather than applied.
+    # Orders this writer's snapshot writes against its OWN earlier ones, so a keepalive
+    # sent on unload cannot be undone by a PATCH the server already had in hand. Never
+    # compared across writers: two browsers' counters mean nothing to each other.
     settingsSeq: Optional[int] = None
+    settingsWriter: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -543,18 +546,15 @@ def patch_thread(
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
         raise _missing_project_error(patch["projectId"])
-    wrote_settings = _apply_settings_write(thread_id, patch)
+    settings_write = _settings_write_from_patch(patch)
     try:
-        if not patch and wrote_settings:
-            # A settings-only PATCH; the write above is the whole of it.
-            thread = get_chat_thread(thread_id)
-        else:
-            thread = update_chat_thread(
-                thread_id,
-                patch,
-                expected_title = expected_title,
-                expected_opening_message_id = expected_opening_message_id,
-            )
+        thread = update_chat_thread(
+            thread_id,
+            patch,
+            expected_title = expected_title,
+            expected_opening_message_id = expected_opening_message_id,
+            settings_write = settings_write,
+        )
     except sqlite3.IntegrityError as exc:
         # Same race as save_thread: the project can go away before this write lands.
         if not patch.get("projectId"):

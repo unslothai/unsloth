@@ -123,7 +123,7 @@ test("every snapshot write is ordered against the others", () => {
   assert.match(store, /function nextThreadSettingsSeq\(\): number \{/);
   const write = slice(store, "function writeThreadScopedSettings", "\n}");
   assert.match(write, /const settingsSeq = nextThreadSettingsSeq\(\);/);
-  assert.match(write, /\{ settings, settingsSeq \}/);
+  assert.match(write, /\{ settings, settingsSeq, settingsWriter/);
   const beacon = slice(store, "function sendThreadScopedSettingsBeacon", "\n}");
   assert.match(beacon, /settingsSeq: nextThreadSettingsSeq\(\)/);
   // the beacon also stands down anything queued and cancels anything already out
@@ -157,4 +157,47 @@ test("a capability clamp never overwrites the preference the chat stored", () =>
     );
   }
   assert.match(build, /modelLoaded &&\s*!capable\[key\] &&/);
+});
+
+test("write ordering is per writer, never one browser's counter against another's", () => {
+  // Comparing unrelated clients means whichever is behind has every edit refused while
+  // the server still answers 200, so the user is told it saved and it did not.
+  assert.match(store, /const threadSettingsWriter = crypto\.randomUUID\(\);/);
+  const next = slice(store, "function nextThreadSettingsSeq", "\n}");
+  assert.doesNotMatch(next, /Date\.now\(\)/, "the seq is a clock again");
+  // every write says who it came from, or the server cannot scope the comparison
+  for (const site of [
+    slice(store, "function sendThreadScopedSettingsBeacon", "\n}"),
+    slice(store, "function writeThreadScopedSettings", "\n}"),
+    slice(store, "async function mergeThreadScopedSettingsIntoRow", "\n}"),
+  ]) {
+    assert.match(site, /settingsWriter/);
+  }
+});
+
+test("a tab-close write that could not be confirmed is replayed next session", () => {
+  // A chat whose row is still being created answers 404, and the creation that follows
+  // knows nothing about the edit.
+  const beacon = slice(store, "function sendThreadScopedSettingsBeacon", "\n}");
+  assert.match(beacon, /rememberThreadSettingsForReplay\(threadId, body\)/);
+  assert.match(store, /export function replayUnconfirmedThreadSettings/);
+  // and something actually calls it on the way back in
+  assert.match(store, /replayUnconfirmedThreadSettings\(\);/);
+});
+
+test("a model that forces thinking on does not erase a chat's stored preference", () => {
+  const build = slice(store, "function buildThreadScopedSnapshot", "\n}");
+  assert.match(build, /activeThreadScopedSettings\?\.reasoningEnabled === false/);
+  assert.match(build, /reasoningAlwaysOn/);
+});
+
+test("compare mode drops the thread-scoped state rather than keeping the last chat's", () => {
+  // One composer, two threads: no single snapshot applies, and leaving the module
+  // pointing at the last single chat lets a model load read its pills back.
+  const disabled = slice(
+    provider,
+    "// Compare panes share one composer",
+    "return;",
+  );
+  assert.match(disabled, /applyThreadScopedSettings\(null, null\)/);
 });

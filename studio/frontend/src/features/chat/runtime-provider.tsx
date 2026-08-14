@@ -1711,8 +1711,16 @@ function ThreadScopedSettingsSync({
   );
 
   useEffect(() => {
-    if (!enabled) return;
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
+    if (!enabled) {
+      // Compare panes share one composer between two threads, so there is no single
+      // chat whose snapshot could apply: compare runs on the installation defaults and
+      // its edits move them, as every chat did before this change. Say so here rather
+      // than leaving the module still pointing at the last single chat, whose stored
+      // pills a model load would otherwise read back through threadScopedOverride.
+      applyThreadScopedSettings(null, null);
+      return;
+    }
     if (activeThreadId === null) {
       if (settingsHydrated) applyThreadScopedSettings(null, null);
       return;

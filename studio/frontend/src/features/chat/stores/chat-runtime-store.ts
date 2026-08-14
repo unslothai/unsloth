@@ -769,6 +769,17 @@ function buildThreadScopedSnapshot(
   ) {
     settings.deepResearchEnabled = true;
   }
+  // And for thinking, which a model that cannot stop thinking forces on in the store.
+  // That true is the model's, so persisting it would erase a chat's stored false and
+  // leave thinking on once the chat is back on a model where it is optional.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    activeThreadScopedSettings?.reasoningEnabled === false &&
+    settings.reasoningEnabled !== false &&
+    useChatRuntimeStore.getState().reasoningAlwaysOn
+  ) {
+    settings.reasoningEnabled = false;
+  }
   // Same again for every pill the model-selection pass in chat-page clamps off in the
   // store without touching the snapshot. The clamp is the model's, not the user's, so it
   // must not erase what the chat had stored; the condition is each pill's own capability
@@ -799,10 +810,59 @@ function buildThreadScopedSnapshot(
   return settings;
 }
 
+const THREAD_SETTINGS_REPLAY_KEY = "unsloth_chat_thread_settings_replay";
+
+/**
+ * Snapshots a terminal event sent but could not confirm, kept where the next session
+ * will find them. The beacon cannot await anything: a chat whose row is still being
+ * created answers 404 and the edit is gone, and the creation that follows knows nothing
+ * about it. Writing the attempt down costs nothing and makes the loss recoverable.
+ */
+function rememberThreadSettingsForReplay(
+  threadId: string,
+  body: Record<string, unknown>,
+): void {
+  if (!canUseStorage()) return;
+  try {
+    const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
+    const pending = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    pending[threadId] = body;
+    localStorage.setItem(THREAD_SETTINGS_REPLAY_KEY, JSON.stringify(pending));
+  } catch {
+    // A full or unavailable store just means no replay; the beacon may still land.
+  }
+}
+
+/**
+ * Re-send anything the last session could not confirm. Safe to run always: the seq the
+ * body carries is that session's own, so a replay of a write that did land is refused
+ * by the server rather than reverting anything newer.
+ */
+export function replayUnconfirmedThreadSettings(): void {
+  if (!canUseStorage()) return;
+  let pending: Record<string, unknown> = {};
+  try {
+    const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
+    localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
+    if (!raw) return;
+    pending = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  for (const [threadId, body] of Object.entries(pending)) {
+    void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => undefined);
+  }
+}
+
 /**
  * Send the snapshot on tab close. The ensure-then-update chain cannot finish during unload, so
- * the row write goes straight out with keepalive; a thread with no row answers 404 and writes
- * nothing, which is the same outcome the chain would have reached.
+ * the row write goes straight out with keepalive, and what it could not confirm is left for
+ * the next session to replay: a thread whose row is still being created answers 404, and the
+ * creation that follows would otherwise land without the user's last edit.
  */
 function sendThreadScopedSettingsBeacon(
   threadId: string,
@@ -813,16 +873,22 @@ function sendThreadScopedSettingsBeacon(
   // never read; sending a replacement built from the defaults on screen would erase
   // the rest of its row. Everything else replaces, as the debounced write does.
   const body = merge
-    ? { settingsPatch: snapshot, settingsSeq: nextThreadSettingsSeq() }
+    ? {
+        settingsPatch: snapshot,
+        settingsSeq: nextThreadSettingsSeq(),
+        settingsWriter: threadSettingsWriter,
+      }
     : {
         settings: buildThreadScopedSnapshot(threadId, snapshot),
         settingsSeq: nextThreadSettingsSeq(),
+        settingsWriter: threadSettingsWriter,
       };
   // The beacon carries the newest values but skips the chain, so an older write would
   // otherwise land after it and put the stale snapshot back. The ticket stands down the
   // ones still queued; the abort ends the one already out, which no ticket can reach.
   takeThreadSettingsWriteTicket(threadId);
   threadSettingsWriteAborts.get(threadId)?.abort();
+  rememberThreadSettingsForReplay(threadId, body);
   void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -843,15 +909,20 @@ const threadSettingsWriteTickets = new Map<string, number>();
 const threadSettingsWriteAborts = new Map<string, AbortController>();
 
 /**
- * Stamps each snapshot write so the server can refuse an older one. Wall clock rather
- * than a counter: two tabs write to the same row and share no counter, but they do
- * share a clock. Never repeats within a tab even if the clock stands still or steps
- * back, so a retry cannot be mistaken for a newer edit.
+ * Stamps each snapshot write so the server can refuse this tab's own older ones, which
+ * is the case that needs it: a keepalive sent on unload can be undone by a PATCH the
+ * server already had in hand, and no client-side abort reaches that.
+ *
+ * The id makes the ordering per-tab. A plain counter, and never a clock: comparing one
+ * machine's numbers with another's means the browser that happens to be behind has
+ * every edit refused while still being told it saved. Across tabs the last write wins,
+ * as it did before any of this.
  */
+const threadSettingsWriter = crypto.randomUUID();
 let lastThreadSettingsSeq = 0;
 
 function nextThreadSettingsSeq(): number {
-  lastThreadSettingsSeq = Math.max(Date.now(), lastThreadSettingsSeq + 1);
+  lastThreadSettingsSeq += 1;
   return lastThreadSettingsSeq;
 }
 
@@ -888,7 +959,7 @@ function writeThreadScopedSettings(
         );
         await updateStoredChatThread(
           threadId,
-          { settings, settingsSeq },
+          { settings, settingsSeq, settingsWriter: threadSettingsWriter },
           { signal: controller.signal },
         );
       } catch {
@@ -1100,6 +1171,7 @@ async function mergeThreadScopedSettingsIntoRow(
         await updateStoredChatThread(threadId, {
           settingsPatch: changes,
           settingsSeq,
+          settingsWriter: threadSettingsWriter,
         });
       } catch {
         warnSettingsPersistenceFailure();
@@ -2687,6 +2759,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           if (fromServer) backfillMirroredSettings(settings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
+          // The previous session's tab-close writes, for the rows that did not exist
+          // yet when it sent them. A replay of one that did land is refused by its own
+          // seq, so this cannot revert anything newer.
+          replayUnconfirmedThreadSettings();
         }
       } catch {
         // Hydrate failed: treat as hydrated-with-defaults so future setParams
