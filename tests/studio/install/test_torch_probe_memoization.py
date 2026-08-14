@@ -213,6 +213,27 @@ class TestMemoization:
             assert stack_mod._probe_torch_runtime()[2] == "2.10.0+rocm7.1"
         assert mock_run.call_count == 1
 
+    def test_the_torchao_probe_sees_the_reinstalled_torch(self):
+        """The consumer that would actually read a stale answer. _select_torchao_spec
+        reads _probe_installed_torch_version() between the two repair points, so a memo
+        surviving the reinstall pins torchao against the torch that was just replaced.
+        """
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
+            assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
+
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            assert stack_mod.pip_install_try("ROCm torch (Windows)", "torch") is True
+
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
+        with patch.object(stack_mod.subprocess, "run", return_value = out):
+            assert stack_mod._probe_installed_torch_version() == "2.10.0+rocm7.1"
+
     @pytest.mark.parametrize("installer", ["pip_install", "pip_install_try"])
     def test_a_real_reinstall_is_really_reclassified(self, tmp_path, installer):
         """The mocked versions above prove the memo was dropped. This proves the answer
