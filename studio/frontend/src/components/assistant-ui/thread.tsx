@@ -171,6 +171,7 @@ import {
   usePlusMenuPrefsStore,
   writeComposerDraft,
 } from "@/features/chat";
+import { applySentTextGuard } from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
   getStoredChatThread,
@@ -258,6 +259,7 @@ import {
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
   type ReactNode,
+  type RefObject,
   Fragment,
   createContext,
   memo,
@@ -2119,8 +2121,11 @@ const Composer: FC<{
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
+  // Read by both writers that could put the sent text back: the input handlers
+  // and the draft restore.
+  const justSentTextRef = useRef<string | null>(null);
   const { inputProps, isComposing, isComposingRef } =
-    useImeComposerInputHandlers({ submitOnEnter: true });
+    useImeComposerInputHandlers({ submitOnEnter: true, justSentTextRef });
   // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
@@ -2613,9 +2618,11 @@ const Composer: FC<{
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
-    if (composer.getState().isEditing) {
-      composer.setText(draft);
-    }
+    if (!composer.getState().isEditing) return;
+    // A save that raced the send still holds the sent text; restoring it would
+    // undo the clear.
+    if (draft.length > 0 && draft === justSentTextRef.current) return;
+    composer.setText(draft);
   }, [draftKey, aui]);
   // Separate from the text restore above, which must stay keyed on the draft
   // alone: this one retries on attachment changes, and rewriting the composer
@@ -3269,7 +3276,12 @@ const Composer: FC<{
     }
     preStreamRunReservationRef.current = reservationToken;
     try {
+      const sentText = aui.composer().getState().text;
       aui.composer().send();
+      // Stamping "" would refuse the clear an attachment-only send needs.
+      if (sentText.length > 0) {
+        justSentTextRef.current = sentText;
+      }
     } catch (error) {
       if (releasePreStreamRunReservation(reservationToken)) {
         notifyPromptQueueRunFailed(referenceThreadId);
@@ -3862,8 +3874,11 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
+  justSentTextRef,
 }: {
   submitOnEnter?: boolean;
+  // Text the last send took. See setComposerText below.
+  justSentTextRef?: RefObject<string | null>;
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
@@ -3907,17 +3922,28 @@ function useImeComposerInputHandlers({
 
   useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
+  // False when refused, so the caller can preventDefault and stop
+  // ComposerPrimitive.Input's own handler applying the same value.
   const setComposerText = useCallback(
-    (value: string) => {
+    (value: string): boolean => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) {
-        return;
+        return false;
+      }
+      // Refuse a write that is the sent message coming back.
+      if (justSentTextRef) {
+        const guard = applySentTextGuard(justSentTextRef.current, value);
+        justSentTextRef.current = guard.sentText;
+        if (!guard.accept) {
+          return false;
+        }
       }
       flushResourcesSync(() => {
         composer.setText(value);
       });
+      return true;
     },
-    [aui],
+    [aui, justSentTextRef],
   );
 
   const onCompositionStart = useCallback(() => {
@@ -3931,7 +3957,9 @@ function useImeComposerInputHandlers({
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
       setCompositionState(false);
-      setComposerText(e.currentTarget.value);
+      if (!setComposerText(e.currentTarget.value)) {
+        e.preventDefault();
+      }
     },
     [setComposerText, setCompositionState],
   );
@@ -3939,7 +3967,9 @@ function useImeComposerInputHandlers({
   const onChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
       setCompositionState(isNativeComposing(e.nativeEvent));
-      setComposerText(e.target.value);
+      if (!setComposerText(e.target.value)) {
+        e.preventDefault();
+      }
     },
     [setComposerText, setCompositionState],
   );
