@@ -5899,6 +5899,24 @@ class LlamaCppBackend:
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
         fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
+
+        Both of those inputs describe the MACHINE, not the moment. MLX's
+        max_recommended_working_set_size is a static device property, and
+        virtual_memory().total obviously is, so on a 16 GB Mac the budget came
+        out around 9 GB whether the machine was idle or already holding several
+        gigabytes. Studio's own idle footprint alone is over a gigabyte once the
+        warm thread has imported torch and, on Apple Silicon, MLX. The fit then
+        sized a context against headroom that was not there, and llama-server
+        died in KV or compute allocation.
+
+        So take whichever is smaller: the device ceiling, or what is actually
+        available right now. The ceiling still applies on a machine with plenty
+        free, which is the case the working-set number was chosen for.
+
+        _APPLE_UNIFIED_MEMORY_FRACTION then earns a second job it did not have
+        over a static ceiling: available is a snapshot, and llama-server spends
+        seconds loading weights, so another app can take memory inside that
+        window. Budgeting all of it would re-create the failure this avoids.
         """
         from utils.hardware import is_apple_silicon
 
@@ -5911,12 +5929,31 @@ class LlamaCppBackend:
                 rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
         except Exception:
             rec_bytes = 0
+        vm = None
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+        except Exception:
+            vm = None
         if rec_bytes <= 0:
+            if vm is None:
+                return 0
             try:
-                import psutil
-                rec_bytes = int(psutil.virtual_memory().total)
+                rec_bytes = int(vm.total)
             except Exception:
                 return 0
+        # available, not free: psutil's macOS free subtracts speculative pages and
+        # leaves out the inactive queue, so it reads far below what a new allocation
+        # can get. available is inactive + free (psutil arch/osx/mem.c), which adds
+        # that reclaimable cache back. An estimate either way, since it counts dirty
+        # inactive pages that cost a compression to reclaim and ignores the
+        # compressor entirely. Only ever lowers the budget.
+        try:
+            available = int(getattr(vm, "available", 0) or 0) if vm is not None else 0
+        except Exception:
+            available = 0
+        if available > 0:
+            rec_bytes = min(rec_bytes, available)
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod

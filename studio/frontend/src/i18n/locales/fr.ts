@@ -557,7 +557,185 @@ export const fr = {
   },
   studio: {
     routeTitle: "Entraîner",
-    title: "Studio de fine-tuning",
+    wizard: {
+      modelTitle: "Modèle",
+      modelDescription: "Sélectionner le modèle et la méthode d'entraînement",
+      datasetTitle: "Jeu de données",
+      datasetDescription:
+        "Sélectionner ou téléverser des données d'entraînement",
+      paramsTitle: "Paramètres",
+      paramsDescription: "Configurer les paramètres d'entraînement",
+      configTitle: "Configuration",
+      configDescription: "Enregistrer et charger des configurations",
+      modelLabel: "Modèle",
+      methodLabel: "Méthode",
+      datasetLabel: "Jeu de données",
+      modelTooltip: "Le modèle de base que vous souhaitez affiner.",
+      methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
+      datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
+      hfTokenDescription:
+        "Nécessaire pour les modèles et jeux de données restreints ou privés.",
+      uploadLocalLabel: "Ou téléverser un fichier local",
+      sourceBrowse: "Parcourir",
+      releaseToUpload: "Relâchez pour téléverser",
+      loadYaml: "Charger le YAML",
+      saveYaml: "Enregistrer le YAML",
+      resetDefaults: "Rétablir les valeurs par défaut",
+      cachedModelGoneTitle: "Modèle en cache indisponible",
+      cachedModelGoneDescription:
+        "Les fichiers du modèle ne sont plus sur cet appareil. L'entraînement les téléchargera à nouveau.",
+      cachedDatasetGoneTitle: "Jeu de données en cache indisponible",
+      cachedDatasetGoneDescription:
+        "Les fichiers du jeu de données ne sont plus sur cet appareil. L'entraînement les téléchargera à nouveau.",
+    },
+    preview: {
+      title: "Aperçu de l'exécution",
+      ready: "Prêt",
+      notReady: "Pas prêt",
+      modelPending: "Modèle en attente",
+      datasetPending: "Jeu de données en attente",
+      method: "Méthode",
+      length: "Durée",
+      stepZero: "{count} étape",
+      step: "{count} étape",
+      stepTwo: "{count} étapes",
+      stepFew: "{count} étapes",
+      stepMany: "{count} étapes",
+      steps: "{count} étapes",
+      epochZero: "{count} époque",
+      epoch: "{count} époque",
+      epochTwo: "{count} époques",
+      epochFew: "{count} époques",
+      epochMany: "{count} époques",
+      epochs: "{count} époques",
+      batch: "Lot",
+      context: "Contexte",
+      lr: "LR",
+      hardware: "Matériel",
+      noGpu: "Aucun GPU détecté",
+      hfToken: "Token HF",
+      saved: "Enregistré",
+      notSet: "Non défini",
+      files: "Fichiers",
+      model: "Modèle",
+      dataset: "Jeu de données",
+      downloadsOnStart: "Téléchargement au démarrage",
+      continuesOnStart: "Reprise au démarrage",
+      noticeModelDownload:
+        "Ce modèle n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
+      noticeModelPartial:
+        "L'entraînement terminera le téléchargement partiel du modèle avant de le charger.",
+      noticeDatasetDownload:
+        "Ce jeu de données n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
+      noticeDatasetPartial:
+        "L'entraînement terminera le téléchargement partiel du jeu de données avant de le lire.",
+      noticeTransformersUpgrade:
+        "Aucune version installée de transformers ne prend encore en charge cette architecture. Au démarrage, l'installation de transformers {version} sera proposée d'abord.",
+      noticeSixteenBitOnly:
+        "Cette architecture s'entraîne en LoRA 16 bits : le 4 bits n'est pas disponible, donc l'exécution demande beaucoup plus de VRAM que QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installer cette version au lieu de conserver le code propre au modèle fait passer cette exécution en LoRA 16 bits, qui demande beaucoup plus de VRAM que QLoRA.",
+      advancedSettings: "Paramètres avancés",
+      defaultAdvancedSettings: "Valeurs par défaut",
+      nonDefaultAdvancedSettings: "{count} non standard",
+    },
+    datasetPicker: {
+      noun: "jeux de données",
+      selectDataset: "Sélectionner un jeu de données",
+      hubPlaceholder: "Rechercher des jeux de données Hugging Face...",
+      devicePlaceholder: "Rechercher des jeux de données locaux...",
+      useAsHubDataset: "Utiliser comme jeu de données Hugging Face",
+      hfCacheLabel: "Cache HF",
+      scanningLocal: "Recherche des jeux de données sur cet appareil…",
+      couldntScan: "Impossible d'analyser les jeux de données locaux",
+      someLocationsUnscanned:
+        "Certains emplacements de jeux de données n'ont pas pu être analysés.",
+      noLocalDatasets:
+        "Rien sur cet appareil pour le moment. Téléchargez un jeu de données depuis le Hub, créez-en un dans Recettes ou téléversez un fichier.",
+      openDataRecipes: "Ouvrir les recettes de données",
+      searchingHub: "Recherche sur Hugging Face…",
+      noDatasetsFound: "Aucun jeu de données trouvé.",
+      tokenRejectedTitle: "Token Hugging Face refusé",
+      tokenRejectedBody:
+        "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
+      hubUnreachable: "Impossible de joindre Hugging Face",
+      cantUseDataset: "Impossible d'utiliser le jeu de données",
+      reasonInvalidHubId:
+        "Saisissez un ID de jeu de données Hugging Face valide : dépôt ou propriétaire/dépôt, composé uniquement de lettres, chiffres, ., _ ou - (96 caractères maximum par partie).",
+      sourceRecipe: "Recette",
+      sourceUpload: "Téléversement",
+      sourceLocal: "Local",
+    },
+    modelPicker: {
+      noun: "modèles",
+      selectModel: "Sélectionner un modèle",
+      hubPlaceholder: "Rechercher ou coller un ID Hugging Face...",
+      devicePlaceholder:
+        "Rechercher des modèles locaux ou coller un chemin de dossier...",
+      useAsHubModel: "Utiliser comme modèle Hugging Face",
+      useAsLocalPath: "Utiliser comme chemin local",
+      hfCacheLabel: "Cache HF",
+      scanningLocal: "Recherche des modèles locaux…",
+      couldntScan: "Impossible d'analyser les modèles locaux",
+      someLocationsUnscanned:
+        "Certains emplacements locaux n'ont pas pu être analysés.",
+      noLocalModels: "Aucun modèle local trouvé.",
+      noLocalModelsHint:
+        "Collez un chemin de dossier ci-dessus ou passez à Hugging Face.",
+      searchingHub: "Recherche sur Hugging Face…",
+      noModelsFound: "Aucun modèle trouvé.",
+      tokenRejectedTitle: "Token Hugging Face refusé",
+      tokenRejectedBody:
+        "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
+      hubUnreachable: "Impossible de joindre Hugging Face",
+      cantUseModel: "Impossible d'utiliser le modèle pour l'entraînement",
+      reasonTypeMismatch:
+        "Ce modèle ne correspond pas au type d’entraînement sélectionné à l’étape précédente.",
+      reasonEmptyId:
+        "Saisissez un ID de modèle ou le chemin d'un modèle local.",
+      reasonInvalidHubId:
+        "Saisissez un ID de modèle Hugging Face valide : dépôt ou propriétaire/dépôt, composé uniquement de lettres, chiffres, ., _ ou - (96 caractères maximum par partie).",
+      reasonGguf: "Les modèles GGUF ne peuvent pas être entraînés.",
+      reasonAdapter:
+        "Les sorties d'adaptateur ne peuvent pas servir de modèles de base pour l'entraînement.",
+      reasonNotTrainable:
+        "Ce modèle présent sur l'appareil ne peut pas être entraîné.",
+      reasonUnsupportedFormat:
+        "Ce format de modèle n'est pas pris en charge pour l'entraînement.",
+      vramNeeds: "Nécessite environ {est} Go de VRAM (GPU : {total} Go)",
+      vramTight: "Environ {est} Go de VRAM (limite sur {total} Go)",
+      vramApprox: "Environ {est} Go de VRAM",
+      sourceModelsFolder: "Dossier des modèles",
+      sourceHfCache: "Cache HF",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "Dossier personnalisé",
+      sourceLocalModel: "Modèle local",
+      vramOomBadge: "OOM",
+      vramTightBadge: "Limite",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "Quantification 4 bits. VRAM minimale et démarrage le plus rapide.",
+        note: "4 bits",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "Adaptateurs 16 bits. Équilibre entre qualité et mémoire.",
+        note: "16 bits",
+      },
+      full: {
+        label: "Fine-tuning complet",
+        hint: "Entraîne tous les poids. Qualité maximale, mais nécessite le plus de VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Pré-entraînement continu",
+        hint: "Pré-entraînement continu pour de nouveaux domaines ou de nouvelles langues.",
+        note: "continu",
+      },
+    },
     subtitles: {
       configure: "Configurer et démarrer l'entraînement",
       trainingInProgress: "Entraînement en cours",
