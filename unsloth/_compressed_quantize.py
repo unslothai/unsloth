@@ -53,6 +53,28 @@ def _has_mtp(config):
     return False
 
 
+def compressed_ignore_patterns(config):
+    """Modules the compressed recipe refuses to quantize, as llm-compressor `ignore` entries.
+
+    Module level, and reachable without importing anything outside the stdlib, so `save.py`
+    can size the quantized sibling from the same list the recipe is built from rather than a
+    second copy of it that drifts. This module is still only ever *executed* by file path.
+
+    Matching is compressed-tensors' `is_match`: a `re:` prefix is `re.match(pattern, name)`
+    against the module's fully qualified name, anything else is an exact name (or parent
+    class name) match.
+    """
+    ignore = ["lm_head"]
+    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family (these also
+    # have shapes not divisible by the grouped-scheme group_size, which would otherwise error).
+    # No-ops elsewhere. Hybrid linear attention, VLM vision tower, and the MTP/speculative head.
+    ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
+    if _is_moe(config):
+        # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
+        ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]
+    return ignore
+
+
 def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_length):
     from datasets import DatasetDict, load_dataset, load_from_disk
 
@@ -248,15 +270,9 @@ def main():
 
     # MoE models: keep the router/gate unquantized (it decides expert routing) and calibrate every
     # expert even if the sample set does not route tokens to all of them.
-    is_moe = _is_moe(getattr(model, "config", None))
-    ignore = ["lm_head"]
-    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family (these also have
-    # shapes not divisible by the grouped-scheme group_size, which would otherwise error). No-ops
-    # elsewhere. Hybrid linear attention, VLM vision tower, and the MTP/speculative head.
-    ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
-    if is_moe:
-        # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
-        ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]
+    config = getattr(model, "config", None)
+    is_moe = _is_moe(config)
+    ignore = compressed_ignore_patterns(config)
     moe_kwargs = {"moe_calibrate_all_experts": True} if is_moe else {}
 
     def _make_recipe():
