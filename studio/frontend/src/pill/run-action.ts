@@ -36,7 +36,9 @@ export async function ensureModelLoaded(
   }
 
   onLoading(model);
-  await requestModelLoad(model, ggufVariant);
+  // Resolves only once the load itself finished, so the poll loop below just
+  // confirms which model ended up active.
+  await requestModelLoad(model, ggufVariant, signal);
 
   // Two consecutive polls with nothing loading means the load never
   // registered or already failed; one idle poll is grace for registration lag.

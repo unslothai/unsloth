@@ -5,6 +5,7 @@
 // pill window's load graph, so import the leaf module directly.
 // eslint-disable-next-line no-restricted-imports
 import { authFetch } from "@/features/auth/api";
+import { assertCompletedPaddedBody } from "@/features/chat/api/padded-response";
 import type { PillSettings } from "@/features/system-pill";
 
 export type { PillSettings };
@@ -54,8 +55,13 @@ export async function fetchInferenceStatus(): Promise<InferenceStatus> {
 export async function requestModelLoad(
   modelPath: string,
   ggufVariant: string | null,
+  signal?: AbortSignal,
 ): Promise<void> {
-  // Streaming response body is ignored; the caller polls /status instead.
+  // The route pads its body past a 15s keepalive, committing the 200 while the
+  // load is still running, so the body is the only thing that reports the load
+  // finished and a late failure arrives in-band as _deferred_error. /status
+  // cannot stand in for it: its `loading` list covers the transformers backend
+  // only and stays empty for a llama.cpp load in progress.
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -65,8 +71,21 @@ export async function requestModelLoad(
       max_seq_length: 0,
       load_in_4bit: true,
     }),
+    signal,
   });
+  const body = (await response.json().catch(() => null)) as {
+    _deferred_error?: { status_code?: unknown; detail?: unknown };
+  } | null;
   if (!response.ok) {
     throw new Error(`Model load failed (${response.status})`);
+  }
+  assertCompletedPaddedBody(body, "Model load");
+  const deferred = body?._deferred_error;
+  if (deferred) {
+    throw new Error(
+      `Model load failed (${
+        typeof deferred.status_code === "number" ? deferred.status_code : 500
+      })`,
+    );
   }
 }
