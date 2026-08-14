@@ -486,11 +486,9 @@ def _clears_dumpable_before(
     writes = sorted(w for w in _dumpable_writes(scope, functions = functions) if w[0] < position)
     # Only a write that certainly runs decides: a conditional restore may never run.
     # A conditional clear still counts: platform-guarded prctl is the documented shape.
-    certain = [w for w in writes if w[2]]
-    if certain:
-        return certain[-1][1] == 0
-    if any(value == 0 for _pos, value, _certain in writes):
-        return True
+    decisive = [w for w in writes if w[2] or w[1] == 0]
+    if decisive:
+        return decisive[-1][1] == 0
     return inherited
 
 
@@ -581,20 +579,38 @@ _MAX_SNIPPET_DEPTH = 5
 
 
 def _bindings_before(tree, scope, position):
-    """String bindings visible in `scope` that are already set at `position`."""
-    env = {}
+    """`(env, maybe)` for `scope` at `position`.
+
+    `env` holds what a name is definitely bound to there. `maybe` collects values a
+    name might still hold, because a rebind under a branch may not have run: dropping
+    the old value on `if False: INNER = "pass"` lost the crash it replaced.
+    """
+    env, maybe = {}, {}
     for owner_scope in (tree, scope) if scope is not tree else (tree,):
-        for node in _iter_executable(owner_scope):
+        for node, certain in _assignments_before(owner_scope, position):
             pair = _assigned_pair(node)
-            if pair is None or _position(node) >= position:
-                continue
             folded, _ids = _fold(pair[1], env)
-            # Rebinding to something unfoldable still replaces the old value, so the
-            # previous script must not go on answering for the name.
+            if not certain:
+                if folded is not None:
+                    maybe.setdefault(pair[0].id, []).append(folded)
+                continue
+            # A certain rebind definitely replaces what was there, foldable or not.
             env.pop(pair[0].id, None)
             if folded is not None:
                 env[pair[0].id] = folded
-    return env
+    return env, maybe
+
+
+def _assignments_before(scope, position, certain = True):
+    """`(assignment, certain)` in source order, before `position`."""
+    for child in ast.iter_child_nodes(scope):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if _assigned_pair(child) is not None and _position(child) < position:
+            yield child, certain
+        yield from _assignments_before(
+            child, position, certain and not isinstance(child, _BRANCHING)
+        )
 
 
 def _nested_scripts(tree):
@@ -613,14 +629,22 @@ def _nested_scripts(tree):
         if isinstance(node.func, ast.Name) and node.func.id in _NESTED_EXEC:
             argument = node.args[0] if node.args else None
             # Bindings AT the exec, so a name reused afterwards is not what runs.
-            env = _bindings_before(tree, scope, _position(node))
-            payload, _ids = _fold(argument, env) if argument is not None else (None, set())
-            if payload is not None:
-                # Same interpreter, so dumpability carries into the payload, including
-                # a restore a helper made between the clear and the exec.
-                yield payload, _clears_dumpable_before(
-                    scope, _position(node), functions = functions
-                )
+            env, maybe = _bindings_before(tree, scope, _position(node))
+            # Same interpreter, so dumpability carries into the payload, including
+            # a restore a helper made between the clear and the exec.
+            inherited = _clears_dumpable_before(
+                scope, _position(node), functions = functions
+            )
+            payloads = []
+            if argument is not None:
+                folded, _ids = _fold(argument, env)
+                if folded is not None:
+                    payloads.append(folded)
+                if isinstance(argument, ast.Name):
+                    # A rebind that may not have run leaves the old value possible.
+                    payloads.extend(maybe.get(argument.id, ()))
+            for payload in payloads:
+                yield payload, inherited
         else:
             for nested in _snippets_of_call(node):
                 yield nested, False
@@ -1042,6 +1066,22 @@ _FIXTURES = {
         "SCRIPT = \"INNER = 'import os; os.abort()'\\nINNER = str('pass')\\nexec(INNER)\"\n"
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         False,  # the rebind wins even when its value cannot be folded
+    ),
+    "payload_rebound_only_in_a_branch": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nif False:\\n"
+        "    INNER = 'pass'\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # a rebind that may not run leaves the old payload possible
+    ),
+    "guarded_clear_after_a_definite_restore": (
+        "import ctypes, sys\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        '    if sys.platform == "linux":\n'
+        "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the guarded clear is the documented shape and comes last
     ),
 }
 
