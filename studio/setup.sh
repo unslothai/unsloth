@@ -1797,34 +1797,41 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # (mirrors $_pkgProbeCode in setup.ps1). __MISSING__ only when the metadata
 # positively reports no such package or its payload is gone: a leftover dist-info
 # with the payload deleted still reports a version, so the verdict comes from the
-# recorded files themselves -- every .py the RECORD places under the install must
-# exist on disk. Existence via locate_file, not find_spec: an emptied package
+# recorded files themselves -- everything the RECORD places under the install must
+# exist on disk, data included: the wheel ships runtime payload that is not .py
+# (unsloth_cli/pi_subagent.ts, studio/frontend/dist), and start.py fails outright
+# without it. Existence via locate_file, not find_spec: an emptied package
 # directory still answers find_spec as a namespace package, a same-name copy
 # reachable through a .pth hook answers for a deleted managed payload, and neither
-# sees a nested module a partial quarantine took while every initializer survived.
-# locate_file resolves against the distribution's own location, so it catches all
-# three. Only relative .py entries count: __pycache__ is legitimately purged by
-# disk cleaners, and recorded console scripts (../.. scheme paths) are managed by
-# the installers themselves, so requiring either would brick healthy venvs.
-# RECORD is read as text, not through d.files: 3.14+ filters d.files to files
-# that exist, which is blind to exactly the deletions this probe looks for.
-# find_spec remains only for a RECORD-less install, best effort. The POSTVER=
-# sentinel keeps a printing sitecustomize or .pth hook out of the caller's exact
-# compares: -I implies -E/-P/-s only, so site hooks still run.
+# sees a nested file a partial quarantine took while every initializer survived.
+# The distribution itself is selected from the venv's own purelib/platlib, not the
+# startup-modified sys.path: an executable .pth can prepend a directory carrying a
+# complete same-name install, and the default lookup would validate that copy --
+# metadata, payload and version -- instead of the managed one. Excluded from the
+# existence pass: __pycache__/.pyc (legitimately purged by disk cleaners), scheme
+# paths like ../../bin console scripts (managed by the installers themselves), and
+# the .dist-info entries (metadata, not payload); requiring any of those would
+# brick healthy venvs. RECORD is read as text, not through d.files: 3.14+ filters
+# d.files to files that exist, which is blind to exactly the deletions this probe
+# looks for. find_spec remains only for a RECORD-less install, best effort. The
+# POSTVER= sentinel keeps a printing sitecustomize or .pth hook out of the
+# caller's exact compares: -I implies -E/-P/-s only, so site hooks still run.
 _PKG_PROBE_PY="
-import csv, importlib.util, sys
-from importlib.metadata import distribution, PackageNotFoundError
+import csv, importlib.metadata, importlib.util, re, sys, sysconfig
 from pathlib import PurePosixPath
-try:
-    d = distribution(sys.argv[1])
-except PackageNotFoundError:
+_paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
+_norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
+d = next((x for x in importlib.metadata.distributions(path=_paths) if _norm(x.metadata['Name']) == _norm(sys.argv[1])), None)
+if d is None:
     print('POSTVER=__MISSING__')
     sys.exit(0)
 rec = [PurePosixPath(r[0]) for r in csv.reader((d.read_text('RECORD') or '').splitlines()) if r and r[0]]
-pkg_files = [f for f in rec if f.suffix == '.py' and not f.is_absolute() and f.parts[0] != '..']
+payload = [f for f in rec if not f.is_absolute() and f.parts[0] != '..'
+    and not f.parts[0].endswith('.dist-info')
+    and '__pycache__' not in f.parts and f.suffix not in ('.pyc', '.pyo')]
 tops = (d.read_text('top_level.txt') or '').split()
-if pkg_files:
-    broken = not all(d.locate_file(f).exists() for f in pkg_files)
+if payload:
+    broken = not all(d.locate_file(f).exists() for f in payload)
 elif tops:
     broken = not all(importlib.util.find_spec(t) for t in tops if t)
 else:

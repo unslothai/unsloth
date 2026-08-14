@@ -4775,25 +4775,27 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # (mirrors _PKG_PROBE_PY in setup.sh). POSTVER=__MISSING__ only when the metadata
 # positively reports no such package or its payload is gone: a leftover dist-info
 # with the payload deleted still reports a version, so the verdict comes from the
-# recorded files themselves -- every .py the RECORD places under the install must
-# exist on disk. Existence via locate_file, not find_spec: an emptied package
+# recorded files themselves -- everything the RECORD places under the install must
+# exist on disk, data included: the wheel ships runtime payload that is not .py
+# (unsloth_cli/pi_subagent.ts, studio/frontend/dist), and start.py fails outright
+# without it. Existence via locate_file, not find_spec: an emptied package
 # directory still answers find_spec as a namespace package, a same-name copy
 # reachable through a .pth hook answers for a deleted managed payload, and neither
-# sees a nested module a partial quarantine took while every initializer survived.
-# locate_file resolves against the distribution's own location, so it catches all
-# three. Only relative .py entries count: __pycache__ is legitimately purged by
-# disk cleaners, and recorded console scripts (../.. scheme paths) are managed by
-# the installers themselves, so requiring either would brick healthy venvs.
-# RECORD is read as text, not through d.files: 3.14+ filters d.files to files
-# that exist, which is blind to exactly the deletions this probe looks for.
-# find_spec remains only for a RECORD-less install, best effort. Names are PEP
-# 503-normalized on both sides, matching importlib.metadata's own lookup;
-# PYTHONPATH and working-directory entries are dropped from sys.path so same-name
-# metadata outside the managed environment cannot satisfy the probe (python -c
-# leaves the inherited cwd on sys.path; the shell probe's -I covers both) --
-# except the interpreter's own site-packages, which stays even when the caller
-# launched from inside it or named it on PYTHONPATH.
-$_pkgProbeCode = "import csv, os, site, sys; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _rec = [PurePosixPath(_r[0]) for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _pkg = [_f for _f in _rec if _f.suffix == '.py' and not _f.is_absolute() and _f.parts[0] != '..']; _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _broken = (not all(_d.locate_file(_f).exists() for _f in _pkg)) if _pkg else ((not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else False); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
+# sees a nested file a partial quarantine took while every initializer survived.
+# The distribution itself is selected from the venv's own purelib/platlib, not the
+# startup-modified sys.path: an executable .pth can prepend a directory carrying a
+# complete same-name install, and the default lookup would validate that copy --
+# metadata, payload and version -- instead of the managed one. Excluded from the
+# existence pass: __pycache__/.pyc (legitimately purged by disk cleaners), scheme
+# paths like ../../bin console scripts (managed by the installers themselves), and
+# the .dist-info entries (metadata, not payload); requiring any of those would
+# brick healthy venvs. RECORD is read as text, not through d.files: 3.14+ filters
+# d.files to files that exist, which is blind to exactly the deletions this probe
+# looks for. find_spec remains only for a RECORD-less install, best effort, with
+# PYTHONPATH and working-directory entries dropped from sys.path first (python -c
+# leaves the inherited cwd on sys.path; the shell probe's -I covers both). Names
+# are PEP 503-normalized on both sides, matching importlib.metadata's own lookup.
+$_pkgProbeCode = "import csv, os, site, sys, sysconfig; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _paths = [_lp for _lp in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if _lp]; _d = next((d for d in m.distributions(path=_paths) if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _rec = [PurePosixPath(_r[0]) for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _pay = [_f for _f in _rec if not _f.is_absolute() and _f.parts[0] != '..' and not _f.parts[0].endswith('.dist-info') and '__pycache__' not in _f.parts and _f.suffix not in ('.pyc', '.pyo')]; _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _broken = (not all(_d.locate_file(_f).exists() for _f in _pay)) if _pay else ((not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else False); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
 $SkipPythonDeps = $false
 $LatestVer = ""
 # True only when the version-check gate ran: the post-update probe must stay off in
