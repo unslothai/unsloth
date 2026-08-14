@@ -498,9 +498,15 @@ export function DownloadedList({
               // a row advertise a drag that every movePinned call silently
               // found nothing to do. pinnedCount selects this slice on the same
               // predicate today, so the check holds the two in lockstep rather
-              // than trusting them to stay identical.
+              // than trusting them to stay identical. Datasets are excluded
+              // outright: pin keys carry no repo type, so a dataset whose
+              // repoId also names a pinned model reaches this grid, and the row
+              // menu offers datasets no pin action, so a drag here must not
+              // reorder the user's model pins from the dataset list.
               const itemPinKey =
-                item.row.repoId && pinnedSet.has(pinKey(item.row.repoId))
+                !isDataset &&
+                item.row.repoId &&
+                pinnedSet.has(pinKey(item.row.repoId))
                   ? pinKey(item.row.repoId)
                   : null;
               return (
