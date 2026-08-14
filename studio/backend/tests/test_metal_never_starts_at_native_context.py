@@ -4,13 +4,12 @@
 """Metal must never be sent "-c 0".
 
 llama.cpp reads "-c 0" as fit_params_min_ctx = UINT32_MAX, pinning the model's
-full native context and disabling the reduction --fit would otherwise do. On
-Apple Silicon no GPU is enumerated, so the Apple cap in load_model is the only
-thing holding the context down, and two paths reach the command builder with a
-zero context after that cap has been skipped or discarded: a GGUF carrying no
-context length in its metadata (the cap is guarded on effective_ctx > 0), and
-the broad `except Exception` around GPU selection, which restores the original
-request and logs "using --fit on" while emitting the argument that disables it.
+full native context and disabling --fit's reduction. No GPU is enumerated on
+Apple Silicon, so the Apple cap in load_model is the only thing holding the
+context down, and two paths reach the command builder with a zero context after
+that cap has been skipped or discarded: a GGUF carrying no context length in its
+metadata (the cap is guarded on effective_ctx > 0), and the broad
+`except Exception` around GPU selection, which restores the original request.
 """
 
 from __future__ import annotations
@@ -190,11 +189,8 @@ class TestOnMetal:
         assert _floor(0, False, False, None) == 4096
 
     def test_a_cap_below_the_floor_wins(self, on_metal):
-        """The exception path keeps max_available_ctx after discarding the context.
-
-        Its KV-based answer can sit under 4096, and floating back up would
-        re-create a smaller version of the same over-commit.
-        """
+        """The exception path keeps max_available_ctx, whose KV answer can sit
+        under 4096. Floating back up would re-create the over-commit."""
         assert _floor(0, False, False, 262144, 2048) == 2048
 
     def test_a_cap_above_the_floor_does_not_raise_it(self, on_metal):
@@ -249,9 +245,8 @@ class TestAPassThroughZeroContext:
 class TestTheEmittedCommand:
     """What llama-server actually receives, argv-level.
 
-    The floor and the drop are only correct together: extras are appended
-    after Studio's own -c and llama.cpp is last-wins, so a surviving "-c 0"
-    would silently undo the floor.
+    Floor and drop are only correct together: extras are appended after Studio's
+    own -c and llama.cpp is last-wins, so a surviving "-c 0" undoes the floor.
     """
 
     def test_a_zero_override_does_not_outlive_the_floor(self, tmp_path, monkeypatch):
@@ -272,9 +267,8 @@ class TestTheEmittedCommand:
     def test_the_context_studio_computed_is_what_survives(self, tmp_path, monkeypatch):
         """Not a constant: the cap's own answer stands, here the model's 2048.
 
-        load_model already treats "-c 0" as non-explicit (explicit_ctx is
-        requested_ctx > 0), so the cap overrides it either way. Dropping it from
-        the extras only stops the trailing copy from undoing that.
+        load_model already treats "-c 0" as non-explicit, so the cap overrides it
+        either way. The drop only stops the trailing copy from undoing that.
         """
         cmd, _ = _launch(tmp_path, monkeypatch, ctx_metadata = 2048, extra_args = ["-c", "0"])
         assert _ctx_values(cmd) == ["2048"]
@@ -296,9 +290,8 @@ class TestTheEmittedCommand:
 class TestAutoLayers:
     """gpu_memory_mode "manual" with gpu_layers < 0: no -c, --fit sizes it.
 
-    That is the one mode where the context is decided entirely by --fit, so a
-    pass-through "-c 0" is worse here than anywhere else: it sets
-    fit_params_min_ctx = UINT32_MAX and the fit this mode relies on never runs.
+    The context is decided entirely by --fit here, so a pass-through "-c 0" is
+    worse in this mode than anywhere else: the fit never runs at all.
     """
 
     def _launch_auto_layers(self, tmp_path, monkeypatch, **kwargs):
@@ -340,11 +333,10 @@ class TestAutoLayers:
 
 
 class TestAnInheritedContextEnvironment:
-    """LLAMA_ARG_CTX_SIZE runs -c's own handler, before argv.
+    """LLAMA_ARG_CTX_SIZE runs -c's own handler, and env parses before argv.
 
     So the command line wins wherever Studio emits one. Auto-layers emits none,
-    on purpose, which leaves an inherited 0 to set fit_params_min_ctx =
-    UINT32_MAX and cancel the --fit this mode is entirely sized by.
+    on purpose, leaving an inherited 0 to cancel the --fit that sizes the mode.
     """
 
     AUTO_LAYERS = {"gpu_memory_mode": "manual", "gpu_layers": -1}
@@ -388,9 +380,8 @@ class TestAnInheritedContextEnvironment:
 class TestAVirtualisedMetalDevice:
     """The paravirtual pin rewrites every placement to manual/0 before these guards.
 
-    An Auto request is the default, so reading the mode off the rewritten
-    placement made the common case on a virtualised Mac look caller-owned and
-    handed llama-server the "-c 0" the whole branch exists to prevent.
+    Auto is the default, so reading the mode off the rewritten placement made the
+    common case on a virtualised Mac look caller-owned and emit "-c 0" anyway.
     """
 
     def _launch_pv(self, tmp_path, monkeypatch, **kwargs):
@@ -441,10 +432,8 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
     """max_context_length must not outlive the cap that never ran.
 
     On the exception path max_available_ctx still holds the native length its
-    initialiser put there, and nothing has said that length fits. Publishing it
-    as max_context_length makes the UI call it the largest context that fits and
-    use it for the warning threshold, so the same over-commit this floor exists
-    to prevent gets advertised as safe.
+    initialiser put there, which nothing has said fits. Publishing it makes the
+    UI call it the largest context that fits, advertising the over-commit as safe.
     """
 
     NATIVE = 262144
@@ -469,9 +458,8 @@ class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
 class TestTheStripDoesNotRewriteWhatWasRequested:
     """The zero-context strip is a launch decision, not a record of the ask.
 
-    _requested_extra_args is the comparator side a later Apply is matched
-    against, so storing the stripped list there made an unchanged request
-    compare unequal to itself and reload the model on every Apply.
+    _requested_extra_args is the comparator a later Apply is matched against, so
+    storing the stripped list there reloaded the model on every Apply.
     """
 
     def test_the_strip_removes_only_the_context_pair(self):
@@ -480,10 +468,9 @@ class TestTheStripDoesNotRewriteWhatWasRequested:
         assert strip_context_only(list(user)) == ["--threads", "8", "--mlock"]
 
     def test_a_suppressed_drafter_does_not_snapshot_the_strip(self, tmp_path, monkeypatch):
-        """The paravirtual drafter drop takes its own copy, and that copy wins below.
-
-        Taken after the zero-context strip it puts the rewrite straight back into
-        the comparator, which is the reload this class exists to prevent.
+        """The paravirtual drafter drop takes its own copy, and that copy wins
+        below. Taken after the zero-context strip, it would put the rewrite back
+        into the comparator and cause the reload this class exists to prevent.
         """
         import core.inference.llama_cpp as _llama_cpp
 

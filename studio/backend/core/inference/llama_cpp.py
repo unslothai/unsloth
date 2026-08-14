@@ -2283,11 +2283,11 @@ def _swa_full_from_args_or_env(
 
 
 def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether an inherited LLAMA_ARG_CTX_SIZE is the zero that pins native length.
+    """Whether an inherited LLAMA_ARG_CTX_SIZE is 0.
 
-    llama.cpp resolves the variable through -c's own handler, so 0 means
-    fit_params_min_ctx = UINT32_MAX here exactly as it does on the command line.
-    Anything unparseable is left to llama.cpp to reject."""
+    llama.cpp resolves the variable through -c's own handler, so 0 pins the
+    native length here exactly as on the command line. Anything unparseable is
+    left to llama.cpp to reject."""
     value = (os.environ if env is None else env).get("LLAMA_ARG_CTX_SIZE")
     try:
         return int(str(value).strip()) == 0
@@ -5965,42 +5965,35 @@ class LlamaCppBackend:
     ) -> int:
         """Context to start at when Metal would otherwise be sent "-c 0", else 0.
 
-        "-c 0" is the over-commit the Apple cap exists to prevent: llama.cpp
-        reads it as fit_params_min_ctx = UINT32_MAX, which pins the model's full
-        native length and disables the reduction --fit would do. Two paths reach
-        the command builder with a zero context after that cap has been skipped
-        or thrown away:
+        llama.cpp reads "-c 0" as fit_params_min_ctx = UINT32_MAX, pinning the
+        model's full native length and disabling --fit's reduction. Two paths
+        reach the command builder with a zero context after the Apple cap has
+        been skipped or thrown away:
 
           * the cap is guarded on ``effective_ctx > 0``, so a GGUF whose
-            metadata carries no context length is never capped at all;
+            metadata carries no context length is never capped;
           * the ``except Exception`` around GPU selection restores the original
-            request, which is 0 when context is on Auto. That discards a context
-            the cap had already computed, and logs "using --fit on" while
-            emitting the one argument that disables --fit.
+            request, 0 when context is on Auto, discarding a context the cap had
+            already computed.
 
-        Either way the child starts at native and over-commits unified memory,
-        which surfaces as llama-server's "Compute error." at decode (#5118,
-        #6529). Floor to the same 4096 the cap falls back to without a KV
-        estimate.
+        Either way the child over-commits unified memory, surfacing as
+        llama-server's "Compute error." at decode (#5118, #6529). Floor to the
+        same 4096 the cap falls back to without a KV estimate.
 
-        Only when a Metal budget is resolvable, which is 0 off Apple Silicon, so
-        this is inert everywhere else. ``auto_fit`` is what the command builder
-        is about to emit, and it omits -c entirely so --fit can size it, which is
-        already correct. ``caller_owns_budget`` is a property of the REQUEST, a
-        manual mode with a fixed layer count, where the user owns memory
-        management, cap included; the paravirtual CPU pin rewrites every
-        placement to manual/0 before this runs, so reading the mode off the
-        rewritten placement would treat a plain Auto request as caller-owned.
+        Exemptions: no Metal budget (0 off Apple Silicon, so this is inert
+        there); ``auto_fit``, which omits -c so --fit sizes it; and
+        ``caller_owns_budget``, a manual mode with a fixed layer count where the
+        user owns memory management. That last is read off the REQUEST, because
+        the paravirtual CPU pin rewrites every placement to manual/0 first and
+        would make a plain Auto request look caller-owned.
         """
         if effective_ctx > 0 or auto_fit or caller_owns_budget:
             return 0
         if not LlamaCppBackend._apple_metal_memory_budget_bytes():
             return 0
         # Never above a ceiling the cap already worked out: on the exception path
-        # max_available_ctx outlives the reset that discarded effective_ctx, and
-        # its KV-based answer can sit below 4096. Floating back up would re-create
-        # a smaller version of the same over-commit, and advertise it as the
-        # ceiling to the UI.
+        # max_available_ctx survives the reset, and its KV-based answer can sit
+        # below 4096. Floating back up would re-create the over-commit.
         return min(4096, native_ctx or 4096, max_available_ctx or 4096)
 
     @staticmethod
@@ -6009,20 +6002,13 @@ class LlamaCppBackend:
     ) -> bool:
         """Whether a pass-through "-c 0" must be dropped before it reaches Metal.
 
-        User extras are appended after Studio's own -c and llama.cpp is last-wins
-        ("only last value will be used"), so a zero override outlives both the
-        Apple cap and the floor above and re-pins the native length. It is also
-        strictly worse than passing no -c at all: the -c handler sets
-        fit_params_min_ctx = UINT32_MAX on value 0, which disables the context
-        reduction --fit would otherwise perform, so the one flag that looks like
-        "let llama.cpp decide" is the one that stops it from deciding.
-
-        Only a zero override; a positive -c stays honored as it is today. Inert
-        off Apple Silicon, like the floor, but unlike the floor it also fires in
-        Auto-layers: there the managed command omits -c precisely so --fit sizes
-        the context, so the trailing zero is the one argument that disables the
-        fit the mode depends on. Only ``caller_owns_budget`` is left alone, and
-        that is read off the request for the reason the floor documents.
+        User extras are appended after Studio's own -c and llama.cpp is
+        last-wins, so a zero override outlives both the Apple cap and the floor
+        above and re-pins the native length. Only a zero; a positive -c stays
+        honored. Inert off Apple Silicon like the floor, but unlike the floor it
+        also fires in Auto-layers, where the command omits -c precisely so --fit
+        sizes the context. ``caller_owns_budget`` is exempt, read off the request
+        for the reason the floor documents.
         """
         if ctx_override != 0 or caller_owns_budget:
             return False
@@ -12052,10 +12038,9 @@ class LlamaCppBackend:
             tensor_split = list(intent.tensor_split) if intent.tensor_split is not None else None
             gpu_ids = list(intent.gpu_ids) if intent.gpu_ids is not None else None
 
-            # Read here, before the pin below rewrites every placement (a plain Auto
-            # one included) to manual/0 in both the locals and the intent. Whether the
-            # user owns the memory budget is a property of what was asked for, and the
-            # two Metal context guards further down skip themselves on it.
+            # Read before the pin below rewrites every placement, Auto included, to
+            # manual/0. Owning the memory budget is a property of what was asked for,
+            # and the two Metal context guards further down skip themselves on it.
             _caller_owns_budget = gpu_memory_mode == "manual" and gpu_layers >= 0
 
             # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
@@ -14327,11 +14312,10 @@ class LlamaCppBackend:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
                 auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
-                # What the user actually asked for, kept whole. The strip below is a
-                # launch decision, and _requested_extra_args is the comparator side
-                # that a later Apply is matched against: storing the stripped list
-                # there made an unchanged request look different from itself, so
-                # every Apply reloaded the model.
+                # What the user asked for, kept whole. The strip below is a launch
+                # decision, but _requested_extra_args is the comparator a later Apply
+                # is matched against: storing the stripped list there made an
+                # unchanged request compare unequal and reload the model.
                 _extra_args_as_requested = list(extra_args) if extra_args is not None else None
                 if self._metal_drops_zero_ctx_override(ctx_override, _caller_owns_budget):
                     extra_args = strip_context_only(extra_args)
@@ -14349,13 +14333,11 @@ class LlamaCppBackend:
                 if _metal_floor:
                     effective_ctx = _metal_floor
                     # Replace, do not max(). On the exception path max_available_ctx
-                    # still holds the native length its initialiser put there, and no
-                    # cap ever ran to say that length fits. Keeping the larger of the
-                    # two publishes native as max_context_length, which the UI reads
-                    # as "the largest context that fits" and uses for its warning
-                    # threshold, so the same failure this floor prevents gets
-                    # advertised as safe. The floor is already bounded by any real
-                    # ceiling the cap did compute.
+                    # still holds the native length its initialiser put there, which
+                    # no cap ever said fits. Keeping the larger publishes native as
+                    # max_context_length, which the UI reads as the largest context
+                    # that fits, advertising this very failure as safe. The floor is
+                    # already bounded by any real ceiling the cap did compute.
                     max_available_ctx = _metal_floor
                     logger.warning(
                         "No GPU is enumerated on Metal and the context cap did not "
@@ -15145,11 +15127,10 @@ class LlamaCppBackend:
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
                 # Same shape, for the context. Auto-layers omits -c so --fit can size
-                # it, and with no -c to win the CLI/env race an inherited
-                # LLAMA_ARG_CTX_SIZE reaches the very handler the flag would, so a 0
-                # sets fit_params_min_ctx = UINT32_MAX and the fit never runs. Only a
-                # zero, and only where a pass-through zero would go too, so a positive
-                # inherited context stays the legitimate way to set one.
+                # it, and with no -c to win the env-then-argv race an inherited
+                # LLAMA_ARG_CTX_SIZE=0 pins the native length and the fit never runs.
+                # Only a zero, and only where a pass-through zero would go too, so a
+                # positive inherited context stays the legitimate way to set one.
                 if (
                     not any(token in cmd for token in ("-c", "--ctx-size"))
                     and _env_asks_for_the_native_context(env)
@@ -16380,13 +16361,12 @@ class LlamaCppBackend:
                         else list(extra_args)
                     )
                     # Device-stripped the same way, so both comparator sides share a rule.
-                    # _extra_args_as_requested first: the Metal zero-context strip is a
-                    # launch decision and must not rewrite what the user is recorded as
-                    # having asked for, or the next identical Apply compares unequal and
-                    # reloads. Ahead of the drafter-drop snapshot, which is taken after
-                    # that strip. The two never disagree otherwise: the snapshot is only
-                    # set alongside a non-None _extra_args_as_requested, and the spec
-                    # strip it guards runs later still.
+                    # _extra_args_as_requested first: it predates the Metal
+                    # zero-context strip, whereas the drafter-drop snapshot is taken
+                    # after it and would put that strip back into the comparator. The
+                    # two never disagree otherwise, since the snapshot is only set
+                    # alongside a non-None _extra_args_as_requested and the spec strip
+                    # it guards runs later still.
                     _pv_requested = (
                         _extra_args_as_requested
                         if _extra_args_as_requested is not None
