@@ -1765,8 +1765,16 @@ function ThreadScopedSettingsSync({
         .then(() => getStoredChatThreadReadResult(activeThreadId))
         .then(({ thread, cacheable }) => {
           if (cancelled || paired) return;
+          // A legacy fallback row means the backend GET FAILED and Dexie answered instead.
+          // That is the failure case, not a confirmed missing row: the thread may well
+          // have a snapshot on the server, so keep holding and retry rather than
+          // releasing this chat's edits into the installation defaults.
+          if (thread && !cacheable) {
+            retryThreadRead();
+            return;
+          }
           // a legacy fallback row carries no snapshot, and pinning would overwrite the real one.
-          if (!thread || !cacheable) {
+          if (!thread) {
             // a new chat's runtime-made id has no row yet, so it stays on the global
             // settings. The answer is in: there is no snapshot to wait for, so an edit
             // held for it is a plain default change and goes out now. Deferring that to a
@@ -1788,21 +1796,24 @@ function ThreadScopedSettingsSync({
         // A failed read leaves the installation defaults up (dropped to above), not the
         // outgoing chat's settings, which would otherwise stay live indefinitely. The held
         // edit goes to the chat it was made in.
-        .catch(() => {
-          if (cancelled) return;
-          commitHeldThreadScopedEditsToTheirThread();
-          // and keep the chat paired, or every later edit in it would fall through to the
-          // installation defaults for as long as it stays open. A fresh browser with no
-          // legacy cache has nothing else to fall back on, so retry a bounded few times.
-          beginThreadScopedPairing(activeThreadId);
-          if (retryTimer === null && retriesLeft > 0) {
-            retriesLeft -= 1;
-            retryTimer = setTimeout(() => {
-              retryTimer = null;
-              sync();
-            }, THREAD_READ_RETRY_MS);
-          }
-        });
+        .catch(() => retryThreadRead());
+    };
+
+    // The read did not answer for this chat. Send what is held to the chat it was made
+    // in, then keep the chat paired, or every later edit in it would fall through to the
+    // installation defaults for as long as it stays open. A fresh browser with no legacy
+    // cache has nothing else to fall back on, so retry a bounded few times.
+    const retryThreadRead = () => {
+      if (cancelled) return;
+      commitHeldThreadScopedEditsToTheirThread();
+      beginThreadScopedPairing(activeThreadId);
+      if (retryTimer === null && retriesLeft > 0) {
+        retriesLeft -= 1;
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          sync();
+        }, THREAD_READ_RETRY_MS);
+      }
     };
 
     sync();

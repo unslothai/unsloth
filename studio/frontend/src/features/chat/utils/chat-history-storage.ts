@@ -22,6 +22,7 @@ import {
   saveChatThread,
   syncChatMessages,
   updateChatProject,
+  type ChatThreadWritePatch,
   updateChatThread,
 } from "../api/chat-api";
 import { DEXIE_DB_NAME, db } from "../db";
@@ -913,7 +914,7 @@ export async function saveStoredChatThread(
 
 export async function updateStoredChatThread(
   threadId: string,
-  patch: Partial<ThreadRecord>,
+  patch: ChatThreadWritePatch,
   options: { signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;

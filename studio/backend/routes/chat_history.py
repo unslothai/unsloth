@@ -140,23 +140,63 @@ def thread_from_row(row: dict) -> ChatThread:
     """
     settings = row.get("settings")
     if isinstance(settings, dict):
-        known = {k: v for k, v in settings.items() if k in ChatThreadSettings.model_fields}
-        # Drop exactly the fields pydantic names and retry: a version gap usually
-        # carries several at once, so removing one guess at a time gives up too early.
-        for _ in range(len(known) + 1):
-            try:
-                ChatThreadSettings.model_validate(known)
-                break
-            except ValidationError as exc:
-                bad = {str(e["loc"][0]) for e in exc.errors() if e.get("loc")}
-                if not bad or not bad & set(known):
-                    known = None
-                    break
-                known = {k: v for k, v in known.items() if k not in bad}
-        row = {**row, "settings": known}
+        row = {**row, "settings": readable_thread_settings(settings)}
     elif settings is not None:
         row = {**row, "settings": None}
     return ChatThread(**row)
+
+
+def readable_thread_settings(settings: dict) -> Optional[dict]:
+    """The part of a stored snapshot this build can validate, or None if none of it is."""
+    known = {k: v for k, v in settings.items() if k in ChatThreadSettings.model_fields}
+    # Drop exactly the fields pydantic names and retry: a version gap usually
+    # carries several at once, so removing one guess at a time gives up too early.
+    for _ in range(len(known) + 1):
+        try:
+            ChatThreadSettings.model_validate(known)
+            return known
+        except ValidationError as exc:
+            bad = {str(e["loc"][0]) for e in exc.errors() if e.get("loc")}
+            if not bad or not bad & set(known):
+                return None
+            known = {k: v for k, v in known.items() if k not in bad}
+    return None
+
+
+def _settings_for_write(thread_id: str, patch: dict) -> None:
+    """Resolve `settings` / `settingsPatch` in `patch` against what the row already holds.
+
+    Two things are being protected. A client that could not READ part of the snapshot
+    must not delete it by writing the rest back: an older Studio opening a database a
+    newer one wrote drops the fields it cannot validate, and a blind replacement would
+    make that loss permanent instead of temporary. And a client that only knows one
+    field changed can say so with `settingsPatch`, which matters on unload, where there
+    is no time to read the row first and a replacement would erase everything else.
+    """
+    replace = "settings" in patch
+    merge = "settingsPatch" in patch
+    if not (replace or merge):
+        return
+    incoming = patch.pop("settingsPatch", None)
+    if merge:
+        # A merge is the more specific instruction; sending both is a client bug.
+        patch.pop("settings", None)
+    else:
+        incoming = patch["settings"]
+    if incoming is None:
+        # Clearing is the one instruction that means the whole column. A merge of
+        # nothing is not an instruction at all, so it leaves the row alone.
+        if replace and not merge:
+            patch["settings"] = None
+        return
+    stored = (get_chat_thread(thread_id) or {}).get("settings")
+    stored = stored if isinstance(stored, dict) else {}
+    readable = readable_thread_settings(stored) or {}
+    # Everything the writer could not have known about: unknown keys, and known keys
+    # holding values this build rejects.
+    unreadable = {k: v for k, v in stored.items() if k not in readable}
+    base = {**unreadable} if replace else {**stored}
+    patch["settings"] = {**base, **incoming}
 
 
 class ChatThreadPatch(BaseModel):
@@ -174,7 +214,11 @@ class ChatThreadPatch(BaseModel):
     updatedAt: Optional[int] = None
     openaiCodeExecContainerId: Optional[str] = None
     anthropicCodeExecContainerId: Optional[str] = None
+    # Replaces the whole snapshot, except for anything the client could not read.
     settings: Optional[ChatThreadSettings] = None
+    # Applies just the fields it names. For the writer that knows what changed but not
+    # what else the row holds, which is any write made before the row has been read.
+    settingsPatch: Optional[ChatThreadSettings] = None
 
 
 class ChatMessage(BaseModel):
@@ -483,6 +527,7 @@ def patch_thread(
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
         raise _missing_project_error(patch["projectId"])
+    _settings_for_write(thread_id, patch)
     try:
         thread = update_chat_thread(
             thread_id,

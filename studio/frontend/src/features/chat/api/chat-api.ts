@@ -819,9 +819,17 @@ export interface UpdateChatThreadOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * `settings` replaces the chat's whole snapshot; `settingsPatch` applies only the fields
+ * it names, for a writer that knows what changed but not what else the row holds.
+ */
+export type ChatThreadWritePatch = Partial<ThreadRecord> & {
+  settingsPatch?: ThreadRecord["settings"];
+};
+
 export async function updateChatThread(
   threadId: string,
-  patch: Partial<ThreadRecord>,
+  patch: ChatThreadWritePatch,
   options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
   const body: Record<string, unknown> = { ...patch };

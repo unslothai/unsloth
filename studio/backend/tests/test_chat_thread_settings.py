@@ -23,6 +23,7 @@ from routes.chat_history import (  # noqa: E402
     ChatThread,
     ChatThreadPatch,
     ChatThreadSettings,
+    _settings_for_write,
     thread_from_row,
 )
 from storage import studio_db  # noqa: E402
@@ -287,3 +288,118 @@ def test_an_unreadable_key_does_not_disturb_the_stored_row(tmp_path, monkeypatch
     finally:
         conn.close()
     assert "voiceModeEnabled" in raw
+
+
+def _raw_settings(thread_id: str = "thread-1") -> str:
+    conn = sqlite3.connect(studio_db_path())
+    try:
+        return conn.execute(
+            "SELECT settings_json FROM chat_threads WHERE id = ?", (thread_id,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _store_raw(payload: str, thread_id: str = "thread-1") -> None:
+    conn = sqlite3.connect(studio_db_path())
+    try:
+        conn.execute(
+            "UPDATE chat_threads SET settings_json = ? WHERE id = ?", (payload, thread_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_downgraded_client_cannot_delete_what_it_could_not_read(tmp_path, monkeypatch):
+    # The whole point of the lenient read is that upgrading gets the setting back, which
+    # only holds if writing in the meantime leaves the unreadable part alone.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true, "ragTopK": 999}')
+
+    # what this build serves the client: neither the unknown key nor the out-of-range one
+    served = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
+    assert served.toolsEnabled is True
+    assert served.ragTopK is None
+
+    # the client writes back everything it knows about
+    patch = {"settings": {"toolsEnabled": False}}
+    _settings_for_write("thread-1", patch)
+    studio_db.update_chat_thread("thread-1", patch)
+
+    raw = _raw_settings()
+    assert "voiceModeEnabled" in raw
+    assert "999" in raw
+    assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is False
+
+
+def test_a_merge_touches_only_the_fields_it_names(tmp_path, monkeypatch):
+    # The unload path knows one pill changed and nothing about the rest of the row.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.update_chat_thread(
+        "thread-1", {"settings": {"toolsEnabled": True, "permissionMode": "ask"}}
+    )
+
+    patch = ChatThreadPatch(settingsPatch = {"codeToolsEnabled": True}).model_dump(
+        exclude_unset = True
+    )
+    _settings_for_write("thread-1", patch)
+    studio_db.update_chat_thread("thread-1", patch)
+
+    got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
+    assert got.codeToolsEnabled is True
+    assert got.toolsEnabled is True
+    assert got.permissionMode == "ask"
+
+
+def test_a_merge_also_spares_an_unreadable_key(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true}')
+
+    patch = ChatThreadPatch(settingsPatch = {"toolsEnabled": False}).model_dump(
+        exclude_unset = True
+    )
+    _settings_for_write("thread-1", patch)
+    studio_db.update_chat_thread("thread-1", patch)
+
+    assert "voiceModeEnabled" in _raw_settings()
+    assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is False
+
+
+def test_clearing_still_clears_the_whole_column(tmp_path, monkeypatch):
+    # An explicit null is the one instruction that means all of it, unreadable part included.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true}')
+
+    patch = {"settings": None}
+    _settings_for_write("thread-1", patch)
+    studio_db.update_chat_thread("thread-1", patch)
+
+    assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings is None
+    assert _raw_settings() in (None, "", "null")
+
+
+def test_a_merge_of_nothing_leaves_the_row_alone(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.update_chat_thread("thread-1", {"settings": {"toolsEnabled": True}})
+
+    patch = {"title": "renamed", "settingsPatch": None}
+    _settings_for_write("thread-1", patch)
+    assert "settings" not in patch
+    studio_db.update_chat_thread("thread-1", patch)
+
+    got = thread_from_row(studio_db.get_chat_thread("thread-1"))
+    assert got.title == "renamed"
+    assert got.settings.toolsEnabled is True
+
+
+def test_a_merge_is_still_held_to_the_contract():
+    with pytest.raises(ValidationError):
+        ChatThreadPatch(settingsPatch = {"voiceModeEnabled": True})
+    with pytest.raises(ValidationError):
+        ChatThreadPatch(settingsPatch = {"ragTopK": 999})

@@ -405,6 +405,10 @@ function flushSettingsOnPageHidden(terminal: boolean): void {
   // would have created it first. visibilitychange is not terminal (it fires on
   // every tab switch), and the page is still there to await the ensure.
   flushThreadScopedSettingsWrite(terminal);
+  // An edit made while its chat's read was still out lives only in heldThreadScopedEdits,
+  // so the flush above does not see it. Effect cleanup is not guaranteed during unload and
+  // its ordinary fetch would not outlive the page anyway, so send it from here, keepalive.
+  if (terminal) commitHeldThreadScopedEditsToTheirThread(true);
   // An edit still waiting on hydration is a user edit like any other, and the
   // tab is going away, so send it rather than let the next session hydrate over it.
   drainPreHydrationPatch();
@@ -798,8 +802,14 @@ function buildThreadScopedSnapshot(
 function sendThreadScopedSettingsBeacon(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
+  merge = false,
 ): void {
-  const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  // A merge carries only what the user touched, for the chat whose own snapshot was
+  // never read; sending a replacement built from the defaults on screen would erase
+  // the rest of its row. Everything else replaces, as the debounced write does.
+  const body = merge
+    ? { settingsPatch: snapshot }
+    : { settings: buildThreadScopedSnapshot(threadId, snapshot) };
   // The beacon carries the newest values but skips the chain, so an older write would
   // otherwise land after it and put the stale snapshot back. The ticket stands down the
   // ones still queued; the abort ends the one already out, which no ticket can reach.
@@ -808,7 +818,7 @@ function sendThreadScopedSettingsBeacon(
   void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings }),
+    body: JSON.stringify(body),
     keepalive: true,
   }).catch(() => undefined);
 }
@@ -949,6 +959,16 @@ export function beginThreadScopedPairing(threadId: string): void {
   if (pendingPairingThreadId === threadId) return;
   releaseHeldThreadScopedEdits();
   pendingPairingThreadId = threadId;
+  setThreadScopedSettingsPending(true);
+}
+
+/** Sends are held while this is true; see the field's own note. */
+function setThreadScopedSettingsPending(pending: boolean): void {
+  if (
+    useChatRuntimeStore.getState().threadScopedSettingsPending !== pending
+  ) {
+    useChatRuntimeStore.setState({ threadScopedSettingsPending: pending });
+  }
 }
 
 /** The chat turned out to own no snapshot: send the held edits to the defaults, as before. */
@@ -956,6 +976,7 @@ export function releaseHeldThreadScopedEdits(): void {
   const held = heldThreadScopedEdits;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
+  setThreadScopedSettingsPending(false);
   for (const edit of held) edit.writeGlobal?.();
 }
 
@@ -969,28 +990,38 @@ export function releaseHeldThreadScopedEdits(): void {
  * nothing (`ensureStoredChatThread` only adopts a record that already exists), which
  * correctly leaves an unsaved chat following the defaults.
  */
-export function commitHeldThreadScopedEditsToTheirThread(): void {
+export function commitHeldThreadScopedEditsToTheirThread(
+  keepalive = false,
+): void {
   const threadId = pendingPairingThreadId;
   const held = heldThreadScopedEdits;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
+  setThreadScopedSettingsPending(false);
   if (threadId === null || held.length === 0) return;
-  // The store is showing the installation defaults here, not this chat's snapshot, which
-  // was never read. The write REPLACES settings_json, so sending the defaults would erase
-  // everything the chat had stored that the user did not just touch. Send only the fields
-  // that were actually edited, merged onto whatever the row already holds.
+  const changes = heldThreadScopedChanges(held);
+  if (keepalive) {
+    sendThreadScopedSettingsBeacon(threadId, changes, true);
+    return;
+  }
+  void mergeThreadScopedSettingsIntoRow(threadId, changes);
+}
+
+/** What the user actually touched, read off the store, which still holds their edits. */
+function heldThreadScopedChanges(
+  held: { field: string }[],
+): ThreadScopedSettings {
   const edited: Record<string, unknown> = {};
   const live = useChatRuntimeStore.getState() as Record<string, unknown>;
   for (const edit of held) edited[edit.field] = live[edit.field];
-  void mergeThreadScopedSettingsIntoRow(
-    threadId,
-    sanitizeThreadScopedSettings(edited),
-  );
+  return sanitizeThreadScopedSettings(edited);
 }
 
 /**
- * Read the row's own snapshot and PATCH it back with `changes` applied. Used when the
- * store cannot be trusted to describe the chat, which is any time its read has not landed.
+ * PATCH just the fields in `changes`, leaving the rest of the row alone. Used when the
+ * store cannot be trusted to describe the chat, which is any time its read has not
+ * landed: the store is showing the installation defaults, and a replacement built from
+ * those would erase everything the chat had stored that the user did not touch.
  */
 async function mergeThreadScopedSettingsIntoRow(
   threadId: string,
@@ -1005,16 +1036,10 @@ async function mergeThreadScopedSettingsIntoRow(
         return;
       }
       try {
-        const { getStoredChatThread, updateStoredChatThread } = await import(
+        const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
         );
-        const existing = (await getStoredChatThread(threadId))?.settings;
-        await updateStoredChatThread(threadId, {
-          settings: {
-            ...(existing ? sanitizeThreadScopedSettings(existing) : {}),
-            ...changes,
-          },
-        });
+        await updateStoredChatThread(threadId, { settingsPatch: changes });
       } catch {
         warnSettingsPersistenceFailure();
       }
@@ -1560,6 +1585,12 @@ type ToolStatusEntry = {
 
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
+  /**
+   * The open chat's own settings have been asked for but have not arrived. The store is
+   * showing the installation defaults meanwhile, so a run started now would be captured
+   * with them: a chat stored as "ask" could run tools without asking. Sending waits.
+   */
+  threadScopedSettingsPending: boolean;
   params: InferenceParams;
   customPresets: Preset[];
   activePreset: string;
@@ -2399,6 +2430,7 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
+  threadScopedSettingsPending: false,
   // Hydrate the last external checkpoint so the external picker survives a
   // refresh. Local checkpoints are re-derived from the backend in
   // useChatModelRuntime and intentionally NOT persisted here.
@@ -2943,9 +2975,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ) {
         releaseHeldThreadScopedEdits();
       }
+      // Set from here rather than trusting the calls above: this updater's own return
+      // value is merged last, so a `return state` would put the old flag back.
+      const pending = pendingPairingThreadId !== null;
       // nothing was overridden while unpaired, so there is nothing to restore.
       if (threadScopedSettingsThreadId === null && threadId === null) {
-        return state;
+        return state.threadScopedSettingsPending === pending
+          ? state
+          : { ...state, threadScopedSettingsPending: pending };
       }
       if (threadScopedSettingsThreadId === null) {
         // A held edit is already in the store but belongs to its chat, not to the
@@ -3030,7 +3067,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           stored === null ? sanitizeThreadScopedSettings(applied) : null,
         );
       }
-      if (!hasKeys(nextState)) return state;
+      if (!hasKeys(nextState)) {
+        return state.threadScopedSettingsPending === pending
+          ? state
+          : { ...state, threadScopedSettingsPending: pending };
+      }
       if (nextState.permissionMode !== undefined) {
         nextState.confirmToolCalls =
           nextState.permissionMode === "ask" ||
@@ -3038,6 +3079,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return {
         ...nextState,
+        threadScopedSettingsPending: pending,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
