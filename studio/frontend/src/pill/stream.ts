@@ -57,6 +57,9 @@ export async function* streamCompletion(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // A dropped connection ends the body exactly like a finished stream, so
+  // without this an answer cut mid-sentence is rendered as a complete one.
+  let terminated = false;
 
   try {
     while (true) {
@@ -80,11 +83,15 @@ export async function* streamCompletion(
           } catch {
             continue;
           }
+          if (chunk.choices?.[0]?.finish_reason) terminated = true;
           const delta = chunk.choices?.[0]?.delta?.content;
           if (delta) yield delta;
         }
         separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
+    }
+    if (!terminated) {
+      throw new Error("Stream ended before the answer was complete");
     }
   } finally {
     reader.releaseLock();
