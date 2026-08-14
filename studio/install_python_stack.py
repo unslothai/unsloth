@@ -370,6 +370,12 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str, str, str]":
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            # The probes this replaced each decoded with errors="replace". text=True alone
+            # decodes strictly, and a UnicodeDecodeError is a ValueError, so an undecodable
+            # byte in torch's import chatter would escape the except below and take the
+            # installer down instead of falling back to the on-disk classifier. Reachable
+            # wherever the console code page and the child's output disagree.
+            errors = "replace",
             timeout = 90,
             **_windows_hidden_subprocess_kwargs(),
         )
