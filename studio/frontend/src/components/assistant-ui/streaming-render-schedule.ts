@@ -19,6 +19,7 @@ const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
 const LINK_DEFINITION_RE = /^ {0,3}\[([^\]\n^][^\]\n]{0,200})\]:/gm;
+const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -75,13 +76,20 @@ const createRepairParity = (): RepairParity => ({
 // Marked keeps link reference definitions in one per-document map and emits no
 // token for a label it has already seen. Lexing only the tail cannot know about
 // an earlier definition, so a redefinition would show up as a literal line.
-function linkDefinitionLabels(text: string): string[] {
-  LINK_DEFINITION_RE.lastIndex = 0;
+// Read this off the block list rather than the raw text, so a definition shown
+// inside a fenced example is code to us for the same reason it is to Marked.
+function linkDefinitionLabels(blocks: string[]): string[] {
   const labels: string[] = [];
-  let match = LINK_DEFINITION_RE.exec(text);
-  while (match) {
-    labels.push(match[1].toLowerCase().replace(/\s+/g, " ").trim());
-    match = LINK_DEFINITION_RE.exec(text);
+  for (const block of blocks) {
+    if (FENCED_CODE_BLOCK_RE.test(block)) {
+      continue;
+    }
+    LINK_DEFINITION_RE.lastIndex = 0;
+    let match = LINK_DEFINITION_RE.exec(block);
+    while (match) {
+      labels.push(match[1].toLowerCase().replace(/\s+/g, " ").trim());
+      match = LINK_DEFINITION_RE.exec(block);
+    }
   }
   return labels;
 }
@@ -699,18 +707,19 @@ export class IncrementalMarkdownCache {
       return this.renderFullDocument(markdown);
     }
 
+    const blocks = parseMarkdownIntoBlocks(repaired);
+
     // A label the retained prefix already defined has to be lexed together with
     // its redefinition, so give up the prefix rather than show a literal line.
     if (
       this.committedLinkLabels.size > 0 &&
-      linkDefinitionLabels(repaired).some((label) =>
+      linkDefinitionLabels(blocks).some((label) =>
         this.committedLinkLabels.has(label),
       )
     ) {
       return this.renderFullDocument(markdown);
     }
 
-    const blocks = parseMarkdownIntoBlocks(repaired);
     const candidateCount = Math.max(0, blocks.length - ROLLBACK_BLOCKS);
     if (candidateCount === 0) {
       return this.render(repaired);
@@ -746,7 +755,7 @@ export class IncrementalMarkdownCache {
     }
 
     this.committedBlocks.push(...blocks.slice(0, commit.count));
-    for (const label of linkDefinitionLabels(committedText)) {
+    for (const label of linkDefinitionLabels(blocks.slice(0, commit.count))) {
       this.committedLinkLabels.add(label);
     }
     this.context = nextContext;

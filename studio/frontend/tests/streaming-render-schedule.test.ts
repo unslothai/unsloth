@@ -94,6 +94,7 @@ const MARKDOWN_CASES = [
   `use \`a *b* c\` here${SHORT_GAP}****x`,
   `a \`\`\` b\n\nc \\\`\`\` d${SHORT_GAP}- >= 4 GB`,
   `[x]: https://e.test\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
+  `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
   // precedes the first bold marker.
@@ -229,6 +230,31 @@ test("an edit that drops retained blocks moves the render identity", () => {
     streaming.update(`${source.slice(0, length)}* **`);
   }
   assert.equal(streaming.renderGeneration, 0);
+});
+
+test("only a real duplicate link label gives up the retained prefix", () => {
+  // Marked reads a definition inside a fenced example as code, so recording it
+  // would strand the reply in the full-document path for the rest of the stream.
+  const shown = `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
+  const shownCache = new IncrementalMarkdownCache();
+  let render = shownCache.update("");
+  for (let length = 1; length <= shown.length; length += 1) {
+    render = shownCache.update(processStreamingText(shown.slice(0, length)));
+  }
+  assert.ok(render.markdown.length < shown.length / 3);
+
+  const repeated = `[x]: https://e.test\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
+  const repeatedCache = new IncrementalMarkdownCache();
+  let repeatedRender = repeatedCache.update("");
+  for (let length = 1; length <= repeated.length; length += 1) {
+    repeatedRender = repeatedCache.update(
+      processStreamingText(repeated.slice(0, length)),
+    );
+  }
+  assert.deepEqual(
+    repeatedRender.parseMarkdownIntoBlocks(repeatedRender.markdown),
+    parseMarkdownIntoBlocks(remend(processStreamingText(repeated))),
+  );
 });
 
 test("Streamdown re-renders only when the Markdown string changes", () => {
