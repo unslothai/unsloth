@@ -67,7 +67,7 @@ function LabelWithHint({
 }
 
 export function CheckpointBackupSection(): ReactElement {
-  const [open, setOpen] = useState(false);
+  const [backupExpanded, setBackupExpanded] = useState(false);
   const [repoTouched, setRepoTouched] = useState(false);
   const [retentionTouched, setRetentionTouched] = useState(false);
   const [accessState, setAccessState] = useState<AccessState>("Not checked");
@@ -97,6 +97,12 @@ export function CheckpointBackupSection(): ReactElement {
     : null;
   const effective = effectiveBackupSteps(store.saveSteps, count);
   const canTest = !!store.backup.repoId && !repoError;
+  const backupEnabled = store.backup.enabled;
+
+  const setBackupEnabled = (enabled: boolean) => {
+    update({ enabled });
+    setBackupExpanded(enabled);
+  };
 
   const configureSaveSteps = () => {
     const input = document.getElementById(
@@ -133,31 +139,61 @@ export function CheckpointBackupSection(): ReactElement {
 
   return (
     <Collapsible
-      open={open}
-      onOpenChange={setOpen}
+      open={backupEnabled && backupExpanded}
+      onOpenChange={(expanded) => {
+        if (backupEnabled) {
+          setBackupExpanded(expanded);
+        }
+      }}
       className="min-w-0 border-t border-border/60 pt-4"
     >
-      <div className="flex min-w-0 items-center gap-3">
-        <CollapsibleTrigger className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left text-xs text-muted-foreground">
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+      <div className="flex w-full min-w-0 items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <CollapsibleTrigger
+            disabled={!backupEnabled}
+            aria-disabled={!backupEnabled}
+            aria-expanded={backupEnabled && backupExpanded}
+            className={`flex min-w-0 items-center gap-2 text-left text-xs text-muted-foreground ${backupEnabled ? "cursor-pointer hover:text-foreground" : "cursor-default"}`}
+          >
+            {backupEnabled && (
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                className={`size-3.5 shrink-0 transition-transform ${backupExpanded ? "rotate-180" : ""}`}
+              />
+            )}
+            <span className="truncate">Automatic Hugging Face backups</span>
+          </CollapsibleTrigger>
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <span
+              className="shrink-0"
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              <FieldHint
+                label="About automatic Hugging Face backups"
+                text="Automatically uploads selected training checkpoints to a Hugging Face model repository. Uploads run in the background and do not stop training if they fail."
+              />
+            </span>
+          </span>
+        </div>
+        <div
+          className="flex shrink-0 items-center"
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <Switch
+            className="cursor-pointer"
+            checked={backupEnabled}
+            onCheckedChange={setBackupEnabled}
+            aria-label="Automatic Hugging Face backups"
           />
-          <span>Automatic Hugging Face backups</span>
-        </CollapsibleTrigger>
-        <FieldHint
-          label="More information about automatic Hugging Face backups"
-          text="Automatically uploads selected training checkpoints to a Hugging Face model repository. Uploads run in the background and do not stop training if they fail."
-        />
-        <Switch
-          checked={store.backup.enabled}
-          onCheckedChange={(enabled) => update({ enabled })}
-          aria-label="Automatic Hugging Face backups"
-        />
+        </div>
       </div>
 
-      <CollapsibleContent className="mt-5 min-w-0 space-y-5">
-        {store.backup.enabled && (
+      {backupEnabled && (
+        <CollapsibleContent className="mt-5 min-w-0 space-y-5">
           <>
             <section className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3">
               <h3 className="text-xs font-medium text-foreground">
@@ -387,8 +423,8 @@ export function CheckpointBackupSection(): ReactElement {
               </div>
             </section>
           </>
-        )}
-      </CollapsibleContent>
+        </CollapsibleContent>
+      )}
     </Collapsible>
   );
 }
