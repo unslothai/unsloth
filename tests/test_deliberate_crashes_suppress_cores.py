@@ -81,8 +81,10 @@ _SIGNAL_ARG_INDEX = {"raise_signal": 0, "kill": 1}
 
 # A signal aimed at self dumps core only for these. SIGKILL, SIGTERM and SIGINT do not,
 # which is why SIGKILL is the recommended way to make a child vanish.
-_FATAL_SIGNALS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP")
-_FATAL_SIGNAL_NUMBERS = {4, 5, 6, 7, 8, 11}  # SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGSEGV
+_FATAL_SIGNALS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP", "SIGQUIT")
+# SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGSEGV: the Linux signals whose
+# default action is "terminate and dump core".
+_FATAL_SIGNAL_NUMBERS = {3, 4, 5, 6, 7, 8, 11}
 
 _PR_SET_DUMPABLE = 4
 
@@ -153,17 +155,20 @@ def _called_name(node):
     return None
 
 
-def _prctl_clears_dumpable(node) -> bool:
-    """A prctl(PR_SET_DUMPABLE, 0, ...) call. The value argument matters: prctl(4, 1)
-    re-enables dumps, so treating any PR_SET_DUMPABLE call as suppression would bless a
-    crash that still dumps."""
+def _prctl_dumpable_value(node):
+    """The value a prctl(PR_SET_DUMPABLE, v, ...) call sets, else None.
+
+    The value argument matters: prctl(4, 1) re-enables dumps, so treating any
+    PR_SET_DUMPABLE call as suppression would bless a crash that still dumps.
+    """
     if _called_name(node) != "prctl" or len(node.args) < 2:
-        return False
+        return None
     cmd, value = node.args[0], node.args[1]
     cmd_ok = (isinstance(cmd, ast.Constant) and cmd.value == _PR_SET_DUMPABLE) or (
         isinstance(cmd, ast.Name) and cmd.id.endswith("PR_SET_DUMPABLE")
     )
-    return cmd_ok and isinstance(value, ast.Constant) and value.value == 0
+    return value.value if cmd_ok and isinstance(value, ast.Constant) else None
+
 
 
 def _fold(node, env):
@@ -228,7 +233,8 @@ def _iter_executable(scope):
     already run, so a helper that suppresses cores blessed a crash it never covered.
     """
     for child in ast.iter_child_nodes(scope):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+        # Not a class body: that one runs the moment the class is defined.
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
         yield child
         yield from _iter_executable(child)
@@ -237,11 +243,12 @@ def _iter_executable(scope):
 def _rebound_names(scope):
     """Names this scope binds itself, which therefore no longer mean the import."""
     out = set()
-    for node in ast.walk(scope):
+    for node in _iter_executable(scope):
         pair = _assigned_pair(node)
         if pair is not None:
             out.add(pair[0].id)
-        elif isinstance(node, ast.arg):
+    for node in ast.walk(scope.args) if hasattr(scope, "args") else ():
+        if isinstance(node, ast.arg):
             out.add(node.arg)
     return out
 
@@ -425,10 +432,14 @@ def _clears_dumpable_before(scope, position) -> bool:
     Order matters. Suppression placed after the fault does nothing, so accepting it
     anywhere in the scope blessed a child that still dumps.
     """
-    return any(
-        _prctl_clears_dumpable(node) and _position(node) < position
-        for node in _iter_executable(scope)
-    )
+    latest = None
+    for node in _iter_executable(scope):
+        value = _prctl_dumpable_value(node)
+        if value is None or _position(node) >= position:
+            continue
+        if latest is None or _position(node) > latest[0]:
+            latest = (_position(node), value)
+    return latest is not None and latest[1] == 0
 
 
 def _suppressed(node, scope, functions) -> bool:
@@ -518,15 +529,22 @@ def _nested_scripts(tree):
     `SCRIPT = 'exec("import os; os.abort()")'` parses cleanly and holds no crash call
     of its own, so without this the crash one level down was never looked at.
     """
+    _owner, module_env, scoped = _string_env(tree)
+    owner = _enclosing_scopes(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
+        scope = owner.get(id(node), tree)
         if _called_name(node) in _NESTED_EXEC:
             argument = node.args[0] if node.args else None
-            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                yield argument.value
+            env = scoped.get(id(scope), module_env)
+            payload, _ids = _fold(argument, env) if argument is not None else (None, set())
+            if payload is not None:
+                # Same interpreter, so a prctl above the exec already covers it.
+                yield payload, _clears_dumpable_before(scope, _position(node))
         else:
-            yield from _snippets_of_call(node)
+            for nested in _snippets_of_call(node):
+                yield nested, False
 
 
 def _snippets_of_call(node):
@@ -560,10 +578,10 @@ def _snippet_state(snippet: str, depth: int = 0):
         return crashes, crashes and not suppressed
     crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree))
     if depth < _MAX_SNIPPET_DEPTH:
-        for nested in _nested_scripts(tree):
+        for nested, already_suppressed in _nested_scripts(tree):
             inner_crashes, inner_violates = _snippet_state(nested, depth + 1)
             crashes = crashes or inner_crashes
-            violates = violates or inner_violates
+            violates = violates or (inner_violates and not already_suppressed)
     return crashes, violates
 
 
@@ -824,6 +842,45 @@ _FIXTURES = {
         "SCRIPT = \"exec('import os; os.abort()')\"\n"
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         True,  # the SIGABRT is one level down, and dumps just the same
+    ),
+    # Six the guard still gets wrong, each verified against the current file.
+    "sigquit_is_a_core_dumping_signal": (
+        "import signal\ndef child():\n    signal.raise_signal(3)\n",
+        True,  # SIGQUIT's default action is terminate and dump
+    ),
+    "class_body_runs_with_its_enclosing_scope": (
+        "import ctypes\n"
+        "class Probe:\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # unlike a def, a class body executes immediately
+    ),
+    "rebinding_inside_an_unrelated_function": (
+        "from os import abort\n"
+        "abort()\n"
+        "def unrelated(mock):\n    abort = mock\n    return abort\n",
+        True,  # a nested local must not disarm the module-level alias
+    ),
+    "dumpability_restored_before_the_crash": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        True,  # the setting nearest the crash is the one that counts
+    ),
+    "exec_payload_reached_by_name": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'import os; os.abort()'\\nexec(INNER)\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the payload is one name away, and still runs
+    ),
+    "suppression_above_a_nested_exec": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        "exec('import os; os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # same interpreter, so the prctl above covers the nested crash
     ),
 }
 
