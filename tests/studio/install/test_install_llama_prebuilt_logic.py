@@ -2245,6 +2245,73 @@ def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
     assert marker["ggml_tree"] == "tree-abc"
 
 
+def _cuda_choice(**overrides):
+    fields = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "b10360",
+        name = "app-b10360-linux-x64-cuda13-older.tar.gz",
+        url = "https://example.invalid/app.tar.gz",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        bundle_profile = "app",
+        runtime_line = "cuda13",
+        coverage_class = "older",
+        supported_sms = ["75", "80", "86", "89"],
+        expected_sha256 = "a" * 64,
+    )
+    fields.update(overrides)
+    return AssetChoice(**fields)
+
+
+def test_write_prebuilt_metadata_records_supported_sms(tmp_path: Path):
+    """The runtime SM gate reads supported_sms from the marker; without it a
+    bundle installed on one GPU fails open when run on another."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    choice = _cuda_choice()
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b10360",
+        release_tag = "b10360",
+        choice = choice,
+        approved_checksums = approved_release_checksums_for_asset(choice.name, "a" * 64),
+        prebuilt_fallback_used = False,
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["supported_sms"] == ["75", "80", "86", "89"]
+
+
+def test_reused_install_backfills_supported_sms(tmp_path: Path):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "b10360", "llama_backend": "auto"}) + "\n",
+        encoding = "utf-8",
+    )
+
+    _sync_arch_coverage(install_dir, _cuda_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["supported_sms"] == ["75", "80", "86", "89"]
+    assert marker["release_tag"] == "b10360"
+
+
+@pytest.mark.parametrize("sms", [None, [], ["", "   "]])
+def test_a_bundle_that_declares_no_sms_leaves_the_marker_alone(tmp_path: Path, sms):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    original = {"release_tag": "b10360", "supported_sms": ["86", "89", "90"]}
+    marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
+
+    _sync_arch_coverage(install_dir, _cuda_choice(supported_sms = sms))
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["supported_sms"] == original["supported_sms"]
+
+
 def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: Path):
     """A pre-#5322 CUDA install must go stale once the choice gains a runtime archive (#5106 fingerprint half)."""
     install_dir = tmp_path / "llama.cpp"

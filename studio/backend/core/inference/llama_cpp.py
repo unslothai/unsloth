@@ -5985,6 +5985,85 @@ class LlamaCppBackend:
             logger.debug(f"install marker arch read failed: {e}")
             return None
 
+    @staticmethod
+    def _installed_llama_cuda_sms(binary: Optional[str] = None) -> Optional[frozenset]:
+        """SM targets the installed CUDA prebuilt was built for (``supported_sms``
+        in UNSLOTH_PREBUILT_INFO.json). None when unknown (no marker, older
+        install, non-CUDA bundle), so callers fail open. Never raises."""
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+
+            marker = read_install_marker(binary or LlamaCppBackend._find_llama_server_binary())
+            if not marker:
+                return None
+            sms = marker.get("supported_sms")
+            if not isinstance(sms, list) or not sms:
+                return None
+            if not all(str(s).strip().isdigit() for s in sms):
+                return None
+            return frozenset(int(s) for s in sms)
+        except Exception as e:
+            logger.debug(f"install marker supported_sms read failed: {e}")
+            return None
+
+    @staticmethod
+    def _cuda_compute_caps() -> dict:
+        """Physical id -> SM (90 for sm_90) via nvidia-smi, honoring
+        CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,compute_cap", "--format=csv,noheader"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode != 0:
+                return {}
+            allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+            caps = {}
+            for line in result.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    idx = int(parts[0])
+                    major, minor = parts[1].split(".")
+                    sm = int(major) * 10 + int(minor)
+                except ValueError:
+                    continue
+                if allowed is not None and idx not in allowed:
+                    continue
+                caps[idx] = sm
+            return caps
+        except Exception as e:
+            logger.debug(f"compute_cap probe failed: {e}")
+            return {}
+
+    @classmethod
+    def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
+        """Error message when the installed CUDA bundle covers no GPU on this host
+        (typically installed on a machine with a different GPU, e.g. a cloud image
+        baked on another card), or None to proceed. The crash this prevents is
+        deterministic -- no launch flag can help -- so failing fast with the fix
+        beats letting llama-server abort. Fails open on unknown coverage or caps."""
+        supported = cls._installed_llama_cuda_sms(binary)
+        if supported is None:
+            return None
+        caps = cls._cuda_compute_caps()
+        if not caps or any(sm in supported for sm in caps.values()):
+            return None
+        present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
+        return (
+            f"The installed llama.cpp build only has GPU code for "
+            f"sm_{min(supported)}-sm_{max(supported)}, but {present} -- it was "
+            "likely installed on a machine with a different GPU. Run "
+            "`unsloth studio update` to install the build for this GPU."
+        )
+
     @classmethod
     def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
         """Physical ids the ROCm arch gate leaves, or [] when there is nothing to
@@ -13405,6 +13484,9 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+                _sm_gate = self._cuda_sm_gate_error(binary)
+                if _sm_gate:
+                    raise RuntimeError(_sm_gate)
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual
