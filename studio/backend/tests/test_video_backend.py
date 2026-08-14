@@ -4965,9 +4965,7 @@ def test_cancel_interrupts_background_generation_waiting_for_generation_lock(
     generate_lock.acquire()
     try:
         backend.begin_generate(prompt = "cancel during placement", steps = 2)
-        assert generate_lock.waiting.wait(5), (
-            "background generation did not wait for placement"
-        )
+        assert generate_lock.waiting.wait(5), "background generation did not wait for placement"
         assert backend.cancel_generate() is True
 
         deadline = time.monotonic() + 5
