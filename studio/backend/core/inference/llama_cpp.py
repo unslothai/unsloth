@@ -6050,6 +6050,9 @@ class LlamaCppBackend:
         baked on another card), or None to proceed. The crash this prevents is
         deterministic -- no launch flag can help -- so failing fast with the fix
         beats letting llama-server abort. Fails open on unknown coverage or caps."""
+        # Resolved once so the marker read and the remedy below describe the same
+        # binary.
+        binary = binary or cls._find_llama_server_binary()
         supported = cls._installed_llama_cuda_sms(binary)
         if supported is None:
             return None
@@ -6057,11 +6060,14 @@ class LlamaCppBackend:
         if not caps or any(sm in supported for sm in caps.values()):
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
+        # The remedy has to follow the binary's provenance: the updater cannot
+        # replace a pinned LLAMA_SERVER_PATH or a llama-server found on PATH, so
+        # telling its owner to update would loop them through the same gate.
         return (
             f"The installed llama.cpp build only has GPU code for "
             f"sm_{min(supported)}-sm_{max(supported)}, but {present} -- it was "
-            "likely installed on a machine with a different GPU. Run "
-            "`unsloth studio update` to install the build for this GPU."
+            f"likely installed on a machine with a different GPU, so "
+            f"{cls._runtime_remedy(binary)}."
         )
 
     @classmethod
@@ -13484,22 +13490,6 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
-                # A deliberate zero-offload load launches with the GPUs hidden from
-                # the child (_cpu_only_zero_offload below writes
-                # CUDA_VISIBLE_DEVICES=-1), so the missing kernels never load and
-                # gating it would refuse a load that runs. zero_vram_chat_load is the
-                # request-level mirror of that mask, so a GPU companion (mmproj,
-                # drafter, device pin, surviving tensor mode) keeps the gate.
-                if not zero_vram_chat_load(
-                    gpu_memory_mode,
-                    gpu_layers,
-                    extra_args,
-                    effective_is_vision,
-                    speculative_type,
-                ):
-                    _sm_gate = self._cuda_sm_gate_error(binary)
-                    if _sm_gate:
-                        raise RuntimeError(_sm_gate)
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual
@@ -15913,6 +15903,23 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
+                # The CUDA SM gate belongs here, where the child's GPU visibility is
+                # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so the
+                # child enumerates no device, loads no kernel image, and the
+                # deterministic abort the gate exists to pre-empt cannot happen --
+                # refusing those loads breaks a launch that runs. Deciding it from the
+                # request instead (zero_vram_chat_load) over-refused: the UI's default
+                # speculative "auto" usually resolves to a drafterless mode, a
+                # projector pinned to the CPU with --no-mmproj-offload holds no VRAM,
+                # and a drafter pinned with --spec-draft-ngl 0 / --spec-draft-device
+                # cpu is likewise CPU-only, yet all three read as GPU-bearing there --
+                # only the resolved argv knows which. Still before every spawn below,
+                # and outside the fit's try/except, so the refusal cannot be swallowed
+                # into the --fit on fallback.
+                if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
+                    _sm_gate = self._cuda_sm_gate_error(binary)
+                    if _sm_gate:
+                        raise RuntimeError(_sm_gate)
                 # The arch gate emptying the pool lands here for the same reason
                 # (#7624): no device set this binary can launch on, so the child must
                 # not see the cards it would enumerate and abort on. gpu_indices is

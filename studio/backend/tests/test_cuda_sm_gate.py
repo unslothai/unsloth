@@ -97,15 +97,34 @@ class TestCudaSmGateError:
     def _caps(self, monkeypatch, caps):
         monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: caps))
 
+    def _managed(self, monkeypatch, managed):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: managed)
+        )
+
     def test_uncovered_gpu_errors_with_the_fix(self, tmp_path, monkeypatch):
         # The incident shape: a cuda13-older bundle (75-89) baked on a T4, run on an H100.
         self._caps(monkeypatch, {0: 90})
+        self._managed(monkeypatch, True)
         binary = _binary_with_marker(tmp_path, {"supported_sms": ["75", "80", "86", "89"]})
         error = LlamaCppBackend._cuda_sm_gate_error(binary)
         assert error is not None
         assert "sm_75-sm_89" in error
         assert "GPU 0 is sm_90" in error
         assert "unsloth studio update" in error
+
+    def test_a_custom_binary_is_told_to_rebuild_not_to_update(self, tmp_path, monkeypatch):
+        # An extracted prebuilt tree reached through LLAMA_SERVER_PATH or PATH still
+        # carries the marker, but the updater cannot replace it, so the update
+        # instruction would send its owner back through this same gate.
+        self._caps(monkeypatch, {0: 90})
+        self._managed(monkeypatch, False)
+        binary = _binary_with_marker(tmp_path, {"supported_sms": ["75", "80", "86", "89"]})
+        error = LlamaCppBackend._cuda_sm_gate_error(binary)
+        assert error is not None
+        assert "GPU 0 is sm_90" in error
+        assert "reinstall or rebuild that custom llama.cpp" in error
+        assert "unsloth studio update" not in error
 
     def test_covered_gpu_passes(self, tmp_path, monkeypatch):
         self._caps(monkeypatch, {0: 90})
@@ -159,6 +178,10 @@ def _gated_backend(
     monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 90}))
     monkeypatch.setattr(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *_a, **_kw: False)
+    )
+    # Pinned so the refusal wording does not depend on where the runner puts tmp_path.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: True)
     )
     backend = LlamaCppBackend()
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
@@ -249,9 +272,8 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         [
             {"extra_args": ["--device", "CUDA0"]},
             {"extra_args": ["--model-draft", "/tmp/draft.gguf"]},
-            {"speculative_type": "auto"},
         ],
-        ids = ["device_pin", "gpu_drafter", "speculation"],
+        ids = ["device_pin", "gpu_drafter"],
     )
     def test_a_gpu_companion_keeps_the_gate(self, tmp_path, monkeypatch, companion):
         # These keep the GPUs visible to the child, so the kernels are needed after
@@ -259,6 +281,92 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         backend, gguf = _gated_backend(tmp_path, monkeypatch)
         launches, error = _drive_load(
             backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0, **companion
+        )
+        assert isinstance(error, RuntimeError)
+        assert launches == []
+
+    def test_the_uis_default_speculative_auto_still_launches_on_cpu(
+        self, tmp_path, monkeypatch
+    ):
+        # The chat store seeds speculativeType from readPersistedSpeculativeType(),
+        # which defaults to "auto", so nearly every /load carries it. Auto resolves
+        # to a drafterless ngram mode here, no --model-draft is emitted and the
+        # launch masks the GPUs away -- deciding the gate from the requested mode
+        # refused the ordinary CPU-only load this exemption exists for.
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        launches, error = _drive_load(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            speculative_type = "auto",
+        )
+        assert error is None, f"the SM gate refused the default CPU-only load: {error}"
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+    def test_a_cpu_pinned_drafter_still_launches_on_cpu(self, tmp_path, monkeypatch):
+        # --spec-draft-ngl 0 keeps the drafter off the GPU, so the launch masks
+        # them away like any other zero-offload load.
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        launches, error = _drive_load(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            speculative_type = "auto",
+            extra_args = ["--spec-draft-ngl", "0"],
+        )
+        assert error is None, f"the SM gate refused a CPU-pinned drafter: {error}"
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+    def test_a_cpu_pinned_projector_still_launches_on_cpu(self, tmp_path, monkeypatch):
+        # --no-mmproj-offload clears mmproj_use_gpu, so clip.cpp holds no VRAM and
+        # the launch hides the GPUs; the gate must follow that mask, not the fact
+        # that a projector was resolved.
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"")
+        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+        launches, error = _drive_load(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            is_vision = True,
+            extra_args = ["--no-mmproj-offload"],
+        )
+        assert error is None, f"the SM gate refused a CPU-pinned projector: {error}"
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        assert "--no-mmproj-offload" in cmd
+        assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+    def test_a_gpu_projector_keeps_the_gate(self, tmp_path, monkeypatch):
+        # Without the CPU pin the projector is offloaded, the GPUs stay visible and
+        # the child needs the kernels the bundle has no code for.
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"")
+        backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+        launches, error = _drive_load(
+            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0, is_vision = True
+        )
+        assert isinstance(error, RuntimeError)
+        assert launches == []
+
+    def test_an_auto_placement_device_none_keeps_the_gate(self, tmp_path, monkeypatch):
+        # Auto placement writes no CPU mask, so the child still enumerates the
+        # uncovered card. --device none only empties model->devices AFTER
+        # ggml_cuda_init has run, and it is one typo ("cpu", which llama.cpp
+        # rejects outright) away from a launch that dies anyway -- the exemption
+        # tracks the mask, not the argv.
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        launches, error = _drive_load(
+            backend, gguf, gpu_memory_mode = "auto", extra_args = ["--device", "none"]
         )
         assert isinstance(error, RuntimeError)
         assert launches == []
