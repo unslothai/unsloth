@@ -58,37 +58,11 @@ concurrency:
   queue: max
 
 jobs:
-  # Ask the sweeper to stand scheduled CI down while this release builds. Same
-  # repository, so this needs no secret: the job's own GITHUB_TOKEN with
-  # actions: write is enough, and there is no credential to rotate or leak.
-  #
-  # Deliberately not a `needs:` of anything. Freeing capacity is an
-  # optimisation, so a failure here must never hold up or fail a release, and
-  # the build must not wait on it either.
-  #
-  # ci-capacity.yml ships inert. Until CI_PREEMPT_ENABLED is set on this
-  # repository it resolves what it would have cancelled, prints that to the job
-  # summary, and touches nothing. That is the intended state for now: this wires
-  # the request up so the dry-run summary shows what a real sweep would free.
-  free-capacity:
-    name: Ask CI to free runner capacity
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Dispatch the capacity sweeper
-        # A release must never fail because the request did not land.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh workflow run ci-capacity.yml --repo "$GITHUB_REPOSITORY" --ref main \
-            -f mode=sweep \
-            -f events=schedule \
-            -f classes=linux,windows \
-            -f reason="release-desktop run ${GITHUB_RUN_ID}"
-
+  # There is no capacity-sweeper dispatch here. It used to ask ci-capacity.yml to
+  # stand scheduled CI down while a release built, but that workflow is inert
+  # unless the repo variable CI_PREEMPT_ENABLED is the exact string 'true', so
+  # every release spent a runner on a job that resolved what it would have
+  # cancelled and then touched nothing. Queue clearing is done by hand now.
   prepare-version:
     name: Prepare release versions
     runs-on: ubuntu-latest
@@ -110,12 +84,20 @@ jobs:
         shell: bash
         env:
           INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
+          # Reading releases unauthenticated spends a quota shared by every runner.
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 <<'PY'
+          import json
           import os
           import pathlib
           import re
           import sys
+          import urllib.request
+
+          RELEASES_API_URL = (
+              'https://api.github.com/repos/unslothai/unsloth/releases?per_page=30'
+          )
 
           studio_version = os.environ['INPUT_STUDIO_VERSION'].strip()
           if not studio_version:
@@ -146,6 +128,63 @@ jobs:
           app_version = studio_version.removeprefix('v')
           asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
           desktop_release_tag = studio_version
+
+          # Both updater paths compare SemVer, so a tag whose numbers go backwards
+          # strands its own clients: 60 < 527, so v0.1.60-beta offered no one.
+          def semver_key(version):
+              # Full precedence, not just the triple: v0.1.528 and v0.1.528-rc
+              # both beat v0.1.528-beta, and the updater knows it.
+              version = version.strip().removeprefix('v')
+              match = semver_tag.fullmatch(f'v{version}')
+              if not match:
+                  return None
+              release = tuple(int(part) for part in match.groups())
+              pre = version.partition('-')[2]
+              if not pre:
+                  return release, (1,)  # a release outranks its own prereleases
+              # SemVer: numeric identifiers sort below alphanumeric, as numbers.
+              return release, (0, *(
+                  (0, int(part), '') if part.isdigit() else (1, 0, part)
+                  for part in pre.split('.')
+              ))
+
+          def fetch(url):
+              headers = {'Accept': 'application/vnd.github+json'}
+              token = os.environ.get('GH_TOKEN', '')
+              if token:
+                  headers['Authorization'] = f'Bearer {token}'
+              with urllib.request.urlopen(
+                  urllib.request.Request(url, headers = headers), timeout = 30
+              ) as response:
+                  return json.loads(response.read())
+
+          def published_desktop_version():
+              # Not /releases/latest: an llama.cpp prebuilt can hold that slot
+              # and ships no manifest, so the read would 404 and skip this check.
+              studio = [
+                  release for release in fetch(RELEASES_API_URL)
+                  if not release['draft'] and semver_tag.fullmatch(release['tag_name'])
+              ]
+              studio.sort(key = lambda release: release['published_at'], reverse = True)
+              for release in studio:
+                  for asset in release['assets']:
+                      if asset['name'] == 'latest.json':
+                          return fetch(asset['browser_download_url']).get('version', '')
+              return ''
+
+          try:
+              published = published_desktop_version()
+          except (OSError, ValueError, KeyError) as error:
+              # An unreachable manifest is not a bad tag, and the first has none.
+              print(f'::warning::could not read the published desktop version: {error}')
+              published = ''
+
+          published_key = semver_key(published)
+          if published_key and published_key >= semver_key(app_version):
+              sys.exit(
+                  f'studio_version {studio_version} is not newer than the published '
+                  f'v{published}, so clients on it would never be offered this release'
+              )
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               print(f'studio_version={studio_version}', file=output)
@@ -517,7 +556,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils
 
       # ── Node.js ──
       - name: Setup Node.js
@@ -567,14 +606,14 @@ jobs:
           if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'rpm')) {
             throw new Error('Desktop release must not target RPM packages');
           }
-          if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'appimage')) {
-            throw new Error('Tauri AppImage bundling must stay disabled; the release uses the thin AppImage packager');
+          if (!Array.isArray(targets) || !targets.some((target) => String(target).toLowerCase() === 'appimage')) {
+            throw new Error('Desktop release must build the complete Tauri AppImage target');
           }
           if (config.bundle?.linux?.rpm) {
             throw new Error('bundle.linux.rpm must not be configured');
           }
-          if (config.bundle?.linux?.appimage) {
-            throw new Error('bundle.linux.appimage must not be configured for the thin AppImage release path');
+          if (config.bundle?.linux?.appimage?.bundleMediaFramework !== false) {
+            throw new Error('Linux AppImage bundleMediaFramework must stay false');
           }
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
@@ -587,64 +626,32 @@ jobs:
           if (!linuxInstallLines.some((line) => line.includes('libappindicator3-dev'))) {
             throw new Error('Desktop Linux release must install libappindicator3-dev');
           }
-          const appimagetoolLines = lines.filter((line) => line.includes('github.com/AppImage/appimagetool/releases/download'));
-          if (!appimagetoolLines.some((line) => line.includes('1.9.1/appimagetool-x86_64.AppImage'))) {
-            throw new Error('Desktop Linux release must pin appimagetool 1.9.1');
+          const requiredTools = [
+            'AppRun-x86_64',
+            'linuxdeploy-x86_64.AppImage',
+            'linuxdeploy-plugin-gtk.sh',
+            'linuxdeploy-plugin-gstreamer.sh',
+            'linuxdeploy-plugin-appimage.AppImage',
+          ];
+          const toolScript = readFileSync(
+            'studio/src-tauri/linux/prepare-complete-appimage-tools.sh',
+            'utf8',
+          );
+          const fetchCalls = toolScript
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => /^fetch "\$[A-Z_]+_URL" "\$[A-Z_]+_SHA256" \S+$/.test(line));
+          const fetchedTools = fetchCalls.map((line) => line.split(/\s+/).at(-1));
+          if (fetchCalls.length !== requiredTools.length) {
+            throw new Error(`Expected ${requiredTools.length} digest-verified fetch calls, got ${fetchCalls.length}`);
           }
-          // A pinned version/path is reproducibility, not integrity: the asset
-          // can be replaced after upload. Require the immutable SHA-256 digest
-          // to be pinned AND verified before chmod +x. Scope every check to the
-          // real "Pin thin AppImage toolchain" step so this guard cannot
-          // satisfy itself; a file-wide scan would match the guard's own code.
-          const expectedAppimagetoolDigest = 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0';
-          const expectedRuntimeDigest = '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d';
-          const isComment = (line) => {
-            const trimmed = line.trim();
-            return trimmed.startsWith('#') || trimmed.startsWith('//');
-          };
-          const stepStart = lines.findIndex((line) => /^\s*- name: Pin thin AppImage toolchain\s*$/.test(line));
-          if (stepStart === -1) {
-            throw new Error('Desktop Linux release must keep the "Pin thin AppImage toolchain" step');
-          }
-          const stepIndent = lines[stepStart].search(/\S/);
-          let stepEnd = lines.length;
-          for (let i = stepStart + 1; i < lines.length; i += 1) {
-            const line = lines[i];
-            if (line.trim() === '') continue;
-            const indent = line.search(/\S/);
-            // The next sibling step ('- ...') at the same indent, or any dedent
-            // below the step, ends this step's block.
-            if (indent < stepIndent || (indent === stepIndent && /^\s*-\s/.test(line))) {
-              stepEnd = i;
-              break;
+          for (const tool of requiredTools) {
+            if (!fetchedTools.includes(tool)) {
+              throw new Error(`Desktop Linux release must digest-verify its fetch of ${tool}`);
             }
           }
-          const stepLines = lines.slice(stepStart, stepEnd);
-          const digest = (name) => {
-            const pattern = new RegExp(`^\\s*${name}:\\s*["']([0-9a-f]{64})["']\\s*$`);
-            const line = stepLines.find((candidate) => pattern.test(candidate));
-            return line?.match(pattern)?.[1];
-          };
-          if (digest('APPIMAGETOOL_SHA256') !== expectedAppimagetoolDigest) {
-            throw new Error('Desktop Linux release must pin the appimagetool SHA-256 digest');
-          }
-          if (digest('APPIMAGE_RUNTIME_SHA256') !== expectedRuntimeDigest) {
-            throw new Error('Desktop Linux release must pin the AppImage runtime SHA-256 digest');
-          }
-          const sha256Indexes = stepLines
-            .map((line, index) => !isComment(line) && line.includes('sha256sum -c') ? index : -1)
-            .filter((index) => index !== -1);
-          if (sha256Indexes.length !== 2) {
-            throw new Error('Desktop Linux release must verify both AppImage toolchain digests');
-          }
-          const chmodIdx = stepLines.findIndex((line) => !isComment(line) && /chmod\s+\+x/.test(line));
-          if (chmodIdx !== -1 && Math.max(...sha256Indexes) > chmodIdx) {
-            throw new Error('Desktop Linux release must verify the AppImage toolchain before chmod +x');
-          }
           const releaseBody = process.env.DESKTOP_RELEASE_NOTES;
-          if (!releaseBody) {
-            throw new Error('DESKTOP_RELEASE_NOTES must not be empty');
-          }
+          if (!releaseBody) throw new Error('DESKTOP_RELEASE_NOTES must not be empty');
           if (/\brpm\b|\.rpm/i.test(releaseBody)) {
             throw new Error('Desktop release body must not advertise RPM packages');
           }
@@ -788,59 +795,88 @@ jobs:
           rm -f certificate.p12
 
       # ── Windows: install Azure Trusted Signing CLI ──
-      # `cargo install` builds this from source: 241s and 248s on the last two
-      # cache-miss runs. It was only ever fast when the ~550 MB rust-cache
-      # happened to restore `~/.cargo/bin` too, and that entry is the first
-      # thing evicted under repo cache pressure, which is why Windows swung
-      # between 8.8 min and 20.9 min. A dedicated single-binary cache keeps the
-      # compile off the critical path independently of the big Rust cache.
-      - name: Restore trusted-signing-cli
-        id: cache_trusted_signing_cli
-        if: matrix.platform == 'windows-latest'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ~/.cargo/bin/trusted-signing-cli.exe
-          # The version is in the key, so a bump invalidates the cache instead
-          # of silently reusing the old binary.
-          key: trusted-signing-cli-0.10.0-${{ runner.os }}-${{ runner.arch }}
-
+      # This binary runs in the steps holding the Azure Trusted Signing and
+      # Tauri signing secrets, so where it comes from is a signing-key question,
+      # not a build-speed one. Caching the `cargo install` build (241s and 248s
+      # on the last two runs) made the cache the source of truth: a hit skipped
+      # the install, and the restored executable went on PATH gated only by a
+      # `--version` probe, which any binary can print.
+      #
+      # Upstream publishes the same tool prebuilt, so pin it instead. The URL is
+      # reproducibility, the SHA-256 is the integrity gate: a release asset can
+      # be replaced after upload, and a replaced one now fails the release
+      # rather than signing with an unknown binary. Same shape as the AppImage
+      # toolchain below, and faster than the cache it replaces. Bump the URL and
+      # the digest together when moving off 0.10.0.
       - name: Install trusted-signing-cli
-        if: matrix.platform == 'windows-latest' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
-        run: |
-          cargo install trusted-signing-cli --version 0.10.0 --locked
-
-      # Unconditional: on a cache hit the install step above is skipped, and the
-      # cargo bin dir still has to reach PATH or signing fails.
-      - name: Add cargo bin to PATH
         if: matrix.platform == 'windows-latest'
+        # Explicit, like every other Windows step here. The retry parameters
+        # below are PowerShell 6+ only, so under 5.1 the download fails with "A
+        # parameter cannot be found that matches parameter name
+        # 'MaximumRetryCount'". Naming the shell keeps that deliberate.
+        shell: pwsh
+        env:
+          TRUSTED_SIGNING_CLI_URL: "https://github.com/Levminer/artifact-signing-cli/releases/download/0.10.0/trusted-signing-cli.exe"
+          TRUSTED_SIGNING_CLI_SHA256: "8c9d750ca582891a7433925dcf302d5d3761fbed757b46c4bf5b417562dccb0e"
         run: |
-          echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $ErrorActionPreference = "Stop"
+          $dir = Join-Path $env:RUNNER_TEMP "trusted-signing-cli"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $dest = Join-Path $dir "trusted-signing-cli.exe"
+
+          Invoke-WebRequest -Uri $env:TRUSTED_SIGNING_CLI_URL -OutFile $dest -MaximumRetryCount 3 -RetryIntervalSec 5
+
+          $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+          $expected = $env:TRUSTED_SIGNING_CLI_SHA256.ToLower()
+          if ($actual -ne $expected) {
+            # Delete it first: a later step resolving this name off PATH must
+            # not find the rejected download still sitting there.
+            Remove-Item -Force $dest
+            Write-Output "::error::trusted-signing-cli digest mismatch, refusing to sign with an unverified binary. Expected $expected, got $actual. Re-pin TRUSTED_SIGNING_CLI_SHA256 deliberately if upstream republished the asset."
+            exit 1
+          }
+          Write-Output "verified trusted-signing-cli sha256=$actual"
+
+          # $GITHUB_PATH prepends, which is what this needs: swatinem/rust-cache
+          # restores ~/.cargo/bin, already on PATH, and a stale entry there can
+          # carry its own unverified copy of this binary. The verified one has
+          # to win the name lookup.
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
       # Fails closed. This used to print a message and exit 0 on both branches,
       # so a missing or broken binary reported success and the failure only
       # surfaced later, inside the Tauri bundling step, as a signing error with
-      # no obvious cause. It matters more now that the binary comes from a
-      # cache: a truncated or corrupt cache entry restores, skips the install
-      # above, and would otherwise sail through this check.
+      # no obvious cause.
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"
 
           $cli = Get-Command trusted-signing-cli -ErrorAction SilentlyContinue
           if (-not $cli) {
-            Write-Output "::error::trusted-signing-cli is not on PATH. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            Write-Output "::error::trusted-signing-cli is not on PATH. Check the 'Install trusted-signing-cli' step above."
             exit 1
           }
           Write-Output "resolved: $($cli.Source)"
 
+          # The signing script invokes this by bare name, so whatever PATH
+          # resolves is what signs. Only the digest-verified copy installed
+          # above may do that; anything else on PATH under the same name (a
+          # leftover in ~/.cargo/bin, say) is unverified by definition.
+          $verified = [IO.Path]::GetFullPath((Join-Path (Join-Path $env:RUNNER_TEMP "trusted-signing-cli") "trusted-signing-cli.exe"))
+          if ([IO.Path]::GetFullPath($cli.Source) -ne $verified) {
+            Write-Output "::error::trusted-signing-cli resolved to $($cli.Source), not the verified $verified. Refusing to sign with a binary that was never digest checked."
+            exit 1
+          }
+
           # Two different failure modes, and neither one covers the other:
-          #   * the binary cannot be started at all (a truncated cache entry
-          #     gives "Exec format error"). That raises a terminating error
-          #     under $ErrorActionPreference = "Stop", so it has to be caught
-          #     or the step dies here, before the recovery message below.
+          #   * the binary cannot be started at all (a truncated download gives
+          #     "Exec format error"). That raises a terminating error under
+          #     $ErrorActionPreference = "Stop", so it has to be caught or the
+          #     step dies here, before the message below.
           #   * the binary starts and exits non-zero. That does NOT raise, so
           #     $LASTEXITCODE has to be read explicitly.
           try {
@@ -852,126 +888,52 @@ jobs:
             # it, and put the recovery ahead of the detail so it survives even if
             # the annotation is clipped for length.
             $detail = ($_.Exception.Message -replace '\s+', ' ').Trim()
-            Write-Output "::error::trusted-signing-cli could not be started. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild. Underlying error: $detail"
+            Write-Output "::error::trusted-signing-cli could not be started. Re-run to fetch it again; if it persists the pinned asset is bad. Underlying error: $detail"
             exit 1
           }
           if ($LASTEXITCODE -ne 0) {
-            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE."
             exit 1
           }
 
-      # ── Linux: pin AppImage packaging toolchain ──
-      - name: Pin thin AppImage toolchain
+      # ── Linux: preseed every executable/script consumed by Tauri's AppImage bundler ──
+      - name: Pin complete AppImage toolchain
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
-        env:
-          # Pinning the versioned release path is reproducibility, not
-          # integrity: a GitHub release asset can be replaced (or its delivery
-          # path compromised) after upload. The SHA-256 digests of these exact
-          # assets are the integrity gate. A replaced
-          # release asset fails closed and must be re-pinned deliberately.
-          APPIMAGETOOL_URL: "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
-          APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
-          APPIMAGE_RUNTIME_URL: "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64"
-          APPIMAGE_RUNTIME_SHA256: "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
         run: |
-          set -euo pipefail
-          tools_dir="$RUNNER_TEMP/appimage-tools"
-          mkdir -p "$tools_dir"
-          appimagetool="$tools_dir/appimagetool-x86_64.AppImage"
-          runtime="$tools_dir/runtime-x86_64"
-          curl -fsSL "$APPIMAGETOOL_URL" -o "$appimagetool"
-          curl -fsSL "$APPIMAGE_RUNTIME_URL" -o "$runtime"
-          # Verify the digest BEFORE the binary is ever marked executable. The
-          # later step builds the AppImage with the Tauri signing key, so a
-          # substituted packager that ran there could exfiltrate signing
-          # material or tamper with release artifacts. Fail closed on any
-          # mismatch.
-          echo "${APPIMAGETOOL_SHA256}  ${appimagetool}" | sha256sum -c -
-          echo "${APPIMAGE_RUNTIME_SHA256}  ${runtime}" | sha256sum -c -
-          chmod +x "$appimagetool"
+          studio/src-tauri/linux/prepare-complete-appimage-tools.sh \
+            "$RUNNER_TEMP/tauri-tools-cache/tauri"
 
-      # ── Linux: build the native package once ──
-      - name: Build Linux deb
+      # ── Linux: build and sign the native package and complete AppImage together ──
+      - name: Build Linux bundles
         id: build_linux
         if: matrix.platform == 'ubuntu-22.04'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          XDG_CACHE_HOME: ${{ runner.temp }}/tauri-tools-cache
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          args: >-
-            -v --bundles deb
-            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          args: -v --bundles deb,appimage
 
-      # ── Linux: wrap the deb payload without bundling the GTK/WebKit stack ──
-      - name: Build and sign thin Linux AppImage
-        id: package_linux
+      - name: Verify complete Linux AppImage
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
         env:
           ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # The signing key is not password protected, and no secret of this name
-          # exists, so this expression has always resolved to the empty string.
-          # Stated literally rather than left pointing at a secret that is not
-          # there: the value is unchanged, but it no longer reads as configuration
-          # someone forgot to set. Empty is not the same as unset here -- tauri
-          # prompts for a password when the variable is absent, which would hang
-          # the job, so the line stays.
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           set -euo pipefail
-          deb_path="$(
-            python3 - <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          paths = json.loads(os.environ.get('ARTIFACT_PATHS', ''))
-          matches = [pathlib.Path(path) for path in paths if str(path).endswith('.deb')]
+          appimage="$(python3 - <<'PY'
+          import json, os, pathlib, sys
+          matches = [pathlib.Path(p) for p in json.loads(os.environ['ARTIFACT_PATHS']) if p.endswith('.AppImage')]
           if len(matches) != 1 or not matches[0].is_file():
-              sys.exit(f'Expected exactly one Linux deb artifact, got {matches}')
+              sys.exit(f'Expected exactly one AppImage artifact, got {matches}')
           print(matches[0])
           PY
           )"
-          output_dir="studio/src-tauri/target/release/bundle/appimage"
-          appimage="$output_dir/unsloth-studio_${APP_VERSION}_amd64.AppImage"
-          export APPIMAGE_PATH="$appimage"
-          studio/src-tauri/linux/build-thin-appimage.sh \
-            "$deb_path" \
-            "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
-            "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
-            "$appimage"
-          signature="${appimage}.sig"
-          # The signer writes ${appimage}.sig itself; stdout is human-readable diagnostics.
-          npx --prefix studio tauri signer sign "$appimage"
-          python3 - "$signature" <<'PY'
-          import base64
-          import binascii
-          import pathlib
-          import sys
-
-          signature_path = pathlib.Path(sys.argv[1])
-          signature_value = signature_path.read_text(encoding='utf-8').strip()
-          try:
-              decoded = base64.b64decode(signature_value, validate=True)
-          except (binascii.Error, ValueError):
-              sys.exit('Tauri signer did not create a base64 minisign signature')
-          if not decoded.startswith(b'untrusted comment:') or b'\ntrusted comment:' not in decoded:
-              sys.exit('Tauri signer did not create a minisign signature payload')
-          signature_path.write_text(signature_value + '\n', encoding='utf-8')
-          PY
-          python3 - <<'PY'
-          import json
-          import os
-
-          deb_paths = json.loads(os.environ['ARTIFACT_PATHS'])
-          appimage = os.environ['APPIMAGE_PATH']
-          paths = [*deb_paths, appimage, f'{appimage}.sig']
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'artifactPaths={json.dumps(paths)}\n')
-          PY
+          studio/src-tauri/linux/verify-complete-appimage.sh "$appimage"
 
       # ── macOS: build + sign + notarize ──
       - name: Build macOS app
@@ -1213,18 +1175,18 @@ jobs:
           if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
           if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
 
-          # Absent scanner vs. bad verdict. Everything below this point assumes a
-          # Defender that answers; when it does not answer at all there is no scan
-          # to interpret, so skip instead of failing closed. This is deliberately
-          # narrow: it triggers only when the cmdlets themselves fail, which is an
-          # unavailable engine. A Defender that IS present but misconfigured still
-          # fails below, and an actual detection still fails the job.
-          if ($unavailable) {
-            Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')); skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
-            exit 0
+          # Absent scanner vs. bad verdict: only a missing scanner may skip; a
+          # misconfigured one or a real detection still fails. Dead cmdlets are not
+          # a missing scanner - WMI and service RPC back them, MpCmdRun talks to
+          # the engine directly - and conflating the two shipped three releases
+          # unscanned since 2026-08-06. Let the EICAR control below decide.
+          $cmdletsDown = [bool]$unavailable
+          if ($cmdletsDown) {
+            Write-Host "::warning::Defender cmdlets are unavailable on this runner ($($unavailable -join '; ')); configuration cannot be read or enforced. Falling back to a direct MpCmdRun scan."
           }
-
-          Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
+          if ($status) {
+            Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
+          }
 
           # Set-MpPreference can return cleanly and still be ignored, so verify.
           # Split by whether the gap invalidates the verdict: cloud-delivered
@@ -1232,14 +1194,21 @@ jobs:
           # sight, and "!ml" is a cloud verdict, so a clean result without them
           # cannot see what this gate exists to catch. Leftover exclusions only
           # weaken it, since -DisableRemediation ignores file exclusions.
+          # Guard each check on the cmdlet that read it, not a blanket flag: the
+          # two fail independently (live WMI call vs. registry), so a blanket
+          # guard drops a readable $pref's MAPS and block-at-first-sight checks.
           $fatal = @()
           $degraded = @()
-          if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
-          if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
-          if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
-          if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-          if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
-          if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+          if ($status) {
+            if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+          }
+          if ($pref) {
+            if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+            if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
+            if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
+            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+          }
 
           # Configuration is not connectivity. Retried, so one network blip does
           # not block a release.
@@ -1250,7 +1219,12 @@ jobs:
             Write-Host "  MAPS check $try failed: $($mapsOut.Trim())"
             Start-Sleep -Seconds (5 * $try)
           }
-          if (-not $maps) { $fatal += 'cannot reach the Defender cloud service' }
+          # Cmdlets down: losing the cloud degrades rather than blocks the release
+          # outright - signature detections still fire, only "!ml" verdicts do not.
+          if (-not $maps) {
+            if ($cmdletsDown) { $degraded += 'cannot reach the Defender cloud service, so "!ml" cloud verdicts cannot fire' }
+            else              { $fatal += 'cannot reach the Defender cloud service' }
+          }
 
           # Positive control: clean and broken-scanner look identical. Split into
           # fragments so this file is not itself a sample.
@@ -1265,12 +1239,32 @@ jobs:
           if (Test-Path $eicarPath) {
             $controlOut = (& $mp -Scan -ScanType 3 -File $eicarPath -DisableRemediation 2>&1 | Out-String)
             $controlPassed = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+            # Remediation is asynchronous: the sample can pass Test-Path and still
+            # be quarantined mid-scan. Vanishing means the control fired, not a
+            # missing scanner - nothing else deletes it and -DisableRemediation
+            # stops this scan from doing so, so a dead engine leaves it on disk.
+            if (-not $controlPassed -and -not (Test-Path $eicarPath)) {
+              Write-Host 'EICAR positive control quarantined before the scan could open it; real-time protection is live.'
+              $controlPassed = $true
+            }
             Remove-Item $eicarPath -Force -ErrorAction SilentlyContinue
           } else {
             Write-Host 'EICAR positive control blocked on write; real-time protection is live.'
             $controlPassed = $true
           }
-          if (-not $controlPassed) { $fatal += 'EICAR positive control did not fire' }
+          # The real test of whether a scanner exists, and the only one left with
+          # the cmdlets down: a control that does not fire means MpCmdRun cannot
+          # scan either, so skip as before rather than fail on a missing engine.
+          if (-not $controlPassed) {
+            if ($cmdletsDown) {
+              Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')) and MpCmdRun could not fire the EICAR positive control either; skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
+              exit 0
+            }
+            $fatal += 'EICAR positive control did not fire'
+          }
+          if ($cmdletsDown) {
+            Write-Host 'EICAR positive control fired via MpCmdRun; scanning with the cmdlets unavailable.'
+          }
 
           if ($degraded) {
             Write-Host "::warning::Defender is not fully configured on this runner ($($degraded -join '; ')). Scanning anyway."
@@ -1321,12 +1315,17 @@ jobs:
 
           # -ErrorAction Continue does not stop on a rejected exclusion, so read
           # it back. Defender stores these verbatim; normalise anyway.
-          $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
-          $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
-          $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
-          if ($notApplied) {
-            Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
-            exit 1
+          # Keyed on the reading cmdlet, not the blanket flag: $pref can be live
+          # while $status is down. With $pref unreadable there is nothing to read
+          # back, and a mid-scan quarantine still fails below as unscannable.
+          if ($pref) {
+            $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
+            $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
+            $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
+            if ($notApplied) {
+              Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
+              exit 1
+            }
           }
 
           $detected = @()
@@ -1443,7 +1442,7 @@ jobs:
       - name: Stage release assets
         shell: bash
         env:
-          ARTIFACT_PATHS: ${{ steps.package_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
         run: |
           set -euo pipefail
           if command -v python3 >/dev/null 2>&1; then
@@ -1774,7 +1773,7 @@ jobs:
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
               'version': os.environ['APP_VERSION'],
-              # App version is SemVer; CHANGELOG.md is keyed by the backend release.
+              # App version is SemVer; this is the backend release it pins.
               'pypi_version': os.environ['PYPI_VERSION'],
               'notes': notes,
               'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),

@@ -343,6 +343,7 @@ async def download_model_response(
             allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
         label = label,
         log_prefix = "Download",
         logger = logger,
@@ -452,14 +453,23 @@ def _variant_transport_status(repo_id: str, variant: str, hf_token: Optional[str
             repo_id,
             variant,
         )
-    has_matching_incomplete = bool(
-        incomplete_hashes and variant_hashes and incomplete_hashes.intersection(variant_hashes)
+    # A partial only counts toward "resumable" while a writer that reopens it is installed,
+    # since the UI turns the flag into "Resume with HTTP to keep the progress you already
+    # have" and the next download start sweeps whatever cannot be reopened.
+    resumable_hashes = download_registry.incomplete_blob_hashes(
+        "model",
+        repo_id,
+        active_only = True,
+        resumable_only = True,
+    )
+    has_resumable_incomplete = bool(
+        resumable_hashes and variant_hashes and resumable_hashes.intersection(variant_hashes)
     )
     return {
         "has_partial": has_partial,
         "last_transport": last_transport,
         "resumable": (
-            has_matching_incomplete and last_transport == download_registry.TRANSPORT_HTTP
+            has_resumable_incomplete and last_transport == download_registry.TRANSPORT_HTTP
         ),
     }
 

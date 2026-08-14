@@ -1508,8 +1508,8 @@ def list_scan_folders() -> list[dict]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
-    """Add a directory to the custom scan folder list. Returns the row."""
+def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+    """Add a custom scan folder and return its row plus whether it was inserted."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
@@ -1553,13 +1553,15 @@ def add_scan_folder(path: str) -> dict:
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            return dict(existing)
+            return dict(existing), False
+        inserted = False
         try:
             conn.execute(
                 "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
                 (normalized, now),
             )
             conn.commit()
+            inserted = True
         except sqlite3.IntegrityError:
             pass  # duplicate; fall through to SELECT
         # Same collation as the pre-check to catch concurrent writes (Windows).
@@ -1571,16 +1573,23 @@ def add_scan_folder(path: str) -> dict:
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
             raise ValueError("Folder was concurrently removed")
-        return dict(row)
+        return dict(row), inserted
     finally:
         conn.close()
 
 
-def remove_scan_folder(id: int) -> None:
+def add_scan_folder(path: str) -> dict:
+    """Add a directory to the custom scan folder list. Returns the row."""
+    row, _ = add_scan_folder_with_status(path)
+    return row
+
+
+def remove_scan_folder(id: int) -> bool:
     conn = get_connection()
     try:
-        conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
+        cursor = conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
         conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 
@@ -3641,11 +3650,20 @@ def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
+# Discriminated unions, not partial patches: merging a `thread` pick into a stored
+# `kb` one keeps `kbId`, which the payload's thread variant forbids.
+_ATOMIC_SETTING_KEYS = frozenset({"ragSource"})
+
+
 def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current)
     for key, value in updates.items():
         current_value = merged.get(key)
-        if isinstance(current_value, dict) and isinstance(value, dict):
+        if (
+            key not in _ATOMIC_SETTING_KEYS
+            and isinstance(current_value, dict)
+            and isinstance(value, dict)
+        ):
             merged[key] = _deep_merge_settings(current_value, value)
         else:
             merged[key] = value
@@ -3661,8 +3679,12 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
     try:
         conn.execute("BEGIN IMMEDIATE")
         current, corrupt = _load_chat_settings_for_merge(conn)
+        # An atomic key carries its whole value, so it repairs a quarantined row
+        # rather than patching a base that is no longer there.
         unsafe_partial_keys = [
-            key for key, value in updates.items() if key in corrupt and isinstance(value, dict)
+            key
+            for key, value in updates.items()
+            if key in corrupt and isinstance(value, dict) and key not in _ATOMIC_SETTING_KEYS
         ]
         if unsafe_partial_keys:
             conn.commit()

@@ -17,9 +17,12 @@ from routes.export import router as export_router
 from routes.training_history import router as training_history_router
 from routes.chat_history import router as chat_history_router
 from routes.providers import router as providers_router
+
+from routes.openai_codex_auth import router as openai_codex_auth_router
 from routes.mcp_servers import router as mcp_servers_router
 from routes.rag import router as rag_router
 from routes.research_runs import router as research_runs_router
+from routes.youtube import router as youtube_router
 
 __all__ = [
     "training_router",
@@ -34,10 +37,12 @@ __all__ = [
     "training_history_router",
     "chat_history_router",
     "providers_router",
+    "openai_codex_auth_router",
     "mcp_servers_router",
     "rag_router",
     "research_runs_router",
+    "youtube_router",
 ]
 
 # Bind the re-export so the import-hoist verifier counts it as used.
-_ = (rag_router, video_router, research_runs_router)
+_ = (rag_router, video_router, research_runs_router, youtube_router)

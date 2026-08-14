@@ -78,3 +78,13 @@ export interface MessageRecord {
   metadata?: Record<string, unknown>;
   createdAt: number;
 }
+
+/** One conversation parsed out of an import file, before it is written to storage. */
+export interface ParsedConversation {
+  title: string;
+  threadId: string;
+  messages: MessageRecord[];
+  /** Open WebUI exports carry the flag; other formats leave it unset. */
+  archived?: boolean;
+  createdAt?: number;
+}

@@ -29,9 +29,9 @@
 # Legs left on `overlay: false`:
 #   mac */mask/pipe     the `curl | sh` shape a user runs, kept end-to-end on the
 #                       released package so a broken PyPI release still shows up.
-#   mac macos-15/trace  `notools` asserts the installer never reaches for git, and the
-#                       editable build calls `git rev-parse` / `git archive` itself via
-#                       setuptools-scm's file finder, answering the leg's own question.
+#   mac macos-15/trace  `notools` rejects toolchain use except uv's exact optional
+#                       libpython self-ID patch; `dylibpatch` requires that control call.
+#                       No overlay: setuptools-scm's editable build would call git itself.
 #   linux ubuntu2404-nonroot-notransport  dies at the elevation gate before a venv exists.
 #   wsl                 only install.sh is copied in; no source tree inside WSL.
 
@@ -125,6 +125,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     continue-on-error: ${{ matrix.experimental }}
+
+    env:
+      # uv's managed Python is not stored in the ordinary download cache on macOS.
+      # Isolate both so every row exercises the first-download dylib patch path.
+      UV_CACHE_DIR: ${{ github.workspace }}/.clean-machine/uv-cache
+      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.clean-machine/uv-python
     # Explicit legs, not a full cross-product: the interesting dimensions are (does
     # the toolchain exist) x (how the script is delivered), not every pairing.
     strategy:
@@ -140,9 +146,9 @@ jobs:
           - {os: macos-15, mode: mask,  delivery: file,  flags: '',           experimental: false, overlay: true}
           # What the desktop app runs: no tty, stdin closed, TAURI markers on.
           - {os: macos-15, mode: mask,  delivery: tauri, flags: '',           experimental: false, overlay: true}
-          # Toolchain present but logged: does the installer ever reach for it? No
-          # overlay: the editable build calls git itself (setuptools-scm), planting the
-          # very evidence `notools` looks for.
+          # Toolchain present but logged: uv may make exactly one kind of developer-tool
+          # call, its managed-libpython self-ID patch. No overlay: the editable build calls
+          # git itself (setuptools-scm), planting evidence unrelated to the consumer path.
           - {os: macos-15, mode: trace, delivery: file,  flags: '',           experimental: false, overlay: false}
           # --no-torch is the one macOS path that can still want a compiler
           # (sentencepiece has no guaranteed cp313 arm64 wheel), so probe it apart from
@@ -179,6 +185,9 @@ jobs:
       - name: Simulate a clean machine (${{ matrix.mode }})
         run: |
           mkdir -p logs
+
+          rm -rf "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+          mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
           if [ "${{ matrix.mode }}" = "mask" ]; then
             bash .github/scripts/clean-machine-env.sh mask --remove
           else
@@ -189,8 +198,14 @@ jobs:
         if: matrix.mode == 'mask'
         run: |
           set -a; . ./clean-machine.env; set +a
+          [ -n "$UNSLOTH_TOOL_TRACE" ] || { echo "::error::mask mode set no UNSLOTH_TOOL_TRACE"; exit 1; }
+          # Prove the observation-only sentinel is on PATH without ever reaching Apple's
+          # /usr/bin shim, then clear the self-test so the post-install zero-hit assertion
+          # describes only the installer.
+          bash .github/scripts/clean-machine-install-name-tool.sh \
+            verify-sentinel "$UNSLOTH_TOOL_TRACE" clean-machine
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
-            bash .github/scripts/clean-machine-assert.sh absent
+            bash .github/scripts/clean-machine-assert.sh absent nodylibtool
 
       - name: Verify the trace actually records
         if: matrix.mode == 'trace'
@@ -305,10 +320,27 @@ jobs:
           checks="nobuild"
           # `absent` ran only BEFORE the install, so an installer that quietly selected the
           # CLT or installed a compiler left the leg green. Re-run it after.
-          [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent"
-          [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools"
+          [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent nodylibtool"
+          [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools dylibpatch"
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
             bash .github/scripts/clean-machine-assert.sh $checks
+
+          if [ "${{ matrix.mode }}" = "trace" ]; then
+            # Validate the on-disk result, not only uv's argv. Field 4 is the first
+            # hex-encoded dylib operand in the boundary-safe trace format.
+            dylib_encoded=$(awk -F '\t' '$1 == "install_name_tool" { print $4; exit }' "$UNSLOTH_TOOL_TRACE")
+            dylib=$(bash .github/scripts/clean-machine-install-name-tool.sh decode "$dylib_encoded")
+            [ -n "$dylib" ] && [ -f "$dylib" ] || {
+              echo "::error::traced managed-Python dylib is missing: ${dylib:-no trace path}"
+              exit 1
+            }
+            dylib_id=$(otool -D "$dylib" | sed -n '2{s/^[[:space:]]*//;p;}')
+            [ "$dylib_id" = "$dylib" ] || {
+              echo "::error::managed libpython ID was not patched to itself (expected $dylib, got ${dylib_id:-empty})"
+              exit 1
+            }
+            echo "managed libpython ID: $dylib_id"
+          fi
 
       - name: Assert llama.cpp loads, and every downloaded Mach-O is native and signed
         if: steps.install.outcome == 'success'
@@ -322,11 +354,54 @@ jobs:
           else
             HOME_DIR="$UNSLOTH_STUDIO_HOME"
           fi
+
+          # install.sh sets SKIP_TORCH for --no-torch AND, at install.sh:1880, for Intel
+          # Macs, where upstream no longer publishes x86_64 macOS torch wheels. Reading
+          # only matrix.flags asserted a torch the installer had deliberately skipped,
+          # so the macos-15-intel leg could never pass.
+          skip_torch=0
+          if [ "${{ matrix.flags }}" = "--no-torch" ]; then
+            skip_torch=1
+          elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ]; then
+            skip_torch=1
+          fi
+
+          if [ "${{ matrix.delivery }}" = "tauri" ]; then
+            PY="$HOME_DIR/studio/unsloth_studio/bin/python"
+          else
+            PY="$HOME_DIR/unsloth_studio/bin/python"
+          fi
+          [ -x "$PY" ] || { echo "::error::installer left no managed Python at $PY"; exit 1; }
+          # These representative native wheels load without the developer-only dylib patch.
+          if [ "$skip_torch" = 1 ]; then
+            "$PY" -c "import numpy, safetensors, tokenizers; print('native wheels loaded', numpy.__version__)"
+            # A skipped torch has to be genuinely absent. Silently tolerating one would
+            # hide a half-installed x86_64 wheel, which is the failure this leg exists
+            # to catch.
+            if "$PY" -c "import torch" 2>/dev/null; then
+              echo "::error::torch is importable on a leg where install.sh skips it"
+              exit 1
+            fi
+            echo "torch correctly absent (install.sh skipped it)"
+          else
+            "$PY" -c "import numpy, safetensors, tokenizers, torch; print('native wheels loaded', numpy.__version__, torch.__version__)"
+          fi
           STUDIO_HOME="$HOME_DIR" bash .github/scripts/assert-llama-loads.sh
           # Rosetta 2 is on this runner and not on a fresh Mac, so llama-server launching
           # above does not prove it would for a user. Assert the arch of every payload
           # (llama.cpp, whisper.cpp, the Node prebuilt, uv) instead.
           MACHO_ROOT="$HOME_DIR" bash .github/scripts/clean-machine-assert.sh macho
+
+      - name: Assert the uv guard left no temporary files
+        if: always() && steps.install.outcome == 'success'
+        run: |
+          leftovers=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d \
+            -name 'unsloth-uv-install-name-tool.*' -print 2>/dev/null || true)
+          [ -z "$leftovers" ] || {
+            echo "::error::installer left temporary uv guard directories: $leftovers"
+            exit 1
+          }
+
 
       - name: Restore the runner
         if: always()

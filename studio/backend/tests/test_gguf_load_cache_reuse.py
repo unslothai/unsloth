@@ -1026,7 +1026,12 @@ class TestLoadHubDownloadExclusion:
 
         class FakeBackend:
             @_with_gguf_load_marker
-            def load_model(self, intent):
+            # The marker forwards the scoped cancel event, so a loader must accept it.
+            def load_model(
+                self,
+                intent,
+                load_cancel_event = None,
+            ):
                 started.set()
                 release.wait(timeout = 2)
                 finished.set()

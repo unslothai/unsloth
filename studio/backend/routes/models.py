@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 import threading
@@ -18,7 +17,6 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
-import structlog
 from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
@@ -135,11 +133,9 @@ try:
         is_vision_model,
         is_embedding_model,
         scan_checkpoints,
-        list_gguf_variants,
         ModelConfig,
     )
     from utils.models.model_config import (
-        _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
@@ -169,11 +165,9 @@ except ImportError:
         is_vision_model,
         is_embedding_model,
         scan_checkpoints,
-        list_gguf_variants,
         ModelConfig,
     )
     from utils.models.model_config import (
-        _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
@@ -1213,16 +1207,20 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
-    from storage.studio_db import add_scan_folder
+    from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder = add_scan_folder(body.path)
+        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return folder
 
 
@@ -1233,8 +1231,13 @@ async def remove_scan_folder_endpoint(
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
 
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
+    removed = await asyncio.to_thread(remove_scan_folder, folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return {"ok": True}
 
 
@@ -2154,7 +2157,7 @@ async def get_model_config(
                 model_name = resolved
 
             logger.info(f"Getting model config for: {model_name}")
-            from utils.models.model_config import detect_audio_type
+            from utils.models.model_config import detect_audio_type_checked
 
             inspection_target = _model_config_inspection_target(
                 model_name,
@@ -2169,8 +2172,8 @@ async def get_model_config(
                 local_files_only = prefer_local_cache,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
-            audio_type = detect_audio_type(
-                inspection_target,
+            audio_type, audio_type_definitive = detect_audio_type_checked(
+                _audio_probe_target(inspection_target),
                 hf_token = hf_token,
                 local_files_only = prefer_local_cache,
             )
@@ -2208,7 +2211,7 @@ async def get_model_config(
                     pass
 
             logger.info(
-                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
+                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
             return ModelDetails(
                 id = model_name,
@@ -2219,6 +2222,7 @@ async def get_model_config(
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,
+                audio_type_known = audio_type_definitive,
                 has_audio_input = is_audio_input_type(audio_type),
                 model_type = derive_model_type(is_vision, audio_type, is_embedding),
                 base_model = base_model,
@@ -2539,6 +2543,59 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "error"}
 
 
+def _audio_probe_target(inspection_target: str) -> str:
+    """Repo to ask about audio capability, resolving a registry alias first.
+
+    A curated entry like "Spark-TTS-0.5B/LLM" names a load subdirectory, not a repo, so
+    the probe fetched a repo that does not exist, got a 404 on every path, and read that
+    as "definitely not an audio model" rather than "not a repo id". Spark-TTS then looked
+    like a text model, and picking it with an audio dataset hit the modality gate. Same
+    resolution routes/training.py already uses for the trainer's own preflight.
+    """
+    if is_local_path(inspection_target):
+        return inspection_target
+    try:
+        from utils.security import load_scan_target
+        repo_id, _load_subdirs = load_scan_target(canonical_model_repo_id(inspection_target), ())
+        return repo_id or inspection_target
+    except Exception:  # noqa: BLE001 - a probe target must never fail the handler
+        return inspection_target
+
+
+def _audio_type_of_checkpoint(
+    model_path: str,
+    base_model: Optional[str],
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """Codec a trained checkpoint speaks, or None for a text one.
+
+    A scan row carries no modality, so without this every trained audio model reads
+    as text: the Audio page filters it out and chat routes it to the GGUF auto-switch,
+    which cannot resolve a local adapter directory. Detection reads the checkpoint
+    itself first (a merged export has its own tokenizer) and falls back to the base
+    repo an adapter names. Cached per model, so the scan stays one pass.
+    """
+    from utils.models.model_config import detect_audio_type
+
+    for candidate in (model_path, base_model):
+        if not candidate:
+            continue
+        try:
+            # local_files_only: this route was a filesystem scan. A trained checkpoint's
+            # base is already cached, and a non-definitive miss is deliberately not cached,
+            # so a gated or offline base would re-fetch on every poll.
+            # hf_token even under local_files_only: a gated base resolves through the same
+            # hub helpers, and the capability caches are keyed by token fingerprint, so a
+            # token-less probe would both misclassify and poison the cache for the rest.
+            audio_type = detect_audio_type(candidate, hf_token = hf_token, local_files_only = True)
+        except Exception as exc:  # never let a scan row fail the whole listing
+            logger.debug("audio detection failed for %r: %s", candidate, exc)
+            continue
+        if audio_type:
+            return audio_type
+    return None
+
+
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(
@@ -2547,6 +2604,7 @@ async def scan_loras(
     exports_dir: str = Query(
         default = str(exports_root()), description = "Directory to scan for exported models"
     ),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan for trained LoRA adapters and exported models.
@@ -2557,33 +2615,12 @@ async def scan_loras(
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
-        lora_list = []
-
-        trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
-        for display_name, model_path, model_type in trained_models:
-            base_model = get_base_model_from_checkpoint(model_path)
-            lora_list.append(
-                LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "training",
-                    export_type = model_type,
-                )
-            )
-
-        # Scan exported models (merged, LoRA, base — skips GGUF)
-        exported = scan_exported_models(exports_dir = resolved_exports_dir)
-        for display_name, model_path, export_type, base_model in exported:
-            lora_list.append(
-                LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "exported",
-                    export_type = export_type,
-                )
-            )
+        # Off the event loop: this is a directory walk plus, per checkpoint, a tokenizer
+        # read. It was already blocking before the audio probe was added; the probe made
+        # the block long enough to delay unrelated requests, streamed tokens included.
+        lora_list = await asyncio.to_thread(
+            _scan_loras_sync, resolved_outputs_dir, resolved_exports_dir, hf_token
+        )
 
         return LoRAScanResponse(loras = lora_list, outputs_dir = resolved_outputs_dir)
 
@@ -2595,6 +2632,43 @@ async def scan_loras(
             event = "models.scan_loras_failed",
             log = logger,
         )
+
+
+def _scan_loras_sync(
+    resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
+) -> List[LoRAInfo]:
+    """The filesystem half of scan_loras, so it can run in a worker thread."""
+    lora_list: List[LoRAInfo] = []
+
+    trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
+    for display_name, model_path, model_type in trained_models:
+        base_model = get_base_model_from_checkpoint(model_path)
+        lora_list.append(
+            LoRAInfo(
+                display_name = display_name,
+                adapter_path = model_path,
+                base_model = base_model,
+                source = "training",
+                export_type = model_type,
+                audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+            )
+        )
+
+    # Scan exported models (merged, LoRA, base — skips GGUF)
+    exported = scan_exported_models(exports_dir = resolved_exports_dir)
+    for display_name, model_path, export_type, base_model in exported:
+        lora_list.append(
+            LoRAInfo(
+                display_name = display_name,
+                adapter_path = model_path,
+                base_model = base_model,
+                source = "exported",
+                export_type = export_type,
+                audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+            )
+        )
+
+    return lora_list
 
 
 @router.get("/diffusion-loras")
@@ -2766,7 +2840,7 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
     refuses a delete, a false miss loses weights.
     """
-    from hub.utils.gguf import bare_quant_alias
+    from hub.utils.gguf import bare_quant_alias, is_qualified_gguf_variant_key
 
     left = (a or "").strip().lower()
     right = (b or "").strip().lower()
@@ -2775,7 +2849,11 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     if left == right:
         return True
     for key, bare in ((left, right), (right, left)):
-        if "/" in key and "/" not in bare and bare_quant_alias(key).lower() == bare:
+        if (
+            is_qualified_gguf_variant_key(key)
+            and not is_qualified_gguf_variant_key(bare)
+            and bare_quant_alias(key).lower() == bare
+        ):
             return True
     return False
 
@@ -3716,19 +3794,22 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
     *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
     doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
-    ``expa/``. Both spellings have to resolve -- a stored pin predates the qualified keys -- but
-    they cannot rank equally. In a repo holding several checkpoints at one quant the bare label
-    names every one of them, so a request for the repo-root ``Q6_K`` matched the qualified
-    files too and then took whichever sorted first. Exact keys are used alone whenever any
-    exist, and the label is the fallback for the rows that have no qualified spelling.
+    ``expa/``. Directory-qualified keys keep their legacy bare spelling, since stored pins predate
+    them. Root-level H3 stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
+    first file would load a different task. Exact keys are used alone whenever any exist, and the
+    label is the fallback for rows with no root-stem identity.
     """
+    from hub.utils.gguf import is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
-    if _variant_keys_match(_gguf_variant_key(rel_path), want):
+    key = _gguf_variant_key(rel_path)
+    if _variant_keys_match(key, want):
         return 0
+    if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
+        return None
     return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
 
 
@@ -3741,7 +3822,9 @@ def _variant_keys_match(key: str, want: str) -> bool:
     key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
     bare aliases it was written for.
     """
-    if "/" in key or "/" in want:
+    from hub.utils.gguf import is_qualified_gguf_variant_key
+
+    if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
         return key.strip().lower() == want.strip().lower()
     return _normalized_quant_label(key) == _normalized_quant_label(want)
 
@@ -3894,6 +3977,11 @@ _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
 # derivative, so its GGUFs declare "lumina2"; these resolve from the repo/file name.
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 
+# Literal placeholders gguf-connector writes into general.architecture for its diffusion
+# GGUFs. Mirrors LlamaCppBackend._PLACEHOLDER_ARCHES, which does the same normalisation on
+# the load side; the two must agree or a row is offered to chat and then refused by it.
+_PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
+
 # Video GGUF archs the video backend CAN load (LTX-2.x ships as "ltxv", the Wan community GGUFs as "wan").
 _VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
 _VIDEO_GEN_TASK = "text-to-video"
@@ -3986,6 +4074,33 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if arch is None:
         return None
     a = arch.lower()
+    if a in _PLACEHOLDER_DIFFUSION_GGUF_ARCHS:
+        # Not an architecture at all: gguf-connector writes these literals in place of one
+        # (gguf-org/flux2-dev-gguf and calcuis/cosmos-predict2-gguf both declare "pig").
+        # Being non-null they used to fall past every media branch to "text-generation", so
+        # a diffusion GGUF was offered to chat and only refused at load. Only gguf-connector
+        # writes them and only for diffusion GGUFs, so the row is never a chat model:
+        # resolve the page by name, and stay unsupported when neither answers.
+        from core.inference.video_families import detect_video_family
+
+        for hint in name_hints:
+            fam = detect_video_family(hint) if hint else None
+            if fam is not None:
+                if not getattr(fam, "is_moe", False) and _video_family_buildable(fam):
+                    return _VIDEO_GEN_TASK
+                return _UNSUPPORTED_DIFFUSION_TASK
+        # An image family has to RESOLVE, not merely fail open: _gguf_family_buildable is
+        # permissive by design for a branch whose arch already says "image GGUF", and a
+        # placeholder says nothing, so it would advertise Images for anything.
+        from core.inference.diffusion_families import detect_family_for_pick
+
+        if any(detect_family_for_pick(hint) is not None for hint in name_hints if hint):
+            return (
+                "text-to-image"
+                if _gguf_family_buildable(name_hints)
+                else _UNSUPPORTED_DIFFUSION_TASK
+            )
+        return _UNSUPPORTED_DIFFUSION_TASK
     if a in _DIFFUSION_GGUF_ARCHS:
         # Third gate, mirroring the cached-repo picker: a family no engine here can build can only fail.
         if not _gguf_family_buildable(name_hints):
@@ -4028,6 +4143,119 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     return "text-generation"
 
 
+# A media checkpoint outranks a text one in the same GGUF folder (see _gguf_folder_task), and is
+# ranked within the media answers too: _UNSUPPORTED_DIFFUSION_TASK hides the row from the chat
+# picker AND from the Images and Video ones, so a folder holding both a buildable denoiser and an
+# arch this backend cannot assemble has exactly one loadable answer, and returning the other on the
+# strength of where it sorts hides a model that works.
+_LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
+# Enough to reach the denoiser past a bundle's encoders, VAE and LoRAs. The guarantee is "the first
+# 64 in order decide", the same 64 on every host. A folder deep enough to hit this is a dump.
+_MAX_TASK_CLASSIFY_GGUFS = 64
+# Ordering costs first-wins' early exit, so bound the walk as _dir_has_downloaded_model and
+# _read_native_context_length already do. A scan folder is arbitrary (a network mount, or weights
+# beside a huge unrelated subtree rglob counts every entry of) and this runs once per listed row.
+# Past the budget the answer comes from what was reached, still at least what first-wins saw.
+_TASK_CLASSIFY_WALK_SECONDS = 0.75
+# The header reads get their own budget, started after the walk, so a slow walk cannot cut them
+# short at the encoder and hand back the answer this function exists to avoid.
+_TASK_CLASSIFY_READ_SECONDS = 1.5
+
+
+def _is_trailing_split_shard(name: str) -> bool:
+    """True for shard 2..N of a split GGUF.
+
+    ``gguf-split`` writes the whole KV block into shard 1 only, so a trailing shard carries no
+    ``general.architecture`` at all: reading one can only fail, and a 51-shard repo would cost 51
+    header reads to answer one question.
+
+    False if the shared pattern cannot be imported, so a rename there costs the optimisation and
+    nothing else: this runs inside the caller's blanket except, where an ImportError would come
+    back as no classification for any folder."""
+    try:
+        from utils.models.model_config import _GGUF_SPLIT_FILE_RE
+    except ImportError:
+        return False
+
+    match = _GGUF_SPLIT_FILE_RE.match(name)
+    return match is not None and match.group("index") != "00001"
+
+
+def _task_classify_sort_key(root: Path, path: Path) -> tuple[str, str]:
+    """Order a candidate by its path RELATIVE to the folder, in posix form.
+
+    Ordering exists so the answer stops depending on the filesystem, so the key carries neither the
+    mount point (what moving a Models folder changes) nor the separator: ``\\`` sorts against ``-``
+    and ``.`` differently than ``/``, so an absolute-path key can order the same two files one way
+    on Windows and the other on Linux. Lowercased so a case-insensitive filesystem agrees, exact
+    form as tie-break to keep the order total."""
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = path.name
+    return (rel.lower(), rel)
+
+
+def _gguf_folder_task(
+    root: Path,
+    id_hints: tuple[Optional[str], ...],
+    deadline: Optional[float] = None,
+) -> Optional[str]:
+    """The task a folder of GGUFs classifies as, ordered and decided by the media file.
+
+    Two bugs, one fix (#8406, #8407). The walk is ``rglob``, i.e. raw directory order, and the
+    answer used to be whichever file it yielded first, so a folder classified differently on two
+    machines and differently before and after a copy, which is what moving the Models folder makes.
+    Sorting makes the answer a property of the contents, not of the filesystem.
+
+    Decisive rather than first-wins because a media checkpoint does not ship alone: community
+    bundles put the text encoder (t5 / clip / a qwen3 conditioner) beside the denoiser. Answering
+    with the encoder tags a real image or video repo ``text-generation``, dropping it out of the
+    Images picker and offering a DiT in the chat one. A text repo has no diffusion GGUF in it, so
+    nothing gains a media task that did not already have one.
+
+    Bounded on both halves so neither scales with the folder: ``deadline`` (time.monotonic,
+    defaulted here) stops the walk, and candidates are trimmed to the cap as they are found."""
+    if deadline is None:
+        deadline = time.monotonic() + _TASK_CLASSIFY_WALK_SECONDS
+    fallback: Optional[str] = None
+    try:
+        # Trimmed back to the cap as it fills: a folder holding thousands of GGUFs should not cost
+        # a list of thousands of paths to read 64 of them.
+        scored: list[tuple[tuple[str, str], Path]] = []
+        for path in _iter_gguf_paths(root, deadline):
+            name = path.name
+            if _is_mmproj_filename(name) or _is_trailing_split_shard(name):
+                continue
+            scored.append((_task_classify_sort_key(root, path), path))
+            if len(scored) > _MAX_TASK_CLASSIFY_GGUFS * 2:
+                scored.sort(key = lambda item: item[0])
+                del scored[_MAX_TASK_CLASSIFY_GGUFS:]
+        scored.sort(key = lambda item: item[0])
+        paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
+    except Exception:
+        return None
+    unsupported: Optional[str] = None
+    read_deadline = time.monotonic() + _TASK_CLASSIFY_READ_SECONDS
+    for index, path in enumerate(paths):
+        # The first read always happens, so a folder still classifies from its first ordered file
+        # even where the budget was gone before this loop started.
+        if index and time.monotonic() >= read_deadline:
+            break
+        try:
+            task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
+        except Exception:
+            continue
+        if task in _LOADABLE_MEDIA_GGUF_TASKS:
+            return task
+        if task == _UNSUPPORTED_DIFFUSION_TASK:
+            if unsupported is None:
+                unsupported = task
+        elif task is not None and fallback is None:
+            fallback = task
+    return unsupported or fallback
+
+
 def _repo_gguf_task(repo_info) -> Optional[str]:
     """HF pipeline task of a cached GGUF repo, from its architecture:
     'text-to-image' for a loadable diffusion arch, the non-loadable diffusion tag
@@ -4035,14 +4263,26 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
     unreadable)."""
     repo_id = getattr(repo_info, "repo_id", None)
     try:
-        for path in _iter_gguf_paths(Path(repo_info.repo_path)):
-            if _is_mmproj_filename(path.name):
-                continue
-            task = _arch_to_task(_gguf_architecture(str(path)), name_hints = (repo_id, path.name))
-            if task is not None:
-                return task
+        return _gguf_folder_task(Path(repo_info.repo_path), (repo_id,))
     except Exception:
-        pass
+        return None
+
+
+def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:
+    """``org/name`` when *path* IS a ``models--org--name/snapshots/<sha>`` root, else None.
+
+    ``hf_cache_repo_id`` also answers for anything UNDER that directory, which is right for its own
+    job and wrong for a needle: a pipeline's ``transformer``, ``vae`` and ``text_encoder`` dirs
+    carry a ``config.json`` and weights, so a scan folder registers each as a row, and handing them
+    the parent's repo id makes every one detect the family, satisfy ``_local_is_diffusers`` and
+    enter the Images picker as a checkpoint that cannot load. Hence the shape must end at the
+    snapshot; the decode itself is still the strict shared one."""
+    if not path:
+        return None
+    parts = str(path).replace("\\", "/").rstrip("/").split("/")
+    if len(parts) >= 3 and parts[-2] == "snapshots" and parts[-3].startswith("models--"):
+        from core.inference.model_ids import hf_cache_repo_id
+        return hf_cache_repo_id(path)
     return None
 
 
@@ -4051,8 +4291,23 @@ def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
     name, and -- for a bare single-file dir -- the sole checkpoint's filename (a generic folder
     holding one ``qwen-image-*.safetensors`` identifies its family only there, and the load route
     resolves it via ``resolve_local_single_file``). Only basenames, so a parent-dir token can't
-    match."""
+    match -- with one exception, the encoded repo id below.
+
+    A checkpoint still in HF cache layout carries its repo id in the ``models--org--name``
+    directory, while every other needle degrades to the snapshot basename, a commit hash. That is
+    a moved Models folder registered as a scan folder (#8407): a GGUF still classifies from its
+    architecture, but a diffusers pipeline, proven to be one by its ``model_index.json``, had no
+    name left and dropped out of the Images picker as task=null. The decode answers only for a real
+    ``models--*/snapshots/*`` path AND only for the row that IS the snapshot, so it recovers the id
+    that row lost without letting arbitrary parent-dir tokens match or component dirs inherit it.
+    Last of the name needles, so the basenames still win."""
     needles = [model.model_id, model.display_name, Path(model.id).name]
+    try:
+        needles.append(
+            _hf_cache_snapshot_repo_id(model.path) or _hf_cache_snapshot_repo_id(model.id)
+        )
+    except Exception:
+        pass
     try:
         from core.inference.diffusion import resolve_local_single_file
         single = resolve_local_single_file(model.path)
@@ -4078,12 +4333,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             p = Path(path)
             if p.suffix.lower() == ".gguf" and p.is_file():
                 return _arch_to_task(_gguf_architecture(str(p)), name_hints = _id_hints + (p.name,))
-            for f in _iter_gguf_paths(p):
-                if _is_mmproj_filename(f.name):
-                    continue
-                task = _arch_to_task(_gguf_architecture(str(f)), name_hints = _id_hints + (f.name,))
-                if task is not None:
-                    return task
+            return _gguf_folder_task(p, _id_hints)
         except Exception:
             pass
         return None
@@ -4102,10 +4352,19 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         # The Images load path 400s AFTER eviction when no image family is supported, so tag only when detection succeeds.
         try:
             from core.inference.diffusion_engine_router import family_buildable_here
-            from core.inference.diffusion_families import detect_family
+            from core.inference.diffusion_families import (
+                detect_family,
+                detect_family_by_pipeline_index,
+            )
 
-            for needle in _local_family_needles(model):
-                fam = detect_family(needle)
+            # The saved pipeline class first: evidence out of the checkpoint, where every needle
+            # below is a name, and a moved model's name is what does not survive (#8407). The
+            # loader reads the index through the same helper, so anything shown on this evidence is
+            # something validate_load_request accepts on it.
+            for fam in (
+                detect_family_by_pipeline_index(path),
+                *(detect_family(needle) for needle in _local_family_needles(model)),
+            ):
                 if fam is not None:
                     # A local non-GGUF checkpoint always loads through diffusers, so the pipeline class has to exist here.
                     return (
@@ -4610,51 +4869,6 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     raise HTTPException(status_code = 404, detail = "Cached model path not found")
 
 
-def _wsl_reveal_in_explorer(path: Path) -> bool:
-    import subprocess
-
-    from utils.paths.path_utils import _IS_WSL
-
-    if not _IS_WSL:
-        return False
-    try:
-        windows_path = subprocess.run(
-            ["wslpath", "-w", str(path)],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            check = True,
-            timeout = 10,
-        ).stdout.strip()
-        if not windows_path:
-            return False
-        argument = f"/select,{windows_path}" if path.is_file() else windows_path
-        subprocess.Popen(["explorer.exe", argument])
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _reveal_in_file_manager(path: Path) -> None:
-    """Open the OS file manager with *path* selected (best effort per platform)."""
-    import subprocess
-
-    target = str(path)
-    if sys.platform == "darwin":
-        cmd = ["open", "-R", target] if path.is_file() else ["open", target]
-        subprocess.Popen(cmd)
-    elif os.name == "nt":
-        if path.is_file():
-            subprocess.Popen(["explorer", f"/select,{target}"])
-        else:
-            os.startfile(target)  # noqa: S606 - local user's own file manager
-    elif not _wsl_reveal_in_explorer(path):
-        # No cross-desktop "select file" standard on Linux; open the directory.
-        directory = target if path.is_dir() else str(path.parent)
-        subprocess.Popen(["xdg-open", directory])
-
-
 class CachedModelPathResponse(BaseModel):
     path: str
     is_dir: bool
@@ -4680,12 +4894,14 @@ async def reveal_cached_model(
     current_subject: str = Depends(get_current_subject),
 ):
     """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
+    from utils.paths.path_utils import reveal_in_file_manager
+
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
     path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
     try:
-        await asyncio.to_thread(_reveal_in_file_manager, path)
+        await asyncio.to_thread(reveal_in_file_manager, path)
     except Exception as e:
         logger.error(f"Failed to reveal {path}: {e}")
         raise HTTPException(status_code = 500, detail = "Failed to open file manager")

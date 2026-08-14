@@ -74,10 +74,12 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
     frozenset({"--models-autoload", "--no-models-autoload"}),
-    # Server-mode flips: --embedding / --rerank restrict llama-server to
-    # those endpoints, breaking Unsloth's /v1/chat/completions hop.
+    # Server-mode flips: --embedding is set from the GGUF pooling type at load, not by hand.
     frozenset({"--embedding", "--embeddings"}),
     frozenset({"--rerank", "--reranking"}),
+    # Pooling decides whether the managed embedding launch is safe. A pass-through
+    # override appended after --embedding could switch it to NONE or RANK.
+    frozenset({"--pooling"}),
     # llama-server's own built-in tools flag would silently stack on top of
     # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),
@@ -651,6 +653,24 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
         strip_spec = False,
         strip_template = False,
         strip_split_mode = True,
+    )
+
+
+def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Remove the context group (``-c`` / ``--ctx-size``) from ``args``, keeping
+    every other shadow flag. Preserves a None/empty input so the
+    inherit-vs-explicit-empty distinction survives. Used by the Metal
+    zero-context floor, where a trailing ``-c 0`` would last-wins override the
+    floor and pin the native length again."""
+    if not args:
+        return args
+    return strip_shadowing_flags(
+        args,
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
     )
 
 
