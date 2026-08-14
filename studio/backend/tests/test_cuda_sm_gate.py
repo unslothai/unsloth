@@ -6,12 +6,16 @@ on a T4) must fail fast when run on a GPU its bundle has no kernels for,
 instead of llama-server aborting on every launch attempt."""
 
 import json
+import os
+import struct
 import subprocess
 import types
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
 
 def _binary_with_marker(tmp_path, payload):
@@ -122,3 +126,136 @@ class TestCudaSmGateError:
         self._caps(monkeypatch, {})
         binary = _binary_with_marker(tmp_path, {"supported_sms": ["75", "80"]})
         assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
+
+
+def _gated_backend(tmp_path, monkeypatch, *, supported_sms = ("75", "80", "86", "89")):
+    """A load on the incident host: the installed bundle covers sm_75-sm_89 and the
+    only GPU is an sm_90 H100, so the gate wants to refuse. Everything below the
+    placement decision is faked -- Popen never runs and health answers True."""
+    install = tmp_path / "llama.cpp"
+    (install / "build" / "bin").mkdir(parents = True)
+    binary = _binary_with_marker(install, {"supported_sms": list(supported_sms)})
+    Path(binary).write_text("", encoding = "utf-8")
+    os.chmod(binary, 0o755)
+
+    gguf = tmp_path / "model.gguf"
+
+    def _string(value):
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    gguf.write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + _string("general.architecture")
+        + struct.pack("<I", 8)
+        + _string("llama")
+    )
+
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 90}))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *_a, **_kw: False)
+    )
+    backend = LlamaCppBackend()
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._mmproj_vram_bytes = lambda _path: 0
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+    backend._apu_ram_shortfall_message = lambda *_a, **_kw: None
+    backend._amd_apu_wants_unified_memory = lambda *_a, **_kw: False
+    backend._find_llama_server_binary = lambda include_denied = False: binary
+    backend._fit_off_retry_eligible = lambda *_a, **_kw: False
+    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
+    backend._detect_audio_type_strict = lambda: None
+    backend._apply_detected_audio = lambda _detected: True
+    backend._wait_for_health = lambda timeout: True
+    backend._llama_server_env_for_binary = lambda _binary: {"PATH": os.environ.get("PATH", "")}
+    return backend, gguf
+
+
+def _drive_load(backend, gguf, **intent_kwargs):
+    """Return (launches, error): a refusal has no launch to point at, so the
+    exception is handed back rather than raised through the harness."""
+    launches = []
+
+    class _Process:
+        pid = 123
+        stdout = ()
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout = None):
+            return 0
+
+        def kill(self):
+            return None
+
+    def _popen(cmd, **kwargs):
+        launches.append((list(cmd), dict(kwargs.get("env") or {})))
+        return _Process()
+
+    error = None
+    with patch.object(subprocess, "Popen", side_effect = _popen):
+        try:
+            backend.load_model(
+                GgufLoadIntent(
+                    gguf_path = str(gguf),
+                    model_identifier = "owner/model",
+                    **intent_kwargs,
+                )
+            )
+        except Exception as exc:
+            error = exc
+    return launches, error
+
+
+class TestTheGateSparesADeliberateCpuOnlyLoad:
+    """A manual zero-offload load launches with CUDA_VISIBLE_DEVICES=-1, so the
+    child never initialises CUDA and the missing kernels cannot reach it. Gating
+    it turned a load that works on the mismatched host into a hard refusal."""
+
+    def test_manual_zero_offload_still_launches_on_cpu(self, tmp_path, monkeypatch):
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        launches, error = _drive_load(
+            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0
+        )
+        assert error is None, f"the SM gate refused a CPU-only load: {error}"
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
+
+    def test_a_gpu_offload_request_is_still_refused(self, tmp_path, monkeypatch):
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        launches, error = _drive_load(backend, gguf, gpu_memory_mode = "auto")
+        assert isinstance(error, RuntimeError)
+        assert "unsloth studio update" in str(error)
+        assert launches == []
+
+    @pytest.mark.parametrize(
+        "companion",
+        [
+            {"extra_args": ["--device", "CUDA0"]},
+            {"extra_args": ["--model-draft", "/tmp/draft.gguf"]},
+            {"speculative_type": "auto"},
+        ],
+        ids = ["device_pin", "gpu_drafter", "speculation"],
+    )
+    def test_a_gpu_companion_keeps_the_gate(self, tmp_path, monkeypatch, companion):
+        # These keep the GPUs visible to the child, so the kernels are needed after
+        # all and the exemption must not swallow them.
+        backend, gguf = _gated_backend(tmp_path, monkeypatch)
+        launches, error = _drive_load(
+            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0, **companion
+        )
+        assert isinstance(error, RuntimeError)
+        assert launches == []

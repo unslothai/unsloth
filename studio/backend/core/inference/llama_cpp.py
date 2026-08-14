@@ -13484,9 +13484,22 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
-                _sm_gate = self._cuda_sm_gate_error(binary)
-                if _sm_gate:
-                    raise RuntimeError(_sm_gate)
+                # A deliberate zero-offload load launches with the GPUs hidden from
+                # the child (_cpu_only_zero_offload below writes
+                # CUDA_VISIBLE_DEVICES=-1), so the missing kernels never load and
+                # gating it would refuse a load that runs. zero_vram_chat_load is the
+                # request-level mirror of that mask, so a GPU companion (mmproj,
+                # drafter, device pin, surviving tensor mode) keeps the gate.
+                if not zero_vram_chat_load(
+                    gpu_memory_mode,
+                    gpu_layers,
+                    extra_args,
+                    effective_is_vision,
+                    speculative_type,
+                ):
+                    _sm_gate = self._cuda_sm_gate_error(binary)
+                    if _sm_gate:
+                        raise RuntimeError(_sm_gate)
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
                 # probe that assigns it may throw first. Captured before manual
