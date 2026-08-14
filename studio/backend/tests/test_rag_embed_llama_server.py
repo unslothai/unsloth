@@ -3,9 +3,11 @@
 
 """llama-server GGUF embedder tests, every boundary mocked."""
 
+import os
 import subprocess
 import sys
 import textwrap
+import time
 import types
 from pathlib import Path
 
@@ -680,3 +682,279 @@ def test_a_soft_gpu_opt_in_keeps_its_own_cpu_fallback(monkeypatch):
         backend._spawn()  # the reaper killed it; the respawn stays where we landed
         assert calls == [True, False, False], requested
         assert backend._use_gpu() is False, requested
+
+
+def _seed_cache(
+    root,
+    repo_id,
+    filenames,
+    *,
+    revision = "abc123",
+    ref = True,
+):
+    """A hub cache tree built the way hf_hub_download builds one: the snapshot holds
+    symlinks into blobs/, not regular files."""
+    repo_dir = root / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / revision
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    for name in filenames:
+        blob = blobs / name.replace("/", "_")
+        blob.write_text("gguf")
+        link = snapshot / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(os.path.relpath(blob, link.parent))
+    if ref:
+        (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
+        (repo_dir / "refs" / "main").write_text(revision)
+    return snapshot
+
+
+def _use_cache_root(monkeypatch, root):
+    import utils.hf_cache_settings as hcs
+    monkeypatch.setattr(hcs, "active_hf_hub_cache", lambda: str(root))
+
+
+def _no_hub(monkeypatch):
+    monkeypatch.setattr(
+        LlamaServerBackend,
+        "_resolve_uncached_model_path",
+        lambda self, *a, **k: pytest.fail("resolved over the hub despite a usable cache"),
+    )
+
+
+def test_cached_gguf_resolves_without_touching_the_hub(monkeypatch, tmp_path):
+    """A repo already on disk must never be re-listed: _model_path is per-process, so
+    every restart used to pay a hub call to name a file it already held (#8778)."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    _no_hub(monkeypatch)
+    backend = LlamaServerBackend()
+    backend._dim = 384  # a width belonging to whatever was served before
+    assert backend._resolve_model_path().endswith("bge-F16.gguf")
+    assert backend._model_repo == repo
+    assert backend._dim is None  # re-probed against the file actually adopted
+
+
+def test_the_pick_takes_the_shortest_variant_match_and_never_an_mmproj(monkeypatch):
+    """An order no directory scan would produce: the wanted file is neither first nor
+    shortest overall, and the shortest F16 name is an mmproj projector."""
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    names = [
+        "bge-small-en-v1.5-F16-alt.gguf",
+        "mmproj-F16.gguf",
+        "bge-small-en-v1.5-F16.gguf",
+        "bge-Q8_0.gguf",
+        "README.md",
+    ]
+    assert LlamaServerBackend._pick_gguf(names) == "bge-small-en-v1.5-F16.gguf"
+
+
+def test_cached_gguf_skips_mmproj_and_honours_the_variant(monkeypatch, tmp_path):
+    """The same rule reached through the cache, over a real snapshot layout."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(
+        tmp_path / "hub",
+        repo,
+        ["mmproj-F16.gguf", "bge-small-en-v1.5-F16.gguf", "bge-Q8_0.gguf", "README.md"],
+    )
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    assert LlamaServerBackend._resolve_cached_gguf(repo).endswith("bge-small-en-v1.5-F16.gguf")
+
+
+def test_cached_gguf_is_found_in_a_subdirectory(monkeypatch, tmp_path):
+    """Quant-per-directory layouts are common, so a snapshot-root-only scan would
+    re-download a model that is already cached."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["F16/bge-small.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    resolved = LlamaServerBackend._resolve_cached_gguf(repo)
+    assert resolved is not None and resolved.endswith("F16/bge-small.gguf")
+
+
+def test_cached_gguf_uses_only_the_revision_refs_main_names(monkeypatch, tmp_path):
+    """hf_hub_download serves refs/main. The current revision here sorts neither first nor
+    last, so no directory ordering can stand in for reading the ref."""
+    repo = config.effective_gguf_repo()
+    root = tmp_path / "hub"
+    _seed_cache(root, repo, ["aaa-F16.gguf"], revision = "aaa111", ref = False)
+    _seed_cache(root, repo, ["live-F16.gguf"], revision = "mmm555", ref = True)
+    _seed_cache(root, repo, ["zzz-F16.gguf"], revision = "zzz999", ref = False)
+    _use_cache_root(monkeypatch, root)
+    assert LlamaServerBackend._resolve_cached_gguf(repo).endswith("live-F16.gguf")
+
+
+def test_a_commit_pinned_cache_with_no_ref_defers_to_the_hub(monkeypatch, tmp_path):
+    """Snapshot directories are commit hashes, which order by nothing; guessing among them
+    could serve a superseded model, so an unnamed revision is no hit at all."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.gguf"], revision = "deadbeef", ref = False)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None
+
+
+def test_a_cached_other_variant_does_not_satisfy_the_configured_one(monkeypatch, tmp_path):
+    """Falling back on a listing means the variant is not published; falling back on a
+    cache would serve a Q8 left from an earlier setting instead of the configured F16."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    assert LlamaServerBackend._resolve_cached_gguf(repo) is None
+
+
+def test_an_unreachable_hub_falls_back_to_whatever_variant_is_cached(monkeypatch, tmp_path):
+    """Refusing the wrong variant must not cost the user their embedder outright: a cached
+    Q8 beats none, the degrade #8778 asks for."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("offline mode is enabled")),
+    )
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path().endswith("bge-Q8_0.gguf")
+
+
+def test_a_reachable_hub_is_preferred_over_a_cached_other_variant(monkeypatch, tmp_path):
+    """A last resort, not a shortcut: a cached Q8 must not pre-empt a hub that can still
+    name the configured variant."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: ["bge-F16.gguf"])
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda **kw: "/cache/bge-F16.gguf")
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path() == "/cache/bge-F16.gguf"
+
+
+def test_a_failed_transfer_surfaces_instead_of_serving_another_variant(monkeypatch, tmp_path):
+    """A download failing for its own reasons (no disk, bad checksum) is no evidence the
+    variant is unobtainable, so it must not be answered with a different model."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-Q8_0.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda *a, **k: ["bge-F16.gguf"])
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **kw: (_ for _ in ()).throw(OSError("No space left on device")),
+    )
+    backend = LlamaServerBackend()
+    with pytest.raises(OSError, match = "No space left on device"):
+        backend._resolve_model_path()
+
+
+def test_a_cached_gguf_is_found_whatever_the_extension_case(monkeypatch, tmp_path):
+    """The hub path always matched the suffix case-insensitively; a stricter cache scan
+    would re-download a model sitting on disk, or fail outright when offline."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.GGUF"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    assert LlamaServerBackend._resolve_cached_gguf(repo).endswith("bge-F16.GGUF")
+
+
+def test_the_adopted_path_is_tagged_with_the_repo_it_was_resolved_for(monkeypatch, tmp_path):
+    """A Settings change landing mid-resolution must leave the path tagged with the repo it
+    was resolved FOR, so _current() reads it as stale and respawns."""
+    repo = config.effective_gguf_repo()
+    _seed_cache(tmp_path / "hub", repo, ["bge-F16.gguf"])
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    _no_hub(monkeypatch)
+    backend = LlamaServerBackend()
+
+    def _resolve_then_change_the_setting(repo_id, **_kw):
+        monkeypatch.setattr(config, "effective_gguf_repo", lambda: "someone/else-GGUF")
+        return str(tmp_path / "hub" / "bge-F16.gguf")
+
+    monkeypatch.setattr(
+        LlamaServerBackend,
+        "_resolve_cached_gguf",
+        staticmethod(_resolve_then_change_the_setting),
+    )
+    backend._resolve_model_path()
+    assert backend._model_repo == repo
+    assert not backend._current()  # the new setting reads as stale, forcing a respawn
+
+
+def test_the_listing_cannot_outlive_its_deadline(monkeypatch, tmp_path):
+    """list_repo_files takes no timeout and pagination overrides any client-level default,
+    so a blackholed address holds this call, and _lifecycle_lock with it, until the kernel
+    exhausts its SYN retries."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    @contextlib.contextmanager
+    def reachable():
+        yield False
+
+    def _stalls(*_a, **_k):
+        time.sleep(30)
+        raise AssertionError("deadline did not cut the listing short")
+
+    _use_cache_root(monkeypatch, tmp_path / "empty")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", reachable)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", _stalls)
+    monkeypatch.setattr(LlamaServerBackend, "_LIST_DEADLINE_S", 0.3)
+    backend = LlamaServerBackend()
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match = "no .gguf embedder found"):
+        backend._resolve_model_path()
+    assert time.monotonic() - started < 3.0
+
+
+def test_the_hub_resolve_runs_inside_the_unreachable_guard(monkeypatch, tmp_path):
+    """The deadline covers the listing only; the guard is what keeps the transfer from
+    starting against an unreachable endpoint."""
+    import contextlib
+    import huggingface_hub
+    from core.inference import llama_cpp
+
+    active = []
+
+    @contextlib.contextmanager
+    def recording_guard():
+        active.append(True)
+        try:
+            yield False
+        finally:
+            active.pop()
+
+    def _require_guard(*_a, **_k):
+        assert active, "hub call made outside the guard"
+        return ["bge-F16.gguf"]
+
+    def _download(**_kw):
+        assert active, "download made outside the guard"
+        return "/cache/bge-F16.gguf"
+
+    _use_cache_root(monkeypatch, tmp_path / "empty")
+    monkeypatch.setattr(llama_cpp, "_hf_offline_if_unreachable", recording_guard)
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", _require_guard)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+    backend = LlamaServerBackend()
+    assert backend._resolve_model_path() == "/cache/bge-F16.gguf"
+    assert active == []
