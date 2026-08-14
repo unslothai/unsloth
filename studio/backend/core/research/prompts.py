@@ -96,8 +96,8 @@ Use 1 to {max_steps} focused, non-overlapping steps. Each step must have a concr
 Prioritize primary and authoritative sources, account for relevant dates and geography, and include
 verification or counterevidence where the question involves disputed or consequential claims.
 When a step depends on recency and a current date is stated above, anchor the step to that date
-rather than to your training data, and never put an older year in a query unless the question
-is specifically about that year.
+rather than to a year your training data makes feel current. An earlier year is right whenever the
+period under study reaches into it, such as the most recent annual figures early in a new year.
 For empirical or technical steps, include a source-type term such as `research paper`, `standard`,
 or `official documentation` in the query. Do not use generic topic-only queries.
 Treat prior conversation context and chat instructions as private reference material. Never put

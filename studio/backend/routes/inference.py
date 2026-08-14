@@ -3363,25 +3363,40 @@ def _states_a_date(text: str) -> bool:
     return CURRENT_DATE_PROMPT_PREFIX in text
 
 
-def _apply_current_date_prompt(system_prompt: str) -> str:
+def _wants_current_date(request: Any) -> bool:
+    """Whether this caller's prompt is Studio's to compose.
+
+    The router is also mounted at /v1, so a third party's sk-unsloth key reaches the same
+    handlers. Their request is theirs verbatim: a Studio preference must not add a system turn
+    they never sent and break a deterministic eval. Internal workflow keys are Studio itself,
+    so Deep Research still gets the date.
+    """
+    return not _request_used_api_key(request)
+
+
+def _apply_current_date_prompt(system_prompt: str, request: Any = None) -> str:
     """Prefix the user's system prompt with today's date when the setting is on.
 
     Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
     as the last word to the model.
     """
+    if request is not None and not _wants_current_date(request):
+        return system_prompt
     date_line = current_date_prompt_line()
     if not date_line or _states_a_date(system_prompt):
         return system_prompt
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
-def _prepend_current_date_to_messages(messages: list[dict]) -> list[dict]:
+def _prepend_current_date_to_messages(messages: list[dict], request: Any = None) -> list[dict]:
     """Apply the date to an already-built message list, for self-hosted providers Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
     assembled first, so the date goes onto its leading system turn instead. A non-string content
     (multimodal) turn is skipped, matching _append_to_system_message.
     """
+    if request is not None and not _wants_current_date(request):
+        return messages
     date_line = current_date_prompt_line()
     if not date_line:
         return messages
@@ -12553,7 +12568,7 @@ async def _proxy_to_external_provider(
     )
     # Self-hosted endpoints only: the hosted APIs already state the date in their own context.
     if provider_is_self_hosted(provider_type):
-        chat_messages = _prepend_current_date_to_messages(chat_messages)
+        chat_messages = _prepend_current_date_to_messages(chat_messages, request)
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -13350,7 +13365,7 @@ async def openai_chat_completions(
             try:
                 audio_array = _decode_audio_base64(payload.audio_base64)
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
-                system_prompt = _apply_current_date_prompt(system_prompt)
+                system_prompt = _apply_current_date_prompt(system_prompt, request)
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
@@ -13678,7 +13693,7 @@ async def openai_chat_completions(
     else:
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
     # applied once so both backends inherit it, with or without tools, and never state it twice.
-    system_prompt = _apply_current_date_prompt(system_prompt)
+    system_prompt = _apply_current_date_prompt(system_prompt, request)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -19340,7 +19355,9 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
 
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
-    payload: ChatCountTokensRequest, current_subject: str = Depends(get_current_subject)
+    payload: ChatCountTokensRequest,
+    current_subject: str = Depends(get_current_subject),
+    request: Request = None,
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
@@ -19392,7 +19409,7 @@ async def chat_count_tokens(
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     if not _takes_passthrough:
-        _system_prompt = _apply_current_date_prompt(_system_prompt)
+        _system_prompt = _apply_current_date_prompt(_system_prompt, request)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
@@ -19605,7 +19622,7 @@ async def anthropic_count_tokens(
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
     if not _count_client_tools:
-        openai_messages = _prepend_current_date_to_messages(openai_messages)
+        openai_messages = _prepend_current_date_to_messages(openai_messages, request)
 
     try:
         count = await asyncio.to_thread(
@@ -19874,7 +19891,7 @@ async def anthropic_messages(
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
     # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
     if not client_tools:
-        openai_messages = _prepend_current_date_to_messages(openai_messages)
+        openai_messages = _prepend_current_date_to_messages(openai_messages, request)
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
     # single tool_use block. Computed here so BOTH the client-tool passthrough

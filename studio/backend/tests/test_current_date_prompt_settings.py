@@ -179,6 +179,24 @@ class TestExternalProviderMessages:
         ]
         assert self._prepend(messages) is messages
 
+    def test_a_third_party_api_key_request_is_left_verbatim(self, monkeypatch):
+        # The router is also mounted at /v1, and an sk-unsloth caller's prompt is theirs.
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_request_used_api_key", lambda _request: True)
+        messages = [{"role": "user", "content": "hi"}]
+        assert inference._prepend_current_date_to_messages(messages, object()) is messages
+        assert inference._apply_current_date_prompt("Be terse.", object()) == "Be terse."
+
+    def test_a_studio_session_request_is_dated(self, monkeypatch):
+        import routes.inference as inference
+
+        monkeypatch.setattr(inference, "_request_used_api_key", lambda _request: False)
+        out = inference._prepend_current_date_to_messages(
+            [{"role": "user", "content": "hi"}], object()
+        )
+        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+
     def test_only_self_hosted_provider_types_are_dated(self):
         from core.inference.providers import provider_is_self_hosted
         for provider_type in ("vllm", "ollama", "llama_cpp", "custom"):

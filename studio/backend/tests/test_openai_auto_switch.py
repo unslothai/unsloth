@@ -3600,6 +3600,9 @@ def _count_tokens_backend(
     backend.count_chat_tokens = _count
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    # Pinned off so message-shape assertions do not depend on the host's stored setting;
+    # test_chat_count_tokens_prices_the_current_date covers the date's own effect on the count.
+    monkeypatch.setattr(inference_route, "current_date_prompt_line", lambda: "")
     return switched, counted
 
 
@@ -3837,6 +3840,26 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
     assert [message.get("content") for message in counted.get("messages") or []] == [
         "first\n\nsecond"
     ]
+
+
+def test_chat_count_tokens_prices_the_current_date(monkeypatch):
+    """The bar has to price what generation sends, and only the passthrough is sent undated."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    monkeypatch.setattr(
+        inference_route, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+    )
+    thread = [{"role": "user", "content": "hi"}]
+
+    _counted_body(_count_request(thread))
+    assert counted["messages"][0] == {
+        "role": "system",
+        "content": "The current date is 2026-08-15.",
+    }
+
+    # The passthrough forwards the caller's request verbatim, so counting a date it never sends
+    # would overcount exactly those prompts.
+    _counted_body(_count_request(thread, tools = _PASSTHROUGH_CATALOG))
+    assert all(message.get("role") != "system" for message in counted["messages"])
 
 
 def _in_flight_generation():
