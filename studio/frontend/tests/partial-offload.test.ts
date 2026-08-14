@@ -101,6 +101,8 @@ test("every load path reads the response the same way", () => {
       offload_overridden: false,
       // biome-ignore lint/style/useNamingConvention: api schema
       cpu_fallback_reason: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      gpu_backend_unavailable: false,
     }),
     {
       offloaded: 38,
@@ -109,6 +111,7 @@ test("every load path reads the response the same way", () => {
       gpuLayers: -1,
       offloadOverridden: false,
       cpuFallbackReason: null,
+      gpuBackendUnavailable: false,
     },
   );
 });
@@ -129,6 +132,30 @@ test("Manual mode with GPU Layers on Auto is still an automatic spill", () => {
   assert.notEqual(
     offloadWarning({ offloaded: 0, total: 60, gpuMemoryMode: "manual" }),
     null,
+  );
+});
+
+test("a GPU that llama.cpp could not use is not a size problem", () => {
+  // A failed CUDA/ROCm init logs the same 0/M line as a fit that placed no
+  // layers, and telling a user with a broken install to pick a smaller
+  // quantization sends them to re-download a model that was never the problem.
+  const broken = offloadWarning({
+    offloaded: 0,
+    total: 60,
+    gpuBackendUnavailable: true,
+  });
+  assert.match(broken?.description ?? "", /could not use it/);
+  assert.doesNotMatch(broken?.description ?? "", /smaller quantization would/);
+  // A genuine zero-layer fit still gets the size wording.
+  assert.match(
+    offloadWarning({ offloaded: 0, total: 60 })?.description ?? "",
+    /None of the 60 layers fit/,
+  );
+  // It only speaks to the all-CPU case; a split load is a split load.
+  assert.match(
+    offloadWarning({ offloaded: 20, total: 60, gpuBackendUnavailable: true })
+      ?.description ?? "",
+    /^20 of 60 layers/,
   );
 });
 

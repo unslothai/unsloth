@@ -995,6 +995,28 @@ class TestPartialOffloadIsReportable:
         assert not _extra_args_set_any_flag(["--threads", "8"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
         assert not _extra_args_set_any_flag(None, _GPU_OFFLOAD_OVERRIDE_FLAGS)
 
+    def test_an_all_cpu_device_table_means_the_backend_did_not_load(self):
+        # llama.cpp prints its device table whenever a GPU backend is visible to
+        # it, so an all-CPU table is the DLL/backend failure rather than a fit
+        # that placed no layers. Both log the same 0/M line.
+        from core.inference.llama_cpp import llama_saw_gpu_device
+
+        cpu_only = [
+            "device_info: available devices",
+            "  - CPU: 12 cores",
+        ]
+        with_gpu = [
+            "device_info: available devices",
+            "  - CUDA0: NVIDIA GeForce RTX 4090",
+            "  - CPU: 12 cores",
+        ]
+        assert llama_saw_gpu_device(cpu_only) is False
+        assert llama_saw_gpu_device(with_gpu) is True
+        # No table at all is unknown, not a failure.
+        assert llama_saw_gpu_device(["INFO starting server"]) is None
+        # Rows before the header do not vote.
+        assert llama_saw_gpu_device(["  - CUDA0: something"]) is None
+
     def test_a_fit_on_in_extras_is_not_a_pinned_split(self):
         # --fit on asks llama.cpp to choose the placement, which is the case
         # worth reporting rather than suppressing, so the provenance check reads

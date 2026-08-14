@@ -715,6 +715,14 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Total layers in the model, alongside offloaded_layers.",
     )
+    gpu_backend_unavailable: bool = Field(
+        False,
+        description = (
+            "Studio detected a GPU for this load but llama.cpp's own device table "
+            "reported none, meaning its GPU backend did not initialise. Separates a "
+            "backend failure from a fit that placed no layers; both log 0/M."
+        ),
+    )
     offload_overridden: bool = Field(
         False,
         description = (

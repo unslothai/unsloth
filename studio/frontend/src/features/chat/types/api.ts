@@ -241,6 +241,7 @@ export interface LoadModelResponse {
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
   offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
@@ -331,6 +332,7 @@ export interface InferenceStatusResponse {
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
   offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;

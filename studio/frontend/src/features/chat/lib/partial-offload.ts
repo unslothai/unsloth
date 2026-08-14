@@ -26,6 +26,8 @@ export interface OffloadCounts {
   offloadOverridden?: boolean | null;
   /** Set when the backend already knows why the model is on the CPU. */
   cpuFallbackReason?: string | null;
+  /** Studio found a GPU for this load but llama.cpp reported none. */
+  gpuBackendUnavailable?: boolean | null;
 }
 
 /** The snake_case load response, narrowed to the fields this file reads. */
@@ -36,6 +38,7 @@ export interface OffloadCountsSource {
   gpu_layers?: number | null;
   offload_overridden?: boolean | null;
   cpu_fallback_reason?: string | null;
+  gpu_backend_unavailable?: boolean | null;
 }
 
 /** Pick the split out of a load response, so the load paths cannot drift. */
@@ -49,6 +52,7 @@ export function offloadCountsFrom(
     gpuLayers: response.gpu_layers,
     offloadOverridden: response.offload_overridden,
     cpuFallbackReason: response.cpu_fallback_reason,
+    gpuBackendUnavailable: response.gpu_backend_unavailable,
   };
 }
 
@@ -89,6 +93,7 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
     gpuLayers,
     offloadOverridden,
     cpuFallbackReason,
+    gpuBackendUnavailable,
   } = counts;
   if (cpuFallbackReason === "vulkan_startup_crash") {
     return {
@@ -108,6 +113,19 @@ export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
   if (total <= 0 || offloaded >= total) return null;
   if (offloaded <= 0) {
+    // Nothing on the GPU has two causes that log the same 0/M line, and telling a
+    // user with a broken CUDA install to pick a smaller quantization sends them
+    // to re-download a model that was never the problem.
+    if (gpuBackendUnavailable) {
+      return {
+        titleSuffix: ", on CPU",
+        description:
+          "The GPU was found but llama.cpp could not use it, so the model runs " +
+          "entirely on CPU and generation will be slow. This is a backend " +
+          "problem rather than a size one, so a smaller quantization will not " +
+          "help. The llama-server log in Settings > Logs has the reason.",
+      };
+    }
     return {
       titleSuffix: ", on CPU",
       description:
