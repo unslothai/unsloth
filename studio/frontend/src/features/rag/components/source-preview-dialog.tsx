@@ -26,6 +26,7 @@ import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { ArtifactHtmlFrame } from "@/features/chat/artifacts/html-frame";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { ZoomInIcon, ZoomOutIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
   getDocumentContent,
@@ -34,6 +35,16 @@ import {
 } from "../api/rag-api";
 import type { DocumentContent } from "../types/rag";
 import { PdfPreview } from "./document-preview-sheet";
+
+// Same step and ceiling as the PDF viewer, but half its floor: a canvas page can
+// be laid out far wider than the modal (a 1600px figure), and 0.5 is not enough
+// to bring one fully into view.
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 0.25;
+
+const clampZoom = (z: number) =>
+  Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(z.toFixed(2))));
 
 /** Click-to-open viewer and quick editor for one project source.
  *
@@ -65,6 +76,7 @@ export function SourcePreviewDialog({
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const [zoom, setZoom] = useState(1);
 
   const open = documentId !== null;
 
@@ -78,6 +90,7 @@ export function SourcePreviewDialog({
     setText("");
     setEditing(false);
     setConfirmingDiscard(false);
+    setZoom(1);
     (async () => {
       try {
         const loaded = await getDocumentContent(documentId);
@@ -135,6 +148,10 @@ export function SourcePreviewDialog({
   // "source" has nothing to switch to, so those open straight in the editor.
   const hasView = content !== null && content.preview !== "source";
   const showEditor = content?.editable === true && (!hasView || editing);
+  const showToggle = hasView && content?.editable === true;
+  // A rendered page can be laid out wider than the modal, and it lives in another
+  // origin, so the zoom has to sit out here. Read-only HTML gets it too.
+  const showZoom = content?.preview === "html" && !showEditor;
 
   return (
     <>
@@ -151,26 +168,60 @@ export function SourcePreviewDialog({
             </DialogDescription>
           </DialogHeader>
 
-          {hasView && content?.editable ? (
-            <div className="flex shrink-0 gap-1">
-              {(["view", "edit"] as const).map((mode) => {
-                const active = (mode === "edit") === editing;
-                return (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setEditing(mode === "edit")}
-                    className={cn(
-                      "rounded-full px-3 py-1 text-ui-11 capitalize transition-colors",
-                      active
-                        ? "bg-muted font-medium text-foreground"
-                        : "text-muted-foreground hover:text-foreground",
-                    )}
+          {showToggle || showZoom ? (
+            <div className="flex shrink-0 items-center gap-1">
+              {showToggle
+                ? (["view", "edit"] as const).map((mode) => {
+                    const active = (mode === "edit") === editing;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setEditing(mode === "edit")}
+                        className={cn(
+                          "rounded-full px-3 py-1 text-ui-11 capitalize transition-colors",
+                          active
+                            ? "bg-muted font-medium text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {mode}
+                      </button>
+                    );
+                  })
+                : null}
+              {showZoom ? (
+                <div className="ml-auto flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    disabled={zoom <= ZOOM_MIN}
+                    onClick={() => setZoom((z) => clampZoom(z - ZOOM_STEP))}
+                    aria-label="Zoom out"
                   >
-                    {mode}
+                    <ZoomOutIcon className="size-4" />
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setZoom(1)}
+                    className="w-11 text-center text-ui-11 tabular-nums text-muted-foreground hover:text-foreground"
+                    aria-label="Reset zoom"
+                  >
+                    {Math.round(zoom * 100)}%
                   </button>
-                );
-              })}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    disabled={zoom >= ZOOM_MAX}
+                    onClick={() => setZoom((z) => clampZoom(z + ZOOM_STEP))}
+                    aria-label="Zoom in"
+                  >
+                    <ZoomInIcon className="size-4" />
+                  </Button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -210,12 +261,26 @@ export function SourcePreviewDialog({
               // The chat artifact canvas: a sandboxed, opaque-origin iframe with
               // network access off by default. Rendering an uploaded page is only
               // safe inside it, so this must never become a plain innerHTML.
-              <div className="h-full overflow-hidden rounded-xl border">
-                <ArtifactHtmlFrame
-                  code={text}
-                  fill={true}
-                  title={`${filename} preview`}
-                />
+              <div className="h-full overflow-auto rounded-xl border bg-white dark:bg-neutral-950">
+                {/* Zoom scales the frame from its top-left and widens it by the
+                  inverse, so zooming out reveals more of a page laid out wider
+                  than the modal (a 1600px SVG, say) instead of only shrinking a
+                  column of it. The frame is a separate origin, so the page inside
+                  cannot be zoomed any other way. */}
+                <div
+                  style={{
+                    width: `${100 / zoom}%`,
+                    height: `${100 / zoom}%`,
+                    transform: `scale(${zoom})`,
+                    transformOrigin: "top left",
+                  }}
+                >
+                  <ArtifactHtmlFrame
+                    code={text}
+                    fill={true}
+                    title={`${filename} preview`}
+                  />
+                </div>
               </div>
             ) : text ? (
               <pre className="h-full overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted/30 p-4 font-mono text-sm leading-relaxed text-foreground/90">
