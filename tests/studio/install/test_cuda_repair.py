@@ -26,7 +26,7 @@ _detect_cuda_torch_index_url = stack_mod._detect_cuda_torch_index_url
 
 
 def _dotted_cuda(tag):
-    """"cu128" -> "12.8", the torch.version.cuda form. Minor is the last digit."""
+    """ "cu128" -> "12.8", the torch.version.cuda form. Minor is the last digit."""
     digits = tag[2:] if tag.startswith("cu") else tag
     if not digits.isdigit() or len(digits) < 2:
         return ""

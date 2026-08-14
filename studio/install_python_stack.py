@@ -2841,9 +2841,7 @@ def _ensure_rocm_torch() -> None:
     # importable as ROCm (a wiped venv leaves a stale env-var that must not suppress it).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
-        _torch_ok = (
-            _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
-        )
+        _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
         if _torch_ok:
             _rocm_windows_torch_installed = True
             # ROCm torch is already installed, but bnb still needs the ROCm build
@@ -2867,9 +2865,7 @@ def _ensure_rocm_torch() -> None:
             return  # no AMD GPU visible via hipinfo
         # Whether torch already links against HIP.
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
-        _torch_already_rocm = (
-            _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
-        )
+        _torch_already_rocm = _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
         # "Is ROCm" is not "is the RIGHT ROCm": wheels are per-family, so a host whose arch
         # now resolves elsewhere (dGPU added, or the #7776 repick) would keep the old family
         # forever. setup.ps1 force-reinstalls every run, so this only bites standalone

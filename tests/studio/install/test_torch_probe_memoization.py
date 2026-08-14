@@ -82,9 +82,7 @@ class TestProbeParsing:
 
 class TestMemoization:
     def test_repeated_calls_spawn_one_interpreter(self):
-        with patch.object(
-            stack_mod.subprocess, "run", return_value = _probe_result()
-        ) as mock_run:
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             for _ in range(5):
                 stack_mod._probe_torch_runtime()
         assert mock_run.call_count == 1
@@ -119,9 +117,7 @@ class TestMemoization:
         assert second[2] == "2.10.0+rocm7.1"
 
     def test_explicit_invalidation_forces_a_reprobe(self):
-        with patch.object(
-            stack_mod.subprocess, "run", return_value = _probe_result()
-        ) as mock_run:
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             stack_mod._probe_torch_runtime()
             stack_mod._invalidate_torch_runtime_probe()
             stack_mod._probe_torch_runtime()
@@ -130,9 +126,7 @@ class TestMemoization:
 
 class TestConsumersShareTheProbe:
     def test_probe_installed_torch_version_uses_the_shared_result(self):
-        with patch.object(
-            stack_mod.subprocess, "run", return_value = _probe_result()
-        ) as mock_run:
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
             # Second consumer, same run: no new interpreter.
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
