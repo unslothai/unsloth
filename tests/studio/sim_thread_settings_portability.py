@@ -32,18 +32,21 @@ FAILURES = []
 CHECKS = 0
 
 
-def check(name, ok, detail=""):
+def check(
+    name,
+    ok,
+    detail = "",
+):
     global CHECKS
     CHECKS += 1
     if not ok:
         FAILURES.append(name)
-    print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  {detail}" if detail else ""),
-          flush=True)
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f"  {detail}" if detail else ""), flush = True)
 
 
 def fresh_home():
     """A Studio home under a real temp dir, so path handling is the platform's own."""
-    home = Path(tempfile.mkdtemp(prefix="sim8686_"))
+    home = Path(tempfile.mkdtemp(prefix = "sim8686_"))
     os.environ["UNSLOTH_STUDIO_HOME"] = str(home)
     return home
 
@@ -51,8 +54,13 @@ def fresh_home():
 def thread_row(title, **extra):
     now = int(time.time() * 1000)
     row = {
-        "id": str(uuid.uuid4()), "title": title, "modelType": "base", "modelId": "",
-        "archived": False, "createdAt": now, "updatedAt": now,
+        "id": str(uuid.uuid4()),
+        "title": title,
+        "modelType": "base",
+        "modelId": "",
+        "archived": False,
+        "createdAt": now,
+        "updatedAt": now,
     }
     row.update(extra)
     return row
@@ -75,11 +83,17 @@ def main():
     # ALTER TABLE ADD COLUMN is SQLite 3.2.0 (2005) and COALESCE predates it, so the
     # floor is far below anything shipping today. Assert it rather than assume it.
     major, minor, _ = (int(p) for p in sqlite3.sqlite_version.split("."))
-    check("sqlite supports ALTER TABLE ADD COLUMN (>= 3.2)",
-          (major, minor) >= (3, 2), f"found {sqlite3.sqlite_version}")
+    check(
+        "sqlite supports ALTER TABLE ADD COLUMN (>= 3.2)",
+        (major, minor) >= (3, 2),
+        f"found {sqlite3.sqlite_version}",
+    )
     # UPSERT (ON CONFLICT DO UPDATE), which the thread writer uses, needs 3.24.
-    check("sqlite supports UPSERT (>= 3.24)",
-          (major, minor) >= (3, 24), f"found {sqlite3.sqlite_version}")
+    check(
+        "sqlite supports UPSERT (>= 3.24)",
+        (major, minor) >= (3, 24),
+        f"found {sqlite3.sqlite_version}",
+    )
 
     print("\n--- upgrade: a database created before the column ---")
     home = fresh_home()
@@ -104,8 +118,9 @@ def main():
     except sqlite3.OperationalError as exc:
         # DROP COLUMN is 3.35+. Older SQLite needs the copy-and-rename dance.
         print(f"  (DROP COLUMN unavailable: {exc}; rebuilding the table instead)")
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_threads)")
-                if r[1] != "settings_json"]
+        cols = [
+            r[1] for r in conn.execute("PRAGMA table_info(chat_threads)") if r[1] != "settings_json"
+        ]
         joined = ", ".join(cols)
         conn.executescript(
             f"""CREATE TABLE chat_threads_old AS SELECT {joined} FROM chat_threads;
@@ -116,16 +131,24 @@ def main():
         dropped = True
     cols = {r[1] for r in conn.execute("PRAGMA table_info(chat_threads)")}
     conn.close()
-    check("the fixture really predates the column",
-          dropped and "settings_json" not in cols, f"columns={len(cols)}")
+    check(
+        "the fixture really predates the column",
+        dropped and "settings_json" not in cols,
+        f"columns={len(cols)}",
+    )
 
     db._schema_ready = False  # force the migration to run against what we just built
     got = db.get_chat_thread(legacy_ids[0])
-    check("a pre-existing thread still reads after the migration", got is not None,
-          f"title={got.get('title') if got else None!r}")
-    check("its settings are absent, not invented",
-          got is not None and got.get("settings") in (None, {}),
-          f"settings={got.get('settings') if got else None!r}")
+    check(
+        "a pre-existing thread still reads after the migration",
+        got is not None,
+        f"title={got.get('title') if got else None!r}",
+    )
+    check(
+        "its settings are absent, not invented",
+        got is not None and got.get("settings") in (None, {}),
+        f"settings={got.get('settings') if got else None!r}",
+    )
     conn = sqlite3.connect(str(db_path))
     cols = {r[1] for r in conn.execute("PRAGMA table_info(chat_threads)")}
     count = conn.execute("SELECT COUNT(*) FROM chat_threads").fetchone()[0]
@@ -165,8 +188,7 @@ def main():
     db.upsert_chat_thread(row)
     big = {"ragSource": {"type": "kb", "kbId": "x" * 200}}
     db.update_chat_thread(row["id"], {"settings": big})
-    check("a 200 char kbId round trips",
-          db.get_chat_thread(row["id"]).get("settings") == big)
+    check("a 200 char kbId round trips", db.get_chat_thread(row["id"]).get("settings") == big)
 
     print("\n--- the writers that rebuild a row must not clear the snapshot ---")
     row = thread_row("coalesce")
@@ -176,14 +198,19 @@ def main():
     renamed["title"] = "renamed by an autosave"
     db.upsert_chat_thread(renamed)
     after = db.get_chat_thread(row["id"])
-    check("a title rewrite leaves the snapshot alone",
-          after.get("settings") == {"toolsEnabled": True}, f"got {after.get('settings')!r}")
+    check(
+        "a title rewrite leaves the snapshot alone",
+        after.get("settings") == {"toolsEnabled": True},
+        f"got {after.get('settings')!r}",
+    )
     check("and the rewrite did land", after.get("title") == "renamed by an autosave")
 
     print("\n--- explicit clears ---")
     db.update_chat_thread(row["id"], {"settings": None})
-    check("PATCH settings=null clears the column",
-          db.get_chat_thread(row["id"]).get("settings") in (None, {}))
+    check(
+        "PATCH settings=null clears the column",
+        db.get_chat_thread(row["id"]).get("settings") in (None, {}),
+    )
 
     print("\n--- the listing stays free of snapshots ---")
     row = thread_row("listed")
@@ -192,25 +219,28 @@ def main():
     listed = db.list_chat_threads()
     entries = [t for t in listed if t.get("id") == row["id"]]
     check("the thread is listed", len(entries) == 1)
-    check("but carries no snapshot in the listing",
-          bool(entries) and not entries[0].get("settings"),
-          f"got {entries[0].get('settings') if entries else None!r}")
+    check(
+        "but carries no snapshot in the listing",
+        bool(entries) and not entries[0].get("settings"),
+        f"got {entries[0].get('settings') if entries else None!r}",
+    )
 
     print("\n--- corrupt content degrades instead of exploding ---")
     row = thread_row("corrupt")
     db.upsert_chat_thread(row)
     conn = sqlite3.connect(str(db_path))
-    conn.execute("UPDATE chat_threads SET settings_json = ? WHERE id = ?",
-                 ('{"nope', row["id"]))
+    conn.execute("UPDATE chat_threads SET settings_json = ? WHERE id = ?", ('{"nope', row["id"]))
     conn.commit()
     conn.close()
     try:
         got = db.get_chat_thread(row["id"])
-        check("unparseable JSON reads as no snapshot", got.get("settings") in (None, {}),
-              f"got {got.get('settings')!r}")
+        check(
+            "unparseable JSON reads as no snapshot",
+            got.get("settings") in (None, {}),
+            f"got {got.get('settings')!r}",
+        )
     except Exception as exc:  # noqa: BLE001 - that would be the finding
-        check("unparseable JSON reads as no snapshot", False,
-              f"{type(exc).__name__}: {exc}")
+        check("unparseable JSON reads as no snapshot", False, f"{type(exc).__name__}: {exc}")
 
     print("\n--- WAL, which is what a running Studio uses ---")
     conn = sqlite3.connect(str(db_path))
@@ -219,8 +249,10 @@ def main():
     row = thread_row("wal")
     db.upsert_chat_thread(row)
     db.update_chat_thread(row["id"], {"settings": {"codeToolsEnabled": True}})
-    check(f"writes work under journal_mode={mode}",
-          db.get_chat_thread(row["id"]).get("settings") == {"codeToolsEnabled": True})
+    check(
+        f"writes work under journal_mode={mode}",
+        db.get_chat_thread(row["id"]).get("settings") == {"codeToolsEnabled": True},
+    )
 
     print(f"\n{CHECKS - len(FAILURES)}/{CHECKS} passed")
     if FAILURES:

@@ -214,12 +214,10 @@ def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch)
         ({"ragTopK": 999, "toolsEnabled": True}, {"toolsEnabled": True}),
         # several at once, which is what a version gap actually looks like
         (
-            {"ragTopK": 999, "reasoningEffort": "ultra", "futureThing": 1,
-             "toolsEnabled": True},
+            {"ragTopK": 999, "reasoningEffort": "ultra", "futureThing": 1, "toolsEnabled": True},
             {"toolsEnabled": True},
         ),
-        ({"ragSource": {"type": "web", "url": "x"}, "toolsEnabled": True},
-         {"toolsEnabled": True}),
+        ({"ragSource": {"type": "web", "url": "x"}, "toolsEnabled": True}, {"toolsEnabled": True}),
         # nothing salvageable, and non-objects
         ({"quantumMode": True}, {}),
         ("hello", None),
@@ -228,8 +226,7 @@ def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch)
 )
 def test_a_snapshot_from_a_newer_build_still_reads(stored, expected):
     thread = thread_from_row(
-        {"id": "t", "title": "T", "modelType": "base", "createdAt": 1,
-         "settings": stored},
+        {"id": "t", "title": "T", "modelType": "base", "createdAt": 1, "settings": stored},
     )
     if expected is None:
         assert thread.settings is None
@@ -247,12 +244,18 @@ def test_the_wire_contract_stays_strict():
         ChatThreadPatch(settings = {"ragTopK": 999})
     with pytest.raises(ValidationError):
         ChatThread(
-            id = "t", title = "T", modelType = "base", createdAt = 1,
+            id = "t",
+            title = "T",
+            modelType = "base",
+            createdAt = 1,
             settings = {"toolsEnabled": True, "voiceModeEnabled": True},
         )
     with pytest.raises(ValidationError):
         ChatThread(
-            id = "t", title = "T", modelType = "base", createdAt = 1,
+            id = "t",
+            title = "T",
+            modelType = "base",
+            createdAt = 1,
             settings = {"ragTopK": 999},
         )
 
