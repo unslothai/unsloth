@@ -378,7 +378,11 @@ def reap_orphan_workers() -> None:
             continue
         pid = data.get("pid") if isinstance(data, dict) else None
         repo_id = data.get("repo_id") if isinstance(data, dict) else None
-        if not isinstance(pid, int) or pid <= 0:
+        # pid 1 as well as 0 and negatives. The cmdline check below is what
+        # actually keeps this honest and init cannot pass it, but the same was
+        # true of the reaper's start-time check until a record naming pid 1
+        # slipped through it, so the cheap bound goes in front of the clever one.
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid < 2:
             _safe_unlink(entry)
             continue
         try:
