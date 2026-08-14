@@ -4916,8 +4916,11 @@ except Exception:
     _edit = False
 rows = []
 selfrec = False
+flen = 3
 if not _edit:
     for r in csv.reader(d_record.splitlines()):
+        if r:
+            flen = len(r)
         rel = r[0] if r else ''
         if not rel or rel.endswith('/'):
             continue
@@ -4933,12 +4936,14 @@ if not _edit:
         rows.append((f, os.path.normcase(str(d.locate_file(f)))))
 tops = (d.read_text('top_level.txt') or '').split()
 # a truncated RECORD can keep its self-entry when the writer ordered entries
-# lexicographically (dist-info sorts before the payload), so the file must also
-# end on a complete line. Declared-top coverage cannot serve as a third signal:
-# top_level.txt legitimately names tops the wheel never ships (xxhash declares
-# _xxhash), so a cut landing exactly on a line boundary stays undetectable here.
-damaged = bool(d_record) and not _edit and (
-    not selfrec or not d_record.endswith(chr(10)))
+# lexicographically (dist-info sorts before the payload), so the final parsed
+# row must also carry RECORD's three fields: a mid-line cut leaves a short row,
+# while a valid wheel may legitimately omit the final newline (CSV allows it),
+# so the newline itself is not the signal. Declared-top coverage cannot serve as
+# one either: top_level.txt legitimately names tops the wheel never ships
+# (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
+# line boundary stays undetectable here.
+damaged = bool(d_record) and not _edit and (not selfrec or flen != 3)
 if not damaged:
     for f, key in rows:
         try:
