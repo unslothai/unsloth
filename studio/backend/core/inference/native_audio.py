@@ -169,7 +169,6 @@ class NativeAudioBackend:
             )
         if audio_type == "minimax_music3":
             import torch
-
             if getattr(torch.version, "hip", None):
                 raise RuntimeError(
                     "MiniMax Music 3 currently requires an NVIDIA CUDA GPU; "
@@ -278,7 +277,9 @@ class NativeAudioBackend:
         sample_rate = int(getattr(model.config, "sample_rate", 24000))
         entry.update(model = model, processor = tokenizer, sample_rate = sample_rate)
 
-    def _load_minimax_music3(self, entry: dict[str, Any], source: str, hf_token: Optional[str]) -> None:
+    def _load_minimax_music3(
+        self, entry: dict[str, Any], source: str, hf_token: Optional[str]
+    ) -> None:
         from diffusers import ModularPipeline
 
         pipeline = ModularPipeline.from_pretrained(source, **self._token_kwargs(hf_token))
@@ -309,26 +310,53 @@ class NativeAudioBackend:
 
         if audio_type == "higgs_tts2":
             audio, sample_rate = self._generate_higgs_tts2(
-                entry, text, instructions, temperature, top_p, top_k,
-                max_new_tokens, cancel_event,
+                entry,
+                text,
+                instructions,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
+                cancel_event,
             )
         elif audio_type == "moss_tts_local":
             audio, sample_rate = self._generate_moss_local(
-                entry, text, temperature, top_p, top_k, max_new_tokens,
-                repetition_penalty, cancel_event,
+                entry,
+                text,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
+                repetition_penalty,
+                cancel_event,
             )
         elif audio_type == "moss_tts_nano":
             return self._generate_moss_nano(
-                entry, text, temperature, top_p, top_k, max_new_tokens,
-                repetition_penalty, cancel_event,
+                entry,
+                text,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
+                repetition_penalty,
+                cancel_event,
             )
         elif audio_type == "higgs_tts3":
             audio, sample_rate = self._generate_higgs_tts3(
-                entry, text, temperature, top_p, top_k, max_new_tokens,
+                entry,
+                text,
+                temperature,
+                top_p,
+                top_k,
+                max_new_tokens,
             )
         elif audio_type == "minimax_music3":
             audio, sample_rate = self._generate_minimax_music3(
-                entry, text, instructions, max_new_tokens, seed,
+                entry,
+                text,
+                instructions,
+                max_new_tokens,
+                seed,
             )
         else:
             raise RuntimeError(f"Unsupported native audio architecture: {audio_type}")
@@ -337,8 +365,7 @@ class NativeAudioBackend:
         return _as_wav_bytes(audio, sample_rate), sample_rate
 
     def _generate_higgs_tts2(
-        self, entry, text, instructions, temperature, top_p, top_k,
-        max_new_tokens, cancel_event,
+        self, entry, text, instructions, temperature, top_p, top_k, max_new_tokens, cancel_event
     ):
         processor = entry["processor"]
         model = entry["model"]
@@ -349,10 +376,12 @@ class NativeAudioBackend:
             },
             {
                 "role": "scene",
-                "content": [{
-                    "type": "text",
-                    "text": instructions or "Audio is recorded from a quiet room.",
-                }],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": instructions or "Audio is recorded from a quiet room.",
+                    }
+                ],
             },
             {"role": "user", "content": [{"type": "text", "text": text}]},
         ]
@@ -378,8 +407,15 @@ class NativeAudioBackend:
         return decoded[0], entry["sample_rate"]
 
     def _generate_moss_local(
-        self, entry, text, temperature, top_p, top_k, max_new_tokens,
-        repetition_penalty, cancel_event,
+        self,
+        entry,
+        text,
+        temperature,
+        top_p,
+        top_k,
+        max_new_tokens,
+        repetition_penalty,
+        cancel_event,
     ):
         processor = entry["processor"]
         batch = processor([[processor.build_user_message(text = text)]], mode = "generation")
@@ -403,8 +439,15 @@ class NativeAudioBackend:
         return message.audio_codes_list[0], entry["sample_rate"]
 
     def _generate_moss_nano(
-        self, entry, text, temperature, top_p, top_k, max_new_tokens,
-        repetition_penalty, cancel_event,
+        self,
+        entry,
+        text,
+        temperature,
+        top_p,
+        top_k,
+        max_new_tokens,
+        repetition_penalty,
+        cancel_event,
     ) -> Tuple[bytes, int]:
         with tempfile.TemporaryDirectory(prefix = "unsloth-moss-nano-") as temp_dir:
             output_path = Path(temp_dir) / "speech.wav"
@@ -475,7 +518,6 @@ class NativeAudioBackend:
         gc.collect()
         try:
             import torch
-
             if self.device == "cuda":
                 torch.cuda.empty_cache()
             elif self.device == "xpu" and hasattr(torch, "xpu"):
