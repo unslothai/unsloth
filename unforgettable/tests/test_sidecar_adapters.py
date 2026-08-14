@@ -24,6 +24,7 @@ from unforgettable.sidecar.adapters import (
     promote_adapter,
     rollback_adapter,
 )
+from unforgettable.sidecar.eval import eval_adapter
 from unforgettable.sidecar.pack import pack_from_admitted_b
 from unforgettable.sidecar.train import FakeTrainBackend, train_pack
 from unforgettable.store.records import insert_record, insert_retrieve_use, insert_rollout
@@ -108,6 +109,24 @@ def test_promote_shadow_without_metrics_refuses(db_path):
         promote_adapter(result.adapter_id, db_path=db_path)
     assert get_promoted_adapter(db_path=db_path) is None
     assert get_adapter(result.adapter_id, db_path=db_path)["status"] == "shadow"
+
+
+def test_promote_after_eval_without_force_succeeds(db_path, monkeypatch):
+    monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
+    report = _voted_pack(db_path, n=5)
+    result = train_pack(
+        report.pack_id,
+        backend=FakeTrainBackend(),
+        base_model="fake",
+        db_path=db_path,
+    )
+    scored = eval_adapter(
+        result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
+    )
+    assert scored.n_holdout >= 1
+    promoted = promote_adapter(result.adapter_id, db_path=db_path)
+    assert promoted["status"] == "promoted"
+    assert get_promoted_adapter(db_path=db_path)["id"] == result.adapter_id
 
 
 def test_discarded_promote_without_force_raises(db_path):

@@ -38,6 +38,8 @@ class EpisodeRequest:
     max_clones: Optional[int] = None
     max_sim_turns: Optional[int] = None
     skip_standing: bool = False
+    adapter_id: Optional[str] = None
+    shrink_standing: Optional[bool] = None
 
 
 @dataclass

@@ -48,10 +48,12 @@ from unforgettable.store.records import (
 )
 from unforgettable.sidecar.adapters import (
     ADAPTER_STATUSES,
+    get_adapter,
     list_adapters,
     promote_adapter,
     rollback_adapter,
 )
+from unforgettable.sidecar.eval import eval_adapter
 from unforgettable.sidecar.pack import list_packs, pack_from_admitted_b
 from unforgettable.sidecar.train import FAKE_BASE_MODEL, FakeTrainBackend, train_pack
 from unforgettable.store.search import search_records
@@ -431,6 +433,23 @@ def _cmd_adapters(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _cmd_eval(args: argparse.Namespace, db_path: Path) -> int:
+    if get_adapter(args.id, db_path=db_path) is None:
+        return _unknown_id(args.id)
+    world = Path(args.world).expanduser() if args.world else None
+    try:
+        report = eval_adapter(
+            args.id,
+            backend=FakeTrainBackend(),
+            world=world,
+            db_path=db_path,
+        )
+    except KeyError:
+        return _unknown_id(args.id)
+    _print_json(asdict(report))
+    return 0 if report.passed else 1
+
+
 def _cmd_promote(args: argparse.Namespace, db_path: Path) -> int:
     try:
         row = promote_adapter(args.id, force=args.force, db_path=db_path)
@@ -717,6 +736,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     adapters_p.set_defaults(func=_cmd_adapters)
+
+    eval_p = sub.add_parser(
+        "eval",
+        help="Score a shadow adapter on holdout lean vs base.",
+    )
+    _add_db_flag(eval_p)
+    eval_p.add_argument("id")
+    eval_p.add_argument(
+        "--world",
+        default=None,
+        help="World tree to clone when running Probe: procedures.",
+    )
+    eval_p.set_defaults(func=_cmd_eval)
 
     promote_p = sub.add_parser(
         "promote",

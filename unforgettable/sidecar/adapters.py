@@ -130,6 +130,30 @@ def list_adapters(*, status: Optional[str] = None, db_path=None) -> list[dict[st
         conn.close()
 
 
+def set_adapter_metrics(
+    adapter_id: str, metrics: dict, *, db_path=None
+) -> dict[str, Any]:
+    if get_adapter(adapter_id, db_path=db_path) is None:
+        raise KeyError(adapter_id)
+    if isinstance(metrics, str):
+        metrics_text = metrics
+    else:
+        metrics_text = json.dumps(metrics)
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE adapters SET metrics = ? WHERE id = ?",
+            (metrics_text, adapter_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    found = get_adapter(adapter_id, db_path=db_path)
+    if found is None:
+        raise RuntimeError("adapter metrics did not persist")
+    return found
+
+
 def get_promoted_adapter(*, db_path=None) -> Optional[dict[str, Any]]:
     conn = get_connection(db_path)
     try:

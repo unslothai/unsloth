@@ -429,7 +429,7 @@ def test_rollback_works(db_path, capsys):
 
 
 def test_train_adapters_rollback_promote_help_include_db(capsys):
-    for cmd in ("train", "adapters", "rollback", "promote"):
+    for cmd in ("train", "adapters", "rollback", "promote", "eval"):
         try:
             main([cmd, "--help"])
         except SystemExit as exc:
@@ -440,4 +440,24 @@ def test_train_adapters_rollback_promote_help_include_db(capsys):
         assert "--db" in out
         if cmd == "promote":
             assert "--force" in out
+        if cmd == "eval":
+            assert "--world" in out
+
+
+def test_eval_then_promote_without_force(db_path, capsys, monkeypatch):
+    monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
+    _voted_procedures(db_path, n=5)
+    assert main(["pack", "--db", str(db_path)]) == 0
+    packed = json.loads(capsys.readouterr().out)
+    assert packed["n_holdout"] >= 1
+    assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
+    trained = json.loads(capsys.readouterr().out)
+    assert main(["eval", trained["adapter_id"], "--db", str(db_path)]) == 0
+    scored = json.loads(capsys.readouterr().out)
+    assert scored["n_holdout"] >= 1
+    assert scored["passed"] is True
+    assert main(["promote", trained["adapter_id"], "--db", str(db_path)]) == 0
+    promoted = json.loads(capsys.readouterr().out)
+    assert promoted["status"] == "promoted"
+    assert promoted["id"] == trained["adapter_id"]
 

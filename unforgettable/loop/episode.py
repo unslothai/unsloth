@@ -39,6 +39,8 @@ from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import resolve_test_command
+from unforgettable.sidecar.adapters import STATUS_DISCARDED, get_adapter
+from unforgettable.sidecar.pack import list_pack_items
 from unforgettable.store.compile import list_standing, maybe_compile, pack_standing
 from unforgettable.store.records import (
     insert_inject_stats,
@@ -130,6 +132,33 @@ async def _confirm_retry_world(host, request, state, action, policy, db_path: st
     return action
 
 
+def _resolve_attached_adapter(
+    request: EpisodeRequest, db_path: str
+) -> tuple[Optional[str], frozenset[str]]:
+    adapter = None
+    adapter_path = None
+    if request.adapter_id:
+        adapter = get_adapter(request.adapter_id, db_path=db_path)
+        if adapter is None or adapter.get("status") == STATUS_DISCARDED:
+            LogGateEyes().note("adapter: missing or discarded", db_path=db_path)
+            adapter = None
+        else:
+            adapter_path = adapter.get("path") or None
+    shrink = request.shrink_standing is True or (
+        request.shrink_standing is None and adapter is not None
+    )
+    exclude: frozenset[str] = frozenset()
+    if shrink and adapter is not None:
+        pack_id = adapter.get("pack_id")
+        if pack_id:
+            exclude = frozenset(
+                item["source_id"]
+                for item in list_pack_items(pack_id, db_path=db_path)
+                if item.get("source_id")
+            )
+    return adapter_path, exclude
+
+
 def _inject_bundle(
     query: str,
     *,
@@ -138,15 +167,21 @@ def _inject_bundle(
     episode_id: str,
     db_path: str,
     contact: str = "world",
+    exclude_standing_ids: frozenset[str] = frozenset(),
 ) -> str:
     standing_rows = [] if skip_standing else list_standing(db_path)
+    if exclude_standing_ids:
+        standing_rows = [
+            row for row in standing_rows if row["id"] not in exclude_standing_ids
+        ]
     standing_text, kept_rows = pack_standing(standing_rows)
     compiled_ids = {row["id"] for row in kept_rows}
+    retrieve_exclude = compiled_ids | set(exclude_standing_ids)
     high_stakes = stakes == "high" and contact == "world"
     policy = RetrievePolicy(
         high_stakes=high_stakes,
         contact=contact,
-        exclude_ids=frozenset(compiled_ids),
+        exclude_ids=frozenset(retrieve_exclude),
         max_twin_notes=3 if contact == "sim" else 1,
     )
     retrieved = retrieve(query, policy=policy, db_path=db_path)
@@ -195,6 +230,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     tokens, _ = bind_episode(db_path=db_path, episode_id=episode_id, namespace=request.namespace)
     actions: list[str] = []
     text = ""
+    adapter_path, exclude_standing_ids = _resolve_attached_adapter(request, db_path)
     try:
         inject = _inject_bundle(
             last_user_text(request.messages),
@@ -203,6 +239,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             episode_id=episode_id,
             db_path=db_path,
             contact="world",
+            exclude_standing_ids=exclude_standing_ids,
         )
         messages = _with_system(request.messages, inject)
         generated = False
@@ -227,6 +264,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                         extra_tools=list(MEMORY_TOOLS) + list(CONTACT_TOOLS),
                         inner_model=request.inner_model,
                         on_chunk=request.on_chunk,
+                        adapter_path=adapter_path,
                     )
                 )
                 generated = True
@@ -279,6 +317,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     episode_id=episode_id,
                     db_path=db_path,
                     contact="sim",
+                    exclude_standing_ids=exclude_standing_ids,
                 )
                 messages = _with_system(
                     request.messages,
@@ -303,6 +342,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                                 episode_id=episode_id,
                                 db_path=db_path,
                                 contact="world",
+                                exclude_standing_ids=exclude_standing_ids,
                             )
                             messages = _with_system(
                                 request.messages,
@@ -331,6 +371,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     episode_id=episode_id,
                     db_path=db_path,
                     contact="world",
+                    exclude_standing_ids=exclude_standing_ids,
                 )
                 messages = _with_system(
                     request.messages,

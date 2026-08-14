@@ -43,6 +43,7 @@ class GenerateRequest:
     inner_model: Optional[str] = None
     permission_mode: Optional[str] = None
     on_chunk: Optional[OnChunk] = None
+    adapter_path: Optional[str] = None
 
 
 @dataclass

@@ -33,10 +33,15 @@ from unforgettable.host import (
 )
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run
+from unforgettable.sidecar.adapters import promote_adapter
+from unforgettable.sidecar.pack import pack_from_admitted_b
+from unforgettable.sidecar.train import FakeTrainBackend, train_pack
 from unforgettable.store.compile import get_compiled, pin_compiled
 from unforgettable.store.records import (
     get_record,
     insert_record,
+    insert_retrieve_use,
+    insert_rollout,
     list_inject_stats,
     list_records,
     list_retrieve_uses,
@@ -70,6 +75,7 @@ class FakeHost:
         self.confirm_result = confirm_result
         self.cancel_event = cancel_event
         self.last_messages = None
+        self.last_adapter_path = None
         self.last_run_action_kwargs = None
 
     def memory_db_path(self) -> Path:
@@ -97,6 +103,7 @@ class FakeHost:
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         self.calls.append(req.session_id)
         self.last_messages = req.messages
+        self.last_adapter_path = req.adapter_path
         if not self._results:
             raise AssertionError("unexpected extra generate")
         return self._results.pop(0)
@@ -793,3 +800,92 @@ def test_episode_maybe_compile_after_second_world_pass(tmp_path: Path):
     compiled = get_compiled(rec["id"], db_path=host.db)
     assert compiled is not None
     assert not compiled["explicit"]
+
+
+def _standing_pack_adapter(tmp_path: Path):
+    db = tmp_path / "memory.db"
+    pinned = insert_record(
+        kind="procedure",
+        title="How we run the formatter",
+        body="Always run ruff, then pytest.",
+        provenance="world",
+        db_path=db,
+    )
+    pin_compiled(pinned["id"], explicit=True, db_path=db)
+    insert_retrieve_use(
+        episode_id="ep-pin",
+        record_id=pinned["id"],
+        contact="world",
+        db_path=db,
+    )
+    insert_rollout(
+        episode_id="ep-pin",
+        contact="world",
+        outcome="pass",
+        summary="ok",
+        db_path=db,
+    )
+    for i in range(3):
+        rec = insert_record(
+            kind="procedure",
+            title=f"Playbook {i}",
+            body=f"steps {i}",
+            provenance="world",
+            db_path=db,
+        )
+        insert_retrieve_use(
+            episode_id=f"ep-{i}",
+            record_id=rec["id"],
+            contact="world",
+            db_path=db,
+        )
+        insert_rollout(
+            episode_id=f"ep-{i}",
+            contact="world",
+            outcome="pass",
+            summary="ok",
+            db_path=db,
+        )
+    packed = pack_from_admitted_b(db_path=db)
+    result = train_pack(
+        packed.pack_id,
+        backend=FakeTrainBackend(),
+        base_model="fake",
+        db_path=db,
+    )
+    promote_adapter(result.adapter_id, force=True, db_path=db)
+    return pinned, result
+
+
+def test_episode_adapter_shrinks_pack_standing(tmp_path: Path):
+    pinned, result = _standing_pack_adapter(tmp_path)
+    host = FakeHost(tmp_path, [_ok("ok", "world")])
+    asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "how do we run the formatter"}],
+                adapter_id=result.adapter_id,
+            ),
+        )
+    )
+    system = host.last_messages[0]["content"]
+    assert f"Source: {pinned['id']}" not in system
+    assert host.last_adapter_path
+    assert Path(host.last_adapter_path).name == result.adapter_id
+
+
+def test_episode_promoted_without_adapter_id_keeps_standing(tmp_path: Path):
+    pinned, _result = _standing_pack_adapter(tmp_path)
+    host = FakeHost(tmp_path, [_ok("ok", "world")])
+    asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "how do we run the formatter"}],
+            ),
+        )
+    )
+    system = host.last_messages[0]["content"]
+    assert f"Source: {pinned['id']}" in system
+    assert host.last_adapter_path is None
