@@ -116,6 +116,18 @@ _USAGE_DETAIL_FIELDS = (
 
 _STEP_DONE = object()
 
+# Mirrors the local execution cap. Hosted code execution can return very large
+# stdout, and the local path already refuses to put more than this in front of
+# the model, so the replayed copy is held to the same limit rather than being
+# allowed to fill the next request's context.
+_HOSTED_RESULT_MAX_CHARS = 16000
+
+
+def _truncate_for_model(text: str, limit: int = _HOSTED_RESULT_MAX_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n... [truncated, {len(text) - limit} more characters]"
+
 # Consecutive turns that asked for a tool but ran none before the loop gives up.
 _MAX_FRUITLESS_TURNS = 2
 
@@ -322,10 +334,20 @@ class _Turn:
             entry["name"] = name
         result = event.get("result")
         if isinstance(result, str) and result.strip():
+            if "__IMAGES__:" in result:
+                # A Gemini plot with no stdout is nothing BUT the sentinel, so
+                # stripping leaves an empty string. Note the picture here or the
+                # entry looks empty and the turn reports that nothing was made.
+                entry["produced_image"] = True
             # Same normalisation local results get: __IMAGES__ and friends are
             # frontend sentinels carrying a full data URI, and replaying one
             # sends megabytes of base64 the model cannot read anyway.
-            entry["result"] = strip_result_for_model(result)
+            stripped = strip_result_for_model(result)
+            if stripped.strip():
+                # Capped like a local result. Hosted code execution can return
+                # very large stdout, and the local path already refuses to put
+                # more than this in front of the model.
+                entry["result"] = _truncate_for_model(stripped)
         if event.get("image_b64"):
             # image_generation reports an empty result and carries the picture
             # separately. Record that it happened rather than the bytes, so the
@@ -893,6 +915,24 @@ async def stream_with_studio_tools(
             ):
                 reprompts += 1
                 last_reprompt_text = visible_answer
+                stalled_hosted = turn.hosted_replay_text()
+                if stalled_hosted:
+                    # A hosted tool did run this turn, the model just did not go
+                    # on to ask for a local one. The replay below never happens
+                    # on this path, so without this the reprompted request is
+                    # told to continue from a search or execution whose output
+                    # it can no longer see.
+                    append_assistant_turn(
+                        conversation,
+                        {
+                            "role": "assistant",
+                            "content": (
+                                f"{visible_answer}\n\n{stalled_hosted}"
+                                if visible_answer
+                                else stalled_hosted
+                            ),
+                        },
+                    )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
                 continue
             break

@@ -478,3 +478,100 @@ def test_a_turn_with_no_hosted_tool_replays_exactly_as_before(executed):
     replayed = _replayed(transport)
     assert "plain answer" in replayed
     assert "result]" not in replayed
+
+
+# ── the three cases review found after the first cut ─────────────────
+
+
+def test_a_plot_with_no_stdout_is_still_reported(executed):
+    """Gemini code execution can return nothing but the image sentinel.
+
+    Stripping it leaves an empty string and image_b64 is not set on that path,
+    so without noticing the sentinel the entry looks empty and the follow-up is
+    told nothing was produced.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "code_execution",
+                        "tool_call_id": "hosted-1",
+                        "arguments": {"code": "plt.plot(x)"},
+                    }
+                ),
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "result": '\n__IMAGES__:["data:image/png;base64,' + ("C" * 4000) + '"]',
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "produced an image" in replayed
+    assert "CCCC" not in replayed
+
+
+def test_a_large_hosted_result_is_capped(executed):
+    """Local execution caps what the model sees; the hosted copy must too."""
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "tool_name": "code_execution",
+                        "result": "D" * 60000,
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "truncated" in replayed
+    assert len(replayed) < 40000, f"replayed {len(replayed)} chars"
+
+
+def test_a_stalled_turn_keeps_its_hosted_result(executed):
+    """The model searched, then only said what it was about to do.
+
+    That takes the stall reprompt, which returns to the provider without the
+    replay below it, so the reprompted request could no longer see the search
+    output it is being told to continue from.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "tool_name": "web_search",
+                        "result": "Title: Unsloth\nURL: https://unsloth.ai",
+                    }
+                ),
+                _text("Let me check that."),
+                _finish("stop"),
+            ],
+            [_text("done"), _finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    assert len(transport.requests) > 1, "the stall reprompt never happened"
+    assert "https://unsloth.ai" in json.dumps(transport.requests[1]["messages"])
