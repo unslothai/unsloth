@@ -14,6 +14,7 @@ import contextlib
 import re
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,7 @@ from core.inference.diffusion import (
 import core.inference.diffusion_eager_patches  # noqa: E402,F401
 import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
+    DIFFUSION_CANCELLED_MSG,
     _GATED_MIRROR_PAIRS,
     _MIRROR_PAIRS,
     _UNGATED_MIRROR_PAIRS,
@@ -7141,7 +7143,8 @@ def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(m
 
 
 def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path):
-    # A queued generation holds no cancel event, so unload's signal cannot reach it, and Python locks are not FIFO, so it could get in ahead and denoise after the eject.
+    # A queued generation is not the active denoise unload signals, and Python locks are not FIFO,
+    # so without the fence it could get in ahead and denoise after the eject.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -7221,6 +7224,36 @@ class _RecordingCondition(threading.Condition):
         return super().wait(timeout)
 
 
+class _AdmissionHookLock:
+    """Lock wrapper that pauses generation after atomic admission releases state."""
+
+    def __init__(self, backend, on_admitted):
+        self._lock = threading.Lock()
+        self._backend = backend
+        self._on_admitted = on_admitted
+        self._fired = False
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+        if (
+            not self._fired
+            and threading.current_thread().name == "generation-under-test"
+            and self._backend._active_generate_cancel is not None
+        ):
+            self._fired = True
+            self._on_admitted()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
 def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monkeypatch):
     # A generation that wins the lock race must yield it to the queued teardown, not
     # misreport a cancellation. Two reservations prove it does not resume early.
@@ -7271,6 +7304,194 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monk
     assert not worker.is_alive(), "generation did not resume after the teardown drained"
     assert denoise_entered.is_set()
     assert outcome["result"]["images"]
+
+
+def test_cancel_wakes_generation_waiting_for_replacement(fake_runtime, tmp_path, monkeypatch):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    replacement_build_started = threading.Event()
+    allow_replacement_commit = threading.Event()
+    real_from_single_file = _FakeTransformer.from_single_file
+
+    def blocking_from_single_file(cls, path, **kwargs):
+        replacement_build_started.set()
+        assert allow_replacement_commit.wait(5), "replacement load was not released"
+        return real_from_single_file(path, **kwargs)
+
+    monkeypatch.setattr(
+        _FakeTransformer, "from_single_file", classmethod(blocking_from_single_file)
+    )
+
+    load_outcome: dict = {}
+
+    def replace_model():
+        try:
+            load_outcome["result"] = backend.load_pipeline(
+                str(tmp_path),
+                gguf_filename = "model.gguf",
+                base_repo = "base/repo",
+                family_override = "z-image",
+            )
+        except BaseException as exc:  # noqa: BLE001 - surface worker failures in the test thread
+            load_outcome["error"] = exc
+
+    loader = threading.Thread(target = replace_model, daemon = True)
+    loader.start()
+    assert replacement_build_started.wait(5), load_outcome
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "cancel while queued", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        allow_replacement_commit.set()
+        pytest.fail("generation was not published while waiting for replacement")
+    assert backend.generate_progress()["active"] is True
+
+    assert backend.cancel_generate() is True
+    worker.join(5)
+    assert not worker.is_alive(), "cancelled generation waited for replacement to finish"
+    assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+    assert not backend._queued_generate_cancels
+    assert backend.generate_progress()["active"] is False
+    assert loader.is_alive(), "replacement unexpectedly finished before the queued cancel"
+
+    allow_replacement_commit.set()
+    loader.join(5)
+    assert not loader.is_alive(), "replacement load did not finish"
+    assert "error" not in load_outcome, load_outcome
+
+
+def test_cancel_stops_every_generation_queued_behind_teardown(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    with backend._lock:
+        backend._teardown_waiters = 1
+
+    errors: list[str] = []
+
+    def generate(prompt):
+        try:
+            backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    workers = [
+        threading.Thread(target = generate, args = (f"queued-{index}",), daemon = True)
+        for index in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if len(backend._queued_generate_cancels) == 2:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("both generations did not register for queued cancellation")
+
+    try:
+        assert backend.cancel_generate() is True
+        for worker in workers:
+            worker.join(5)
+            assert not worker.is_alive()
+        assert errors == [DIFFUSION_CANCELLED_MSG, DIFFUSION_CANCELLED_MSG]
+        assert not backend._queued_generate_cancels
+    finally:
+        with backend._lock:
+            if backend._teardown_waiters:
+                backend._release_teardown_locked()
+
+
+def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    start_teardown = threading.Event()
+    teardown_reserved = threading.Event()
+    saw_active_cancel: list[bool] = []
+
+    def after_admission():
+        start_teardown.set()
+        assert teardown_reserved.wait(5), "teardown did not reserve after admission"
+
+    backend._lock = _AdmissionHookLock(backend, after_admission)
+    backend._teardown_drained = threading.Condition(backend._lock)
+
+    def teardown():
+        assert start_teardown.wait(5), "generation never reached admission"
+        with backend._lock:
+            with backend._generation_cancel_lock:
+                cancel = backend._active_generate_cancel
+                saw_active_cancel.append(cancel is not None)
+                if cancel is not None:
+                    cancel.set()
+            backend._teardown_waiters += 1
+            teardown_reserved.set()
+        with backend._generate_lock:
+            with backend._lock:
+                try:
+                    backend._unload_locked()
+                finally:
+                    backend._release_teardown_locked()
+
+    teardown_worker = threading.Thread(target = teardown, daemon = True)
+    teardown_worker.start()
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "atomic admission", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    generation_worker = threading.Thread(
+        target = generate, name = "generation-under-test", daemon = True
+    )
+    generation_worker.start()
+    generation_worker.join(5)
+    teardown_worker.join(5)
+
+    assert not generation_worker.is_alive(), "generation ignored teardown cancellation"
+    assert not teardown_worker.is_alive(), "teardown remained blocked behind generation"
+    assert saw_active_cancel == [True]
+    assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+    assert backend._state is None
+    assert backend._teardown_waiters == 0
 
 
 def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):

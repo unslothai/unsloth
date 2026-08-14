@@ -1095,11 +1095,17 @@ class DiffusionBackend:
         self._load_token = 0
         # Set by unload() to abort an in-flight download. Replaced, never cleared, so a cancelled worker stays cancelled.
         self._cancel_event = threading.Event()
+        # Cancellation state has its own tiny lock so Stop remains responsive while a replacement
+        # load holds _lock for model construction.
+        self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
-        # Unloads / superseding loads waiting on _generate_lock to free this pipeline. A generation queued behind the active
-        # one holds no cancel event yet, so without this fence it could win the lock after an eject and denoise anyway. A
-        # count, not a flag, so concurrent teardowns each own their own release.
+        # Requests waiting behind teardown are cancellable too, but cannot share the active
+        # slot: multiple HTTP callers may queue while another generation is still denoising.
+        self._queued_generate_cancels: set[threading.Event] = set()
+        # Unloads / superseding loads waiting on _generate_lock to free this pipeline. A queued
+        # generation is not the ACTIVE one teardown should cancel, so without this fence it could
+        # win the lock after an eject and denoise anyway. A count lets concurrent teardowns reserve.
         self._teardown_waiters = 0
         # Wakes a generation that yielded the generation lock to a pending teardown. It shares
         # _lock so checking the count and sleeping cannot miss a completed teardown.
@@ -1138,26 +1144,63 @@ class DiffusionBackend:
             self._teardown_drained.notify_all()
 
     @contextmanager
-    def _generation_slot(self):
-        """Hold the generation lock, yielding to a teardown already queued for it.
+    def _generation_slot(self, cancel: threading.Event):
+        """Hold the generation lock, yielding to teardown and remaining cancellable.
 
         Lock acquisition is not FIFO. If a generation wins the lock after a load or unload
         has raised its fence, it must let that teardown run before reading ``_state``. Once
         the final fence drops, the teardown still owns ``_generate_lock`` until its model
         transition has settled, so the retried acquisition observes the new truthful state.
+
+        The zero-fence check and active-cancel registration share one ``_lock`` section. A
+        teardown starting after that check therefore either sees this event and cancels it,
+        or reserved before the check and makes this request yield.
         """
-        while True:
-            self._generate_lock.acquire()
-            with self._lock:
-                if not self._teardown_waiters:
-                    break
-            self._generate_lock.release()
-            with self._teardown_drained:
-                self._teardown_drained.wait_for(lambda: self._teardown_waiters == 0)
+        admitted = False
+        with self._generation_cancel_lock:
+            self._queued_generate_cancels.add(cancel)
         try:
-            yield
+            while True:
+                # A replacement holds this lock throughout construction. Timed acquisition keeps
+                # a queued HTTP request responsive to Stop without weakening that barrier.
+                while not self._generate_lock.acquire(timeout = 0.1):
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                with self._lock:
+                    if not self._teardown_waiters:
+                        # Lock order is state -> cancellation everywhere teardown touches both.
+                        # Registration is therefore atomic with the zero-fence observation.
+                        with self._generation_cancel_lock:
+                            cancelled = cancel.is_set()
+                            if not cancelled:
+                                self._queued_generate_cancels.discard(cancel)
+                                self._active_generate_cancel = cancel
+                                admitted = True
+                    else:
+                        cancelled = cancel.is_set()
+                if admitted:
+                    break
+                self._generate_lock.release()
+                if cancelled:
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                with self._teardown_drained:
+                    while self._teardown_waiters and not cancel.is_set():
+                        # Cancellation uses its independent lock and cannot notify this condition
+                        # while a load owns _lock, so wake periodically only while actually queued.
+                        self._teardown_drained.wait(timeout = 0.1)
+                    if cancel.is_set():
+                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+            try:
+                yield
+            finally:
+                with self._generation_cancel_lock:
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                self._generate_lock.release()
         finally:
-            self._generate_lock.release()
+            if not admitted:
+                with self._generation_cancel_lock:
+                    self._queued_generate_cancels.discard(cancel)
 
     # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
     # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
@@ -3124,8 +3167,9 @@ class DiffusionBackend:
             # Bail before signalling if this load was superseded, else a stale worker aborts a live one.
             if _load_token is not None and _load_token != self._load_token:
                 raise RuntimeError("Diffusion load was cancelled.")
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
+            with self._generation_cancel_lock:
+                if self._active_generate_cancel is not None:
+                    self._active_generate_cancel.set()
             # Same fence unload() takes: a queued generation must not run on the pipeline this load is about to free.
             self._teardown_waiters += 1
         with self._generate_lock:
@@ -5318,13 +5362,13 @@ class DiffusionBackend:
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
-        with self._generation_slot():
+        with self._generation_slot(cancel):
             with self._lock:
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
-                # Register under _lock so unload()/a load can signal THIS generation.
-                self._active_generate_cancel = cancel
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:
@@ -5749,11 +5793,11 @@ class DiffusionBackend:
                 # artifact per shape, so that save is not instant) and the page still shows Stop
                 # for as long as progress reads active, so a Stop landing there was answered
                 # cancelled = true and then contradicted by the image the route persisted.
-                # Check and deregister under _lock, which is the lock cancel_generate takes, so the
+                # Check and deregister under the cancellation lock, which cancel_generate takes, so the
                 # two cannot interleave: a cancel that saw this event registered ran strictly
                 # before the check, and one that arrives after finds nothing to set and answers
                 # false. The finally below repeats the clear for every other exit.
-                with self._lock:
+                with self._generation_cancel_lock:
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
@@ -5784,18 +5828,23 @@ class DiffusionBackend:
                 }
             finally:
                 # Deregister so a later unload/load can't poke a finished generation (if still ours).
-                with self._lock:
+                with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                with self._lock:
                     # Sole clear of the published progress state, on every exit, so a crashed generation never leaves the UI stuck.
                     self._gen = None
 
     def generate_progress(self) -> dict[str, Any]:
-        """Live per-step progress for an in-flight generation (lock-free read)."""
+        """Live per-step progress for an in-flight or teardown-queued generation."""
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
+            with self._generation_cancel_lock:
+                pending = bool(
+                    self._queued_generate_cancels or self._active_generate_cancel is not None
+                )
             return {
-                "active": False,
+                "active": pending,
                 "step": 0,
                 "total_steps": 0,
                 "fraction": 0.0,
@@ -5820,11 +5869,14 @@ class DiffusionBackend:
         Best effort by construction: the sampler stops at the NEXT step callback, so a cancel
         during the VAE decode or the encode that precedes step 0 lands when that finishes.
         Same contract as the video backend."""
-        with self._lock:
-            cancel = self._active_generate_cancel
-            if cancel is None:
+        with self._generation_cancel_lock:
+            cancels = set(self._queued_generate_cancels)
+            if self._active_generate_cancel is not None:
+                cancels.add(self._active_generate_cancel)
+            if not cancels:
                 return False
-            cancel.set()
+            for cancel in cancels:
+                cancel.set()
             return True
 
     def unload(self) -> dict[str, Any]:
@@ -5833,9 +5885,11 @@ class DiffusionBackend:
             # rebinds this attribute, so an unlocked read could set an event the current load no longer watches.
             self._cancel_event.set()
             # Abort an in-flight denoise via ITS cancel event.
-            if self._active_generate_cancel is not None:
-                self._active_generate_cancel.set()
-            # Fence queued generations too: they hold no cancel event yet, so the signal above cannot reach them.
+            with self._generation_cancel_lock:
+                if self._active_generate_cancel is not None:
+                    self._active_generate_cancel.set()
+            # Fence queued generations too: they are intentionally not cancelled by model
+            # lifecycle changes, so they must wait and observe the post-teardown state.
             self._teardown_waiters += 1
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
