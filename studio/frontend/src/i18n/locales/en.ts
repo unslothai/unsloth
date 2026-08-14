@@ -927,7 +927,7 @@ export const en = {
         'Show "LLMs can make mistakes" under the chat box.',
       projectAttachments: "Share files across a project",
       projectAttachmentsDescription:
-        "Files attached in a chat that belongs to a project are indexed for the whole project, so every chat in it can use them. Change it per chat from the attach menu.",
+        "Default for files attached in a chat that belongs to a project: index them for the whole project so every chat in it can use them. Each chat can override this from the attach menu.",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:

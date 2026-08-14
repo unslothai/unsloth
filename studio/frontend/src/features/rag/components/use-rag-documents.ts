@@ -93,6 +93,12 @@ export function useRagDocuments(
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
+  // Refreshes are fired from several places at once (a mutation invalidates
+  // before and after, the poll ticks, the scope changes). Two list requests can
+  // complete out of order, so only the newest is allowed to publish: an earlier
+  // one landing last would put the pre-mutation list back and, with it, drop the
+  // indexing state the composer gates sends on.
+  const refreshSeq = useRef(0);
 
   const scopeKey = scope
     ? scope.type === "kb"
@@ -207,11 +213,13 @@ export function useRagDocuments(
   const refresh = useCallback(
     async (opts?: { quiet?: boolean }) => {
       if (!scopeKey) return;
+      const requestId = ++refreshSeq.current;
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
         // live "running %" chip. Failed docs hidden (toast warned at upload).
         const rows = (await lister()).filter((row) => row.status !== "failed");
+        if (refreshSeq.current !== requestId) return;
         setDocuments((prev) => {
           const merged = rows.map((row) => {
             const tracked = prev.find((p) => p.id === row.id);

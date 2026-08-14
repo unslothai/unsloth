@@ -112,6 +112,9 @@ export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
  * Ignored outside a project. */
 export type ProjectAttachmentTarget = "project" | "thread";
 
+/** Key a choice made in a chat that has no id yet lives under until it gets one. */
+export const PENDING_CHAT_ATTACHMENT_KEY = "__pending__";
+
 export type RagMode = "hybrid" | "lexical" | "dense";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
@@ -1003,8 +1006,12 @@ type ChatRuntimeStore = {
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
-  /** Composer attachment scope for chats inside a project. */
+  /** Default composer attachment scope for chats inside a project. */
   projectAttachmentTarget: ProjectAttachmentTarget;
+  /** Per-chat override of that default, so picking a target in one chat does not
+   * change every other chat in the project. Session-only: the menu always shows
+   * the target in force, and a reload falls back to the saved default. */
+  projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
   // autoInject = forced first-pass retrieval before answering.
@@ -1310,6 +1317,12 @@ type ChatRuntimeStore = {
   setRagEnabled: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
   setProjectAttachmentTarget: (target: ProjectAttachmentTarget) => void;
+  setThreadProjectAttachmentTarget: (
+    threadId: string | null,
+    target: ProjectAttachmentTarget,
+  ) => void;
+  /** Carry a choice made before the chat existed onto its new id. */
+  adoptPendingProjectAttachmentTarget: (threadId: string) => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
@@ -1642,6 +1655,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragEnabled: false,
   ragSource: loadRagSource(),
   projectAttachmentTarget: loadProjectAttachmentTarget(),
+  projectAttachmentTargetByThread: {},
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
   ragAutoInject: loadRagAutoInject(),
@@ -2474,6 +2488,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, projectAttachmentTarget);
       return { projectAttachmentTarget };
+    }),
+  setThreadProjectAttachmentTarget: (threadId, target) =>
+    set((state) => ({
+      projectAttachmentTargetByThread: {
+        ...state.projectAttachmentTargetByThread,
+        [threadId ?? PENDING_CHAT_ATTACHMENT_KEY]: target,
+      },
+    })),
+  adoptPendingProjectAttachmentTarget: (threadId) =>
+    set((state) => {
+      const pending =
+        state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
+      if (pending === undefined) return state;
+      const next = { ...state.projectAttachmentTargetByThread };
+      delete next[PENDING_CHAT_ATTACHMENT_KEY];
+      next[threadId] = pending;
+      return { projectAttachmentTargetByThread: next };
     }),
   setRagSource: (ragSource) =>
     set((state) => {

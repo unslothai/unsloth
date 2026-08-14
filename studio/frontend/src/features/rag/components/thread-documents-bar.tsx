@@ -12,6 +12,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import {
+  PENDING_CHAT_ATTACHMENT_KEY,
   type ProjectAttachmentTarget,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
@@ -319,11 +320,14 @@ export function ThreadDocumentsBar({
   const ragSource = useChatRuntimeStore((s) => s.ragSource);
   const setRagSource = useChatRuntimeStore((s) => s.setRagSource);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
-  const projectAttachmentTarget = useChatRuntimeStore(
+  const projectAttachmentDefault = useChatRuntimeStore(
     (s) => s.projectAttachmentTarget,
   );
-  const setProjectAttachmentTarget = useChatRuntimeStore(
-    (s) => s.setProjectAttachmentTarget,
+  const projectAttachmentTargetByThread = useChatRuntimeStore(
+    (s) => s.projectAttachmentTargetByThread,
+  );
+  const setThreadProjectAttachmentTarget = useChatRuntimeStore(
+    (s) => s.setThreadProjectAttachmentTarget,
   );
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -349,6 +353,12 @@ export function ThreadDocumentsBar({
   const threadProjectId = useThreadProjectId(effectiveThreadId);
   const projectId =
     ragEnabled && ragSource.type === "kb" ? null : threadProjectId;
+  // This chat's own choice if it made one, otherwise the saved default. Keeps a
+  // pick in one chat from redirecting every other chat in the project.
+  const projectAttachmentTarget =
+    projectAttachmentTargetByThread[
+      effectiveThreadId ?? PENDING_CHAT_ATTACHMENT_KEY
+    ] ?? projectAttachmentDefault;
   const sharesWithProject =
     projectId !== null && projectAttachmentTarget === "project";
 
@@ -417,6 +427,9 @@ export function ThreadDocumentsBar({
       .initialize()
       .then(async ({ remoteId }) => {
         await requireStoredThread(remoteId);
+        useChatRuntimeStore
+          .getState()
+          .adoptPendingProjectAttachmentTarget(remoteId);
         // a clear that landed while the row write was in flight is deleting this thread
         if (chatHistoryClearBoundary.capture() !== clearGeneration) {
           throw new Error("Chat history was cleared");
@@ -564,7 +577,9 @@ export function ThreadDocumentsBar({
         <AttachmentTargetMenu
           disabled={busy}
           sharesWithProject={sharesWithProject}
-          onSelect={setProjectAttachmentTarget}
+          onSelect={(target) =>
+            setThreadProjectAttachmentTarget(effectiveThreadId, target)
+          }
         />
       ) : null}
       <input
