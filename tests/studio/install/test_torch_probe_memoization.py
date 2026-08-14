@@ -219,6 +219,7 @@ class TestMemoization:
         that replaces it comes from the venv as it is NOW: two real torch packages, a
         real probe subprocess either side of a real call into the installer.
         """
+
         def _torch(where, version):
             pkg = where / "torch"
             pkg.mkdir(parents = True)
@@ -276,8 +277,7 @@ class TestMemoization:
         )
         for name, called in installers.items():
             assert "_invalidate_torch_runtime_probe" in called, (
-                f"{name}() installs packages without dropping the memoized torch "
-                "classification"
+                f"{name}() installs packages without dropping the memoized torch " "classification"
             )
 
     def test_explicit_invalidation_forces_a_reprobe(self):
