@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Guards the shell-rc PATH append in install.sh (_persist_local_bin_on_path).
+# Guards the shell-rc PATH append in install.sh (_persist_login_path_dir, and the fish
+# drop-in arm _persist_fish_path_dir it delegates to).
 #
 # History: the append was three unguarded `echo ... >> "$_SHELL_PROFILE"` lines. With
 # `set -e` at the top of install.sh, an rc file that could not be written aborted the
@@ -20,6 +21,12 @@
 #     `set -e` cannot kill a successful install;
 #   * the three lines go in as ONE redirect, so a partial write cannot leave a dangling
 #     "# Added by Unsloth installer" comment with no export under it.
+#
+# The helper was later generalised from _persist_local_bin_on_path (one hardcoded directory,
+# rc file as $1) to _persist_login_path_dir (any directory, rc file as the optional $5) and
+# grew a fish arm. Every clause above is a property of the append itself, not of that
+# signature, so they all still apply -- including to fish, whose conf.d drop-in lives under a
+# home directory that is just as likely to be read-only.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -51,13 +58,24 @@ assert_not_contains() {
     fi
 }
 
-# ── Extract the function under test ──
+# ── Extract the functions under test ──
+# The POSIX arm delegates to the fish arm and reads _PATH_LINE_RE, so all three come along.
 _FN_FILE=$(mktemp)
-sed -n '/^_persist_local_bin_on_path()/,/^}/p' "$INSTALL_SH" > "$_FN_FILE"
+{
+    grep '^_PATH_LINE_RE=' "$INSTALL_SH"
+    sed -n '/^_persist_fish_path_dir()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_persist_login_path_dir()/,/^}/p' "$INSTALL_SH"
+} > "$_FN_FILE"
 
-if ! grep -q '_persist_local_bin_on_path()' "$_FN_FILE"; then
-    echo "FAIL: could not extract _persist_local_bin_on_path from install.sh"
-    echo "      (it must stay a top-level function so this test can reach it)"
+for _fn in _persist_fish_path_dir _persist_login_path_dir; do
+    if ! grep -q "^$_fn()" "$_FN_FILE"; then
+        echo "FAIL: could not extract $_fn from install.sh"
+        echo "      (it must stay a top-level function so this test can reach it)"
+        exit 1
+    fi
+done
+if ! grep -q '^_PATH_LINE_RE=' "$_FN_FILE"; then
+    echo "FAIL: could not extract _PATH_LINE_RE from install.sh"
     exit 1
 fi
 
@@ -72,8 +90,18 @@ _SH="${BASH:-/bin/bash}"
 
 # `set -e` inside the runner mirrors install.sh: if the function returns non-zero the
 # runner dies before echoing RC, which is exactly the regression being guarded.
+# $5 pins the profile file, so the rc-selection cascade (zsh / .bashrc / .profile) stays out
+# of what is being measured here. SHELL is forced to a non-fish value for the same reason:
+# the POSIX arm hands off to fish before it looks at anything else, and a developer running
+# this suite under fish would otherwise silently exercise the wrong arm.
 _run() {  # $1 = rc path
-    ( "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_local_bin_on_path '$1'; echo \"RC=\$?\"" 2>&1 )
+    ( SHELL=/bin/bash "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin' '$1'; echo \"RC=\$?\"" 2>&1 )
+}
+
+# The fish arm picks its own file under $HOME, so it is steered by HOME rather than by an
+# argument.
+_run_fish() {  # $1 = HOME
+    ( HOME="$1" SHELL=/usr/bin/fish "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
 }
 
 _TMP=$(mktemp -d)
@@ -100,8 +128,10 @@ else
     echo "  FAIL: file changed on a re-run"; FAIL=$((FAIL + 1))
 fi
 
-echo "=== empty rc path (no shell rc found): no-op ==="
-_out=$(_run "")
+echo "=== no home at all (nothing to write to): no-op ==="
+# The old shape took an empty rc path; the current one derives the file, so the equivalent
+# "there is nowhere to persist to" input is an unset HOME.
+_out=$( env -u HOME "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir '/x/.local/bin' '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
 assert_contains     "returns 0"  "$_out" "RC=0"
 assert_not_contains "no step"    "$_out" "STEP path"
 
@@ -126,6 +156,39 @@ else
     fi
 fi
 chmod 0644 "$_rc3" 2>/dev/null || true
+
+echo "=== fish: writable conf.d gets the drop-in ==="
+_fhome="$_TMP/fishhome"; mkdir -p "$_fhome"
+_out=$(_run_fish "$_fhome")
+assert_contains "returns 0"       "$_out" "RC=0"
+assert_contains "reports the add" "$_out" "STEP path added ~/.local/bin to PATH"
+assert_contains "fish_add_path written" "$(cat "$_fhome/.config/fish/conf.d/unsloth.fish" 2>&1)" "fish_add_path '$_fhome/.local/bin'"
+
+echo "=== fish: re-run is idempotent ==="
+_before=$(cat "$_fhome/.config/fish/conf.d/unsloth.fish")
+_out=$(_run_fish "$_fhome")
+assert_contains "returns 0" "$_out" "RC=0"
+if [ "$(cat "$_fhome/.config/fish/conf.d/unsloth.fish")" = "$_before" ]; then
+    echo "  PASS: fish file unchanged"; PASS=$((PASS + 1))
+else
+    echo "  FAIL: fish file changed on a re-run"; FAIL=$((FAIL + 1))
+fi
+
+echo "=== fish: READ-ONLY drop-in warns, does not fail the install ==="
+# Same immutable-home shape as the POSIX case: home-manager manages conf.d too.
+_fro="$_TMP/fishro"; mkdir -p "$_fro/.config/fish/conf.d"
+_frofile="$_fro/.config/fish/conf.d/unsloth.fish"; : > "$_frofile"; chmod 0444 "$_frofile"
+if [ "$(id -u)" = "0" ] || { echo x >> "$_frofile"; } 2>/dev/null; then
+    echo "  SKIP: cannot make a file unwritable as this user (running as root?)"
+else
+    _out=$(_run_fish "$_fro")
+    assert_contains     "returns 0 (set -e survives)" "$_out" "RC=0"
+    assert_contains     "warns about the drop-in"     "$_out" "could not write"
+    assert_contains     "prints the manual line"      "$_out" "fish_add_path '$_fro/.local/bin'"
+    assert_contains     "reassures install is fine"   "$_out" "only the PATH line is missing"
+    assert_not_contains "does not claim success"      "$_out" "added ~/.local/bin to PATH in"
+fi
+chmod 0644 "$_frofile" 2>/dev/null || true
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

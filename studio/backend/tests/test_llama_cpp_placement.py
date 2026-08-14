@@ -85,8 +85,8 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
 def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
-    backend._get_gpu_memory = lambda _binary = None: list(memory)
-    backend._get_gpu_free_memory = lambda _binary = None: [
+    backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [
         (index, free) for index, free, _total in memory
     ]
     backend._read_gguf_metadata = lambda _path: None
@@ -339,7 +339,7 @@ def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
     backend = LlamaCppBackend()
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: True
-    backend._get_gpu_memory = lambda _binary = None: [(1, 8_000, 8_000)]
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(1, 8_000, 8_000)]
     backend._download_gguf = lambda **kwargs: str(gguf)
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
     backend._start_diffusion_server = lambda **kwargs: pytest.fail(

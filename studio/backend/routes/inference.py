@@ -69,6 +69,7 @@ from core.inference.llama_admission import (
     llama_admission_config_from_env,
     peek_llama_admission_snapshot,
 )
+from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -2205,6 +2206,8 @@ from models.inference import (
     ValidateModelRequest,
     ValidateModelResponse,
     TransformersUpgradeInfo,
+    TransformersUpgradeCheckRequest,
+    TransformersUpgradeCheckResponse,
     InstallLatestTransformersRequest,
     InstallLatestTransformersResponse,
     TextContentPart,
@@ -2270,6 +2273,54 @@ def _request_has_api_key(request: Any) -> bool:
     return _request_api_key_token(request) is not None
 
 
+def _request_is_internal_workflow(request: Any) -> bool:
+    """True only for Studio's own workflow keys (Deep Research, data recipes).
+
+    Checked against the stored internal-key hashes, never a prefix, so a caller
+    cannot mint one by sending an sk-unsloth-looking bearer. Fails closed when the
+    probe raises, so a storage error withholds saved credentials rather than
+    handing them out.
+    """
+    token = _request_api_key_token(request)
+    if token is None:
+        return False
+    try:
+        return bool(auth_storage.is_internal_api_key(token))
+    except Exception:
+        logger.debug("external_provider.internal_key_probe_failed", exc_info = True)
+        return False
+
+
+def _request_is_saved_credential_workflow(request: Any) -> bool:
+    """True only for the one workflow key allowed to spend a saved provider credential.
+
+    "Internal" is not the licence: Studio mints internal keys for data recipes
+    too, and ``routes/data_recipe/jobs.py`` writes that key straight into the
+    recipe's own provider block so a user-authored recipe subprocess holds it.
+    Granting every internal key the saved-connection exception would therefore
+    hand that subprocess a confused deputy: name any saved provider_id, omit the
+    key, and bill arbitrary requests to the user's cloud account. Only the
+    durable Deep Research hop needs the exception, and only because its run
+    outlives the session that created it, so it carries a key instead of a JWT
+    and ``research_runs._sanitize_config`` already pinned it to one enabled saved
+    connection.
+
+    Layered on the internal check rather than replacing it, and fails closed on a
+    storage error, so an unreadable key store withholds the credential.
+    """
+    if not _request_is_internal_workflow(request):
+        return False
+    token = _request_api_key_token(request)
+    if token is None:
+        return False
+    try:
+        name = auth_storage.internal_api_key_name(token)
+    except Exception:
+        logger.debug("external_provider.workflow_key_name_probe_failed", exc_info = True)
+        return False
+    return name == auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME
+
+
 def _request_used_api_key(request: Any) -> bool:
     """True when this request authenticated with a third party's sk-unsloth key.
 
@@ -2279,8 +2330,8 @@ def _request_used_api_key(request: Any) -> bool:
     itself and are excluded, or every research step would pop the API monitor open.
     """
     # Total by construction: this only decides a monitor label and must never fail a
-    # load. Saved-secret authorization uses _request_has_api_key instead, because
-    # internal workflow keys must remain programmatic callers for credential access.
+    # load. Saved-secret authorization uses _request_has_api_key instead, narrowed by
+    # _request_is_internal_workflow where a Studio workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
         return False
@@ -2314,11 +2365,23 @@ from core.inference.passthrough_healing import (
     response_has_promotable_calls,
 )
 from core.inference.providers import (
+    HOSTED_TOOL_NAMES,
     get_base_url,
     get_provider_info,
+    hosted_only_tools,
+    LOCAL_STANDINS_FOR_HOSTED_TOOLS,
+    provider_hosted_tools,
+    provider_model_runs_local_tools,
+    provider_runs_local_tools,
     validate_provider_base_url,
 )
 from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_tool_transport import OAICompatTransport
+from core.inference.studio_tool_loop import (
+    ToolLoopPolicy,
+    ToolLoopRun,
+    stream_with_studio_tools,
+)
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from routes.provider_credentials import resolve_provider_api_key_or_400
 from storage import providers_db
@@ -2724,6 +2787,54 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
 
     policy = get_tool_policy()
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
+
+
+def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> bool:
+    """True when the request's tool selection is nothing but the provider's own
+    hosted builtins, so the provider must execute them as it always has.
+
+    ``enable_tools: true`` plus ``enabled_tools: ["web_search", ...]`` is the
+    documented way to ask a provider for its hosted tools, and it is what every
+    bundle shipped before Studio's loop reached external providers. Read only by
+    name, the same bytes now also describe a local-loop request, and taking the
+    loop would swap the provider's search for Studio's and silently drop the
+    hosted-only names (code_execution, image_generation, web_fetch) that Studio
+    has no implementation of.
+
+    Anything that names a Studio-only tool (python, terminal,
+    search_knowledge_base) or asks for MCP is unambiguous and keeps the loop, and
+    so does every self-hosted provider, which declares no hosted tools at all.
+    """
+    if getattr(payload, "mcp_enabled", False):
+        return False
+    enabled = getattr(payload, "enabled_tools", None)
+    # None means "every local tool"; an empty list selects nothing and never
+    # reaches the loop anyway. Neither is a hosted-tool request.
+    if not enabled or not isinstance(enabled, list):
+        return False
+    if not provider_hosted_tools(provider_type):
+        return False
+    # Matched against the whole hosted vocabulary rather than this provider's own
+    # slice: the pre-PR bundle sent one list of hosted names per turn, and a name
+    # the provider does not implement was simply ignored by it. Studio has no
+    # local implementation of those names either, so reading such a request as
+    # "local" would drop them just the same, only after also replacing the
+    # provider's search with ours.
+    if not all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled):
+        return False
+    # run_tools_locally only decides the ambiguous names, the ones Studio can
+    # also run itself. A selection with no SELECTED local stand-in stays hosted
+    # whatever the flag says: honouring it would enter the loop, find an empty
+    # catalog, fall back to the same passthrough, and skip the confirmation
+    # rejection on the way.
+    if getattr(payload, "run_tools_locally", None) is True:
+        # Intersected with the selection, as hosted_only_tools does: code_execution
+        # maps to python/terminal, but naming it alone selects neither.
+        selected = {name for name in enabled if isinstance(name, str)}
+        return not any(
+            LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name, frozenset()) & selected for name in selected
+        )
+    return True
 
 
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
@@ -3465,6 +3576,14 @@ def _monitor_usage(
         sink = _monitor_perf_sink.get()
         if sink is not None:
             sink["timings"] = timings
+            outer_monitor_id = sink.get("monitor_id")
+            if outer_monitor_id:
+                _monitor_usage(
+                    outer_monitor_id,
+                    None,
+                    sink.get("context_length"),
+                    timings = timings,
+                )
     # isinstance, not truthiness: a non-dict usage would raise on .get() into the
     # streaming generator and abort the user's response.
     if isinstance(usage, dict) and usage:
@@ -3475,14 +3594,16 @@ def _monitor_usage(
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
         )
-    tok_per_sec = prompt_ms = decode_ms = None
+    tok_per_sec = prompt_tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):
         tok_per_sec = timings.get("predicted_per_second")
+        prompt_tok_per_sec = timings.get("prompt_per_second")
         prompt_ms = timings.get("prompt_ms")
         # The span the tile rates on: total tokens over total time, not a mean of per-request rates.
         decode_ms = timings.get("predicted_ms")
     if (
         tok_per_sec is not None
+        or prompt_tok_per_sec is not None
         or prompt_ms is not None
         or decode_ms is not None
         or stop_reason is not None
@@ -3490,10 +3611,27 @@ def _monitor_usage(
         api_monitor.set_perf(
             monitor_id,
             tok_per_sec = tok_per_sec,
+            prompt_tok_per_sec = prompt_tok_per_sec,
             prompt_ms = prompt_ms,
             decode_ms = decode_ms,
             stop_reason = stop_reason,
         )
+
+
+def _monitor_perf_callback(monitor_id: Optional[str], context_length):
+    """Build a timing sink only when a monitor row or wrapper sink can consume it."""
+    if not monitor_id and _monitor_perf_sink.get() is None:
+        return None
+
+    def _callback(timings: dict) -> None:
+        _monitor_usage(
+            monitor_id,
+            None,
+            context_length,
+            timings = timings,
+        )
+
+    return _callback
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
@@ -6100,6 +6238,96 @@ def _estimate_gguf_kv_gb(
         return 0.0
 
 
+def _remote_gguf_compute_reserve_gb(
+    llama_extra_args: Optional[list[str]] = None,
+    max_seq_length: int = 0,
+    n_parallel: int = 1,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    n_devices: int = 1,
+    tensor_parallel: bool = False,
+    is_diffusion: bool = False,
+) -> float:
+    """Compute buffers a remote GGUF will reserve, in GB.
+
+    Split out of _estimate_gguf_required_gb so a caller that is pricing something
+    else, a drafter for instance, can hold it at zero the way it already holds
+    _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
+    """
+    # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
+    from core.inference.llama_server_args import parse_ctx_override
+
+    try:
+        ctx_override = parse_ctx_override(llama_extra_args) or 0
+    except Exception:
+        ctx_override = 0
+    ctx = max(max_seq_length or 0, ctx_override)
+    effective_ubatch = (
+        None
+        if is_diffusion
+        else _extra_args_n_ubatch(
+            llama_extra_args,
+            n_ctx = ctx if ctx > 0 else None,
+            # same floor raise the loader applies at launch
+            n_batch = _emitted_n_batch(n_batch, n_parallel),
+            n_ubatch = n_ubatch,
+        )
+    )
+    if effective_ubatch is None and not is_diffusion:
+        effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
+    if effective_ubatch:
+        # auto context: assume the native one fits at least a full micro-batch
+        budget_ctx = ctx if ctx > 0 else effective_ubatch
+        devices = max(1, int(n_devices))
+        # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
+        # times, the same step _compute_buffer_ctx_bytes applies locally; charging
+        # the single-copy rate under-reserved 4x. Tensor mode is already correct
+        # (measured at the single-device rate, replicated per device). n_layers is
+        # None here: the header is unread, so -ngl cannot be resolved, but -ot /
+        # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
+        # same model 409s while remote and loads once cached.
+        from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+
+        split_mult = (
+            LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
+            if devices > 1
+            and not tensor_parallel
+            and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
+            else 1
+        )
+        mask_bytes = (
+            budget_ctx
+            * effective_ubatch
+            * 2
+            * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+            * devices
+            * split_mult
+        )
+        # The mask is only the context-linear half. The flat half needs the dims,
+        # which are unreadable remotely, but its dominant term needs just a vocab
+        # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
+        # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
+        # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
+        # an uncached load that then OOMs the training job it exists to protect.
+        # The activation scratch needs embedding_length and stays uncharged: it is
+        # the small half, and over-reserving here denies the load outright.
+        # Scaled per device only in tensor mode, mirroring the local branch: a
+        # layer split folds the flat buffer in once (_flat_buffer(False)), and
+        # only tensor mode replicates it on every card.
+        # The remote header is unknown, so reserve as if it enables embeddings.
+        _out_slots = max(1, n_parallel)
+        out_buffer_bytes = (
+            _ASSUMED_MAX_VOCAB
+            * effective_ubatch
+            * 4
+            * _out_slots
+            * (devices if tensor_parallel else 1)
+            * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+        )
+        return (mask_bytes + out_buffer_bytes) / (1024**3)
+    return 0.0
+
+
 def _estimate_gguf_required_gb(
     config: ModelConfig,
     hf_token: Optional[str] = None,
@@ -6354,77 +6582,16 @@ def _estimate_gguf_required_gb(
             # one: this repo's listing cannot see it, local or remote, and it is
             # resident next to these weights.
             total_gb = (main_bytes + companions + _extras_bytes) / (1024**3)
-            # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
-            from core.inference.llama_server_args import parse_ctx_override
-
-            try:
-                ctx_override = parse_ctx_override(llama_extra_args) or 0
-            except Exception:
-                ctx_override = 0
-            ctx = max(max_seq_length or 0, ctx_override)
-            effective_ubatch = (
-                None
-                if is_diffusion
-                else _extra_args_n_ubatch(
-                    llama_extra_args,
-                    n_ctx = ctx if ctx > 0 else None,
-                    # same floor raise the loader applies at launch
-                    n_batch = _emitted_n_batch(n_batch, n_parallel),
-                    n_ubatch = n_ubatch,
-                )
+            total_gb += _remote_gguf_compute_reserve_gb(
+                llama_extra_args = llama_extra_args,
+                max_seq_length = max_seq_length,
+                n_parallel = n_parallel,
+                n_batch = n_batch,
+                n_ubatch = n_ubatch,
+                n_devices = n_devices,
+                tensor_parallel = tensor_parallel,
+                is_diffusion = is_diffusion,
             )
-            if effective_ubatch is None and not is_diffusion:
-                effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
-            if effective_ubatch:
-                # auto context: assume the native one fits at least a full micro-batch
-                budget_ctx = ctx if ctx > 0 else effective_ubatch
-                devices = max(1, int(n_devices))
-                # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
-                # times, the same step _compute_buffer_ctx_bytes applies locally; charging
-                # the single-copy rate under-reserved 4x. Tensor mode is already correct
-                # (measured at the single-device rate, replicated per device). n_layers is
-                # None here: the header is unread, so -ngl cannot be resolved, but -ot /
-                # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
-                # same model 409s while remote and loads once cached.
-                from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
-
-                split_mult = (
-                    LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
-                    if devices > 1
-                    and not tensor_parallel
-                    and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
-                    else 1
-                )
-                mask_bytes = (
-                    budget_ctx
-                    * effective_ubatch
-                    * 2
-                    * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-                    * devices
-                    * split_mult
-                )
-                # The mask is only the context-linear half. The flat half needs the dims,
-                # which are unreadable remotely, but its dominant term needs just a vocab
-                # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
-                # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
-                # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
-                # an uncached load that then OOMs the training job it exists to protect.
-                # The activation scratch needs embedding_length and stays uncharged: it is
-                # the small half, and over-reserving here denies the load outright.
-                # Scaled per device only in tensor mode, mirroring the local branch: a
-                # layer split folds the flat buffer in once (_flat_buffer(False)), and
-                # only tensor mode replicates it on every card.
-                # The remote header is unknown, so reserve as if it enables embeddings.
-                _out_slots = max(1, n_parallel)
-                out_buffer_bytes = (
-                    _ASSUMED_MAX_VOCAB
-                    * effective_ubatch
-                    * 4
-                    * _out_slots
-                    * (devices if tensor_parallel else 1)
-                    * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
-                )
-                total_gb += (mask_bytes + out_buffer_bytes) / (1024**3)
             return total_gb
         return None
     except Exception as e:
@@ -7174,10 +7341,29 @@ _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
 )
 
 
+def _diagnosis_text(msg: str) -> str:
+    """``msg`` up to the startup-diagnostics block, which is not ours to read.
+
+    A llama-server failure now carries a tail of the child's own stdout and the
+    log path. That evidence is quoted verbatim from an untrusted process, so
+    matching a phrase inside it says nothing about the model: llama.cpp prints
+    lines like "device does not support 16-bit storage" for reasons that have
+    nothing to do with the checkpoint, and every phrase below would then rewrite
+    the diagnosis to "This model is not supported yet". Match on the part this
+    backend wrote. A message without the block is returned unchanged, so every
+    other error source behaves exactly as before.
+    """
+    for marker in ("\n\nllama-server output:", "\n\nFull log: "):
+        head, sep, _ = msg.partition(marker)
+        if sep:
+            msg = head
+    return msg
+
+
 def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
     """Whether ``msg`` is the verbose MLX per-module metadata error emitted
     while loading an NVFP4 checkpoint."""
-    lower_msg = msg.lower()
+    lower_msg = _diagnosis_text(msg).lower()
     return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
 
 
@@ -7185,7 +7371,8 @@ def _maybe_unsupported_message(msg: str) -> str:
     """Rewrite a load/validate error into the friendly "not supported yet"
     message when it matches a known unsupported-model signature; otherwise
     return ``msg`` unchanged."""
-    if any(h.lower() in msg.lower() for h in _NOT_SUPPORTED_HINTS):
+    hay = _diagnosis_text(msg).lower()
+    if any(h.lower() in hay for h in _NOT_SUPPORTED_HINTS):
         return f"This model is not supported yet. Try a different model. (Original error: {msg})"
     return msg
 
@@ -8924,6 +9111,208 @@ async def validate_model(
             status_code = 400,
             detail = "Invalid model",
         )
+
+
+def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> str:
+    """The config.json this load will actually read, by the remote-code scan's precedence.
+
+    ``routes/models.py::scan_model_remote_code`` picks its target as: a local identifier
+    stands for itself (resolved); else an exact ``model_snapshot_path`` pin wins; else
+    ``prefer_local_cache`` resolves the selected cache directory to a snapshot; else the
+    repository identifier. ``resolve_training_model_load_target`` agrees, returning
+    ``model_snapshot_path or model_name``, so this check reads the same directory: a
+    repo's current config.json says nothing about the pinned snapshot the run loads.
+
+    The identifier stays the response's ``model_name``, for display; every read, the
+    LoRA base resolve included, goes through this target, as the scan route does.
+
+    Falls back to the identifier on any resolution failure: this route never raises.
+    """
+    from utils.paths import is_local_path, normalize_path
+
+    model_name = request.model_name
+    try:
+        if is_local_path(model_name):
+            normalized = normalize_path(model_name)
+            try:
+                return str(Path(normalized).expanduser().resolve(strict = False))
+            except (OSError, RuntimeError, ValueError):
+                return normalized
+        snapshot_path = (request.model_snapshot_path or "").strip()
+        if snapshot_path:
+            from routes.models import _model_config_inspection_target
+            return _model_config_inspection_target(
+                (request.model_snapshot_repo_id or "").strip() or model_name,
+                True,
+                normalize_path(snapshot_path),
+            )
+        local_path = (request.model_local_path or "").strip()
+        if request.prefer_local_cache:
+            # No path is a legitimate cached selection (an inventory row can carry a null
+            # cachePath) and _resolve_model_snapshot then searches every cache root, as
+            # the scan route and /train/start both do. Taking the pin only when a path
+            # came along would judge those selections on the repo's current architecture
+            # while the worker loads the snapshot.
+            from core.training.training import _resolve_model_snapshot
+            return (
+                _resolve_model_snapshot(
+                    model_name, normalize_path(local_path) if local_path else None
+                )
+                or model_name
+            )
+    except Exception as exc:
+        logger.debug("Cache pin resolution failed for '%s': %s", model_name, exc)
+    return model_name
+
+
+def _install_breaks_exact_resume(run_id: str) -> bool:
+    """Would installing the offered release strand the checkpoint of ``run_id``?
+
+    The latest sidecar is a persistent overlay, and a 4-bit run with attested exact
+    resource provenance only resumes in the load mode it was attested with:
+    ``effective_training_load_in_4bit`` raises the moment the sidecar routes it. So an
+    install consented to on the way into a resume is not undoable.
+
+    Answers False for an unknown run: a resume that cannot find its own row is not one
+    this route should be suppressing an install for.
+    """
+    from core.training.provenance import exact_resume_requires_current_4bit
+    from core.training.resume import training_run_config
+    from storage.studio_db import get_run
+
+    try:
+        run = get_run(run_id)
+        if run is None:
+            return False
+        return exact_resume_requires_current_4bit(training_run_config(run))
+    except Exception as exc:
+        logger.debug("Exact-resume check failed for run '%s': %s", run_id, exc)
+        return False
+
+
+# studio_router only: a Studio preflight, kept off the OpenAI-compatible /v1 mount.
+@studio_router.post("/transformers-upgrade-check", response_model = TransformersUpgradeCheckResponse)
+async def check_transformers_upgrade_route(
+    request: TransformersUpgradeCheckRequest, current_subject: str = Depends(get_current_subject)
+):
+    """
+    Does loading this model need a newer transformers than any installed overlay?
+
+    /validate answers this for a chat load, but only as one field of a check that also
+    resolves a ModelConfig, picks a GPU placement and runs the coexistence guard, none of
+    which apply to a training start and several of which refuse while a run is active. So
+    training asks on its own here, before spawning a worker that would otherwise die at
+    model load with an unrecognized-architecture error the user cannot act on.
+
+    Answers the same way /validate does: check_upgrade_for_model across [adapter, base],
+    inside the same forced-offline window, on a worker thread. Also reports whether the
+    run would load 16-bit instead of bnb 4-bit, which is what the latest sidecar means
+    for training. Never raises: an unreadable model reports "no upgrade needed" and the
+    caller proceeds exactly as it did before.
+    """
+    from utils.transformers_version import latest_tier_active_for
+
+    model_name = request.model_name
+    # Inspect what the load will open, not what the identifier resolves to today.
+    load_target = await asyncio.to_thread(_upgrade_check_config_target, request)
+    targets = [load_target]
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        # The worker activates transformers for the BASE model, so an adapter is judged
+        # by what it is an adapter for. Resolved from the load target rather than the
+        # identifier, as the worker and the scan route both do: a repo that repointed
+        # base_model_name_or_path since the pin was taken would otherwise have this
+        # route judging a base the run never loads.
+        base = await asyncio.to_thread(
+            _offline_guarded,
+            load_target,
+            get_base_model_from_lora_identifier,
+            load_target,
+            request.hf_token,
+        )
+        if base:
+            targets.append(base)
+    except Exception:
+        pass
+    targets = list(dict.fromkeys(targets))
+
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = None
+    try:
+        from utils.transformers_latest import check_upgrade_for_model
+        for target in targets:
+            upgrade = await asyncio.to_thread(
+                _offline_guarded,
+                target,
+                check_upgrade_for_model,
+                target,
+                request.hf_token,
+            )
+            if upgrade is not None:
+                transformers_upgrade = TransformersUpgradeInfo(**upgrade)
+                break
+    except Exception as exc:
+        logger.debug("Transformers upgrade check failed for '%s': %s", model_name, exc)
+
+    requires_trust_remote_code = False
+    try:
+        requires_trust_remote_code = await asyncio.to_thread(
+            _offline_guarded,
+            targets,
+            lambda: any(
+                _requires_trust_remote_code_for_model(target, request.hf_token)
+                for target in targets
+            ),
+        )
+    except Exception as exc:
+        logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
+
+    latest_tier_active = False
+    try:
+        latest_tier_active = await asyncio.to_thread(
+            _offline_guarded,
+            # Every target, not just the load target: latest_tier_active_for resolves a
+            # remote adapter's base itself, so the base is fetched too.
+            tuple(targets),
+            latest_tier_active_for,
+            load_target,
+            request.hf_token,
+        )
+    except Exception as exc:
+        logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
+
+    # An offered install lands the model on the latest sidecar, which forces 16-bit (bnb
+    # 4-bit feeds quantized experts into unvalidated paths for brand-new architectures).
+    # A dev-only upgrade is never installed, so it changes nothing. Same rule /validate
+    # applies: a model with a custom-code fallback still loads 4-bit on the current
+    # transformers and the dialog offers that way out, so a merely offered upgrade
+    # cannot be claimed as 16-bit. Only an install-only upgrade, or a sidecar already
+    # routing the model, forces it.
+    install_only_upgrade = bool(
+        transformers_upgrade is not None
+        and transformers_upgrade.supported_in_pypi
+        and transformers_upgrade.pypi_version
+        and not requires_trust_remote_code
+    )
+    # Already on the sidecar: the install is not what would strand the checkpoint, and
+    # the resume is refused (or 16-bit) whatever this route answers.
+    install_breaks_exact_resume = False
+    if request.resume_run_id and not latest_tier_active:
+        install_breaks_exact_resume = await asyncio.to_thread(
+            _install_breaks_exact_resume, request.resume_run_id
+        )
+    return TransformersUpgradeCheckResponse(
+        model_name = model_name,
+        requires_transformers_upgrade = transformers_upgrade is not None,
+        transformers_upgrade = transformers_upgrade,
+        # Already booleans: False, or the preflight's own bool result. Re-wrapping the
+        # custom-code one in bool() reads as the raw-YAML pattern the GGUF consistency
+        # guard forbids, and it was never needed here.
+        requires_trust_remote_code = requires_trust_remote_code,
+        latest_tier_active = latest_tier_active,
+        forces_16bit = latest_tier_active or install_only_upgrade,
+        install_breaks_exact_resume = install_breaks_exact_resume,
+    )
 
 
 # studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.
@@ -11306,13 +11695,44 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
-    codex_studio_tool_loop = (
-        provider_type == "openai_codex" and _explicit_studio_tool_loop_requested(payload)
+    # Studio's tools run on this host, so any provider whose wire format can
+    # carry a tool schema out and a result back can use them. The capability is
+    # declared per provider type in the registry, not hardcoded here.
+    #
+    # Streaming is part of the condition, not an afterthought: the loop is an SSE
+    # protocol (tool_start / tool_end and the approval handshake all ride the
+    # stream), so a non-streaming request still cannot honour confirm_tool_calls
+    # and must still be refused below rather than silently proxied without it.
+    studio_tool_loop = (
+        # Model-aware: Gemini's image models drop the function catalog inside the
+        # native translator, so entering the loop for them would advertise tools
+        # the model is never shown and finish as if none were selected.
+        provider_model_runs_local_tools(provider_type, payload.external_model or payload.model)
+        and payload.stream is True
+        and _explicit_studio_tool_loop_requested(payload)
+        # A selection of purely hosted names is the provider's tool envelope, not
+        # a request for this loop. Checked here rather than inside the loop so the
+        # whole path (catalog selection, nudge, confirm gate) is skipped and the
+        # request proxies through byte-for-byte as it did before the loop existed.
+        and not _selects_only_provider_hosted_tools(payload, provider_type)
+    )
+    codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
+    # Studio's UI asks for the gate by permission_mode, not by confirm_tool_calls,
+    # so reading the raw flag admits the exact request the local routes reject: a
+    # non-streaming permission_mode="ask" with the flag omitted proxies through
+    # with its tools live and no confirmation the caller explicitly asked for.
+    # Derive it the way the local guard does, and only for the non-streaming case
+    # it covers: a streaming request that merely fell out of the loop (a
+    # hosted-only selection, or a provider that runs no local tools) keeps
+    # answering an ask/auto mode as it always has, and is still refused on an
+    # explicit flag.
+    _external_confirm_gate = bool(payload.confirm_tool_calls) or (
+        not payload.stream and _confirm_gate_needs_stream(payload)
     )
     if (
-        payload.confirm_tool_calls
+        _external_confirm_gate
         and not payload.bypass_permissions
-        and not codex_studio_tool_loop
+        and not studio_tool_loop
         and (
             payload.enable_tools is True
             or bool(payload.enabled_tools)
@@ -11365,8 +11785,12 @@ async def _proxy_to_external_provider(
             CodexReauthorizationError,
         )
 
-        api_key_token = _request_api_key_token(request)
-        if api_key_token and not auth_storage.is_internal_api_key(api_key_token):
+        # Through the same helper the saved-credential exception uses, not a bare
+        # auth_storage probe: a raising probe used to escape as a 500, and a 500
+        # is not a decision -- the same failure on the branch below withholds the
+        # credential instead. The workflow scope is the same question too, since
+        # this branch spends a saved ChatGPT subscription.
+        if _request_has_api_key(request) and not _request_is_saved_credential_workflow(request):
             raise HTTPException(
                 status_code = 403,
                 detail = "ChatGPT subscriptions are available only to Studio UI and internal workflows.",
@@ -11630,7 +12054,16 @@ async def _proxy_to_external_provider(
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,
         payload.encrypted_api_key,
-        allow_saved_key = not _request_has_api_key(request),
+        # A durable Deep Research hop authenticates with an internal workflow key,
+        # which is still an API key, so the plain check would drop the saved
+        # provider id and fail before the provider is ever contacted. The run's
+        # connection was already validated as an enabled saved one by
+        # research_runs._sanitize_config, and the key is verified against storage.
+        # Scoped to that one workflow rather than to "internal", because the other
+        # internal key Studio mints is held by a user-authored recipe subprocess.
+        allow_saved_key = (
+            not _request_has_api_key(request) or _request_is_saved_credential_workflow(request)
+        ),
     )
 
     model = payload.external_model or payload.model
@@ -11676,10 +12109,44 @@ async def _proxy_to_external_provider(
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
+    # Studio-owned tool loop for every non-Codex provider that declares the
+    # capability. The catalog comes from the same selector the local and Codex
+    # paths use, so an omitted enabled_tools means "all allowed built-ins" and an
+    # explicit empty list stays empty.
+    external_studio_tools: list[dict] = []
+    if studio_tool_loop:
+        external_studio_tools = await _select_request_tools(
+            payload,
+            tools_on = _effective_enable_tools(payload) is True,
+            mcp_allowed = bool(payload.mcp_enabled),
+        )
+    run_studio_tool_loop = bool(external_studio_tools)
+    if run_studio_tool_loop and payload.bypass_permissions:
+        # Full access disables the sandbox at execution time, so the schemas must
+        # say so too rather than describing a sandbox the model will not get.
+        _external_nudge = _build_tool_action_nudge(
+            tools = external_studio_tools,
+            model_name = model,
+            full_access = True,
+            full_access_only = True,
+        )
+        if _external_nudge:
+            chat_messages = _append_to_system_message(chat_messages, _external_nudge)
+
+    cancel_event = threading.Event()
+    cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+
+    async def _watch_disconnect() -> None:
+        # A tool loop can sit for minutes inside execute_tool with no SSE line
+        # arriving, so poll rather than waiting for the next yield to notice.
+        while not cancel_event.is_set():
+            if await request.is_disconnected():
+                cancel_event.set()
+                return
+            await asyncio.sleep(0.1)
+
     async def _stream():
-        gen = client.stream_chat_completion(
-            messages = chat_messages,
-            model = model,
+        _provider_kwargs = dict(
             temperature = payload.temperature,
             top_p = payload.top_p,
             # Honor max_completion_tokens when max_tokens is absent, so a
@@ -11690,18 +12157,74 @@ async def _proxy_to_external_provider(
             top_k = _top_k_explicit,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
-            enabled_tools = payload.enabled_tools,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
-            tools = payload.tools,
-            tool_choice = payload.tool_choice,
             fast_mode = payload.fast_mode,
-            continue_final_message = _continue_final_message(payload),
-            stream = payload.stream,
+            response_format = _extract_response_format(payload),
         )
+        if run_studio_tool_loop:
+            # The Studio loop owns the tool surface for this turn. The caller's
+            # own catalog is dropped for the same reason the Codex path drops it
+            # (the model would return calls this server is not authorized to
+            # run), and the hosted names Studio runs itself are withheld so the
+            # provider's builtins do not double up on the local web_search.
+            # Hosted-only tools still ride along: Images and Fetch have their own
+            # toggles and no local stand-in, so dropping them would turn a lit
+            # pill into a tool the model never sees.
+            loop_hosted_tools = hosted_only_tools(provider_type, payload.enabled_tools)
+            gen = stream_with_studio_tools(
+                OAICompatTransport(
+                    client,
+                    model = model,
+                    continue_final_message = _continue_final_message(payload),
+                    enabled_tools = loop_hosted_tools or None,
+                    stream = True,
+                    **_provider_kwargs,
+                ),
+                run = ToolLoopRun(
+                    messages = chat_messages,
+                    session_id = payload.session_id,
+                    thread_id = payload.thread_id,
+                    # The loop withholds the provider's own usage-only chunks and
+                    # sends one summed chunk instead, so this is the only model id
+                    # the client sees for the whole answer. Omitted, it falls back
+                    # to the literal "external" and the usage is attributed to
+                    # nothing: no cost lookup, no per-model accounting.
+                    model = model,
+                    tool_choice = payload.tool_choice,
+                    continue_final_message = _continue_final_message(payload),
+                ),
+                policy = ToolLoopPolicy(
+                    tools = external_studio_tools,
+                    max_calls = (
+                        payload.max_tool_calls_per_message
+                        if payload.max_tool_calls_per_message is not None
+                        else 25
+                    ),
+                    timeout = payload.tool_call_timeout or 300,
+                    permission_mode = payload.permission_mode or "auto",
+                    confirm_calls = _permission_mode_confirm(payload),
+                    bypass_permissions = bool(payload.bypass_permissions),
+                    rag_scope = payload.rag_scope,
+                    auto_heal = payload.auto_heal_tool_calls,
+                ),
+                cancel_event = cancel_event,
+            )
+        else:
+            gen = client.stream_chat_completion(
+                messages = chat_messages,
+                model = model,
+                enabled_tools = payload.enabled_tools,
+                tools = payload.tools,
+                tool_choice = payload.tool_choice,
+                continue_final_message = _continue_final_message(payload),
+                stream = payload.stream,
+                **_provider_kwargs,
+            )
+        disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
         try:
             sent_done = False
             stream_failed = False
@@ -11749,14 +12272,38 @@ async def _proxy_to_external_provider(
             )
             yield "data: [DONE]\n\n"
         finally:
+            cancel_event.set()
+            if disconnect_task is not None:
+                # Joined, not just cancelled. A bare cancel() leaves the task's
+                # result unretrieved, so asyncio logs "Task exception was never
+                # retrieved" when it is collected, and the poll can still be
+                # mid-await on request.is_disconnected() while the response is
+                # torn down. Same pairing as the Codex branch and the local
+                # watchers.
+                disconnect_task.cancel()
+                await asyncio.gather(disconnect_task, return_exceptions = True)
             try:
                 await gen.aclose()
             except RuntimeError:
                 pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
             await client.close()
 
+    def _tracked_stream():
+        # Only the tool loop is registered: it can run for minutes and a /load
+        # needs to know it would interrupt a chat. The plain proxy stays
+        # untracked, as it was before.
+        if not run_studio_tool_loop:
+            return _stream()
+
+        async def _wrapped():
+            with _TrackedCancel.for_payload(cancel_event, payload, *cancel_keys):
+                async for chunk in _stream():
+                    yield chunk
+
+        return _wrapped()
+
     return StreamingResponse(
-        _stream(),
+        _tracked_stream(),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
@@ -12707,6 +13254,12 @@ async def openai_chat_completions(
                 )
             )
 
+        _gguf_perf_callback = (
+            _monitor_perf_callback(monitor_id, llama_backend.context_length)
+            if not _wants_multiple_choices(payload)
+            else None
+        )
+
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
                 delta = delta.model_copy(update = {"content": ""})
@@ -12861,6 +13414,7 @@ async def openai_chat_completions(
                     confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
+                    perf_callback = _gguf_perf_callback,
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -12935,6 +13489,7 @@ async def openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
+                    approval_flush_pending = False
 
                     def _flush_reasoning_extractor():
                         final_reasoning, final_visible = reasoning_extractor.finish()
@@ -12967,15 +13522,23 @@ async def openai_chat_completions(
                             # Stall-timeout wait: keepalive while the generator stays
                             # silent (e.g. prefill between tool iterations). asyncio.wait
                             # never cancels next_task, matching the finally-drain shield.
+                            wait_timeout = (
+                                TOOL_APPROVAL_FLUSH_DELAY_S
+                                if approval_flush_pending
+                                else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                            )
                             while True:
                                 done_tasks, _ = await asyncio.wait(
                                     {next_task},
-                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                    timeout = wait_timeout,
                                 )
                                 if done_tasks:
                                     break
                                 yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                approval_flush_pending = False
+                                wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                             event = next_task.result()
+                            approval_flush_pending = False
                         finally:
                             if next_task.done():
                                 next_task = None
@@ -13033,6 +13596,7 @@ async def openai_chat_completions(
                                 reasoning_extractor = _new_chat_reasoning_extractor()
                                 # Yielded just before the loop blocks on the user.
                                 await _park_admission(bool(event.get("awaiting_confirmation")))
+                                approval_flush_pending = bool(event.get("awaiting_confirmation"))
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -13524,6 +14088,7 @@ async def openai_chat_completions(
                 preserve_thinking = payload.preserve_thinking,
                 continue_final_message = _continue_final_message(payload),
                 seed = _seed,
+                perf_callback = _gguf_perf_callback,
             )
 
         _gguf_sentinel = object()
@@ -14387,6 +14952,7 @@ async def openai_chat_completions(
                 gen = sf_generate_with_tools()
                 prev_text = ""
                 reasoning_extractor = _new_sf_reasoning_extractor()
+                approval_flush_pending = False
 
                 def _sf_flush_reasoning():
                     # Drain the extractor at turn/stream end (mirrors GGUF); only visible text hits the monitor.
@@ -14416,15 +14982,23 @@ async def openai_chat_completions(
                     _sf_next_task = asyncio.create_task(
                         asyncio.to_thread(next, gen, _sf_tool_sentinel)
                     )
+                    wait_timeout = (
+                        TOOL_APPROVAL_FLUSH_DELAY_S
+                        if approval_flush_pending
+                        else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    )
                     while True:
                         _sf_done, _ = await asyncio.wait(
                             {_sf_next_task},
-                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                            timeout = wait_timeout,
                         )
                         if _sf_done:
                             break
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        approval_flush_pending = False
+                        wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                     event = _sf_next_task.result()
+                    approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
                     _sf_next_task = None
                     if event is _sf_tool_sentinel:
@@ -14477,6 +15051,7 @@ async def openai_chat_completions(
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
+                            approval_flush_pending = bool(event.get("awaiting_confirmation"))
                         yield f"data: {json.dumps(event)}\n\n"
                         continue
 
@@ -15368,6 +15943,58 @@ async def list_sandbox_files(
     # filesystem either one would hold the event loop for every other request.
     sandbox_dir, files = await run_in_threadpool(_resolve_and_list)
     return {"path": sandbox_dir, "files": files}
+
+
+@router.post("/sandbox/{session_id}/reveal")
+async def reveal_sandbox_dir(
+    session_id: str,
+    request: Request,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Open this chat's sandbox directory in the OS file manager.
+
+    The file manager is the backend host's, so this only means anything when the
+    backend runs on the user's own machine, which is the desktop app.
+    """
+    await _authenticate_header_or_query(request, token)
+
+    from starlette.concurrency import run_in_threadpool
+
+    def _resolve_existing() -> "str | None":
+        sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        if not os.path.isdir(sandbox_dir):
+            # One more resolve, as the listing does: the legacy move can rename
+            # the tree into place between resolving it and looking.
+            sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        return sandbox_dir if os.path.isdir(sandbox_dir) else None
+
+    # Resolving scans the sandbox root, so it stays off the event loop.
+    sandbox_dir = await run_in_threadpool(_resolve_existing)
+    if sandbox_dir is None:
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
+
+    from pathlib import Path
+
+    from utils.paths.path_utils import reveal_in_file_manager
+
+    try:
+        # expect_dir: a sandbox is always a directory, and a running tool can
+        # replace its own with a file, which would take the file branch and show
+        # the parent, here the root holding every other chat's sandbox.
+        await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir), expect_dir = True)
+    except FileNotFoundError:
+        # Two things raise this: the sandbox going between resolve and open, and
+        # Popen not finding the file manager at all. Only the first is "no
+        # folder"; the second reported that way hides a missing xdg-open.
+        if os.path.isdir(sandbox_dir):
+            logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
+    except Exception:
+        logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+    return {"status": "ok", "path": sandbox_dir}
 
 
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
@@ -16769,9 +17396,11 @@ async def _responses_non_streaming(
 
     # Catches the engine timings the suppressed inner monitor would otherwise drop.
     inner_perf: dict = {}
-
+    if monitor_id:
+        inner_perf["monitor_id"] = monitor_id
+        inner_perf["context_length"] = _monitor_context_length()
     try:
-        _sink_token = _monitor_perf_sink.set(inner_perf)
+        _sink_token = _monitor_perf_sink.set(inner_perf if monitor_id else None)
         try:
             result = await openai_chat_completions(chat_req, request)
         finally:
@@ -19132,6 +19761,10 @@ async def anthropic_messages(
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
                 promote_reasoning_only = False,
+                perf_callback = _monitor_perf_callback(
+                    monitor_id,
+                    llama_backend.context_length,
+                ),
             )
 
         if payload.stream:
@@ -19172,6 +19805,10 @@ async def anthropic_messages(
             stop = stop,
             cancel_event = cancel_event,
             promote_reasoning_only = False,
+            perf_callback = _monitor_perf_callback(
+                monitor_id,
+                llama_backend.context_length,
+            ),
         )
 
     if payload.stream:
@@ -22107,6 +22744,36 @@ def _guard_diffusion_load_against_training() -> None:
     )
 
 
+async def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True) -> Optional[int]:
+    """The torch ordinal for a request's ``gpu_ids``, or None when there is nothing to honour.
+
+    Physical ids have no applicator off CUDA / ROCm, which the contract says to ignore rather than
+    refuse, so the resolver only runs once the target reports a CUDA device. Raises ValueError for
+    a bad pick, which every caller maps to a 400.
+
+    ``allow_ranking = False`` drops only the free-VRAM comparison, for the plan routes while a
+    trainer holds the cards: the ids are still validated and translated (mask plus nvidia-smi, no
+    CUDA context), so a bad pick is refused at the plan rather than tens of gigabytes later.
+    """
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
+
+    if not gpu_ids:
+        return None
+    device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+    if device != "cuda":
+        return None
+    # The keyword only when it is not the default, so the ordinary path calls the resolver with
+    # the same one-argument shape it always had (a monkeypatched seam still fits it).
+    if allow_ranking:
+        return await asyncio.to_thread(resolve_selected_cuda_ordinal, gpu_ids)
+    return await asyncio.to_thread(
+        lambda: resolve_selected_cuda_ordinal(gpu_ids, allow_ranking = False)
+    )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -22158,7 +22825,16 @@ async def diffusion_download_plan(
         # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
         # files during training is legitimate and needs no GPU, so the plan is answered without
         # the precision check; /images/load still refuses the same pick afterwards.
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
+        # Ranking reads free VRAM per candidate, which opens a CUDA context on each: exactly what
+        # the training guard below exists to prevent, so the RANKING waits until training is known
+        # idle. The ids are validated and translated either way -- that costs no CUDA context, and
+        # skipping it entirely let the plan accept a GPU the load would refuse, and size its file
+        # set for the wrong card. ONE resolution for the whole request, reused by preflight + plan.
+        gpu_ordinal = None
+        training = fam is not None and await asyncio.to_thread(_training_is_active)
+        if fam is not None:
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        if fam is not None and not training:
             if planner is backend:
                 await asyncio.to_thread(
                     backend.assert_precision_available,
@@ -22170,6 +22846,8 @@ async def diffusion_download_plan(
                     # anything is measured, and an offloaded transformer skips the dense quant.
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    # Judged on the card this pick would load on, as the loader does.
+                    gpu_ordinal = gpu_ordinal,
                 )
             else:
                 _assert_native_precision_unset(
@@ -22179,6 +22857,7 @@ async def diffusion_download_plan(
         plan = await asyncio.to_thread(
             planner.download_plan,
             request.model_path,
+            gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
@@ -22249,7 +22928,10 @@ async def load_diffusion_model(
         resolve_local_single_file,
         resolve_model_kind,
     )
-    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
     from core.inference.diffusion_engine_router import (
         active_engine_name,
         annotate_status,
@@ -22287,6 +22969,10 @@ async def load_diffusion_model(
         # Pure resolve, so it can run before selection, which the refusal below has to precede.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
+        # Refuse a bad pick before anything is evicted or staged; begin_load re-checks, but only
+        # after the arbiter has taken the GPU. Only on CUDA / ROCm: physical ids have no applicator
+        # on XPU / MPS / CPU, which the request contract says to ignore rather than 400.
+        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
 
         def _preflight(target):
             # Gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
@@ -22324,6 +23010,7 @@ async def load_diffusion_model(
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = getattr(request, "memory_mode", None),
                 cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                gpu_ordinal = gpu_ordinal,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
             # The native engine accepts both knobs for interface parity and ignores them. It was
@@ -22373,6 +23060,7 @@ async def load_diffusion_model(
                     text_encoder_quant = request.text_encoder_quant,
                     memory_mode = getattr(request, "memory_mode", None),
                     cpu_offload = bool(getattr(request, "cpu_offload", False)),
+                    gpu_ordinal = gpu_ordinal,
                 )
 
         def _start_engine_load():
@@ -22395,6 +23083,10 @@ async def load_diffusion_model(
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,
                 loras = [(s.id, s.weight) for s in request.loras] if request.loras else None,
+                gpu_ids = request.gpu_ids,
+                # The winner this route already ranked and preflighted, so the load cannot pick a
+                # different card from free VRAM that has moved since.
+                gpu_ordinal = gpu_ordinal,
             )
 
         def _begin_load():

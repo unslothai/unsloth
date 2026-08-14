@@ -14,7 +14,7 @@ type ReasoningEffort =
 export interface ResearchInferenceRequest {
   model: string;
   providerId?: string;
-  providerType?: "openai_codex";
+  providerType?: string;
   externalModel?: string;
   temperature?: number;
   topP?: number;
@@ -25,7 +25,7 @@ export interface ResearchInferenceRequest {
 
 export function buildResearchInferenceRequest(input: {
   checkpoint: string;
-  external?: { providerId: string; modelId: string };
+  external?: { providerId: string; providerType: string; modelId: string };
   temperature: number;
   topP: number;
   maxTokens: number;
@@ -44,7 +44,7 @@ export function buildResearchInferenceRequest(input: {
     ...(input.external
       ? {
           providerId: input.external.providerId,
-          providerType: "openai_codex" as const,
+          providerType: input.external.providerType,
           externalModel: input.external.modelId,
         }
       : {}),

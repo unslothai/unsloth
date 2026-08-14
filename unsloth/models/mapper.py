@@ -1381,6 +1381,11 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Kimi-K2-Instruct-BF16" : (
         "unsloth/Kimi-K2-Instruct",
     ),
+    "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit" : (
+        "unsloth/Muse-Glimmer-30B",
+        "meta-models/Muse-Glimmer-30B",
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+    ),
 }
 
 INT_TO_FLOAT_MAPPER  = {}

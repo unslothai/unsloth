@@ -13,6 +13,8 @@ Endpoints:
 """
 
 import uuid
+from typing import Optional
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -85,6 +87,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         ),
         models = row.get("models") or [],
         available_models = row.get("available_models") or [],
+        max_output_tokens = row.get("max_output_tokens"),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
@@ -109,6 +112,25 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
 
 
+def _validate_max_output_tokens_contract(
+    provider_type: str,
+    field_was_set: bool,
+    value: Optional[int] = None,
+) -> None:
+    """Reject a non-null override on a provider type with its own documented caps.
+
+    An explicit null is allowed through everywhere: the dialog shows the field for rows
+    it displays as Custom but the backend stores as `openai`, and a blank field
+    serialises as null, so rejecting it failed every unrelated edit of those rows.
+    Clearing an override that cannot exist is a no-op.
+    """
+    if field_was_set and value is not None and provider_type != "custom":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Max Tokens limit can only be overridden for generic Custom providers.",
+        )
+
+
 # ── Public key for API key encryption ─────────────────────────────
 
 
@@ -129,9 +151,18 @@ async def get_public_key(current_subject: str = Depends(get_current_subject)):
 
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
-async def list_registry(current_subject: str = Depends(get_current_subject)):
-    """List all supported provider types with their default configurations."""
-    return list_available_providers()
+async def list_registry(
+    include_hidden: bool = False, current_subject: str = Depends(get_current_subject)
+):
+    """List all supported provider types with their default configurations.
+
+    ``include_hidden=true`` also returns the backend-only entries (the
+    self-hosted presets), which carry the studio-tools capability the composer
+    needs. It is opt-in so that a browser still running a pre-capability bundle,
+    which does not know to filter on ``hidden``, keeps seeing exactly the list
+    it saw before and cannot render them as duplicate dropdown options.
+    """
+    return list_available_providers(include_hidden = include_hidden)
 
 
 # ── Per-MTok pricing snapshot for client-side cost display ──────────
@@ -171,6 +202,12 @@ async def create_provider_config(
             f"Use GET /api/providers/registry to see available types.",
         )
 
+    _validate_max_output_tokens_contract(
+        payload.provider_type,
+        "max_output_tokens" in payload.model_fields_set,
+        payload.max_output_tokens,
+    )
+
     _validate_provider_auth_contract(
         info,
         encrypted_api_key = payload.encrypted_api_key,
@@ -201,6 +238,7 @@ async def create_provider_config(
             base_url = base_url,
             models = payload.models,
             available_models = payload.available_models,
+            max_output_tokens = payload.max_output_tokens,
         )
         try:
             if api_key:
@@ -228,6 +266,12 @@ async def update_provider_config(
         raise HTTPException(status_code = 404, detail = "Provider not found")
 
     existing_info = get_provider_info(existing["provider_type"]) or {}
+    max_output_tokens_requested = "max_output_tokens" in payload.model_fields_set
+    _validate_max_output_tokens_contract(
+        existing["provider_type"],
+        max_output_tokens_requested,
+        payload.max_output_tokens,
+    )
     _validate_provider_auth_contract(
         existing_info,
         encrypted_api_key = payload.encrypted_api_key,
@@ -243,7 +287,14 @@ async def update_provider_config(
             detail = "Cannot replace and clear an API key in the same request",
         )
 
-    metadata_fields = {"display_name", "base_url", "is_enabled", "models", "available_models"}
+    metadata_fields = {
+        "display_name",
+        "base_url",
+        "is_enabled",
+        "models",
+        "available_models",
+        "max_output_tokens",
+    }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
     # Only a *changed* base URL is validated. The dialog re-sends the stored value
@@ -267,7 +318,7 @@ async def update_provider_config(
 
     with current_credential_write(credential):
         if metadata_requested:
-            providers_db.update_provider(
+            metadata_updates = dict(
                 id = provider_id,
                 display_name = payload.display_name,
                 base_url = base_url,
@@ -275,6 +326,9 @@ async def update_provider_config(
                 models = payload.models,
                 available_models = payload.available_models,
             )
+            if max_output_tokens_requested:
+                metadata_updates["max_output_tokens"] = payload.max_output_tokens
+            providers_db.update_provider(**metadata_updates)
         try:
             if replacement_api_key is not None:
                 credential_secrets.save_provider_api_key(provider_id, replacement_api_key)
@@ -290,6 +344,7 @@ async def update_provider_config(
                         is_enabled = bool(existing["is_enabled"]),
                         models = existing.get("models") or [],
                         available_models = existing.get("available_models") or [],
+                        max_output_tokens = existing.get("max_output_tokens"),
                     )
                 except Exception:
                     logger.exception(
