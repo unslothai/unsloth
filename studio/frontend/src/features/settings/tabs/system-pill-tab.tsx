@@ -32,8 +32,11 @@ export function SystemPillTab(): ReactElement {
   const [hotkey, setHotkey] = useState("");
   const [models, setModels] = useState<PillModelOption[]>([]);
   // The model scan gates this whole load, so the settings GET it carries can
-  // land long after a toggle has already been saved. Let the edit win.
+  // land long after a toggle has already been saved. Let a saved edit win.
   const editedRef = useRef(false);
+  // Saves are independent PUTs, so a slow earlier one can answer after a later
+  // one and put the UI, the native hotkey and the backend out of step.
+  const saveSeqRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,9 +56,14 @@ export function SystemPillTab(): ReactElement {
   }, []);
 
   const applySettings = async (update: Partial<PillSettings>) => {
-    editedRef.current = true;
+    const seq = ++saveSeqRef.current;
     try {
       const next = await updatePillSettings(update);
+      // A superseded save must not restore its own result over the newer one.
+      if (seq !== saveSeqRef.current) return;
+      // Fenced only once a save actually landed, so a failed edit cannot
+      // suppress the initial load and leave the tab showing defaults.
+      editedRef.current = true;
       setSettings(next);
       await syncNativePillConfig(next);
     } catch {
