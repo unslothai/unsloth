@@ -303,9 +303,7 @@ def _raw_settings(thread_id: str = "thread-1") -> str:
 def _store_raw(payload: str, thread_id: str = "thread-1") -> None:
     conn = sqlite3.connect(studio_db_path())
     try:
-        conn.execute(
-            "UPDATE chat_threads SET settings_json = ? WHERE id = ?", (payload, thread_id)
-        )
+        conn.execute("UPDATE chat_threads SET settings_json = ? WHERE id = ?", (payload, thread_id))
         conn.commit()
     finally:
         conn.close()
@@ -342,9 +340,7 @@ def test_a_merge_touches_only_the_fields_it_names(tmp_path, monkeypatch):
         "thread-1", {"settings": {"toolsEnabled": True, "permissionMode": "ask"}}
     )
 
-    patch = ChatThreadPatch(settingsPatch = {"codeToolsEnabled": True}).model_dump(
-        exclude_unset = True
-    )
+    patch = ChatThreadPatch(settingsPatch = {"codeToolsEnabled": True}).model_dump(exclude_unset = True)
     _settings_for_write("thread-1", patch)
     studio_db.update_chat_thread("thread-1", patch)
 
@@ -359,9 +355,7 @@ def test_a_merge_also_spares_an_unreadable_key(tmp_path, monkeypatch):
     studio_db.upsert_chat_thread(_thread())
     _store_raw('{"toolsEnabled": true, "voiceModeEnabled": true}')
 
-    patch = ChatThreadPatch(settingsPatch = {"toolsEnabled": False}).model_dump(
-        exclude_unset = True
-    )
+    patch = ChatThreadPatch(settingsPatch = {"toolsEnabled": False}).model_dump(exclude_unset = True)
     _settings_for_write("thread-1", patch)
     studio_db.update_chat_thread("thread-1", patch)
 
