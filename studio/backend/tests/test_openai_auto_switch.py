@@ -788,7 +788,7 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "slots": [{"id": 0, "filename": saved.name}],
     }
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False, 0)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
@@ -813,7 +813,7 @@ def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
     }
     kw._kv_resume = manifest
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False, 0)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
     monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
@@ -3142,7 +3142,11 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     # Codex P2: a chat request carrying audio_base64 must guard the target before the
     # switch -- audio rides the same companion mmproj as vision -- so a text-only
     # target can't be loaded and evict the working audio model. Assert the handler
-    # flags require_vision so the hook's multimodal probe runs.
+    # flags require_vision so the hook's multimodal probe runs, and that it asks for
+    # the projector alone: an audio model's projector carries no vision tower, so
+    # requiring one would refuse the very models that serve the request.
+    from models.inference import ChatMessage, ImageContentPart, ImageUrl
+
     class _Reached(Exception):
         pass
 
@@ -3154,8 +3158,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        require_image = True,
     ):
-        captured["require_vision"] = require_vision
+        captured.update(require_vision = require_vision, require_image = require_image)
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -3163,7 +3168,18 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured["require_vision"] is True
+    assert captured == {"require_vision": True, "require_image": False}
+
+    # An image in the same request does need the vision tower.
+    img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        audio_base64 = "AAAA",
+        messages = [ChatMessage(role = "user", content = [img])],
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert captured == {"require_vision": True, "require_image": True}
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
@@ -3277,7 +3293,7 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: False)
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._maybe_auto_switch_model(
@@ -3298,11 +3314,99 @@ def test_require_vision_allows_vision_target(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: True)
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: True)
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
     )
     assert len(rec.calls) == 1  # vision target still switches
+
+
+def test_an_audio_only_target_still_switches_for_an_audio_request(monkeypatch, tmp_path):
+    # End to end through the real probe: a Voxtral-style snapshot whose projector
+    # declares audio and no vision tower must still be swapped in for an audio
+    # request, or the model that can serve it is exactly the one refused.
+    import struct
+
+    key = "clip.has_audio_encoder"
+    (tmp_path / "Voxtral-Mini-3B-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+    (tmp_path / "mmproj-F16.gguf").write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
+    )
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(tmp_path), "Q4_K_M", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "t", require_vision = True, require_image = False
+        )
+    )
+    assert len(rec.calls) == 1
+
+
+def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
+    # The resolver hands the gate a directory plus the quant to load, so the probe must
+    # see the same pair the load does (#8772).
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/cache/snap", "UD-Q4_K_XL", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    probed: list[tuple] = []
+    monkeypatch.setattr(
+        inference_route,
+        "_target_is_vision",
+        lambda path, variant = None, need_image = True: probed.append((path, variant, need_image))
+        or True,
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
+    )
+    assert probed == [("/cache/snap", "UD-Q4_K_XL", True)]
+
+
+def test_an_audio_request_is_not_refused_for_want_of_a_vision_tower(tmp_path):
+    # ultravox / Voxtral / Qwen3-ASR serve audio through a projector with no vision
+    # tower, so gating their swap on image capability would 400 a request they can
+    # serve, for as long as the model is not already resident.
+    import struct
+
+    key = "clip.has_audio_encoder"
+    (tmp_path / "Voxtral-Mini-3B-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+    (tmp_path / "mmproj-F16.gguf").write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
+    )
+
+    assert inference_route._target_is_vision(str(tmp_path), None, False) is True
+    assert inference_route._target_is_vision(str(tmp_path), None, True) is False
+
+
+def test_target_is_vision_reads_a_subdir_quants_projector(tmp_path):
+    # End to end through the real probe: a repo filing every quant under a subdir has no
+    # weight file at the snapshot root for the root-level detector to find.
+    variant_dir = tmp_path / "UD-Q4_K_XL"
+    variant_dir.mkdir()
+    (variant_dir / "Qwen3-VL-235B-UD-Q4_K_XL.gguf").write_bytes(b"\0" * 32)
+    (tmp_path / "mmproj-F32.gguf").write_bytes(b"\0" * 32)
+
+    assert inference_route._target_is_vision(str(tmp_path), "UD-Q4_K_XL") is True
 
 
 def test_require_vision_ignores_reload_stash(monkeypatch):
@@ -3318,7 +3422,7 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     monkeypatch.setattr(
-        inference_route, "_target_is_vision", lambda _p: False
+        inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False
     )  # would reject if used
     # 404 because the restored A is not the requested B, whose quant makes it a real reference.
     with pytest.raises(HTTPException):
@@ -5003,9 +5107,25 @@ def _drive_idle_loop(
     kw,
     poll_seconds = 0.02,
     run_for = 0.2,
+    until = None,
+    timeout = 10.0,
 ):
+    """Pass `until` when the test asserts something the loop must DO: a loaded
+    runner can otherwise be cancelled mid-sequence (save recorded, unload not),
+    which is a flake, not a failure. Name the LAST state the test asserts: the
+    loop signals most of these from inside a to_thread body and still has
+    bookkeeping to run after it, so an earlier landmark cancels that away.
+    The fixed window always runs afterwards, both as settle time for that
+    bookkeeping and because most of these tests also assert the loop then
+    stops, which needs a stretch of loop time to be worth anything."""
+    import time as _time
+
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = poll_seconds))
+        if until is not None:
+            deadline = _time.monotonic() + timeout
+            while not until() and _time.monotonic() < deadline:
+                await asyncio.sleep(poll_seconds / 4)
         await asyncio.sleep(run_for)
         task.cancel()
         try:
@@ -5049,7 +5169,8 @@ def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch,
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    # The stash is the last thing the loop writes, after the in-thread unload.
+    _drive_idle_loop(kw, until = lambda: events == ["save", "unload"] and kw._kv_resume)
     # KV must be saved while the server is still alive, then exactly one unload.
     assert events == ["save", "unload"]
     assert kw.get_last_unloaded_model()[:2] == ("unsloth/Idle-GGUF", "Q4_K_M")
@@ -5086,7 +5207,7 @@ def test_idle_save_failure_still_unloads_plain(monkeypatch):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: kw.get_last_unloaded_model() is not None)
     assert unloads == [1]  # the save failure must not skip the unload
     assert kw.get_last_unloaded_model() is not None
     assert kw.take_kv_resume() is None
@@ -5116,7 +5237,7 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: unloads)
     assert saves == []
     assert unloads == [1]
     assert kw.take_kv_resume() is None
@@ -5158,7 +5279,7 @@ def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: unloads)
     assert unloads == [1]  # still unloads; only the stash is dropped
     assert kw.take_kv_resume() is None
     assert not state_file.exists()
@@ -5196,7 +5317,8 @@ def test_idle_ttl_disabled_mid_save_skips_unload(monkeypatch, tmp_path):
     backend.unload_model = lambda: unloads.append(1)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    # Skipping the unload is an inaction, but dropping the saved state is not.
+    _drive_idle_loop(kw, until = lambda: not state_file.exists())
     assert unloads == []  # the unload was cancelled by the setting change
     assert kw.take_kv_resume() is None
     assert not state_file.exists()
@@ -5397,7 +5519,8 @@ def test_stale_stash_cleanup_waits_for_lifecycle_gate(monkeypatch, tmp_path):
         assert state_file.exists()
     finally:
         kw._lifecycle_lock.release()
-    _drive_idle_loop(kw)
+    # The unlink trails the _kv_resume clear, so wait on the file, not the stash.
+    _drive_idle_loop(kw, until = lambda: not state_file.exists())
     assert kw._kv_resume is None  # gate freed: genuinely stale stash purged
     assert not state_file.exists()
 
@@ -5431,11 +5554,21 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl, api_only = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl, api_only, media_idle = settings.set_openai_auto_switch(
+        False, None, False
+    )
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
+    assert settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # nor the media TTL
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv, auto_dl, api_only) == (False, 600, False, False, False)
+    assert (enabled, idle, keep_kv, auto_dl, api_only, media_idle) == (
+        False,
+        600,
+        False,
+        False,
+        False,
+        0,
+    )
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
@@ -5483,6 +5616,61 @@ def test_setter_rejects_idle_below_floor(monkeypatch):
     assert settings.set_openai_auto_switch(True, 0)[1] == 0
     assert settings.set_openai_auto_switch(True, 60)[1] == 60
     assert settings.set_openai_auto_switch(True, 3600)[1] == 3600
+
+
+def test_media_idle_setting_roundtrip_and_default(monkeypatch):
+    # The image/video TTL is persisted on its own key, in the same write as the rest
+    # of the section, and starts off: a chat TTL alone must not evict a pipeline.
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
+
+    assert settings.set_openai_auto_switch(True, 300)[5] == 0
+    assert settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY not in store
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    assert settings.get_auto_unload_idle_seconds() == 300
+
+    assert settings.set_openai_auto_switch(True, 300, None, None, None, 600)[5] == 600
+    assert store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] == 600
+    assert settings.get_media_auto_unload_idle_seconds() == 600
+    assert settings.get_stored_media_auto_unload_idle_seconds() == 600
+    # None leaves the stored value untouched, and the floor is the chat one.
+    assert settings.set_openai_auto_switch(False, None)[5] == 600
+    with pytest.raises(ValueError, match = "at least 60"):
+        settings.set_openai_auto_switch(True, None, None, None, None, 30)
+    assert settings.set_openai_auto_switch(True, None, None, None, None, 0)[5] == 0
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+
+
+def test_settings_route_reports_the_media_idle_ttl(monkeypatch):
+    import routes.settings as settings_route
+
+    monkeypatch.setattr(settings_route, "get_stored_media_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings_route, "get_media_auto_unload_idle_seconds", lambda: 600)
+    resp = settings_route.get_openai_auto_switch("tester")
+    assert resp.media_auto_unload_idle_seconds == 600
+    assert resp.media_idle_unload_active is True
+    # Vetoed (residency, or API-loaded only): the saved number stays, the flag drops,
+    # so the UI can say the unload is paused rather than silently doing nothing.
+    monkeypatch.setattr(settings_route, "get_media_auto_unload_idle_seconds", lambda: 0)
+    resp = settings_route.get_openai_auto_switch("tester")
+    assert resp.media_auto_unload_idle_seconds == 600
+    assert resp.media_idle_unload_active is False
+
+
+def test_put_route_rejects_media_idle_below_floor():
+    import routes.settings as settings_route
+    from fastapi import HTTPException
+
+    payload = settings_route.OpenAIAutoSwitchPayload(
+        enabled = True, media_auto_unload_idle_seconds = 30
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch(payload, "tester")
+    assert excinfo.value.status_code == 400
 
 
 def test_put_route_rejects_idle_below_floor():
@@ -7339,7 +7527,7 @@ def test_idle_unload_still_frees_a_user_loaded_model_by_default(monkeypatch):
     backend = _idle_backend(kw, monkeypatch, user_loaded = True)
     monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: backend.is_loaded is False)
     assert backend.is_loaded is False
 
 
@@ -7354,7 +7542,7 @@ def test_api_only_spares_a_user_loaded_model_but_not_an_api_one(monkeypatch):
     assert kw.get_last_unloaded_model() is None  # nothing stashed either
 
     api_loaded = _idle_backend(kw, monkeypatch, user_loaded = False)
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: api_loaded.is_loaded is False)
     assert api_loaded.is_loaded is False
 
 
@@ -7379,7 +7567,7 @@ def test_an_idle_restored_model_is_api_provenance(monkeypatch):
     assert rec.calls and backend._loaded_by_user_action is False
 
     backend.unload_model = lambda: setattr(backend, "is_loaded", False)
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: backend.is_loaded is False)
     assert backend.is_loaded is False
 
 
@@ -7443,7 +7631,8 @@ def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_pat
 
     backend.save_slots_for_resume = _save
 
-    _drive_idle_loop(kw)
+    # Sparing the model is an inaction; deleting what the save wrote is not.
+    _drive_idle_loop(kw, until = lambda: deleted)
     assert backend.is_loaded is True
     assert deleted == [manifest]  # nothing was unloaded, so nothing may be stashed
     assert kw._kv_resume is None

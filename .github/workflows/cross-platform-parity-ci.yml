@@ -33,6 +33,9 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # The System32 working-directory guard the CLI callback runs; all of that
+      # logic lives here now, so an edit to it alone must still run this leg.
+      - 'unsloth_cli/_system_dir_guard.py'
       # test_installer_profile_hardening.py asserts this module directly (unconditional
       # -NoProfile, the proxy handoff), so a change to it has to run here.
       - 'unsloth_cli/commands/studio.py'
@@ -72,6 +75,10 @@ on:
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_application_control_cli_fallback.ps1'
+      # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
+      # process.rs's, so a change to either spelling has to run here.
+      - 'studio/src-tauri/src/process.rs'
       - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
@@ -83,6 +90,9 @@ on:
       - 'install.sh'
       - 'install.ps1'
       - 'unsloth_cli/__init__.py'
+      # The System32 working-directory guard the CLI callback runs; all of that
+      # logic lives here now, so an edit to it alone must still run this leg.
+      - 'unsloth_cli/_system_dir_guard.py'
       # test_installer_profile_hardening.py asserts this module directly (unconditional
       # -NoProfile, the proxy handoff), so a change to it has to run here.
       - 'unsloth_cli/commands/studio.py'
@@ -122,6 +132,10 @@ on:
       - 'tests/studio/test_xpu_arm64_torchaudio.ps1'
       - 'tests/studio/test_amd_venv_repair_loop.ps1'
       - 'tests/studio/test_amd_name_arch_r9700.ps1'
+      - 'tests/studio/test_application_control_cli_fallback.ps1'
+      # test_application_control_cli_fallback.ps1 pins install.ps1's trampoline against
+      # process.rs's, so a change to either spelling has to run here.
+      - 'studio/src-tauri/src/process.rs'
       - 'tests/sh/test_install_sh_xpu_flavor_probe.sh'
       - 'tests/sh/test_setup_xpu_fastpath_escape.sh'
       - 'tests/sh/test_setup_xpu_posix_summary.sh'
@@ -234,6 +248,13 @@ jobs:
       - name: AMD GPU-name arch table tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
+      # AST-extracted helpers plus a real .cmd written to a temp dir, so no venv and no
+      # Windows needed. The 1260 classification is exercised against crafted exceptions:
+      # a hosted runner has no Application Control policy to be denied by. The enforced
+      # end-to-end leg lives in the AppLocker workflow.
+      - name: Application Control CLI fallback tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh
