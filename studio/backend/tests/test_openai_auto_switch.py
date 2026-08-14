@@ -3277,7 +3277,7 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: False)
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None: False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._maybe_auto_switch_model(
@@ -3298,11 +3298,46 @@ def test_require_vision_allows_vision_target(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: True)
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None: True)
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
     )
     assert len(rec.calls) == 1  # vision target still switches
+
+
+def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
+    # The resolver hands the gate a directory plus the quant to load, so the probe must
+    # see the same pair the load does (#8772).
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/cache/snap", "UD-Q4_K_XL", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    probed: list[tuple] = []
+    monkeypatch.setattr(
+        inference_route,
+        "_target_is_vision",
+        lambda path, variant = None: probed.append((path, variant)) or True,
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
+    )
+    assert probed == [("/cache/snap", "UD-Q4_K_XL")]
+
+
+def test_target_is_vision_reads_a_subdir_quants_projector(tmp_path):
+    # End to end through the real probe: a repo filing every quant under a subdir has no
+    # weight file at the snapshot root for the root-level detector to find.
+    variant_dir = tmp_path / "UD-Q4_K_XL"
+    variant_dir.mkdir()
+    (variant_dir / "Qwen3-VL-235B-UD-Q4_K_XL.gguf").write_bytes(b"\0" * 32)
+    (tmp_path / "mmproj-F32.gguf").write_bytes(b"\0" * 32)
+
+    assert inference_route._target_is_vision(str(tmp_path), "UD-Q4_K_XL") is True
 
 
 def test_require_vision_ignores_reload_stash(monkeypatch):
@@ -3318,7 +3353,7 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     monkeypatch.setattr(
-        inference_route, "_target_is_vision", lambda _p: False
+        inference_route, "_target_is_vision", lambda _p, _v = None: False
     )  # would reject if used
     # 404 because the restored A is not the requested B, whose quant makes it a real reference.
     with pytest.raises(HTTPException):

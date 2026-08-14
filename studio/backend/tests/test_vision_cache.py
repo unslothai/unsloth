@@ -231,6 +231,72 @@ class TestLocalGgufVisionDetection:
         assert config.gguf_mmproj_file == str(mmproj.resolve())
         mock_subprocess.assert_not_called()
 
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_named_quant_in_a_subdir_reads_the_snapshot_projector(self, mock_subprocess, tmp_path):
+        """A repo whose quants all live under a per-quant subdir has no weight file at the
+        snapshot root, which is the only place the root-level detector looks (#8772)."""
+        variant_dir = tmp_path / "UD-Q4_K_XL"
+        variant_dir.mkdir()
+        (variant_dir / "Qwen3-VL-235B-UD-Q4_K_XL-00001-of-00002.gguf").write_bytes(b"\0" * 32)
+        (variant_dir / "Qwen3-VL-235B-UD-Q4_K_XL-00002-of-00002.gguf").write_bytes(b"\0" * 32)
+        (tmp_path / "mmproj-F32.gguf").write_bytes(b"\0" * 32)
+
+        assert is_vision_model(str(tmp_path), gguf_variant = "UD-Q4_K_XL") is True
+        mock_subprocess.assert_not_called()
+
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_named_quant_in_a_subdir_without_a_projector_is_text_only(
+        self, mock_subprocess, tmp_path
+    ):
+        variant_dir = tmp_path / "UD-Q4_K_XL"
+        variant_dir.mkdir()
+        (variant_dir / "Qwen3-235B-UD-Q4_K_XL.gguf").write_bytes(b"\0" * 32)
+
+        assert is_vision_model(str(tmp_path), gguf_variant = "UD-Q4_K_XL") is False
+        mock_subprocess.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "variant, expected",
+        [("Q4_K_M", True), ("Q8_0", False)],
+    )
+    def test_each_quant_answers_what_a_load_of_that_quant_would_see(
+        self, tmp_path, variant, expected
+    ):
+        """One quant keeps the projector beside it and the other does not, so a probe that
+        reads any quant of the directory answers one of them wrongly."""
+        variant_dir = tmp_path / "Q4_K_M"
+        variant_dir.mkdir()
+        (variant_dir / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+        (variant_dir / "mmproj-F16.gguf").write_bytes(b"\0" * 32)
+        (tmp_path / "Qwen3-VL-8B-Instruct-Q8_0.gguf").write_bytes(b"\0" * 32)
+
+        config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = variant)
+
+        assert config is not None
+        assert config.is_vision is expected
+        assert is_vision_model(str(tmp_path), gguf_variant = variant) is expected
+
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
+    def test_a_quant_that_is_not_on_disk_is_not_answered_by_another_one(
+        self, mock_uncached, tmp_path
+    ):
+        """A load of an absent quant resolves no GGUF at all, so neither may the probe: the
+        projector beside the quant that IS on disk says nothing about the one asked for."""
+        (tmp_path / "Qwen3-VL-8B-Instruct-Q8_0.gguf").write_bytes(b"\0" * 32)
+        (tmp_path / "mmproj-F16.gguf").write_bytes(b"\0" * 32)
+
+        config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = "UD-Q4_K_XL")
+
+        assert config is not None
+        assert config.is_gguf is False
+        assert is_vision_model(str(tmp_path), gguf_variant = "UD-Q4_K_XL") is False
+
 
 # --- Exception handling: cache the False fallback ---
 

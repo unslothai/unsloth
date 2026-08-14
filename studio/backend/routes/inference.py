@@ -4828,18 +4828,24 @@ def _switch_model_for_payload(payload) -> str:
     return payload.model if "model" in payload.model_fields_set else _RELOAD_ONLY_MODEL
 
 
-def _target_is_vision(load_path: str) -> bool:
+def _target_is_vision(load_path: str, gguf_variant: Optional[str] = None) -> bool:
     # A local GGUF's vision capability is its companion mmproj, a filesystem check
     # (no model load). Matches the loaded backend's is_vision, so rejecting a swap
-    # here can't differ from the post-load guard. Thread the ambient HF token so the
-    # probe keeps the capability-probe invariant (the resolver only yields local
-    # paths, where the token is unused, but the rule requires it regardless).
+    # here can't differ from the post-load guard, hence the quant. Thread the ambient HF
+    # token so the probe keeps the capability-probe invariant (the resolver only yields
+    # local paths, where the token is unused, but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
         # Deliberately unguarded: the resolver only yields local paths, so this returns
         # from the mmproj filesystem branch without touching the hub. A reachability
         # probe here would add seconds per request and prevent nothing.
-        return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
+        return bool(
+            is_vision_model(
+                load_path,
+                hf_token = os.environ.get("HF_TOKEN"),
+                gguf_variant = gguf_variant,
+            )
+        )
     except Exception as exc:
         # Detection failure: don't block the swap, let the load decide.
         logger.debug("auto-switch: vision probe failed for %s: %s", load_path, exc)
@@ -5635,7 +5641,7 @@ async def _maybe_auto_switch_model(
         if (
             require_vision
             and resolved is not None
-            and not await asyncio.to_thread(_target_is_vision, target_id)
+            and not await asyncio.to_thread(_target_is_vision, target_id, variant)
         ):
             raise HTTPException(
                 status_code = 400,
