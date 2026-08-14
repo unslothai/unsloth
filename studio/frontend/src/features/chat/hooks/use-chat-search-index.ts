@@ -276,6 +276,10 @@ export function writeCachedIndex(next: ChatSearchItem[] | null): void {
   else if (chatSearchHadRows() === false) forgetChatSearchHasRows();
 }
 
+// Raised only for an account change made elsewhere. Private to this module: it exists to
+// reach an open dialog's own request sequence, which nothing outside can see.
+const SEARCH_SESSION_CHANGED_EVENT = "unsloth-chat-search-session-changed";
+
 // A history change in another tab or from an API client never reaches this document, so the
 // cache would otherwise open onto rows that no longer exist and navigate to a dead thread.
 if (typeof window !== "undefined") {
@@ -289,7 +293,14 @@ if (typeof window !== "undefined") {
       writeCachedIndex(null);
       // Shared by every account on the origin, so it cannot answer for the new one.
       forgetChatSearchHasRows();
+      // The history event first, for the sidebar and anything else showing the previous
+      // account's chats. Then the account change, which is not a history change: a build
+      // already in flight was started for the account that just went away, and its epoch
+      // check cannot catch that, because the epoch is this document's and this document did
+      // not sign out. An open dialog drops what it is showing and starts over at once,
+      // which also supersedes the rebuild the first event just queued.
       window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+      window.dispatchEvent(new Event(SEARCH_SESSION_CHANGED_EVENT));
       return;
     }
     if (event.key !== CHAT_HISTORY_REVISION_KEY) return;
@@ -345,7 +356,9 @@ export function useChatSearchIndex(enabled: boolean): {
       // dialog exists to avoid. Waiting for the exit costs one timer and no visible frame.
       let release: ReturnType<typeof setTimeout> | null = null;
       const scheduleRelease = () => {
-        if (release !== null) clearTimeout(release);
+        // Never postponed: a stream invalidates per chunk, and restarting the countdown
+        // each time would hold a whole index for the length of a generation.
+        if (release !== null) return;
         release = setTimeout(() => {
           release = null;
           if (readCachedIndex() !== null) return;
@@ -360,9 +373,8 @@ export function useChatSearchIndex(enabled: boolean): {
       // touched: clearing state would also re-render for every streaming chunk.
       const invalidate = () => {
         writeCachedIndex(null);
-        // The rows outlive the cache otherwise: the release above already ran while the
-        // cache was still there, and nothing else would look again. Rescheduling only
-        // moves a timer, so a stream still costs no render until it goes quiet.
+        // The rows outlive the cache otherwise: the release above may already have run
+        // while the cache was still there, and nothing else would look again.
         scheduleRelease();
       };
       window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
@@ -415,8 +427,23 @@ export function useChatSearchIndex(enabled: boolean): {
       }, SEARCH_REBUILD_DEBOUNCE_MS);
     };
 
+    // An account change is not a history change: the rows on screen belong to whoever was
+    // signed in a moment ago, so they go at once rather than when a debounced rebuild lands.
+    // Rebuilding immediately also advances the request sequence, which is what retires a
+    // build still in flight for the previous account.
+    const onSessionChanged = () => {
+      if (cancelled) return;
+      if (debounceTimer !== null) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      setItems([]);
+      run();
+    };
+
     run();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
+    window.addEventListener(SEARCH_SESSION_CHANGED_EVENT, onSessionChanged);
     return () => {
       cancelled = true;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
@@ -425,6 +452,10 @@ export function useChatSearchIndex(enabled: boolean): {
       // rows stay put: clearing them here would tear the list down inside the exit animation.
       if (rebuildPending) writeCachedIndex(null);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
+      window.removeEventListener(
+        SEARCH_SESSION_CHANGED_EVENT,
+        onSessionChanged,
+      );
     };
   }, [enabled]);
 

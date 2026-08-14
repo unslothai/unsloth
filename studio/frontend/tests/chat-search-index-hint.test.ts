@@ -193,10 +193,16 @@ test("another tab's account switch drops this tab's rows and hint", () => {
   const onHistory = () => {
     rebuilds += 1;
   };
-  (globalThis.window as Window).addEventListener(
-    CHAT_HISTORY_UPDATED_EVENT,
-    onHistory,
-  );
+  // Mirrors the module-private event name. An open dialog listens for this one to retire a
+  // build already in flight for the previous account, which the epoch check cannot do: the
+  // epoch is this document's, and this document never signed out.
+  let sessionChanges = 0;
+  const onSession = () => {
+    sessionChanges += 1;
+  };
+  const win = globalThis.window as Window;
+  win.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistory);
+  win.addEventListener("unsloth-chat-search-session-changed", onSession);
   try {
     fireStorage(AUTH_TOKEN_KEY);
     assert.equal(
@@ -204,16 +210,36 @@ test("another tab's account switch drops this tab's rows and hint", () => {
       null,
       "the previous account's titles must not survive the switch",
     );
+    assert.equal(rebuilds, 1, "everything showing that account has to refresh");
     assert.equal(
-      rebuilds,
+      sessionChanges,
       1,
-      "an open dialog has to rebuild for the new account",
+      "a build in flight for the previous account has to be retired",
     );
   } finally {
-    (globalThis.window as Window).removeEventListener(
-      CHAT_HISTORY_UPDATED_EVENT,
-      onHistory,
-    );
+    win.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistory);
+    win.removeEventListener("unsloth-chat-search-session-changed", onSession);
+  }
+});
+
+test("a history change in another tab is not treated as a session change", () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex([row]);
+
+  // A delete elsewhere must not tear the rendered rows out from under an open dialog: that
+  // path schedules a rebuild and lets the current rows stand until it lands.
+  let sessionChanges = 0;
+  const onSession = () => {
+    sessionChanges += 1;
+  };
+  const win = globalThis.window as Window;
+  win.addEventListener("unsloth-chat-search-session-changed", onSession);
+  try {
+    fireStorage(CHAT_HISTORY_REVISION_KEY);
+    assert.equal(sessionChanges, 0);
+  } finally {
+    win.removeEventListener("unsloth-chat-search-session-changed", onSession);
   }
 });
 

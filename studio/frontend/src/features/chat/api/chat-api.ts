@@ -35,6 +35,7 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import { publishChatHistoryRevision } from "../utils/chat-history-revision";
 import {
   type GgufVariantsRequestOptions,
   ggufVariantsQuery,
@@ -45,7 +46,7 @@ import { assertCompletedPaddedBody } from "./padded-response";
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches
 // they built from a history this one has just changed.
-export const CHAT_HISTORY_REVISION_KEY = "unsloth_chat_history_revision";
+export { CHAT_HISTORY_REVISION_KEY } from "../utils/chat-history-revision";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
@@ -92,50 +93,20 @@ export class GenerationLengthError extends Error {
   }
 }
 
-// Streaming fires the event below per chunk, so the cross-tab write is coalesced: a
-// synchronous setItem on that path would block the producing tab and wake every other
-// tab for every chunk. Other tabs only need to learn that the history moved, not when.
-const CROSS_TAB_REVISION_DEBOUNCE_MS = 500;
-let revisionWriteTimer: ReturnType<typeof setTimeout> | null = null;
-
-function writeChatHistoryRevision(): void {
-  try {
-    window.localStorage?.setItem(
-      CHAT_HISTORY_REVISION_KEY,
-      `${Date.now()}.${Math.random()}`,
-    );
-  } catch {
-    // Private modes can refuse the write. The in-tab listeners are unaffected.
-  }
-}
-
-function publishChatHistoryRevision(): void {
-  // Rescheduled rather than left to run, so a whole generation collapses into the one
-  // write its quiet window earns instead of one every debounce period throughout.
-  if (revisionWriteTimer !== null) clearTimeout(revisionWriteTimer);
-  revisionWriteTimer = setTimeout(() => {
-    revisionWriteTimer = null;
-    writeChatHistoryRevision();
-  }, CROSS_TAB_REVISION_DEBOUNCE_MS);
-}
-
-// A delete followed by closing the tab must still reach the other tabs: the pending write
-// would otherwise go with the page, leaving them to open onto rows that no longer exist.
-if (typeof window !== "undefined") {
-  window.addEventListener("pagehide", () => {
-    if (revisionWriteTimer === null) return;
-    clearTimeout(revisionWriteTimer);
-    revisionWriteTimer = null;
-    writeChatHistoryRevision();
-  });
-}
-
-export function notifyChatHistoryUpdated(): void {
+/**
+ * Announces a history change to this document and, through localStorage, to the others.
+ *
+ * `coalesce` is for the per-chunk streaming path alone: it delays the cross-tab write until
+ * the writes stop. Structural changes must not use it.
+ */
+export function notifyChatHistoryUpdated(options?: {
+  coalesce?: boolean;
+}): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
     // The event above is same-document, so another tab's delete or rename cannot reach a
     // cache built here. A storage write is what crosses, and the value only has to differ.
-    publishChatHistoryRevision();
+    publishChatHistoryRevision(options?.coalesce === true);
   }
 }
 
@@ -1060,7 +1031,8 @@ export async function saveChatMessage(
     },
   );
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
-  notifyChatHistoryUpdated();
+  // The autosave behind a streaming response lands here per chunk.
+  notifyChatHistoryUpdated({ coalesce: true });
   return savedMessage;
 }
 
@@ -1081,7 +1053,8 @@ export async function syncChatMessages(
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
-  notifyChatHistoryUpdated();
+  // Same streaming path as saveChatMessage, in its batched form.
+  notifyChatHistoryUpdated({ coalesce: true });
   return data.messages;
 }
 
