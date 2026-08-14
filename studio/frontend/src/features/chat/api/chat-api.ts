@@ -98,19 +98,36 @@ export class GenerationLengthError extends Error {
 const CROSS_TAB_REVISION_DEBOUNCE_MS = 500;
 let revisionWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
+function writeChatHistoryRevision(): void {
+  try {
+    window.localStorage?.setItem(
+      CHAT_HISTORY_REVISION_KEY,
+      `${Date.now()}.${Math.random()}`,
+    );
+  } catch {
+    // Private modes can refuse the write. The in-tab listeners are unaffected.
+  }
+}
+
 function publishChatHistoryRevision(): void {
-  if (revisionWriteTimer !== null) return;
+  // Rescheduled rather than left to run, so a whole generation collapses into the one
+  // write its quiet window earns instead of one every debounce period throughout.
+  if (revisionWriteTimer !== null) clearTimeout(revisionWriteTimer);
   revisionWriteTimer = setTimeout(() => {
     revisionWriteTimer = null;
-    try {
-      window.localStorage?.setItem(
-        CHAT_HISTORY_REVISION_KEY,
-        `${Date.now()}.${Math.random()}`,
-      );
-    } catch {
-      // Private modes can refuse the write. The in-tab listeners are unaffected.
-    }
+    writeChatHistoryRevision();
   }, CROSS_TAB_REVISION_DEBOUNCE_MS);
+}
+
+// A delete followed by closing the tab must still reach the other tabs: the pending write
+// would otherwise go with the page, leaving them to open onto rows that no longer exist.
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => {
+    if (revisionWriteTimer === null) return;
+    clearTimeout(revisionWriteTimer);
+    revisionWriteTimer = null;
+    writeChatHistoryRevision();
+  });
 }
 
 export function notifyChatHistoryUpdated(): void {

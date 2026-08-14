@@ -3,6 +3,7 @@
 
 import {
   AUTH_SESSION_CLEARED_EVENT,
+  AUTH_TOKEN_KEY,
   getAuthSessionEpoch,
 } from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
@@ -279,6 +280,18 @@ export function writeCachedIndex(next: ChatSearchItem[] | null): void {
 // cache would otherwise open onto rows that no longer exist and navigate to a dead thread.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
+    // A sign-out and sign-in performed in another tab reaches this one as a token write
+    // alone: the session epoch lives in this document's memory, and its events are
+    // same-document too, so nothing here would otherwise notice the account changed. The
+    // token is shared, so the next rebuild already speaks for the new account, and only
+    // the rows built for the previous one have to go.
+    if (event.key === AUTH_TOKEN_KEY) {
+      writeCachedIndex(null);
+      // Shared by every account on the origin, so it cannot answer for the new one.
+      forgetChatSearchHasRows();
+      window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+      return;
+    }
     if (event.key !== CHAT_HISTORY_REVISION_KEY) return;
     writeCachedIndex(null);
     // Dropping the cache alone leaves an already-open dialog showing the rows it built
@@ -330,21 +343,31 @@ export function useChatSearchIndex(enabled: boolean): {
       // so they have to be released. Not during the closing render though: the portal stays
       // mounted for the exit animation, and emptying the list inside it is the teardown this
       // dialog exists to avoid. Waiting for the exit costs one timer and no visible frame.
-      const release = setTimeout(() => {
-        if (readCachedIndex() !== null) return;
-        // Same reference when there is nothing to release, so a closed dialog that never
-        // held rows does not re-render for this.
-        setItems((prev) => (prev.length > 0 ? [] : prev));
-      }, ROW_RELEASE_DELAY_MS);
+      let release: ReturnType<typeof setTimeout> | null = null;
+      const scheduleRelease = () => {
+        if (release !== null) clearTimeout(release);
+        release = setTimeout(() => {
+          release = null;
+          if (readCachedIndex() !== null) return;
+          // Same reference when there is nothing to release, so a closed dialog that never
+          // held rows does not re-render for this.
+          setItems((prev) => (prev.length > 0 ? [] : prev));
+        }, ROW_RELEASE_DELAY_MS);
+      };
+      scheduleRelease();
       // History can change while the dialog is closed, so drop the cache rather
       // than reopening onto rows for chats that no longer exist. Only the cache is
       // touched: clearing state would also re-render for every streaming chunk.
       const invalidate = () => {
         writeCachedIndex(null);
+        // The rows outlive the cache otherwise: the release above already ran while the
+        // cache was still there, and nothing else would look again. Rescheduling only
+        // moves a timer, so a stream still costs no render until it goes quiet.
+        scheduleRelease();
       };
       window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
       return () => {
-        clearTimeout(release);
+        if (release !== null) clearTimeout(release);
         window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
       };
     }

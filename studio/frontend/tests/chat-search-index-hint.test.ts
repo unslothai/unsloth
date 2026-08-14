@@ -47,9 +47,11 @@ const { CHAT_HISTORY_REVISION_KEY, CHAT_HISTORY_UPDATED_EVENT } = await import(
 const { rememberChatSearchHasRows } = await import(
   "../src/features/chat/utils/chat-search-history-hint.ts"
 );
-const { AUTH_SESSION_CLEARED_EVENT, setAuthSessionEpochForTest } = await import(
-  "./helpers/store-stubs/chat-search-auth.ts"
-);
+const {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_TOKEN_KEY,
+  setAuthSessionEpochForTest,
+} = await import("./helpers/store-stubs/chat-search-auth.ts");
 
 const row = {
   type: "single" as const,
@@ -169,6 +171,43 @@ test("another tab's history change reaches an open dialog's rebuild", () => {
       rebuilds,
       1,
       "the cross-tab change has to re-raise as a local one",
+    );
+  } finally {
+    (globalThis.window as Window).removeEventListener(
+      CHAT_HISTORY_UPDATED_EVENT,
+      onHistory,
+    );
+  }
+});
+
+test("another tab's account switch drops this tab's rows and hint", () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex([row]);
+  assert.equal(chatSearchIndexHasRows(), true);
+
+  // The epoch lives in this document's memory and its events are same-document, so a sign-in
+  // performed elsewhere arrives as a token write and nothing else. The epoch still matches,
+  // which is exactly why the cache would otherwise answer for the previous account.
+  let rebuilds = 0;
+  const onHistory = () => {
+    rebuilds += 1;
+  };
+  (globalThis.window as Window).addEventListener(
+    CHAT_HISTORY_UPDATED_EVENT,
+    onHistory,
+  );
+  try {
+    fireStorage(AUTH_TOKEN_KEY);
+    assert.equal(
+      chatSearchIndexHasRows(),
+      null,
+      "the previous account's titles must not survive the switch",
+    );
+    assert.equal(
+      rebuilds,
+      1,
+      "an open dialog has to rebuild for the new account",
     );
   } finally {
     (globalThis.window as Window).removeEventListener(
