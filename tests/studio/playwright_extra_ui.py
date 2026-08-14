@@ -64,6 +64,11 @@ HF_OFFLINE = os.environ.get("STUDIO_UI_HF_OFFLINE", "0") == "1"
 # Only a failing run pays either; a passing run leaves on the first wheel, 1.5s end to end in CI.
 WHEEL_ROWS_TIMEOUT_MS = 15_500
 WHEEL_DEADLINE_S = 30.0
+# The ceiling the deadline may be pushed to when the wait is re-based onto a request that is
+# still open. WHEEL_DEADLINE_S covers one search, and the picker runs two in sequence, so
+# re-basing onto the second has to be allowed to outlast it. Measured from the step's start so
+# a page that keeps opening requests cannot hold the step open indefinitely.
+WHEEL_DEADLINE_MAX_S = 75.0
 
 _n = [0]
 _failed: list[str] = []
@@ -703,7 +708,8 @@ with sync_playwright() as p:
                     const node = document.querySelector('[data-testid="stt-model-results"]');
                     return !!node && node.scrollTop > 0;
                 }"""
-                wheel_deadline = time.monotonic() + WHEEL_DEADLINE_S
+                wheel_started_at = time.monotonic()
+                wheel_deadline = wheel_started_at + WHEEL_DEADLINE_S
                 wheel_scrolled = False
                 cleared_search = False
                 extended_for: set = set()
@@ -766,6 +772,15 @@ with sync_playwright() as p:
                             ):
                                 extended_for.add(open_req)
                                 next_rows_ms = extra_ms
+                                # The extension is worth nothing if the step deadline still
+                                # ends inside it: rows_ms is min()ed against what is left, so
+                                # the second search would be cut off mid-flight and reported
+                                # as a scroll failure. Push the deadline past the request just
+                                # re-based onto, up to the ceiling.
+                                wheel_deadline = min(
+                                    wheel_started_at + WHEEL_DEADLINE_MAX_S,
+                                    max(wheel_deadline, time.monotonic() + extra_ms / 1000),
+                                )
                                 info(
                                     "WARN search rows are not in and a Hugging Face request is "
                                     f"still open; waiting {extra_ms / 1000:.1f}s more for it to "
