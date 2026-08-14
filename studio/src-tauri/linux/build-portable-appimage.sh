@@ -1003,13 +1003,22 @@ if [ -n "$_gles" ] && [ -e "$_gles" ]; then
     *) _gles_ok=1 ;;
   esac
 fi
+# Each branch supplies a whole sentence rather than a fragment slotted into a
+# shared "..., so WebKit's DMA-BUF renderer is being disabled." tail. With the
+# tail shared, the GLES branches read "this system has no libGLESv2.so.2, so it
+# is being disabled" -- which names libGLESv2 as the thing being turned off --
+# and the Wayland branch repeated "WebKit's DMA-BUF renderer" twice in one line.
 _why=""
+_hint=""
 if [ "$_gles_ok" != 1 ]; then
   if [ -n "$_gles" ]; then
-    _why="this system's libGLESv2.so.2 could not be loaded"
+    _why="this system's libGLESv2.so.2 could not be loaded, so WebKit's DMA-BUF renderer is being disabled."
   else
-    _why="this system has no libGLESv2.so.2"
+    _why="this system has no libGLESv2.so.2, so WebKit's DMA-BUF renderer is being disabled."
   fi
+  # Deliberately no opt-out hint here. Turning the renderer back on without a
+  # usable libGLESv2 is the SIGABRT this whole block exists to avoid, so telling
+  # the user how to do it would be advice that breaks the machine it is printed on.
 elif [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
   # Second reason, and the one that survives having GLES: on Wayland the DMA-BUF
   # renderer does not work here even with the host's own libGLESv2 in use. The app
@@ -1025,13 +1034,35 @@ elif [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; t
   # This is a different fault from the packaged-shim one above and produces the same
   # blank window, which is why dropping the shim alone did not fix this hardware. It
   # does not reproduce under Xvfb/llvmpipe, so a container matrix cannot see it.
-  _why="WebKit's DMA-BUF renderer does not render on this Wayland session"
+  # Not every Wayland session needs this. Measured on KDE Plasma Wayland (NVIDIA,
+  # host libGLESv2, DMA-BUF forced back on): WebKitWebProcess alive, zero "No
+  # provider" errors, 18 frontend API calls and desktop-login 200 -- the renderer
+  # works there. So this condition is wider than the hardware that needs it, and
+  # it costs every other Wayland desktop the accelerated path. It stays wide
+  # because the failing signal is not knowable at launch and a Deck that does not
+  # paint is worse than a desktop that paints slowly -- but the override below
+  # exists so that trade is not forced on anyone.
+  _why="WebKit's DMA-BUF renderer is unreliable on Wayland, so it is being disabled."
+  # Only this branch is safe to reverse: GLES is present and working, and on some
+  # Wayland desktops the renderer is fine (measured on KDE Plasma Wayland/NVIDIA).
+  _hint="Set WEBKIT_DISABLE_DMABUF_RENDERER=0 to keep it on."
 fi
 if [ -n "$_why" ]; then
-  printf '%s\n' \
-    "Unsloth: $_why, so WebKit's DMA-BUF renderer is being disabled." \
-    "The app runs; rendering takes the slower path." >&2
-  export WEBKIT_DISABLE_DMABUF_RENDERER=1
+  # An explicit setting wins. Without this the export below overwrites whatever
+  # the user chose, so someone on a Wayland desktop where the renderer demonstrably
+  # works had no way to keep it -- setting the variable to 0 looked like it should
+  # work and was silently discarded.
+  if [ -n "${WEBKIT_DISABLE_DMABUF_RENDERER:-}" ]; then
+    printf '%s\n' \
+      "Unsloth: ${_why%%,*} — but WEBKIT_DISABLE_DMABUF_RENDERER is already set" \
+      "to '$WEBKIT_DISABLE_DMABUF_RENDERER', so that is being left alone." >&2
+  else
+    printf '%s\n' \
+      "Unsloth: $_why" \
+      "The app runs; rendering takes the slower path." >&2
+    [ -n "${_hint:-}" ] && printf '%s\n' "$_hint" >&2
+    export WEBKIT_DISABLE_DMABUF_RENDERER=1
+  fi
 fi
 
 if [ -n "$missing" ]; then
