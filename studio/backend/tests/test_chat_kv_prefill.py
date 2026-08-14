@@ -219,7 +219,6 @@ def test_prefill_rejects_a_stale_model_payload(monkeypatch):
     assert upstream.calls == []
 
 
-
 def test_prefill_rechecks_model_identity_before_dispatch(monkeypatch):
     backend = _Backend()
     upstream = _Client()
