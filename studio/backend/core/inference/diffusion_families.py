@@ -1206,12 +1206,10 @@ def _installed_diffusers_version() -> Optional[str]:
 def _installed_at_least(installed: str, minimum: str) -> bool:
     """Whether an INSTALLED version satisfies ``minimum``, judged on its release numbers.
 
-    Not ``_version_tuple``, which is for the clean constants in the table above: a vendor or
-    locally rebuilt diffusers carries a PEP 440 local suffix (``0.40.0+dfsg``) that stops the
-    numeric parse mid-version, so a build that HAS the class reads as older than the release it
-    was cut from. The release segment is the honest comparison for those, and it also keeps a
-    ``.dev0`` git install open, which a strict PEP 440 compare would sort below its own release.
-    An unreadable version answers OPEN, like a missing one."""
+    Not ``_version_tuple``, which is for the clean constants in the table above: a vendor build
+    carries a PEP 440 local suffix (``0.40.0+dfsg``) that stops the numeric parse mid-version, and
+    a git install carries ``.dev0``, which strict PEP 440 sorts below its own release. Both HAVE
+    the class, so compare the release they were cut from. An unreadable version answers OPEN."""
     try:
         from packaging.version import Version
         return Version(Version(installed).base_version) >= Version(minimum)

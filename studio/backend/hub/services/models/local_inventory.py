@@ -948,8 +948,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
         classified = await asyncio.to_thread(classify, response)
-        # The worker hop is an await point of its own, so a deletion or a finished download
-        # can land after the check above. Send it to the retry path, not to the response.
+        # That hop is an await point of its own, so a mutation can land after the check above.
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
         return classified
