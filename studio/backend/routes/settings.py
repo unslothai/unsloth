@@ -2056,8 +2056,8 @@ def update_personalization_settings(
     return PersonalizationPayload.model_validate(merged)
 
 
-# ── Debugging: read the log files from inside the app ────────────────────────
-# Backs the Settings > Debugging tab. The session log always existed, but its
+# ── Logs: read the log files from inside the app ─────────────────────────────
+# Backs the Settings > Logs tab. The session log always existed, but its
 # path was only printed to a console the desktop user never sees.
 
 

@@ -153,7 +153,7 @@ export const en = {
       data: "Data",
       apiKeys: "API",
       agents: "Agents",
-      debugging: "Debugging",
+      debugging: "Logs",
       about: "About",
     },
     debugging: {
@@ -177,6 +177,9 @@ export const en = {
       droppedNotice: "Some lines were skipped: the log was written faster than it could be read.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      // Not rendered: extra terms the settings search matches this tab on, so
+      // the pane is still reachable by searching for debug or an error.
+      keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
       title: "Voice",

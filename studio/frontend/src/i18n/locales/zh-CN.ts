@@ -154,7 +154,7 @@ export const zhCN = {
       voice: "语音",
       data: "数据",
       agents: "智能体",
-      debugging: "调试",
+      debugging: "日志",
     },
     debugging: {
       logSection: "日志文件",
@@ -177,6 +177,7 @@ export const zhCN = {
       droppedNotice: "已跳过部分行：日志的写入速度超过了读取速度。",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "调试 日志 错误 崩溃 堆栈 跟踪 诊断 排查 故障 debug log logs error",
     },
     voice: {
       title: "语音",

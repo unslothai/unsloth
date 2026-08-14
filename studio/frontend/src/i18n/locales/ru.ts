@@ -157,7 +157,7 @@ export const ru = {
       about: "О программе",
       data: "Данные",
       agents: "Агенты",
-      debugging: "Отладка",
+      debugging: "Журналы",
       voice: "Голос",
     },
     debugging: {
@@ -181,6 +181,7 @@ export const ru = {
       droppedNotice: "Часть строк пропущена: журнал записывался быстрее, чем его удавалось читать.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "отладка журнал журналы лог логи ошибка ошибки сбой трассировка диагностика поиск неисправностей debug log",
     },
     voice: {
       title: "Голос",

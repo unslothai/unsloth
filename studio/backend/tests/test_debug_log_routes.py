@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Settings > Debugging endpoints. These are polled once a second while the
+"""The Settings > Logs endpoints. These are polled once a second while the
 tab is open, so "the file is not there yet" has to be a 200 with a status, not
 an error the UI flashes on every tick."""
 

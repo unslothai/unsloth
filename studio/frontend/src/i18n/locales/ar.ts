@@ -155,7 +155,7 @@ export const ar = {
       about: "حول",
       data: "البيانات",
       agents: "الوكلاء",
-      debugging: "تصحيح الأخطاء",
+      debugging: "السجلات",
       voice: "الصوت",
     },
     debugging: {
@@ -179,6 +179,7 @@ export const ar = {
       droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
       title: "الصوت",

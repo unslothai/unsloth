@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Buffer and polling maths for the Settings > Debugging log viewer. Kept free
+/** Buffer and polling maths for the Settings > Logs log viewer. Kept free
  * of React so it can be tested: the tab component pulls in the router, motion
  * and hugeicons and cannot be imported under node:test.
  */

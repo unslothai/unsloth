@@ -155,7 +155,7 @@ export const ko = {
       about: "정보",
       data: "데이터",
       agents: "에이전트",
-      debugging: "디버깅",
+      debugging: "로그",
       voice: "음성",
     },
     debugging: {
@@ -179,6 +179,7 @@ export const ko = {
       droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
     },
     voice: {
       title: "음성",

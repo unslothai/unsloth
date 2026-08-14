@@ -158,7 +158,7 @@ export const ptBR = {
       voice: "Voz",
       data: "Dados",
       agents: "Agentes",
-      debugging: "Depuração",
+      debugging: "Registros",
     },
     debugging: {
       logSection: "Arquivo de log",
@@ -181,6 +181,7 @@ export const ptBR = {
       droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {
       title: "Voz",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Find the log files the Settings > Debugging viewer is allowed to read.
+"""Find the log files the Settings > Logs viewer is allowed to read.
 
 The client never names a path. It gets opaque ids from `list_sources` and hands
 one back; `resolve_source_id` re-runs this same walk and matches the digest, so

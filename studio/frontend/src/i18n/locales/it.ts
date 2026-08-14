@@ -122,7 +122,7 @@ export const it = {
       data: "Dati",
       apiKeys: "API",
       agents: "Agenti",
-      debugging: "Debug",
+      debugging: "Log",
       about: "Informazioni",
     },
     debugging: {
@@ -146,6 +146,7 @@ export const it = {
       droppedNotice: "Alcune righe sono state saltate: il log è stato scritto più velocemente di quanto potesse essere letto.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
       title: "Voce",

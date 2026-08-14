@@ -159,7 +159,7 @@ export const fr = {
       about: "À propos",
       data: "Données",
       agents: "Agents",
-      debugging: "Débogage",
+      debugging: "Journaux",
       voice: "Voix",
     },
     debugging: {
@@ -183,6 +183,7 @@ export const fr = {
       droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
       title: "Voix",

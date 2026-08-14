@@ -16,8 +16,8 @@ import {
   BotIcon,
   Cancel01Icon,
   CloudIcon,
+  ComputerTerminal01Icon,
   CpuIcon,
-  BugIcon,
   DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
@@ -118,7 +118,11 @@ const TABS: TabDef[] = [
     icon: DatabaseSettingIcon,
     badgeKey: "common.new",
   },
-  { id: "debugging", labelKey: "settings.tabs.debugging", icon: BugIcon },
+  {
+    id: "debugging",
+    labelKey: "settings.tabs.debugging",
+    icon: ComputerTerminal01Icon,
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 

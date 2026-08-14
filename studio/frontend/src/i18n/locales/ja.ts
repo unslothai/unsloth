@@ -158,7 +158,7 @@ export const ja = {
       voice: "音声",
       data: "データ",
       agents: "エージェント",
-      debugging: "デバッグ",
+      debugging: "ログ",
     },
     debugging: {
       logSection: "ログファイル",
@@ -181,6 +181,7 @@ export const ja = {
       droppedNotice: "一部の行がスキップされました。ログの書き込みが読み取りに追いつきませんでした。",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {
       title: "音声",

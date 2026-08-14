@@ -131,7 +131,7 @@ _QUIET_SUCCESS_PATHS = {
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
-    # The Settings > Debugging viewer polls are suppressed in _SELF_READ_PATHS below.
+    # The Settings > Logs viewer polls are suppressed in _SELF_READ_PATHS below.
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",

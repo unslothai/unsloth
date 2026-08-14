@@ -159,7 +159,7 @@ export const de = {
       about: "Info",
       data: "Daten",
       agents: "Agenten",
-      debugging: "Fehlersuche",
+      debugging: "Protokolle",
       voice: "Sprachfunktionen",
     },
     debugging: {
@@ -183,6 +183,7 @@ export const de = {
       droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
       title: "Sprachfunktionen",

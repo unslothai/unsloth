@@ -158,7 +158,7 @@ export const hi = {
       about: "परिचय",
       data: "डेटा",
       agents: "एजेंट",
-      debugging: "डिबगिंग",
+      debugging: "लॉग",
       voice: "आवाज़",
     },
     debugging: {
@@ -182,6 +182,7 @@ export const hi = {
       droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
       title: "आवाज़",
