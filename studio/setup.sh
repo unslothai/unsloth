@@ -1793,26 +1793,15 @@ if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
-# Never inherited from the caller's environment: the post-update check below keys on
-# these, and the block that assigns them is skipped in installer-driven/local/Colab
-# runs (mirrors $LatestVer = "" in setup.ps1).
-LATEST_VER=""
-_PYPI_JSON=""
-# True only when the version-check gate ran: the post-update probe needs the venv
-# python and must stay off in installer-driven/local/Colab runs, but it must not
-# depend on the PyPI fetch succeeding -- a missing package is missing on any index.
-_VERIFY_UPDATE=false
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
-    _VERIFY_UPDATE=true
-    INSTALLED_VER=$("$VENV_DIR/bin/python" -I -c "
+    INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    _PYPI_JSON=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null || echo "")
-    LATEST_VER=$(printf '%s' "$_PYPI_JSON" \
-        | "$VENV_DIR/bin/python" -I -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
+    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
@@ -1946,169 +1935,6 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
-    # a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
-    # resolves from the mirror while LATEST_VER came from pypi.org, so version
-    # comparisons are muted when a custom index is active. The missing-package
-    # check below still runs: a pass that leaves nothing installed is broken on
-    # any index.
-    _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
-    if [ "$_VERIFY_UPDATE" = true ]; then
-        # __MISSING__ only when the metadata positively reports no such package: a
-        # probe that merely crashed must not read as "not installed" and fail setup.
-        # -I so an inherited PYTHONPATH cannot satisfy the probe with same-name
-        # metadata from outside the managed venv
-        POST_VER=$("$VENV_DIR/bin/python" -I -c "
-import importlib.util, sys
-from importlib.metadata import distribution, PackageNotFoundError
-try:
-    d = distribution(sys.argv[1])
-except PackageNotFoundError:
-    print('__MISSING__')
-    sys.exit(0)
-# a leftover dist-info with the payload deleted still reports a version:
-# metadata only counts when its top-level modules are actually loadable
-# (find_spec locates without importing). RECORD existence is the fallback
-# for wheels without top_level.txt; 3.14+ already filters d.files to what
-# exists, so an empty ftops there falls back to trusting the metadata.
-tops = (d.read_text('top_level.txt') or '').split()
-if tops:
-    broken = not any(importlib.util.find_spec(t) for t in tops if t)
-else:
-    files = d.files or []
-    # stem/suffix rather than the joined name: a bare filename literal inside an
-    # installer reads as an invoked helper to the guard in
-    # tests/test_installer_interactive_prompts.py, which resolves it against the
-    # script's own directory and lands on the real package initializer.
-    ftops = [f for f in files if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py'] \
-        or [f for f in files if len(f.parts) == 1 and str(f).endswith('.py')]
-    broken = bool(ftops) and not any(d.locate_file(f).exists() for f in ftops)
-print('__MISSING__' if broken else d.version)
-" "$_PKG_NAME" 2>/dev/null || echo "")
-        _UPDATE_OK=false
-        if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
-            _UPDATE_OK=true
-        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && "$VENV_DIR/bin/python" -I -c "
-import re, sys
-def nums(v):
-    m = re.match(r'\d+(\.\d+)*', v)
-    if not m: sys.exit(1)
-    return [int(x) for x in m.group(0).split('.')]
-try:
-    from packaging.version import Version
-    ok = Version(sys.argv[1]) >= Version(sys.argv[2])
-except Exception:
-    ok = nums(sys.argv[1]) >= nums(sys.argv[2])
-sys.exit(0 if ok else 1)
-" "$POST_VER" "$LATEST_VER" 2>/dev/null; then
-            # newer than announced is fine (a release can land mid-update); PEP 440
-            # ordering so an installed pre/post/dev build never passes as the release
-            _UPDATE_OK=true
-        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -I -c "
-import json, sys
-raw = sys.stdin.read()
-try:
-    from packaging.specifiers import SpecifierSet
-    from packaging.version import Version, InvalidVersion
-    post = Version(sys.argv[1])
-    latest = Version(sys.argv[2])
-    releases = json.loads(raw).get('releases') or {}
-except Exception:
-    sys.exit(1)
-try:
-    from packaging.tags import sys_tags
-    from packaging.utils import parse_wheel_filename
-    supported = set(str(t) for t in sys_tags())
-except Exception:
-    supported = None
-cur = Version('.'.join(map(str, sys.version_info[:3])))
-best = None
-for ver, files in releases.items():
-    try:
-        v = Version(ver)
-    except InvalidVersion:
-        continue
-    if v.is_prerelease:
-        continue
-    for f in files:
-        if f.get('yanked'):
-            continue
-        rp = f.get('requires_python')
-        try:
-            if rp and cur not in SpecifierSet(rp):
-                continue
-        except Exception:
-            pass
-        pt = f.get('packagetype')
-        if pt == 'bdist_wheel' and supported is not None:
-            try:
-                if not any(str(t) in supported for t in parse_wheel_filename(f.get('filename') or '')[3]):
-                    continue
-            except Exception:
-                pass
-        elif pt and pt != 'sdist' and pt != 'bdist_wheel':
-            continue
-        if best is None or v > best:
-            best = v
-        break
-sys.exit(0 if best is not None and best < latest and post >= best else 1)
-" "$POST_VER" "$LATEST_VER" 2>/dev/null; then
-            # the announced release cannot install on this interpreter (Requires-Python
-            # bump): accept only the newest release this interpreter CAN install, so a
-            # no-op pass below that bar still fails loudly
-            substep "$_PKG_NAME $POST_VER kept: no $LATEST_VER artifact installs on this environment"
-            _UPDATE_OK=true
-        fi
-        if [ "$_UPDATE_OK" = true ]; then
-            substep "$_PKG_NAME $POST_VER confirmed"
-        elif [ "$POST_VER" = "__MISSING__" ]; then
-            # the one unambiguous failure: a "successful" pass with no package left
-            # behind (no-op pass, stale dist-info) -- the case this check exists for.
-            # The pass already wrote its success manifest (step 15, before this
-            # check) and verify_install accepts a null recorded version, so the
-            # marker must not survive: its presence means "install completed".
-            _MANIFEST_STATE=$("$VENV_DIR/bin/python" -c "
-import sys, time
-sys.path.insert(0, sys.argv[1])
-try:
-    import install_manifest
-except Exception:
-    print('MANIFEST=gone')
-    sys.exit(0)
-ok = False
-for _ in range(3):
-    if install_manifest.remove_manifest():
-        ok = True
-        break
-    time.sleep(0.2)
-if not ok:
-    # deletion blocked (AV lock, read-only): write is a different access right
-    # than delete on Windows, and a schema-busted manifest also reads incomplete
-    try:
-        install_manifest.manifest_path().write_text('{\"schema\": -1}', encoding='utf-8')
-        ok = True
-    except Exception:
-        pass
-print('MANIFEST=' + ('gone' if ok else 'stuck'))
-" "$SCRIPT_DIR" 2>/dev/null || echo "MANIFEST=stuck")
-            case "$_MANIFEST_STATE" in *stuck*)
-                substep "stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "$C_WARN" ;;
-            esac
-            step "python" "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}" "$C_ERR"
-            setup_fail 1 "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}"
-        elif [ -z "$POST_VER" ]; then
-            step "python" "could not verify $_PKG_NAME version after update${LATEST_VER:+ (expected $LATEST_VER)}" "$C_WARN"
-        elif [ -z "$LATEST_VER" ]; then
-            substep "$_PKG_NAME $POST_VER present (PyPI unreachable; compare skipped)"
-        elif [ -n "$_CUSTOM_INDEX" ]; then
-            substep "$_PKG_NAME $POST_VER present (custom package index; PyPI compare skipped)"
-        else
-            # older-but-successful is a resolver outcome (constraints, config-file
-            # mirrors, wheels for this platform), not an install failure: pypi.org's
-            # announced latest is not authoritative for what this environment can
-            # run -- surface it, don't brick the update
-            step "python" "update left $_PKG_NAME at $POST_VER ($LATEST_VER announced on PyPI)" "$C_WARN"
-        fi
-    fi
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
