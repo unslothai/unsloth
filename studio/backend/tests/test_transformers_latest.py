@@ -1278,3 +1278,103 @@ def test_waiter_never_answers_no_upgrade_while_the_refresh_is_still_running(monk
     assert answers["loser"] is not None, "the loser answered 'no upgrade' mid-refresh"
     assert answers["loser"]["pypi_version"] == "5.99.0"
     tl.clear_caches()
+
+
+# The transfer budget is bounded from above by the tests near it. The risk it carries is
+# the opposite one, and it lands on chat as well as training: a budget that also rejects
+# ORDINARY responses would silently stop /validate ever finding an upgrade.
+
+class _BodyServer:
+    """Serves one body, either in full or split across chunks."""
+
+    def __init__(self, body: bytes, chunked = False, status = 200):
+        import http.server
+        import threading
+
+        outer = self
+        self.body, self.chunked, self.status = body, chunked, status
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):  # noqa: N802
+                self.send_response(outer.status)
+                if outer.chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    step = max(1, len(outer.body) // 7)
+                    for i in range(0, len(outer.body), step):
+                        piece = outer.body[i:i + step]
+                        self.wfile.write(f"{len(piece):x}\r\n".encode() + piece + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                else:
+                    self.send_header("Content-Length", str(len(outer.body)))
+                    self.end_headers()
+                    self.wfile.write(outer.body)
+                self.wfile.flush()
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}/x"
+        self.thread = threading.Thread(target = self.httpd.serve_forever, daemon = True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+_AUTO_SOURCE = textwrap.dedent(
+    """
+    CONFIG_MAPPING_NAMES = OrderedDict[str, str](
+        [
+            ("albert", "AlbertConfig"),
+            ("llama", "LlamaConfig"),
+        ]
+    )
+    """
+)
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_an_ordinary_response_comes_back_whole(chunked):
+    with _BodyServer(_AUTO_SOURCE.encode(), chunked = chunked) as server:
+        body = tl._fetch_text(server.url)
+    assert body is not None and body.strip() == _AUTO_SOURCE.strip()
+
+
+def test_a_multi_chunk_body_is_not_truncated_by_the_budget():
+    # configuration_auto.py is ~200 KB against a 64 KB read, so several chunks is the
+    # normal path rather than an edge case.
+    payload = (_AUTO_SOURCE + "# padding\n" * 40_000).encode()
+    with _BodyServer(payload) as server:
+        body = tl._fetch_text(server.url)
+    assert body is not None and len(body) == len(payload.decode())
+
+
+def test_an_empty_body_is_not_a_failure():
+    with _BodyServer(b"") as server:
+        assert tl._fetch_text(server.url) == ""
+
+
+def test_a_missing_file_stays_distinguishable_from_a_failure():
+    # auto_mappings.py does not exist on pre-5.10 tags, so a 404 has to remain its own
+    # answer: read as a failure it would break every lookup against an older tag, and
+    # read as an empty body it would cache a mapping that supports nothing.
+    with _BodyServer(b"nope", status = 404) as server:
+        assert tl._fetch_text(server.url) == tl._FETCH_MISSING
+
+
+def test_a_truncated_source_fails_the_lookup_instead_of_shrinking_the_map(monkeypatch):
+    # The worst outcome this module can produce: a short mapping cached for the TTL as
+    # "these are the architectures the release ships", which offers an upgrade to every
+    # model missing from it.
+    truncated = _AUTO_SOURCE[: len(_AUTO_SOURCE) // 2].encode()
+    with _BodyServer(truncated) as server:
+        monkeypatch.setattr(tl, "_RAW_URL", server.url + "?{ref}{name}")
+        assert tl._fetch_remote_model_types("v5.15.0") is None

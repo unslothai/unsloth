@@ -367,3 +367,71 @@ test("a model without custom code reports no verdict to carry", async () => {
 
   assert.equal(outcome.requiresTrustRemoteCode, false);
 });
+
+// The other half of the question: everything that worked before this gate existed has
+// to keep working. The realistic mismatch is a frontend bundle newer than the backend
+// serving it, which is every in-place upgrade between the moment the assets swap and the
+// moment the server restarts. The route answers 404 or 405 and the check throws.
+for (const [label, failure] of [
+  ["a 404 from a backend without the route", new Error("404: API endpoint not found")],
+  ["a 405 from a backend without the route", new Error("405: Method Not Allowed")],
+  ["a 500 from a broken backend", new Error("500: Internal Server Error")],
+  ["a network failure", new TypeError("Failed to fetch")],
+] as const) {
+  test(`${label} leaves the start exactly as it was`, async () => {
+    stub.resetStub();
+    stub.state.checkResult = failure;
+    const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+    assert.equal(outcome.proceed, true);
+    assert.equal(outcome.error, null);
+    assert.equal(outcome.forces16Bit, false);
+    // false is what the next gate would have used anyway, and the start path ORs it
+    // with the stored flag, so a failed check can never REMOVE a custom-code consent.
+    assert.equal(outcome.requiresTrustRemoteCode, false);
+    assert.equal(
+      stub.calls.filter((c) => c.name === "confirmTransformersUpgradeIfNeeded").length,
+      0,
+      "a preflight that could not run must raise no dialog",
+    );
+  });
+}
+
+test("an upgrade with no version is never offered as an install", async () => {
+  // A partially populated payload must not produce "Install transformers undefined".
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: {
+      // biome-ignore lint/style/useNamingConvention: API schema
+      model_type: "muse_glimmer",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      pypi_version: null,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      supported_in_pypi: true,
+    },
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: false,
+  };
+  stub.state.consentResult = false;
+  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+  assert.equal(outcome.proceed, false);
+  assert.match(String(outcome.error), /no released transformers version supports it/);
+});
+
+test("a field from a newer backend is ignored rather than fatal", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: null,
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: false,
+  };
+  // Added through Object.assign because the stub's types are deliberately exact: a key
+  // this build has never heard of is a compile error there, which is the whole point of
+  // typing it that way, and is also exactly what a newer backend would send.
+  Object.assign(stub.state.checkResult, {
+    someVerdictThisBuildHasNeverHeardOf: { nested: true },
+  });
+  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+  assert.equal(outcome.proceed, true);
+});
