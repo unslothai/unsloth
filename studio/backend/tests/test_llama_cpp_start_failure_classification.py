@@ -1629,9 +1629,7 @@ class TestRejectedArguments:
         assert "--tempp" in _classify(within, "/models/x.gguf", "local/x", 1)
         # Before it: not found, which is only possible if the scan stopped short of
         # the head. Reported as an ordinary failure instead.
-        buried = (
-            "error: invalid argument: --tempp\n" + "x" * (_FAILURE_SCAN_TAIL_CHARS * 2)
-        )
+        buried = "error: invalid argument: --tempp\n" + "x" * (_FAILURE_SCAN_TAIL_CHARS * 2)
         assert "--tempp" not in _classify(buried, "/models/x.gguf", "local/x", 1)
 
     def test_a_model_load_error_mentioning_arguments_is_not_misread(self):
