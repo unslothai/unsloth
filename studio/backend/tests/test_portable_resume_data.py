@@ -102,6 +102,13 @@ def test_resume_loads_snapshot_relative_to_checkpoint_without_original_sources(
 
     assert (train, evaluate) == ("train", "eval")
     assert loaded_paths == [run / snapshot["splits"]["train"], run / snapshot["splits"]["eval"]]
+    assert portable.has_snapshot_for_resume(checkpoint)
+
+
+def test_resume_without_bundle_does_not_claim_snapshot_availability(tmp_path):
+    checkpoint = tmp_path / "run" / "checkpoint-1"
+    checkpoint.mkdir(parents = True)
+    assert not portable.has_snapshot_for_resume(checkpoint)
 
 
 def test_resume_rejects_snapshot_path_escape(tmp_path):

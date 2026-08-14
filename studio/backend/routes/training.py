@@ -267,28 +267,6 @@ async def start_training(
         # pump thread is dead.
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
 
-        # Snapshot resumes intentionally do not depend on the original source
-        # paths.  Those paths are often invalid after copying a run to another
-        # machine, so leave them for the worker's bundled-snapshot fallback.
-        uses_resume_snapshot = bool(
-            (request.resume_from_checkpoint or request.imported_resume_checkpoint
-             or request.resume_checkpoint_path)
-            and request.portable_resume_data == "snapshot"
-        )
-        if not uses_resume_snapshot:
-            for entry in request.training_datasets:
-                if entry.local_path:
-                    entry.local_path = _validate_local_dataset_paths(
-                        [entry.local_path], "Training dataset"
-                    )[0]
-            if request.local_datasets:
-                request.local_datasets = _validate_local_dataset_paths(
-                    request.local_datasets, "Local dataset"
-                )
-            if request.local_eval_datasets and request.eval_steps > 0:
-                request.local_eval_datasets = _validate_local_dataset_paths(
-                    request.local_eval_datasets, "Local eval dataset"
-                )
         resume_output_dir: Optional[str] = None
         resume_run: Optional[dict] = None
         imported_checkpoint: Optional[str] = None
@@ -334,6 +312,30 @@ async def start_training(
             request.imported_resume_checkpoint = imported_checkpoint
 
         resume_source = request.resume_from_checkpoint or imported_checkpoint
+        # Skip stale source validation only when the selected resume source
+        # really contains a bundled snapshot.  Trusting the requested mode by
+        # itself would let a missing bundle fall back to unvalidated local paths
+        # in the worker.
+        from core.training.portable_data import has_snapshot_for_resume
+
+        uses_resume_snapshot = (
+            request.portable_resume_data == "snapshot"
+            and has_snapshot_for_resume(resume_source)
+        )
+        if not uses_resume_snapshot:
+            for entry in request.training_datasets:
+                if entry.local_path:
+                    entry.local_path = _validate_local_dataset_paths(
+                        [entry.local_path], "Training dataset"
+                    )[0]
+            if request.local_datasets:
+                request.local_datasets = _validate_local_dataset_paths(
+                    request.local_datasets, "Local dataset"
+                )
+            if request.local_eval_datasets and request.eval_steps > 0:
+                request.local_eval_datasets = _validate_local_dataset_paths(
+                    request.local_eval_datasets, "Local eval dataset"
+                )
         destination_output_dir: Optional[str] = None
         if resume_source:
             if request.in_place_continuation and imported_checkpoint:

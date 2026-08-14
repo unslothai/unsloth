@@ -18,6 +18,18 @@ class PortableDatasetError(ValueError):
     pass
 
 
+def snapshot_bundle_path(resume_checkpoint: str | Path) -> Path:
+    """Return the canonical bundle metadata path for a checkpoint or run."""
+    checkpoint = Path(resume_checkpoint).expanduser().resolve()
+    run_dir = checkpoint.parent if checkpoint.name.startswith("checkpoint-") else checkpoint
+    return run_dir / PORTABLE_DATA_DIR / "snapshot-v1" / "bundle.json"
+
+
+def has_snapshot_for_resume(resume_checkpoint: str | Path | None) -> bool:
+    """Report whether a resume source actually carries a processed snapshot."""
+    return bool(resume_checkpoint and snapshot_bundle_path(resume_checkpoint).is_file())
+
+
 def file_hash(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -141,9 +153,8 @@ def load_snapshot_for_resume(resume_checkpoint: str | Path) -> tuple[Any, Any | 
     original local paths (or even the original Hub repository) may no longer be
     reachable.
     """
-    checkpoint = Path(resume_checkpoint).expanduser().resolve()
-    run_dir = checkpoint.parent if checkpoint.name.startswith("checkpoint-") else checkpoint
-    bundle_path = run_dir / PORTABLE_DATA_DIR / "snapshot-v1" / "bundle.json"
+    bundle_path = snapshot_bundle_path(resume_checkpoint)
+    run_dir = bundle_path.parents[2]
     if not bundle_path.is_file():
         return None
     try:
