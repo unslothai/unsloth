@@ -1811,15 +1811,118 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
         return None
 
 
+def _rocm_windows_hip_device_luids(
+    device_count: int,
+) -> Optional[list[Optional[str]]]:
+    """Return the Windows LUID for each visible HIP ordinal.
+
+    ``hipDeviceProp_tR0600`` exposes the same 8-byte LUID embedded in Windows
+    ``GPU Adapter Memory`` counter instance names. Querying HIP directly avoids
+    guessing from adapter order, name, or capacity. ``None`` means the runtime
+    API itself was unavailable; individual ``None`` entries mean that ordinal
+    could not be resolved and must remain unknown.
+    """
+    if platform.system() != "Windows":
+        return None
+    try:
+        import ctypes
+
+        torch = sys.modules.get("torch")
+        hip_version = str(getattr(getattr(torch, "version", None), "hip", ""))
+        major = hip_version.split(".", 1)[0]
+        dll_names = [
+            name
+            for name in (
+                f"amdhip64_{major}.dll" if major else None,
+                "amdhip64.dll",
+                "amdhip64_7.dll",
+                "amdhip64_6.dll",
+            )
+            if name
+        ]
+        win_dll = getattr(ctypes, "WinDLL")
+        kernel32 = win_dll("kernel32", use_last_error = True)
+        get_module_handle = kernel32.GetModuleHandleW
+        get_module_handle.argtypes = [ctypes.c_wchar_p]
+        get_module_handle.restype = ctypes.c_void_p
+        hip = None
+        for dll_name in dict.fromkeys(dll_names):
+            handle = get_module_handle(dll_name)
+            if handle:
+                hip = win_dll(dll_name, handle = handle)
+                break
+        if hip is None:
+            return None
+
+        get_properties = hip.hipGetDevicePropertiesR0600
+        get_properties.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        get_properties.restype = ctypes.c_int
+
+        # The versioned R0600 ABI starts with name[256], UUID[16], then LUID[8].
+        # HIP writes the complete structure, so use a deliberately oversized buffer
+        # and read only this stable documented prefix.
+        buffer_size = 64 * 1024
+        luids: list[Optional[str]] = []
+        for ordinal in range(device_count):
+            raw = ctypes.create_string_buffer(buffer_size)
+            if get_properties(ctypes.byref(raw), ordinal) != 0:
+                luids.append(None)
+                continue
+            luid = bytes(raw[272:280])
+            if luid == b"\x00" * 8:
+                luids.append(None)
+                continue
+            low = int.from_bytes(luid[:4], "little", signed = False)
+            high = int.from_bytes(luid[4:], "little", signed = False)
+            luids.append(f"luid_0x{high:08x}_0x{low:08x}")
+        return luids
+    except Exception as e:
+        logger.debug("HIP device LUID probe unavailable: %s", e)
+        return None
+
+
+def _rocm_windows_luid_used_by_device(
+    adapters: list[tuple[str, float]],
+    device_luids: list[Optional[str]],
+    device_totals: list[float],
+) -> list[Optional[float]]:
+    """Join counter usage to visible HIP devices by exact LUID, failing closed."""
+    samples: dict[tuple[str, int], float] = {}
+    for instance, used in adapters:
+        match = re.fullmatch(
+            r"(luid_0x[0-9a-f]{8}_0x[0-9a-f]{8})_phys_(\d+)", instance.lower()
+        )
+        if match is None:
+            continue
+        key = (match.group(1), int(match.group(2)))
+        if key in samples:
+            # Repeated samples are not independent physical nodes; summing them
+            # would double-count. Invalidate identity attribution for this poll.
+            return [None] * len(device_luids)
+        samples[key] = used
+
+    used_by_luid: dict[str, float] = {}
+    for (luid, _phys_idx), used in samples.items():
+        used_by_luid[luid] = used_by_luid.get(luid, 0.0) + used
+
+    assigned: list[Optional[float]] = []
+    for position, luid in enumerate(device_luids):
+        normalized = luid.lower() if luid else None
+        used = used_by_luid.get(normalized) if normalized else None
+        total = device_totals[position] if position < len(device_totals) else 0.0
+        assigned.append(min(used, total) if used is not None and total > 0 else None)
+    return assigned
+
+
 def _match_adapter_used_to_devices(
     adapter_useds: list[float], device_totals: list[float]
 ) -> list[Optional[float]]:
     """Attribute per-adapter used bytes to torch devices by capacity ranking.
 
-    Windows shares no key between LUID counters and torch ordinals, so usages are
-    ranked against device totals and each is trusted only when capacity *forces* it
-    (it exceeds every smaller device); an ambiguous ranking reports unknown
-    (``None``) rather than fabricate a per-index free.
+    Windows exposes the LUID counter key through HIP device properties. When that
+    API is unavailable, usages are ranked against device totals and each is trusted
+    only when capacity *forces* it (it exceeds every smaller device); an ambiguous
+    ranking reports unknown (``None``) rather than fabricate a per-index free.
 
     Extra counters mean a hidden/display adapter, and the noise filter may have
     dropped a real reading, so values are emitted only when the supra-threshold
@@ -1965,8 +2068,21 @@ def _rocm_windows_per_device_vram(
     if adapters:
         adapter_useds = [used for _, used in adapters]
         totals = [d["total_bytes"] for d in dev_meta]
-        assigned = _match_adapter_used_to_devices(adapter_useds, totals)
-        aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
+        device_luids = _rocm_windows_hip_device_luids(len(dev_meta))
+        if device_luids is None:
+            # Preserve the existing conservative capacity fallback only when HIP's
+            # identity API itself is unavailable.
+            assigned = _match_adapter_used_to_devices(adapter_useds, totals)
+            aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
+        else:
+            # Once HIP identity is available, missing/ambiguous counters stay
+            # unknown instead of falling back to a heuristic that could contradict it.
+            assigned = _rocm_windows_luid_used_by_device(adapters, device_luids, totals)
+            aggregate_bytes = (
+                sum(used for used in assigned if used is not None)
+                if assigned and all(used is not None for used in assigned)
+                else None
+            )
         if aggregate_bytes is not None:
             aggregate_gb = round(aggregate_bytes / (1024**3), 2)
     else:

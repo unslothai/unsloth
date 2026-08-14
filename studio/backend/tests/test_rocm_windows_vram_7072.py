@@ -317,6 +317,69 @@ def test_match_adapter_capacity_forced_matrix():
     assert m([40 * GB, 30 * GB, 3 * MiB], [48 * GB, 48 * GB]) == [None, None]
 
 
+def test_luid_join_sums_physical_nodes_and_clamps():
+    luid = "luid_0xffffffff_0x000147fe"
+    adapters = [
+        (f"{luid}_phys_0", 3.0 * GB),
+        (f"{luid.upper()}_phys_1", 4.0 * GB),
+        ("luid_0x00000000_0x00016b51_phys_0", 0.0),
+    ]
+    assert hw._rocm_windows_luid_used_by_device(adapters, [luid], [6 * GB]) == [6 * GB]
+
+
+def test_luid_join_rejects_duplicate_physical_sample():
+    luid = "luid_0x00000000_0x000147fe"
+    adapters = [(f"{luid}_phys_0", 2.0 * GB), (f"{luid}_phys_0", 2.0 * GB)]
+    assert hw._rocm_windows_luid_used_by_device(adapters, [luid], [16 * GB]) == [None]
+
+
+def test_single_gpu_uses_exact_hip_luid_with_basic_render_driver(win_rocm, monkeypatch):
+    """Regression from a RX 9070 XT host with a zero-use virtual adapter."""
+    gpu_luid = "luid_0x00000000_0x000147fe"
+    basic_luid = "luid_0x00000000_0x00016b51"
+    devices = [("AMD Radeon RX 9070 XT", 16 * GB)]
+    counters = [(f"{gpu_luid}_phys_0", 5.0 * GB), (f"{basic_luid}_phys_0", 0.0)]
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(devices, free_equals_total = True))
+    monkeypatch.setattr(
+        hw, "_rocm_windows_hip_device_luids", lambda count: [gpu_luid], raising = False
+    )
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(counters))
+    )
+
+    result = hw.get_visible_gpu_utilization()
+    assert result["devices"][0]["vram_used_gb"] == pytest.approx(5.0)
+    assert result["devices"][0]["vram_utilization_pct"] == pytest.approx(31.2)
+    _, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert aggregate == pytest.approx(5.0)
+
+
+def test_available_hip_luid_with_missing_counter_does_not_use_capacity_fallback(
+    win_rocm, monkeypatch
+):
+    visible_luid = "luid_0x00000000_0x0000aaaa"
+    hidden_luid = "luid_0x00000000_0x0000bbbb"
+    devices = [("AMD Radeon", 8 * GB)]
+    counters = [(f"{hidden_luid}_phys_0", 6.0 * GB)]
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(devices, free_equals_total = True))
+    monkeypatch.setattr(hw, "_rocm_windows_hip_device_luids", lambda count: [visible_luid])
+    monkeypatch.setattr(
+        hw,
+        "_match_adapter_used_to_devices",
+        lambda *_: pytest.fail("capacity fallback must not run when HIP identity is available"),
+    )
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(counters))
+    )
+
+    result = hw.get_visible_gpu_utilization()
+    assert result["devices"][0]["vram_used_gb"] is None
+    _, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert aggregate is None
+
+
 def test_perf_counter_parser_and_sentinel(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(
