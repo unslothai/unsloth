@@ -5507,13 +5507,15 @@ if ($_verifyUpdate) {
     # leaves the inherited cwd on sys.path; the shell probe's -I covers both) --
     # except the interpreter's own site-packages, which stays even when the caller
     # launched from inside it or named it on PYTHONPATH. Metadata only counts when
-    # its recorded top-level modules exist on disk: a leftover dist-info with the
-    # payload deleted still reports a version. The initializer is matched by stem and
+    # every recorded top-level module exists on disk: a leftover dist-info with the
+    # payload deleted still reports a version, and the wheel records studio, unsloth
+    # and unsloth_cli, so a partial quarantine that leaves one behind must still
+    # read as broken. The initializer is matched by stem and
     # suffix rather than by its joined name: a bare filename literal inside an
     # installer reads as an invoked helper to the guard in
     # tests/test_installer_interactive_prompts.py, which resolves it against the
     # script's own directory and lands on the real package initializer.
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _files = (_d.files if _d is not None else None) or []; _ftops = [_f for _f in _files if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'] or [_f for _f in _files if len(_f.parts) == 1 and str(_f).endswith('.py')]; _broken = (not any(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else (bool(_ftops) and not any(_d.locate_file(_f).exists() for _f in _ftops)); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _files = (_d.files if _d is not None else None) or []; _ftops = [_f for _f in _files if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'] or [_f for _f in _files if len(_f.parts) == 1 and str(_f).endswith('.py')]; _broken = (not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else (bool(_ftops) and not all(_d.locate_file(_f).exists() for _f in _ftops)); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
     if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {

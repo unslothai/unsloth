@@ -1966,13 +1966,15 @@ except PackageNotFoundError:
     print('__MISSING__')
     sys.exit(0)
 # a leftover dist-info with the payload deleted still reports a version:
-# metadata only counts when its top-level modules are actually loadable
-# (find_spec locates without importing). RECORD existence is the fallback
-# for wheels without top_level.txt; 3.14+ already filters d.files to what
-# exists, so an empty ftops there falls back to trusting the metadata.
+# metadata only counts when every recorded top-level module is actually loadable
+# (find_spec locates without importing) -- the wheel records studio, unsloth and
+# unsloth_cli, and a partial quarantine that leaves one behind must still read as
+# broken. RECORD existence is the fallback for wheels without top_level.txt;
+# 3.14+ already filters d.files to what exists, so an empty ftops there falls
+# back to trusting the metadata.
 tops = (d.read_text('top_level.txt') or '').split()
 if tops:
-    broken = not any(importlib.util.find_spec(t) for t in tops if t)
+    broken = not all(importlib.util.find_spec(t) for t in tops if t)
 else:
     files = d.files or []
     # stem/suffix rather than the joined name: a bare filename literal inside an
@@ -1981,7 +1983,7 @@ else:
     # script's own directory and lands on the real package initializer.
     ftops = [f for f in files if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py'] \
         or [f for f in files if len(f.parts) == 1 and str(f).endswith('.py')]
-    broken = bool(ftops) and not any(d.locate_file(f).exists() for f in ftops)
+    broken = bool(ftops) and not all(d.locate_file(f).exists() for f in ftops)
 print('__MISSING__' if broken else d.version)
 " "$_PKG_NAME" 2>/dev/null || echo "")
         _UPDATE_OK=false
