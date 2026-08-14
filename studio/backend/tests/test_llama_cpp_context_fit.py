@@ -963,9 +963,34 @@ class TestPartialOffloadIsReportable:
         ]
         assert parse_gpu_offload_counts(lines) == (12, 60)
 
+    def test_a_drafter_of_equal_size_does_not_mask_the_main_model(self):
+        # Nothing forces a drafter to have fewer layers than its target. On a tie
+        # llama.cpp's load order decides: the main model is logged first, so the
+        # fully offloaded drafter behind it must not report 32/32 over a main
+        # model that only got half its layers onto the GPU.
+        lines = [
+            "load_tensors: offloaded 16/32 layers to GPU",
+            "load_tensors: offloaded 32/32 layers to GPU",
+        ]
+        assert parse_gpu_offload_counts(lines) == (16, 32)
+
     def test_no_counted_line_is_not_a_guess(self):
         assert parse_gpu_offload_counts(["INFO starting server"]) is None
         assert parse_gpu_offload_counts([]) is None
 
     def test_a_zero_total_is_not_reportable(self):
         assert parse_gpu_offload_counts(["offloaded 0/0 layers to GPU"]) is None
+
+    def test_an_extras_ngl_reads_as_the_users_own_placement(self):
+        # Auto mode respects an inherited -ngl instead of stripping it (manual
+        # mode is the one that strips), so gpu_memory_mode alone cannot tell a
+        # split Studio allowed from one the user asked for.
+        from core.inference.llama_cpp import (
+            _GPU_OFFLOAD_OVERRIDE_FLAGS,
+            _extra_args_set_any_flag,
+        )
+
+        assert _extra_args_set_any_flag(["-ngl", "20"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
+        assert _extra_args_set_any_flag(["--gpu-layers=20"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
+        assert not _extra_args_set_any_flag(["--threads", "8"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
+        assert not _extra_args_set_any_flag(None, _GPU_OFFLOAD_OVERRIDE_FLAGS)

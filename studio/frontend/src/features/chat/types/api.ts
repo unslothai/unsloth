@@ -240,6 +240,7 @@ export interface LoadModelResponse {
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
@@ -329,6 +330,7 @@ export interface InferenceStatusResponse {
   /** Set while the active model is a recovered CPU-only Vulkan load. */
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;

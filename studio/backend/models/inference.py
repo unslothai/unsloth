@@ -715,6 +715,14 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Total layers in the model, alongside offloaded_layers.",
     )
+    offload_overridden: bool = Field(
+        False,
+        description = (
+            "Whether the user's own llama-server extras pinned the layer split. "
+            "Auto mode respects an inherited -ngl instead of stripping it, so a "
+            "deliberate placement can arrive with gpu_memory_mode still 'auto'."
+        ),
+    )
     cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
         None,
         description = (

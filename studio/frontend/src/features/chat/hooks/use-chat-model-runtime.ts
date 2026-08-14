@@ -15,8 +15,7 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import {
   type OffloadCounts,
-  isPartialOffload,
-  partialOffloadDescription,
+  offloadWarning,
 } from "../lib/partial-offload";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
@@ -1296,6 +1295,7 @@ export function useChatModelRuntime() {
               offloaded: loadResponse.offloaded_layers,
               total: loadResponse.offload_total_layers,
               gpuMemoryMode: loadResponse.gpu_memory_mode,
+              offloadOverridden: loadResponse.offload_overridden,
             };
 
             // If cancelled while loading, don't update UI to show
@@ -1920,20 +1920,17 @@ export function useChatModelRuntime() {
           if (abortCtrl.signal.aborted) return;
           // A split load is a success the user still needs told about: the layers
           // llama.cpp left on the CPU are on the critical path for every token.
-          const partialOffload =
-            !cpuFallbackReason && isPartialOffload(offloadCounts);
+          const offloadNotice = cpuFallbackReason
+            ? null
+            : offloadWarning(offloadCounts);
           const loadedTitle = cpuFallbackReason
             ? `${toastDisplayName} loaded on CPU`
-            : partialOffload
-              ? `${toastDisplayName} loaded, partly on CPU`
-              : `${toastDisplayName} loaded`;
+            : `${toastDisplayName} loaded${offloadNotice?.titleSuffix ?? ""}`;
           const loadedDescription = cpuFallbackReason
             ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-            : partialOffload
-              ? partialOffloadDescription(offloadCounts)
-              : undefined;
+            : offloadNotice?.description;
           const showLoadedToast =
-            cpuFallbackReason || partialOffload ? toast.warning : toast.success;
+            cpuFallbackReason || offloadNotice ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
               description: loadedDescription,

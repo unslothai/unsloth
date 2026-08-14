@@ -23,7 +23,10 @@ test("an auto-load that fell back to CPU warns instead of claiming plain success
   // added alongside it, and pinning the whole expression made a widening of the
   // rule read as a break of it. What matters is that a CPU fallback still selects
   // the warning toast and still explains itself.
-  assert.match(helper, /cpuFallbackReason[^\n]*\? toast\.warning : toast\.success/);
+  assert.match(
+    helper,
+    /cpuFallbackReason[^\n]*\? toast\.warning : toast\.success/,
+  );
   assert.match(helper, /GPU acceleration is disabled for this model session/);
 });
 
@@ -33,19 +36,19 @@ test("an auto-load that only partly reached the GPU warns too", () => {
   // that stays silent.
   const start = source.indexOf("const showAutoLoadSuccess = (");
   const helper = source.slice(start, source.indexOf("\n  };", start));
-  assert.match(helper, /isPartialOffload/);
-  assert.match(helper, /partialOffloadDescription/);
+  assert.match(helper, /offloadWarning/);
+  assert.match(helper, /offloadNotice\?\.description/);
+  assert.match(helper, /offloadNotice\?\.titleSuffix/);
 });
 
 test("every auto-load path forwards the offload counts", () => {
   const calls = source.match(/\n\s*showAutoLoadSuccess\([\s\S]*?\);/g) ?? [];
   assert.ok(calls.length > 0, "no showAutoLoadSuccess call sites found");
   for (const call of calls) {
-    assert.match(call, /offloaded_layers/);
-    assert.match(call, /offload_total_layers/);
-    // Manual mode pins the split deliberately, so the mode has to travel with
-    // the counts or a user's own choice gets reported as a problem.
-    assert.match(call, /gpu_memory_mode/);
+    // Through the shared reader, so a field added to the split (the mode, and
+    // then whether extras overrode the placement) reaches every load path at
+    // once rather than the one whose call site got updated.
+    assert.match(call, /offloadCountsFrom\(loadResp\)/);
   }
 });
 

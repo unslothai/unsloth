@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getInferenceStatus, loadModel } from "@/features/chat";
+import {
+  getInferenceStatus,
+  loadModel,
+  offloadCountsFrom,
+  offloadWarning,
+} from "@/features/chat";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
@@ -250,7 +255,7 @@ async function loadLocalModelSelection(
   });
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
-    await loadModel({
+    const loadResp = await loadModel({
       // biome-ignore lint/style/useNamingConvention: api schema
       model_path: target,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -274,15 +279,20 @@ async function loadLocalModelSelection(
       // biome-ignore lint/style/useNamingConvention: api schema
       tensor_parallel: false,
     });
+    // A recipe run loads its model with no panel open, so a split load was
+    // announced here as a plain success and the run just came out slow.
+    const offloadNotice = offloadWarning(offloadCountsFrom(loadResp));
     const successOptions = {
-      description: undefined,
-      duration: 2000,
+      description: offloadNotice?.description,
+      duration: offloadNotice ? 8000 : 2000,
       icon: undefined,
     };
+    const title = `Loaded ${modelLabel}${offloadNotice?.titleSuffix ?? ""}`;
+    const showToast = offloadNotice ? toast.warning : toast.success;
     if (loadToastDismissed) {
-      toast.success(`Loaded ${modelLabel}`, successOptions);
+      showToast(title, successOptions);
     } else {
-      toast.success(`Loaded ${modelLabel}`, { ...successOptions, id: toastId });
+      showToast(title, { ...successOptions, id: toastId });
     }
     return null;
   } catch (error) {

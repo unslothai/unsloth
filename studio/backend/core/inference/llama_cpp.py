@@ -309,7 +309,11 @@ def parse_gpu_offload_counts(lines: "list[str]") -> "Optional[tuple[int, int]]":
     fraction of the speed and is told only that it loaded.
 
     Same largest-M rule as the classifier: a draft/MTP model logs its own much
-    smaller line, and the main model is the one worth reporting.
+    smaller line, and the main model is the one worth reporting. On a tie the
+    first line wins, because llama.cpp loads the main model before its drafter and
+    nothing forces a drafter to have fewer layers than its target: taking the
+    larger N there would let a fully offloaded 32-layer drafter report 32/32 over
+    a main model that only got half its layers onto the GPU.
     """
     max_total = -1
     offloaded_at_max = 0
@@ -318,7 +322,7 @@ def parse_gpu_offload_counts(lines: "list[str]") -> "Optional[tuple[int, int]]":
         if not match:
             continue
         offloaded, total = int(match.group(1)), int(match.group(2))
-        if total > max_total or (total == max_total and offloaded > offloaded_at_max):
+        if total > max_total:
             max_total, offloaded_at_max = total, offloaded
     if max_total <= 0:
         return None
@@ -3596,6 +3600,8 @@ class LlamaCppBackend:
         self._gpu_offload_active: Optional[bool] = None
         # (offloaded, total) layers llama.cpp reported for this load, when it said.
         self._gpu_offload_layers: Optional[tuple[int, int]] = None
+        # Whether the user's own extras pinned the layer split for this load.
+        self._offload_overridden: bool = False
         # Diffusion only: the split the running child was asked for.
         self._diffusion_requested_ngl: Optional[int] = None
         self._context_length: Optional[int] = None
@@ -3965,6 +3971,16 @@ class LlamaCppBackend:
     @property
     def offload_total_layers(self) -> Optional[int]:
         return self._gpu_offload_layers[1] if self._gpu_offload_layers else None
+
+    @property
+    def offload_overridden(self) -> bool:
+        """Whether the user's own extras chose this split.
+
+        Auto mode strips neither -ngl nor --fit off from extras, so a deliberate
+        placement can arrive with gpu_memory_mode still reading "auto". Callers
+        that would otherwise suggest a smaller quantization need to know the
+        difference between a spill Studio allowed and a split the user asked for."""
+        return self._offload_overridden
 
     @property
     def requested_parallel_slots(self) -> int:
@@ -16117,6 +16133,14 @@ class LlamaCppBackend:
                 # In auto mode the placement is llama.cpp's (--fit on), so its log is
                 # the only account of what actually happened.
                 self._gpu_offload_layers = parse_gpu_offload_counts(self._stdout_lines)
+                # Auto mode respects an inherited -ngl rather than stripping it (see
+                # _GPU_OFFLOAD_OVERRIDE_FLAGS), so the split can be the user's own
+                # choice even though the first-class mode still reads "auto". Set
+                # beside the counts, from the same extras this load launched with, so
+                # the two cannot disagree about which load they describe.
+                self._offload_overridden = _extra_args_set_any_flag(
+                    extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
+                )
                 if (
                     self._gpu_offload_layers is not None
                     and 0 < self._gpu_offload_layers[0] < self._gpu_offload_layers[1]
@@ -17100,6 +17124,7 @@ class LlamaCppBackend:
             # server's stale zero-offload flag until the health probe reclassifies.
             self._gpu_offload_active = None
             self._gpu_offload_layers = None
+            self._offload_overridden = False
             # Drives _wait_for_vram_settle in the next load_model; set in finally
             # so both in-process and frontend Apply paths record the kill.
             self._last_kill_monotonic = time.monotonic()
