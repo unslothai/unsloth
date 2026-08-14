@@ -1223,7 +1223,6 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
     if driver_total_ordinals:
         try:
             from utils.torch_device_probe import rocm_memory_totals
-
             driver_totals = rocm_memory_totals(driver_total_ordinals)
         except Exception as e:
             # Keep the carve-out rather than dropping the device: an understated

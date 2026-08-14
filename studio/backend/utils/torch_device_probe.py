@@ -440,8 +440,7 @@ def _rocm_memory_totals_cached(
         if process.returncode != 0:
             tail = (stderr or "").strip()[-_STDERR_TAIL_CHARS:]
             logger.warning(
-                "ROCm memory-total probe exited with status %s; using device-property "
-                "totals%s",
+                "ROCm memory-total probe exited with status %s; using device-property totals%s",
                 process.returncode,
                 f": {tail}" if tail else "",
             )
@@ -467,9 +466,7 @@ def _rocm_memory_totals_cached(
                 sorted(
                     (int(raw_ordinal), int(raw_total))
                     for raw_ordinal, raw_total in payload.items()
-                    if int(raw_ordinal) in expected
-                    and type(raw_total) is int
-                    and raw_total > 0
+                    if int(raw_ordinal) in expected and type(raw_total) is int and raw_total > 0
                 )
             )
         except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
