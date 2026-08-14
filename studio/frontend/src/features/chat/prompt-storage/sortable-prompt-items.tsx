@@ -14,9 +14,7 @@ import {
   useState,
 } from "react";
 
-// Textarea that tracks its own content height. Prompts in a list run from one
-// line to a paragraph, and a fixed `rows` either wastes space or hides text
-// behind an inner scrollbar, so the element is measured on every change.
+// Textarea that grows with its content, capped at maxHeight.
 export function AutoTextarea({
   value,
   onChange,
@@ -43,32 +41,23 @@ export function AutoTextarea({
     el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [maxHeight]);
 
-  // Layout effect, not a plain effect: resizing after paint shows a one-frame
-  // flash of the wrong height while typing.
+  // Layout effect: measuring after paint flashes the wrong height while typing.
   useLayoutEffect(measure, [value, measure]);
 
-  // The same text wraps to a different number of lines when the column width
-  // changes -- a window resize, a rotation, or crossing the dialog's responsive
-  // breakpoints -- and none of those touch `value`. Without remeasuring, the
-  // box keeps its old height and, because overflowY may be "hidden", the newly
-  // wrapped lines are clipped until the next keystroke.
+  // A width change rewraps the text without touching `value`, and overflowY may
+  // be "hidden", so the new lines would be clipped until the next keystroke.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
 
-    // A window resize covers the common cases (resizing the window, rotating a
-    // device, crossing the dialog's breakpoints) and fires independently of the
-    // rendering loop.
     window.addEventListener("resize", measure);
 
-    // The observer additionally catches the column changing width without the
-    // window doing so, e.g. the rail stacking above the detail pane.
+    // Catches the column resizing without the window doing so.
     let observer: ResizeObserver | undefined;
     if (typeof ResizeObserver !== "undefined") {
       let lastWidth = el.clientWidth;
       observer = new ResizeObserver(() => {
-        // Width only: the observer also fires for the height we just set, which
-        // would otherwise loop.
+        // Width only; it also fires for the height we just set, which would loop.
         const width = el.clientWidth;
         if (width === lastWidth) return;
         lastWidth = width;
@@ -111,8 +100,7 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
-// Nearest ancestor that actually scrolls, so a drag can pull the list along with
-// it. In the storage dialog this is the detail pane's overflow-y-auto wrapper.
+// Nearest ancestor a drag can scroll.
 function findScrollParent(el: HTMLElement | null): HTMLElement | null {
   let node = el?.parentElement ?? null;
   while (node) {
@@ -128,11 +116,8 @@ function findScrollParent(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-
-// Reorderable list of prompt texts. Rows are keyed by a synthetic uid rather
-// than by array index so React keeps each textarea (and its DOM node) attached
-// to its text through a reorder. Index keys would swap the values under the
-// caret and break the reorder animation.
+// Rows are keyed by a synthetic uid, not array index: index keys would swap the
+// values under the caret on reorder and break the animation.
 export function SortablePromptItems({
   items,
   onChange,
@@ -154,14 +139,12 @@ export function SortablePromptItems({
   const prevRects = useRef(new Map<string, DOMRect>());
   const uidsRef = useRef(uids);
   uidsRef.current = uids;
-  // Bumped only by a reorder. Rows also move when a textarea auto-grows, and
-  // animating those would turn ordinary typing into a wobbling list, so the
-  // rects are always re-recorded but only a reorder actually animates.
+  // Rects are re-recorded on every commit but only a reorder animates, or an
+  // auto-growing textarea would make the rows below it wobble as you type.
   const reorderTick = useRef(0);
   const animatedTick = useRef(0);
 
-  // Resync when the item count changes from outside this component (revert,
-  // switching to another list, an import landing underneath us).
+  // Resync when the count changes from outside (revert, switching lists, import).
   useEffect(() => {
     setUids((prev) =>
       prev.length === items.length
@@ -170,9 +153,8 @@ export function SortablePromptItems({
     );
   }, [items.length]);
 
-  // FLIP: rows are measured after every commit, and any row that moved is
-  // snapped back to where it was and then released, so the browser animates
-  // one transform per row instead of us animating layout.
+  // FLIP: snap each moved row back to where it was, then release, so the browser
+  // animates one transform per row rather than animating layout.
   useLayoutEffect(() => {
     const next = new Map<string, DOMRect>();
     rowRefs.current.forEach((el, uid) => next.set(uid, el.getBoundingClientRect()));
@@ -197,8 +179,7 @@ export function SortablePromptItems({
     prevRects.current = next;
   }, [uids, items]);
 
-  // Read through refs so the drag listener below never has to resubscribe just
-  // because the text of an item changed.
+  // Refs so the drag listener does not resubscribe on every keystroke.
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const onChangeRef = useRef(onChange);
@@ -213,23 +194,15 @@ export function SortablePromptItems({
 
   const handlePointerDown = useCallback(
     (uid: string, e: React.PointerEvent<HTMLButtonElement>) => {
-      // Primary button only. A right- or middle-press would otherwise start a
-      // drag that the zero-buttons recovery cannot end (buttons reads 2 or 4),
-      // so opening a context menu over a grip could reorder the list. Touch and
-      // pen contacts report button 0, so they still drag; isPrimary keeps a
-      // second finger from starting a competing drag.
+      // Primary press only: a right/middle drag reports buttons 2 or 4, which
+      // the zero-buttons release check below cannot end.
       if (e.button !== 0 || !e.isPrimary) return;
-      // isPrimary is scoped per pointer type, so on a hybrid device a primary
-      // mouse or pen press passes the check above while a touch drag is already
-      // running. Without this the second device would take over the drag, and
-      // the finger that started it would have its events filtered out.
+      // isPrimary is per pointer type, so a mouse press can pass it mid-touch-drag.
       if (pointerIdRef.current !== null) return;
       pointerIdRef.current = e.pointerId;
-      // Deliberately no setPointerCapture here. Reordering makes React move the
-      // row's DOM node (insertBefore detaches and reattaches it), and detaching
-      // a node implicitly releases its pointer capture -- so a captured grip
-      // stops receiving pointermove after the very first swap and the drag dies
-      // one row in. The window listener in the effect below outlives the move.
+      // No setPointerCapture: reordering moves the row's DOM node, and detaching
+      // releases capture, killing the drag one row in. The window listener below
+      // outlives the move instead.
       e.preventDefault();
       pointerYRef.current = e.clientY;
       setDraggingUid(uid);
@@ -249,10 +222,8 @@ export function SortablePromptItems({
       const from = order.indexOf(draggingUid);
       if (from < 0) return;
 
-      // Hit-test against layout offsets rather than client rects: the FLIP
-      // animation leaves a translateY on every row it moved, and a client rect
-      // reports that transformed position, so mid-flight the rows would claim
-      // to still be where they were. offsetTop/offsetHeight ignore transforms.
+      // Layout offsets, not client rects: mid-FLIP a client rect still reports
+      // the pre-animation position. offsetTop/offsetHeight ignore transforms.
       const localY = pointerYRef.current - container.getBoundingClientRect().top;
       let to = order.length - 1;
       for (let i = 0; i < order.length; i++) {
@@ -266,10 +237,8 @@ export function SortablePromptItems({
       if (to !== from) applyOrder(from, to);
     };
 
-    // Holding near an edge scrolls the pane and re-runs the hit-test, so a list
-    // taller than the pane can be reordered end to end. pointerdown suppresses
-    // the browser's own drag gesture, so without this the reachable range is
-    // whatever happens to be on screen -- which matters most on touch.
+    // Holding near an edge scrolls and re-runs the hit-test; pointerdown
+    // suppresses the browser's own gesture, so nothing else would scroll.
     const tick = () => {
       if (scroller) {
         const rect = scroller.getBoundingClientRect();
@@ -290,19 +259,15 @@ export function SortablePromptItems({
       setDraggingUid(null);
     };
 
-    // These listeners are on the window, so every pointer on the device reaches
-    // them. Without this filter a second finger's movement would reorder using
-    // its own clientY, and its release would end the first finger's drag.
+    // Window listeners see every pointer; a second finger would otherwise
+    // reorder with its own clientY and its release would end this drag.
     const isDragPointer = (e: PointerEvent) =>
       pointerIdRef.current === null || e.pointerId === pointerIdRef.current;
 
     const onMove = (e: PointerEvent) => {
       if (!isDragPointer(e)) return;
-      // Releasing the button outside the window delivers neither pointerup nor
-      // pointercancel here, because the grip deliberately does not capture the
-      // pointer. The first move back over the page reports no buttons held, so
-      // treat that as the release we missed -- otherwise the drag stays live and
-      // keeps autoscrolling and reordering long after the user let go.
+      // Releasing outside the window delivers no pointerup, so treat the first
+      // move with no buttons held as the release we missed.
       if (e.buttons === 0) {
         endDrag();
         return;
@@ -319,8 +284,7 @@ export function SortablePromptItems({
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onPointerEnd);
     window.addEventListener("pointercancel", onPointerEnd);
-    // Covers the release happening entirely outside the page, where no further
-    // move arrives to trigger the buttons check above.
+    // Release entirely outside the page, where no move follows to catch it.
     window.addEventListener("blur", endDrag);
     return () => {
       cancelAnimationFrame(raf);
@@ -342,14 +306,13 @@ export function SortablePromptItems({
   );
 
   return (
-    // `relative` makes this the offsetParent, so the row offsetTop values the
-    // drag hit-test reads are measured against this container.
+    // `relative` makes this the offsetParent the hit-test measures against.
     <div
       ref={containerRef}
       className={cn(
         "relative flex flex-col gap-2",
-        // The drag now tracks the pointer across the whole window, so kill text
-        // selection for its duration or dragging paints a selection behind it.
+        // The drag tracks the pointer window-wide; without this it paints a
+        // text selection behind itself.
         draggingUid && "select-none",
       )}
     >

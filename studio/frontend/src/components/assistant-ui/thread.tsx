@@ -4762,17 +4762,13 @@ const ComposerToolsMenu: FC<{
 
   // Shared by the storage dialog's Run button and the bookmarked lists in the
   // "+" menu, so both entry points queue a list the same way.
-  // `fromDialog` tracks where the run was launched: queue setup is async, and on
-  // abort the storage dialog should only come back if that is where the user
-  // was. Reopening it for a run started from the "+" submenu would throw a
-  // modal over a chat the user never opened it from.
+  // `fromDialog`: queue setup is async, and on abort only a dialog-started run
+  // should reopen it. A menu-started one would throw a modal over the chat.
   const runPromptList = useCallback(
     (items: string[], fromDialog = false) => {
-      // The composer sits above the generated-image overlay, so this stays
-      // clickable while an image edit is pending. Submitting normally rewrites
-      // the prompt into an edit instruction and closes the overlay; startQueue
-      // appends the saved text as-is, so the first list prompt would either be
-      // applied to the selected image or swallow the pending reference.
+      // The composer sits above the image overlay, so this stays clickable mid
+      // edit. Submitting rewrites the prompt and closes the overlay; startQueue
+      // appends the text as-is, hitting the image or eating the reference.
       if (generatedImageOverlay) {
         toast.error("Close the image editor before running a list", {
           description: "Saved lists cannot be applied to a generated image.",
@@ -4789,10 +4785,8 @@ const ComposerToolsMenu: FC<{
         setPromptStorageOpen(false);
         return;
       }
-      // startQueue refuses synchronously when queueing is unavailable (the
-      // project new-chat composer sets disableQueue) and does not run the
-      // onAborted callback in that case, so without this the Run button and the
-      // bookmarked-list menu items would both just silently do nothing.
+      // startQueue refuses synchronously when queueing is unavailable and skips
+      // onAborted, so without this both entry points fail silently.
       toast.error("Couldn't queue that list here", {
         description: "Open a chat first, then run the list.",
       });

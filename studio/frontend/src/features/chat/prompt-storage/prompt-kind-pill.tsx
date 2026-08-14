@@ -3,9 +3,8 @@
 
 import type { ReactElement } from "react";
 
-// Bookmarked prompts and bookmarked lists share one submenu, and the two behave
-// very differently on select (fill the composer vs. queue and send N prompts).
-// The pill is what tells them apart before you click.
+// Both kinds share one submenu but behave very differently on select: a prompt
+// fills the composer, a list queues and sends N prompts.
 export function PromptKindPill({
   kind,
   count,

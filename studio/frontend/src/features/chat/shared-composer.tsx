@@ -1759,16 +1759,10 @@ export function SharedComposer({
     (items: string[]) => {
       const filtered = items.filter((p) => p.trim());
       if (!filtered.length) return;
-      // Ordinary sends gate on `busy` and `isDictating`, and this path did not:
-      // starting a list mid-generation overwrote the queue refs and fired
-      // sendRef 100ms later, on top of the run already in flight. The queue refs
-      // are equally clobberable by a second list started while the first is
-      // still stepping. Dictation is its own hazard -- the composer text is set
-      // here, then a transcription lands on top of it before the timeout fires,
-      // so the queue sends the dictated words instead of the saved prompt.
-      // `running` only refreshes on the 200ms poll, so right after a send `busy`
-      // is still false; ask the handles directly the way that poll does, or a
-      // list started inside that window queues over the live generation.
+      // Ordinary sends gate on `busy` and `isDictating`; this path must too, or
+      // it clobbers the queue refs and sends over a run already in flight.
+      // `busy` alone is not enough: `running` only refreshes on the 200ms poll,
+      // so ask the handles directly the way that poll does.
       const liveRunning =
         busy || Object.values(handlesRef.current).some((h) => h.isRunning());
       if (liveRunning || isQueueRunningRef.current) {
@@ -1779,10 +1773,8 @@ export function SharedComposer({
         toast.error("Finish dictating before running a list");
         return;
       }
-      // send() picks up whatever is staged, so the first prompt would go out
-      // with the image or audio attached and every later one without it,
-      // quietly changing what the list measures. Refusing beats clearing: the
-      // attachment is the user's, not ours to discard.
+      // send() picks up whatever is staged, so only the first prompt would carry
+      // the attachment. Refuse rather than clear: it is the user's, not ours.
       if (pendingImagesRef.current.length > 0 || pendingAudioRef.current) {
         toast.error("Remove the staged attachment before running a list", {
           description: "Only the first prompt in the list would carry it.",

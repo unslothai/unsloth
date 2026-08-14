@@ -6,11 +6,8 @@ export const AUTOSCROLL_EDGE = 48;
 export const AUTOSCROLL_MAX_STEP = 14;
 
 /**
- * Per-frame scroll step for a drag held near the edge of a scrolling pane.
- *
- * Negative scrolls up, positive scrolls down, zero leaves the pane alone. The
- * step ramps with how far into the edge band the pointer sits, so easing off
- * slows the scroll instead of stopping it dead.
+ * Per-frame scroll step for a drag held near a pane edge. Negative scrolls up,
+ * positive down, zero holds. Ramps with depth into the edge band.
  */
 export function autoscrollDelta(
   pointerY: number,

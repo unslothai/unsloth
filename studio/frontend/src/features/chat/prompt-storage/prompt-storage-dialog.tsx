@@ -1329,10 +1329,8 @@ function EmptyDetail({
   );
 }
 
-// Delete sits next to the draft controls in the master-detail layout, where it
-// was previously hidden while editing. Deleting a dirty entry destroys the
-// stored copy and the only copy of the unsaved draft at once, so that case asks
-// first and says what is being lost.
+// Deleting a dirty entry destroys the stored copy and the only copy of the
+// unsaved draft at once, so that case asks first.
 function UnsavedDeleteConfirm({
   open,
   onOpenChange,
@@ -1422,16 +1420,14 @@ function PromptDetail({
   const handleDelete = useCallback(async () => {
     await deletePromptEntry(entry.id);
     onDraftChange(undefined);
-    // The id goes up so the parent can clear the selection only if this row is
-    // still the selected one: the request is awaited, and a click on another
-    // row while it was in flight would otherwise be undone here.
+    // Id goes up so the parent only clears if this row is still selected: the
+    // delete is awaited, and a click elsewhere meanwhile would be undone.
     onDeleted(entry.id);
     onRefresh();
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
-  // Export what the pane is showing. With unsaved edits the saved entry and the
-  // draft differ, and exporting the former writes a file that silently does not
-  // match what is on screen. Normalised the same way saving would.
+  // Export what the pane shows, normalised as saving would, or a dirty entry
+  // writes a file that does not match the screen.
   const exportValue: PromptEntry = dirty
     ? { ...entry, name: name.trim() || "Untitled Prompt", text: text.trim() }
     : entry;
@@ -1534,9 +1530,8 @@ function PromptDetail({
   );
 }
 
-// The in-progress entry lives in the parent, like the edit drafts: selecting a
-// row in the rail hides this form, and local state would be thrown away without
-// warning the moment someone clicked away from a half-written prompt.
+// Draft lives in the parent, like the edit drafts: selecting a row hides this
+// form, and local state would be discarded with it.
 function NewPromptForm({
   draft,
   onDraftChange,
@@ -1566,9 +1561,8 @@ function NewPromptForm({
       createdAt: ts,
       updatedAt: ts,
     });
-    // Await the refresh before selecting: the keep-a-row-selected effect runs
-    // against whatever list is in state, and if the new id is not in it yet the
-    // effect bounces the selection to the first existing prompt instead.
+    // Await the refresh first, or the keep-a-row-selected effect runs against a
+    // list without the new id and bounces the selection off it.
     await onRefresh();
     onCreated(id);
     onClose();
@@ -1664,10 +1658,8 @@ function PromptListDetail({
     onRefresh();
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
-  // Run what the editor is showing. Queueing entry.items would fire the stored
-  // list while the pane displays something else, and in the worst case -- every
-  // draft item deleted -- the button stayed enabled off the stored length and
-  // silently ran the whole old list.
+  // Run what the editor shows. Off entry.items, deleting every draft item left
+  // the button enabled on the stored length and ran the old list.
   const runnableItems = items.filter((t) => t.trim());
 
   // See PromptDetail: export the visible draft, not the last saved copy.
@@ -1890,10 +1882,8 @@ export function PromptStorageDialog({
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
-  // Maps, not plain objects: ids come from storage and can be any string up to
-  // 128 chars, so an entry called "constructor" or "toString" would otherwise
-  // resolve to an inherited Object.prototype member, mark the row permanently
-  // dirty, and feed a function's own `name` into the editor as the entry name.
+  // Maps, not plain objects: ids are arbitrary strings, so one named
+  // "constructor" would resolve to an inherited prototype member.
   const [promptDrafts, setPromptDrafts] = useState<Map<string, PromptDraft>>(
     () => new Map(),
   );
@@ -1955,10 +1945,8 @@ export function PromptStorageDialog({
     setShowNewList(false);
   }, [activeTab]);
 
-  // Clear the search alongside the selection. Awaiting the refresh is not
-  // enough on its own: an active search that the new entry does not match keeps
-  // it out of the filtered rail, and the keep-a-row-selected effect below would
-  // bounce the selection straight off it to the first row that does match.
+  // Clear the search too: an active one the new entry does not match keeps it
+  // out of the filtered rail, and the effect below bounces the selection off it.
   const selectCreatedPrompt = useCallback((id: string) => {
     setSearchQuery("");
     setSelectedPromptId(id);
@@ -2220,20 +2208,11 @@ export function PromptStorageDialog({
           </div>
 
           {/* */}
-          {/* The floor subtracts the chrome above it rather than taking a flat
-              share of the viewport: the header and the tab/search block are
-              ~13rem and do not shrink, so a percentage floor still added up past
-              DialogContent's 94dvh on a phone in landscape and clipped the
-              detail actions behind its overflow-hidden. max(0px,...) keeps the
-              value legal when the viewport is shorter than the chrome. Below
-              `sm` the rail stacks above the detail pane instead of squeezing
-              it. Each pane keeps the minimum its own non-shrinking chrome needs
-              (rail: new button and count footer; detail: name field, metadata
-              and the action row) rather than being squeezed to nothing, and the
-              body scrolls when those minimums do not fit. Shrinking the tracks
-              alone was not enough -- the tracks got smaller but their contents
-              did not, so the chrome spilled into DialogContent's clipping
-              region instead. */}
+          {/* The floor subtracts the ~13rem of non-shrinking chrome above it, so
+              it cannot add up past DialogContent's 94dvh and clip the detail
+              actions. Each pane keeps the minimum its own chrome needs and the
+              body scrolls when those do not fit; shrinking the tracks alone did
+              not help, since their contents did not shrink with them. */}
           <div className="flex-1 min-h-[max(0px,min(420px,calc(94dvh_-_13rem)))] overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
             <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
