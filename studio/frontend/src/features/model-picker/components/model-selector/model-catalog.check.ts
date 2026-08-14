@@ -20,7 +20,9 @@ import {
   catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
+  curatedArtifactFitsDevice,
   curatedDisplayNameFor,
+  curatedRowLabelFor,
   groupForRepoId,
   groupMatchesQuery,
   loadSpecFor,
@@ -239,6 +241,155 @@ assert.deepEqual(
 assert.equal(
   curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG),
   "MiniMax H3 (GGUF)",
+);
+
+// ── curatedRowLabelFor ─────────────────────────────────────────────────────────
+// The row form: format (and a resolution when that is the only difference) become chips, and only
+// what actually names the variant stays in brackets.
+
+assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG), {
+  name: "MiniMax H3",
+  tags: ["BF16"],
+});
+// GGUF is spelled by the repo name, like a text model's row, so no chip repeats it.
+assert.deepEqual(curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG), {
+  name: "MiniMax-H3-GGUF",
+  tags: [],
+});
+assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG), {
+  name: "Z-Image-Turbo-GGUF",
+  tags: [],
+});
+// Every GGUF row ends in the suffix, whoever published it.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
+  for (const group of catalog) {
+    for (const artifact of group.artifacts) {
+      if (artifact.format !== "gguf") continue;
+      const row = curatedRowLabelFor(artifact.repoId, catalog);
+      assert.ok(row?.name.endsWith("-GGUF"), `${artifact.repoId} row reads "${row?.name}"`);
+      assert.deepEqual(row?.tags, []);
+    }
+  }
+}
+// A label part that is not a format or a resolution names the variant, so it stays in the name.
+assert.deepEqual(
+  curatedRowLabelFor("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG),
+  { name: "HiDream I1 (Dev (distilled))", tags: ["BF16"] },
+);
+assert.deepEqual(
+  curatedRowLabelFor(
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+    VIDEO_CATALOG,
+  ),
+  { name: "HunyuanVideo 1.5", tags: ["BF16", "720p"] },
+);
+assert.deepEqual(
+  curatedRowLabelFor(
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+    VIDEO_CATALOG,
+  ),
+  { name: "HunyuanVideo 1.5", tags: ["BF16", "480p"] },
+);
+// One artifact means nothing to tell apart, so the row stays bare.
+assert.deepEqual(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG), {
+  name: "LTX 2 (base)",
+  tags: [],
+});
+assert.equal(curatedRowLabelFor("someone/not-in-the-catalog", VIDEO_CATALOG), null);
+
+// No two rows of a group may render identically, or the picker offers the same thing twice.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
+  for (const group of catalog) {
+    const seen = new Set<string>();
+    for (const artifact of group.artifacts) {
+      const row = curatedRowLabelFor(artifact.repoId, catalog);
+      assert.ok(row, `${artifact.repoId} is in the catalog it came from`);
+      const key = `${row.name} | ${row.tags.join(",")}`;
+      assert.equal(seen.has(key), false, `${group.displayName}: two rows both read "${key}"`);
+      seen.add(key);
+    }
+  }
+}
+
+// A non-GGUF artifact that states a parameter count must state its size too. The picker's VRAM
+// badge falls back to the QLoRA estimator when it cannot size a row, and that formula reads a
+// diffusion pipeline as a language model it can quantize: 5B params says 5.9 GB where the Wan 2.2
+// TI2V pipeline is 30. The curated size is what keeps that fallback off these rows.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
+  for (const group of catalog) {
+    for (const artifact of group.artifacts) {
+      if (!artifact.totalParams || artifact.format === "gguf") continue;
+      assert.ok(
+        artifact.approxSizeGb && artifact.approxSizeGb > 0,
+        `${artifact.repoId} declares totalParams but no approxSizeGb`,
+      );
+    }
+  }
+}
+
+// ── curatedArtifactFitsDevice ──────────────────────────────────────────────────
+
+const WAN = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"; // 30 GB, no offload tiers
+const H3 = "MiniMaxAI/MiniMax-H3"; // 145 GB, tiers at 74/140 and 123/80
+const fitsCurated = (id: string, gpuGb: number, systemRamGb: number) =>
+  curatedArtifactFitsDevice(id, VIDEO_CATALOG, { gpuGb, systemRamGb });
+
+// The resident 70% rule, on the card alone. RAM is not a discrete GPU's budget: a pipeline with
+// no measured tier is placed wholly on the card, so 64 GB of RAM does not rescue a 12 GB one.
+assert.equal(fitsCurated(WAN, 48, 0), true);
+assert.equal(fitsCurated(WAN, 40, 0), false);
+assert.equal(fitsCurated(WAN, 12, 64), false);
+// A unified-memory host reports RAM and no GPU, and there the RAM is the card.
+assert.equal(fitsCurated(WAN, 0, 64), true);
+// Nothing to judge against: no verdict rather than a scary one.
+assert.equal(fitsCurated(WAN, 0, 0), undefined);
+// Measured offload tiers override the 70% rule, in both directions. 123/80 is the case the
+// generic size test gets wrong: 0.7 * (123 + 80) is 142, under 145, yet the tier was measured.
+assert.equal(fitsCurated(H3, 74, 140), true);
+assert.equal(fitsCurated(H3, 123, 80), true);
+assert.equal(fitsCurated(H3, 74, 100), false);
+// A GGUF ladder self-fits via pickDefaultQuant, and an unknown id is not ours to judge.
+assert.equal(fitsCurated("unsloth/MiniMax-H3-GGUF", 12, 64), undefined);
+assert.equal(fitsCurated("someone/not-in-the-catalog", 12, 64), undefined);
+// Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget for
+// an stt row: Whisper Large runs on a card too small to hold it. A tts load rejects CPU offload
+// (inference.py raise_if_offloaded), so Orpheus is judged on the card alone.
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 4,
+    systemRamGb: 32,
+  }),
+  true,
+);
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 4,
+    systemRamGb: 0,
+  }),
+  false,
+);
+// The whole model goes to whichever device takes it, so the budget is the LARGER of the two and
+// never their sum: 3 GB of card and 3 GB of RAM hold a 4 GB checkpoint on neither.
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 3,
+    systemRamGb: 3,
+  }),
+  false,
+);
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 0,
+    systemRamGb: 8,
+  }),
+  true,
+);
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/orpheus-3b-0.1-ft", AUDIO_CATALOG, {
+    gpuGb: 4,
+    systemRamGb: 32,
+  }),
+  false,
 );
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────

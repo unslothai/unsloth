@@ -17,7 +17,6 @@ export const es = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origen del modelo",
     hubSectionAriaLabel: "Sección del Hub",
-    pickModelFile: "Elegir un archivo de modelo del disco",
     modelDropped: "Ya no se ofrece",
     modelDroppedByProvider: "{provider} · ya no se ofrece",
     modelDisabled: "No activado",
@@ -379,6 +378,14 @@ export const es = {
           "Libera la VRAM después de este número de segundos de inactividad. El valor 0 mantiene el modelo cargado; el mínimo es 60.",
         idleSecondsAriaLabel:
           "Segundos de inactividad antes de liberar el modelo",
+        mediaIdleUnload:
+          "Liberar imagen y vídeo automáticamente por inactividad",
+        mediaIdleUnloadDescription:
+          "Libera la VRAM descargando los modelos de imagen y vídeo después de este número de segundos de inactividad. Es una configuración independiente: la de arriba solo afecta al modelo de chat. El valor 0 los mantiene cargados; el mínimo es 60.",
+        mediaIdleSecondsAriaLabel:
+          "Segundos de inactividad antes de liberar los modelos de imagen y vídeo",
+        mediaIdlePaused:
+          "En pausa mientras «Mantener el modelo en la memoria de la GPU» o «Liberar solo los modelos cargados por la API» esté activado.",
         idleNeedsEnable: "Activa primero «Cambiar de modelo según la solicitud».",
         idleActiveViaEnv:
           "La descarga automática por inactividad está activa mediante la variable de entorno UNSLOTH_MODEL_IDLE_TTL.",

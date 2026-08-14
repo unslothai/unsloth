@@ -783,6 +783,7 @@ def apply_memory_plan(
     plan: MemoryPlan,
     *,
     device: str,
+    placement_device: Optional[str] = None,
     logger: Any = None,
 ) -> tuple[str, bool]:
     """Apply ``plan`` to a built diffusers pipeline: enable the VAE savers then place / offload
@@ -790,7 +791,15 @@ def apply_memory_plan(
 
     Returns the ``(offload_policy, vae_tiling)`` ACTUALLY engaged, which can differ from the plan:
     tiling is a no-op where there's no tiling control, and group / sequential offload fall back to
-    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39)."""
+    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39).
+
+    ``placement_device`` is the INDEXED string when a card was selected ("cuda:1"), and is what
+    every diffusers handoff below receives. A bare "cuda" is not equivalent to the CPU-offload
+    APIs: ``enable_model_cpu_offload`` reads the index off the device and, finding none, falls
+    back to ``_offload_gpu_id = 0`` and onloads to cuda:0 (pipeline_utils.py, diffusers 0.39), so
+    the modules would page onto the very card the selection existed to avoid while generation ran
+    on another. ``device`` stays bare for anything reading it as a policy string."""
+    placement = placement_device or device
     tiling_engaged = False
     if plan.vae_tiling:
         tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
@@ -800,28 +809,28 @@ def apply_memory_plan(
     def _fallback_to_model_offload() -> None:
         # The GROUP plan set vae_tiling=False (the VAE stays resident). Dropping to whole-module offload is the low-VRAM case where the decode spike can OOM, so turn tiling on now.
         nonlocal tiling_engaged
-        pipe.enable_model_cpu_offload(device = device)
+        pipe.enable_model_cpu_offload(device = placement)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
-        pipe.enable_model_cpu_offload(device = device)
+        pipe.enable_model_cpu_offload(device = placement)
     elif policy == OFFLOAD_GROUP:
         # getattr, not attribute access: manually built / duck-typed plans predate this field.
         if not _apply_group_offload(
             pipe,
-            device,
+            placement,
             logger,
             stream_text_encoders = bool(getattr(plan, "stream_text_encoders", False)),
         ):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
-        _apply_streaming_offload(pipe, device, logger)
+        _apply_streaming_offload(pipe, placement, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
-            pipe.enable_sequential_cpu_offload(device = device)
+            pipe.enable_sequential_cpu_offload(device = placement)
         except Exception as exc:  # noqa: BLE001 — keep the model loadable
             if logger is not None:
                 logger.warning(
@@ -832,7 +841,7 @@ def apply_memory_plan(
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
-        pipe.to(device)
+        pipe.to(placement)
     return policy, tiling_engaged
 
 
