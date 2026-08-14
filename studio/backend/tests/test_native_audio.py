@@ -303,6 +303,7 @@ def test_native_audio_context_uses_text_config_and_requested_cap():
         )
     }
     assert NativeAudioBackend._context_length(moss_entry, 0, "moss_tts_local") == 32768
+    assert NativeAudioBackend._context_length(moss_entry, 10240, "moss_tts_local") == 32768
 
 
 def test_higgs_tts2_follows_chat_template_and_decode_contract():

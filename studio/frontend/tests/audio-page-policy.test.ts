@@ -13,6 +13,8 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
+  MOSS_TTS_DEFAULT_SECONDS,
+  MOSS_TTS_MAX_FRAMES,
   MOSS_TTS_MAX_SECONDS,
   mossTtsMaxFrames,
   mossTtsFramesForSeconds,
@@ -84,7 +86,7 @@ test("cached GGUF quant labels remain exact when no filename is present", () => 
   );
 });
 
-test("TTS load context matches the advertised generation ceiling", () => {
+test("TTS load context reserves the advertised standard ceiling", () => {
   assert.match(audioPageSource, /const TTS_MAX_TOKENS = 8192/);
   assert.match(audioPageSource, /max_seq_length: TTS_MAX_TOKENS/);
   assert.match(
@@ -93,16 +95,21 @@ test("TTS load context matches the advertised generation ceiling", () => {
   );
 });
 
-test("MOSS generation stays below fifteen seconds", () => {
-  assert.equal(MOSS_TTS_MAX_SECONDS, 15);
+test("MOSS generation exposes the full model context with a safe default", () => {
+  assert.equal(MOSS_TTS_DEFAULT_SECONDS, 15);
+  assert.equal(MOSS_TTS_MAX_FRAMES, 32768);
+  assert.equal(MOSS_TTS_MAX_SECONDS, 2621.44);
   assert.equal(mossTtsFramesForSeconds(15), 187);
-  assert.equal(mossTtsMaxFrames("moss_tts_local"), 187);
-  assert.equal(mossTtsMaxFrames("moss_tts_nano"), 187);
+  assert.equal(mossTtsFramesForSeconds(MOSS_TTS_MAX_SECONDS), 32768);
+  assert.equal(mossTtsFramesForSeconds(10000), 32768);
+  assert.equal(mossTtsMaxFrames("moss_tts_local"), 32768);
+  assert.equal(mossTtsMaxFrames("moss_tts_local", 16384), 16384);
+  assert.equal(mossTtsMaxFrames("moss_tts_nano"), 32768);
   assert.equal(mossTtsMaxFrames("higgs_tts3"), null);
   assert.match(audioPageSource, /label="Max duration \(seconds\)"/);
   assert.match(
     audioPageSource,
-    /mossTtsFramesForSeconds\(mossMaxSeconds\)/,
+    /mossTtsFramesForSeconds\(mossMaxSeconds, mossFrameLimit\)/,
   );
 });
 

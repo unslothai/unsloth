@@ -57,6 +57,7 @@ from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
     GenStreamErrorRaised,
+    MOSS_TTS_MAX_FRAMES,
 )
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -391,7 +392,6 @@ _MIN_SPEECH_OUTPUT_TOKENS = 64
 _TTS_PROMPT_FORMAT_RESERVE = 32
 _MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
 _MINIMAX_MUSIC3_RESIDENT_GB = 24.0
-_MOSS_TTS_MAX_FRAMES = 187  # 12.5 codec frames/s -> 14.96 s, never beyond 15 s
 
 
 def _tts_max_new_tokens(
@@ -407,21 +407,24 @@ def _tts_max_new_tokens(
     ceiling plus a long prompt overflowed the context the page loaded with. Capped here so
     both the Studio and OpenAI routes inherit it.
     """
+    moss_generation = audio_type in ("moss_tts_local", "moss_tts_nano")
+    context_length = _monitor_context_length() if moss_generation or prompt else None
+    token_ceiling = (
+        context_length or MOSS_TTS_MAX_FRAMES
+        if moss_generation
+        else AUDIO_GENERATION_MAX_TOKENS
+    )
     budget = min(
-        AUDIO_GENERATION_MAX_TOKENS,
+        token_ceiling,
         max(1, int(_effective_max_tokens(payload) or 2048)),
     )
     if speech_api_default_max_tokens and audio_type == "minimax_music3":
         budget = min(budget, _MINIMAX_MUSIC3_DEFAULT_FRAMES)
-    if audio_type in ("moss_tts_local", "moss_tts_nano"):
-        budget = min(budget, _MOSS_TTS_MAX_FRAMES)
-    if prompt:
-        context_length = _monitor_context_length()
-        if context_length:
-            budget = min(
-                budget,
-                context_length - _prompt_token_estimate(prompt) - _TTS_PROMPT_FORMAT_RESERVE,
-            )
+    if prompt and context_length:
+        budget = min(
+            budget,
+            context_length - _prompt_token_estimate(prompt) - _TTS_PROMPT_FORMAT_RESERVE,
+        )
     # A caller that reached generation with no budget left gets one token and a useless
     # clip; the routes reject that case up front instead.
     return max(1, budget)

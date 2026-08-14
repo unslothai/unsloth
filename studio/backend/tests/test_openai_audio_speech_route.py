@@ -214,21 +214,34 @@ def test_minimax_speech_api_default_is_thirty_seconds(monkeypatch):
     )
 
 
-def test_moss_generation_is_capped_below_fifteen_seconds(monkeypatch):
+def test_moss_generation_uses_the_model_context_ceiling(monkeypatch):
+    from core.inference.orchestrator import MOSS_TTS_MAX_FRAMES
     from models.inference import ChatCompletionRequest
 
     monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: None)
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": "A short sentence."}],
-        max_tokens = 2048,
+        max_tokens = 10**310,
     )
 
     for audio_type in ("moss_tts_local", "moss_tts_nano"):
         assert (
             routes_module._tts_max_new_tokens(payload, audio_type = audio_type)
-            == routes_module._MOSS_TTS_MAX_FRAMES
-            == 187
+            == MOSS_TTS_MAX_FRAMES
+            == 32768
         )
+
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: MOSS_TTS_MAX_FRAMES)
+    prompt = "A short sentence."
+    assert routes_module._tts_max_new_tokens(
+        payload,
+        prompt,
+        audio_type = "moss_tts_local",
+    ) == (
+        MOSS_TTS_MAX_FRAMES
+        - routes_module._prompt_token_estimate(prompt)
+        - routes_module._TTS_PROMPT_FORMAT_RESERVE
+    )
 
 
 def test_the_budget_leaves_room_for_the_prompt(monkeypatch):

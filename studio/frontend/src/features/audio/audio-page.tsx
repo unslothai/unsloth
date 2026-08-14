@@ -102,7 +102,9 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
-  MOSS_TTS_MAX_SECONDS,
+  MOSS_TTS_DEFAULT_SECONDS,
+  MOSS_TTS_FRAMES_PER_SECOND,
+  MOSS_TTS_MAX_FRAMES,
   mossTtsMaxFrames,
   mossTtsFramesForSeconds,
   persistedClipForGeneration,
@@ -298,7 +300,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     setTemperature(value);
   }, []);
   const [maxTokens, setMaxTokens] = useState(2048);
-  const [mossMaxSeconds, setMossMaxSeconds] = useState(MOSS_TTS_MAX_SECONDS);
+  const [mossMaxSeconds, setMossMaxSeconds] = useState(MOSS_TTS_DEFAULT_SECONDS);
   const generateAbort = useRef<AbortController | null>(null);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
@@ -427,11 +429,21 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     galleryCache.srcById.toRecord(),
   );
   const clipSrcLoads = useRef<Map<string, Promise<void>>>(new Map());
-  const mossFrameLimit = mossTtsMaxFrames(status?.audio_type);
+  const mossFrameLimit = mossTtsMaxFrames(
+    status?.audio_type,
+    status?.context_length,
+  );
+  const mossMaxSecondsLimit =
+    (mossFrameLimit ?? MOSS_TTS_MAX_FRAMES) / MOSS_TTS_FRAMES_PER_SECOND;
 
   useEffect(() => {
     setTemperature(mossFrameLimit !== null ? 1.7 : 0.6);
     setTemperatureEdited(false);
+    if (mossFrameLimit !== null) {
+      setMossMaxSeconds((current) =>
+        Math.min(current, mossFrameLimit / MOSS_TTS_FRAMES_PER_SECOND),
+      );
+    }
   }, [mossFrameLimit]);
 
   const {
@@ -1581,7 +1593,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
         max_tokens:
           mossFrameLimit !== null
-            ? mossTtsFramesForSeconds(mossMaxSeconds)
+            ? mossTtsFramesForSeconds(mossMaxSeconds, mossFrameLimit)
             : maxTokens,
         ...((musicGeneration || mossLocalGeneration) && instructions
           ? { audio_instructions: instructions }
@@ -2245,9 +2257,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                       label="Max duration (seconds)"
                       value={mossMaxSeconds}
                       min={1}
-                      max={MOSS_TTS_MAX_SECONDS}
-                      step={1}
+                      max={mossMaxSecondsLimit}
+                      step={1 / MOSS_TTS_FRAMES_PER_SECOND}
                       onChange={setMossMaxSeconds}
+                      valueSize={8}
+                      info={`Starts at ${MOSS_TTS_DEFAULT_SECONDS} seconds. This model reports ${mossFrameLimit?.toLocaleString()} frames (${mossMaxSecondsLimit.toLocaleString(undefined, { maximumFractionDigits: 2 })} seconds); the prompt uses part of that context.`}
                     />
                   ) : (
                     <ParamSlider

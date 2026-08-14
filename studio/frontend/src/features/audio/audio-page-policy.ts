@@ -34,19 +34,32 @@ const NATIVE_TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
 ]);
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
-export const MOSS_TTS_MAX_SECONDS = 15;
-export const MOSS_TTS_MAX_FRAMES = Math.floor(
-  MOSS_TTS_FRAMES_PER_SECOND * MOSS_TTS_MAX_SECONDS,
-);
+export const MOSS_TTS_DEFAULT_SECONDS = 15;
+export const MOSS_TTS_MAX_FRAMES = 32768;
+export const MOSS_TTS_MAX_SECONDS =
+  MOSS_TTS_MAX_FRAMES / MOSS_TTS_FRAMES_PER_SECOND;
 
-export function mossTtsFramesForSeconds(seconds: number): number {
-  return Math.max(1, Math.floor(seconds * MOSS_TTS_FRAMES_PER_SECOND));
+export function mossTtsFramesForSeconds(
+  seconds: number,
+  maxFrames = MOSS_TTS_MAX_FRAMES,
+): number {
+  return Math.min(
+    Math.max(1, Math.floor(maxFrames)),
+    Math.max(1, Math.floor(seconds * MOSS_TTS_FRAMES_PER_SECOND)),
+  );
 }
 
-export function mossTtsMaxFrames(audioType?: string | null): number | null {
-  return audioType === "moss_tts_local" || audioType === "moss_tts_nano"
-    ? MOSS_TTS_MAX_FRAMES
-    : null;
+export function mossTtsMaxFrames(
+  audioType?: string | null,
+  contextLength?: number | null,
+): number | null {
+  if (audioType !== "moss_tts_local" && audioType !== "moss_tts_nano") {
+    return null;
+  }
+  const detected = Math.floor(Number(contextLength));
+  return Number.isFinite(detected) && detected > 0
+    ? detected
+    : MOSS_TTS_MAX_FRAMES;
 }
 
 export function isTtsAudioType(

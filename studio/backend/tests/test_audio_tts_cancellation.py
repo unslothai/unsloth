@@ -399,6 +399,13 @@ def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
     assert orchestrator_module._audio_generation_timeout(2048) == 10.0
     assert orchestrator_module._audio_generation_timeout(8192) == 40.0
     assert orchestrator_module._audio_generation_timeout(10**310) == 40.0
+    assert (
+        orchestrator_module._audio_generation_timeout(
+            10**310,
+            max_tokens = orchestrator_module.MOSS_TTS_MAX_FRAMES,
+        )
+        == 160.0
+    )
 
 
 def test_tts_route_bounds_public_token_budget():
@@ -410,7 +417,7 @@ def test_tts_route_bounds_public_token_budget():
     assert inference_route._tts_max_new_tokens(payload) == 8192
 
 
-def test_audio_worker_command_uses_the_bounded_token_budget_and_forwards_language(monkeypatch):
+def test_audio_worker_command_uses_model_token_ceiling_and_forwards_language(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     sent = []
@@ -443,7 +450,21 @@ def test_audio_worker_command_uses_the_bounded_token_budget_and_forwards_languag
         24000,
     )
     assert sent[0]["max_new_tokens"] == 8192
-    assert sent[0]["language"] == "French"
+
+    orchestrator.models["model"].update(
+        audio_type = "moss_tts_local",
+        context_length = 16384,
+    )
+    assert orchestrator.generate_audio_response(
+        "hello",
+        max_new_tokens = 10**310,
+        language = "French",
+    ) == (
+        b"RIFFfake",
+        24000,
+    )
+    assert sent[1]["max_new_tokens"] == 16384
+    assert sent[1]["language"] == "French"
 
 
 def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch):

@@ -527,6 +527,8 @@ class NativeAudioBackend:
             if detected:
                 break
         requested = max(0, int(requested or 0))
+        if detected and audio_type in ("moss_tts_local", "moss_tts_nano"):
+            return detected
         if detected and requested:
             return min(detected, requested)
         return detected or requested

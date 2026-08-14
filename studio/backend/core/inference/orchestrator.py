@@ -69,6 +69,7 @@ _DISPATCH_DRAIN_TIMEOUT = 5.0
 _AUDIO_GENERATION_TIMEOUT = 900.0
 _AUDIO_GENERATION_BASE_TOKENS = 2048
 AUDIO_GENERATION_MAX_TOKENS = 8192
+MOSS_TTS_MAX_FRAMES = 32768
 _AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
 # Before audio_started there is nobody to receive the cancel, and a prefill pass (a 3B TTS
 # model on CPU, or OuteTTS's per-token Python repetition penalty) routinely outlasts the
@@ -80,7 +81,11 @@ _AUDIO_CANCEL_TEARDOWN_TIMEOUT = 30.0
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
-def _audio_generation_timeout(max_new_tokens: int, base: Optional[float] = None) -> float:
+def _audio_generation_timeout(
+    max_new_tokens: int,
+    base: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> float:
     """Scale a floor by the requested token count.
 
     ``base`` differs per backend by an order of magnitude: the Transformers subprocess
@@ -93,7 +98,9 @@ def _audio_generation_timeout(max_new_tokens: int, base: Optional[float] = None)
     """
     if base is None:
         base = _AUDIO_GENERATION_TIMEOUT
-    max_new_tokens = min(AUDIO_GENERATION_MAX_TOKENS, max(1, int(max_new_tokens)))
+    if max_tokens is None:
+        max_tokens = AUDIO_GENERATION_MAX_TOKENS
+    max_new_tokens = min(max(1, int(max_tokens)), max(1, int(max_new_tokens)))
     token_scale = max(1.0, max_new_tokens / _AUDIO_GENERATION_BASE_TOKENS)
     return base * token_scale
 
@@ -2138,11 +2145,23 @@ class InferenceOrchestrator:
 
                 # Bound public API integers before either enqueuing work or
                 # calculating the floating-point watchdog deadline.
+                model_info = self.models.get(expected_model, {})
+                audio_type = model_info.get("audio_type")
+                max_token_ceiling = AUDIO_GENERATION_MAX_TOKENS
+                if audio_type in ("moss_tts_local", "moss_tts_nano"):
+                    try:
+                        detected_context = int(model_info.get("context_length") or 0)
+                    except (TypeError, ValueError):
+                        detected_context = 0
+                    max_token_ceiling = detected_context or MOSS_TTS_MAX_FRAMES
                 max_new_tokens = min(
-                    AUDIO_GENERATION_MAX_TOKENS,
+                    max_token_ceiling,
                     max(1, int(max_new_tokens)),
                 )
-                generation_timeout = _audio_generation_timeout(max_new_tokens)
+                generation_timeout = _audio_generation_timeout(
+                    max_new_tokens,
+                    max_tokens = max_token_ceiling,
+                )
                 request_id = str(uuid.uuid4())
 
                 cmd = {
