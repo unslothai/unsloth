@@ -1085,7 +1085,12 @@ class VideoBackend:
     def _generation_slot(self, cancel_event: Optional[threading.Event] = None):
         """Hold the generation lock, yielding to queued teardown or cancellation."""
         while True:
-            self._generate_lock.acquire()
+            # A replacement holds this lock while its final memory placement and state
+            # commit run. Polling lets a queued background job observe cancellation instead
+            # of remaining active until that potentially lengthy placement finishes.
+            while not self._generate_lock.acquire(timeout = 0.1):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
             with self._lock:
                 cancelled = cancel_event is not None and cancel_event.is_set()
                 if not cancelled and not self._teardown_waiters:

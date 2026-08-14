@@ -4667,6 +4667,30 @@ class _HookedLock:
         self.release()
 
 
+class _ObservedLock:
+    """Lock wrapper that reports an acquisition attempt made outside its owner thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._owner = threading.current_thread()
+        self.waiting = threading.Event()
+
+    def acquire(self, *args, **kwargs):
+        if threading.current_thread() is not self._owner:
+            self.waiting.set()
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+
 def _run_teardown_race(backend, teardown):
     """Park a generation behind ``teardown``'s _generate_lock barrier, admit it the
     instant that barrier releases the lock, and report what it did."""
@@ -4925,6 +4949,35 @@ def test_cancel_wakes_a_background_generation_waiting_for_teardown(fake_runtime,
         with backend._lock:
             if backend._teardown_waiters:
                 backend._release_teardown_locked()
+
+
+def test_cancel_interrupts_background_generation_waiting_for_generation_lock(
+    fake_runtime, tmp_path
+):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    # Stand in for a replacement's final placement, which holds _generate_lock after
+    # teardown has drained. The queued worker must reach a terminal state while this
+    # lock remains held rather than waiting for placement to finish.
+    generate_lock = _ObservedLock()
+    backend._generate_lock = generate_lock
+    generate_lock.acquire()
+    try:
+        backend.begin_generate(prompt = "cancel during placement", steps = 2)
+        assert generate_lock.waiting.wait(5), (
+            "background generation did not wait for placement"
+        )
+        assert backend.cancel_generate() is True
+
+        deadline = time.monotonic() + 5
+        while backend.generate_progress()["active"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        progress = backend.generate_progress()
+        assert progress["phase"] == "failed", progress
+        assert progress["error"] == VIDEO_CANCELLED_MSG
+    finally:
+        generate_lock.release()
 
 
 def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):
