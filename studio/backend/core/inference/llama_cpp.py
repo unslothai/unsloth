@@ -5042,10 +5042,12 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--draft-max"
 
             supports_kv_unified = _is_real("--kv-unified")
-            # Only once the help actually parsed. An empty `blocks` means the
-            # probe told us nothing, and "nothing" must not read as "absent"
-            # for a flag we would otherwise always send.
-            if blocks:
+            # Only once the help actually parsed AND `--help` succeeded. Empty
+            # `blocks` means the probe told us nothing, and a nonzero exit means
+            # the listing may be a fragment; neither may read as "absent" for a
+            # flag we would otherwise always send. A real llama-server prints
+            # usage and exits 0, so this costs no supported build anything.
+            if probe_ok and blocks:
                 supports_no_context_shift = _is_real("--no-context-shift")
                 supports_jinja = _is_real("--jinja")
                 flash_attn_takes_value = cls._flash_attn_takes_value(help_text)
@@ -11177,8 +11179,9 @@ class LlamaCppBackend:
         (last-wins) value is already off/absent so there is nothing to retry. FA
         kernels hard-crash at startup on some ROCm builds; disabling FA keeps
         vision and MTP, the least destructive rung. A bare --flash-attn/-fa reads
-        as on, so it counts toward the effective value and is neutralised too;
-        every form is flipped in place (length preserved for downstream slices)."""
+        as on, so it counts toward the effective value and is neutralised too --
+        by dropping it, since only the older boolean builds accept the bare form
+        and they take no value. Valued forms are flipped in place."""
         out = list(cmd)
 
         def explicit(i):
@@ -11194,6 +11197,13 @@ class LlamaCppBackend:
                 effective = explicit(i) or "on"
         if effective not in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
             return None
+        # A bare flag cannot be turned off in place: llama.cpp looks each argv
+        # token up verbatim (only '_' -> '-'), so --flash-attn=off is "invalid
+        # argument" everywhere, and the boolean builds that are the only ones
+        # accepting the bare form take no value at all. Dropping the token is
+        # what disables FA there. Collected first, removed back to front, so the
+        # indices stay valid.
+        bare_at: list[int] = []
         for i, tok in enumerate(out):
             name = _flag_name(tok)
             if name in ("--flash-attn", "-fa") and "=" in tok:
@@ -11203,8 +11213,10 @@ class LlamaCppBackend:
             elif name in ("--flash-attn", "-fa"):
                 if explicit(i) in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
                     out[i + 1] = "off"
-                elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
-                    out[i] = f"{tok}=off"
+                elif explicit(i) is None:  # bare flag (reads as on) -> drop it
+                    bare_at.append(i)
+        for i in reversed(bare_at):
+            del out[i]
 
         # A quantized V cache requires flash attention in llama.cpp: the init
         # aborts with "V cache quantization requires flash_attn". A quantized K
@@ -11274,6 +11286,19 @@ class LlamaCppBackend:
                 env.pop(var, None)
                 dropped = True
         return dropped
+
+    @staticmethod
+    def _drop_env_flash_attn(env: MutableMapping[str, str]) -> bool:
+        """Drop an inherited LLAMA_ARG_FLASH_ATTN in place before a flash-attn-off
+        retry, returning True if anything was removed.
+
+        On the older builds whose --flash-attn takes no value the argv rewrite can
+        only drop the flag, never negate it, and llama.cpp reads the env var before
+        parsing argv, so LLAMA_ARG_FLASH_ATTN=1 would turn the kernel that just
+        crashed straight back on. Newer builds get an explicit --flash-attn off,
+        which already beats the env, so dropping it changes nothing there.
+        """
+        return env.pop("LLAMA_ARG_FLASH_ATTN", None) is not None
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -12015,6 +12040,10 @@ class LlamaCppBackend:
             # clamp before an HF download, command build after), and with a 30s window a
             # later success would otherwise erase an earlier one that already degraded it.
             _launch_probe_inconclusive = False
+            # Set by the crash-recovery retries below. On a build whose flag takes
+            # no value the retry disables FA by dropping it, so the launched argv
+            # no longer says anything either way and the default has to.
+            _flash_attn_forced_off = False
 
             def _launch_caps(bin_path):
                 nonlocal _launch_probe_inconclusive
@@ -15725,6 +15754,15 @@ class LlamaCppBackend:
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
                             )
+                        # Same reach problem for the flag itself: where the rewrite
+                        # could only drop a bare --flash-attn, the env var alone
+                        # still enables it.
+                        if self._drop_env_flash_attn(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
+                                "--flash-attn off retry."
+                            )
+                        _flash_attn_forced_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
@@ -15780,6 +15818,15 @@ class LlamaCppBackend:
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
                             )
+                        # Same reach problem for the flag itself: where the rewrite
+                        # could only drop a bare --flash-attn, the env var alone
+                        # still enables it.
+                        if self._drop_env_flash_attn(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
+                                "--flash-attn off retry."
+                            )
+                        _flash_attn_forced_off = True
                         cmd = _fa_cmd
                         healthy = (
                             _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
@@ -16026,7 +16073,9 @@ class LlamaCppBackend:
                     int(self._DEFAULT_N_UBATCH if _launched_ubatch is None else _launched_ubatch),
                 )
                 self._flash_attn_enabled = (
-                    _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)
+                    _flash_attn_enabled_from_args(
+                        _last_spawn_cmd, default = not _flash_attn_forced_off, env = env
+                    )
                     and self._architecture != "grok"
                 )
                 self._effective_cache_types = _effective_main_cache_types(
