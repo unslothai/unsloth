@@ -285,10 +285,10 @@ class LlamaServerBackend:
     @staticmethod
     def _gpu_available() -> bool:
         """Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM. Reuses
-        llama_cpp's static probe (nvidia-smi first, so the common path needs no
-        torch). This backend IS llama-server, so it opts into the ROCm arch gate: an
-        uncovered device crashes the embedding server as it does a chat load
-        (#7624)."""
+        llama_cpp's static probe, which asks an smi tool before torch, so the
+        common path leaves no CUDA/HIP context behind. This backend IS
+        llama-server, so it opts into the ROCm arch gate: an uncovered device
+        crashes the embedding server as it does a chat load (#7624)."""
         from utils.hardware import is_apple_silicon
 
         if is_apple_silicon():
