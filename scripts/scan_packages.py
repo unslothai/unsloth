@@ -152,6 +152,9 @@ RE_BASE64 = re.compile(
 _EXEC_NAMES = frozenset(("exec", "eval"))
 _BUILTINS_NAMES = frozenset(("builtins", "__builtins__"))
 _BUILTINS_LEN = len("builtins")
+# The letters a decorated spelling of `builtins` has to fold into, so a
+# non-ASCII character that reaches none of them cannot be part of one.
+_BUILTINS_CHARS = frozenset("builtins")
 # The loader calls a receiver can be: `__import__(...)` is a builtin and
 # `import_module(...)` needs only `from importlib import import_module`.
 # `__import__` is a builtin, so it means the loader in any file without being
@@ -294,6 +297,30 @@ def _ident(name: str) -> str:
     for that is a flag on the string object, so ordinary source pays nothing.
     """
     return name if name.isascii() else unicodedata.normalize("NFKC", name)
+
+
+def _folds_to_builtins(text: str) -> bool:
+    """Whether `text` may spell `builtins` in a decorated alphabet.
+
+    `import \U0001d41b\U0001d42e\U0001d422\U0001d425\U0001d42d\U0001d422\U0001d427\U0001d42c as b`
+    imports the module - the compiler NFKC-normalizes the identifier before it
+    looks it up - while the ASCII word never appears in the source. The
+    substring test that keeps the tokenize pass off ordinary files read that as
+    "no alias here", so `b.exec(marshal.loads(BLOB))` under it fell from the
+    blocking finding to the non-blocking one.
+
+    Answered from the DISTINCT characters, which are a few hundred at most, so
+    a decorated file costs one pass rather than an NFKC rewrite of up to 64 MiB.
+    A character that folds into none of `builtins` cannot be part of the
+    decorated name, so a file whose only non-ASCII text is prose still skips the
+    pass; ASCII files answer with the flag on the string object.
+    """
+    if text.isascii():
+        return False
+    return any(
+        not ch.isascii() and not _BUILTINS_CHARS.isdisjoint(unicodedata.normalize("NFKC", ch))
+        for ch in set(text)
+    )
 
 
 def _mentions_name(text: str, names) -> bool:
@@ -783,22 +810,9 @@ def _loads_builtins(
         return False
     if _const_string(_module_argument(_split_top(value[open_at + 1 : -1]))) != "builtins":
         return False
-    call = value[:open_at]
-    if len(call) == 1:
-        # `__import__('builtins')`, or `import_module('builtins')` for a name
-        # `from importlib import import_module` bound.
-        return call[0].type == tokenize.NAME and (
-            call[0].string == "__import__" or call[0].string in loaders.funcs
-        )
-    return (
-        len(call) == 3
-        and call[0].type == tokenize.NAME
-        and call[0].string in loaders.modules
-        and call[1].type == tokenize.OP
-        and call[1].string == "."
-        and call[2].type == tokenize.NAME
-        and call[2].string == "import_module"
-    )
+    # `__import__('builtins')`, or `import_module('builtins')` for a name
+    # `from importlib import import_module` bound, or the dotted spelling.
+    return _is_loader_value(value[:open_at], loaders)
 
 
 def _bare_singleton(toks: list) -> "list | None":
@@ -900,6 +914,65 @@ def _unwrapped_target(group: list) -> tuple:
     return None, False
 
 
+def _unpacks_positionally(stmt: list) -> bool:
+    """Whether `stmt` assigns to a comma-separated target list.
+
+    The cheap admission test for `b, spare = builtins, None`. The comma has to
+    come before the assignment to be a target list: `b = builtins, None` binds
+    the tuple, not the module. One allocation-free walk that stops at the first
+    top-level `=`, so an ordinary statement pays a comparison per token and no
+    string is decoded.
+    """
+    depth = 0
+    comma = False
+    for tok in stmt:
+        if tok.type != tokenize.OP:
+            continue
+        text = tok.string
+        if text in _OPENERS:
+            depth += 1
+        elif text in _CLOSERS:
+            depth -= 1
+        elif depth == 0:
+            if text == ",":
+                comma = True
+            elif text == "=":
+                return comma
+    return False
+
+
+def _unpacked_bindings(groups: list, loaders: _Loaders, known: "set | None") -> list:
+    """The names a target list binds the `builtins` module to.
+
+    `b, spare = builtins, None` binds `b` to the module exactly as `b = builtins`
+    does, and reading the target group whole rejected it, so the `b.exec(...)`
+    under it was demoted to the non-blocking finding. Read positionally, like
+    `_unpacked_value` reads a parked builtin: a starred target shifts every
+    position after it and a single right-hand side (`b, spare = pair`) names no
+    element at all, so both are left alone rather than guessed at.
+    """
+    values = _split_top(groups[-1])
+    if len(values) < 2:
+        return []
+    names: list = []
+    for group in groups[:-1]:
+        targets = _split_top(group)
+        if len(targets) != len(values):
+            return []
+        for target, value in zip(targets, values):
+            if target and target[0].type == tokenize.OP and target[0].string in ("*", "**"):
+                return []
+            name, from_sequence = _unwrapped_target(target)
+            # A nested target (`[b], spare = ...`) unpacks its element out of a
+            # value this pass has not opened, and an attribute or subscript
+            # target binds no alias at all.
+            if name is None or from_sequence:
+                continue
+            if _loads_builtins(value, loaders, known):
+                names.append(name)
+    return names
+
+
 def _assignment_bindings(
     stmt: list,
     loaders: _Loaders,
@@ -916,23 +989,27 @@ def _assignment_bindings(
     `known` are the aliases the file has already bound to the module, so a plain
     copy of one (`c = b`) binds it too.
     """
-    # Every accepted form ends in the module - named outright, or as the closing
-    # parenthesis of a loader call - and needs a plain `=`. That is one test on
-    # the last token for most statements, and a single early-exiting pass for the
-    # rest; nothing is allocated until a statement can actually be one.
+    # Every single-target form ends in the module - named outright, or as the
+    # closing parenthesis of a loader call - and needs a plain `=`. That is one
+    # test on the last token for most statements, and a single early-exiting pass
+    # for the rest; nothing is allocated until a statement can actually be one.
     if len(stmt) < 3:
         return []
     last = stmt[-1]
     if last.type == tokenize.OP and last.string == "," and len(stmt) > 3:
         last = stmt[-2]  # `b, = builtins,`: the one-tuple ends in the module
     if last.type == tokenize.NAME:
-        if last.string not in _BUILTINS_NAMES and not (known and last.string in known):
-            return []
-    elif not (last.type == tokenize.OP and last.string in (")", "]")):
+        ends_in_module = last.string in _BUILTINS_NAMES or bool(known and last.string in known)
+    else:
         # A loader call may carry optional arguments after the module name
         # (`__import__('builtins', fromlist=[])`), so the closing parenthesis is
         # all that is fixed about it; the marker pass below is what rejects
         # `v = compute(0)`, and it allocates nothing either.
+        ends_in_module = last.type == tokenize.OP and last.string in (")", "]")
+    # `b, spare = builtins, None` puts the module in a position of its own, so
+    # the statement need not end in it; that is the one form the last-token test
+    # cannot recognise, and it is read positionally below.
+    if not ends_in_module and not _unpacks_positionally(stmt):
         return []
     marker = assign = False
     # The bodies of the adjacent literals seen so far, since the compiler joins
@@ -988,7 +1065,10 @@ def _assignment_bindings(
             group = group[:colon_at]
         name, from_sequence = _unwrapped_target(group)
         if name is None:
-            return []  # a tuple, attribute or subscript target: not a plain alias
+            # A target list is the one form that still binds the module: an
+            # attribute or subscript target does not, and `_unpacked_bindings`
+            # answers with nothing for either.
+            return _unpacked_bindings(groups, loaders, known)
         names.append(name)
         unpacked = unpacked or from_sequence
     if unpacked:
@@ -1003,6 +1083,48 @@ def _assignment_bindings(
     if not _loads_builtins(value, loaders, known):
         return []
     return names
+
+
+def _is_loader_value(value: list, loaders: _Loaders) -> bool:
+    """Whether `value` is one of the module loaders under any of its names."""
+    if len(value) == 1:
+        return value[0].type == tokenize.NAME and (
+            value[0].string in _DEFAULT_LOADER_FUNCS or value[0].string in loaders.funcs
+        )
+    return (
+        len(value) == 3
+        and value[0].type == tokenize.NAME
+        and value[0].string in loaders.modules
+        and value[1].type == tokenize.OP
+        and value[1].string == "."
+        and value[2].type == tokenize.NAME
+        and value[2].string == "import_module"
+    )
+
+
+def _collect_loader_copies(stmt: list, loaders: _Loaders) -> None:
+    """Record the names `stmt` copies a module loader into.
+
+    `from builtins import __import__ as load` then `copy = load` leaves `copy`
+    the loader, so `copy(name).exec(marshal.loads(BLOB))` reaches the builtin
+    exactly as the imported spelling does. Only module aliases were propagated,
+    so one rename carried the call under the enforced gate; `il =
+    importlib.import_module` is the same copy through the module.
+
+    Loaders are collected in source order like the aliases beside them, so a
+    copy written above the import that names it is left to the next pass, the
+    same limit `known` carries for a copied module alias.
+    """
+    groups = _split_top(stmt, "=")
+    if len(groups) < 2 or not _is_loader_value(_strip_parens(groups[-1]), loaders):
+        return
+    for group in groups[:-1]:
+        colon_at = _name_index_op(group, ":")  # annotated target: `copy: Any = load`
+        if colon_at is not None:
+            group = group[:colon_at]
+        name, from_sequence = _unwrapped_target(group)
+        if name is not None and not from_sequence:
+            loaders.funcs.add(name)
 
 
 def _copied_alias(stmt: list) -> "str | None":
@@ -1246,18 +1368,38 @@ def _collect_rebindings(
     # is the exception, which is what the scoped span says.
     handler = stmt[head].type == tokenize.NAME and stmt[head].string == "except"
     depth = 0
+    # Whether an operand at each bracket depth may be skipped. `False and
+    # (b := model)` never runs its assignment expression, so `b` is still the
+    # module below it and cancelling the alias there suppressed a real
+    # `b.exec(...)`; the same goes for `True or ...` and for the arm of a
+    # conditional expression that is not taken. Reset at each opener and at
+    # each separator, because a short-circuit operator only guards the operand
+    # written to its right.
+    skippable = [False]
     for j, tok in enumerate(stmt):
         if tok.type == tokenize.OP:
-            if tok.string in _OPENERS:
+            text = tok.string
+            if text in _OPENERS:
                 depth += 1
-            elif tok.string in _CLOSERS:
+                del skippable[depth:]
+                skippable.append(False)
+            elif text in _CLOSERS:
                 depth -= 1
-            elif tok.string == ":=":
-                if j and stmt[j - 1].type == tokenize.NAME:
+            elif text == ",":
+                if 0 <= depth < len(skippable):
+                    skippable[depth] = False
+            elif text == ":=":
+                if j and stmt[j - 1].type == tokenize.NAME and not any(skippable[: depth + 1]):
                     rebound.add(stmt[j - 1].string)
             continue
         if tok.type != tokenize.NAME:
             continue
+        # A leading `if`/`else` heads a compound statement, whose walrus runs
+        # before the suite either way; past the head they are a conditional
+        # expression, and only one of its arms is evaluated.
+        if tok.string in ("and", "or") or (j and tok.string in ("if", "else")):
+            if 0 <= depth < len(skippable):
+                skippable[depth] = True
         if tok.string == "for":
             if depth:
                 continue  # a comprehension: its target is scoped to the comprehension
@@ -2951,6 +3093,8 @@ class _ExecEvalPattern:
         # An escaped literal spells the module without the word appearing, so
         # that file has to be read too - but only when it also holds a call to
         # reach through the alias, since `_scan` returns nothing without one.
+        # A decorated identifier spells it without the word appearing either,
+        # which is what `_folds_to_builtins` catches.
         if ("exec" in content or "eval" in content) and (
             "builtins" in content
             # A file that imports `import_module` binds a loader, and
@@ -2959,6 +3103,7 @@ class _ExecEvalPattern:
             or "import_module" in content
             or _RE_STRING_ESCAPE.search(content)
             or _RE_SPLIT_BUILTINS.search(content)
+            or _folds_to_builtins(content)
         ):
             failed: list = []
             # The aliases bound by something other than an import. An import is
@@ -2977,7 +3122,10 @@ class _ExecEvalPattern:
                     # it the same way inside an expression.
                     # `modules` is the running set of aliases, so a copy of one
                     # bound above (`c = b`) is read as the module here and can
-                    # itself be copied again further down.
+                    # itself be copied again further down. A copy of a LOADER
+                    # (`copy = load`) is the same rename one step earlier, and
+                    # `copy(name).exec(...)` reaches the builtin through it.
+                    _collect_loader_copies(stmt, loaders)
                     parked = _assignment_bindings(stmt, loaders, modules)
                     parked += _walrus_bindings(stmt, loaders, modules)
                     if parked:
@@ -3219,8 +3367,13 @@ class _ExecEvalPattern:
                                 # assigns something else to.
                                 if scope[6]:
                                     scope[6].discard(name)
-                        rebound.clear()
-                        continue
+                        # Only the names this statement puts the module in are
+                        # re-armed. A target list binds the others to something
+                        # else - `spare, b = None, builtins` leaves `spare` an
+                        # ordinary rebinding - so they still cancel below.
+                        rebound.difference_update(aliased)
+                        if not rebound:
+                            continue
                     if binds_in_class:
                         # `class C: b = model` binds an attribute of C, and the
                         # methods under it still resolve `b` to the global. So

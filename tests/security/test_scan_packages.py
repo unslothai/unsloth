@@ -4048,3 +4048,130 @@ def test_a_parked_alias_is_read_with_the_liveness_of_a_call():
     assert _high(
         f"{marker}eval = safe_eval\neval(marshal.loads(BLOB))\n"
     ), "the call site reads a shadowed bare builtin the same way"
+
+
+# The marker pair every route needs to reach the blocking finding: a dynamic
+# import and a marshal payload. On its own it is the non-blocking MEDIUM.
+_OBFUSCATION = "import marshal\nmod = __import__('os')\n"
+_ALIAS_CALL = "b.exec(marshal.loads(BLOB))\n"
+# `builtins` in mathematical bold, an identifier the compiler NFKC-normalizes
+# to the module name before it looks it up.
+_BOLD_BUILTINS = "".join(
+    chr(c) for c in (0x1D41B, 0x1D42E, 0x1D422, 0x1D425, 0x1D42D, 0x1D422, 0x1D427, 0x1D42C)
+)
+
+
+def test_a_decorated_spelling_of_the_module_still_binds_the_alias():
+    # PEP 3131 normalizes every identifier to NFKC before it is resolved, so
+    # `import 𝐛𝐮𝐢𝐥𝐭𝐢𝐧𝐬 as b` imports builtins while the ASCII word never appears
+    # in the source. The substring test that keeps the tokenize pass off ordinary
+    # files read that as "no alias here", and `b.exec(marshal.loads(BLOB))` fell
+    # to the non-blocking MEDIUM.
+    assert unicodedata.normalize("NFKC", _BOLD_BUILTINS) == "builtins"
+    assert _high(
+        f"import {_BOLD_BUILTINS} as b\n{_OBFUSCATION}{_ALIAS_CALL}"
+    ), "a decorated import binds the alias its call reaches"
+
+    # The pass is admitted by the characters, not by "this file is not ASCII":
+    # prose in another alphabet folds into none of `builtins`, so the ordinary
+    # file keeps the substring test it has always had.
+    assert not sp._folds_to_builtins("# résumé of the café\n")
+    assert sp._folds_to_builtins(f"import {_BOLD_BUILTINS} as b\n")
+
+    # And running the pass on a decorated file invents nothing: a name that is
+    # not the module leaves `.eval()` an ordinary inference call.
+    batch = "".join(chr(c) for c in (0x1D41B, 0x1D41A, 0x1D42D, 0x1D41C, 0x1D421))
+    assert (
+        _high(f"{_OBFUSCATION}{batch} = load_model()\n{batch}.eval()\n", "pkg/_infer.py") == []
+    ), "a decorated name that is not the module must stay clean"
+
+
+def test_a_target_list_still_binds_the_module_alias():
+    # `b, spare = builtins, None` binds `b` to the module exactly as
+    # `b = builtins` does. Reading the target group whole rejected it as a tuple
+    # target, so the `b.exec(...)` under it was demoted to MEDIUM.
+    for binding in (
+        "b, spare = builtins, None",
+        "spare, b = None, builtins",
+        "b, spare = __import__('builtins'), None",
+    ):
+        assert _high(
+            f"import builtins\n{_OBFUSCATION}{binding}\n{_ALIAS_CALL}"
+        ), f"a target list must bind the alias: {binding}"
+
+    # Read positionally, so the module reaches the name that really receives it.
+    # `b, spare = None, builtins` leaves `b` None and `b.eval(...)` clean.
+    assert (
+        _high(f"import builtins\n{_OBFUSCATION}b, spare = None, builtins\nb.eval(BLOB)\n", "pkg/_infer.py")
+        == []
+    ), "the module goes to the target in its own position, not to every target"
+    assert (
+        _high(
+            f"import builtins\n{_OBFUSCATION}b, spare = load_model(), None\nb.eval()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a target list that unpacks no module binds no alias"
+
+    # The other targets of the same statement are ordinary rebindings: `spare`
+    # takes None here, so `spare.eval(...)` below it is not the builtin while
+    # the `b` that took the module still is.
+    unpacked = f"import builtins as spare\n{_OBFUSCATION}spare, b = None, builtins\n"
+    assert _high(f"{unpacked}{_ALIAS_CALL}"), "the target that takes the module keeps the alias"
+    assert (
+        _high(f"{unpacked}spare.eval(BLOB)\n", "pkg/_infer.py") == []
+    ), "a target the same statement binds to something else still cancels"
+
+
+def test_a_short_circuited_walrus_does_not_cancel_the_alias():
+    # `False and (b := model)` never runs its assignment expression, so `b` is
+    # still the module below it - and cancelling the alias there dropped the
+    # `b.exec(marshal.loads(BLOB))` under it to the non-blocking MEDIUM.
+    for skipped in (
+        "False and (b := model)",
+        "True or (b := model)",
+        "spare = None if flag else (b := model)",
+    ):
+        assert _high(
+            f"import builtins as b\n{_OBFUSCATION}{skipped}\n{_ALIAS_CALL}"
+        ), f"a walrus that may not run must not cancel the alias: {skipped}"
+
+    # A walrus that always runs still cancels it, or `model.eval()` past one is
+    # the false positive this rule exists to remove. The separator is what tells
+    # the second case apart: the `and` guards its own operand, not the argument
+    # written after the comma.
+    for taken in (
+        "(b := model) and flag",
+        "print(flag and other, (b := model))",
+        "if (b := model):\n    pass",
+    ):
+        assert (
+            _high(f"import builtins as b\n{_OBFUSCATION}{taken}\n{_ALIAS_CALL}", "pkg/_infer.py")
+            == []
+        ), f"a walrus that always runs must still cancel the alias: {taken}"
+
+
+def test_a_renamed_module_loader_is_followed_through_a_copy():
+    # `from builtins import __import__ as load` then `copy = load` leaves `copy`
+    # the loader, so `copy(name).exec(...)` reaches the builtin under a second
+    # name. Only module aliases were propagated, so one rename carried the call
+    # under the enforced gate.
+    for source in (
+        "from builtins import __import__ as load\ncopy = load\n",
+        "import importlib\nimp = importlib.import_module\ncopy = imp\n",
+    ):
+        assert _high(
+            f"{source}{_OBFUSCATION}copy(name).exec(marshal.loads(BLOB))\n"
+        ), f"a copied loader must still be a loader:\n{source}"
+
+    # Only a copy of a loader is one: `copy = load_model` then
+    # `copy(path).eval()` is ordinary inference code, in a file that does reach
+    # the pass.
+    assert (
+        _high(
+            f"from importlib import import_module\n{_OBFUSCATION}copy = load_model\n"
+            "copy(path).eval()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a copy of something that is not a loader must stay clean"
