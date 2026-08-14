@@ -21,6 +21,10 @@ stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
 _STACK_SPEC.loader.exec_module(stack_mod)
 
+# The probe prints its answer behind this marker, so chatter on either side of it cannot
+# be mistaken for the answer. Mocked stdout has to carry it too.
+_MARK = stack_mod._TORCH_PROBE_MARKER
+
 _ensure_cuda_torch = stack_mod._ensure_cuda_torch
 _detect_cuda_torch_index_url = stack_mod._detect_cuda_torch_index_url
 
@@ -45,12 +49,12 @@ def _torch_probe_line(torch_state, cuda_version):
     marker, installed_cu, release, runtime_cu = (torch_state.split("|") + ["", "", ""])[:4]
     release = release or "2.9.1"
     if marker == "hip":
-        return f"{release}+rocm6.4|6.4|"
+        return _MARK + f"{release}+rocm6.4|6.4|"
     if marker == "cuda":
         version = f"{release}+{installed_cu}" if installed_cu else release
         cuda = _dotted_cuda(runtime_cu) or _dotted_cuda(installed_cu) or cuda_version
-        return f"{version}||{cuda}"
-    return f"{release}||"
+        return _MARK + f"{version}||{cuda}"
+    return _MARK + f"{release}||"
 
 
 def _make_run(

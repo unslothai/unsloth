@@ -47,6 +47,10 @@ stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
 _STACK_SPEC.loader.exec_module(stack_mod)
 
+# The probe prints its answer behind this marker, so chatter on either side of it cannot
+# be mistaken for the answer. Mocked stdout has to carry it too.
+_MARK = stack_mod._TORCH_PROBE_MARKER
+
 _detect_rocm_version = stack_mod._detect_rocm_version
 _ensure_rocm_torch = stack_mod._ensure_rocm_torch
 _has_rocm_gpu = stack_mod._has_rocm_gpu
@@ -628,7 +632,7 @@ class TestEnsureRocmTorch:
         """Strix Halo without /dev/kfd must still get AMD gfx1151 wheels (unslothai#7301)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+cpu||\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -653,7 +657,7 @@ class TestEnsureRocmTorch:
         the AMD gfx wheels."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+cpu||\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -680,7 +684,7 @@ class TestEnsureRocmTorch:
         (Strix override / generic branch) decides instead."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+cpu||\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -704,7 +708,7 @@ class TestEnsureRocmTorch:
         and leave CPU torch in place -- the per-arch install runs."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+cpu||\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}):
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
@@ -729,7 +733,7 @@ class TestEnsureRocmTorch:
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         # Single-line probe: empty HIP marker before "|" for a CUDA build.
-        mock_probe.stdout = "2.10.0+cu126||\n"
+        mock_probe.stdout = _MARK + "2.10.0+cu126||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -742,7 +746,7 @@ class TestEnsureRocmTorch:
 
         Returns the pip_install_try mock so callers can assert on the reinstall.
         """
-        probe = MagicMock(returncode = 0, stdout = "2.10.0+rocm7.1|7.1|\n")
+        probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
         pip_try = MagicMock(return_value = True)
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
@@ -846,7 +850,7 @@ class TestEnsureRocmTorch:
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+rocm7.1|7.1.12345|\n"  # HIP marker + version
+        mock_probe.stdout = _MARK + "2.10.0+rocm7.1|7.1.12345|\n"  # HIP marker + version
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -863,7 +867,7 @@ class TestEnsureRocmTorch:
         and the reinstall fires."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+cpu||\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 with patch.object(stack_mod, "pip_install_try", return_value = True):
@@ -968,7 +972,7 @@ class TestEnsureRocmTorch:
         """ROCm 7.14 caps to rocm7.2 on pytorch.org; Strix must use AMD gfx index."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.11.0+rocm7.2|7.14.60850|\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.14.60850|\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -995,7 +999,7 @@ class TestEnsureRocmTorch:
         # Strix and routes the install to the Strix-only AMD index.
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.11.0+rocm7.2|7.14.60850|\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.14.60850|\n"
         buf = io.StringIO()
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1"}, clear = False):
             for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
@@ -1025,7 +1029,7 @@ class TestEnsureRocmTorch:
         # Negative control: device 2 really is the Strix, so the reroute must still fire.
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.11.0+rocm7.2|7.14.60850|\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.14.60850|\n"
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "2"}, clear = False):
             for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
                 os.environ.pop(_v, None)
@@ -1197,7 +1201,7 @@ Agent 4
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         # HIP marker present (has_hip_torch=True) + installed +rocm6.4 wheel.
-        mock_probe.stdout = "2.10.0+rocm6.4|6.4.12345|\n"
+        mock_probe.stdout = _MARK + "2.10.0+rocm6.4|6.4.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
@@ -1221,7 +1225,7 @@ Agent 4
         The gfx probe may run for the bnb-skip flag but must not alter the pinned index."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+rocm6.4|6.4.12345|\n"
+        mock_probe.stdout = _MARK + "2.10.0+rocm6.4|6.4.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1246,7 +1250,7 @@ Agent 4
         (no false reinstall of a correct ROCm venv)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.11.0+rocm7.2|7.2.12345|\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.2.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
@@ -1280,7 +1284,7 @@ Agent 4
         specs for that arch, so re-flagging would reinstall-loop on every update."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.10.0+rocm6.4|6.4.12345|\n"
+        mock_probe.stdout = _MARK + "2.10.0+rocm6.4|6.4.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx110X-all"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1306,7 +1310,7 @@ Agent 4
         is not the per-arch build the user pinned (Strix stays off the generic wheel)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.11.0+rocm7.2|7.2.12345|\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.2.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1544,7 +1548,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.11.0+rocm7.2|7.2.12345|\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.2.12345|\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1569,7 +1573,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = "2.7.0+rocm6.3|6.3.42131|\n"
+        mock_probe.stdout = _MARK + "2.7.0+rocm6.3|6.3.42131|\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -4694,7 +4698,7 @@ class TestRocmTorchInstalledEnvVar:
         # a non-empty HIP version is what marks it as ROCm.
         rv = MagicMock()
         rv.returncode = 0
-        rv.stdout = "2.10.0+rocm7.1|7.1|\n"
+        rv.stdout = _MARK + "2.10.0+rocm7.1|7.1|\n"
         return rv
 
     @patch.object(stack_mod, "_install_bnb_windows_rocm")
@@ -4759,7 +4763,7 @@ class TestWindowsRocmTorchaoGuard:
     def test_installed_torch_is_windows_rocm_accepts_rocm_probe(self):
         rv = MagicMock()
         rv.returncode = 0
-        rv.stdout = "2.10.0+rocm7.1|7.1|"
+        rv.stdout = _MARK + "2.10.0+rocm7.1|7.1|"
         with (
             patch.object(stack_mod, "IS_WINDOWS", True),
             patch.object(stack_mod.subprocess, "run", return_value = rv),

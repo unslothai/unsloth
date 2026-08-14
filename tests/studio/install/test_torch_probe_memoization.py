@@ -12,6 +12,7 @@ subprocess per run, invalidated whenever pip changes what is installed.
 """
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,8 +37,15 @@ def _reset_torch_runtime_probe():
     stack_mod._invalidate_torch_runtime_probe()
 
 
-def _probe_result(stdout = "2.9.1+cu128||12.8\n", returncode = 0):
-    return MagicMock(returncode = returncode, stdout = stdout)
+_MARK = stack_mod._TORCH_PROBE_MARKER
+
+
+def _probe_result(fields = "2.9.1+cu128||12.8", returncode = 0, raw = None):
+    """A probe stdout carrying our marked line, plus whatever chatter is asked for."""
+    return MagicMock(
+        returncode = returncode,
+        stdout = raw if raw is not None else (f"{_MARK}{fields}\n" if fields else ""),
+    )
 
 
 class TestProbeParsing:
@@ -48,19 +56,19 @@ class TestProbeParsing:
         assert (version, hip, cuda) == ("2.9.1+cu128", "", "12.8")
 
     def test_rocm_build_fields(self):
-        out = _probe_result("2.10.0+rocm7.1|7.1.12345|\n")
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
         with patch.object(stack_mod.subprocess, "run", return_value = out):
             _ran, _importable, version, hip, cuda = stack_mod._probe_torch_runtime()
         assert (version, hip, cuda) == ("2.10.0+rocm7.1", "7.1.12345", "")
 
     def test_cpu_build_fields(self):
-        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result("2.9.1||\n")):
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result("2.9.1||")):
             _ran, _importable, version, hip, cuda = stack_mod._probe_torch_runtime()
         assert (version, hip, cuda) == ("2.9.1", "", "")
 
     def test_last_line_wins_over_import_chatter(self):
         # sitecustomize / import hooks can print before the marker line.
-        out = _probe_result("some import warning\n2.9.1+cu128||12.8\n")
+        out = _probe_result(raw = f"some import warning\n{_MARK}2.9.1+cu128||12.8\n")
         with patch.object(stack_mod.subprocess, "run", return_value = out):
             _ran, _importable, version, _hip, cuda = stack_mod._probe_torch_runtime()
         assert (version, cuda) == ("2.9.1+cu128", "12.8")
@@ -75,7 +83,43 @@ class TestProbeParsing:
         boom = subprocess.TimeoutExpired(cmd = "python", timeout = 90)
         with patch.object(stack_mod.subprocess, "run", side_effect = boom):
             ran, importable, version, hip, cuda = stack_mod._probe_torch_runtime()
-        assert (ran, importable, version, hip, cuda) == (False, False, "", "", "")
+        assert (ran, importable, version, hip, cuda) == (False, False, None, "", "")
+
+    def test_chatter_after_the_marker_does_not_win(self):
+        """An atexit handler, a CUDA teardown notice or a "Segmentation fault" line can
+        arrive AFTER the answer, so "the last non-empty line" is not reliably ours."""
+        out = _probe_result(raw = f"{_MARK}2.9.1+cu128||12.8\ndestroying CUDA context\n")
+        with patch.object(stack_mod.subprocess, "run", return_value = out):
+            _ran, _importable, version, _hip, cuda = stack_mod._probe_torch_runtime()
+        assert (version, cuda) == ("2.9.1+cu128", "12.8")
+
+    def test_no_marked_line_reports_an_unknown_version(self):
+        """Exit 0 with nothing of ours on stdout means we learned nothing. None, not "",
+        because the XPU and CPU pins act on an empty version and must not act on this."""
+        out = _probe_result(raw = "only chatter, no answer\n")
+        with patch.object(stack_mod.subprocess, "run", return_value = out):
+            ran, importable, version, _hip, _cuda = stack_mod._probe_torch_runtime()
+        assert (ran, importable, version) == (True, True, None)
+
+    def test_an_empty_version_is_reported_as_empty_not_unknown(self):
+        """A torch whose __version__ is empty IS broken, and an XPU pin repairs it.
+        Collapsing that into the unknown case silently skips the repair."""
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result("||")):
+            _ran, _importable, version, _hip, _cuda = stack_mod._probe_torch_runtime()
+        assert version == ""
+
+    def test_a_torch_without_a_version_module_still_classifies(self, tmp_path):
+        """torch.version is not guaranteed to exist. Reaching through it unguarded raises
+        inside the child, which reads as "torch cannot import" and force-reinstalls a
+        working venv. Runs the real subprocess against a real package on PYTHONPATH,
+        since a mock cannot show which attribute the child touched."""
+        pkg = tmp_path / "torch"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("__version__ = '1.13.1'\n", encoding = "utf-8")
+        with patch.dict(os.environ, {"PYTHONPATH": str(tmp_path)}):
+            ran, importable, version, hip, cuda = stack_mod._probe_torch_runtime()
+        assert (ran, importable, version) == (True, True, "1.13.1")
+        assert (hip, cuda) == ("", "")
 
     def test_oserror_reports_not_ran(self):
         with patch.object(stack_mod.subprocess, "run", side_effect = OSError("no exe")):
@@ -90,7 +134,10 @@ class TestProbeParsing:
         and take the whole installer down rather than falling back to the on-disk
         classifier. Runs the real subprocess: a mock cannot show which decoder was used.
         """
-        emit = r"import sys; sys.stdout.buffer.write(b'noise \xff\xfe\n2.9.1+cu128||12.8\n')"
+        emit = (
+            "import sys; sys.stdout.buffer.write("
+            r"b'noise \xff\xfe\n' + " + repr(_MARK) + r".encode() + b'2.9.1+cu128||12.8\n')"
+        )
         real_run = subprocess.run  # bound before the patch, or the stand-in calls itself
 
         def _emit(_cmd, **kwargs):
@@ -135,7 +182,7 @@ class TestMemoization:
         ):
             stack_mod.pip_install("torch repair", "torch")
 
-        out = _probe_result("2.10.0+rocm7.1|7.1.12345|\n")
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
         with patch.object(stack_mod.subprocess, "run", return_value = out) as mock_run:
             second = stack_mod._probe_torch_runtime()
         assert mock_run.call_count == 1

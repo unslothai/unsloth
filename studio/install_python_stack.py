@@ -319,9 +319,15 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     return _TORCHAO_DEFAULT_SPEC
 
 
-# Memoized `import torch` classification of the target venv, reset by pip_install(), the
-# only thing here that changes what is installed. None means "not probed yet".
-_TORCH_RUNTIME_PROBE: "tuple[bool, bool, str, str, str] | None" = None
+# Memoized `import torch` classification of the target venv, reset by pip_install() and
+# pip_install_try(), the only things here that change what is installed. None means
+# "not probed yet".
+_TORCH_RUNTIME_PROBE: "tuple[bool, bool, str | None, str, str] | None" = None
+
+# Prefix on the probe's own stdout line. Import chatter can arrive before the answer, and
+# an atexit handler or a CUDA teardown notice can arrive after it, so "the last non-empty
+# line" is not reliably ours; "the last line starting with this" is.
+_TORCH_PROBE_MARKER = "UNSLOTH_TORCH_PROBE|"
 
 
 def _invalidate_torch_runtime_probe() -> None:
@@ -330,7 +336,7 @@ def _invalidate_torch_runtime_probe() -> None:
     _TORCH_RUNTIME_PROBE = None
 
 
-def _probe_torch_runtime() -> "tuple[bool, bool, str, str, str]":
+def _probe_torch_runtime() -> "tuple[bool, bool, str | None, str, str]":
     """Classify the venv's torch with ONE `import torch` subprocess per install run.
 
     Returns ``(ran, importable, version, hip, cuda)``:
@@ -340,7 +346,10 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str, str, str]":
       importable -- ...and it exited 0, so `import torch` actually works. A False here
                     with `ran` True is the "installed but broken" signal the repair
                     paths use to force a reinstall.
-      version    -- torch.__version__ verbatim ("" when unknown)
+      version    -- torch.__version__ verbatim, or None when no line of ours came back.
+                    None is NOT "": an empty __version__ is a broken torch the pins
+                    repair, while a missing line means we learned nothing and must leave
+                    the venv alone, which is what the per-path probes did on empty stdout.
       hip        -- torch.version.hip  ("" when absent)
       cuda       -- torch.version.cuda ("" when absent)
 
@@ -362,9 +371,13 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str, str, str]":
                 (
                     "import torch; "
                     "v = getattr(torch, '__version__', '') or ''; "
-                    "h = getattr(torch.version, 'hip', '') or ''; "
-                    "c = getattr(torch.version, 'cuda', '') or ''; "
-                    "print('|'.join((v, h, c)))"
+                    # torch.version is not guaranteed to exist. Reaching through it
+                    # unguarded raises, which reads as "torch cannot import" and
+                    # force-reinstalls a working venv.
+                    "_v = getattr(torch, 'version', None); "
+                    "h = getattr(_v, 'hip', '') or ''; "
+                    "c = getattr(_v, 'cuda', '') or ''; "
+                    f"print('{_TORCH_PROBE_MARKER}' + '|'.join((v, h, c)))"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -380,8 +393,21 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str, str, str]":
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
-        _TORCH_RUNTIME_PROBE = (False, False, "", "", "")
+        _TORCH_RUNTIME_PROBE = (False, False, None, "", "")
         return _TORCH_RUNTIME_PROBE
+    # Our own marked line, last one wins: chatter can land on either side of it.
+    _marked = [
+        line.strip()
+        for line in (probe.stdout or "").splitlines()
+        if line.strip().startswith(_TORCH_PROBE_MARKER)
+    ]
+    version: "str | None" = None
+    hip = cuda = ""
+    if _marked:
+        _fields = _marked[-1][len(_TORCH_PROBE_MARKER) :].split("|")
+        version, hip, cuda = (_fields + ["", ""])[:3]
+    _TORCH_RUNTIME_PROBE = (True, probe.returncode == 0, version, hip, cuda)
+    return _TORCH_RUNTIME_PROBE
     # Last non-empty line only: torch and its dependencies can chatter on import.
     lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
     version = hip = cuda = ""
@@ -434,7 +460,7 @@ def _installed_torch_is_windows_rocm() -> bool:
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if not _ran or not _importable:
         return False
-    _ver = _version.lower()
+    _ver = (_version or "").lower()
     return bool(_hip) or "rocm" in _ver or "rocmsdk" in _ver
 
 
@@ -2361,6 +2387,10 @@ def _ensure_cuda_torch() -> None:
             constrain = False,
         )
         return
+    if _version is None:
+        # Nothing readable came back, so classify nothing: this is where the per-path
+        # probe returned when its stdout held no line.
+        return
     # marker | +cuXXX local tag | release | family from torch.version.cuda. The last is the
     # only CUDA clue an untagged wheel gives: PyPI forbids the local +cuXXX version.
     _ver = _version.lower()
@@ -2466,7 +2496,7 @@ def _ensure_xpu_torch() -> None:
             return
         _why = "torch could not be probed"
     elif _importable:
-        if not _version:
+        if _version is None:
             return  # unreadable -- the base install step handles a missing torch
         # Flavour AND range: a migrated 2.5+xpu venv is broken, not correct, so the tag
         # alone is not enough. Range matches _XPU_TORCH_PKG_SPEC.
@@ -2785,7 +2815,7 @@ def _ensure_cpu_torch() -> None:
             constrain = False,
         )
         return
-    if not _version:
+    if _version is None:
         return  # unreadable -- the base install step handles a missing torch
     # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so without it a
     # working Intel build reads as "cpu" and the CPU pin over it does nothing.
@@ -2841,7 +2871,7 @@ def _ensure_rocm_torch() -> None:
     # importable as ROCm (a wiped venv leaves a stale env-var that must not suppress it).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
-        _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
+        _torch_ok = _ran and _importable and (bool(_hip) or "rocm" in (_version or "").lower())
         if _torch_ok:
             _rocm_windows_torch_installed = True
             # ROCm torch is already installed, but bnb still needs the ROCm build
@@ -2865,7 +2895,9 @@ def _ensure_rocm_torch() -> None:
             return  # no AMD GPU visible via hipinfo
         # Whether torch already links against HIP.
         _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
-        _torch_already_rocm = _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
+        _torch_already_rocm = (
+            _ran and _importable and (bool(_hip) or "rocm" in (_version or "").lower())
+        )
         # "Is ROCm" is not "is the RIGHT ROCm": wheels are per-family, so a host whose arch
         # now resolves elsewhere (dGPU added, or the #7776 repick) would keep the old family
         # forever. setup.ps1 force-reinstalls every run, so this only bites standalone
@@ -2957,7 +2989,7 @@ def _ensure_rocm_torch() -> None:
     # detection. Marker is the HIP version, else a "rocm" sentinel when only the version
     # string flags ROCm; empty = CPU/CUDA torch, or un-probeable, which reinstalls.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
-    _installed_torch_ver = _version.lower() if (_ran and _importable) else ""
+    _installed_torch_ver = (_version or "").lower() if (_ran and _importable) else ""
     _hip_marker = ""
     if _ran and _importable:
         _hip_marker = _hip if _hip else ("rocm" if "rocm" in _installed_torch_ver else "")
@@ -4036,6 +4068,9 @@ def pip_install_try(
     """Like pip_install but returns False on failure instead of exiting.
     For optional installs that have a follow-up fallback.
     """
+    # Same reason as pip_install: this installs torch too (the Windows AMD ROCm trio),
+    # so the memoized classification must not survive it.
+    _invalidate_torch_runtime_probe()
     constraint_args_pip: list[str] = []
     constraint_args_uv: list[str] = []
     if constrain and CONSTRAINTS.is_file():
