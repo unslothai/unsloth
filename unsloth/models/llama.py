@@ -3806,6 +3806,18 @@ class FastLlamaModel:
         # Detect a stray pre-train forward so train() can drop the torch.compile
         # graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
+
+        # Prevent transformers >= 4.43+ inplace loss modification crash
+        old_forward = model.forward
+        def new_forward(*args, **kwargs):
+            outputs = old_forward(*args, **kwargs)
+            if hasattr(outputs, "loss") and outputs.loss is not None:
+                outputs.loss = outputs.loss.clone()
+            elif isinstance(outputs, tuple) and outputs[0] is not None:
+                outputs = (outputs[0].clone(),) + outputs[1:]
+            return outputs
+        model.forward = new_forward
+
         return model
 
     @staticmethod
