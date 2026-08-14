@@ -951,9 +951,7 @@ class TestPipConfigPolicySurvivesThePin:
         assert "PIP_REQUIRE_HASHES" not in env
 
     def test_a_switched_off_pip_conf_policy_is_not_carried(self):
-        env = self._pinned_env(
-            "global.require-hashes='false'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
-        )
+        env = self._pinned_env("global.require-hashes='false'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"})
         assert "PIP_REQUIRE_HASHES" not in env
 
     def test_their_own_variable_is_never_overwritten(self):
@@ -1273,15 +1271,13 @@ class TestUvConfigDiscoveryMatchesUv:
         (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
         nested = tmp_path / "project"
         nested.mkdir()
-        (nested / "pyproject.toml").write_text(
-            "[project]\nname = 'x'\n", encoding = "utf-8"
-        )
+        (nested / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding = "utf-8")
         monkeypatch.chdir(nested)
         assert self._keys() == ["uv.toml: no-build"]
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "XDG is the Unix system-config path")
     def test_only_the_first_system_config_is_read(self, tmp_path, monkeypatch):
-        """"only the first-discovered file will be used". Unioning them lets a
+        """ "only the first-discovered file will be used". Unioning them lets a
         lower-priority file uv ignores fail an install under the switch."""
         first, second = tmp_path / "a", tmp_path / "b"
         for directory, policy in ((first, "require-hashes = true"), (second, "no-build = true")):
@@ -1354,7 +1350,7 @@ class TestUvConfigDiscoveryMatchesUv:
         ]
 
     def test_uv_no_config_means_there_is_no_config(self, tmp_path, monkeypatch):
-        """"--no-config: Avoid discovering configuration files". A policy uv is not
+        """ "--no-config: Avoid discovering configuration files". A policy uv is not
         reading is not one to enforce, translate or report, and treating it as live fails
         installs uv itself would have run."""
         (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")

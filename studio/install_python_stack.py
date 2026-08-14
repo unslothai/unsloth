@@ -4847,8 +4847,10 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     so a pinned command reads no config in either mode and policy travels by environment.
     """
     strict = _strict_pm_policy()
-    if strict and _is_pip_fetch_cmd(cmd) and _refuse_pip_under_untranslatable_policy(
-        " ".join(cmd[:3])
+    if (
+        strict
+        and _is_pip_fetch_cmd(cmd)
+        and _refuse_pip_under_untranslatable_policy(" ".join(cmd[:3]))
     ):
         # Every pip fetch passes through here, which is the only place that catches the
         # ones pip_install() does not drive: the bootstrap's own pip upgrade and the XPU
