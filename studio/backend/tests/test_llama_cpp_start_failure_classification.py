@@ -1616,17 +1616,23 @@ class TestRejectedArguments:
         assert "enough memory" in msg.lower()
         assert "argument" not in msg.lower()
 
-    def test_a_huge_line_before_the_error_is_still_cheap(self):
-        # The argument scan is bounded because _drain_stdout keeps an unterminated
-        # line whole, and two full scans of one over the whole capture put the
-        # classifier past its budget.
-        import time
+    def test_the_argument_scan_reads_only_the_tail(self):
+        # The bound exists because _drain_stdout keeps an unterminated line whole,
+        # and scanning a 10 MB one twice puts the classifier past any sane budget.
+        # Asserted by BEHAVIOUR rather than by the clock: a wall-clock budget on a
+        # shared CI runner measures the runner, and a Windows one failed this at
+        # 204ms against 200 while the bound it was meant to prove was in place.
+        from core.inference.llama_cpp import _FAILURE_SCAN_TAIL_CHARS
 
-        out = "x" * 10_000_000 + "\nerror: invalid argument: --tempp"
-        start = time.perf_counter()
-        msg = _classify(out, "/models/x.gguf", "local/x", 1)
-        assert time.perf_counter() - start < 0.2
-        assert "--tempp" in msg
+        # Inside the tail: found, and the whole capture is enormous either way.
+        within = "x" * 10_000_000 + "\nerror: invalid argument: --tempp"
+        assert "--tempp" in _classify(within, "/models/x.gguf", "local/x", 1)
+        # Before it: not found, which is only possible if the scan stopped short of
+        # the head. Reported as an ordinary failure instead.
+        buried = (
+            "error: invalid argument: --tempp\n" + "x" * (_FAILURE_SCAN_TAIL_CHARS * 2)
+        )
+        assert "--tempp" not in _classify(buried, "/models/x.gguf", "local/x", 1)
 
     def test_a_model_load_error_mentioning_arguments_is_not_misread(self):
         # "invalid argument" as an errno string (EINVAL) is not llama.cpp's
