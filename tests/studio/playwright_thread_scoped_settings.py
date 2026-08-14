@@ -199,6 +199,47 @@ def open_thread(page, thread_id):
     settle(page)
 
 
+def unload_any_model(page, token):
+    """Leave no model loaded, so the capability-gated pills stay clickable.
+
+    The Search and Code pills are disabled when a model is loaded that cannot run tools
+    (`modelLoaded && !(supportsTools || supportsBuiltinWebSearch)`), and this file drives
+    both. In CI an earlier step in the same job leaves a small GGUF resident, which has
+    no tool support, so every pill click here would time out on a disabled button. With
+    nothing loaded the pills are pre-selectable, which is the state this test is about.
+    """
+    status = page.evaluate(
+        """async ({ base, token }) => {
+            const res = await fetch(base + "/api/inference/status", {
+                headers: { Authorization: "Bearer " + token },
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        }""",
+        {"base": BASE, "token": token},
+    )
+    status = status or {}
+    loaded = status.get("model_identifier") or (status.get("loaded") or [None])[0]
+    if not loaded:
+        return
+    print(f"[thread-settings] unloading {loaded!r} so the pills are not capability-gated",
+          flush = True)
+    page.evaluate(
+        """async ({ base, token, modelPath }) => {
+            await fetch(base + "/api/inference/unload", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: "Bearer " + token,
+                },
+                body: JSON.stringify({ model_path: modelPath }),
+            });
+        }""",
+        {"base": BASE, "token": token, "modelPath": loaded},
+    )
+    page.wait_for_timeout(1500)
+
+
 def settle(page):
     """Wait for the composer, then for the thread's snapshot to have been applied."""
     page.locator('button[data-pill-label="Search"]:visible').first.wait_for(
@@ -257,6 +298,8 @@ def main():
         token = sign_in(page)
         if not token:
             fail("no auth token in localStorage after change-password")
+        unload_any_model(page, token)
+        page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60_000)
 
         step("an unsaved chat still edits the installation defaults")
         # plain /chat runs on a runtime-made thread id with no row: treating that as an open
