@@ -470,6 +470,7 @@ def start_ingestion(
     linked_relative_path: str | None = None,
     background: bool = True,
     content_hash: str | None = None,
+    replaces: tuple[str, str | None] | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -480,7 +481,15 @@ def start_ingestion(
     reconciliation hashes it to detect content-identical renames) pass that digest
     through instead of paying for a second full read of the file. Must be the lowercase
     hex sha256 of ``stored_path``; a mismatched value would misfile the document under
-    the wrong hash, so it is trusted as given and never reverified here."""
+    the wrong hash, so it is trusted as given and never reverified here.
+
+    ``replaces`` is ``(old_document_id, old_stored_path)``: the named document is
+    retired by the worker only once this ingestion completes, so a failed re-index
+    never destroys the still-searchable original. It is how an edited source
+    replaces the one it was edited from. Only valid with ``dedupe=False``, because
+    the dedupe branch owns that value and its early return would drop a caller's."""
+    if replaces is not None and dedupe:
+        raise ValueError("replaces requires dedupe=False")
     account_path(stored_path)
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -508,9 +517,10 @@ def start_ingestion(
         ).fetchone():
             conn.rollback()
             raise RuntimeError("Owning scope is being deleted")
-        # (old_document_id, old_stored_path) replaced by this upload; deleted by the worker only after the
-        # replacement completes, so a failed re-index never destroys the still-searchable original.
-        replaces: tuple[str, str | None] | None = None
+        # A re-upload of identical bytes can also retire the document it supersedes
+        # (see the stale-embedder and empty-ingest cases below). Only reachable under
+        # dedupe, which the caller-supplied `replaces` parameter excludes -- assigning
+        # here would otherwise overwrite the value an edit came in with.
         existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)

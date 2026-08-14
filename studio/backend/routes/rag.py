@@ -1157,3 +1157,180 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
         # linked documents are named by a posix relative path, invalid in this header
         filename = doc["filename"].rsplit("/", 1)[-1],
     )
+
+
+# Formats a <textarea> represents faithfully, so an edit round-trips byte for byte.
+# .pdf and .docx are deliberately absent: neither survives being retyped as plain
+# text, so both are display-only.
+_EDITABLE_EXTS = {".txt", ".md", ".markdown", ".html", ".htm"}
+_MARKDOWN_EXTS = {".md", ".markdown"}
+# Read (and accept) at most this much text. Beyond it the preview is truncated for
+# display and editing is refused, because saving a truncated body would silently
+# delete the tail of the file.
+_MAX_TEXT_EDIT_BYTES = 1024 * 1024
+
+
+def _document_text(stored_path: str, ext: str) -> str:
+    """The document's text for display, as the indexer sees it.
+
+    .docx has no plain-text form on disk, so it goes back through the ingestion
+    parser: what the modal shows is then exactly what was chunked and embedded.
+    """
+    if ext == ".docx":
+        from core.rag import parsers
+
+        return "\n".join(page.text for page in parsers.parse(stored_path))
+    with open(stored_path, "rb") as handle:
+        raw = handle.read(_MAX_TEXT_EDIT_BYTES)
+    # replace, not strict: a preview must never 500 on a stray byte, and the guard
+    # below makes the decoded text unsavable whenever it was cut short anyway.
+    return raw.decode("utf-8", errors = "replace")
+
+
+@router.get("/documents/{document_id}/content")
+def document_content(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    """Text of a source for the preview modal, plus whether it may be edited.
+
+    The editability decision lives here rather than in the client so there is one
+    copy of the rule; the client renders whatever this returns.
+    """
+    _require_rag()
+    conn = _rag_connection()
+    try:
+        doc = store.get_visible_document(conn, document_id)
+        if doc is None:
+            raise HTTPException(status_code = 404, detail = "Document not found")
+        _require_document_owner(conn, doc)
+    finally:
+        conn.close()
+
+    ext = os.path.splitext(doc["filename"])[1].lower()
+    out = {
+        "documentId": document_id,
+        "filename": doc["filename"],
+        "mediaKind": "pdf" if ext == ".pdf" else "text",
+        "format": "markdown" if ext in _MARKDOWN_EXTS else "plain",
+        "text": None,
+        "editable": False,
+        "truncated": False,
+        "readOnlyReason": None,
+    }
+    if ext == ".pdf":
+        # Rendered from the signed file URL by pdf.js, so no text is sent here.
+        out["readOnlyReason"] = "PDFs are shown as the original document and cannot be edited here."
+        return out
+
+    stored_path = doc.get("stored_path")
+    if not stored_path or not os.path.isfile(stored_path):
+        raise HTTPException(status_code = 404, detail = "Document file not available")
+    # Same uploads-root confinement as the signed file route: a stored_path that
+    # escaped the managed root is never read, let alone written.
+    if not _is_managed_preview_path(stored_path):
+        raise HTTPException(status_code = 403, detail = "Forbidden")
+
+    try:
+        out["text"] = _document_text(stored_path, ext)
+    except Exception as exc:  # noqa: BLE001 - a broken file is a preview failure, not a 500
+        logger.warning("failed to read document %s for preview", document_id, exc_info = True)
+        raise HTTPException(
+            status_code = 422, detail = f"Could not read this document ({exc})"
+        ) from exc
+
+    size = _stored_size(stored_path) or 0
+    if ext not in _EDITABLE_EXTS:
+        out["readOnlyReason"] = (
+            "Word documents are shown as the text Unsloth indexed and cannot be edited here."
+        )
+    elif doc.get("linked_folder_id"):
+        # Editing the snapshot would be undone by the next folder sync, and the
+        # original in the user's folder is never written to. So: display only.
+        out["readOnlyReason"] = (
+            "This source is synced from a linked folder, so it is read-only here. "
+            "Edit the file in the folder instead."
+        )
+    elif doc.get("status") in ("pending", "running"):
+        out["readOnlyReason"] = "This source is still indexing."
+    elif size > _MAX_TEXT_EDIT_BYTES:
+        out["truncated"] = True
+        out["readOnlyReason"] = "This file is too large to edit here; showing the start of it."
+    else:
+        out["editable"] = True
+    return out
+
+
+class UpdateDocumentContentRequest(BaseModel):
+    text: str = Field(max_length = _MAX_TEXT_EDIT_BYTES)
+
+
+@router.put("/documents/{document_id}/content")
+def update_document_content(
+    document_id: str,
+    payload: UpdateDocumentContentRequest,
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    """Save an edited source and re-index it, returning the replacement document.
+
+    The edit is written to a *new* file in the managed uploads root and ingested as
+    a replacement, never over the existing one. The document it replaces is retired
+    by the ingestion worker only once the re-index completes, so a parse or embed
+    failure leaves the original searchable rather than destroying it. Files outside
+    the uploads root -- every original the user linked or dragged in -- are never
+    opened for writing.
+    """
+    _require_rag()
+    conn = _rag_connection()
+    try:
+        doc = store.get_visible_document(conn, document_id)
+        if doc is None:
+            raise HTTPException(status_code = 404, detail = "Document not found")
+        _require_document_owner(conn, doc)
+    finally:
+        conn.close()
+
+    if doc.get("linked_folder_id"):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Linked-folder documents are managed by folder synchronization",
+        )
+    ext = os.path.splitext(doc["filename"])[1].lower()
+    if ext not in _EDITABLE_EXTS:
+        raise HTTPException(
+            status_code = 400, detail = f"'{ext}' documents cannot be edited"
+        )
+    if doc.get("status") in ("pending", "running"):
+        # An ingestion worker is reading the current file and will write this
+        # document's rows; replacing it underneath would race that job.
+        raise HTTPException(status_code = 409, detail = "This source is still indexing")
+    old_path = doc.get("stored_path")
+    if not old_path or not os.path.isfile(old_path):
+        raise HTTPException(status_code = 404, detail = "Document file not available")
+    if not _is_managed_preview_path(old_path):
+        raise HTTPException(status_code = 403, detail = "Forbidden")
+
+    scope = doc["scope"]
+    _raise_if_scope_retired(scope, "The owner of this source is being deleted")
+
+    uploads = ensure_dir(rag_uploads_root())
+    stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
+    with open(stored_path, "wb") as handle:
+        handle.write(payload.text.encode("utf-8"))
+    try:
+        with folder_sync.scope_lock(scope):
+            _raise_if_scope_retired(scope, "The owner of this source is being deleted")
+            with _rag_unavailable_as_503(stored_path):
+                new_id, job_id = ingestion.start_ingestion(
+                    scope,
+                    doc.get("kb_id"),
+                    doc.get("thread_id"),
+                    # Same scope columns and same filename: the replacement is the
+                    # same source, so retrieval keeps finding it where it was.
+                    doc["filename"],
+                    stored_path,
+                    project_id = doc.get("project_id"),
+                    dedupe = False,
+                    replaces = (document_id, old_path),
+                )
+    except Exception:
+        _remove_stored_upload(stored_path)
+        raise
+    return {"documentId": new_id, "jobId": job_id, "filename": doc["filename"]}

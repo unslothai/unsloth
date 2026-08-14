@@ -181,6 +181,23 @@ export interface PreviewTarget {
   text?: string | null;
 }
 
+/** A source opened in the preview modal. The backend decides how to render it and
+ * whether it may be edited, so the client keeps no list of file extensions and the
+ * two can never disagree about what is editable. */
+export interface DocumentContent {
+  documentId: string;
+  filename: string;
+  /** "pdf" renders from the signed file URL and carries no text. */
+  mediaKind: "pdf" | "text";
+  format: "markdown" | "plain";
+  text?: string | null;
+  editable: boolean;
+  /** Text was cut off at the size cap, so it is shown but not editable. */
+  truncated: boolean;
+  /** Why editing is unavailable; shown in the footer. Null when editable. */
+  readOnlyReason?: string | null;
+}
+
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
 
 const ACCEPTED_UPLOAD_EXTS = new Set(
