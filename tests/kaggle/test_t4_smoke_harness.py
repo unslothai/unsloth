@@ -3871,6 +3871,50 @@ def test_the_reports_of_every_kernel_are_gathered(tmp_path):
     assert sorted(r["label"] for r in reports) == ["control", "grpo"]
 
 
+def test_the_log_fallback_reads_kaggles_own_json_record_shape(tmp_path):
+    """The kernel log is the fallback for a run whose executed notebook never
+    came back, and Kaggle does not hand that log back as text.
+
+    `kernels/output` returns `log` as a JSON array of {stream_name, time,
+    data} records, one record per line, so nothing in the file starts with
+    the report prefix and reading it verbatim recovered nothing -- a failed
+    assertion scored as infra. report.py::kernel_log_text and
+    collect_evidence.py::iter_text already flatten it; this one has to too.
+    """
+    import launch
+
+    records = [
+        {"stream_name": "stderr", "time": 1.0, "data": "some noise\n"},
+        {
+            "stream_name": "stdout",
+            "time": 2.0,
+            "data": 'T4_SMOKE_REPORT {"label": "control", "model": "m", "passed": false}\n',
+        },
+    ]
+    (tmp_path / "k1").mkdir()
+    (tmp_path / "k1" / "kernel.log").write_text(
+        "[" + "\n,".join(json.dumps(r) for r in records) + "]", encoding = "utf-8"
+    )
+    reports = launch.extract_reports(tmp_path)
+    assert [r["label"] for r in reports] == ["control"]
+    assert reports[0]["passed"] is False
+
+
+def test_a_report_split_across_log_records_is_still_read(tmp_path):
+    """Kaggle chunks stdout by write, not by line, so the prefix and its
+    payload can land in different records. Flattening has to join them back
+    before any line splitting happens."""
+    import launch
+
+    records = [
+        {"stream_name": "stdout", "time": 1.0, "data": 'T4_SMOKE_REPORT {"label": "grpo", '},
+        {"stream_name": "stdout", "time": 1.1, "data": '"model": "q", "passed": true}\n'},
+    ]
+    (tmp_path / "k1").mkdir()
+    (tmp_path / "k1" / "kernel.log").write_text(json.dumps(records), encoding = "utf-8")
+    assert [r["label"] for r in launch.extract_reports(tmp_path)] == ["grpo"]
+
+
 def test_a_kernel_that_could_not_be_pushed_does_not_lose_the_other(tmp_path):
     """Half a run is a warning, not a failure: half a comparison is not
     evidence of a regression."""
