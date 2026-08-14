@@ -356,7 +356,7 @@ Chat completions and tool argument blobs are not training gold. Preference pairs
 7. `decide` then optional `confirm` (`_confirm_retry_world`).
 8. `ENTER_SIM`: `create_sim_session`, `track_sim`, refuse bad ids, `clone_tree`, resolve test command, rebuild inject, optional diagnostic `run_action` (does not burn a sim turn).
 9. `RETRY_WORLD` / `CONTINUE_SIM`: rebuild inject + `_repair_context` (last failure, sim grade, clipped last generate text). World retry does **not** copy sim files onto world.
-10. `_extract`: `from_episode` (prefers last **world** success), `from_drift`, optional `llm_extract` via `Host.complete`, episode row, last-event rollouts, `maybe_compile`. `keep_sim` only for **active** `error_fix` or **active** `twin_note` on this episode.
+10. `_extract`: `from_episode` (prefers last **world** success), `from_drift`, optional `llm_extract` via `Host.complete`, episode row, last-fail and last-pass rollouts per contact, `maybe_compile`. `keep_sim` only for **active** `error_fix` or **active** `twin_note` on this episode.
 11. Optional ≤3 `Probe:` runs on a **fresh** clone of current world.
 12. `finally`: remove every created sim except the kept one; `reset_episode`.
 

@@ -505,24 +505,31 @@ def _write_draft(
 
 
 def _write_rollouts(state: EpisodeState, *, source_record_id: str, db_path: str) -> None:
-    last_by_contact: dict[str, dict[str, Any]] = {}
+    last_fail: dict[str, dict[str, Any]] = {}
+    last_pass: dict[str, dict[str, Any]] = {}
     for event in state.trace_events:
         contact = event.get("contact")
-        if contact in ROLLOUT_CONTACT_ORDER:
-            last_by_contact[contact] = event
-    for contact in ROLLOUT_CONTACT_ORDER:
-        event = last_by_contact.get(contact)
-        if event is None:
+        if contact not in ROLLOUT_CONTACT_ORDER:
             continue
-        outcome = ROLLOUT_PASS if event.get("kind") == "success" else ROLLOUT_FAIL
-        insert_rollout(
-            episode_id=state.episode_id,
-            contact=contact,
-            outcome=outcome,
-            summary=event.get("summary") or "",
-            source_record_id=source_record_id,
-            db_path=db_path,
-        )
+        if event.get("kind") == "success":
+            last_pass[contact] = event
+        elif event.get("kind") == "failure":
+            last_fail[contact] = event
+    for contact in ROLLOUT_CONTACT_ORDER:
+        for event, outcome in (
+            (last_fail.get(contact), ROLLOUT_FAIL),
+            (last_pass.get(contact), ROLLOUT_PASS),
+        ):
+            if event is None:
+                continue
+            insert_rollout(
+                episode_id=state.episode_id,
+                contact=contact,
+                outcome=outcome,
+                summary=event.get("summary") or "",
+                source_record_id=source_record_id,
+                db_path=db_path,
+            )
 
 
 async def _extract(

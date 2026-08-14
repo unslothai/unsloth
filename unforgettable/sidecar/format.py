@@ -70,7 +70,7 @@ def _fail_text_from_error_fix(rec: dict[str, Any]) -> str:
 
 def preference_pairs(*, db_path=None, train_episode_ids: set[str] | None = None) -> list[dict]:
     """World-pass + admitted error_fix pairs. Chosen is never sim-only."""
-    # run() keeps last-per-contact, so a happy path stores world/pass only.
+    # run() stores last fail and last pass per contact. Chosen is the admitted body.
     world_pass = {
         row["episode_id"]
         for row in list_rollouts(contact="world", outcome="pass", db_path=db_path)

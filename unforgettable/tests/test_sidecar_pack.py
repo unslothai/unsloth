@@ -546,7 +546,7 @@ def test_preference_pairs_from_episode_writer_world_pass(db_path):
         (row["contact"], row["outcome"])
         for row in list_rollouts(episode_id=state.episode_id, db_path=db_path)
     }
-    assert grades == {("world", "pass"), ("sim", "pass")}
+    assert grades == {("world", "fail"), ("world", "pass"), ("sim", "pass")}
     assert preference_pairs(db_path=db_path) == []
     fixes = list_records(kinds=["error_fix"], db_path=db_path)
     assert len(fixes) == 1
