@@ -3255,10 +3255,10 @@ def _report_live_llama_timings(callback, chunk) -> None:
         return
     timings = chunk.get("timings")
     sample = dict(timings) if isinstance(timings, dict) else {}
+    # Live samples are not TTFT; terminal metadata retains prompt_ms for the fallback.
+    sample.pop("prompt_ms", None)
     progress = chunk.get("prompt_progress")
     if isinstance(progress, dict):
-        # Live prefill is not TTFT; keep prompt_ms for terminal engine timings only.
-        sample.pop("prompt_ms", None)
         try:
             processed = max(0.0, float(progress.get("processed", 0)))
             cached = max(0.0, float(progress.get("cache", 0)))

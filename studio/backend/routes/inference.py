@@ -3466,6 +3466,14 @@ def _monitor_usage(
         sink = _monitor_perf_sink.get()
         if sink is not None:
             sink["timings"] = timings
+            outer_monitor_id = sink.get("monitor_id")
+            if outer_monitor_id:
+                _monitor_usage(
+                    outer_monitor_id,
+                    None,
+                    sink.get("context_length"),
+                    timings = timings,
+                )
     # isinstance, not truthiness: a non-dict usage would raise on .get() into the
     # streaming generator and abort the user's response.
     if isinstance(usage, dict) and usage:
@@ -16866,9 +16874,11 @@ async def _responses_non_streaming(
 
     # Catches the engine timings the suppressed inner monitor would otherwise drop.
     inner_perf: dict = {}
-
+    if monitor_id:
+        inner_perf["monitor_id"] = monitor_id
+        inner_perf["context_length"] = _monitor_context_length()
     try:
-        _sink_token = _monitor_perf_sink.set(inner_perf)
+        _sink_token = _monitor_perf_sink.set(inner_perf if monitor_id else None)
         try:
             result = await openai_chat_completions(chat_req, request)
         finally:
