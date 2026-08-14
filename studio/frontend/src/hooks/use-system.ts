@@ -3,7 +3,11 @@
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
-import { shouldRetrySystemDiscovery } from "./system-discovery";
+import {
+  settledFailureStatus,
+  shouldRetrySystemDiscovery,
+  type SystemInfoStatus,
+} from "./system-discovery";
 
 export interface GpuDevice {
   index?: number;
@@ -38,11 +42,10 @@ export interface SystemGpuInfo {
 export { aggregateGpuMemoryTotalGb } from "./gpu-vram";
 
 export interface SystemInfoResponse {
-  /** Client-side, not sent by the backend: false on the placeholder below until
-   * /api/system answers. Readers that render a verdict about the host -- "no
-   * GPU", "CPU only" -- must check it, or they state it as fact before anything
-   * has been read. */
-  loaded: boolean;
+  /** Client-side, not sent by the backend. Readers that render a verdict about
+   * the host -- "no GPU", "CPU only" -- must check it, or they state the
+   * placeholder below as fact. */
+  status: SystemInfoStatus;
   platform: string;
   python_version: string;
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
@@ -80,7 +83,7 @@ let vulkanRetrySubscribers = 0;
 let vulkanRetryId: number | null = null;
 
 const DEFAULT_SYSTEM: SystemInfoResponse = {
-  loaded: false,
+  status: "pending",
   platform: "Unknown",
   python_version: "Unknown",
   device_backend: "cpu",
@@ -155,7 +158,7 @@ export async function fetchSystemInfo({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
-      cachedSystem = { ...(data as SystemInfoResponse), loaded: true };
+      cachedSystem = { ...(data as SystemInfoResponse), status: "ready" };
       systemSubscribers.forEach((subscriber) => subscriber(cachedSystem!));
       return cachedSystem;
     } catch {
@@ -189,7 +192,17 @@ export function useSystemInfo({
     const update = (force: boolean) => {
       void fetchSystemInfo({ force })
         .then((info) => {
-          if (!cancelled && info) setSystemInfo(info);
+          if (cancelled) return;
+          if (info) {
+            setSystemInfo(info);
+            return;
+          }
+          setSystemInfo((previous) => {
+            const status = settledFailureStatus(previous.status);
+            return status === previous.status
+              ? previous
+              : { ...DEFAULT_SYSTEM, status };
+          });
         })
         .finally(() => {
           if (cancelled || !pollMs) return;

@@ -834,6 +834,7 @@ export const en = {
         ggufInference: "GGUF inference",
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
+        unreadable: "Could not read this server's hardware.",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
