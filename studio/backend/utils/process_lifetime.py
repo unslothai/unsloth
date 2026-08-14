@@ -36,6 +36,41 @@ _PR_SET_PDEATHSIG = 1
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _JobObjectExtendedLimitInformation = 9
 
+# The lowest pid this module will ever record or signal.
+#
+# kill(2) gives 0, 1 and negatives a different meaning to every other value, and
+# each of those meanings is catastrophic here:
+#
+#   kill(0, sig)     this process's entire group, i.e. Studio and its siblings
+#   killpg(1, sig)   the same call as kill(-1, sig): EVERY process the caller
+#                    has permission to signal, not "process group 1"
+#   kill(-n, sig)    process group n
+#
+# The middle one is not hypothetical. A record naming pid 1 as a child reaches
+# _posix_terminate, getpgid(1) == 1 makes it look like a group leader, and the
+# killpg branch then SIGTERMs every process belonging to the user, waits the
+# grace period, and SIGKILLs them too. Nothing rejected it on the way: the
+# identity check compares recorded start-time against current, and init's start
+# time never changes, so a recorded pid 1 matches forever.
+#
+# Guarded at both ends. Nothing below this is recorded, so the bad record cannot
+# be created, and nothing below this is signalled, so records written by an
+# older build cannot fire.
+_LOWEST_SIGNALABLE_PID = 2
+
+
+def _signalable(pid: object) -> bool:
+    """Whether `pid` names a process this module may record or signal.
+
+    `bool` is excluded explicitly: it is an `int` subclass, so True would
+    otherwise read as pid 1.
+    """
+    return (
+        isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid >= _LOWEST_SIGNALABLE_PID
+    )
+
 _lock = threading.Lock()
 _spawner_lock = threading.Lock()
 _spawner: "Optional[_Spawner]" = None
@@ -644,7 +679,7 @@ def terminate_descendants(
         return
     live: "list[tuple[int, Optional[str]]]" = []
     for pid, identity in collected:
-        if not _still_the_same(pid, identity):
+        if not _signalable(pid) or not _still_the_same(pid, identity):
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -918,7 +953,9 @@ def adopt_pid(pid: Optional[int]) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.
     Tolerates a None or already-exited pid."""
-    if not pid:
+    # `not pid` already rejected None and 0. pid 1 is init, and recording it is
+    # what turns the sweep into a kill of everything the user owns.
+    if not _signalable(pid):
         return
     # Here as well as in the Linux spawn path: this is the first thing that
     # writes a record, and without the handler a fork child keeps this
@@ -968,6 +1005,8 @@ def terminate_all(timeout: float = 5.0) -> "list[int]":
         with _record_lock:
             _tracked_pids.pop(pid, None)
             pgid = _tracked_pgids.pop(pid, None)
+        if not _signalable(pid):
+            continue  # dropped, not kept: see _LOWEST_SIGNALABLE_PID
         current = _pid_identity(pid)
         if not _pid_alive(pid):
             # Same as the startup sweep: a leader that exited first can still
@@ -1141,7 +1180,12 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
     children = record.get("children")
     for entry in children if isinstance(children, list) else []:
         pid = entry.get("pid") if isinstance(entry, dict) else None
-        if not isinstance(pid, int):
+        if not _signalable(pid):
+            # Records written by a build without the guard can name pid 1, and
+            # signalling that is a kill of everything the user owns. Dropped
+            # rather than deferred: leaving `unresolved` alone lets the record be
+            # unlinked, so a poisoned one is gone after a single startup instead
+            # of being retried on every launch forever.
             continue
         # A zombie is a dead leader nobody has waited on: it holds nothing, and
         # signalling it would burn the whole grace period answering probes.
@@ -1214,6 +1258,8 @@ def _own_process_group(pid: int) -> Optional[int]:
         pgid = os.getpgid(pid)
     except Exception:
         return None
+    if not _signalable(pgid):
+        return None  # killpg(1) is a broadcast, killpg(0) is our own group
     return pgid if pgid == pid else None
 
 
@@ -1225,8 +1271,8 @@ def _reap_orphaned_group(pgid: object, pid: int, timeout: float) -> bool:
     a process group, so it cannot have been handed to an unrelated group while
     members remain.
     """
-    if not isinstance(pgid, int) or pgid != pid or _is_windows() or not hasattr(os, "killpg"):
-        return False
+    if not _signalable(pgid) or pgid != pid or _is_windows() or not hasattr(os, "killpg"):
+        return False  # killpg(1) is kill(-1); see _LOWEST_SIGNALABLE_PID
     try:
         os.killpg(pgid, 0)  # the group is still there
     except Exception:
@@ -1312,6 +1358,8 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
     # SIGTERM, give the child up to `timeout` to exit, then SIGKILL. Reaping
     # belongs to the child's owner (or init for orphans). Prefer the group
     # (covers grandchildren) when pid leads its own group.
+    if not _signalable(pid):
+        return  # see _LOWEST_SIGNALABLE_PID
     group_leader = False
     try:
         group_leader = os.getpgid(pid) == pid
@@ -1329,6 +1377,11 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
 
 
 def _posix_terminate_one(pid: int, group_leader: bool, timeout: float) -> None:
+    # Belt and braces with the caller: this is the last line before the signal,
+    # and killpg(1) would reach every process the user owns. See
+    # _LOWEST_SIGNALABLE_PID.
+    if not _signalable(pid):
+        return
     killer = os.killpg if group_leader else os.kill
     try:
         killer(pid, signal.SIGTERM)
