@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 
 from utils.paths.path_utils import drop_appledouble_metadata
+from .output_storage import resolve_configured_outputs_root
 
 
 def _infer_studio_home_from_venv() -> Path | None:
@@ -91,7 +92,7 @@ def recipe_datasets_root() -> Path:
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return resolve_configured_outputs_root(default = studio_root() / "outputs")
 
 
 def exports_root() -> Path:
