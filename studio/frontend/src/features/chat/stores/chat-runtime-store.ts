@@ -1216,9 +1216,10 @@ type ChatRuntimeStore = {
     options?: {
       persist?: boolean;
       trackQueuedSettings?: boolean;
-      /** This is the load response applied after setCheckpoint, so remembered
-       * params outrank the model defaults it carries. */
-      fromModelLoad?: boolean;
+      /** These params are the model's defaults (a load or status response, or
+       * the built-in per-family values), so the model's remembered settings are
+       * laid back over them even though the checkpoint did not change. */
+      fromModelDefaults?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -1471,46 +1472,31 @@ function persistReplayedParams(
 
 /** Same contract as the inference-param versions: a local edit must not be
  * clobbered by a hydration response already in flight. Recorded per model so
- * only the edited one is fenced. */
+ * only the edited one is fenced. Before hydration there is nothing to fence
+ * against and the params are placeholders, so nothing is recorded either. */
 function trackParamsByModel(
+  state: ChatRuntimeStore,
   paramsByModel: Record<string, PersistedInferenceParams> | null,
   modelId: string | undefined,
 ): Record<string, PersistedInferenceParams> | null {
+  if (!state.settingsHydrated) {
+    return null;
+  }
   if (paramsByModel && modelId) {
     locallyRememberedModels.add(modelId);
   }
   return paramsByModel;
 }
 
-/** Replayed params no longer match the named preset as saved. For Default the
- * settings sheet reads provenance alone to decide that, and the post-load hooks
- * that re-apply model defaults (mergeBackendRecommendedInference, the Qwen
- * thinking params) all skip a source other than builtin-default, so marking this
- * is also what stops them overwriting what was just replayed. */
-function getReplayedPresetPatch(
-  state: ChatRuntimeStore,
-  replayed: boolean,
-): Partial<ChatRuntimeStore> {
-  return replayed && state.activePresetSource !== "modified"
-    ? { activePresetSource: "modified" as const }
-    : {};
-}
-
-/** State a model switch owes to the memory: the outgoing snapshot and preset
- * provenance. */
+/** State a model switch owes to the memory: the outgoing model's snapshot. */
 function getReplayStatePatch(
   state: ChatRuntimeStore,
   nextParams: InferenceParams,
   outgoing: Record<string, PersistedInferenceParams> | null,
   baseParams: InferenceParams,
-  visible: boolean,
 ): Partial<ChatRuntimeStore> {
-  const replayed = baseParams !== state.params;
-  persistReplayedParams(state, nextParams, replayed);
-  return {
-    ...(outgoing ? { paramsByModel: outgoing } : {}),
-    ...(visible ? getReplayedPresetPatch(state, replayed) : {}),
-  };
+  persistReplayedParams(state, nextParams, baseParams !== state.params);
+  return outgoing ? { paramsByModel: outgoing } : {};
 }
 
 /** The per-model map after a setParams call: the destination's new snapshot,
@@ -1528,6 +1514,7 @@ function getParamsByModelAfterEdit(
     return outgoing;
   }
   const recorded = trackParamsByModel(
+    state,
     getRememberedParamsPatch(
       state.rememberParamsPerModel,
       outgoing ?? state.paramsByModel,
@@ -1549,6 +1536,7 @@ function rememberOutgoingModel(
 ): Record<string, PersistedInferenceParams> | null {
   const snapshot = pickPersistedInferenceParams(outgoing);
   const next = trackParamsByModel(
+    state,
     getRememberedParamsPatch(
       state.rememberParamsPerModel,
       state.paramsByModel,
@@ -1669,6 +1657,17 @@ function getHydratedSettingsState(
       (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
     }
   }
+  // The model already selected when this lands -- restored from storage, or
+  // published by a status response that beat it -- never crossed a checkpoint
+  // transition, so nothing replayed its memory. Without this it runs on the
+  // global set, which belongs to whichever model was used last.
+  nextState.params = getReplayedParams(
+    nextState.rememberParamsPerModel ?? state.rememberParamsPerModel,
+    nextState.paramsByModel ?? state.paramsByModel,
+    params,
+    params.checkpoint,
+    true,
+  );
   return nextState;
 }
 
@@ -1924,15 +1923,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // An interactive local load lands here with the destination checkpoint and
       // the backend's recommended params, and only reaches setCheckpoint later,
       // once params.checkpoint already matches. Replay here or that switch, the
-      // common one, never restores the model's own settings. fromModelLoad marks
-      // the load-response update that follows setCheckpoint: it overwrites token
-      // budgets, so the remembered ones have to be laid back over it.
+      // common one, never restores the model's own settings. fromModelDefaults
+      // marks the updates that re-apply model defaults after a load or a status
+      // poll: they overwrite remembered values, so memory goes back over them.
       const nextParams = getReplayedParams(
         state.rememberParamsPerModel,
         outgoing ?? state.paramsByModel,
         params,
         params.checkpoint,
-        checkpointChanged || options?.fromModelLoad === true,
+        checkpointChanged || options?.fromModelDefaults === true,
       );
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
@@ -1957,9 +1956,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         params: nextParams,
         ...(paramsByModel ? { paramsByModel } : {}),
-        ...(options?.trackQueuedSettings === false
-          ? {}
-          : getReplayedPresetPatch(state, nextParams !== params)),
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
           : {}),
@@ -2200,17 +2196,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
       return {
         params: nextParams,
-        // A background load and the restore that follows it both switch the
-        // checkpoint with trackQueuedSettings off. Their replays are not visible
-        // settings changes, and the restore does not carry provenance back, so
-        // marking there would leave the visible model reading as modified.
-        ...getReplayStatePatch(
-          state,
-          nextParams,
-          outgoing,
-          baseParams,
-          options?.trackQueuedSettings !== false,
-        ),
+        ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
@@ -2650,6 +2636,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Turning it on adopts the settings on screen for the active model.
       const snapshot = pickPersistedInferenceParams(state.params);
       const paramsByModel = trackParamsByModel(
+        state,
         getRememberedParamsPatch(
           rememberParamsPerModel,
           state.paramsByModel,

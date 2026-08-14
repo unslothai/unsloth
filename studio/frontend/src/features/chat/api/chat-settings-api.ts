@@ -4,11 +4,9 @@
 import { authFetch } from "@/features/auth";
 import type { ChatPresetSource } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
-import type { InferenceParams } from "../types/runtime";
+import type { PersistedInferenceParams } from "../types/runtime";
 
-export type PersistedInferenceParams = Partial<
-  Omit<InferenceParams, "checkpoint">
->;
+export type { PersistedInferenceParams };
 
 export interface PersistedChatPreset {
   name: string;

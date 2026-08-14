@@ -7,8 +7,10 @@
 // filed against the model it was made for, and a switch replays that model's own
 // settings. No store or network imports, so the rules stay unit-testable.
 
-import type { PersistedInferenceParams } from "../api/chat-settings-api";
-import type { InferenceParams } from "../types/runtime";
+import type {
+  InferenceParams,
+  PersistedInferenceParams,
+} from "../types/runtime";
 
 export type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 

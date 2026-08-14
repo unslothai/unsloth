@@ -26,5 +26,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["tests"]
+  // The ambient Web Speech types too: a test that reaches the dictation adapter
+  // through a barrel gets the app's globals, not bare DOM.
+  "include": ["tests", "src/speech-recognition.d.ts"]
 }

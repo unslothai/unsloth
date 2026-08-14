@@ -170,36 +170,38 @@ test("a load response does not overwrite a remembered token budget", () => {
   assert.equal(withForcedReplay.maxTokens, 4096);
 });
 
-// The post-load hooks that re-apply model defaults all bail on a preset source
-// other than builtin-default, so marking a replay is what keeps them from
-// overwriting the settings that were just restored.
-test("the post-load default hooks stand down once a replay is marked", async () => {
+// A load or status response re-applies the model's defaults over whatever is on
+// screen. Replaying afterwards is what keeps the model's own settings, and it
+// leaves a model with nothing remembered on its recommendation, which standing
+// the default hooks down globally would not.
+test("a model's defaults do not outrank what it is remembered with", async () => {
   const { mergeBackendRecommendedInference } = await import(
     "../src/features/chat/presets/preset-policy.ts"
   );
-  const replayed = params({ temperature: 0.2, maxTokens: 4096 });
   const response = {
     inference: { temperature: 0.9, top_p: 0.5 },
     is_gguf: true,
     context_length: 131072,
   };
+  const applyDefaults = (current: InferenceParams, modelId: string) =>
+    mergeBackendRecommendedInference({
+      current,
+      response: response as never,
+      modelId,
+      presetSource: "builtin-default",
+    });
+  const memory = { [QWEN]: { temperature: 0.2, maxTokens: 4096 } };
 
-  const unmarked = mergeBackendRecommendedInference({
-    current: replayed,
-    response: response as never,
-    modelId: QWEN,
-    presetSource: "builtin-default",
-  });
-  assert.equal(unmarked.temperature, 0.9, "this is the reported clobber");
+  const tuned = applyDefaults(params({ temperature: 0.2, maxTokens: 4096 }), QWEN);
+  assert.equal(tuned.temperature, 0.9, "this is the reported clobber");
+  // setParams(fromModelDefaults) forces the replay even though the checkpoint
+  // did not change.
+  const replayed = getReplayedParams(true, memory, tuned, QWEN, true);
+  assert.equal(replayed.temperature, 0.2);
+  assert.equal(replayed.maxTokens, 4096);
 
-  const marked = mergeBackendRecommendedInference({
-    current: replayed,
-    response: response as never,
-    modelId: QWEN,
-    presetSource: "modified",
-  });
-  assert.equal(marked.temperature, 0.2, "the replayed value survives");
-  assert.equal(marked.maxTokens, 4096);
+  const fresh = getReplayedParams(true, memory, applyDefaults(params(), LLAMA), LLAMA, true);
+  assert.equal(fresh.temperature, 0.9, "a model with no memory keeps its own defaults");
 });
 
 // Null is how the store leaves the map and its hydration version untouched.

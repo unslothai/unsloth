@@ -1311,6 +1311,8 @@ export function useChatModelRuntime() {
                 modelId,
                 presetSource: useChatRuntimeStore.getState().activePresetSource,
               }),
+              // Lay this model's remembered settings back over its defaults.
+              { fromModelDefaults: true },
             );
             // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
             // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
@@ -1493,7 +1495,12 @@ export function useChatModelRuntime() {
                         ? { presencePenalty: 1.5 }
                         : {}),
                     };
-                store.setParams({ ...store.params, ...p });
+                // Same rule as the load response: defaults first, this model's
+                // remembered settings over them.
+                store.setParams(
+                  { ...store.params, ...p },
+                  { fromModelDefaults: true },
+                );
               }
             }
             await refresh({ signal: abortCtrl.signal });
