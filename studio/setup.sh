@@ -1925,7 +1925,14 @@ if not _edit:
         if len(f.parts) > 1 and f.parts[0] in _shared:
             continue
         rows.append((f, os.path.normcase(str(d.locate_file(f)))))
-damaged = bool(d_record) and not _edit and not selfrec
+tops = (d.read_text('top_level.txt') or '').split()
+# a truncated RECORD can keep its self-entry when the writer ordered entries
+# lexicographically (dist-info sorts before the payload), so the file must also
+# end on a complete line. Declared-top coverage cannot serve as a third signal:
+# top_level.txt legitimately names tops the wheel never ships (xxhash declares
+# _xxhash), so a cut landing exactly on a line boundary stays undetectable here.
+damaged = bool(d_record) and not _edit and (
+    not selfrec or not d_record.endswith(chr(10)))
 if not damaged:
     for f, key in rows:
         try:
@@ -1946,7 +1953,6 @@ if not damaged:
         if _min is not None and f.name not in _rewritten and st.st_size < _min:
             damaged = True
             break
-tops = (d.read_text('top_level.txt') or '').split()
 if not rows and not damaged and tops:
     damaged = not all(importlib.util.find_spec(t) for t in tops if t)
 print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))

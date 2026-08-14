@@ -1093,7 +1093,10 @@ function Invoke-BoundedPythonStdinProbe {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $PythonExe
-        $psi.Arguments = "-"
+        # -I so a project-local sysconfig.py or csv.py in the caller's working
+        # directory cannot shadow the probe's own imports before its in-code
+        # scrub runs: python - would otherwise prepend the cwd (-P is implied).
+        $psi.Arguments = "-I -"
         $psi.RedirectStandardInput = $true
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
@@ -4837,9 +4840,8 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # resolution there: a checkout's nested files have no recorded inventory to
 # compare against, importing is off the table by design, and a development tree
 # is the user's own to edit.
-# only for a RECORD-less install, best effort, with PYTHONPATH and
-# working-directory entries dropped from sys.path first (python - leaves the
-# inherited cwd on sys.path; the shell probe's -I covers both).
+# only for a RECORD-less install, best effort. Both probes now run under -I;
+# the in-code sys.path scrub is kept as a second layer.
 $_pkgProbeCode = @'
 import csv, importlib.metadata, importlib.util, json, os, re, site, stat, sys, sysconfig
 from pathlib import PurePosixPath
@@ -4929,7 +4931,14 @@ if not _edit:
         if len(f.parts) > 1 and f.parts[0] in _shared:
             continue
         rows.append((f, os.path.normcase(str(d.locate_file(f)))))
-damaged = bool(d_record) and not _edit and not selfrec
+tops = (d.read_text('top_level.txt') or '').split()
+# a truncated RECORD can keep its self-entry when the writer ordered entries
+# lexicographically (dist-info sorts before the payload), so the file must also
+# end on a complete line. Declared-top coverage cannot serve as a third signal:
+# top_level.txt legitimately names tops the wheel never ships (xxhash declares
+# _xxhash), so a cut landing exactly on a line boundary stays undetectable here.
+damaged = bool(d_record) and not _edit and (
+    not selfrec or not d_record.endswith(chr(10)))
 if not damaged:
     for f, key in rows:
         try:
@@ -4950,7 +4959,6 @@ if not damaged:
         if _min is not None and f.name not in _rewritten and st.st_size < _min:
             damaged = True
             break
-tops = (d.read_text('top_level.txt') or '').split()
 if not rows and not damaged and tops:
     damaged = not all(importlib.util.find_spec(t) for t in tops if t)
 print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
