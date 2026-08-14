@@ -10,20 +10,26 @@
 // This pins the latest-request rule useRagDocuments.refresh applies.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 type Row = { id: string; status: string };
 
 /** The publish gate as refresh applies it: take a ticket, drop the result if a
- * newer request has started since. */
+ * newer request has started since. `clearScope` is the scope-change effect,
+ * which takes a ticket without issuing a request of its own. */
 function makeRefresher(published: Row[][]) {
   let seq = 0;
-  return async function refresh(list: () => Promise<Row[]>) {
+  async function refresh(list: () => Promise<Row[]>) {
     const requestId = ++seq;
     const rows = await list();
     if (seq !== requestId) return;
     published.push(rows);
+  }
+  refresh.clearScope = () => {
+    seq += 1;
   };
+  return refresh;
 }
 
 function deferred<T>() {
@@ -83,4 +89,36 @@ test("a lone refresh still publishes", async () => {
   const refresh = makeRefresher(published);
   await refresh(async () => INDEXING);
   assert.deepEqual(published, [INDEXING]);
+});
+
+// Leaving a project for a chat with no project clears the scope, and a cleared
+// scope issues no replacement request. Without a ticket taken on the way out,
+// the project's own response lands afterwards and puts its sources back, in a
+// chat that is not in that project.
+test("a response for a scope that has been cleared does not publish", async () => {
+  const published: Row[][] = [];
+  const refresh = makeRefresher(published);
+  const inFlight = deferred<Row[]>();
+
+  const pending = refresh(() => inFlight.promise);
+  refresh.clearScope();
+  inFlight.resolve(INDEXING);
+  await pending;
+
+  assert.deepEqual(published, [], "the old scope's sources stay gone");
+});
+
+test("the scope-change effect takes a ticket on the way out", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /prev !== null && prev !== scopeKey\)[\s\S]{0,400}?refreshSeq\.current \+= 1;/,
+    "clearing the scope must outrank a refresh already in flight",
+  );
 });

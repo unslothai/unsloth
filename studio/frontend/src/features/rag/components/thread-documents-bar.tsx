@@ -340,12 +340,22 @@ export function ThreadDocumentsBar({
   const effectiveThreadId = threadId ?? materializedId;
   const initPromiseRef = useRef<Promise<string | null> | null>(null);
   const initGenerationRef = useRef(0);
+  const hadThreadIdRef = useRef(threadId !== null);
   useEffect(() => {
-    if (threadId) {
-      setMaterializedId(null);
-      initGenerationRef.current += 1;
-      initPromiseRef.current = null;
+    const hadThreadId = hadThreadIdRef.current;
+    hadThreadIdRef.current = threadId !== null;
+    if (!threadId) {
+      return;
     }
+    // A plain send creates the chat too, without going through ensureThreadId.
+    // Hand the choice made before it existed to the chat that just got an id,
+    // or it falls back to the default and the next new chat inherits the pick.
+    if (!hadThreadId) {
+      useChatRuntimeStore.getState().adoptPendingProjectAttachmentTarget(threadId);
+    }
+    setMaterializedId(null);
+    initGenerationRef.current += 1;
+    initPromiseRef.current = null;
   }, [threadId]);
 
   // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,

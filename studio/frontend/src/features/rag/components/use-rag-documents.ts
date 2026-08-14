@@ -259,6 +259,10 @@ export function useRagDocuments(
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
       sigByDocId.current.clear();
+      // Stand down any refresh still in flight for the old scope. Clearing to a
+      // null scope starts no replacement request to outrank it, so without this
+      // its response would repopulate the list that is about to be cleared.
+      refreshSeq.current += 1;
       // Scope changes intentionally clear the old scope before fetching the new
       // one. Keep this synchronous so React StrictMode's setup/cleanup replay
       // cannot cancel the only refresh after prevScopeKeyRef has advanced.

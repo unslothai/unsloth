@@ -2500,7 +2500,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       const pending =
         state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
-      if (pending === undefined) return state;
+      // A chat that already made its own choice keeps it: the pending entry
+      // belongs to a chat that does not exist yet.
+      if (pending === undefined || threadId in state.projectAttachmentTargetByThread) {
+        return state;
+      }
       const next = { ...state.projectAttachmentTargetByThread };
       delete next[PENDING_CHAT_ATTACHMENT_KEY];
       next[threadId] = pending;
