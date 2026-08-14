@@ -359,11 +359,17 @@ def test_an_explicit_env_value_beats_the_persisted_tier():
 def test_the_winget_bootstrap_rechecks_the_architecture():
     """The ARM64 branch clears $HasPython because the python on PATH is native. If
     winget fails, or its x64 build is not first on PATH, the same interpreter answers
-    the re-probe and setup would continue on the build it just rejected."""
+    the re-probe and setup would continue on the build it just rejected. But PATH order
+    is not the same thing as a failed install, so a build winget did put on the box is
+    searched for by path before the run is given up."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
-    block = source[source.index("winget install -e --id Python.Python.3.12") :][:1600]
+    block = source[source.index("winget install -e --id Python.Python.3.12") :][:2200]
     assert "Test-CompatibleSetupPythonArch $_afterWinget.Source" in block
+    assert "$_x64Python = Find-X64SetupPython" in block
+    assert "Add-PythonDirToProcessPath $_x64Python" in block
     assert 'Exit-SetupFailure "No x64 Python 3.11-3.13 was found"' in block
+    # And the search is defined before the branch that calls it.
+    assert source.index("function Find-X64SetupPython") < source.index("$_x64Python = Find")
 
 
 def test_setup_hands_the_resolved_tier_to_the_python_child():
