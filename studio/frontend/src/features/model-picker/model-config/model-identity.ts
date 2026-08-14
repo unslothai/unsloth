@@ -104,7 +104,7 @@ function ggufStem(filename: string): string {
 /**
 * Mirrors extract_quant_label in gguf.py, for a bare filename. The parent-directory pass
 * cannot fire on a basename, so this is the stem's quant token or the stem itself. */
-function ggufQuantLabel(filename: string): string {
+export function ggufQuantLabel(filename: string): string {
   const stem = ggufStem(filename);
   let fallback: RegExpExecArray | null = null;
   for (const match of stem.matchAll(QUANT_TOKEN)) {

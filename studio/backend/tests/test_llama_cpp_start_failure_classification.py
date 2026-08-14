@@ -148,9 +148,7 @@ class TestUnsupportedNonDiffusionArchitecture:
 
 
 class TestOllamaAndFallback:
-    _OLLAMA_GGUF = (
-        f"/home/u/.ollama{__import__('os').sep}ollama_links" f"{__import__('os').sep}m.gguf"
-    )
+    _OLLAMA_GGUF = f"/home/u/.ollama{__import__('os').sep}ollama_links{__import__('os').sep}m.gguf"
 
     def test_ollama_compat_message_still_works(self):
         out = "llama_model_load: error loading model: key not found"
@@ -284,8 +282,7 @@ class TestMissingSharedLibrary:
         # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec
         # target as "not found" and exits 127.
         out = (
-            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: "
-            "./build/bin/llama-server: not found"
+            "/home/t/.unsloth/llama.cpp/llama-server: 2: exec: ./build/bin/llama-server: not found"
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "package manager" not in msg
@@ -821,13 +818,34 @@ class TestDiagnosticsDoNotLeak:
     def test_a_huge_unterminated_line_is_cheap(self):
         # _drain_stdout keeps an unterminated line whole; the tail must be
         # sliced before it is filtered character by character.
+        #
+        # Proven by BEHAVIOUR rather than by a stopwatch. The bound is observable: an
+        # argument error further back than the tail cannot be reported unless
+        # something read it. A wall-clock budget tests the same property by proxy and
+        # measures the runner instead, which is why this exact assertion goes red on
+        # the Windows runner for main as well as for a branch. The stopwatch stays
+        # only as a catastrophic guard, loose enough that no runner can trip it.
         import time
 
-        out = "x" * 10_000_000 + "\nggml_metal_init: error"
+        buried = "error: invalid argument: --nope\n" + "x" * 10_000_000 + "\nggml_metal_init: error"
         start = time.perf_counter()
-        msg = _classify(out, "/models/x.gguf", "local/x", 1)
-        assert time.perf_counter() - start < 0.2
+        msg = _classify(buried, "/models/x.gguf", "local/x", 1)
+        elapsed = time.perf_counter() - start
+
+        # 10 MB back, so out of the scanned tail: reporting it would mean the whole
+        # capture was walked.
+        assert "--nope" not in msg
+        # And what IS in the tail still surfaces.
         assert "ggml_metal_init: error" in msg
+        assert elapsed < 5, f"{elapsed:.1f}s to classify one 10 MB line"
+
+    def test_an_argument_error_inside_the_tail_is_still_reported(self):
+        # The other half of the bound: near the end is where llama-server actually
+        # prints it, immediately before exiting.
+        out = "x" * 10_000_000 + "\nerror: invalid argument: --nope"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert "--nope" in msg
 
 
 class TestDyldInstallNames:
@@ -1255,6 +1273,10 @@ class TestAnEncodedSecretIsStillRedacted:
             "A=1," * 25000,
             'TOKEN="' + "y" * 100000,
         ],
+        # Named, because pytest puts the whole parameter in the node id and then in
+        # PYTEST_CURRENT_TEST. Windows caps an environment variable at 32767
+        # characters, so a 100 KB id errors the test in setup on that OS alone.
+        ids = ["escaped-quotes", "long-value", "many-pairs", "unterminated-quote"],
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
@@ -1477,6 +1499,9 @@ class TestTheRedactionHolesCodexFound:
     @pytest.mark.parametrize(
         "blob",
         ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
+        # Same reason as above: the parameter is the node id, and the node id
+        # becomes an environment variable.
+        ids = ["unterminated-quote", "dotted-names", "many-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
         import time
@@ -1484,3 +1509,163 @@ class TestTheRedactionHolesCodexFound:
         start = time.monotonic()
         LlamaCppBackend._scrub_secret_values(blob, ())
         assert time.monotonic() - start < 2.0
+
+
+class TestRejectedArguments:
+    """Argument parsing runs before the model is touched, so these are never a
+    bad GGUF or an OOM. The strings are what the bundled llama-server actually
+    prints, captured from it directly rather than written from memory."""
+
+    def test_an_unknown_flag_is_named(self):
+        msg = _classify("error: invalid argument: --tempp", "/models/x.gguf", "local/x", 1)
+        assert "--tempp" in msg
+        assert "extra arguments" in msg
+        # The generic diagnosis must not survive: the file and the memory are fine.
+        assert "memory" not in msg.lower()
+
+    def test_a_flag_unsloth_set_itself_is_covered_by_the_same_message(self):
+        # Nothing reaching the classifier says whose flag it was, and Unsloth emits
+        # its own conditionally on the capability probe, so a binary swapped under a
+        # cached probe lands here too. The message has to serve that reader as well
+        # as the one who mistyped something in the box.
+        msg = _classify("error: invalid argument: --flash-attn", "/models/x.gguf", "local/x", 1)
+        assert "--flash-attn" in msg
+        assert "reinstall llama.cpp" in msg
+
+    def test_a_rejected_value_is_told_apart_from_an_unknown_flag(self):
+        # Different fix for the reader: the flag is right, the value is not.
+        msg = _classify(
+            'error while handling argument "--numa": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--numa" in msg
+        assert "invalid value" in msg
+        assert "does not recognise" not in msg
+
+    def test_a_missing_value_keeps_llama_cpps_own_reason(self):
+        msg = _classify(
+            'error while handling argument "--top-k": expected value for argument',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--top-k" in msg
+        assert "expected value" in msg
+
+    def test_a_std_stoi_failure_is_translated(self):
+        # llama.cpp surfaces the C++ standard library's exception name verbatim.
+        # "stoi" is not an error message anyone outside libstdc++ can act on.
+        msg = _classify(
+            'error while handling argument "--top-k": stoi', "/models/x.gguf", "local/x", 1
+        )
+        assert "not a number" in msg
+        assert "stoi" not in msg
+
+    def test_a_value_error_on_a_flag_the_user_did_not_set_stays_neutral(self):
+        # Studio emits its own options conditionally on the capability probe, so a
+        # build that reads "--flash-attn on" differently rejects a value the box
+        # never held. Sending that reader to edit their extra arguments points them
+        # at a setting they cannot use to fix it.
+        msg = _classify(
+            'error while handling argument "--flash-attn": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--flash-attn" in msg
+        assert "reinstall llama.cpp" in msg
+
+    def test_a_value_error_on_a_flag_the_user_did_set_names_the_box(self):
+        # Ownership established: the extras really do carry the flag, so the box is
+        # where the fix is.
+        msg = LlamaCppBackend._classify_llama_start_failure(
+            'error while handling argument "--numa": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+            None,
+            None,
+            (),
+            ["--numa", "wherever"],
+        )
+        assert "--numa" in msg
+        assert "Fix it in the extra arguments" in msg
+        assert "reinstall" not in msg
+
+    def test_an_alias_spelling_falls_back_to_the_neutral_wording(self):
+        # -fa and --flash-attn are the same option to llama.cpp but not to this
+        # comparison, and a wrong "you set this" is worse than a neutral one.
+        msg = LlamaCppBackend._classify_llama_start_failure(
+            'error while handling argument "--flash-attn": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+            None,
+            None,
+            (),
+            ["-fa", "on"],
+        )
+        assert "reinstall llama.cpp" in msg
+
+    def test_an_ordinary_failure_is_untouched(self):
+        # The two new branches sit ahead of the generic diagnosis, so this pins
+        # that they do not swallow it.
+        msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
+        assert "enough memory" in msg.lower()
+        assert "argument" not in msg.lower()
+
+    def test_the_argument_scan_reads_only_the_tail(self):
+        # The bound exists because _drain_stdout keeps an unterminated line whole,
+        # and scanning a 10 MB one twice puts the classifier past any sane budget.
+        # Asserted by BEHAVIOUR rather than by the clock: a wall-clock budget on a
+        # shared CI runner measures the runner, and a Windows one failed this at
+        # 204ms against 200 while the bound it was meant to prove was in place.
+        from core.inference.llama_cpp import _FAILURE_SCAN_TAIL_CHARS
+
+        # Inside the tail: found, and the whole capture is enormous either way.
+        within = "x" * 10_000_000 + "\nerror: invalid argument: --tempp"
+        assert "--tempp" in _classify(within, "/models/x.gguf", "local/x", 1)
+        # Before it: not found, which is only possible if the scan stopped short of
+        # the head. Reported as an ordinary failure instead.
+        buried = "error: invalid argument: --tempp\n" + "x" * (_FAILURE_SCAN_TAIL_CHARS * 2)
+        assert "--tempp" not in _classify(buried, "/models/x.gguf", "local/x", 1)
+
+    def test_a_model_load_error_mentioning_arguments_is_not_misread(self):
+        # "invalid argument" as an errno string (EINVAL) is not llama.cpp's
+        # argument parser, and the anchored "error: invalid argument:" prefix is
+        # what keeps them apart.
+        out = "llama_model_load: error loading model: invalid argument (22)"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "does not recognise" not in msg
+
+
+class TestArgumentErrorsAreQuotedShort:
+    """What a failed start copies out of the child's own output."""
+
+    def test_a_pathological_argument_is_truncated(self):
+        # A wrapper on LLAMA_SERVER_PATH can print anything, and the capture is a run
+        # of non-whitespace, so without a bound the API error becomes 64 KiB of it.
+        out = "error: invalid argument: " + "x" * 50_000
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert len(msg) < 1_000, len(msg)
+        assert "..." in msg
+        # Still says what happened, and still names the beginning of the argument.
+        assert "does not recognise the argument" in msg
+        assert "xxxx" in msg
+
+    def test_a_pathological_reason_is_truncated(self):
+        out = 'error while handling argument "--top-k": ' + "y" * 50_000
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert len(msg) < 1_000, len(msg)
+        assert "--top-k" in msg
+
+    def test_an_ordinary_argument_error_is_untouched(self):
+        out = "error: invalid argument: --tempp"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+
+        assert "--tempp" in msg
+        assert "..." not in msg
