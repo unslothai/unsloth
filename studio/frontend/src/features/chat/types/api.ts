@@ -496,6 +496,8 @@ export interface OpenAIChatMessage {
   content: OpenAIMessageContent | null;
   /** Assistant tool-call deltas, when the turn invoked a function tool. */
   tool_calls?: OpenAIToolCallPart[];
+  /** Preserved local reasoning replay for models whose template consumes it. */
+  reasoning_content?: string;
   /** `role="tool"` only: id matching `assistant.tool_calls[].id`. */
   tool_call_id?: string;
   /** `role="tool"` only: name of the function that produced the result. */

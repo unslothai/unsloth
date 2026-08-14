@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import asyncio
-
 import sys
+import threading
 from pathlib import Path
 
 import httpx
@@ -30,6 +30,11 @@ class _Backend:
     is_diffusion = False
     _is_audio = False
     base_url = "http://llama.prefill.test"
+
+    model_identifier = "local-model"
+    _openai_advertised_id = None
+    _native_grant_backed = False
+    _native_display_label = None
     context_length = 4096
     markup_profile = None
 
@@ -125,6 +130,30 @@ def test_prefill_forwards_zero_token_nonstreaming_request(monkeypatch):
     assert upstream.closed is True
 
 
+def test_prefill_uses_standard_gguf_message_normalization(monkeypatch):
+    upstream = _Client()
+    response = _client(monkeypatch, _Backend(), upstream).post(
+        "/api/inference/chat/prefill",
+        json = _payload(
+            messages = [
+                {"role": "system", "content": "Be concise."},
+                {"role": "user", "content": "First"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "Second"},
+                {"role": "assistant", "content": "Done"},
+            ]
+        ),
+    )
+
+    assert response.json() == {"prefilled": True}
+    [call] = upstream.calls
+    assert call["json"]["messages"] == [
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "First\n\nSecond"},
+        {"role": "assistant", "content": "Done"},
+    ]
+
+
 def test_prefill_reproduces_studio_tool_prompt(monkeypatch):
     tool = {
         "type": "function",
@@ -174,6 +203,38 @@ def test_prefill_does_not_route_external_or_unloaded_models(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: unloaded)
     missing = client.post("/api/inference/chat/prefill", json = _payload())
     assert missing.json() == {"prefilled": False, "reason": "unsupported"}
+    assert upstream.calls == []
+
+
+def test_prefill_rejects_a_stale_model_payload(monkeypatch):
+    backend = _Backend()
+    backend.model_identifier = "new-model"
+    upstream = _Client()
+    response = _client(monkeypatch, backend, upstream).post(
+        "/api/inference/chat/prefill",
+        json = _payload(model = "local-model"),
+    )
+
+    assert response.json() == {"prefilled": False, "reason": "stale_model"}
+    assert upstream.calls == []
+
+
+
+def test_prefill_rechecks_model_identity_before_dispatch(monkeypatch):
+    backend = _Backend()
+    upstream = _Client()
+
+    async def switch_model(_payload, _backend):
+        backend.model_identifier = "new-model"
+        return {}
+
+    monkeypatch.setattr(inference_route, "_build_chat_prefill_body", switch_model)
+    response = _client(monkeypatch, backend, upstream).post(
+        "/api/inference/chat/prefill",
+        json = _payload(),
+    )
+
+    assert response.json() == {"prefilled": False, "reason": "stale_model"}
     assert upstream.calls == []
 
 
@@ -233,6 +294,26 @@ def test_prefill_skips_instead_of_waiting_for_admission(monkeypatch):
     assert response.json() == {"prefilled": False, "reason": "busy"}
     assert reservation.cancelled is True
     assert upstream.calls == []
+
+
+def test_real_admission_preempts_active_prefill(monkeypatch):
+    class _Queue:
+        def reserve(self, *, capacity, config):
+            return object()
+
+    backend = _Backend()
+    cancel_event = threading.Event()
+    monkeypatch.setattr(inference_route, "get_llama_admission_queue", lambda _key: _Queue())
+    inference_route._register_chat_prefill_cancel(backend.base_url, cancel_event)
+    try:
+        inference_route._openai_llama_admission_reserve(
+            request = None,
+            llama_backend = backend,
+        )
+    finally:
+        inference_route._unregister_chat_prefill_cancel(backend.base_url, cancel_event)
+
+    assert cancel_event.is_set() is True
 
 
 def test_prefill_upstream_failure_is_best_effort_and_releases_resources(monkeypatch):

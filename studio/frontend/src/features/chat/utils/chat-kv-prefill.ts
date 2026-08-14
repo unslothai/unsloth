@@ -39,6 +39,9 @@ export function buildChatKvPrefillPayload(
     if (message.role === "tool" || (message.tool_calls?.length ?? 0) > 0) {
       return true;
     }
+    if (message.reasoning_content?.trim()) {
+      return true;
+    }
     if (typeof message.content === "string") {
       return message.content.trim().length > 0;
     }

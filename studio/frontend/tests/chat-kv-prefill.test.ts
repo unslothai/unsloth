@@ -157,6 +157,22 @@ test("empty text is skipped while tool-only responses are prefilled", () => {
   assert.equal(payload.messages.at(-1)?.role, "tool");
 });
 
+test("reasoning-only responses are meaningful prefill history", () => {
+  const payload = buildChatKvPrefillPayload(request(), [
+    {
+      role: "assistant",
+      content: "",
+      reasoning_content: "The answer follows from the evidence.",
+    },
+  ]);
+
+  assert.ok(payload);
+  assert.equal(
+    payload.messages.at(-1)?.reasoning_content,
+    "The answer follows from the evidence.",
+  );
+});
+
 test("new work aborts the previous prefill and failures stay best effort", async () => {
   const signals: AbortSignal[] = [];
   const resolvers: Array<() => void> = [];

@@ -1398,6 +1398,32 @@ _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
+_CHAT_PREFILL_CANCEL_LOCK = threading.Lock()
+_CHAT_PREFILL_CANCEL_EVENTS: dict[str, set[threading.Event]] = {}
+
+
+def _register_chat_prefill_cancel(key: str, cancel_event: threading.Event) -> None:
+    with _CHAT_PREFILL_CANCEL_LOCK:
+        _CHAT_PREFILL_CANCEL_EVENTS.setdefault(key, set()).add(cancel_event)
+
+
+def _unregister_chat_prefill_cancel(key: str, cancel_event: threading.Event) -> None:
+    with _CHAT_PREFILL_CANCEL_LOCK:
+        events = _CHAT_PREFILL_CANCEL_EVENTS.get(key)
+        if events is None:
+            return
+        events.discard(cancel_event)
+        if not events:
+            _CHAT_PREFILL_CANCEL_EVENTS.pop(key, None)
+
+
+def _cancel_active_chat_prefills(key: str) -> None:
+    with _CHAT_PREFILL_CANCEL_LOCK:
+        events = tuple(_CHAT_PREFILL_CANCEL_EVENTS.get(key, ()))
+    for cancel_event in events:
+        cancel_event.set()
+
+
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
     """Serving slots available for one local llama-server backend.
 
@@ -1417,11 +1443,16 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
 
 
 def _openai_llama_admission_reserve(
-    *, request: Optional[Request], llama_backend
+    *,
+    request: Optional[Request],
+    llama_backend,
+    preempt_chat_prefill: bool = True,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = str(getattr(llama_backend, "base_url", "llama-server"))
+    if preempt_chat_prefill:
+        _cancel_active_chat_prefills(key)
     reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
@@ -22471,6 +22502,14 @@ async def _build_chat_prefill_body(payload, llama_backend) -> dict:
         llama_backend = llama_backend,
     )
 
+    messages, _ = await _openai_messages_for_gguf_chat_async(
+        payload,
+        llama_backend.is_vision,
+    )
+    system_prompt, _, _ = _extract_content_parts(payload.messages)
+    messages = _set_or_prepend_system_message(messages, system_prompt)
+    body["messages"] = messages
+
     # Studio's managed tool loop renders a different first prompt than the plain
     # passthrough: it selects server tools, adds the tool/RAG system nudge, and
     # sanitizes tool markup. Reproduce that prompt so the warmed prefix is reusable.
@@ -22492,12 +22531,6 @@ async def _build_chat_prefill_body(payload, llama_backend) -> dict:
             mcp_allowed = mcp_allowed,
         )
         if tools:
-            messages, _ = await _openai_messages_for_gguf_chat_async(
-                payload,
-                llama_backend.is_vision,
-            )
-            system_prompt, _, _ = _extract_content_parts(payload.messages)
-            messages = _set_or_prepend_system_message(messages, system_prompt)
             messages = _append_to_system_message(
                 messages,
                 _apply_rag_nudge(
@@ -22575,12 +22608,20 @@ async def prefill_chat_cache(
     ):
         return {"prefilled": False, "reason": "unsupported"}
 
+    if payload.model != _llama_status_checkpoint_id(llama_backend):
+        return {"prefilled": False, "reason": "stale_model"}
+
+    cancel_event = threading.Event()
+    prefill_key = str(getattr(llama_backend, "base_url", "llama-server"))
+    _register_chat_prefill_cancel(prefill_key, cancel_event)
     try:
         reservation, _ = _openai_llama_admission_reserve(
             request = request,
             llama_backend = llama_backend,
+            preempt_chat_prefill = False,
         )
     except LlamaAdmissionQueueFull:
+        _unregister_chat_prefill_cancel(prefill_key, cancel_event)
         return {"prefilled": False, "reason": "busy"}
 
     lease = reservation.lease_nowait()
@@ -22588,9 +22629,13 @@ async def prefill_chat_cache(
         # Warming is opportunistic. Never leave a waiter behind that could run a
         # stale conversation after the user request that occupied the slot.
         reservation.cancel()
+        _unregister_chat_prefill_cancel(prefill_key, cancel_event)
         return {"prefilled": False, "reason": "busy"}
 
-    cancel_event = threading.Event()
+    if cancel_event.is_set():
+        lease.release()
+        _unregister_chat_prefill_cancel(prefill_key, cancel_event)
+        return {"prefilled": False, "reason": "cancelled"}
     client = _cancelable_nonstreaming_client()
     watcher = asyncio.create_task(
         _await_cancel_or_disconnect_then_close_client(
@@ -22601,6 +22646,11 @@ async def prefill_chat_cache(
     )
     try:
         body = await _build_chat_prefill_body(payload, llama_backend)
+
+        if cancel_event.is_set():
+            return {"prefilled": False, "reason": "cancelled"}
+        if payload.model != _llama_status_checkpoint_id(llama_backend):
+            return {"prefilled": False, "reason": "stale_model"}
         response = await client.post(
             f"{llama_backend.base_url}/v1/chat/completions",
             json = body,
@@ -22635,6 +22685,7 @@ async def prefill_chat_cache(
                 await client.aclose()
             finally:
                 lease.release()
+                _unregister_chat_prefill_cancel(prefill_key, cancel_event)
 
 
 # ──────────────────────────────────────────────────────────────────────────
