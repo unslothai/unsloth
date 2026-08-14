@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import linecache
+import os
 import sys
 import textwrap
 import types
@@ -235,6 +236,18 @@ def _lora_requests(log, kind = "generate"):
     return [entry[1] for entry in log if entry[0] == kind]
 
 
+def _lora_name():
+    """The adapter directory the patch derives, device suffix and all.
+
+    Recomputed rather than hardcoded: the suffix depends on CUDA_VISIBLE_DEVICES,
+    which is set on any CI runner that has a GPU and unset on the ones that do not.
+    """
+    name = "vllm_gen_lora"
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        name += "_" + os.environ.get("CUDA_VISIBLE_DEVICES", "0").replace(",", "")
+    return name
+
+
 def test_lora_reaches_engine_without_reload_weights_anchor(monkeypatch):
     """TRL >= 1.10.0 `generate`: no reload_weights line, adapter still passed.
 
@@ -434,3 +447,120 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
     self = _make_generation(cls, log)
     cls.generate(self, ["hello"])
     assert len(_lora_requests(log)) == 1, f"generate reached the engine twice: {log}"
+
+
+# --- vLLM signature fidelity --------------------------------------------------
+#
+# The tests above use an engine whose methods take `*args, **kwargs`, so they say
+# nothing about how the injection behaves against vLLM's ACTUAL parameter lists.
+# Those differ between the two entry points, and that difference matters:
+#
+#   LLM.generate(self, prompts, sampling_params = None, *, use_tqdm, lora_request, ...)
+#   LLM.chat(self, messages, sampling_params = None, use_tqdm = True, lora_request = None, ...)
+#
+# `lora_request` is KEYWORD-ONLY on `generate` in every vLLM release from 0.11.0 to
+# 0.27.1, so nothing can reach it positionally there. On `chat` it is an ordinary
+# positional parameter, and its index has already moved once (`tokenization_kwargs`
+# was inserted in 0.18.0). A caller that fills it positionally and an injector that
+# then adds it as a keyword is `TypeError: got multiple values for argument`.
+
+class VLLMSignatureEngine(FakeEngine):
+    """`FakeEngine` with vLLM 0.27.1's real parameter lists on both entry points."""
+
+    def generate(
+        self,
+        prompts,
+        sampling_params = None,
+        *,
+        use_tqdm = True,
+        lora_request = None,
+        priority = None,
+        tokenization_kwargs = None,
+        mm_processor_kwargs = None,
+    ):
+        self.log.append(("generate", lora_request if lora_request is not None else "ABSENT"))
+        return ["generated"]
+
+    def chat(
+        self,
+        messages,
+        sampling_params = None,
+        use_tqdm = True,
+        lora_request = None,
+        chat_template = None,
+        chat_template_content_format = "auto",
+        add_generation_prompt = True,
+        continue_final_message = False,
+        tools = None,
+        chat_template_kwargs = None,
+        tokenization_kwargs = None,
+        mm_processor_kwargs = None,
+    ):
+        self.log.append(("chat", lora_request if lora_request is not None else "ABSENT"))
+        return ["chatted"]
+
+
+# TRL reaching `chat` with `lora_request` as the fourth POSITIONAL argument.
+_GENERATE_CHAT_POSITIONAL = """
+def generate(self, prompts, **kwargs):
+    self.sync_weights()
+    return self.llm.chat(prompts, self.sampling_params, False, self.caller_lora)
+"""
+
+
+def test_the_adapter_still_reaches_a_signature_accurate_engine(monkeypatch):
+    """`generate`'s keyword-only `lora_request` accepts the injected keyword."""
+    cls = _build_fake_trl(monkeypatch, _GENERATE_TRL_1_10)
+    _rl_replacements().vllm_generation_init_patch()
+
+    log = []
+    self = _make_generation(cls, log)
+    self.llm = VLLMSignatureEngine(log)
+
+    assert cls.generate(self, ["hello"]) == ["generated"]
+    assert _lora_requests(log) == ["LORA[%s|True]" % _lora_name()], log
+
+
+def test_a_positionally_supplied_adapter_is_not_injected_over(monkeypatch):
+    """The caller already filled `lora_request`; a keyword on top is a TypeError.
+
+    Not hypothetical arithmetic: `chat` takes `lora_request` positionally in every
+    vLLM release checked, so this is reachable from any TRL that spells the call
+    that way. Before the signature check the wrapper raised here.
+    """
+    cls = _build_fake_trl(monkeypatch, _GENERATE_CHAT_POSITIONAL)
+    _rl_replacements().vllm_generation_init_patch()
+
+    log = []
+    self = _make_generation(cls, log)
+    self.llm = VLLMSignatureEngine(log)
+    self.caller_lora = "CALLER_LORA"
+
+    assert cls.generate(self, [[{"role": "user", "content": "hi"}]]) == ["chatted"]
+    # The caller's own adapter, untouched, and exactly one call.
+    assert _lora_requests(log, kind = "chat") == ["CALLER_LORA"], log
+
+
+def test_an_explicit_none_adapter_is_overridden(monkeypatch):
+    """`lora_request = None` by keyword means base-model rollouts, which is the bug.
+
+    A shared-weights engine holds the BASE weights, so honouring the None is how
+    the adapter goes missing in the first place. Only a non-None value from the
+    caller is treated as a choice worth keeping.
+    """
+    cls = _build_fake_trl(
+        monkeypatch,
+        """
+def generate(self, prompts, **kwargs):
+    self.sync_weights()
+    return self.llm.generate(prompts, sampling_params = self.sampling_params, lora_request = None)
+""",
+    )
+    _rl_replacements().vllm_generation_init_patch()
+
+    log = []
+    self = _make_generation(cls, log)
+    self.llm = VLLMSignatureEngine(log)
+
+    assert cls.generate(self, ["hello"]) == ["generated"]
+    assert _lora_requests(log) == ["LORA[%s|True]" % _lora_name()], log

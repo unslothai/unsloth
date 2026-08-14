@@ -3369,8 +3369,11 @@ def vllm_generation_init_patch():
     #
     # So intercept on the vLLM engine instead of on TRL's method body. `self.llm` is the
     # vLLM `LLM` object in colocate mode in every TRL release that has `VLLMGeneration`,
-    # and `LLM.generate` / `LLM.chat` / `LLM.collective_rpc` are public, stable vLLM APIs
-    # (unchanged across vLLM 0.11.x - 0.15.x). TRL's method body is free to move around;
+    # and `LLM.generate` / `LLM.chat` / `LLM.collective_rpc` are public, stable vLLM APIs.
+    # Checked against every vLLM release from 0.11.0 to 0.27.1: all three exist on `LLM` at
+    # each one, `generate` and `chat` both take `lora_request`, `LLM` has no `__slots__` and
+    # no `__setattr__`/`__getattr__` hook (so the instance override below always takes), and
+    # nothing here is decorated. TRL's method body is free to move around;
     # whatever shape it takes, it has to reach the engine through those calls. The
     # override is scoped to the dynamic extent of one `VLLMGeneration.generate` call and
     # is undone in a `finally`, so `model.fast_generate` and any other user of the same
@@ -3414,11 +3417,37 @@ def vllm_generation_init_patch():
                     return
                 saved.append((name, had_own, bound))
 
+            def caller_already_bound_lora(bound, args, kwargs):
+                """Has the caller's own argument list already filled `lora_request`?
+
+                A keyword `lora_request` that is not None is the caller's choice, so leave
+                it. A keyword `lora_request = None` is not: on a shared-weights engine that
+                means base-model rollouts, which is the bug this whole wrapper exists to
+                fix, so it gets overwritten.
+
+                The positional case is the one that has to be checked rather than assumed.
+                `lora_request` is keyword-only on `LLM.generate` in every vLLM release from
+                0.11.0 to 0.27.1, but on `LLM.chat` it is an ordinary positional-or-keyword
+                parameter, and its index there has already moved once (`tokenization_kwargs`
+                landed in 0.18.0). A caller that passed it positionally has supplied it, and
+                adding a keyword on top would be `TypeError: got multiple values`, not a
+                missing adapter. Bind the real signature instead of counting arguments so a
+                future reshuffle cannot reintroduce that.
+                """
+                if kwargs.get("lora_request", None) is not None: return True
+                try:
+                    positional = inspect.signature(bound).bind_partial(*args).arguments
+                except (TypeError, ValueError):
+                    # Unintrospectable callable (C extension, odd wrapper): the keyword
+                    # check above is all we have, and injecting is the safe default.
+                    return False
+                return "lora_request" in positional
+
             def wrap_generation_call(bound):
                 def unsloth_generation_call(*args, **kwargs):
                     # vLLM needs the adapter handed to it explicitly: the shared engine
                     # holds the BASE weights, and sync_weights is a no-op when sharing.
-                    if load_lora is not None and kwargs.get("lora_request", None) is None:
+                    if load_lora is not None and not caller_already_bound_lora(bound, args, kwargs):
                         kwargs["lora_request"] = load_lora(lora_name, load_tensors = True)
                     return bound(*args, **kwargs)
 
