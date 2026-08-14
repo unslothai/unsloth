@@ -148,6 +148,32 @@ MEMORY_COMPACT = {
     },
 }
 
+MEMORY_COMPILE = {
+    "type": "function",
+    "function": {
+        "name": "memory_compile",
+        "description": (
+            "Pin an admitted procedure into the standing prompt cache, or "
+            "preview/run auto-compile of procedures that have enough world-pass hits. "
+            "Source of truth stays the B record. dry_run defaults true."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Procedure id to pin. Omit to run maybe_compile.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Default true (preview). Pass false to mutate.",
+                    "default": True,
+                },
+            },
+        },
+    },
+}
+
 MEMORY_TOOLS = [
     MEMORY_WRITE,
     MEMORY_SEARCH,
@@ -155,6 +181,7 @@ MEMORY_TOOLS = [
     MEMORY_SUPERSEDE,
     MEMORY_DEPRECATE,
     MEMORY_COMPACT,
+    MEMORY_COMPILE,
 ]
 
 MEMORY_TOOL_NAMES = frozenset(spec["function"]["name"] for spec in MEMORY_TOOLS)

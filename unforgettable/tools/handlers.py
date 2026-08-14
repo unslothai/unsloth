@@ -23,10 +23,18 @@ from unforgettable.constants import DEFAULT_NAMESPACE_ID
 from unforgettable.eyes.gate import review_write
 from unforgettable.loop.runtime import current_db_path, current_episode_id, current_namespace
 from unforgettable.store.compact import CompactReport, run_compact
+from unforgettable.store.compile import (
+    get_compiled,
+    is_compile_candidate,
+    maybe_compile,
+    pin_compiled,
+    procedure_hits,
+)
 from unforgettable.store.records import (
     deprecate_record,
     get_record,
     insert_record,
+    list_records,
     supersede_record,
 )
 from unforgettable.store.search import search_records
@@ -48,6 +56,8 @@ def dispatch(name: str, arguments: dict[str, Any] | None, *, db_path=None) -> st
         return _deprecate(args, db_path=path)
     if name == "memory_compact":
         return _compact(args, db_path=path)
+    if name == "memory_compile":
+        return _compile(args, db_path=path)
     if name == "rims_enter_sim":
         return "enter_sim requested"
     return f"Error: unknown memory tool '{name}'"
@@ -175,6 +185,80 @@ def _compact(args: dict[str, Any], *, db_path) -> str:
         dry_run = True
     report = run_compact(db_path=db_path, dry_run=bool(dry_run))
     return json.dumps(_report_payload(report), indent=2)
+
+
+def _dry_run(args: dict[str, Any]) -> bool:
+    dry_run = args.get("dry_run", True)
+    if dry_run is None:
+        dry_run = True
+    return bool(dry_run)
+
+
+def _compile(args: dict[str, Any], *, db_path) -> str:
+    dry_run = _dry_run(args)
+    rid = str(args.get("id") or "").strip()
+    if rid:
+        return _compile_one(rid, dry_run=dry_run, db_path=db_path)
+    return _compile_maybe(dry_run=dry_run, db_path=db_path)
+
+
+def _maybe_compile_candidates(db_path) -> list[str]:
+    would_pin: list[str] = []
+    for rec in list_records(kinds=["procedure"], statuses=["active"], db_path=db_path):
+        rid = rec["id"]
+        if get_compiled(rid, db_path=db_path) is not None:
+            continue
+        hits = procedure_hits(rid, db_path=db_path)
+        if is_compile_candidate(rec, hits=hits, explicit=False):
+            would_pin.append(rid)
+    return would_pin
+
+
+def _compile_maybe(*, dry_run: bool, db_path) -> str:
+    if dry_run:
+        return json.dumps(
+            {"dry_run": True, "would_pin": _maybe_compile_candidates(db_path)},
+            indent=2,
+        )
+    return json.dumps(
+        {"dry_run": False, "pinned": maybe_compile(db_path=db_path)},
+        indent=2,
+    )
+
+
+def _compile_one(rid: str, *, dry_run: bool, db_path) -> str:
+    rec = get_record(rid, db_path=db_path)
+    if rec is None:
+        return f"Error: no record {rid}"
+    hits = procedure_hits(rid, db_path=db_path)
+    existing = get_compiled(rid, db_path=db_path)
+    eligible = is_compile_candidate(rec, hits=hits, explicit=True)
+    if dry_run:
+        return json.dumps(
+            {
+                "dry_run": True,
+                "id": rid,
+                "hits": hits,
+                "eligible": eligible,
+                "compiled": existing is not None,
+                "explicit": bool(existing["explicit"]) if existing else False,
+            },
+            indent=2,
+        )
+    try:
+        row = pin_compiled(rid, explicit=True, db_path=db_path)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    return json.dumps(
+        {
+            "dry_run": False,
+            "id": rid,
+            "hits": hits,
+            "pinned": row["source_record_id"],
+            "explicit": bool(row["explicit"]),
+        },
+        indent=2,
+    )
 
 
 def _report_payload(report: CompactReport) -> dict[str, Any]:

@@ -40,6 +40,7 @@ from unforgettable.store.records import (
     ROLLOUT_OUTCOMES,
     get_record,
     list_admissions,
+    list_inject_stats,
     list_records,
     list_rollouts,
     set_record_status,
@@ -314,6 +315,32 @@ def _cmd_rollouts(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _csv_count(value: str | None) -> int:
+    if not value:
+        return 0
+    return len([part for part in str(value).split(",") if part])
+
+
+def _cmd_load(args: argparse.Namespace, db_path: Path) -> int:
+    rows = list_inject_stats(limit=args.limit, db_path=db_path)
+    _print_aligned(
+        ("episode", "contact", "standing", "retrieve", "traj", "total", "n_compiled"),
+        [
+            (
+                rec["episode_id"][:TABLE_ID_CHARS],
+                rec["contact"],
+                str(rec.get("standing_chars") or 0),
+                str(rec.get("retrieve_chars") or 0),
+                str(rec.get("trajectory_chars") or 0),
+                str(rec.get("total_chars") or 0),
+                str(_csv_count(rec.get("compiled_ids"))),
+            )
+            for rec in rows
+        ],
+    )
+    return 0
+
+
 def _cmd_probes(args: argparse.Namespace, db_path: Path) -> int:
     if not args.run:
         _print_probe_table(list_probes(db_path=db_path))
@@ -486,6 +513,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rollouts_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
     rollouts_p.set_defaults(func=_cmd_rollouts)
+
+    load_p = sub.add_parser(
+        "load",
+        help="Print inject char splits (standing / retrieve / traj / total).",
+    )
+    _add_db_flag(load_p)
+    load_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
+    load_p.set_defaults(func=_cmd_load)
 
     return parser
 

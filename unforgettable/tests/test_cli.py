@@ -18,7 +18,12 @@ import json
 import re
 
 from unforgettable.cli import COMPACT_FIRST_DRY_RUN_HELP, main
-from unforgettable.store.records import get_record, insert_record, insert_rollout
+from unforgettable.store.records import (
+    get_record,
+    insert_inject_stats,
+    insert_record,
+    insert_rollout,
+)
 
 
 def test_list_prints_title(db_path, capsys):
@@ -205,3 +210,38 @@ def test_rollouts_contact_sim_and_db(db_path, capsys):
     assert "ep-1" in out
     assert "exit code 1" not in out
     assert "world" not in out
+
+
+def test_load_prints_char_split_columns(db_path, capsys):
+    insert_inject_stats(
+        episode_id="oldold01-load-stats",
+        contact="sim",
+        standing_chars=1,
+        retrieve_chars=2,
+        trajectory_chars=3,
+        total_chars=6,
+        compiled_ids="aa,bb",
+        retrieved_ids="rec-1",
+        db_path=db_path,
+    )
+    insert_inject_stats(
+        episode_id="abcdef12-load-stats",
+        contact="world",
+        standing_chars=12,
+        retrieve_chars=34,
+        trajectory_chars=0,
+        total_chars=46,
+        compiled_ids="",
+        retrieved_ids="rec-1",
+        db_path=db_path,
+    )
+    assert main(["load", "--db", str(db_path)]) == 0
+    out = capsys.readouterr().out
+    assert "standing" in out
+    assert "retrieve" in out
+    assert "traj" in out
+    assert "total" in out
+    assert "n_compiled" in out
+    assert "abcdef12" in out
+    assert "world" in out
+    assert out.index("abcdef12") < out.index("oldold01")
