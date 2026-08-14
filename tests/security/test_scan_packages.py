@@ -3971,3 +3971,80 @@ def test_a_one_line_suite_starts_where_its_header_ends():
     assert _high(
         f"{module}for b in items: pass\nb.exec(marshal.loads(BLOB))\n"
     ), "an empty loop leaves the alias exactly where it was"
+
+
+def test_a_re_arm_inside_a_function_does_not_reopen_an_outer_alias():
+    # `b = load_model()` at module level takes the module out of `b`, and a
+    # `def f(): b = __import__('builtins')` under it binds f's OWN local - it
+    # cannot put the module back in the module-level name. So the
+    # `b.exec(...)` written after f is `model.exec`, and ending the outer
+    # cancellation on the nested binding reported it as the builtin.
+    module = "import builtins as b\nimport marshal\nmod = __import__('os')\nb = load_model()\n"
+    call = "b.exec(marshal.loads(BLOB))\n"
+    for rearm in ("b = __import__('builtins')\n", "import builtins as b\n"):
+        nested = f"{module}def f():\n    {rearm}{call}"
+        assert _high(nested, "pkg/_infer.py") == [], f"a nested {rearm!r} re-armed the outer alias"
+
+        # A sibling function reads the same module-level name, so it is the
+        # model there too.
+        sibling = f"{module}def f():\n    {rearm}def g():\n    {call}"
+        assert _high(sibling, "pkg/_infer.py") == [], f"a sibling saw the nested {rearm!r}"
+
+        # A class body binds an attribute, which is no more the global than a
+        # local is.
+        attribute = f"{module}class C:\n    {rearm}{call}"
+        assert _high(attribute, "pkg/_infer.py") == [], f"a class body re-armed with {rearm!r}"
+
+        # The body that re-arms still reaches the module: below the binding, in
+        # that scope, the name really is `builtins`.
+        inside = f"{module}def f():\n    {rearm}    {call}"
+        assert _high(inside), f"the call under a local {rearm!r} runs the builtin"
+
+        # And `global b` is what makes the binding the module-level one, so the
+        # re-arm reaches the whole file again.
+        declared = f"{module}def f():\n    global b\n    {rearm}{call}"
+        assert _high(declared), f"a `global` {rearm!r} re-arms the module-level name"
+
+
+def test_a_parked_alias_is_read_with_the_liveness_of_a_call():
+    # `holder.exec = run` hands over whatever `run` is on that line, so the
+    # right-hand side needs the liveness a call site already applies: past
+    # `run = safe` the name is the safe local, and past `b = model` the
+    # `b.exec` attribute is a method of the model. Accepting the name outright
+    # made either one a HIGH beside the marshal marker.
+    marker = "import marshal\nmod = __import__('os')\ncode = marshal.loads(BLOB)\n"
+    alias = f"from builtins import exec as run\n{marker}"
+    assert (
+        _high(f"{alias}run = safe\nholder.exec = run\n", "pkg/_infer.py") == []
+    ), "a rebound alias parks the safe local, not the builtin"
+    assert (
+        _high(f"{alias}def f():\n    run = safe\n    holder.exec = run\n", "pkg/_infer.py") == []
+    ), "an alias the function assigns is its local everywhere in the body"
+    scoped = (
+        f"{marker}def f():\n    from builtins import exec as run\ndef g():\n    holder.exec = run\n"
+    )
+    assert (
+        _high(scoped, "pkg/_infer.py") == []
+    ), "an alias imported in one function is not the builtin in a sibling"
+    assert _high(
+        f"{marker}def f():\n    from builtins import exec as run\n    holder.exec = run\n"
+    ), "the function that imported it parks the builtin"
+    module_alias = f"import builtins as b\n{marker}"
+    assert (
+        _high(f"{module_alias}b = model\nholder.exec = b.exec\n", "pkg/_infer.py") == []
+    ), "`b.exec` past `b = model` is a method of the model"
+
+    # A live alias still parks the builtin, whichever spelling reaches it.
+    assert _high(f"{alias}holder.exec = run\n"), "a live alias parks the builtin"
+    assert _high(f"{module_alias}holder.exec = b.exec\n"), "a live module alias parks the builtin"
+    assert _high(
+        f"{module_alias}b = model\nholder.exec = builtins.exec\n"
+    ), "the module named outright is not something a rebinding can take away"
+    # The bare builtin is not an alias and has no liveness to test, exactly as
+    # at a call site: `eval = safe_eval` then `eval(BLOB)` is a HIGH too.
+    assert _high(
+        f"{marker}eval = safe_eval\nholder.eval = eval\n"
+    ), "a shadowed bare builtin is read as the builtin here and at a call site"
+    assert _high(
+        f"{marker}eval = safe_eval\neval(marshal.loads(BLOB))\n"
+    ), "the call site reads a shadowed bare builtin the same way"

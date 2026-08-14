@@ -1868,7 +1868,13 @@ def _cancel_add(cancel: dict, opened: dict, levels: list, name: str, at: int, co
         levels.append((col, [(name, entry)]))
 
 
-def _cancel_rearm(opened: dict, name: str, at: int) -> None:
+def _cancel_rearm(
+    opened: dict,
+    name: str,
+    at: int,
+    floor: int = -1,
+    outer: "list | None" = None,
+) -> None:
     """End `name`'s open cancellation spans at `at`, keeping what they decided.
 
     A statement that puts the module back in the name - `import builtins as b`,
@@ -1880,10 +1886,43 @@ def _cancel_rearm(opened: dict, name: str, at: int) -> None:
     The entries stay in their `levels` group, so the block that opened them
     closes them again later; `_cancel_close` keeps the earlier end because a
     span that has one is already ended.
+
+    `outer` collects the `(name, indent)` of every span ended here that was
+    opened at `floor` or shallower - a scope the re-arm is written inside cannot
+    bind for, so the caller reopens those where that scope ends.
     """
     for entry in opened.pop(name, ()):
         if entry[2] is None:
             entry[2] = at
+        if outer is not None and entry[1] <= floor:
+            outer.append((name, entry[1]))
+
+
+def _rearm_here(opened: dict, scopes: list, name: str, at: int) -> None:
+    """Re-arm `name` at `at`, restoring an enclosing scope's cancellation after.
+
+    A binding written in a `def` or `class` body is that scope's local or its
+    attribute, so it cannot put the module back in a name the enclosing scope
+    rebound: `b = model` then `def f(): b = __import__('builtins')` leaves the
+    module-level `b` the model, and reading the `b.exec(...)` below `f` as the
+    builtin was a false HIGH. The re-arm still governs the body it is written in
+    - a call under it there really does reach the module - so the outer span is
+    ended here and reopened at the offset the body ends, which `_close_scope`
+    knows and this statement does not.
+
+    `global b` and `nonlocal b` are the two statements that stop the binding
+    being local, so a name under either re-arms file-wide exactly as before.
+    """
+    scope = scopes[-1] if scopes else None
+    if scope is None or name in (scope[3] or ()) or name in (scope[7] or ()):
+        _cancel_rearm(opened, name, at)
+        return
+    outer: list = []
+    _cancel_rearm(opened, name, at, scope[0], outer)
+    if outer:
+        if scope[8] is None:
+            scope[8] = []
+        scope[8].extend(outer)
 
 
 def _cancel_close(
@@ -1938,6 +1977,7 @@ def _close_scope(
     local_imports: "dict | None" = None,
     file_wide: "set | None" = None,
     local_shadows: "dict | None" = None,
+    cancel: "dict | None" = None,
 ) -> None:
     """Record what a closing `def` or `class` body bound, as offset spans.
 
@@ -1957,6 +1997,14 @@ def _close_scope(
     names = scope[3]
     imported = scope[4] if len(scope) > 4 else None
     shadowed = scope[6] if len(scope) > 6 else None
+    rearmed = scope[8] if len(scope) > 8 else None
+    if rearmed and cancel is not None:
+        # The body re-armed an alias the enclosing scope had rebound, which it
+        # can only do for itself. Past this offset the enclosing rebinding is
+        # the live one again, at the indent it was written at - so a call
+        # shallower than that is left alone exactly as the original span left it.
+        for name, col in rearmed:
+            cancel.setdefault(name, []).append([end, col, None])
     if shadowed and local_shadows is not None:
         for name in shadowed:
             local_shadows.setdefault(name, []).append((scope[5], end))
@@ -2268,16 +2316,79 @@ def _fstring_spans(
         out.append(_Span(base + span.start(), base + span.end()))
 
 
-def _names_builtin(value: list, receivers: frozenset, funcs: frozenset, aliases: _Aliases) -> bool:
+def _alias_live(
+    alias: str, start: int, col: int, aliases: _Aliases, cancel: "dict | None", positional: bool
+) -> bool:
+    """Whether `alias` still names the builtin at offset `start`, indent `col`.
+
+    The three ways a file takes the name back, in the order they are cheapest to
+    test: an import that only one function ran, an assignment that makes the
+    name that function's local over its whole body, and a rebinding written
+    above this offset. `global` opts a scope back out of the middle one, which
+    is why the declaration is read before it and handed to `_is_cancelled`.
+    """
+    if positional and aliases.scoped_imports:
+        # Bound by an import written inside one function, so a use anywhere else
+        # in the file resolves some other `run`.
+        where = aliases.scoped_imports.get(alias)
+        if where is not None and not _in_scope(where, start):
+            return False
+    declaring = None
+    if cancel or (positional and aliases.local_shadows):
+        spans = aliases.declared_global.get(alias)
+        declaring = _declares_global(spans, start) if spans else None
+    if positional and aliases.local_shadows and declaring is None:
+        # The enclosing function assigns the alias, which makes it that
+        # function's local everywhere in the body - so a use written above the
+        # assignment raises `UnboundLocalError` instead of reaching the
+        # module-level name. A `global` declaration in that scope opts back out.
+        body = aliases.local_shadows.get(alias)
+        if body is not None and _in_scope(body, start):
+            return False
+    if cancel:
+        # `import builtins as m` ... `m = load_model()` ... `m.eval`: past a
+        # rebinding that reaches here the name is the model, not the module. A
+        # rebinding indented deeper does not reach it, so a local `m = model` in
+        # some function above cannot silence a module-level use.
+        frontier = cancel.get(alias)
+        if frontier is not None and _is_cancelled(frontier, start, col, declaring):
+            return False
+    return True
+
+
+def _names_builtin(
+    value: list,
+    receivers: frozenset,
+    funcs: frozenset,
+    aliases: _Aliases,
+    offsets: _Offsets,
+    col: int,
+    cancel: "dict | None",
+    positional: bool,
+) -> bool:
     """Whether `value` is the exec/eval builtin itself rather than some object.
 
     The three spellings that hand the function over: the bare builtin, a file
     alias of it (`from builtins import eval as run`), and an attribute of the
     module (`builtins.eval`). `model.eval` is a method of an object and is not
     one, which is what keeps `holder.eval = model.eval` off the report.
+
+    An alias is only the builtin while it still is one, so the same liveness the
+    call site applies decides the right-hand side too: `run = safe` then
+    `holder.exec = run` parks the safe local, and `b = model` then
+    `holder.exec = b.exec` parks a method of the model. Reading either as the
+    builtin was a false HIGH next to any marshal or dynamic-import marker. The
+    bare builtin is not an alias and has no liveness to test - a file that
+    shadows `eval` and then hands `eval` over is read as the builtin here
+    exactly as it is at a call site.
     """
     if len(value) == 1 and value[0].type == tokenize.NAME:
-        return value[0].string in _EXEC_NAMES or value[0].string in funcs
+        name = value[0].string
+        if name in _EXEC_NAMES:
+            return True
+        if name not in funcs:
+            return False
+        return _alias_live(name, offsets.of(*value[0].start), col, aliases, cancel, positional)
     if (
         len(value) >= 3
         and value[-1].type == tokenize.NAME
@@ -2285,10 +2396,14 @@ def _names_builtin(value: list, receivers: frozenset, funcs: frozenset, aliases:
         and value[-2].type == tokenize.OP
         and value[-2].string == "."
     ):
-        at, _alias = _receiver_start(
+        at, alias = _receiver_start(
             value, len(value) - 2, receivers, aliases.loaders, None, aliases.loader_modules
         )
-        return at is not None
+        if at is None:
+            return False
+        if alias is None:
+            return True  # `builtins.exec`: a spelling no rebinding can take away
+        return _alias_live(alias, offsets.of(*value[at].start), col, aliases, cancel, positional)
     return False
 
 
@@ -2388,7 +2503,9 @@ def _statement_spans(
                     if nxt.string == ",":
                         continue  # a tuple this pass cannot line up: not a park
                     value = _strip_parens(_split_top(stmt, "=")[-1])
-                if value and _names_builtin(value, receivers, funcs, aliases):
+                if value and _names_builtin(
+                    value, receivers, funcs, aliases, offsets, at_col, cancel, positional
+                ):
                     out.append(_Span(offsets.of(*tok.start), offsets.of(*value[-1].end)))
             continue
         alias = None
@@ -2413,35 +2530,10 @@ def _statement_spans(
             if not direct:
                 alias = tok.string
         start = offsets.of(*stmt[at].start)
-        if positional and alias is not None and aliases.scoped_imports:
-            # The alias is bound by an import written inside one function, so a
-            # call anywhere else in the file resolves some other `run`.
-            where = aliases.scoped_imports.get(alias)
-            if where is not None and not _in_scope(where, start):
-                continue
-        declaring = None
-        if alias is not None and (cancel or (positional and aliases.local_shadows)):
-            spans = aliases.declared_global.get(alias)
-            declaring = _declares_global(spans, start) if spans else None
-        if positional and alias is not None and aliases.local_shadows and declaring is None:
-            # The enclosing function assigns the alias, which makes it that
-            # function's local everywhere in the body - so a call written above
-            # the assignment raises `UnboundLocalError` instead of reaching the
-            # module-level name. A `global` declaration in the calling scope is
-            # what stops the assignment creating a local, so it opts back out.
-            body = aliases.local_shadows.get(alias)
-            if body is not None and _in_scope(body, start):
-                continue
-        if cancel and alias is not None:
-            frontier = cancel.get(alias)
-            # `import builtins as m` ... `m = load_model()` ... `m.eval()`: past
-            # a rebinding that reaches this call the name is the model, not the
-            # module. A rebinding indented deeper than the call does not reach
-            # it, so a local `m = model` in some function above cannot silence a
-            # module-level call.
-            if frontier is not None:
-                if _is_cancelled(frontier, start, at_col, declaring):
-                    continue
+        # A spelling that names the module outright reports no alias, and nothing
+        # a file writes can take it away, so only a real alias is tested.
+        if alias is not None and not _alias_live(alias, start, at_col, aliases, cancel, positional):
+            continue
         out.append(_Span(start, offsets.of(*nxt.end)))
 
 
@@ -2923,7 +3015,8 @@ class _ExecEvalPattern:
                 # The `def` and `class` headers the statement sits under, as
                 # [indent, is a class, header offset, names declared global,
                 # aliases imported here, header end offset, names this body
-                # assigns, names declared nonlocal]. Only those two open a
+                # assigns, names declared nonlocal, enclosing cancellations this
+                # body re-armed]. Only those two open a
                 # scope, so this is what says whether a binding is a class
                 # attribute.
                 scopes: list = []
@@ -2957,6 +3050,7 @@ class _ExecEvalPattern:
                             local_imports,
                             by_value,
                             local_shadows,
+                            cancel,
                         )
                     opens = _opens_scope(stmt)
                     # A class body is the one scope a name does not cross: the
@@ -2982,6 +3076,7 @@ class _ExecEvalPattern:
                                 None,
                                 None,
                                 offsets.of(*_header_end(stmt).end),
+                                None,
                                 None,
                                 None,
                             ]
@@ -3017,7 +3112,7 @@ class _ExecEvalPattern:
                             bound: set = set()
                             _collect_import_bindings(stmt, bound, bound, None)
                             for name in bound:
-                                _cancel_rearm(opened, name, at)
+                                _rearm_here(opened, scopes, name, at)
                                 for scope in scopes:
                                     # The import re-arms the alias, so the body
                                     # is no longer shadowing a name it only
@@ -3117,7 +3212,7 @@ class _ExecEvalPattern:
                         # statement that does rebind an alias, which is rare.
                         rearmed = offsets.of(*stmt[-1].end)
                         for name in aliased:
-                            _cancel_rearm(opened, name, rearmed)
+                            _rearm_here(opened, scopes, name, rearmed)
                             for scope in scopes:
                                 # The body puts the module back in the name, so
                                 # it is no longer shadowing an alias it only
@@ -3177,6 +3272,7 @@ class _ExecEvalPattern:
                         local_imports,
                         by_value,
                         local_shadows,
+                        cancel,
                     )
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or
