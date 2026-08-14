@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from unforgettable.eyes.basic import inspect_tool_result
 from unforgettable.loop.context import EpisodeState
 from unforgettable.rims.clone import clone_tree
@@ -41,6 +43,16 @@ def test_clone_tree_copies_and_skips_markers(tmp_path: Path):
     assert not (dst / "old.deleting-abcdef12").exists()
     (src / "main.py").write_text("print(2)\n")
     assert (dst / "main.py").read_text() == "print(1)\n"
+
+
+def test_clone_tree_same_path_raises(tmp_path: Path):
+    src = tmp_path / "world"
+    src.mkdir()
+    (src / "main.py").write_text("print(1)\n")
+    with pytest.raises(ValueError, match="clone_tree refuses to copy a tree onto itself"):
+        clone_tree(src, src)
+    with pytest.raises(ValueError, match="clone_tree refuses to copy a tree onto itself"):
+        clone_tree(src, src / ".")
 
 
 def test_eyes_detect_traceback_and_exit_code():

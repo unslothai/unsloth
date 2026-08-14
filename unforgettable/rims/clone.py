@@ -31,8 +31,10 @@ def _ignore(directory: str, names: list[str]) -> set[str]:
 
 
 def clone_tree(src: str | Path, dst: str | Path) -> Path:
-    source = Path(src)
-    dest = Path(dst)
+    source = Path(src).resolve()
+    dest = Path(dst).resolve()
+    if source == dest:
+        raise ValueError("clone_tree refuses to copy a tree onto itself")
     if not source.is_dir():
         raise FileNotFoundError(f"world sandbox missing: {source}")
     dest.mkdir(parents=True, exist_ok=True)

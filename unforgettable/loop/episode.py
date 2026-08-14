@@ -39,7 +39,7 @@ from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import resolve_test_command
-from unforgettable.store.records import insert_record, insert_rollout
+from unforgettable.store.records import insert_record, insert_rollout, list_records
 from unforgettable.throne.policy import Action, decide, policy_from_request
 from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
 
@@ -181,6 +181,8 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             actions.append(action)
             if action == Action.ENTER_SIM:
                 sim_id = host.create_sim_session(episode_id)
+                if not sim_id or sim_id == world or sim_id.startswith("project-"):
+                    raise ValueError(f"refusing to share world sandbox as sim: {sim_id!r}")
                 clone_tree(host.sandbox_path(world), host.sandbox_path(sim_id))
                 state.enter_sim(sim_id)
                 set_contact("sim")
@@ -319,7 +321,6 @@ async def _extract(
         rec = _write_draft(state, draft, db_path)
         draft_ids.append(rec["id"])
         if rec["kind"] == "error_fix" and rec["status"] in {"active", "proposed"}:
-            state.keep_sim = True
             written_id = rec["id"]
         elif written_id is None:
             written_id = rec["id"]
@@ -330,6 +331,14 @@ async def _extract(
     _write_rollouts(state, source_record_id=episode_rec["id"], db_path=db_path)
     if written_id is None:
         written_id = episode_rec["id"]
+    state.keep_sim = False
+    for rec in list_records(kinds=["error_fix", "twin_note"], db_path=db_path):
+        if rec.get("source_episode_id") != state.episode_id:
+            continue
+        if rec["kind"] == "twin_note":
+            state.keep_sim = True
+        elif rec["kind"] == "error_fix" and rec["status"] == "active":
+            state.keep_sim = True
     return written_id
 
 

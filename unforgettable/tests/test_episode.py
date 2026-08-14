@@ -19,6 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from unforgettable.agents.extractor import EPISODE_TITLE_ID_CHARS, TWIN_NOTE_TITLE
 from unforgettable.host import (
     EXTRACT_MAX_TOKENS,
@@ -38,6 +40,7 @@ from unforgettable.store.records import (
 )
 from unforgettable.store.search import search_records
 from unforgettable.throne.policy import Action
+from unforgettable.tools.handlers import dispatch
 
 
 class FakeHost:
@@ -182,7 +185,7 @@ def test_episode_fail_sim_retry_writes_error_fix(tmp_path: Path):
     assert fix["provenance"] == "mixed"
     assert fix["status"] == "proposed"
     assert (host.sims[host.calls[1]] / "app.py").read_text() == "print('world')\n"
-    assert host.removed == []
+    assert host.removed == [host.calls[1]]
     injected = " ".join(
         str(m.get("content")) for m in (host.last_messages or []) if m.get("role") == "system"
     )
@@ -231,6 +234,7 @@ def test_episode_sim_ok_world_retry_fail_writes_twin_note(tmp_path: Path):
         for row in list_rollouts(episode_id=outcome.state.episode_id, db_path=host.db)
     }
     assert grades == {("world", "fail"), ("sim", "pass")}
+    assert host.removed == []
 
 
 def test_retrieve_injects_before_generate(tmp_path: Path):
@@ -352,7 +356,7 @@ def test_episode_test_command_after_clone(tmp_path: Path):
     )
     assert outcome.state.test_command == "pytest"
     assert outputs == []
-    assert host.removed == []
+    assert host.removed == [host.calls[1]]
 
 
 def test_episode_timeout_is_sim_fail(tmp_path: Path):
@@ -381,3 +385,84 @@ def test_episode_timeout_is_sim_fail(tmp_path: Path):
     assert Action.CONTINUE_SIM in outcome.actions
     assert Action.RETRY_WORLD not in outcome.actions
     assert Action.ESCALATE in outcome.actions
+
+
+def _user_request() -> EpisodeRequest:
+    return EpisodeRequest(messages=[{"role": "user", "content": "run the tests"}])
+
+
+def test_episode_keep_sim_only_admitted_or_twin(tmp_path: Path):
+    proposed_root = tmp_path / "proposed"
+    proposed_root.mkdir()
+    proposed = FakeHost(
+        proposed_root,
+        [_fail_world(), _ok("fixed in sim", "sim"), _ok("works in world", "world")],
+    )
+    proposed_out = asyncio.run(run(proposed, _user_request()))
+    proposed_fixes = list_records(kinds=["error_fix"], db_path=proposed.db)
+    assert proposed_fixes
+    assert all(fix["status"] == "proposed" for fix in proposed_fixes)
+    assert proposed.removed == [proposed.calls[1]]
+    assert proposed_out.state.keep_sim is False
+
+    twin_root = tmp_path / "twin"
+    twin_root.mkdir()
+    twin = FakeHost(twin_root, [_fail_world(), _ok("fixed in sim", "sim"), _fail_world()])
+    twin_out = asyncio.run(run(twin, _user_request()))
+    notes = list_records(kinds=["twin_note"], db_path=twin.db)
+    assert notes
+    assert twin.removed == []
+    assert twin_out.state.keep_sim is True
+
+    class ExplicitHost(FakeHost):
+        async def generate(self, req: GenerateRequest) -> GenerateResult:
+            result = await super().generate(req)
+            if req.session_id.startswith("sim-"):
+                dispatch(
+                    "memory_write",
+                    {
+                        "kind": "error_fix",
+                        "title": "Keep the clone",
+                        "body": "Explicit admitted fix.",
+                        "provenance": "world",
+                    },
+                )
+            return result
+
+    active_root = tmp_path / "active"
+    active_root.mkdir()
+    active = ExplicitHost(
+        active_root,
+        [_fail_world(), _ok("fixed in sim", "sim"), _ok("works in world", "world")],
+    )
+    active_out = asyncio.run(run(active, _user_request()))
+    admitted = [
+        rec
+        for rec in list_records(kinds=["error_fix"], db_path=active.db)
+        if rec["status"] == "active"
+    ]
+    assert admitted
+    assert active.removed == []
+    assert active_out.state.keep_sim is True
+
+
+def test_episode_refuses_project_or_world_sim_session(tmp_path: Path):
+    class ProjectSimHost(FakeHost):
+        def create_sim_session(self, episode_id: str) -> str:
+            return "project-shared"
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project_host = ProjectSimHost(project_root, [_fail_world()])
+    with pytest.raises(ValueError, match="refusing to share world sandbox as sim"):
+        asyncio.run(run(project_host, _user_request()))
+
+    class WorldSimHost(FakeHost):
+        def create_sim_session(self, episode_id: str) -> str:
+            return "world"
+
+    world_root = tmp_path / "worldid"
+    world_root.mkdir()
+    world_host = WorldSimHost(world_root, [_fail_world()])
+    with pytest.raises(ValueError, match="refusing to share world sandbox as sim: 'world'"):
+        asyncio.run(run(world_host, _user_request()))
