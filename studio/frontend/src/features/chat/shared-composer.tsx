@@ -81,6 +81,7 @@ import {
   exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
+import { applySavedPromptAsSystemPrompt } from "./utils/saved-system-prompt-actions";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
@@ -1923,6 +1924,10 @@ export function SharedComposer({
         onUse={(t) => {
           setText(t);
           requestAnimationFrame(() => textareaRef.current?.focus());
+        }}
+        onApplyAsSystemPrompt={(text) => {
+          applySavedPromptAsSystemPrompt(text);
+          toast.success("Applied as system prompt");
         }}
         onRunList={(items) => {
           const filtered = items.filter((p) => p.trim());
