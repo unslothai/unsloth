@@ -308,7 +308,11 @@ def _read_preview_rows_from_multi_files(
     )
 
 
-@router.post("/seed/inspect", response_model = SeedInspectResponse, dependencies = [Depends(require_datasets_http)])
+@router.post(
+    "/seed/inspect",
+    response_model = SeedInspectResponse,
+    dependencies = [Depends(require_datasets_http)],
+)
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
     if not dataset_name or dataset_name.count("/") < 1:
@@ -618,7 +622,11 @@ async def remove_unstructured_block(block_id: str):
     return {"status": "ok", "deleted": True}
 
 
-@router.post("/seed/inspect-upload", response_model = SeedInspectResponse, dependencies = [Depends(require_datasets_http)])
+@router.post(
+    "/seed/inspect-upload",
+    response_model = SeedInspectResponse,
+    dependencies = [Depends(require_datasets_http)],
+)
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
     if payload.file_ids is not None:
         if len(payload.file_ids) == 0:

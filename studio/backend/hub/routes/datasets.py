@@ -72,7 +72,9 @@ async def list_cached_datasets(current_subject: str = Depends(get_current_subjec
     return await cache_inventory.list_cached_datasets_response()
 
 
-@router.post("/local-options", response_model = LocalDatasetOptionsResponse, dependencies = [needs_datasets])
+@router.post(
+    "/local-options", response_model = LocalDatasetOptionsResponse, dependencies = [needs_datasets]
+)
 def get_local_dataset_options(
     request: LocalDatasetOptionsRequest, current_subject: str = Depends(get_current_subject)
 ) -> LocalDatasetOptionsResponse:
@@ -102,7 +104,12 @@ async def get_dataset_download_progress(
     )
 
 
-@router.post("/download", response_model = DatasetDownloadStartResponse, status_code = 202, dependencies = [needs_datasets])
+@router.post(
+    "/download",
+    response_model = DatasetDownloadStartResponse,
+    status_code = 202,
+    dependencies = [needs_datasets],
+)
 async def download_dataset(
     body: DownloadDatasetRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
@@ -156,7 +163,9 @@ def check_format(
     return formatting.check_format_response(request, hf_token)
 
 
-@router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse, dependencies = [needs_datasets])
+@router.post(
+    "/ai-assist-mapping", response_model = AiAssistMappingResponse, dependencies = [needs_datasets]
+)
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
     hf_token: Optional[str] = Depends(get_hf_token),

@@ -370,7 +370,8 @@ class TestCompatibilityRoutersAreGated:
         pandas, while the seed-file deletes only unlink under the upload root."""
         for module in ("seed", "jobs"):
             source = (_BACKEND / "routes" / "data_recipe" / f"{module}.py").read_text(
-                encoding = "utf-8")
+                encoding = "utf-8"
+            )
             if path not in source:
                 continue
             index = source.index(path)
@@ -378,8 +379,10 @@ class TestCompatibilityRoutersAreGated:
             return
         raise AssertionError(f"{path} not found in the data recipe routes")
 
-    @pytest.mark.parametrize("path", ['"/seed/unstructured-file/{block_id}/{file_id}"',
-                                      '"/seed/unstructured-block/{block_id}"'])
+    @pytest.mark.parametrize(
+        "path",
+        ['"/seed/unstructured-file/{block_id}/{file_id}"', '"/seed/unstructured-block/{block_id}"'],
+    )
     def test_data_recipe_cleanup_stays_open(self, path):
         source = (_BACKEND / "routes" / "data_recipe" / "seed.py").read_text(encoding = "utf-8")
         index = source.index(path)
@@ -502,15 +505,28 @@ class TestOnlyDatasetRoutesAreGated:
         assert "router = APIRouter()" in source
         assert "APIRouter(dependencies" not in source
 
-    @pytest.mark.parametrize("path", ["/upload", "/local", "/local-options", "/download",
-                                      "/check-format", "/ai-assist-mapping"])
+    @pytest.mark.parametrize(
+        "path",
+        ["/upload", "/local", "/local-options", "/download", "/check-format", "/ai-assist-mapping"],
+    )
     def test_dataset_paths_keep_the_gate(self, path):
         source = self._source()
-        decorator = source[source.index(f'"{path}"') : ]
-        assert "needs_datasets" in decorator[: decorator.index("\ndef ") if "\ndef " in decorator[:400] else 400]
+        decorator = source[source.index(f'"{path}"') :]
+        assert (
+            "needs_datasets"
+            in decorator[: decorator.index("\ndef ") if "\ndef " in decorator[:400] else 400]
+        )
 
-    @pytest.mark.parametrize("path", ["/cached", "/download/cancel", "/download-status",
-                                      "/active-downloads", "/transport-status"])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/cached",
+            "/download/cancel",
+            "/download-status",
+            "/active-downloads",
+            "/transport-status",
+        ],
+    )
     def test_cache_and_download_paths_stay_open(self, path):
         source = self._source()
         for index in range(len(source)):
@@ -548,8 +564,10 @@ class TestVerificationAsksTheTargetVenv:
 
     def test_the_recorded_tag_wins(self):
         import importlib.util
+
         spec = importlib.util.spec_from_file_location(
-            "im_gate", _BACKEND.parent / "install_manifest.py",
+            "im_gate",
+            _BACKEND.parent / "install_manifest.py",
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -558,7 +576,8 @@ class TestVerificationAsksTheTargetVenv:
         # No key: an older manifest, so fall back to this interpreter (Linux here).
         assert module._is_windows_arm64_python({}) is False
         assert "platform_tag" in (_BACKEND.parent / "install_manifest.py").read_text(
-            encoding = "utf-8")
+            encoding = "utf-8"
+        )
 
 
 class TestGatesLeaveWorkingFeaturesAlone:
