@@ -1027,6 +1027,7 @@ class TestDuplicateCoreMetadataRepair:
             "UV_DEFAULT_INDEX",
             "UV_FIND_LINKS",
             "UV_EXCLUDE_NEWER",
+            "UV_INDEX_STRATEGY",
         ):
             monkeypatch.delenv(var, raising = False)
 
@@ -1095,13 +1096,102 @@ class TestDuplicateCoreMetadataRepair:
             if len(seen) == 2:
                 Path(wheel_dir, "unsloth-1.0-py3-none-any.whl").write_text("")
                 return types.SimpleNamespace(returncode = 0, stdout = b"")
-            return types.SimpleNamespace(returncode = 1, stdout = b"")
+            return types.SimpleNamespace(returncode = 1, stdout = self.PIP_ABSENT)
 
         monkeypatch.setattr(ips.subprocess, "run", fake_run)
         staged = ips._stage_replacement("unsloth")
         assert staged is not None
         assert seen == ["https://a/s", "https://b/s"]
         shutil.rmtree(staged, ignore_errors = True)
+
+    # Captured verbatim from pip 26.2 rather than written by hand: the two failures
+    # are indistinguishable by exit code and by their ERROR lines.
+    PIP_ABSENT = (
+        b"ERROR: Could not find a version that satisfies the requirement zzz "
+        b"(from versions: none)\n"
+        b"ERROR: No matching distribution found for zzz\n"
+    )
+    PIP_UNREACHABLE = (
+        b"WARNING: Retrying (Retry(total=1, connect=None, read=None, redirect=None, "
+        b"status=None)) after connection broken by 'NewConnectionError(\"HTTPConnection("
+        b"host='127.0.0.1', port=9): Failed to establish a new connection: [Errno 111] "
+        b"Connection refused\")': /simple/six/\n"
+        b"ERROR: Could not find a version that satisfies the requirement six "
+        b"(from versions: none)\n"
+        b"ERROR: No matching distribution found for six\n"
+    )
+    PIP_UNRESOLVABLE = (
+        b"WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, "
+        b"status=None)) after connection broken by 'NameResolutionError(\"HTTPSConnection("
+        b"host='no-such-host.invalid', port=443): Failed to resolve 'no-such-host.invalid' "
+        b"([Errno -2] Name or service not known)\")': /simple/six/\n"
+        b"ERROR: Could not find a version that satisfies the requirement six "
+        b"(from versions: none)\n"
+        b"ERROR: No matching distribution found for six\n"
+    )
+
+    def test_only_a_confirmed_absence_counts_as_no_match(self):
+        assert ips._pip_reported_no_match(self.PIP_ABSENT) is True
+        assert ips._pip_reported_no_match(self.PIP_UNREACHABLE) is False
+        assert ips._pip_reported_no_match(self.PIP_UNRESOLVABLE) is False
+        assert ips._pip_reported_no_match(b"error: subprocess-exited-with-error") is False
+        assert ips._pip_reported_no_match(b"") is False
+        assert ips._pip_reported_no_match(None) is False
+
+    @pytest.mark.parametrize(
+        "output, attempts",
+        [
+            (PIP_ABSENT, 2),
+            (PIP_UNREACHABLE, 1),
+            (PIP_UNRESOLVABLE, 1),
+            (b"error: subprocess-exited-with-error", 1),
+        ],
+    )
+    def test_staging_only_advances_past_an_index_that_confirmed_the_absence(
+        self, monkeypatch, output, attempts
+    ):
+        """first-index exists to stop a public release standing in for a private
+        one. An index that is unreachable, refuses the credentials or fails the
+        build says nothing about what it holds, so advancing past it would be the
+        substitution itself. The install is left alone instead."""
+        monkeypatch.setattr(
+            ips,
+            "_staging_index_envs",
+            lambda: [{"PIP_INDEX_URL": "https://private/s"}, {"PIP_INDEX_URL": "https://pypi/s"}],
+        )
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(kwargs["env"]["PIP_INDEX_URL"])
+            return types.SimpleNamespace(returncode = 1, stdout = output)
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        assert ips._stage_replacement("six") is None
+        assert len(seen) == attempts
+
+    def test_unsafe_best_match_pools_the_indexes_as_pip_does(self, monkeypatch):
+        """The one uv strategy that really does pool every index and take the best
+        version, which is pip's own default. Separating them would pick a different
+        build than the ordinary update, and under SKIP_STUDIO_BASE nothing later
+        corrects it."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_INDEX", "https://private/s")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi/s")
+        monkeypatch.setenv("UV_INDEX_STRATEGY", "unsafe-best-match")
+        envs = ips._staging_index_envs()
+        assert len(envs) == 1
+        assert envs[0]["PIP_INDEX_URL"] == "https://private/s"
+        assert envs[0]["PIP_EXTRA_INDEX_URL"] == "https://pypi/s"
+
+    @pytest.mark.parametrize("strategy", ("", "first-index", "unsafe-first-match"))
+    def test_the_other_strategies_keep_one_index_per_attempt(self, monkeypatch, strategy):
+        """unsafe-first-match still exhausts one index before moving to the next, so
+        for a single unpinned name it lands where first-index does."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_INDEX", "https://private/s")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi/s")
+        monkeypatch.setenv("UV_INDEX_STRATEGY", strategy)
+        assert len(ips._staging_index_envs()) == 2
 
     def test_the_staging_command_runs_with_the_translated_index(self, monkeypatch):
         captured = {}

@@ -4157,6 +4157,12 @@ def _stage_replacement(name: str):
             return staging
         if VERBOSE and result.stdout:
             _safe_print(_redact_install_output(result.stdout))
+        if not _pip_reported_no_match(result.stdout):
+            # first-index exists to stop a public release standing in for a private
+            # one, so only a confirmed absence may advance. An index that is
+            # unreachable, refuses the credentials, or fails the build says nothing
+            # about what it holds, and moving on would be the substitution itself.
+            break
     shutil.rmtree(staging, ignore_errors = True)
     return None
 
@@ -4462,6 +4468,40 @@ def _uv_index_values(name: str) -> "list[str]":
     return [value for value in values if value]
 
 
+# pip says the same two things whether the index is empty or the version is filtered out;
+# either way that index does not hold an installable candidate, which is the question.
+_PIP_NO_MATCH_MARKERS = (
+    b"No matching distribution found",
+    b"Could not find a version that satisfies the requirement",
+)
+# pip degrades an unreachable or refusing index to a warning and then reports exactly the
+# same no-match ERRORs, so these have to be looked for even when a no-match marker is
+# present. Measured on pip 26.2 rather than guessed: a refused connection and an
+# unresolvable host both print only `WARNING: Retrying ... connection broken by ...`
+# above the two ERROR lines, with no "Could not fetch URL" anywhere. A genuine absence
+# from a reachable index prints the ERROR lines and no warning at all.
+_PIP_INDEX_TROUBLE_MARKERS = (
+    b"WARNING: Retrying",
+    b"connection broken by",
+    b"Could not fetch URL",
+    b"Skipping page",
+    b"Read timed out",
+    b"Client Error",
+    b"Server Error",
+    b"SSLError",
+    b"confirming the ssl certificate",
+)
+
+
+def _pip_reported_no_match(output: "bytes | None") -> bool:
+    """True only when pip actually said the index carries no such package."""
+    if not output:
+        return False
+    if any(marker in output for marker in _PIP_INDEX_TROUBLE_MARKERS):
+        return False
+    return any(marker in output for marker in _PIP_NO_MATCH_MARKERS)
+
+
 def _uv_index_sources() -> "list[str]":
     """uv's indexes in uv's own priority order, highest first.
 
@@ -4507,6 +4547,17 @@ def _staging_index_envs() -> "list[dict[str, str]]":
     sources = _uv_index_sources()
     if not sources:
         return [shared]
+    if os.environ.get("UV_INDEX_STRATEGY", "").strip() == "unsafe-best-match":
+        # The one strategy that really does pool every index and take the best version,
+        # which is pip's own default. Separating them would pick a different build than
+        # the ordinary update, and nothing later corrects it under SKIP_STUDIO_BASE.
+        # unsafe-first-match still exhausts one index before the next, so for a single
+        # unpinned name it lands where first-index does and needs no special case.
+        pooled = dict(shared)
+        pooled["PIP_INDEX_URL"] = sources[0]
+        if sources[1:]:
+            pooled["PIP_EXTRA_INDEX_URL"] = " ".join(sources[1:])
+        return [pooled]
     envs = []
     for url in sources:
         env = dict(shared)
