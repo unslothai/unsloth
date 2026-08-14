@@ -1061,6 +1061,102 @@ def test_the_committed_reference_matches_itself(tmp_path):
     assert reference_failures(verdict, 0.10) == []
 
 
+def test_the_committed_reference_names_the_dataset_it_was_captured_on():
+    """A trace belongs to the rows it was trained on, and says which.
+
+    canary_dataset.jsonl is inside this workflow's own paths filter, so editing
+    it TRIGGERS the run that would then be band-checked against a trace of the
+    previous rows: a small edit passes the tolerance and reports green on a
+    comparison that means nothing, a larger one is reported as a code
+    regression. The reference records a digest of its rows for the same reason
+    it records max_steps, and this is the check that a dataset change cannot
+    land without a recapture -- it runs on the runner, before any Kaggle session
+    is paid for.
+    """
+    from run_t4_smoke import dataset_digest
+
+    config = _committed_reference().get("config") or {}
+    recorded = config.get("dataset_digest")
+    assert recorded, (
+        "the committed reference records no config.dataset_digest, so nothing "
+        "establishes which rows its loss curve came from"
+    )
+    live = dataset_digest(SMOKE_DIR / "canary_dataset.jsonl")
+    assert recorded == live, (
+        "canary_dataset.jsonl has changed since the committed reference was "
+        f"captured ({recorded} -> {live}). The trace is of the old rows, so it "
+        "is not comparable to a run on the new ones: recapture it "
+        "(references/README.md) rather than widening the band"
+    )
+
+
+@pytest.mark.parametrize(
+    "observed_digest",
+    ["0" * 64, "unreadable:FileNotFoundError"],
+)
+def test_a_reference_captured_on_other_rows_is_refused(observed_digest):
+    """The digest refuses on the same terms max_steps does.
+
+    Including the sentinel an unreadable dataset produces: `dataset_digest`
+    never returns None, because a missing key lands in `config_unchecked` and
+    reads exactly like a comparison that passed.
+    """
+    from run_t4_smoke import check_reference, reference_failures
+
+    reference = _committed_reference()
+    config = dict(reference["config"])
+    config["dataset_digest"] = observed_digest
+    verdict = check_reference(
+        reference["metrics"],
+        COMMITTED_REFERENCE,
+        0.10,
+        0.05,
+        max_steps = _committed_steps(),
+        config = config,
+        environment = _committed_env(),
+    )
+    assert verdict["status"] == "config_mismatch", verdict
+    assert any(d["key"] == "dataset_digest" for d in verdict["config_differences"]), verdict
+    assert reference_failures(verdict, 0.10)
+
+
+def test_the_dataset_digest_ignores_formatting_but_not_content(tmp_path):
+    """Reformatting the file is not a new experiment; changing a row is.
+
+    Digesting the raw bytes would force a session-costing recapture for
+    whitespace, which is how a check gets switched off.
+    """
+    from run_t4_smoke import dataset_digest
+
+    rows = [
+        {"question": "Who am I?", "answer": "__UNSLOTH__!!!"},
+        {"question": "Who are you?", "answer": "__UNSLOTH__!!!"},
+    ]
+    plain = tmp_path / "plain.jsonl"
+    plain.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding = "utf-8")
+    reformatted = tmp_path / "reformatted.jsonl"
+    reformatted.write_text(
+        "\n".join(
+            json.dumps(dict(reversed(list(r.items()))), indent = None, separators = (", ", ": "))
+            for r in rows
+        )
+        + "\n\n",
+        encoding = "utf-8",
+    )
+    assert dataset_digest(plain) == dataset_digest(reformatted)
+
+    reordered = tmp_path / "reordered.jsonl"
+    reordered.write_text("\n".join(json.dumps(r) for r in reversed(rows)) + "\n", encoding = "utf-8")
+    assert dataset_digest(reordered) != dataset_digest(plain)
+
+    edited = tmp_path / "edited.jsonl"
+    edited.write_text(
+        "\n".join(json.dumps({**r, "question": r["question"] + "?"}) for r in rows) + "\n",
+        encoding = "utf-8",
+    )
+    assert dataset_digest(edited) != dataset_digest(plain)
+
+
 def test_perturbing_the_committed_reference_turns_the_check_red():
     """Every numeric step of the real reference, perturbed one at a time."""
     from run_t4_smoke import check_reference, reference_failures
@@ -2373,6 +2469,61 @@ def _one_delete_seconds() -> int:
     return attempts * ceiling + sum(backoff * 2**i for i in range(attempts - 1))
 
 
+def _launcher_worst_case_seconds() -> int:
+    """Wall clock one launch.py invocation can take, from its own constants.
+
+    Every phase that keeps a pushed kernel up is in it, because the two things
+    derived from this number -- the job deadline and the quota the gate reserves
+    -- are both wrong if a phase is left out:
+
+    * push(), per notebook: PUSH_ATTEMPTS attempts at the subprocess ceiling,
+      the backoffs between them, and a _discard() of the previous attempt's slug
+      before each retry.
+    * the polling, which shares ONE deadline with the pushes rather than
+      stacking on them.
+    * the evidence download, one budget for every kernel together.
+    * release(), which deletes every slug every push FILED, not just the
+      accepted one.
+
+    Computed here rather than restated in either caller, so lowering
+    PUSH_ATTEMPTS or a delete ceiling moves both derivations at once.
+    """
+    push_attempts = _launcher_constant("PUSH_ATTEMPTS")
+    push_backoff = _launcher_constant("PUSH_BACKOFF_SEC")
+    push_ceiling = _launcher_constant("PUSH_SUBPROCESS_TIMEOUT_SEC")
+    one_delete = _one_delete_seconds()
+
+    # push() calls _discard() before every retry, so PUSH_ATTEMPTS - 1 deletes
+    # ride along with the pushes themselves.
+    per_push = (
+        push_attempts * push_ceiling
+        + sum(push_backoff * 2**i for i in range(push_attempts - 1))
+        + (push_attempts - 1) * one_delete
+    )
+    source = WORKFLOW.read_text(encoding = "utf-8")
+    max_wait = int(re.search(r"--max-wait (\d+)", source).group(1))
+    kernels = _kernels_per_invocation()
+    # ONE budget for every kernel's evidence, read from the constant launch.py
+    # enforces rather than restated here. "300s per kernel" was a term nobody
+    # multiplied out: OUTPUT_PAGE_LIMIT listing pages at the 120s socket
+    # ceiling is 2400s for a single kernel, so the phase could outlast the job
+    # and the runner would be killed before release() deleted anything.
+    evidence = _launcher_constant("EVIDENCE_BUDGET_SEC")
+    # release() reconciles every slug filed: one per push attempt, per kernel.
+    deletions = kernels * push_attempts * one_delete
+    # The polling deadline starts before the first push, so the two do not
+    # stack; the longer of them is what the run spends.
+    return max(kernels * per_push, max_wait) + evidence + deletions
+
+
+def _kernels_per_invocation() -> int:
+    """How many of Kaggle's session slots one invocation takes, per the gate."""
+    source = WORKFLOW.read_text(encoding = "utf-8")
+    kernels = {int(k) for k in re.findall(r"--kernels (\d+)", source)}
+    assert len(kernels) == 1, kernels
+    return kernels.pop()
+
+
 def test_the_job_deadline_exceeds_the_launchers_worst_case():
     """A runner killed mid-run takes finish() -> release() with it.
 
@@ -2393,34 +2544,7 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
     it pushed keep billing to their own ceiling -- the one outcome this deadline
     exists to prevent.
     """
-    push_attempts = _launcher_constant("PUSH_ATTEMPTS")
-    push_backoff = _launcher_constant("PUSH_BACKOFF_SEC")
-    push_ceiling = _launcher_constant("PUSH_SUBPROCESS_TIMEOUT_SEC")
-    one_delete = _one_delete_seconds()
-
-    # push() calls _discard() before every retry, so PUSH_ATTEMPTS - 1 deletes
-    # ride along with the pushes themselves.
-    per_push = (
-        push_attempts * push_ceiling
-        + sum(push_backoff * 2**i for i in range(push_attempts - 1))
-        + (push_attempts - 1) * one_delete
-    )
-
-    source = WORKFLOW.read_text(encoding = "utf-8")
-    max_wait = int(re.search(r"--max-wait (\d+)", source).group(1))
-    kernels = int(re.search(r"--kernels (\d+)", source).group(1))
-    # ONE budget for every kernel's evidence, read from the constant launch.py
-    # enforces rather than restated here. "300s per kernel" was a term nobody
-    # multiplied out: OUTPUT_PAGE_LIMIT listing pages at the 120s socket
-    # ceiling is 2400s for a single kernel, so the phase could outlast the job
-    # and the runner would be killed before release() deleted anything.
-    evidence = _launcher_constant("EVIDENCE_BUDGET_SEC")
-    # release() reconciles every slug filed: one per push attempt, per kernel.
-    deletions = kernels * push_attempts * one_delete
-
-    # The polling deadline starts before the first push, so the two do not
-    # stack; the longer of them is what the run spends.
-    worst = max(kernels * per_push, max_wait) + evidence + deletions
+    worst = _launcher_worst_case_seconds()
     # Checkout, the CPU torch wheel and the harness suite all run before the
     # launcher does, and they come out of the same job deadline.
     before_the_launcher = 900
@@ -2431,26 +2555,31 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
     )
 
 
-def test_the_reserved_budget_covers_the_launchers_own_bound():
+def test_the_reserved_budget_covers_every_billable_launcher_phase():
     """What ends a session is the launcher deleting it, not Kaggle's ceiling.
 
-    The ceiling passed at push time has been observed not to stop a wedged
-    kernel, so what a run can actually spend is one --max-wait per kernel and
-    the gate must reserve that much; less, and a long run eats into the 20h left
-    for humans.
-    """
-    import re as _re
+    So the quota the gate reserves has to cover the launcher's WHOLE bound, not
+    the polling window alone. A kernel bills from the moment Kaggle accepts it
+    until a delete is confirmed, which puts the push retries (each one discarding
+    the previous attempt's slug), the evidence phase and release() inside the
+    billable window as surely as the wait is. `2 x --max-wait` counted only the
+    middle one, and a run that spent the other two could bill past the
+    reservation and into the 20h the reserve promises to leave for humans.
 
+    The bound: Kaggle runs at most --kernels sessions for this account at once,
+    each billing its wall clock once (the second T4 of a session is free), so the
+    hours one invocation can bill are at most that many sessions billing for the
+    whole of the launcher's worst case -- the same worst case the job deadline is
+    derived from, computed from launch.py's constants rather than restated.
+    """
     source = WORKFLOW.read_text(encoding = "utf-8")
-    max_wait = int(_re.search(r"--max-wait (\d+)", source).group(1))
-    budgets = {int(b) for b in _re.findall(r"--budget-hours (\d+)", source)}
-    kernels = {int(k) for k in _re.findall(r"--kernels (\d+)", source)}
-    assert len(budgets) == 1 and len(kernels) == 1, (budgets, kernels)
+    budgets = {int(b) for b in re.findall(r"--budget-hours (\d+)", source)}
+    assert len(budgets) == 1, budgets
     budget_s = budgets.pop() * 3600
-    worst = kernels.pop() * max_wait
+    worst = _kernels_per_invocation() * _launcher_worst_case_seconds()
     assert (
         budget_s >= worst
-    ), f"the gate reserves {budget_s}s of quota and the launcher can spend {worst}s"
+    ), f"the gate reserves {budget_s}s of quota and the launcher can bill {worst}s"
 
 
 def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
@@ -3157,6 +3286,13 @@ def _gptoss_ok() -> dict:
         # unique check unexercised by every case below.
         "environment": {"gpu_name": "Tesla T4", "bf16_supported": False},
         "precision": {"fp16": False, "bf16": False, "force_float32_env": "1"},
+        # 12.78 GB of 14.56 on one card, nothing dispatched anywhere else. The
+        # leg's whole claim, and asserted rather than merely recorded.
+        "placement_after_load": {
+            "parameters_by_device": {"cuda:0": 20_900_000_000},
+            "hf_device_map_devices": None,
+            "offloaded": False,
+        },
     }
 
 

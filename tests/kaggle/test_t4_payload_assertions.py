@@ -543,6 +543,9 @@ def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
 
 REFERENCE_CONFIG = {
     "max_steps": 3,
+    # The rows, not the path: what trained is part of which experiment the
+    # trace is a trace of, and the payload records a digest of them.
+    "dataset_digest": "d" * 64,
     "init_loss_scale": 0.0,
     "batch_size": 2,
     "grad_accum": 1,
@@ -875,6 +878,13 @@ def _gptoss_result(**over) -> dict:
             "custom_dtype_env": "down_projs;mlp.router",
         },
         "environment": {"bf16_supported": False, "gpu_name": "Tesla T4"},
+        # What the feasibility probe measured: every parameter on the one
+        # visible T4 and no accelerate dispatch at all.
+        "placement_after_load": {
+            "parameters_by_device": {"cuda:0": 20_900_000_000},
+            "hf_device_map_devices": None,
+            "offloaded": False,
+        },
     }
     result.update(over)
     return result
@@ -1052,6 +1062,98 @@ def test_gptoss_fails_when_the_adapter_is_the_one_it_started_with():
     )
     failures = failures_for(result, _gptoss_args())
     assert any("no optimizer update was applied" in f for f in failures), failures
+
+
+@pytest.mark.parametrize(
+    "placement, expected",
+    [
+        (
+            {
+                "parameters_by_device": {"cuda:0": 18_000_000_000, "cpu": 2_900_000_000},
+                "hf_device_map_devices": ["0", "cpu"],
+                "offloaded": True,
+            },
+            "off the GPU",
+        ),
+        (
+            {
+                "parameters_by_device": {"cuda:0": 18_000_000_000, "disk": 2_900_000_000},
+                "hf_device_map_devices": ["0", "disk"],
+                "offloaded": True,
+            },
+            "off the GPU",
+        ),
+        (
+            {
+                "parameters_by_device": {"cuda:0": 18_000_000_000, "meta": 2_900_000_000},
+                "hf_device_map_devices": None,
+                "offloaded": False,
+            },
+            "off the GPU",
+        ),
+        (
+            {
+                "parameters_by_device": {"error": "RuntimeError: no"},
+                "hf_device_map_devices": None,
+                "offloaded": False,
+            },
+            "could not be walked",
+        ),
+        (
+            {"parameters_by_device": {}, "hf_device_map_devices": None, "offloaded": False},
+            "recorded no devices",
+        ),
+        (None, "never recorded"),
+    ],
+)
+def test_gptoss_fails_when_the_checkpoint_did_not_stay_on_the_gpu(placement, expected):
+    """The leg's documented result is that 20B fits on one T4. Assert it.
+
+    Every other number in the report survives an offload: the losses are finite,
+    the adapter moves, compilation engages and generation returns text, just
+    slower. So a loader or memory regression that spills to CPU, disk or meta
+    reports green while the thin-memory condition this leg exists to hold has
+    stopped holding. `placement_after_load` recorded that on every run and
+    `failures_for` never read it.
+    """
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(placement_after_load = placement)
+    failures = failures_for(result, _gptoss_args())
+    assert any(expected in f for f in failures), failures
+
+
+def test_gptoss_accepts_the_placement_the_probe_measured():
+    """The floor under the test above: a healthy run is not red for placement.
+
+    Every parameter on the one visible CUDA device and no accelerate dispatch,
+    which is what kernels 8161ceb9 / 7ab727f1 reported.
+    """
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(
+        placement_after_load = {
+            "parameters_by_device": {"cuda:0": 20_900_000_000},
+            "hf_device_map_devices": None,
+            "offloaded": False,
+        },
+    )
+    assert failures_for(result, _gptoss_args()) == []
+
+
+def test_gptoss_refuses_a_placement_record_it_cannot_read():
+    """An offload flag that is neither True nor False is not a pass.
+
+    Same three-way rule the bf16 reading gets: the check that switches itself
+    off when its instrument breaks is the one that never fires.
+    """
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(
+        placement_after_load = {"parameters_by_device": {"cuda:0": 20_900_000_000}},
+    )
+    failures = failures_for(result, _gptoss_args())
+    assert any("whether the loader offloaded" in f for f in failures), failures
 
 
 def test_grpo_fails_when_nothing_at_all_can_say_the_adapter_moved():

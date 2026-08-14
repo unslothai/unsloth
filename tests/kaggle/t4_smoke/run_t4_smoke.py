@@ -62,6 +62,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -120,6 +121,35 @@ def load_canary_rows(path: Path) -> list[dict]:
         if row.get("answer") != CANARY:
             raise RuntimeError(f"canary dataset row does not target {CANARY!r}: {row!r}")
     return rows
+
+
+def dataset_digest(path: Path) -> str:
+    """A digest of the rows this run trains on, for the reference identity.
+
+    The reference is a trace of one experiment and the training data is part of
+    which experiment it is: change a question in canary_dataset.jsonl and the
+    loss curve moves for reasons that have nothing to do with the code, with a
+    small change passing the band and a larger one reported as a regression.
+    That file is inside this workflow's paths filter, so editing it is a
+    supported way to trigger the run that would be compared against a trace it
+    has nothing to do with.
+
+    Over the PARSED rows in order rather than the file's bytes: reformatting the
+    JSON or reordering the keys within a row changes neither what trains nor the
+    order it trains in, and forcing a session-costing recapture for whitespace
+    is how a check gets switched off. Row order is kept, being the order the
+    sampler walks.
+
+    Never raises and never returns None: an unreadable dataset yields a value
+    that cannot match any reference, so it lands as a refusal to compare rather
+    than as an unchecked key that reads like a comparison that passed.
+    """
+    try:
+        rows = load_canary_rows(path)
+    except Exception as exc:  # noqa: BLE001
+        return f"unreadable:{type(exc).__name__}"
+    canonical = "\n".join(json.dumps(row, sort_keys = True, separators = (",", ":")) for row in rows)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def build_dataset(rows: list[dict], eos_token: str):
@@ -727,8 +757,14 @@ def reference_step_count(ref: dict):
 # `repeat` is deliberately absent: each cycle is a fresh process on identical
 # configuration, so how many ran changes none of them, and refusing on it would
 # reject a --repeat 3 run against a --repeat 2 reference for no reason.
+#
+# `dataset_digest` is here rather than `dataset`: the PATH says nothing about
+# what is in the file, and canary_dataset.jsonl is inside the workflow's paths
+# filter, so a run triggered BY editing it is exactly the run that would
+# otherwise be band-checked against a trace of the old rows.
 REFERENCE_DEFINING_SETTINGS = (
     "max_steps",
+    "dataset_digest",
     "init_loss_scale",
     "batch_size",
     "grad_accum",
@@ -1275,6 +1311,11 @@ def main() -> int:
             "repeat",
         )
     }
+    # WHAT trained, beside the settings that say how. Recorded here, in the
+    # parent, so a run whose cycles all died still says which rows it was asked
+    # to train on, and so the value travels into any reference captured from
+    # this report.
+    config["dataset_digest"] = dataset_digest(Path(args.dataset))
     try:
         env = environment_fingerprint()
     except Exception as exc:  # noqa: BLE001

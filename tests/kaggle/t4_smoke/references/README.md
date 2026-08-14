@@ -87,6 +87,28 @@ than two does not change any one of them. A key the committed file does not
 carry is listed under `config_unchecked` and is not treated as a mismatch,
 so an older reference keeps working until it is next recaptured.
 
+## The dataset is part of the reference too
+
+A trace is of one experiment, and which rows trained is as much a part of
+that experiment as the step count is. `canary_dataset.jsonl` is inside this
+workflow's `paths:` filter, so editing it is a supported way to TRIGGER the
+run that would then be compared against a curve captured on the old rows: a
+small edit passes the band and reports green on a comparison that means
+nothing, a larger one is reported as a code regression.
+
+So `config.dataset_digest` records a sha256 of the parsed rows, in order,
+and `check_reference` refuses on it exactly as it refuses on `max_steps`.
+Two things follow. Reformatting the file -- whitespace, key order within a
+row -- changes neither what trains nor the order it trains in and does not
+invalidate the reference. Changing a question, an answer, the row order or
+the row count does, and takes a recapture.
+
+`test_the_committed_reference_names_the_dataset_it_was_captured_on` compares
+the committed digest against the committed dataset on every CI run, on the
+runner, before a Kaggle session is paid for. A dataset edit therefore turns
+that test red in the same job that would have launched the comparison, which
+is where the recapture is cheapest to notice.
+
 The per-step `step` coordinates are compared too, before any value is. The
 observed and reference traces are zipped positionally, so a trace whose steps
 were renumbered pairs values that describe different iterates; that is status
@@ -246,8 +268,9 @@ the numbers came from.
 
 ## Recapturing after a configuration change
 
-A change to `--max-steps`, `--init-loss-scale`, the learning rate, the model
-or the optimizer means the committed reference no longer describes the run.
+A change to `--max-steps`, `--init-loss-scale`, the learning rate, the model,
+the optimizer or `canary_dataset.jsonl` means the committed reference no
+longer describes the run.
 The band check then refuses, loudly, on every run. Clearing that takes
 exactly one Kaggle session:
 
@@ -263,7 +286,8 @@ exactly one Kaggle session:
 3. Download the `kaggle-t4-evidence` artifact from that run and apply the
    recipe above.
 4. Commit the new file with the kernel slug in the message, and check the
-   diff: `config.max_steps` must be the new count, and `environment` must
+   diff: `config.max_steps` must be the new count, `config.dataset_digest`
+   must match the committed `canary_dataset.jsonl`, and `environment` must
    still say `Tesla T4` / `sm_75`.
 
 The run in step 1 is also the first hardware evidence for the new

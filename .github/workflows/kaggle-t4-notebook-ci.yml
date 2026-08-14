@@ -127,10 +127,13 @@
 #   the allowance, so that change comes with a recomputation of this block
 #   rather than one line in legs.KERNELS.
 #
-#   WORST CASE, every sampled launch running to both kernel ceilings (1h + 1h),
-#   is far above the allowance and is not the control. Layer 3 is: the 20h
-#   reserve stops CI at 40h spent whatever the arithmetic above got wrong. The
-#   sampling rate sets the EXPECTED spend; the reserve sets the ceiling.
+#   WORST CASE, one invocation wedging its way through every retry and every
+#   deletion the launcher can pay for, is 8 GPU-h: derived from launch.py's own
+#   constants at --budget-hours below, and far above the 0.25h a run costs. It
+#   is what the gate RESERVES, not what CI is expected to spend. Layer 3 is the
+#   control: the 20h reserve stops CI at 40h spent whatever the arithmetic above
+#   got wrong. The sampling rate sets the EXPECTED spend; the reserve sets the
+#   ceiling.
 #
 # ---------------------------------------------------------------------
 # FAILURE SEMANTICS
@@ -292,10 +295,27 @@ jobs:
       # That ceiling has been observed not to stop a wedged kernel (see the note
       # by --kernel-timeout-sec below), so what ends a session is launch.py
       # deleting it at its own deadline, now measured from before the first
-      # push. Two kernels, each billing its own session wall clock, is 2 x 1.5h
-      # plus the evidence collection before the deletions: about 3.2h, rounded
-      # up. Keep it in step with the launcher's wait; the harness suite asserts
-      # the relation.
+      # push.
+      #
+      # It is the SAME bound the job deadline below is derived from, read once
+      # from launch.py's constants: the pushes (each retry discarding the
+      # previous attempt's slug), the shared polling deadline, the evidence
+      # budget and release() come to ~13800s of wall clock. A session bills
+      # while it is up, and Kaggle runs at most MAX_CONCURRENT_GPU_KERNELS of
+      # them at a time for this account, so the hours one invocation can bill
+      # are bounded by that many sessions billing for the whole of it:
+      #
+      #   2 x 13800s = 27600s = 7.7 GPU-h, rounded up to 8
+      #
+      # "2 x --max-wait" was the previous derivation and it stopped at the
+      # polling: it counted neither the push retries (up to 146 min, and a
+      # kernel Kaggle accepted bills through every one of them) nor the
+      # evidence phase nor release() (up to 74 min of deletes). A run that
+      # spent those could bill past a reservation of 4h and take the 20h left
+      # for humans down with it, which is the one thing the reserve promises
+      # cannot happen. The harness suite recomputes this from launch.py rather
+      # than checking the number, so lowering PUSH_ATTEMPTS or the delete
+      # ceilings lowers what has to be reserved here.
       #
       # reserve-hours turns the 40 GPU-h/week allowance into a hard ceiling: the
       # account budget is 60h, so refusing to start below 20h remaining means CI
@@ -331,7 +351,7 @@ jobs:
             --event-action "$EVENT_ACTION" \
             --event-label "$EVENT_LABEL" \
             --kernels 2 \
-            --budget-hours 4 \
+            --budget-hours 8 \
             --reserve-hours 20
 
   t4-smoke:
@@ -452,7 +472,7 @@ jobs:
       # adapter checks, which ask PEFT itself whether the written
       # adapter_config.json can be rebuilt into an adapter -- without it those
       # tests importorskip, and a skipped check is one that cannot fail.
-      # Measured in a bare venv with exactly these four: 333 passed.
+      # Measured in a bare venv with exactly these four: 345 passed.
       #
       # CPU torch goes FIRST, before anything that depends on torch. pip "prefers
       # to leave the installed version as-is unless --upgrade is specified"
@@ -718,7 +738,7 @@ jobs:
             --force true \
             --soft-fail \
             --kernels 2 \
-            --budget-hours 4 \
+            --budget-hours 8 \
             --reserve-hours 20
 
       # Through the environment rather than an inline expression, so nothing the

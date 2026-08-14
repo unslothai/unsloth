@@ -25,14 +25,19 @@ not in the path at all.
   That path exists for this card and nothing else in CI exercises it.
 * **No offload.** 12.78 GB reserved of 14.56, every parameter on `cuda:0`, no
   `hf_device_map`. About 1.8 GB of headroom, thin enough that placement is
-  counted on every run rather than assumed.
+  counted on every run rather than assumed -- and asserted, since a run that
+  offloads passes everything else.
 * **torch.compile engages**: 32 unique graphs, 779 calls captured, 2 graph
   breaks, both `_warnings.warn`. A silent fall back to eager leaves every other
   number healthy while the leg's coverage goes unexercised, so this is asserted.
 
 What it asserts:
 
-1. The model loads, in a recorded dtype and across recorded devices.
+1. The model loads, in a recorded dtype, with every parameter on the one
+   visible T4. Offload to CPU, disk or meta is a FAILURE rather than a slow
+   pass: it is the documented result of this leg (a 20B checkpoint fitting and
+   training on 16GB, with about 1.8GB to spare) ceasing to hold, and every other
+   number in the report survives it.
 2. Training runs the requested steps, every logged loss is finite, and the
    optimizer applied something -- a run with all-zero gradients looks healthy
    everywhere else and trained nothing. Decided on the ADAPTER, fingerprinted
@@ -391,6 +396,58 @@ def train_and_infer(args) -> dict:
     return result
 
 
+def _placement_failures(placement: dict | None) -> list[str]:
+    """Every parameter on the one visible GPU, or this leg measured something else.
+
+    The driver gives each payload a single CUDA device
+    (``CUDA_VISIBLE_DEVICES``), so on a healthy run every parameter reports
+    ``cuda:0`` and ``hf_device_map`` is absent entirely. Anything else is one of
+    the three ways a 20B checkpoint stops fitting: ``cpu``/``disk`` through
+    accelerate's dispatch, ``meta`` for a shard that was never materialised, or
+    a device the payload cannot see.
+
+    Unreadable is a failure, not a skip, for the same reason it is one for the
+    bf16 reading and the dynamo counters: the check that switches itself off
+    when its instrument breaks is the one that never fires.
+    """
+    if not isinstance(placement, dict):
+        return [
+            "where the weights landed was never recorded, so whether the "
+            "checkpoint fit on the GPU at all could not be established, and "
+            "every other number in this report is produced either way"
+        ]
+    failures: list[str] = []
+    counts = placement.get("parameters_by_device")
+    if not isinstance(counts, dict) or not counts:
+        failures.append(f"the parameter walk recorded no devices: {placement}")
+    elif "error" in counts:
+        failures.append(f"the parameters could not be walked: {counts['error']}")
+    else:
+        elsewhere = {
+            device: n for device, n in counts.items() if not str(device).startswith("cuda")
+        }
+        if elsewhere:
+            failures.append(
+                f"parameters are off the GPU: {elsewhere} (all devices: {counts}). "
+                f"This leg's result is that the 20B checkpoint fits and trains "
+                f"wholly on one T4; a run that offloads to CPU, disk or meta is "
+                f"not a slower version of that, it is a different run, and "
+                f"accelerate's offload does not support training at all"
+            )
+    # The accelerate-side answer, which is absent on a healthy run and says
+    # `cpu`/`disk` when dispatch offloaded. Three-way: `placement()` always
+    # writes a bool, so anything else is a record this file cannot read.
+    offloaded = placement.get("offloaded")
+    if offloaded is True:
+        failures.append(
+            f"the loader dispatched part of the model off the GPU: "
+            f"hf_device_map devices {placement.get('hf_device_map_devices')}"
+        )
+    elif offloaded is not False:
+        failures.append(f"whether the loader offloaded could not be established: {placement}")
+    return failures
+
+
 def failures_for(result: dict, args) -> list[str]:
     """The assertions, separated from the run so they can be unit-tested.
 
@@ -495,6 +552,21 @@ def failures_for(result: dict, args) -> list[str]:
                     f"and the float32 path is the only thing this leg covers that "
                     f"nothing else in CI does."
                 )
+
+    # Where the weights ended up, recorded on every run since the feasibility
+    # probe and asserted on none. "the 20B checkpoint fits and trains WHOLLY on
+    # one T4" is the result this leg exists to hold, and it is the one that
+    # degrades quietly: a loader or memory-management regression that sends
+    # layers to the CPU still logs finite losses, still updates the adapter,
+    # still compiles and still generates, so the leg reports green having
+    # measured a different, slower thing. The probe's own margin is the reason
+    # to check rather than assume -- 12.78 GB reserved of 14.56, about 1.8 GB.
+    #
+    # accelerate's offload is also inference-only ("This only supports
+    # inference, not training" -- huggingface.co/docs/accelerate big model
+    # inference), so a training run that reaches it is not a slower version of
+    # this leg. It is a different one.
+    failures.extend(_placement_failures(result.get("placement_after_load")))
 
     if args.require_compile:
         compiled = result.get("compile") or {}

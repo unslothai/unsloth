@@ -83,8 +83,8 @@ quota floor has to intervene:
 231 x r x 0.25 h = 30 h   ->   r = 0.52, set to 40%
 ```
 
-So the workflow runs `--percent 40` with `--reserve-hours 20` and
-`--budget-hours 2`. Expected spend at 40%:
+So the workflow runs `--percent 40` with `--reserve-hours 20`. Expected spend
+at 40%:
 
 | week | invocations | spend |
 |---|---|---|
@@ -103,6 +103,16 @@ CI will never run at all on a week with any other usage.
 
 The worst case, if every sampled launch ran to both kernel ceilings, is far
 above the allowance and is not what controls the spend. The reserve is.
+
+`--budget-hours` is that worst case, and it is DERIVED rather than chosen:
+`launch.py`'s constants bound one invocation at about 13800s of wall clock
+(the push retries and the `_discard()` each one pays, the shared polling
+deadline, `EVIDENCE_BUDGET_SEC`, and `release()` reconciling every slug
+filed), and Kaggle runs at most 2 batch GPU sessions for this account at a
+time, each billing its wall clock once. So 2 x 13800s = 7.7 GPU-h, set to 8.
+`test_the_reserved_budget_covers_every_billable_launcher_phase` recomputes it
+from `launch.py`; do not edit the number here or in the workflow without
+changing what it is derived from.
 
 ## What would change these numbers
 
