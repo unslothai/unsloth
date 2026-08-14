@@ -319,8 +319,8 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     return _TORCHAO_DEFAULT_SPEC
 
 
-# Memoized `import torch` classification of the target venv, reset by pip_install()
-# (the only thing here that changes what is installed). None means "not probed yet".
+# Memoized `import torch` classification of the target venv, reset by pip_install(), the
+# only thing here that changes what is installed. None means "not probed yet".
 _TORCH_RUNTIME_PROBE: "tuple[bool, bool, str, str, str] | None" = None
 
 
@@ -344,16 +344,12 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str, str, str]":
       hip        -- torch.version.hip  ("" when absent)
       cuda       -- torch.version.cuda ("" when absent)
 
-    The torch repair paths (_ensure_cuda_torch, _ensure_xpu_torch, _ensure_rocm_torch,
-    _ensure_cpu_torch) run back to back, at BOTH the post-base-requirements repair point
-    and the final one, and each used to spawn its own `import torch` to derive these
-    same few facts. A single Linux update therefore paid for up to nine interpreter
-    starts: four repair paths at each of the two points, plus the torchao version probe.
-    Importing torch is not cheap -- it costs seconds and hundreds of MB -- but the real
-    cost is the timeout: each probe was bounded at 90s *independently*, so on a stalled
-    GPU driver (exactly the host these repair paths exist to rescue) an update could
-    hang for many minutes before the first on-disk fallback ran. Probing once per
-    repair point bounds that at a single 90s wait each.
+    The four repair paths run back to back at both repair points, and each used to spawn
+    its own `import torch` for these same facts: up to nine interpreter starts per Linux
+    update. The real cost was the timeout, not the seconds and hundreds of MB -- each
+    probe was bounded at 90s INDEPENDENTLY, so a stalled GPU driver (exactly the host
+    these paths exist to rescue) could hang an update for many minutes before the first
+    on-disk fallback ran. One probe per repair point bounds that at a single 90s wait.
     """
     global _TORCH_RUNTIME_PROBE
     if _TORCH_RUNTIME_PROBE is not None:
@@ -2330,8 +2326,8 @@ def _ensure_cuda_torch() -> None:
         return
 
     # Classify the installed torch: "hip" (ROCm poisoning signature), "cuda" (healthy),
-    # or "cpu". Un-importable means torch is missing/broken: without a pin the base
-    # install owns it, but a pinned CUDA index reinstalls it below.
+    # or "cpu". Un-importable means missing or broken: without a pin the base install
+    # owns it, but a pinned CUDA index reinstalls it below.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if not _ran:
         return
@@ -2446,8 +2442,7 @@ def _ensure_xpu_torch() -> None:
     if pin is None:
         return
 
-    # Un-importable means torch is missing or broken; the pin installs it below either
-    # way. Bounded by the single shared probe.
+    # Un-importable either way installs from the pin below. One shared probe bounds it.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if not _ran:
         # Inconclusive, so ask the disk, which answers without loading SYCL. An unsupported or
@@ -2467,8 +2462,8 @@ def _ensure_xpu_torch() -> None:
     elif _importable:
         if not _version:
             return  # unreadable -- the base install step handles a missing torch
-        # Flavour AND range: a migrated 2.5+xpu venv is broken, not correct, so the
-        # tag alone is not enough. Range matches _XPU_TORCH_PKG_SPEC.
+        # Flavour AND range: a migrated 2.5+xpu venv is broken, not correct, so the tag
+        # alone is not enough. Range matches _XPU_TORCH_PKG_SPEC.
         _ver = _version.lower()
         _rel = _ver.split("+")[0].split(".")
         _n = tuple(int(x) for x in _rel[:2] if x.isdigit())
@@ -2754,8 +2749,8 @@ def _ensure_cpu_torch() -> None:
     if pin is None:
         return
 
-    # Classify the installed torch family. Un-importable means torch is missing or
-    # broken: the explicit CPU pin reinstalls it below.
+    # Classify the torch family. Un-importable means missing or broken, and the
+    # explicit CPU pin reinstalls it below.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if not _ran:
         # A hung import is the wedged-driver case this pin exists to rescue, so returning here
@@ -2787,8 +2782,7 @@ def _ensure_cpu_torch() -> None:
     if not _version:
         return  # unreadable -- the base install step handles a missing torch
     # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so without it a
-    # working Intel build reads as "cpu" and a CPU pin over it does nothing. Local label,
-    # since torch.version.xpu is None on some builds.
+    # working Intel build reads as "cpu" and the CPU pin over it does nothing.
     _ver = _version.lower()
     _is_gpu_build = (
         bool(_hip)
@@ -2955,8 +2949,7 @@ def _ensure_rocm_torch() -> None:
 
     # Whether torch links against HIP, capturing the installed ROCm tag for pin-mismatch
     # detection. Marker is the HIP version, else a "rocm" sentinel when only the version
-    # string flags ROCm; empty marker = CPU/CUDA torch. An un-probeable torch (missing,
-    # broken, or a stalled driver) leaves the marker empty -> reinstall.
+    # string flags ROCm; empty = CPU/CUDA torch, or un-probeable, which reinstalls.
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     _installed_torch_ver = _version.lower() if (_ran and _importable) else ""
     _hip_marker = ""
@@ -4075,7 +4068,7 @@ def pip_install(
 ) -> None:
     """Build and run a pip install command (uses uv when available, falls back to pip)."""
     # Any pip operation can change which torch is installed, so the memoized
-    # classification from _probe_torch_runtime() must not outlive it.
+    # classification must not outlive it.
     _invalidate_torch_runtime_probe()
     constraint_args_pip: list[str] = []
     constraint_args_uv: list[str] = []

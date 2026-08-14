@@ -591,11 +591,11 @@ class TestPreTuringWheelFamily:
             mock_pip.assert_not_called()
 
     def test_untagged_cuda_build_uses_the_runtime_family(self):
-        # An untagged build (no +cuXXX local tag) still reports torch.version.cuda, so
-        # _family falls back to the runtime value and the architecture policy applies.
+        # An untagged build still reports torch.version.cuda, so _family falls back to
+        # the runtime value and the architecture policy applies.
         # The "family unknown, leave it alone" branch needs BOTH the tag and
-        # torch.version.cuda empty, and that combination reads as a CPU build, never
-        # as "cuda" -- so an untagged CUDA build is always classifiable.
+        # torch.version.cuda empty, which reads as a CPU build, so an untagged CUDA
+        # build is always classifiable.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda||2.11.0",
             cuda_version = "13.0",

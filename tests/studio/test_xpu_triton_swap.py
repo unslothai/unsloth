@@ -538,8 +538,8 @@ class TestCpuRepairSeesAnXpuWheel:
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_cpu_torch() -> None:")
         seg = src[start : src.index("\n\ndef ", start)]
-        # Pull the predicate straight out of the module source, so a future edit to it is
-        # what this test sees rather than a copy here that can drift.
+        # Read the predicate from the module source, so an edit to it is what this test
+        # sees rather than a copy that can drift.
         marker = "_is_gpu_build = ("
         begin = seg.index(marker) + len(marker)
         depth, end = 1, begin
