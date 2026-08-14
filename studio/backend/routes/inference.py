@@ -391,6 +391,7 @@ _MIN_SPEECH_OUTPUT_TOKENS = 64
 _TTS_PROMPT_FORMAT_RESERVE = 32
 _MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
 _MINIMAX_MUSIC3_RESIDENT_GB = 24.0
+_MOSS_TTS_MAX_FRAMES = 187  # 12.5 codec frames/s -> 14.96 s, never beyond 15 s
 
 
 def _tts_max_new_tokens(
@@ -412,6 +413,8 @@ def _tts_max_new_tokens(
     )
     if speech_api_default_max_tokens and audio_type == "minimax_music3":
         budget = min(budget, _MINIMAX_MUSIC3_DEFAULT_FRAMES)
+    if audio_type in ("moss_tts_local", "moss_tts_nano"):
+        budget = min(budget, _MOSS_TTS_MAX_FRAMES)
     if prompt:
         context_length = _monitor_context_length()
         if context_length:
@@ -10222,6 +10225,7 @@ async def _generate_tts_wav(
             use_adapter = payload.use_adapter,
             cancel_event = _audio_cancel,
             instructions = payload.audio_instructions,
+            language = payload.audio_language,
             seed = payload.seed,
         )
 
@@ -10426,6 +10430,7 @@ async def openai_audio_speech(
         messages = [{"role": "user", "content": body.input}],
         max_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS,
         audio_instructions = body.instructions,
+        audio_language = body.language,
         seed = body.seed,
     )
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(

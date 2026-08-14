@@ -28,6 +28,7 @@ export interface GenerateAudioOptions {
   top_p?: number;
   max_tokens?: number;
   audio_instructions?: string;
+  audio_language?: string;
   seed?: number;
   signal?: AbortSignal;
 }

@@ -57,6 +57,9 @@ NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values())
 REMOTE_CODE_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano", "higgs_tts3"))
 MOSS_LOCAL_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 MOSS_NANO_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
+MOSS_NANO_TEXT_TEMPERATURE = 1.5
+MOSS_NANO_TEXT_TOP_P = 1.0
+MOSS_NANO_TEXT_TOP_K = 50
 HIGGS_TTS3_CODEC_REPO = "bosonai/higgs-audio-v2-tokenizer"
 NATIVE_AUDIO_COMPANION_REPOS = {
     "moss_tts_local": (MOSS_LOCAL_CODEC_REPO,),
@@ -716,6 +719,7 @@ class NativeAudioBackend:
         use_adapter = None,
         cancel_event = None,
         instructions: Optional[str] = None,
+        language: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         del min_p, use_adapter
@@ -742,6 +746,7 @@ class NativeAudioBackend:
                 entry,
                 text,
                 instructions,
+                language,
                 temperature,
                 top_p,
                 top_k,
@@ -838,6 +843,7 @@ class NativeAudioBackend:
         entry,
         text,
         instructions,
+        language,
         temperature,
         top_p,
         top_k,
@@ -847,7 +853,13 @@ class NativeAudioBackend:
     ):
         processor = entry["processor"]
         batch = processor(
-            [[processor.build_user_message(text = text, instruction = instructions)]],
+            [[
+                processor.build_user_message(
+                    text = text,
+                    instruction = instructions,
+                    language = language,
+                )
+            ]],
             mode = "generation",
         )
         kwargs = {
@@ -860,10 +872,24 @@ class NativeAudioBackend:
             "audio_top_k": int(top_k),
             "audio_repetition_penalty": float(repetition_penalty),
         }
-        stopping = _stopping_criteria(cancel_event)
-        if stopping is not None:
-            kwargs["stopping_criteria"] = stopping
-        outputs = entry["model"].generate(**kwargs)
+        model = entry["model"]
+        cancel_hooks = []
+        if cancel_event is not None:
+            for target in (
+                getattr(model, "transformer", None),
+                getattr(model, "local_transformer", None),
+            ):
+                if target is not None and hasattr(target, "register_forward_pre_hook"):
+                    cancel_hooks.append(
+                        target.register_forward_pre_hook(
+                            lambda _module, _args: _raise_if_cancelled(cancel_event)
+                        )
+                    )
+        try:
+            outputs = model.generate(**kwargs)
+        finally:
+            for cancel_hook in cancel_hooks:
+                cancel_hook.remove()
         message = next((item for item in processor.decode(outputs) if item is not None), None)
         if message is None or not message.audio_codes_list:
             raise RuntimeError("MOSS TTS Local returned no audio")
@@ -912,9 +938,9 @@ class NativeAudioBackend:
                     device = self.device,
                     max_new_frames = int(max_new_tokens),
                     do_sample = float(temperature) > 0,
-                    text_temperature = max(0.0, float(temperature)),
-                    text_top_p = float(top_p),
-                    text_top_k = int(top_k),
+                    text_temperature = MOSS_NANO_TEXT_TEMPERATURE,
+                    text_top_p = MOSS_NANO_TEXT_TOP_P,
+                    text_top_k = MOSS_NANO_TEXT_TOP_K,
                     audio_temperature = max(0.0, float(temperature)),
                     audio_top_p = float(top_p),
                     audio_top_k = int(top_k),

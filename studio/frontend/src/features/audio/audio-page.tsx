@@ -29,6 +29,7 @@ import {
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -101,6 +102,9 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
+  MOSS_TTS_MAX_SECONDS,
+  mossTtsMaxFrames,
+  mossTtsFramesForSeconds,
   persistedClipForGeneration,
   reconcileSttSelection,
   resolveAudioPickTask,
@@ -282,6 +286,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
   const [prompt, setPrompt] = useState("");
   const [audioInstructions, setAudioInstructions] = useState("");
+  const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);
   // Sending temperature unconditionally puts it in the request's model_fields_set, which the
   // backend reads as an explicit client override and which then beats the per-model
@@ -293,6 +298,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     setTemperature(value);
   }, []);
   const [maxTokens, setMaxTokens] = useState(2048);
+  const [mossMaxSeconds, setMossMaxSeconds] = useState(MOSS_TTS_MAX_SECONDS);
   const generateAbort = useRef<AbortController | null>(null);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
@@ -420,6 +426,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [srcById, setSrcById] = useState<Record<string, string>>(
     galleryCache.srcById.toRecord(),
   );
+  const clipSrcLoads = useRef<Map<string, Promise<void>>>(new Map());
+  const mossFrameLimit = mossTtsMaxFrames(status?.audio_type);
+
+  useEffect(() => {
+    setTemperature(mossFrameLimit !== null ? 1.7 : 0.6);
+    setTemperatureEdited(false);
+  }, [mossFrameLimit]);
 
   const {
     attach: attachSettingsScroll,
@@ -551,15 +564,34 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       galleryCache.srcById.touch(clip.id);
       return;
     }
+    const pending = clipSrcLoads.current.get(clip.id);
+    if (pending) return pending;
+    const load = (async () => {
+      try {
+        const fetched = await fetchClipObjectUrl(clip.url);
+        // A delete can finish while protected bytes are in flight. Do not revive its
+        // cache entry after the row is already gone.
+        if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) {
+          URL.revokeObjectURL(fetched.url);
+          return;
+        }
+        galleryCache.srcById.set(clip.id, fetched.url, fetched.bytes);
+        galleryCache.srcById.prune(
+          galleryCache.selectedId ? [galleryCache.selectedId] : [],
+        );
+        setSrcById(galleryCache.srcById.toRecord());
+      } catch {
+        // Clip may have been deleted server-side; the next gallery refresh drops it.
+        toast.error("Could not load this audio clip. Try selecting it again.");
+      }
+    })();
+    clipSrcLoads.current.set(clip.id, load);
     try {
-      const fetched = await fetchClipObjectUrl(clip.url);
-      galleryCache.srcById.set(clip.id, fetched.url, fetched.bytes);
-      galleryCache.srcById.prune(
-        galleryCache.selectedId ? [galleryCache.selectedId] : [],
-      );
-      setSrcById(galleryCache.srcById.toRecord());
-    } catch {
-      // Clip may have been deleted server-side; the next gallery refresh drops it.
+      await load;
+    } finally {
+      if (clipSrcLoads.current.get(clip.id) === load) {
+        clipSrcLoads.current.delete(clip.id);
+      }
     }
   }, []);
 
@@ -612,13 +644,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           galleryCache.selectedId = merged[0].id;
           setSelectedId(galleryCache.selectedId);
         }
+        const selected = merged.find(
+          (clip) => clip.id === galleryCache.selectedId,
+        );
+        if (selected) void ensureClipSrc(selected);
         return merged;
       } catch {
         // Same recoverable-poll stance as status.
         return galleryCache.clips;
       }
     },
-    [],
+    [ensureClipSrc],
   );
 
   const loadMore = useCallback(async () => {
@@ -686,7 +722,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     galleryCache.selectedId = id;
     setSelectedId(id);
     if (!keepFallback) setFallbackClip(null);
-  }, []);
+    const clip = galleryCache.clips.find((candidate) => candidate.id === id);
+    if (clip) void ensureClipSrc(clip);
+  }, [ensureClipSrc]);
 
   // --- Model selection ----------------------------------------------------
 
@@ -1419,6 +1457,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const musicGeneration =
     status?.audio_type === "minimax_music3" ||
     isMusicGenerationModel(status?.active_model);
+  const mossLocalGeneration = status?.audio_type === "moss_tts_local";
   const handleEject = useCallback(() => {
     if (busy !== null || isRecording) {
       toast.info("Stop the active audio task before ejecting its model.");
@@ -1530,14 +1569,21 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       toast.error("Add a music description for MiniMax Music 3.");
       return;
     }
+    const language = audioLanguage.trim();
     const controller = new AbortController();
     generateAbort.current = controller;
     try {
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
-        max_tokens: maxTokens,
-        ...(musicGeneration && instructions
+        max_tokens:
+          mossFrameLimit !== null
+            ? mossTtsFramesForSeconds(mossMaxSeconds)
+            : maxTokens,
+        ...((musicGeneration || mossLocalGeneration) && instructions
           ? { audio_instructions: instructions }
+          : {}),
+        ...(mossLocalGeneration && language
+          ? { audio_language: language }
           : {}),
         signal: controller.signal,
       });
@@ -1589,7 +1635,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, [
     prompt,
     audioInstructions,
+    audioLanguage,
     musicGeneration,
+    mossLocalGeneration,
+    mossFrameLimit,
+    mossMaxSeconds,
     temperature,
     temperatureEdited,
     maxTokens,
@@ -1943,6 +1993,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // --- Render -------------------------------------------------------------
 
   const selectedClip = clips.find((c) => c.id === selectedId) ?? null;
+  const selectedClipSrc = selectedClip ? srcById[selectedClip.id] : undefined;
   const selectorModels =
     mode === "speak" && isMac
       ? MODELS_BY_MODE.speak.filter((model) =>
@@ -2129,18 +2180,40 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     className="min-h-28"
                   />
                 </Field>
-                {musicGeneration ? (
+                {musicGeneration || mossLocalGeneration ? (
                   <Field
-                    label="Music description"
-                    hint="Describe genre, tempo, mood, vocals, and arrangement. MiniMax Music 3 requires this separately from the lyrics."
+                    label={
+                      musicGeneration ? "Music description" : "Style instructions"
+                    }
+                    hint={
+                      musicGeneration
+                        ? "Describe genre, tempo, mood, vocals, and arrangement. MiniMax Music 3 requires this separately from the lyrics."
+                        : "Optional MOSS Local guidance such as speaking style, emotion, pace, or delivery."
+                    }
                   >
                     <Textarea
                       value={audioInstructions}
                       onChange={(event) =>
                         setAudioInstructions(event.target.value)
                       }
-                      placeholder="Acoustic pop, 96 BPM, warm female lead, fingerpicked guitar and soft piano…"
+                      placeholder={
+                        musicGeneration
+                          ? "Acoustic pop, 96 BPM, warm female lead, fingerpicked guitar and soft piano…"
+                          : "Warm, measured delivery with a calm conversational tone…"
+                      }
                       className="min-h-24"
+                    />
+                  </Field>
+                ) : null}
+                {mossLocalGeneration ? (
+                  <Field
+                    label="Language"
+                    hint="Optional, but MOSS Local v1.5 recommends a language tag when known (for example English, Arabic, or French)."
+                  >
+                    <Input
+                      value={audioLanguage}
+                      onChange={(event) => setAudioLanguage(event.target.value)}
+                      placeholder="English"
                     />
                   </Field>
                 ) : null}
@@ -2158,19 +2231,30 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                       label="Temperature"
                       value={temperature}
                       min={0}
-                      max={1.5}
+                      max={mossFrameLimit !== null ? 2 : 1.5}
                       step={0.05}
                       onChange={handleTemperatureChange}
                     />
                   ) : null}
-                  <ParamSlider
-                    label="Max tokens"
-                    value={maxTokens}
-                    min={256}
-                    max={TTS_MAX_TOKENS}
-                    step={256}
-                    onChange={setMaxTokens}
-                  />
+                  {mossFrameLimit !== null ? (
+                    <ParamSlider
+                      label="Max duration (seconds)"
+                      value={mossMaxSeconds}
+                      min={1}
+                      max={MOSS_TTS_MAX_SECONDS}
+                      step={1}
+                      onChange={setMossMaxSeconds}
+                    />
+                  ) : (
+                    <ParamSlider
+                      label="Max tokens"
+                      value={maxTokens}
+                      min={256}
+                      max={TTS_MAX_TOKENS}
+                      step={256}
+                      onChange={setMaxTokens}
+                    />
+                  )}
                 </AdvancedDisclosure>
               </>
             ) : (
@@ -2313,12 +2397,24 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     <p className="line-clamp-2 text-ui-13 text-muted-foreground">
                       {selectedClip.prompt}
                     </p>
-                    {/* Auth-protected bytes, so the element plays the fetched object URL. */}
-                    <audio
-                      controls={true}
-                      src={srcById[selectedClip.id]}
-                      className="w-full"
-                    />
+                    {/* Auth-protected bytes, so mount a fresh player only once this clip's
+                        object URL exists. Reusing one media element while src is empty or
+                        changing left History switches showing stale/broken controls. */}
+                    {selectedClipSrc ? (
+                      <audio
+                        key={selectedClip.id}
+                        controls={true}
+                        src={selectedClipSrc}
+                        className="w-full"
+                      />
+                    ) : (
+                      <div
+                        role="status"
+                        className="flex h-12 w-full items-center justify-center rounded-md border border-border text-ui-12 text-muted-foreground"
+                      >
+                        Loading audio…
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
                       <span>{selectedClip.model}</span>
                       <span>·</span>
@@ -2425,6 +2521,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                         <button
                           type="button"
                           onClick={() => selectClip(clip.id)}
+                          aria-current={clip.id === selectedId ? "true" : undefined}
                           className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                         >
                           <HugeiconsIcon

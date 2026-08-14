@@ -629,11 +629,18 @@ def test_moss_local_uses_generation_messages_and_stereo_decode():
         sample_rate = 48000,
     )
     wav, sample_rate = backend.generate_audio_response(
-        "Bonjour", instructions = "Warm and measured", max_new_tokens = 400
+        "Bonjour",
+        instructions = "Warm and measured",
+        language = "French",
+        max_new_tokens = 400,
     )
 
     assert wav[:4] == b"RIFF" and sample_rate == 48000
-    assert seen["message"] == {"text": "Bonjour", "instruction": "Warm and measured"}
+    assert seen["message"] == {
+        "text": "Bonjour",
+        "instruction": "Warm and measured",
+        "language": "French",
+    }
     assert seen["mode"] == "generation"
     assert seen["generate"]["audio_top_k"] == 50
     assert seen["generate"]["do_sample"] is True
@@ -641,6 +648,66 @@ def test_moss_local_uses_generation_messages_and_stereo_decode():
     backend.generate_audio_response("Bonjour", temperature = 0)
     assert seen["generate"]["do_sample"] is False
     assert seen["generate"]["audio_temperature"] == 0
+
+
+def test_moss_local_cancellation_interrupts_generation_and_removes_hooks():
+    cancel = threading.Event()
+    seen = {"steps": 0, "removed": []}
+
+    class Handle:
+        def __init__(self, name):
+            self.name = name
+
+        def remove(self):
+            seen["removed"].append(self.name)
+
+    class Transformer:
+        hook = None
+
+        def __init__(self, name):
+            self.name = name
+
+        def register_forward_pre_hook(self, hook):
+            self.hook = hook
+            return Handle(self.name)
+
+        def step(self):
+            self.hook(self, ())
+
+    class Processor:
+        def build_user_message(self, **_kwargs):
+            return {}
+
+        def __call__(self, _conversations, mode):
+            assert mode == "generation"
+            return {
+                "input_ids": torch.tensor([[1]]),
+                "attention_mask": torch.tensor([[1]]),
+            }
+
+    class Model:
+        def __init__(self):
+            self.transformer = Transformer("transformer")
+            self.local_transformer = Transformer("local_transformer")
+
+        def generate(self, **_kwargs):
+            self.transformer.step()
+            seen["steps"] += 1
+            cancel.set()
+            self.local_transformer.step()
+            pytest.fail("cancelled generation must stop before decoding")
+
+    backend = _backend(
+        "moss_tts_local",
+        model = Model(),
+        processor = Processor(),
+        sample_rate = 48000,
+    )
+
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate_audio_response("Bonjour", cancel_event = cancel)
+
+    assert seen == {"steps": 1, "removed": ["transformer", "local_transformer"]}
 
 
 def test_moss_nano_passes_companion_codec_and_returns_written_wav():
@@ -668,10 +735,13 @@ def test_moss_nano_passes_companion_codec_and_returns_written_wav():
     assert seen["text_tokenizer"] is tokenizer
     assert seen["audio_tokenizer"] is codec
     assert seen["max_new_frames"] == 375
+    assert seen["text_temperature"] == 1.5
+    assert seen["text_top_p"] == 1.0
+    assert seen["text_top_k"] == 50
 
     backend.generate_audio_response("Portable speech", temperature = 0, max_new_tokens = 375)
     assert seen["do_sample"] is False
-    assert seen["text_temperature"] == 0
+    assert seen["text_temperature"] == 1.5
     assert seen["audio_temperature"] == 0
 
 

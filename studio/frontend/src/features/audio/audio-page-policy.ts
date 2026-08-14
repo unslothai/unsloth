@@ -33,6 +33,21 @@ const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts3",
   "minimax_music3",
 ]);
+export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
+export const MOSS_TTS_MAX_SECONDS = 15;
+export const MOSS_TTS_MAX_FRAMES = Math.floor(
+  MOSS_TTS_FRAMES_PER_SECOND * MOSS_TTS_MAX_SECONDS,
+);
+
+export function mossTtsFramesForSeconds(seconds: number): number {
+  return Math.max(1, Math.floor(seconds * MOSS_TTS_FRAMES_PER_SECOND));
+}
+
+export function mossTtsMaxFrames(audioType?: string | null): number | null {
+  return audioType === "moss_tts_local" || audioType === "moss_tts_nano"
+    ? MOSS_TTS_MAX_FRAMES
+    : null;
+}
 
 export function isTtsAudioType(
   audioType?: string | null,

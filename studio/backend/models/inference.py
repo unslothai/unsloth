@@ -1228,6 +1228,10 @@ class ChatCompletionRequest(BaseModel):
             "MiniMax Music 3 requires this alongside lyrics."
         ),
     )
+    audio_language: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Target-language hint for native audio models that support it.",
+    )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -3315,6 +3319,10 @@ class AudioSpeechRequest(BaseModel):
     instructions: Optional[str] = Field(
         None,
         description = "Scene or music-description instructions for compatible audio models.",
+    )
+    language: Optional[str] = Field(
+        None,
+        description = "Target-language hint for compatible audio models.",
     )
     seed: Optional[int] = Field(None, description = "Best-effort deterministic generation seed.")
     max_new_tokens: Optional[int] = Field(

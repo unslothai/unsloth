@@ -100,6 +100,7 @@ def test_native_audio_instructions_and_seed_reach_the_shared_core(monkeypatch):
         json = {
             "input": "[verse] Morning light",
             "instructions": "Acoustic pop, 96 BPM.",
+            "language": "English",
             "seed": 7,
         },
     )
@@ -107,6 +108,7 @@ def test_native_audio_instructions_and_seed_reach_the_shared_core(monkeypatch):
     assert resp.status_code == 200
     payload = calls[0]["payload"]
     assert payload.audio_instructions == "Acoustic pop, 96 BPM."
+    assert payload.audio_language == "English"
     assert payload.seed == 7
 
 
@@ -210,6 +212,23 @@ def test_minimax_speech_api_default_is_thirty_seconds(monkeypatch):
         )
         == AUDIO_GENERATION_MAX_TOKENS
     )
+
+
+def test_moss_generation_is_capped_below_fifteen_seconds(monkeypatch):
+    from models.inference import ChatCompletionRequest
+
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: None)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "A short sentence."}],
+        max_tokens = 2048,
+    )
+
+    for audio_type in ("moss_tts_local", "moss_tts_nano"):
+        assert (
+            routes_module._tts_max_new_tokens(payload, audio_type = audio_type)
+            == routes_module._MOSS_TTS_MAX_FRAMES
+            == 187
+        )
 
 
 def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
