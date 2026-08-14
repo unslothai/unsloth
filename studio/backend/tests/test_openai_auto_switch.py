@@ -7584,3 +7584,77 @@ def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q8_0") is False
     assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q4_K_M") is True
+
+
+def test_clearing_the_box_for_a_quant_clears_the_legacy_fallback(override_store):
+    # The carry-over copies a legacy bare entry's flags onto the first per-quant save,
+    # and leaves the bare entry standing. Clearing the box then writes an empty list,
+    # which stores nothing at all, so the load falls back to the bare key and hands the
+    # same flags back: the box comes up empty and the server still runs them.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    carried = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    assert carried.overrides["unsloth/B-GGUF:Q4_K_M"]["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]
+
+    cleared = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    assert "llama_extra_args" not in cleared.overrides.get("unsloth/B-GGUF:Q4_K_M", {})
+    assert "llama_extra_args" not in cleared.overrides.get("unsloth/B-GGUF", {})
+    _key, resolved = settings.resolve_override_for_load(
+        "unsloth/B-GGUF", variant = "Q4_K_M"
+    )
+    assert resolved.get("llama_extra_args") is None
+
+
+def test_the_clear_leaves_the_fallbacks_other_settings_alone(override_store):
+    # Only the flags were cleared. A context length stored on the bare entry is what
+    # every quant without one of its own loads with, and this save said nothing about it.
+    settings.set_model_override(
+        "unsloth/B-GGUF",
+        llama_extra_args = ["--numa", "distribute"],
+        max_seq_length = 4096,
+    )
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    bare = settings.get_model_override("unsloth/B-GGUF")
+    assert bare.get("max_seq_length") == 4096
+    assert not bare.get("llama_extra_args")
+
+
+def test_the_clear_leaves_a_fallback_another_quant_is_reading(override_store):
+    # Q8 has an entry of its own only because it saved something else; the flags it
+    # loads with still come from the bare key, so clearing Q4's box must not strip them.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]
+
+
+def test_a_save_that_did_not_touch_the_box_leaves_the_fallback(override_store):
+    # Omitting the field is how every save that never opened the editor behaves, and
+    # it means "keep them", not "clear them".
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]
+
+
+def test_a_fill_pass_never_clears_a_fallback(override_store):
+    # The migration writes only what is missing, and mirrors both spellings of a model;
+    # clearing from it would delete flags it is supposed to be preserving.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = [],
+        remove = False,
+        fill_absent_fields = True,
+    )
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]

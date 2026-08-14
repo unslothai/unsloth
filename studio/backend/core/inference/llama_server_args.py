@@ -1161,6 +1161,13 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_API_KEY",
     "LLAMA_ARG_API_KEY",
     "LLAMA_ARG_API_KEY_FILE",
+    # The twins of --ssl-key-file and --ssl-cert-file. Given both, llama-server
+    # listens on https, while Studio probes /health and proxies over http against
+    # the port it launched: the child comes up healthy and every load times out.
+    # Measured on b10360, where an inherited pair turns "listening on
+    # http://127.0.0.1:PORT" into "listening on https://...".
+    "LLAMA_ARG_SSL_KEY_FILE",
+    "LLAMA_ARG_SSL_CERT_FILE",
 )
 
 

@@ -197,6 +197,10 @@ def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypat
     monkeypatch.setenv("LLAMA_ARG_API_PREFIX", "/llama")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-someone-elses")
     monkeypatch.setenv("LLAMA_ARG_API_KEY_FILE", "/etc/llama.keys")
+    # Given both TLS twins llama-server listens on https, while Studio probes /health
+    # and proxies over http: the child is healthy and every load times out.
+    monkeypatch.setenv("LLAMA_ARG_SSL_KEY_FILE", "/etc/llama/key.pem")
+    monkeypatch.setenv("LLAMA_ARG_SSL_CERT_FILE", "/etc/llama/cert.pem")
     monkeypatch.setenv("LLAMA_ARG_NO_WARMUP", "1")
 
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 20_000, 24_000)])
@@ -208,6 +212,8 @@ def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypat
     assert "LLAMA_ARG_API_PREFIX" not in env
     assert "LLAMA_API_KEY" not in env
     assert "LLAMA_ARG_API_KEY_FILE" not in env
+    assert "LLAMA_ARG_SSL_KEY_FILE" not in env
+    assert "LLAMA_ARG_SSL_CERT_FILE" not in env
     # Not a general purge: a variable that is not a denied flag's twin, and that
     # no other reconciliation claims, is the user's own configuration and stays.
     assert env.get("LLAMA_ARG_NO_WARMUP") == "1"
