@@ -1370,6 +1370,12 @@ export const it = {
         "Questo dataset non è ancora presente sul dispositivo. L'addestramento lo scaricherà automaticamente.",
       noticeDatasetPartial:
         "L'addestramento completerà il download parziale del dataset prima di leggerlo.",
+      noticeTransformersUpgrade:
+        "Nessuna versione installata di transformers supporta ancora questa architettura. All'avvio verrà proposto di installare prima transformers {version}.",
+      noticeSixteenBitOnly:
+        "Questa architettura si addestra in LoRA a 16 bit: i 4 bit non sono disponibili, quindi l'esecuzione richiede molta più VRAM di QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installare quella versione invece di mantenere il codice del modello porta questa esecuzione a LoRA a 16 bit, che richiede molta più VRAM di QLoRA.",
       advancedSettings: "Impostazioni avanzate",
       defaultAdvancedSettings: "Predefinite",
       nonDefaultAdvancedSettings: "{count} non predefinite",
