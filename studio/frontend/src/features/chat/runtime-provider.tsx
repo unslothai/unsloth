@@ -1767,11 +1767,13 @@ function ThreadScopedSettingsSync({
           if (cancelled || paired) return;
           // a legacy fallback row carries no snapshot, and pinning would overwrite the real one.
           if (!thread || !cacheable) {
-            // a new chat's runtime-made id has no row yet, so it stays on the global settings.
-            if (unpaired) {
-              releaseHeldThreadScopedEdits();
-              return;
-            }
+            // a new chat's runtime-made id has no row yet, so it stays on the global
+            // settings. The answer is in: there is no snapshot to wait for, so an edit
+            // held for it is a plain default change and goes out now. Deferring that to a
+            // second missing read meant an unsaved chat's click was written to a row that
+            // does not exist, or attached to the chat once it was saved.
+            releaseHeldThreadScopedEdits();
+            if (unpaired) return;
             unpaired = true;
             applyThreadScopedSettings(null, null);
             return;

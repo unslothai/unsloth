@@ -713,6 +713,15 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   return activeThreadScopedSettings?.[key];
 }
 
+// The pills chat-page clamps to the selected model's capabilities.
+const CLAMPED_PILL_KEYS = [
+  "toolsEnabled",
+  "codeToolsEnabled",
+  "imageToolsEnabled",
+  "webFetchToolsEnabled",
+] as const;
+type ClampedPillKey = (typeof CLAMPED_PILL_KEYS)[number];
+
 function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   if (Object.is(next, current)) return true;
   // ragSource is the only object among these, and its variants carry at most a kb id.
@@ -751,37 +760,28 @@ function buildThreadScopedSnapshot(
   ) {
     settings.deepResearchEnabled = true;
   }
-  // Same again for the two pills a tool-less model clamps off in the store
-  // (resolveToolsEnabledOnLoad) without touching the snapshot. The clamp is the model's,
-  // not the user's, so it must not erase what the chat had stored; the condition is each
-  // pill's own `disabled` rule from the composer, which is exactly when the user could
-  // not have turned it off themselves.
+  // Same again for every pill the model-selection pass in chat-page clamps off in the
+  // store without touching the snapshot. The clamp is the model's, not the user's, so it
+  // must not erase what the chat had stored; the condition is each pill's own capability
+  // rule, which is exactly when the user could not have turned it off themselves.
   if (threadId === threadScopedSettingsThreadId) {
     const live = useChatRuntimeStore.getState();
     const modelLoaded = !!live.params.checkpoint && !live.modelLoading;
-    const clampedOff = (
-      key: "toolsEnabled" | "codeToolsEnabled",
-      capable: boolean,
-    ) =>
-      modelLoaded &&
-      !capable &&
-      activeThreadScopedSettings?.[key] === true &&
-      settings[key] !== true;
-    if (
-      clampedOff(
-        "toolsEnabled",
-        live.supportsTools || live.supportsBuiltinWebSearch,
-      )
-    ) {
-      settings.toolsEnabled = true;
-    }
-    if (
-      clampedOff(
-        "codeToolsEnabled",
-        live.supportsTools || live.supportsBuiltinCodeExecution,
-      )
-    ) {
-      settings.codeToolsEnabled = true;
+    const capable: Record<ClampedPillKey, boolean> = {
+      toolsEnabled: live.supportsTools || live.supportsBuiltinWebSearch,
+      codeToolsEnabled: live.supportsTools || live.supportsBuiltinCodeExecution,
+      imageToolsEnabled: live.supportsBuiltinImageGeneration,
+      webFetchToolsEnabled: live.supportsBuiltinWebFetch,
+    };
+    for (const key of CLAMPED_PILL_KEYS) {
+      if (
+        modelLoaded &&
+        !capable[key] &&
+        activeThreadScopedSettings?.[key] === true &&
+        settings[key] !== true
+      ) {
+        settings[key] = true;
+      }
     }
   }
   if (threadId === threadScopedSettingsThreadId) {
@@ -800,10 +800,11 @@ function sendThreadScopedSettingsBeacon(
   snapshot: ThreadScopedSettings | null,
 ): void {
   const settings = buildThreadScopedSnapshot(threadId, snapshot);
-  // The beacon carries the newest values but skips the chain, so a write still queued
-  // behind an in-flight one would go out afterwards and put the older snapshot back.
-  // Taking the newest ticket makes those queued writes stand down.
+  // The beacon carries the newest values but skips the chain, so an older write would
+  // otherwise land after it and put the stale snapshot back. The ticket stands down the
+  // ones still queued; the abort ends the one already out, which no ticket can reach.
   takeThreadSettingsWriteTicket(threadId);
+  threadSettingsWriteAborts.get(threadId)?.abort();
   void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -819,6 +820,9 @@ const threadSettingsWriteChains = new Map<string, Promise<void>>();
 // Newest snapshot issued per thread, so a write that is still waiting its turn can tell it
 // has been superseded and skip its PATCH rather than reinstate what it captured.
 const threadSettingsWriteTickets = new Map<string, number>();
+
+// The request each thread currently has out, so a newer snapshot can stand it down.
+const threadSettingsWriteAborts = new Map<string, AbortController>();
 
 function takeThreadSettingsWriteTicket(threadId: string): number {
   const ticket = (threadSettingsWriteTickets.get(threadId) ?? 0) + 1;
@@ -842,14 +846,25 @@ function writeThreadScopedSettings(
       if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
         return;
       }
+      const controller = new AbortController();
+      threadSettingsWriteAborts.set(threadId, controller);
       try {
         const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
         );
-        await updateStoredChatThread(threadId, { settings });
+        await updateStoredChatThread(
+          threadId,
+          { settings },
+          { signal: controller.signal },
+        );
       } catch {
         // the chat still behaves as edited; only the snapshot for the next visit is lost.
-        warnSettingsPersistenceFailure();
+        // An abort lands here too, and that one is deliberate: a newer snapshot won.
+        if (!controller.signal.aborted) warnSettingsPersistenceFailure();
+      } finally {
+        if (threadSettingsWriteAborts.get(threadId) === controller) {
+          threadSettingsWriteAborts.delete(threadId);
+        }
       }
     })
     .finally(() => {
@@ -960,8 +975,63 @@ export function commitHeldThreadScopedEditsToTheirThread(): void {
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
   if (threadId === null || held.length === 0) return;
-  scheduleThreadScopedSettingsWrite(threadId);
-  flushThreadScopedSettingsWrite();
+  // The store is showing the installation defaults here, not this chat's snapshot, which
+  // was never read. The write REPLACES settings_json, so sending the defaults would erase
+  // everything the chat had stored that the user did not just touch. Send only the fields
+  // that were actually edited, merged onto whatever the row already holds.
+  const edited: Record<string, unknown> = {};
+  const live = useChatRuntimeStore.getState() as Record<string, unknown>;
+  for (const edit of held) edited[edit.field] = live[edit.field];
+  void mergeThreadScopedSettingsIntoRow(
+    threadId,
+    sanitizeThreadScopedSettings(edited),
+  );
+}
+
+/**
+ * Read the row's own snapshot and PATCH it back with `changes` applied. Used when the
+ * store cannot be trusted to describe the chat, which is any time its read has not landed.
+ */
+async function mergeThreadScopedSettingsIntoRow(
+  threadId: string,
+  changes: ThreadScopedSettings,
+): Promise<void> {
+  const ticket = takeThreadSettingsWriteTicket(threadId);
+  const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
+        return;
+      }
+      try {
+        const { getStoredChatThread, updateStoredChatThread } = await import(
+          "../utils/chat-history-storage"
+        );
+        const existing = (await getStoredChatThread(threadId))?.settings;
+        await updateStoredChatThread(threadId, {
+          settings: {
+            ...(existing ? sanitizeThreadScopedSettings(existing) : {}),
+            ...changes,
+          },
+        });
+      } catch {
+        warnSettingsPersistenceFailure();
+      }
+    })
+    .finally(() => {
+      if (threadSettingsWriteChains.get(threadId) === next) {
+        threadSettingsWriteChains.delete(threadId);
+        threadSettingsWriteTickets.delete(threadId);
+      }
+    });
+  threadSettingsWriteChains.set(threadId, next);
+  return next;
+}
+
+/** Is this field an edit waiting on its chat's read, and so not the installation's to set? */
+function isHeldThreadScopedField(field: string): boolean {
+  return heldThreadScopedEdits.some((edit) => edit.field === field);
 }
 
 // reports whether the edit was taken; with no chat open the caller persists globally as before.
@@ -2295,6 +2365,12 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
+    // A click made before this response landed is held for the open chat rather than
+    // written globally, so it advances no mutation version and the server's value would
+    // silently replace it. The user is looking at their click; it wins.
+    if (isHeldThreadScopedField(key)) {
+      continue;
+    }
     if (
       value !== undefined &&
       scalarSettingMutationVersions[key] === versions.scalarSettings[key]
@@ -2872,7 +2948,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return state;
       }
       if (threadScopedSettingsThreadId === null) {
-        globalThreadScopedDefaults = readThreadScopedSettings(state);
+        // A held edit is already in the store but belongs to its chat, not to the
+        // installation. Capturing it here would promote it to the default that every
+        // snapshot-less chat follows, so keep the value captured before the window opened.
+        const captured = readThreadScopedSettings(state) as Record<
+          string,
+          unknown
+        >;
+        const previousDefaults = globalThreadScopedDefaults as
+          | Record<string, unknown>
+          | null;
+        for (const field of heldFields) {
+          if (previousDefaults && field in previousDefaults) {
+            captured[field] = previousDefaults[field];
+          } else {
+            delete captured[field];
+          }
+        }
+        globalThreadScopedDefaults = captured as ThreadScopedSettings;
       }
       threadScopedSettingsThreadId = threadId;
       const stored = hasThreadScopedSettings(settings)

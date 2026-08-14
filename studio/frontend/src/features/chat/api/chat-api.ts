@@ -52,11 +52,27 @@ const THREAD_WRITE_TIMEOUT_MS = 30_000;
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
+  caller?: AbortSignal,
 ): Promise<Response> {
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  if (caller === undefined) {
+    try {
+      return await authFetch(input, { ...init, signal: timeout.signal });
+    } finally {
+      timeout.dispose();
+    }
+  }
+  // Either reason ends the request. Linked by hand rather than with AbortSignal.any,
+  // which Safari only got in 17.4.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (caller.aborted) abort();
+  caller.addEventListener("abort", abort);
+  timeout.signal.addEventListener("abort", abort);
   try {
-    return await authFetch(input, { ...init, signal: timeout.signal });
+    return await authFetch(input, { ...init, signal: controller.signal });
   } finally {
+    caller.removeEventListener("abort", abort);
     timeout.dispose();
   }
 }
@@ -799,6 +815,8 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
+  /** Give up on the write; used to stand a superseded settings PATCH down. */
+  signal?: AbortSignal;
 }
 
 export async function updateChatThread(
@@ -820,6 +838,7 @@ export async function updateChatThread(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
+    options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();

@@ -914,11 +914,12 @@ export async function saveStoredChatThread(
 export async function updateStoredChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
   const thread = await ensureStoredChatThread(threadId);
   if (!thread) return undefined;
-  return updateChatThread(threadId, patch);
+  return updateChatThread(threadId, patch, options);
 }
 
 /** Thread ids whose sandbox still holds files, passed through from the route. */
