@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -78,6 +80,46 @@ def test_snapshot_preserves_train_eval_and_detects_hash_corruption(tmp_path):
 def test_streaming_requires_explicit_materialization(tmp_path):
     with pytest.raises(portable.PortableDatasetError, match = "streaming dataset"):
         portable.snapshot_processed_datasets(tmp_path, iter([1, 2]), None, {})
+
+
+def test_resume_loads_snapshot_relative_to_checkpoint_without_original_sources(
+    tmp_path, monkeypatch
+):
+    run = tmp_path / "copied-run"
+    checkpoint = run / "checkpoint-12"
+    checkpoint.mkdir(parents = True)
+    snapshot = portable.snapshot_processed_datasets(
+        run, _Dataset(["train"]), _Dataset(["eval"]), {"format": "chat"}
+    )
+    loaded_paths = []
+
+    def load_from_disk(path):
+        loaded_paths.append(Path(path))
+        return Path(path).name
+
+    monkeypatch.setitem(sys.modules, "datasets", types.SimpleNamespace(load_from_disk = load_from_disk))
+    train, evaluate = portable.load_snapshot_for_resume(checkpoint)
+
+    assert (train, evaluate) == ("train", "eval")
+    assert loaded_paths == [run / snapshot["splits"]["train"], run / snapshot["splits"]["eval"]]
+
+
+def test_resume_rejects_snapshot_path_escape(tmp_path):
+    run = tmp_path / "run"
+    checkpoint = run / "checkpoint-1"
+    bundle = run / portable.PORTABLE_DATA_DIR / "snapshot-v1" / "bundle.json"
+    checkpoint.mkdir(parents = True)
+    bundle.parent.mkdir(parents = True)
+    bundle.write_text(
+        json.dumps(
+            {
+                "bundle_version": portable.PORTABLE_DATA_VERSION,
+                "splits": {"train": "../outside"},
+            }
+        )
+    )
+    with pytest.raises(portable.PortableDatasetError, match = "escapes the run"):
+        portable.load_snapshot_for_resume(checkpoint)
 
 
 def test_unavailable_hub_revision_warns_replacement_is_not_exact(monkeypatch):

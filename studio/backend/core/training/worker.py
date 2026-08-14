@@ -1787,7 +1787,32 @@ def _run_mlx_training(event_queue, stop_queue, config):
         loader = _mlx_local_dataset_loader_for_files(all_files)
         return load_dataset(loader, data_files = all_files, split = "train")
 
-    if hf_dataset:
+    def _load_training_entries(entries):
+        loaded = []
+        for entry in entries:
+            if entry.get("hf_dataset"):
+                kwargs = {
+                    "split": entry.get("split") or "train",
+                    "token": hf_token,
+                    "revision": entry.get("revision"),
+                }
+                if entry.get("subset"):
+                    kwargs["name"] = entry["subset"]
+                loaded.append(load_dataset(entry["hf_dataset"], **kwargs))
+            elif entry.get("local_path"):
+                loaded.append(_load_local([entry["local_path"]]))
+        if not loaded:
+            raise ValueError("No valid structured training dataset specified")
+        if len(loaded) == 1:
+            return loaded[0]
+        from datasets import concatenate_datasets
+
+        return concatenate_datasets(loaded).shuffle(seed = config.get("random_seed", 3407))
+
+    if config.get("training_datasets"):
+        dataset = _load_training_entries(config["training_datasets"])
+        dataset = _slice(dataset)
+    elif hf_dataset:
         load_kwargs = {
             "split": train_split,
             "token": hf_token,
@@ -1825,16 +1850,22 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # Eval dataset (separate split or local file)
     eval_dataset = None
-    if eval_split and hf_dataset:
+    structured_hf = next(
+        (entry for entry in config.get("training_datasets") or [] if entry.get("hf_dataset")),
+        None,
+    )
+    eval_hf_dataset = (structured_hf or {}).get("hf_dataset") or hf_dataset
+    if eval_split and eval_hf_dataset:
         eval_kwargs = {
             "split": eval_split,
             "token": hf_token,
-            "revision": config.get("dataset_revision"),
+            "revision": (structured_hf or {}).get("revision") or config.get("dataset_revision"),
         }
-        if subset:
-            eval_kwargs["name"] = subset
+        eval_subset = (structured_hf or {}).get("subset") or subset
+        if eval_subset:
+            eval_kwargs["name"] = eval_subset
         try:
-            eval_dataset = load_dataset(hf_dataset, **eval_kwargs)
+            eval_dataset = load_dataset(eval_hf_dataset, **eval_kwargs)
         except Exception as e:
             _send("status", status_message = f"Eval split load failed: {e}")
             eval_dataset = None
@@ -3068,14 +3099,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         hf_token = hf_token if hf_token and hf_token.strip() else None
 
         from core.training.portable_data import (
+            load_snapshot_for_resume,
             package_local_sources,
             pin_hub_datasets,
             resolve_bundled_paths,
         )
 
-        # Resolve once before any load; all loaders consume these immutable pins.
-        config["pinned_dataset_revisions"] = pin_hub_datasets(config)
         resume_checkpoint = config.get("resume_from_checkpoint")
+        bundled_snapshot = (
+            load_snapshot_for_resume(resume_checkpoint)
+            if resume_checkpoint and config.get("portable_resume_data") == "snapshot"
+            else None
+        )
+        if bundled_snapshot is not None:
+            snapshot_train, snapshot_eval = bundled_snapshot
+            bundled_snapshot = (
+                {
+                    "dataset": snapshot_train,
+                    "detected_format": "portable_snapshot",
+                    "final_format": "portable_snapshot",
+                    "success": True,
+                },
+                snapshot_eval,
+            )
+        # A snapshot is already the final processed input.  Do not contact the
+        # Hub or validate stale original paths when it is available.
+        if bundled_snapshot is None:
+            config["pinned_dataset_revisions"] = pin_hub_datasets(config)
         portable_output = config.get("output_dir") or _output_dir_from_resume_checkpoint(
             resume_checkpoint
         )
@@ -3083,7 +3133,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             portable_output = build_default_output_dir_name(model_name, config.get("project_name"))
         portable_output = str(resolve_output_dir(portable_output))
         config["output_dir"] = portable_output
-        if config.get("local_datasets") or config.get("local_eval_datasets"):
+        if bundled_snapshot is None and (
+            config.get("local_datasets") or config.get("local_eval_datasets")
+        ):
             config["bundled_dataset_sources"] = package_local_sources(config, portable_output)
             resolve_bundled_paths(config, portable_output)
 
@@ -3106,7 +3158,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         hf_dataset = config.get("hf_dataset", "")
         training_type = config.get("training_type", "LoRA/QLoRA")
         _is_cpt_for_dataset = training_type == "Continued Pretraining"
-        dataset_result = trainer.load_and_format_dataset(
+        dataset_result = bundled_snapshot or trainer.load_and_format_dataset(
             dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
             format_type = config.get("format_type", ""),
             local_datasets = config.get("local_datasets") or None,
@@ -3132,7 +3184,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset = dataset_result
             eval_dataset = None
 
-        if config.get("portable_resume_data") == "snapshot" and dataset is not None:
+        if (
+            bundled_snapshot is None
+            and config.get("portable_resume_data") == "snapshot"
+            and dataset is not None
+        ):
             from core.training.portable_data import snapshot_processed_datasets
 
             train_value = dataset.get("dataset", dataset) if isinstance(dataset, dict) else dataset
@@ -3844,7 +3900,33 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
             return load_dataset(loader, data_files = all_files, split = "train")
 
-        if hf_dataset and hf_dataset.strip():
+        def _load_embedding_entries(entries):
+            parts = []
+            token = config.get("hf_token", "") or None
+            for entry in entries:
+                if entry.get("hf_dataset"):
+                    parts.append(
+                        load_dataset(
+                            entry["hf_dataset"],
+                            entry.get("subset") or None,
+                            split = entry.get("split") or "train",
+                            token = token,
+                            revision = entry.get("revision"),
+                        )
+                    )
+                elif entry.get("local_path"):
+                    parts.append(_load_local_embedding_dataset([entry["local_path"]]))
+            if not parts:
+                raise ValueError("No valid structured embedding dataset specified")
+            if len(parts) == 1:
+                return parts[0]
+            from datasets import concatenate_datasets
+
+            return concatenate_datasets(parts).shuffle(seed = config.get("random_seed", 3407))
+
+        if config.get("training_datasets"):
+            dataset = _load_embedding_entries(config["training_datasets"])
+        elif hf_dataset and hf_dataset.strip():
             hf_token = config.get("hf_token", "")
             hf_token = hf_token if hf_token and hf_token.strip() else None
             dataset = load_dataset(

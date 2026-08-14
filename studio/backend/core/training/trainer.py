@@ -2503,6 +2503,39 @@ class UnslothTrainer:
                     raise ValueError(
                         f"Training dataset schemas cannot be reconciled for {labels}: {exc}"
                     ) from exc
+
+                # Structured descriptors replace the legacy selection for train,
+                # but an explicitly selected evaluation split still belongs to
+                # the primary HF source and must not become a random train split.
+                if eval_enabled and eval_split:
+                    primary = next(
+                        (entry for entry in training_datasets if entry.get("hf_dataset")), None
+                    )
+                    primary_train_split = (primary or {}).get("split") or train_split or "train"
+                    if primary and eval_split != primary_train_split:
+                        eval_kwargs = {
+                            "path": primary["hf_dataset"],
+                            "split": eval_split,
+                        }
+                        if primary.get("subset"):
+                            eval_kwargs["name"] = primary["subset"]
+                        if primary.get("revision"):
+                            eval_kwargs["revision"] = primary["revision"]
+                        eval_dataset = load_dataset(
+                            **eval_kwargs, streaming = dataset_streaming
+                        )
+                        if dataset_streaming and not hasattr(eval_dataset, "__len__"):
+                            eval_dataset = eval_dataset.take(STREAMING_EVAL_MAX_SAMPLES)
+                        has_separate_eval_source = True
+                if local_eval_datasets and eval_enabled:
+                    eval_files = self._resolve_local_files(local_eval_datasets)
+                    if eval_files:
+                        eval_dataset = load_dataset(
+                            self._loader_for_files(eval_files),
+                            data_files = eval_files,
+                            split = "train",
+                        )
+                        has_separate_eval_source = True
             elif local_datasets:
                 # Use load_dataset() for an Arrow-backed result; in-memory
                 # Dataset.from_list() has no cache and forces num_proc=1 during

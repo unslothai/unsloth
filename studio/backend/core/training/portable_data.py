@@ -133,6 +133,46 @@ def verify_snapshot(output_dir: str | Path, snapshot: Mapping[str, Any]) -> None
         )
 
 
+def load_snapshot_for_resume(resume_checkpoint: str | Path) -> tuple[Any, Any | None] | None:
+    """Load a processed snapshot located beside a resumed checkpoint.
+
+    The bundle is discovered from the checkpoint rather than from the request's
+    dataset descriptors.  This is important for copied checkpoints, where the
+    original local paths (or even the original Hub repository) may no longer be
+    reachable.
+    """
+    checkpoint = Path(resume_checkpoint).expanduser().resolve()
+    run_dir = checkpoint.parent if checkpoint.name.startswith("checkpoint-") else checkpoint
+    bundle_path = run_dir / PORTABLE_DATA_DIR / "snapshot-v1" / "bundle.json"
+    if not bundle_path.is_file():
+        return None
+    try:
+        metadata = json.loads(bundle_path.read_text(encoding = "utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PortableDatasetError(f"Portable dataset snapshot metadata is invalid: {exc}") from exc
+    if metadata.get("bundle_version") != PORTABLE_DATA_VERSION:
+        raise PortableDatasetError(
+            f"Unsupported portable dataset snapshot version: {metadata.get('bundle_version')}"
+        )
+
+    from datasets import load_from_disk
+
+    loaded: dict[str, Any] = {}
+    for split in ("train", "eval"):
+        relative = (metadata.get("splits") or {}).get(split)
+        if not relative:
+            continue
+        destination = (run_dir / relative).resolve()
+        if run_dir != destination and run_dir not in destination.parents:
+            raise PortableDatasetError(f"Portable snapshot path escapes the run: {relative}")
+        if not destination.is_dir():
+            raise PortableDatasetError(f"Portable snapshot split is missing: {destination}")
+        loaded[split] = load_from_disk(str(destination))
+    if "train" not in loaded:
+        raise PortableDatasetError("Portable dataset snapshot has no train split.")
+    return loaded["train"], loaded.get("eval")
+
+
 def resolve_bundled_paths(config: dict[str, Any], run_dir: str | Path) -> None:
     """Resolve manifest-relative paths before considering original locations."""
     root = Path(run_dir).resolve()
