@@ -4080,14 +4080,14 @@ _PM_POLICY_CONFIG_KEYS = (
 # Wider than _PM_POLICY_RELAXED_ENV_VARS because the package-scoped --no-binary in
 # _sdist_only_build_args() overrides the build policy on the command line rather than
 # through the environment, and an operator who set it deserves to hear that too.
+# The NO_BINARY family is deliberately absent: those FORCE a source build, every pinned
+# install drops them whatever the switch says, and naming them beside "set the switch to
+# enforce your policy" would promise an enforcement that cannot happen.
 _PM_POLICY_REPORTED_ENV_VARS = (
     *_PM_POLICY_RELAXED_ENV_VARS,
     "PIP_ONLY_BINARY",
-    "PIP_NO_BINARY",
     "UV_NO_BUILD",
     "UV_NO_BUILD_PACKAGE",
-    "UV_NO_BINARY",
-    "UV_NO_BINARY_PACKAGE",
 )
 
 # A policy key set to one of these is switched OFF, so reporting it would send an
@@ -4105,6 +4105,40 @@ def _pm_policy_value_is_on(value: "object") -> bool:
     return text not in _PM_POLICY_DISABLED_VALUES
 
 
+def _uv_config_candidates() -> "list[Path]":
+    """Where uv would look, in uv's own order.
+
+    Per uv's configuration-files documentation: the current directory then each parent,
+    then the user directory, then the system one. UV_CONFIG_FILE (--config-file) replaces
+    every discovered file rather than adding to them, so it stands alone.
+    """
+    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
+    if explicit:
+        return [Path(explicit)]
+    candidates: "list[Path]" = []
+    try:
+        _here = Path.cwd()
+    except OSError:  # a deleted cwd is not worth failing an install over
+        _here = None
+    if _here is not None:
+        for directory in (_here, *_here.parents):
+            # uv.toml wins over the pyproject in the same directory, and the walk keeps
+            # going only while neither carries a [tool.uv] table, which is close enough
+            # for a report: naming one file too many costs a word in a printed line.
+            candidates.append(directory / "uv.toml")
+            candidates.append(directory / "pyproject.toml")
+    if IS_WINDOWS:
+        for _var in ("APPDATA", "PROGRAMDATA"):
+            _dir = os.environ.get(_var, "").strip()
+            if _dir:
+                candidates.append(Path(_dir) / "uv" / "uv.toml")
+    else:
+        _xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        candidates.append((Path(_xdg) if _xdg else Path.home() / ".config") / "uv" / "uv.toml")
+        candidates.append(Path("/etc/uv/uv.toml"))
+    return candidates
+
+
 def _uv_policy_config_sources() -> "list[str]":
     """Policy keys set in uv's config files, which pip knows nothing about.
 
@@ -4112,21 +4146,7 @@ def _uv_policy_config_sources() -> "list[str]":
     no-build lived in ~/.config/uv/uv.toml, so an environment-and-pip-only report would
     have stayed silent on the exact case the relaxation was written for.
     """
-    candidates: "list[Path]" = []
-    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
-    if explicit:
-        candidates.append(Path(explicit))
-    else:
-        candidates.append(Path.cwd() / "uv.toml")
-        candidates.append(Path.cwd() / "pyproject.toml")
-        if IS_WINDOWS:
-            _appdata = os.environ.get("APPDATA", "")
-            if _appdata:
-                candidates.append(Path(_appdata) / "uv" / "uv.toml")
-        else:
-            _xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-            _home = Path(_xdg) if _xdg else Path.home() / ".config"
-            candidates.append(_home / "uv" / "uv.toml")
+    candidates = _uv_config_candidates()
     try:
         import tomllib
     except ImportError:  # 3.10 has no tomllib, and uv config is not worth a dependency
@@ -4142,9 +4162,15 @@ def _uv_policy_config_sources() -> "list[str]":
         # A pyproject.toml only speaks for uv under [tool.uv]; anywhere else in that file
         # "no-binary" belongs to somebody else's tool.
         if path.name == "pyproject.toml":
-            document = document.get("tool", {}).get("uv", {})
+            # `[tool]` + `uv = true` parses fine and hands back a bool, and this function
+            # promises to cost at most a printed line, never an install.
+            _tool = document.get("tool")
+            document = _tool.get("uv") if isinstance(_tool, dict) else None
+        if not isinstance(document, dict):
+            continue
+        _pip_table = document.get("pip")
         for key in _PM_POLICY_CONFIG_KEYS:
-            for table in (document, document.get("pip", {})):
+            for table in (document, _pip_table):
                 if isinstance(table, dict) and _pm_policy_value_is_on(table.get(key)):
                     found.append(f"uv config {path.name}: {key}")
                     break
@@ -4243,6 +4269,31 @@ def _report_pm_policy_relaxation() -> None:
     )
 
 
+def _uv_policy_as_pip_policy() -> "dict[str, str]":
+    """The pip equivalents of the uv-only policy vars, for strict mode's pip FALLBACK.
+
+    pip_install() falls back to pip whenever uv fails, including when uv failed BECAUSE of
+    the operator's policy, and pip reads none of the UV_* variables. Without this the
+    fallback performs exactly the source or unhashed install uv had just refused.
+
+    Only the blanket controls translate. UV_NO_BUILD_PACKAGE is left alone rather than
+    guessed at: pip's list syntax is not uv's, and a wrong translation is worse than none.
+    An explicit PIP_* setting is the operator's own and is never overwritten.
+    """
+    if not _strict_pm_policy():
+        return {}
+    translated: "dict[str, str]" = {}
+    if _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD")) and not os.environ.get(
+        "PIP_ONLY_BINARY"
+    ):
+        translated["PIP_ONLY_BINARY"] = ":all:"
+    if _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES")) and not os.environ.get(
+        "PIP_REQUIRE_HASHES"
+    ):
+        translated["PIP_REQUIRE_HASHES"] = "1"
+    return translated
+
+
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
@@ -4255,33 +4306,35 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     relaxation with no command-line equivalent; the wheel-less requirements go through
     the package-scoped --no-binary in _sdist_only_build_args() instead.
 
-    UNSLOTH_STRICT_PM_POLICY=1 drops every one of those relaxations, including the config
-    neutralisation, and keeps only the scrub the pin itself needs. The operator's
-    require-hashes / no-build / only-binary policy then applies to our installs as well.
+    UNSLOTH_STRICT_PM_POLICY=1 drops the relaxations: hash mode is left alone, the policy
+    env vars survive a pinned command, and the uv-only ones are translated for the pip
+    fallback that would otherwise undo them.
+
+    What strict does NOT do is let a config FILE reach a pinned command. Config discovery
+    carries the operator's index as well as their policy, and a uv.toml index outranks the
+    CLI pin (uv 0.10), so honouring the file there would resolve a CUDA/ROCm/XPU repair
+    from their default mirror and install the wrong torch. Wrong wheel beats failed policy,
+    so a pinned command reads no config in either mode and policy travels by environment.
     """
     strict = _strict_pm_policy()
     if not _is_pinned_index_cmd(cmd):
-        relaxed = _relaxed_pip_policy_env(cmd)
-        if not relaxed:
+        overrides = _uv_policy_as_pip_policy() if strict else _relaxed_pip_policy_env(cmd)
+        if not overrides:
             return None
         env = os.environ.copy()
-        env.update(relaxed)
+        env.update(overrides)
         return env
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
-        # Under strict policy UV_CONFIG_FILE is the operator's POLICY file, not just an
-        # index override, and config discovery stays on below -- so removing the pointer
-        # would only swap their file for whichever uv.toml uv happens to find.
-        if strict and name == "UV_CONFIG_FILE":
-            continue
         env.pop(name, None)
     for name in _PM_POLICY_FORCED_SOURCE_ENV_VARS:
         env.pop(name, None)
     if not strict:
         for name in _PM_POLICY_RELAXED_ENV_VARS:
             env.pop(name, None)
-        env["UV_NO_CONFIG"] = "1"
-        env["PIP_CONFIG_FILE"] = os.devnull
+    env["UV_NO_CONFIG"] = "1"
+    env["PIP_CONFIG_FILE"] = os.devnull
+    env.update(_uv_policy_as_pip_policy())
     return env
 
 
@@ -4546,6 +4599,12 @@ def install_python_stack() -> int:
     # absent torch as a stale venv, and tries to delete the running environment.
     install_manifest.set_no_torch_marker(NO_TORCH)
 
+    # Before anything installs: the pip bootstrap below is itself a pip install, and it
+    # takes the same relaxation, so reporting afterwards would disclose the bypass only
+    # after using it. A venv without pip yet just reports what the environment and uv's
+    # config files say, which is the half that matters on a uv-only venv anyway.
+    _report_pm_policy_relaxation()
+
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
     USE_UV = _bootstrap_uv()
@@ -4587,10 +4646,6 @@ def install_python_stack() -> int:
                 "Upgrading pip",
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
-
-    # After the pip bootstrap: this reads `pip config list`, and on a uv venv from
-    # install.sh pip only exists from here on.
-    _report_pm_policy_relaxation()
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).

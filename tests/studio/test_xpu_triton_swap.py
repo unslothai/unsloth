@@ -54,6 +54,8 @@ def _load_real_index_env_scrub():
         ("_PM_POLICY_FORCED_SOURCE_ENV_VARS = (", "\n)\n", 2),
         ("_PM_POLICY_RELAXED_ENV_VARS = (", "\n)\n", 2),
         ("def _relaxed_pip_policy_env(", "\n\n\n", 0),
+        ("def _pm_policy_value_is_on(", "\n\n\n", 0),
+        ("def _uv_policy_as_pip_policy(", "\n\n\n", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):

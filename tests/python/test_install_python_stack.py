@@ -564,9 +564,12 @@ class TestStrictPmPolicyOptOut:
                 is None
             ), "strict policy must not switch hash mode off"
 
-    def test_pinned_cmd_keeps_policy_and_config_discovery(self):
-        """The index scrub is what the pin needs and stays; the policy overrides go."""
-        with mock.patch.dict(os.environ, dict(self.HOSTILE, UV_INDEX = "https://mirror.corp/simple")):
+    def test_pinned_cmd_keeps_the_policy_it_can_carry(self):
+        """Policy travels by environment on a pinned command, and the index scrub the pin
+        needs is untouched by the switch."""
+        with mock.patch.dict(
+            os.environ, dict(self.HOSTILE, UV_INDEX = "https://mirror.corp/simple")
+        ):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
@@ -574,17 +577,56 @@ class TestStrictPmPolicyOptOut:
         assert "UV_INDEX" not in env, "the pin still overrides an inherited index"
         for name, value in self.HOSTILE.items():
             assert env[name] == value, f"strict policy must keep {name}"
-        assert "UV_NO_CONFIG" not in env, "strict policy must not disable uv config files"
-        assert env.get("PIP_CONFIG_FILE") != os.devnull, "nor pip config files"
 
-    def test_pinned_cmd_keeps_the_operator_uv_config_file(self):
-        """With discovery left on, dropping the pointer would only swap their policy
-        file for whichever uv.toml uv finds next to the cwd."""
-        with mock.patch.dict(os.environ, dict(self.HOSTILE, UV_CONFIG_FILE = "/etc/uv/uv.toml")):
-            env = ips._install_env_for_cmd(
-                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
-            )
-        assert env["UV_CONFIG_FILE"] == "/etc/uv/uv.toml"
+    def test_a_pinned_cmd_never_reads_a_config_file_in_either_mode(self):
+        """Config discovery carries the operator's INDEX as well as their policy, and a
+        uv.toml index outranks the CLI pin, so honouring the file here would resolve a
+        CUDA/ROCm/XPU repair from their mirror and install the wrong torch. A refused
+        policy is recoverable; the wrong wheel is what the pin exists to prevent."""
+        for strict in ("0", "1"):
+            with mock.patch.dict(
+                os.environ,
+                dict(
+                    self.HOSTILE,
+                    UNSLOTH_STRICT_PM_POLICY = strict,
+                    UV_CONFIG_FILE = "/etc/uv/uv.toml",
+                ),
+            ):
+                env = ips._install_env_for_cmd(
+                    ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+                )
+            assert env["UV_NO_CONFIG"] == "1", f"strict={strict}"
+            assert env["PIP_CONFIG_FILE"] == os.devnull, f"strict={strict}"
+            assert "UV_CONFIG_FILE" not in env, f"strict={strict}"
+
+    def test_the_pip_fallback_inherits_the_uv_policy_translated(self):
+        """pip_install() falls back to pip whenever uv fails, INCLUDING when uv failed
+        because of the policy, and pip reads no UV_* variable. Without the translation the
+        fallback performs exactly the install uv had just refused."""
+        with mock.patch.dict(
+            os.environ,
+            {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_NO_BUILD": "1", "UV_REQUIRE_HASHES": "1"},
+            clear = True,
+        ):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+        assert env is not None
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert env["PIP_REQUIRE_HASHES"] == "1"
+
+    def test_the_translation_never_overwrites_an_explicit_pip_setting(self):
+        with mock.patch.dict(
+            os.environ,
+            {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_NO_BUILD": "1", "PIP_ONLY_BINARY": "numpy"},
+            clear = True,
+        ):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
+        # Nothing to add, so nothing is added: the inherited environment already carries
+        # their setting, and an env of None IS that environment.
+        assert env is None
+
+    def test_no_uv_policy_means_no_translation(self):
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            assert ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"]) is None
 
     def test_the_source_build_exemptions_are_dropped(self):
         """--no-binary for the four wheel-less names IS the no-build override, so it
