@@ -2101,6 +2101,8 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        instructions: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate).
 
@@ -2155,6 +2157,10 @@ class InferenceOrchestrator:
                 }
                 if use_adapter is not None:
                     cmd["use_adapter"] = use_adapter
+                if instructions is not None:
+                    cmd["instructions"] = instructions
+                if seed is not None:
+                    cmd["seed"] = int(seed)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id)

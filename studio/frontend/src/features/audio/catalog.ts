@@ -24,6 +24,39 @@ export {
 
 export type AudioTask = "tts" | "stt";
 
+const NATIVE_TTS_REPOS = new Set([
+  "bosonai/higgs-tts-2-3b-base",
+  "openmoss-team/moss-tts-local-transformer-v1.5",
+  "openmoss-team/moss-tts-nano-100m",
+  "multimodalart/higgs-audio-v3-tts-4b-transformers",
+  "minimaxai/minimax-music3",
+]);
+
+const REMOTE_CODE_TTS_REPOS = new Set([
+  "openmoss-team/moss-tts-local-transformer-v1.5",
+  "openmoss-team/moss-tts-nano-100m",
+  "multimodalart/higgs-audio-v3-tts-4b-transformers",
+]);
+
+const MUSIC_GENERATION_REPOS = new Set(["minimaxai/minimax-music3"]);
+
+const normalizedRepoId = (repoId: string): string =>
+  repoId.trim().toLowerCase();
+
+export function usesNativeAudioRuntime(repoId: string): boolean {
+  return NATIVE_TTS_REPOS.has(normalizedRepoId(repoId));
+}
+
+export function audioModelRequiresRemoteCode(repoId: string): boolean {
+  return REMOTE_CODE_TTS_REPOS.has(normalizedRepoId(repoId));
+}
+
+export function isMusicGenerationModel(repoId?: string | null): boolean {
+  return Boolean(
+    repoId && MUSIC_GENERATION_REPOS.has(normalizedRepoId(repoId)),
+  );
+}
+
 export function audioTaskFor(repoId: string): AudioTask | null {
   if (isKnownSttArtifactRepoId(repoId)) return "stt";
   return groupForRepoId(repoId, AUDIO_CATALOG)?.task ?? null;
@@ -39,7 +72,10 @@ export function ggufSiblingFor(repoId: string): string | null {
 export function macTtsCatalogChoiceIsRunnable(repoId: string): boolean {
   const group = groupForRepoId(repoId, AUDIO_CATALOG);
   if (!group || group.task !== "tts") return false;
-  return group.artifacts.some((artifact) => artifact.format === "gguf");
+  return (
+    group.artifacts.some((artifact) => artifact.format === "gguf") ||
+    (usesNativeAudioRuntime(repoId) && !isMusicGenerationModel(repoId))
+  );
 }
 
 export const AUDIO_MODEL_OPTIONS: ModelOption[] =

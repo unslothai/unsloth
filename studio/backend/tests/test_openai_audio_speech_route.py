@@ -93,6 +93,23 @@ def test_voice_and_speed_accepted_and_ignored(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_native_audio_instructions_and_seed_reach_the_shared_core(monkeypatch):
+    cli, calls, _saved = _make_client(monkeypatch)
+    resp = cli.post(
+        "/v1/audio/speech",
+        json = {
+            "input": "[verse] Morning light",
+            "instructions": "Acoustic pop, 96 BPM.",
+            "seed": 7,
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = calls[0]["payload"]
+    assert payload.audio_instructions == "Acoustic pop, 96 BPM."
+    assert payload.seed == 7
+
+
 def test_non_wav_response_format_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})

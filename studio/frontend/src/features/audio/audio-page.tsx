@@ -109,13 +109,16 @@ import {
 } from "./audio-page-policy";
 import {
   audioCapabilityLine,
+  audioModelRequiresRemoteCode,
   audioModelsForTask,
   audioTaskFor,
   ggufSiblingFor,
+  isMusicGenerationModel,
   macTtsCatalogChoiceIsRunnable,
   sttEngineForRepoId,
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
+  usesNativeAudioRuntime,
 } from "./catalog";
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
@@ -273,6 +276,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // --- TTS (main inference slot) -----------------------------------------
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [audioInstructions, setAudioInstructions] = useState("");
   const [temperature, setTemperature] = useState(0.6);
   // Sending temperature unconditionally puts it in the request's model_fields_set, which the
   // backend reads as an explicit client override and which then beats the per-model
@@ -727,6 +731,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             load_in_4bit: false,
             is_lora: false,
             gguf_variant: ggufFilename ?? null,
+            trust_remote_code: audioModelRequiresRemoteCode(repoId),
           },
           {
             signal: controller.signal,
@@ -1151,10 +1156,19 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           id.toLowerCase().endsWith(".gguf"),
       );
       const ggufSibling = isGguf ? null : ggufSiblingFor(id);
-      const macAction = macTtsPickAction({ isMac, isGguf, ggufSibling });
+      const nativeRuntime =
+        usesNativeAudioRuntime(id) && !isMusicGenerationModel(id);
+      const macAction = macTtsPickAction({
+        isMac,
+        isGguf,
+        ggufSibling,
+        nativeRuntime,
+      });
       if (macAction === "reject") {
         toast.error(
-          `${id} has no runnable GGUF TTS build. MLX cannot generate text-to-speech from its safetensors checkpoint on this Mac.`,
+          isMusicGenerationModel(id)
+            ? `${id} currently requires an NVIDIA CUDA GPU and cannot run locally on this Mac.`
+            : `${id} has no runnable GGUF TTS build. MLX cannot generate text-to-speech from its safetensors checkpoint on this Mac.`,
           { duration: 7000 },
         );
         return;
@@ -1277,6 +1291,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     status?.active_model &&
       isTtsAudioType(status.audio_type, status.is_gguf === true),
   );
+  const musicGeneration =
+    status?.audio_type === "minimax_music3" ||
+    isMusicGenerationModel(status?.active_model);
   const handleEject = useCallback(() => {
     if (busy !== null || isRecording) {
       toast.info("Stop the active audio task before ejecting its model.");
@@ -1381,12 +1398,20 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setMode("transcribe");
       return;
     }
+    const instructions = audioInstructions.trim();
+    if (musicGeneration && !instructions) {
+      busyRef.current = null;
+      setBusy(null);
+      toast.error("Add a music description for MiniMax Music 3.");
+      return;
+    }
     const controller = new AbortController();
     generateAbort.current = controller;
     try {
       const generated = await generateAudio(text, {
         ...(temperatureEdited ? { temperature } : {}),
         max_tokens: maxTokens,
+        ...(instructions ? { audio_instructions: instructions } : {}),
         signal: controller.signal,
       });
       const refreshed = await refreshGallery();
@@ -1436,6 +1461,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, [
     prompt,
+    audioInstructions,
+    musicGeneration,
     temperature,
     temperatureEdited,
     maxTokens,
@@ -1951,16 +1978,39 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             {mode === "speak" ? (
               <>
                 <Field
-                  label="Text"
-                  hint="What the model should say. Generation runs on the loaded TTS model and lands in the gallery on the right."
+                  label={musicGeneration ? "Lyrics" : "Text"}
+                  hint={
+                    musicGeneration
+                      ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery on the right."
+                      : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery on the right."
+                  }
                 >
                   <Textarea
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
-                    placeholder="Type the sentence to speak…"
+                    placeholder={
+                      musicGeneration
+                        ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
+                        : "Type the sentence to speak…"
+                    }
                     className="min-h-28"
                   />
                 </Field>
+                {musicGeneration ? (
+                  <Field
+                    label="Music description"
+                    hint="Describe genre, tempo, mood, vocals, and arrangement. MiniMax Music 3 requires this separately from the lyrics."
+                  >
+                    <Textarea
+                      value={audioInstructions}
+                      onChange={(event) =>
+                        setAudioInstructions(event.target.value)
+                      }
+                      placeholder="Acoustic pop, 96 BPM, warm female lead, fingerpicked guitar and soft piano…"
+                      className="min-h-24"
+                    />
+                  </Field>
+                ) : null}
                 <AdvancedDisclosure
                   open={advancedOpen}
                   onOpenChange={setAdvancedOpen}
@@ -2054,7 +2104,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 disabled={
                   busy === "generating"
                     ? false
-                    : busy !== null || !ttsLoaded || !prompt.trim()
+                    : busy !== null ||
+                      !ttsLoaded ||
+                      !prompt.trim() ||
+                      (musicGeneration && !audioInstructions.trim())
                 }
                 variant={busy === "generating" ? "destructive" : "default"}
               >

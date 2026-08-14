@@ -27,6 +27,8 @@ export interface GenerateAudioOptions {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  audio_instructions?: string;
+  seed?: number;
   signal?: AbortSignal;
 }
 

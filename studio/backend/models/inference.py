@@ -579,7 +579,10 @@ class _InferenceRuntimeFields(BaseModel):
         "non-diffusion models and whenever the ask and the applied split agree.",
     )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
-    audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Audio codec or native generation architecture.",
+    )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
     requires_trust_remote_code: bool = Field(
         False,
@@ -1217,6 +1220,13 @@ class ChatCompletionRequest(BaseModel):
     audio_base64: Optional[str] = Field(
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
+    )
+    audio_instructions: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Scene or music-description instructions for native audio models. "
+            "MiniMax Music 3 requires this alongside lyrics."
+        ),
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,
@@ -3290,6 +3300,11 @@ class AudioSpeechRequest(BaseModel):
         "wav", description = "Output container. Only 'wav' is supported."
     )
     speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    instructions: Optional[str] = Field(
+        None,
+        description = "Scene or music-description instructions for compatible audio models.",
+    )
+    seed: Optional[int] = Field(None, description = "Best-effort deterministic generation seed.")
 
     @field_validator("response_format", mode = "before")
     @classmethod

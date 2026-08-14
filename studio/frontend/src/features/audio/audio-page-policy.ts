@@ -14,7 +14,17 @@ export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
 export type SttEngine = "transformers" | "gguf" | "mtmd";
 
-const TTS_AUDIO_TYPES = new Set(["snac", "csm", "bicodec", "dac"]);
+const TTS_AUDIO_TYPES = new Set([
+  "snac",
+  "csm",
+  "bicodec",
+  "dac",
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
 const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
 
 export function isTtsAudioType(
@@ -113,18 +123,20 @@ export function exactGgufLoadSelector(
 
 export type MacTtsPickAction = "allow" | "use-gguf-sibling" | "reject";
 
-/** MLX has no TTS decoder. A Mac TTS pick is runnable only when it already is
- * GGUF or its curated family publishes a GGUF sibling. */
+/** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX;
+ * other Mac picks still need GGUF or a family GGUF sibling. */
 export function macTtsPickAction({
   isMac,
   isGguf,
   ggufSibling,
+  nativeRuntime = false,
 }: {
   isMac: boolean;
   isGguf: boolean;
   ggufSibling: string | null;
+  nativeRuntime?: boolean;
 }): MacTtsPickAction {
-  if (!isMac || isGguf) return "allow";
+  if (!isMac || isGguf || nativeRuntime) return "allow";
   return ggufSibling ? "use-gguf-sibling" : "reject";
 }
 

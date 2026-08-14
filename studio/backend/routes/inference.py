@@ -9982,7 +9982,19 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
 
-_TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(("snac", "csm", "bicodec", "dac"))
+_TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(
+    (
+        "snac",
+        "csm",
+        "bicodec",
+        "dac",
+        "higgs_tts2",
+        "moss_tts_local",
+        "moss_tts_nano",
+        "higgs_tts3",
+        "minimax_music3",
+    )
+)
 _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
 
 
@@ -10058,6 +10070,8 @@ async def _generate_tts_wav(
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
             cancel_event = _audio_cancel,
+            instructions = payload.audio_instructions,
+            seed = payload.seed,
         )
 
     if audio_type not in supported_audio_types:
@@ -10222,6 +10236,8 @@ async def openai_audio_speech(
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": body.input}],
         max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+        audio_instructions = body.instructions,
+        seed = body.seed,
     )
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.input, payload, request, current_subject

@@ -80,6 +80,15 @@ test("Mac rejects safetensors-only TTS and redirects sibling families", () => {
     macTtsPickAction({ isMac: true, isGguf: true, ggufSibling: null }),
     "allow",
   );
+  assert.equal(
+    macTtsPickAction({
+      isMac: true,
+      isGguf: false,
+      ggufSibling: null,
+      nativeRuntime: true,
+    }),
+    "allow",
+  );
 });
 
 test("Mac sibling resolution returns an exact managed-download file", () => {
@@ -118,8 +127,18 @@ test("only the generation's persisted gallery id is selected", () => {
   assert.equal(persistedClipForGeneration("missing", refreshed), null);
 });
 
-test("Speak requires a supported TTS codec, not any audio model", () => {
-  for (const codec of ["snac", "csm", "bicodec", "dac"])
+test("Speak requires a supported TTS runtime, not any audio model", () => {
+  for (const codec of [
+    "snac",
+    "csm",
+    "bicodec",
+    "dac",
+    "higgs_tts2",
+    "moss_tts_local",
+    "moss_tts_nano",
+    "higgs_tts3",
+    "minimax_music3",
+  ])
     assert.equal(isTtsAudioType(codec), true);
   assert.equal(isTtsAudioType("csm", true), false);
   for (const codec of ["snac", "bicodec", "dac"])
