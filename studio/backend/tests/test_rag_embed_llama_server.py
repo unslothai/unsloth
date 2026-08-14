@@ -571,3 +571,112 @@ class TestTheEmbeddingLoaderChangesAreMacOsOnly:
         )
         mod.LlamaServerBackend()._build_env(str(wrapper), use_gpu = True)
         assert seen["dir"] == str(wrapper.parent)
+
+
+def test_device_preference_is_shared_between_both_backends(monkeypatch):
+    """One reader, so the two backends cannot disagree about the same string.
+
+    They did: this one compared a bare .lower() with no strip, so " gpu " forced the
+    GPU for sentence-transformers and fell through to auto here, and an Intel user
+    writing their own accelerator's name (xpu) got neither.
+    """
+    for requested, expected in (
+        ("gpu", "gpu"),
+        ("GPU", "gpu"),
+        ("  gpu  ", "gpu"),
+        ("cuda", "gpu"),
+        ("rocm", "gpu"),
+        ("hip", "gpu"),
+        ("xpu", "gpu"),
+        ("mps", "gpu"),
+        ("metal", "gpu"),
+        ("cpu", "cpu"),
+        ("CPU", "cpu"),
+        (" cpu ", "cpu"),
+        ("auto", "auto"),
+        ("", "auto"),
+        ("   ", "auto"),
+        ("banana", "auto"),
+    ):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        assert config.embed_device_preference() == expected, requested
+
+
+def test_use_gpu_honours_the_normalized_preference(monkeypatch):
+    """A whitespace-padded or device-named setting reaches this backend too."""
+    backend = LlamaServerBackend()
+    for requested in ("  gpu  ", "GPU", "xpu", "cuda"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        monkeypatch.setattr(
+            LlamaServerBackend,
+            "_gpu_available",
+            staticmethod(lambda: False),
+        )
+        assert backend._use_gpu() is True, requested
+    for requested in (" cpu ", "CPU"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        monkeypatch.setattr(
+            LlamaServerBackend,
+            "_gpu_available",
+            staticmethod(lambda: True),
+        )
+        assert backend._use_gpu() is False, requested
+
+
+def test_gpu_opt_in_still_falls_back_to_cpu(monkeypatch):
+    """Opting into the GPU by naming it must not turn a failed GPU start fatal.
+
+    These spellings all fell through to ``auto`` before the normalizer read them,
+    so they fell back; making them fatal would stop RAG on hosts it worked on."""
+    for requested in ("cuda", "rocm", "hip", "xpu", "mps", "metal", "  gpu  ", "  CUDA  "):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        calls: list[bool] = []
+
+        def fake_spawn_once(use_gpu, _calls = calls):
+            _calls.append(use_gpu)
+            if use_gpu:
+                raise RuntimeError("GPU start failed")
+
+        monkeypatch.setattr(backend, "_spawn_once", fake_spawn_once)
+        backend._spawn()
+        assert calls == [True, False], requested
+        assert backend._force_cpu is True, requested
+
+
+def test_literal_gpu_remains_a_hard_request(monkeypatch):
+    """The documented value keeps forcing the GPU, as it always has."""
+    for requested in ("gpu", "GPU"):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        monkeypatch.setattr(
+            backend, "_spawn_once", lambda use_gpu: (_ for _ in ()).throw(RuntimeError("no cuda"))
+        )
+        with pytest.raises(RuntimeError, match = "no cuda"):
+            backend._spawn()
+        assert backend._force_cpu is False, requested
+
+
+def test_a_soft_gpu_opt_in_keeps_its_own_cpu_fallback(monkeypatch):
+    """The chat reaper kills this server routinely, so respawns are the common case.
+
+    A GPU start we were already allowed to give up on must not be retried on every
+    one of them: each retry pays the full startup timeout before landing back on the
+    CPU it had already fallen back to. Only the literal ``gpu`` outranks the flag,
+    and that spelling never sets it."""
+    for requested in ("cuda", "xpu", "  gpu  "):
+        monkeypatch.setattr(config, "EMBED_DEVICE", requested)
+        backend = LlamaServerBackend()
+        calls: list[bool] = []
+
+        def fake_spawn_once(use_gpu, _calls = calls):
+            _calls.append(use_gpu)
+            if use_gpu:
+                raise RuntimeError("GPU start failed")
+
+        monkeypatch.setattr(backend, "_spawn_once", fake_spawn_once)
+        backend._spawn()
+        assert calls == [True, False], requested
+        backend._spawn()  # the reaper killed it; the respawn stays where we landed
+        assert calls == [True, False, False], requested
+        assert backend._use_gpu() is False, requested
