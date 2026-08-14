@@ -998,20 +998,14 @@ class TestPipConfigPolicySurvivesThePin:
         (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
-        env = self._pinned_env(
-            "global.only-binary='numpy'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
-        )
+        env = self._pinned_env("global.only-binary='numpy'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"})
         assert env["PIP_ONLY_BINARY"] == ":all:"
 
     def test_two_scoped_policies_are_unioned(self, tmp_path, monkeypatch):
-        (tmp_path / "uv.toml").write_text(
-            '[pip]\nno-build-package = ["torch"]\n', encoding = "utf-8"
-        )
+        (tmp_path / "uv.toml").write_text('[pip]\nno-build-package = ["torch"]\n', encoding = "utf-8")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
-        env = self._pinned_env(
-            "global.only-binary='numpy'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
-        )
+        env = self._pinned_env("global.only-binary='numpy'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"})
         assert env["PIP_ONLY_BINARY"] == "numpy,torch"
 
     def test_a_scoped_pip_conf_policy_keeps_its_scope(self):
