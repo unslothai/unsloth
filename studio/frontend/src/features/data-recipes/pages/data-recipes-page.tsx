@@ -322,12 +322,13 @@ export function DataRecipesPage(): ReactElement {
 
   // Recipes read seeds through datasets and pandas, so leave once a verdict says the
   // install has neither: the root guard admits this route while the verdict is still out.
-  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  // Not gated on the hardware verdict: only the server sets this false, and it is
+  // published before detection settles.
   const datasetsAvailable = usePlatformStore((s) => s.datasetsAvailable);
   useEffect(() => {
-    if (capabilitiesUnknown || datasetsAvailable) return;
+    if (datasetsAvailable) return;
     void navigate({ to: "/chat", replace: true });
-  }, [capabilitiesUnknown, datasetsAvailable, navigate]);
+  }, [datasetsAvailable, navigate]);
 
   useEffect(() => {
     if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {

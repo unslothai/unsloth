@@ -83,7 +83,14 @@ export function StudioPage(): ReactElement {
   // still out.
   const datasetsAvailable = usePlatformStore((s) => s.datasetsAvailable);
   useEffect(() => {
-    if (capabilitiesUnknown || (!chatOnly && datasetsAvailable)) return;
+    // datasetsAvailable is not part of the hardware verdict, so it is acted on as
+    // soon as it is false: only the server writes that, and it arrives on a
+    // provisional reply too.
+    if (!datasetsAvailable) {
+      void navigate({ to: "/chat", replace: true });
+      return;
+    }
+    if (capabilitiesUnknown || !chatOnly) return;
     void navigate({ to: "/chat", replace: true });
   }, [capabilitiesUnknown, chatOnly, datasetsAvailable, navigate]);
   const hfToken = useHfTokenStore((s) => s.token);

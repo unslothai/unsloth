@@ -210,9 +210,12 @@ export const Route = createRootRoute({
     ) {
       throw redirect({ to: "/chat" });
     }
-    // Only on a measured verdict: the default is available, so this never fires on the
-    // pre-measurement guess and a healthy host is never stranded on /chat.
-    if (!unmeasured && !datasetsAvailable && needsDatasets(location.pathname)) {
+    // Independent of the hardware verdict: this is answered from the interpreter and
+    // is published on provisional replies too, so waiting for detection would admit
+    // the page for as long as a slow torch import takes. `false` can only come from
+    // the server -- the default is `true` and nothing else writes it -- so this still
+    // never fires on the pre-measurement guess.
+    if (!datasetsAvailable && needsDatasets(location.pathname)) {
       throw redirect({ to: "/chat" });
     }
   },

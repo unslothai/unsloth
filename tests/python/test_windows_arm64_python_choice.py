@@ -166,7 +166,7 @@ def _setup_arch_script(interpreter_tag: str, host_arch: str, no_datasets: bool) 
     arch_fn = _extract(r"function Test-CompatibleSetupPythonArch \{.*?\r?\n\}", source)
     return f"""
 $ErrorActionPreference = "Stop"
-$script:NoDatasetsMode = {'$true' if no_datasets else '$false'}
+$script:NoDatasetsMode = {"$true" if no_datasets else "$false"}
 function Get-HostMachineArch {{ return "{host_arch}" }}
 function FakePython {{
     param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
@@ -236,7 +236,9 @@ def test_install_ps1_rechecks_a_migrated_venv():
     clear $_Migrated so the fresh-install path (not the migrated-upgrade path) runs."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     index = source.index("migrated environment is")
-    block = source[index - 2400 : index + 1200]
+    # From where the probe is taken, so the window cannot fall short of it as the
+    # block between the two grows.
+    block = source[source.index("$migratedTag = Get-PythonPlatformTag") : index + 1200]
     assert "Get-PythonPlatformTag $VenvPython" in block
     assert "Start-StudioVenvRollback" in block
     assert "$_Migrated = $false" in block
@@ -251,7 +253,9 @@ def test_an_unreadable_arch_tag_never_rebuilds_a_migrated_venv():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     index = source.index("migrated environment is")
     condition = source[source.index("$migratedTag = Get-PythonPlatformTag") : index]
-    assert "if ($migratedTag -and $migratedTag -ne $wantedTag)" in condition
+    assert "$migratedTag -and $migratedTag -ne $wantedTag" in condition
+    # And the rebuild is skipped outright for a migrated venv that was kept.
+    assert "-not $_keepMigratedVenv -and $migratedTag" in condition
 
 
 def test_a_migrated_x64_venv_is_kept_even_when_the_tier_is_on():
@@ -305,9 +309,9 @@ def test_every_arm_filtered_copy_is_cleaned_up():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     calls = source.count("= Get-ArmFilteredRequirements ")
     cleanups = source.count("\n                Remove-ArmFilteredRequirements\n")
-    assert (
-        calls and calls == cleanups
-    ), f"{calls} Get-ArmFilteredRequirements call sites but {cleanups} cleanups"
+    assert calls and calls == cleanups, (
+        f"{calls} Get-ArmFilteredRequirements call sites but {cleanups} cleanups"
+    )
 
 
 def test_a_failed_install_does_not_leave_the_tier_in_the_callers_shell():

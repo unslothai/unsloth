@@ -191,9 +191,9 @@ class TestStartupDoesNotNeedDatasets:
             tree = ast.parse(source)
             for node in tree.body:
                 if isinstance(node, ast.ImportFrom) and node.module:
-                    assert (
-                        "core.training.trainer" not in node.module
-                    ), f"{relative} imports the training worker at module scope"
+                    assert "core.training.trainer" not in node.module, (
+                        f"{relative} imports the training worker at module scope"
+                    )
 
 
 class TestRoutesAreGated:
@@ -678,7 +678,7 @@ class TestTheCapabilityIsPublishedAndActedOn:
         )
         assert '["/studio", "/data-recipes"]' in source
         index = source.index("needsDatasets(location.pathname)")
-        assert "!unmeasured && !datasetsAvailable" in source[index - 120 : index]
+        assert "!datasetsAvailable" in source[index - 120 : index]
 
     def test_the_recovery_poll_treats_missing_datasets_as_unsettled(self):
         """Off ARM64 the host is not chat-only, so `!chatOnly` alone settled it and the
@@ -708,6 +708,43 @@ class TestTheCapabilityIsPublishedAndActedOn:
         index = source.index("$_x64Python = Find-X64SetupPython")
         assert "Add-PythonDirToProcessPath $_x64Python" in source[index : index + 300]
         assert source.index("function Find-X64SetupPython") < index
+
+
+class TestTheGatesHoldOnEveryCaller:
+    """A FastAPI dependency only runs for callers that go through FastAPI, and the
+    capability is only useful if it is acted on when it arrives."""
+
+    def test_the_mcp_dataset_reader_is_gated_too(self):
+        """mcp_server calls job_dataset() directly, so the route's dependency never
+        runs for it and paging would answer with a pandas error, not the 503."""
+        source = (_BACKEND / "mcp_server.py").read_text(encoding = "utf-8")
+        index = source.index("def get_recipe_job_dataset")
+        body = source[index : index + 900]
+        assert "await require_datasets_http()" in body
+        assert "async def get_recipe_job_dataset" in source
+
+    def test_the_route_guard_does_not_wait_for_hardware(self):
+        """datasets_available is answered from the interpreter and published on
+        provisional replies, so waiting for detection admits the page for as long as
+        a slow torch import takes. Only the server writes false, so this cannot fire
+        on the pre-measurement guess."""
+        source = (_BACKEND.parent / "frontend" / "src" / "app" / "routes" / "__root.tsx").read_text(
+            encoding = "utf-8"
+        )
+        index = source.index("needsDatasets(location.pathname)")
+        assert "unmeasured" not in source[index - 60 : index]
+
+    def test_a_kept_migrated_x64_venv_is_not_rebuilt(self):
+        """The fallback tier is on because no x64 interpreter was FOUND, so
+        $DetectedPython is the native ARM64 one. Comparing the migrated venv against
+        it would rebuild the working x64 environment the branch above just kept."""
+        source = (_BACKEND.parents[1] / "install.ps1").read_text(encoding = "utf-8")
+        keep = source.index("$_keepMigratedVenv = $true")
+        compare = source.index("$migratedTag -ne $wantedTag")
+        assert "-not $_keepMigratedVenv" in source[compare - 60 : compare]
+        assert keep < compare
+        # Initialised before the branch, so a strict-mode read is never on an unset name.
+        assert source.index("$_keepMigratedVenv = $false") < keep
 
 
 class TestTheTierRemovesTrainingNotTheDevice:

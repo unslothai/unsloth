@@ -191,14 +191,20 @@ def create_studio_mcp() -> FastMCP:
         return _dump(job_status(job_id))
 
     @mcp.tool
-    def get_recipe_job_dataset(
+    async def get_recipe_job_dataset(
         job_id: str,
         limit: int = 20,
         offset: int = 0,
     ) -> dict[str, Any]:
         """Read a bounded page of generated Data Recipe rows."""
         from routes.data_recipe.jobs import job_dataset
+        from utils.datasets_availability import require_datasets_http
 
+        # Same reason /train/start is gated here: the route carries
+        # require_datasets_http as a FastAPI dependency, and a direct call skips
+        # dependencies entirely, so paging would reach duckdb's pandas-backed
+        # .fetchdf() and answer with a pandas error instead of the stated 503.
+        await require_datasets_http()
         # Clamp here (direct call skips FastAPI's Query bounds).
         limit = _clamp(limit, 1, 500)
         offset = max(0, offset)

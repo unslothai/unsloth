@@ -3640,6 +3640,7 @@ exit 0
     # branch below rebuilds from $DetectedPython and a failed reinstall is restorable.
     if ($_Migrated -and (Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython)) {
         $migratedTag = Get-PythonPlatformTag $VenvPython
+        $_keepMigratedVenv = $false
         # An x64 environment is never the wrong answer on this host: it can install
         # everything the tier gives up. So if the tier is only on because no x64
         # interpreter could be FOUND, and the migrated venv turns out to have one,
@@ -3651,6 +3652,11 @@ exit 0
             # inference-only on purpose, including on x64, so it survives this.
             substep "migrated environment already runs x64 Python -- keeping it, full install." "Yellow"
             $script:ArmInferenceOnly = $false
+            # And keep it through the tag comparison below: $DetectedPython is the
+            # native ARM64 interpreter whose absence of an x64 alternative caused the
+            # fallback, so comparing against it would rebuild the very venv this
+            # branch exists to preserve.
+            $_keepMigratedVenv = $true
             if ($script:HadPreviousNoDatasetsEnv) {
                 $env:UNSLOTH_NO_DATASETS = $script:PreviousNoDatasetsEnv
             } else {
@@ -3668,7 +3674,7 @@ exit 0
         # relocated base install, and treating that as a mismatch sends a working
         # environment -- with whatever the user keeps inside it -- through a rollback
         # whose success deletes the original tree. Only rebuild on a KNOWN mismatch.
-        if ($migratedTag -and $migratedTag -ne $wantedTag) {
+        if (-not $_keepMigratedVenv -and $migratedTag -and $migratedTag -ne $wantedTag) {
             $migratedTagLabel = $migratedTag
             substep "migrated environment is $migratedTagLabel, this install needs $wantedTag -- rebuilding" "Yellow"
             try {
