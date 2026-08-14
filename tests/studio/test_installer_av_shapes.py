@@ -114,9 +114,9 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
         if "powershell" not in line and "pwsh" not in line:
             continue
         for match in re.finditer(r"(?<![\w-])-(e[a-z]*)\b", line):
-            assert not "encodedcommand".startswith(match.group(1)), (
-                f"{name}:{number} passes an -EncodedCommand prefix to PowerShell: {line.strip()}"
-            )
+            assert not "encodedcommand".startswith(
+                match.group(1)
+            ), f"{name}:{number} passes an -EncodedCommand prefix to PowerShell: {line.strip()}"
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
