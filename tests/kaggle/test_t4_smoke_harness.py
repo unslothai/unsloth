@@ -509,11 +509,12 @@ def _run_gate(monkeypatch, tmp_path, *extra):
     import gate
 
     code = gate.main()
-    outputs = dict(
-        line.split("=", 1)
-        for line in (tmp_path / "out.txt").read_text().splitlines()
-        if "=" in line
-    )
+    # A hard failure can exit before any decision is published (--no-soft-fail
+    # on an error in the gate itself does exactly that), so an absent file is an
+    # answer here rather than a missing one.
+    out = tmp_path / "out.txt"
+    lines = out.read_text().splitlines() if out.exists() else []
+    outputs = dict(line.split("=", 1) for line in lines if "=" in line)
     return code, outputs
 
 
@@ -598,6 +599,175 @@ def test_a_rerun_of_the_same_run_id_does_not_reroll(monkeypatch, tmp_path):
     first = _run_gate(monkeypatch, tmp_path / "a", "--run-attempt", "1")
     second = _run_gate(monkeypatch, tmp_path / "b", "--run-attempt", "7")
     assert first[1]["should_run"] == second[1]["should_run"]
+
+
+# -------------------------------------- gate: the one stand-down that is red
+#
+# An exhausted weekly quota is not a dice roll going the usual way, it is the
+# account out of accelerator hours until Kaggle refreshes them, and a reader who
+# sees nothing at all cannot tell that from a workflow nobody wired up. So it
+# exits nonzero carrying a sentence written for whoever opened the pull request,
+# who did not cause it and cannot clear it. Everything else here stays green.
+
+# _run_gate passes --budget-hours 1 --reserve-hours 20, so 21h is the floor.
+EXHAUSTED = {
+    "ok": True,
+    "used_hours": 27.0,
+    "total_hours": 30.0,
+    "remaining_hours": 3.0,
+    "refresh_at": "2026-08-17T00:00:00",
+}
+PLENTIFUL = dict(EXHAUSTED, used_hours = 1.0, remaining_hours = 29.0)
+
+
+def _idle_account():
+    return {
+        "busy": [],
+        "own": [],
+        "foreign": [],
+        "surveyed": 0,
+        "unreadable": 0,
+        "gone": 0,
+        "complete": True,
+        "out_of_budget": False,
+        "window_hours": 13.0,
+    }
+
+
+def _run_gate_against(
+    monkeypatch,
+    tmp_path,
+    quota,
+    *extra,
+    survey = None,
+):
+    """The gate against an account whose quota and kernels read exactly so.
+
+    ``survey`` takes a result or a callable, the callable being how a test says
+    "and this must not be called at all".
+    """
+    import gate
+
+    answer = _idle_account() if survey is None else survey
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    monkeypatch.setattr(gate, "kaggle_client", lambda: object())
+    monkeypatch.setattr(gate, "remaining_gpu_hours", lambda api: dict(quota))
+    monkeypatch.setattr(
+        gate, "survey_kernels", answer if callable(answer) else (lambda api: answer)
+    )
+    code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true", *extra)
+    summary_path = tmp_path / "summary.md"
+    summary = summary_path.read_text(encoding = "utf-8") if summary_path.exists() else ""
+    return code, outputs, summary
+
+
+def test_an_exhausted_weekly_quota_is_the_one_red_stand_down(monkeypatch, tmp_path):
+    """Nonzero, and carrying the sentence verbatim in both places a human reads.
+
+    The numbers ride along rather than replacing it: remaining, total and the
+    refresh time are what tell the reader WHEN it clears, and the API has
+    already handed them over.
+    """
+    import gate
+
+    code, outputs, summary = _run_gate_against(monkeypatch, tmp_path, EXHAUSTED)
+    assert code == 1
+    assert outputs["should_run"] == "false"
+    for text in (outputs["reason"], summary):
+        assert gate.QUOTA_EXHAUSTED_MESSAGE in text
+        assert "3.0h" in text and "30.0h" in text
+        assert EXHAUSTED["refresh_at"] in text
+    assert "not-a-real-token" not in summary
+
+
+def test_the_required_sentence_is_the_one_that_was_asked_for():
+    """Pinned literally: a reworded message is a different message."""
+    import gate
+    assert gate.QUOTA_EXHAUSTED_MESSAGE == (
+        "GPU capacity exhausted - please wait until next week - you can ignore this CI failure"
+    )
+
+
+def test_the_exhausted_answer_costs_one_api_call_and_no_kernel(monkeypatch, tmp_path):
+    """Before the survey, so it is a quota read rather than a Kaggle session.
+
+    Answering after the concurrency survey would spend up to SURVEY_BUDGET_SEC
+    of status calls to report that there is nothing left to spend, and the whole
+    point of failing here is that it is the cheap end of the workflow.
+    """
+
+    def _must_not_survey(api):
+        raise AssertionError("the survey ran after the quota was already exhausted")
+
+    code, outputs, _ = _run_gate_against(monkeypatch, tmp_path, EXHAUSTED, survey = _must_not_survey)
+    assert code == 1 and outputs["should_run"] == "false"
+
+
+def test_an_unreadable_quota_is_still_a_skip(monkeypatch, tmp_path):
+    """ "Unknown" is not "exhausted", and must not borrow its message."""
+    import gate
+
+    code, outputs, summary = _run_gate_against(
+        monkeypatch, tmp_path, {"ok": False, "error": "no gpu_quota in quota response"}
+    )
+    assert code == 0
+    assert outputs["should_run"] == "false"
+    assert "unknown" in outputs["reason"]
+    assert gate.QUOTA_EXHAUSTED_MESSAGE not in outputs["reason"]
+    assert gate.QUOTA_EXHAUSTED_MESSAGE not in summary
+
+
+def test_a_busy_account_is_still_a_skip(monkeypatch, tmp_path):
+    """Quota to spare and a human on the slots: nothing red about that."""
+    import gate
+
+    survey = _idle_account() | {
+        "busy": ["someone/notebook (RUNNING)"],
+        "foreign": ["someone/notebook (RUNNING)"],
+        "surveyed": 1,
+    }
+    code, outputs, _ = _run_gate_against(monkeypatch, tmp_path, PLENTIFUL, survey = survey)
+    assert code == 0
+    assert outputs["should_run"] == "false"
+    assert "in flight" in outputs["reason"]
+    assert gate.QUOTA_EXHAUSTED_MESSAGE not in outputs["reason"]
+
+
+def test_a_caller_that_asks_for_soft_failure_still_gets_one(monkeypatch, tmp_path):
+    """--soft-fail is a request, and the recheck step makes it.
+
+    It softens the exit code and nothing else: the reason still says what
+    happened, which is what the stale-approval warning quotes.
+    """
+    import gate
+
+    code, outputs, summary = _run_gate_against(monkeypatch, tmp_path, EXHAUSTED, "--soft-fail")
+    assert code == 0
+    assert outputs["should_run"] == "false"
+    assert gate.QUOTA_EXHAUSTED_MESSAGE in outputs["reason"]
+    assert gate.QUOTA_EXHAUSTED_MESSAGE in summary
+
+
+def test_soft_failure_is_asked_for_rather_than_assumed(monkeypatch, tmp_path):
+    """The flag defaulting to on would make the red unreachable.
+
+    It used to default to True, so every invocation looked like a caller that
+    had asked for softness. Nobody can ask for the opposite of a default that is
+    always taken, which is why the three states are distinguished.
+    """
+    import gate
+
+    unasked = _run_gate_against(monkeypatch, tmp_path / "default", EXHAUSTED)[0]
+    asked = _run_gate_against(monkeypatch, tmp_path / "asked", EXHAUSTED, "--soft-fail")[0]
+    assert (unasked, asked) == (1, 0)
+    # And --no-soft-fail still means what it always did: an error in the gate
+    # itself becomes a failure rather than a skip.
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    monkeypatch.setattr(gate, "kaggle_client", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    hard, _ = _run_gate(monkeypatch, tmp_path / "hard", "--force", "true", "--no-soft-fail")
+    assert hard == 1
+    soft, outputs = _run_gate(monkeypatch, tmp_path / "soft", "--force", "true", "--soft-fail")
+    assert soft == 0 and outputs["should_run"] == "false"
 
 
 # ----------------------------------------------------------- reference band
@@ -2302,6 +2472,58 @@ def test_the_account_is_rechecked_after_the_concurrency_slot_is_held():
     assert names[names.index("Recheck the Kaggle account") + 2] == "Launch on Kaggle and collect"
     launch = steps[names.index("Launch on Kaggle and collect")]
     assert launch["if"] == "steps.recheck.outputs.should_run == 'true'"
+
+
+def test_the_exhausted_quota_failure_reaches_the_pull_request():
+    """A red nothing surfaces is the same as no red at all.
+
+    The Decide step is the whole gate job, so anything that swallowed its exit
+    code (continue-on-error, an `|| true`, a downstream always()) would leave the
+    check green while the log said the account was out of hours.
+    """
+    jobs = _workflow()["jobs"]
+    gate_job = jobs["gate"]
+    decide = next(s for s in gate_job["steps"] if s.get("id") == "decide")
+    assert "continue-on-error" not in gate_job
+    assert "continue-on-error" not in decide
+    assert "|| true" not in decide["run"]
+    # and the gate job asks for the red: --soft-fail is the recheck's flag.
+    assert "--soft-fail" not in decide["run"]
+    # t4-smoke is skipped rather than run when the gate fails, and nothing in it
+    # runs unconditionally enough to turn that into a green verdict.
+    assert jobs["t4-smoke"]["needs"] == "gate"
+    assert "always()" not in jobs["t4-smoke"]["if"]
+
+
+def test_the_recheck_stands_down_rather_than_reporting_the_quota_twice():
+    """It runs AFTER approval, with the account slot already held.
+
+    Reaching it means the hours went while this run queued, which is a race lost
+    rather than the week's quota gone, and the gate job would already have said
+    so for a run that was short before it started. So it asks for soft failure
+    and the stale-approval warning below it carries the reason.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    recheck = steps[names.index("Recheck the Kaggle account")]
+    assert "--soft-fail" in recheck["run"]
+    assert "continue-on-error" not in recheck
+    warn = steps[names.index("Report the stale approval")]
+    assert "steps.recheck.outputs.should_run != 'true'" in warn["if"]
+    assert "::warning" in warn["run"]
+
+
+def test_the_workflow_states_the_failure_semantics_it_actually_has():
+    """The comment block is what a reader trusts instead of reading gate.py."""
+    source = WORKFLOW.read_text(encoding = "utf-8")
+    semantics = source.split("FAILURE SEMANTICS", 1)[1].split("CREDENTIALS", 1)[0]
+    assert "WEEKLY accelerator quota is exhausted" in semantics
+    assert "before any kernel" in semantics
+    assert "--soft-fail" in semantics
+    # An unreadable quota is not the same outcome, and the block says so.
+    assert "UNREADABLE" in semantics
+    # The old promise that only a failed payload is ever red is gone.
+    assert "Red ONLY when a payload ran" not in source
 
 
 def test_the_harness_suite_runs_before_any_kernel_is_pushed():

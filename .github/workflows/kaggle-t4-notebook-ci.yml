@@ -135,10 +135,21 @@
 # ---------------------------------------------------------------------
 # FAILURE SEMANTICS
 # ---------------------------------------------------------------------
-# Red ONLY when a payload ran on a T4 and its assertions failed. Every other
-# outcome (not sampled, no quota, account busy, push throttled, kernel died on
-# Kaggle's side, evidence would not download) is a SKIP or a warning and exits
-# 0, nothing having been learned about the code.
+# Red for two things and nothing else:
+#
+#   1. a payload ran on a T4 and its assertions failed.
+#   2. the account's WEEKLY accelerator quota is exhausted. The `gate` job says
+#      so in one API call, before the concurrency survey and before any kernel
+#      is pushed, and its message says the hours come back on Kaggle's refresh
+#      and the reader can ignore the failure. Nothing downstream swallows it:
+#      the Decide step has no continue-on-error, and t4-smoke needs this job.
+#
+# Every other outcome (not sampled, wrong label, no credentials, quota
+# UNREADABLE, account busy, push throttled, kernel died on Kaggle's side,
+# evidence would not download) is a SKIP or a warning and exits 0, nothing
+# having been learned about the code. The recheck inside t4-smoke passes
+# --soft-fail, so a run already approved that loses the hours while queueing for
+# the account slot stands down green rather than going red for a second time.
 #
 # This job is NOT intended to be a required check: it runs on a minority of
 # commits by design, so requiring it would block every commit it declined to run
@@ -441,7 +452,7 @@ jobs:
       # adapter checks, which ask PEFT itself whether the written
       # adapter_config.json can be rebuilt into an adapter -- without it those
       # tests importorskip, and a skipped check is one that cannot fail.
-      # Measured in a bare venv with exactly these four: 323 passed.
+      # Measured in a bare venv with exactly these four: 333 passed.
       #
       # CPU torch goes FIRST, before anything that depends on torch. pip "prefers
       # to leave the installed version as-is unless --upgrade is specified"
@@ -573,7 +584,7 @@ jobs:
       # control and canary differing by unrecorded zoo code invalidate the
       # reference band and the attribution both. A run that cannot be made
       # reproducible has nothing to say, which is infrastructure: a warning and
-      # a green job, like the concurrency and quota stand-downs. The ls-remote
+      # a green job, like the concurrency stand-down. The ls-remote
       # is retried first, a single blip not being a verdict.
       #
       # Also reads the step count the committed reference was captured at, so
@@ -688,6 +699,15 @@ jobs:
       # --force true skips the SAMPLING draw and only that: the dice were rolled
       # by the gate job, and rerolling would discard a run legitimately sampled
       # in. The quota floor and the concurrency survey run in full.
+      #
+      # --soft-fail, because THIS check is not the one that reports exhaustion.
+      # The gate job already answered that question for this run and answered it
+      # yes, in one API call and minutes ago; arriving here means the hours went
+      # while the run queued on the account-wide group, which is a race lost
+      # rather than a week's quota gone. Red here would also be the expensive
+      # version of the same message, after a runner, the harness suite and the
+      # kernel build. So it stands down green and the step below warns, exactly
+      # as it does for a foreign kernel holding the slot.
       - name: Recheck the Kaggle account
         id: recheck
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
@@ -696,6 +716,7 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --force true \
+            --soft-fail \
             --kernels 2 \
             --budget-hours 4 \
             --reserve-hours 20

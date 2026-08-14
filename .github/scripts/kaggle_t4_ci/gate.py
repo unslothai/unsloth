@@ -18,7 +18,8 @@ four checks, in this order:
    re-run of the same run gives the same answer (otherwise anyone could reroll
    until it fires) while different runs stay independent.
 3. **Remaining quota.** Refuses when what is left would not cover this
-   invocation's worst case plus a reserve, so CI never drains the account.
+   invocation's worst case plus a reserve, so CI never drains the account. This
+   is the ONE stand-down that is a failure rather than a skip; see below.
 4. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, per ACCOUNT
    rather than per workflow. The survey splits kernels this workflow pushed
    from the rest because they call for opposite answers: a FOREIGN kernel means
@@ -29,8 +30,20 @@ four checks, in this order:
    which is what makes it exhaustive; see LOOKBACK_HOURS.
 
 Every negative answer is a SKIP, and a skip exits 0: not spending quota is
-designed behaviour and must never colour a pull request red. The only nonzero
-exit is a real error in the gate itself, and ``--soft-fail`` converts even that.
+designed behaviour and must never colour a pull request red. The ONE exception
+is an EXHAUSTED weekly quota, which exits nonzero carrying
+QUOTA_EXHAUSTED_MESSAGE: that is not a dice roll going the usual way, it is the
+whole account out of accelerator hours until the refresh, and a reader who sees
+nothing at all cannot tell that from a workflow nobody wired up. It is decided
+before the concurrency survey and before any kernel is pushed, so it costs one
+API call rather than a Kaggle session. An UNREADABLE quota is still a skip:
+"unknown" is not "exhausted". A real error in the gate itself is a skip too, and
+``--no-soft-fail`` turns that back into a failure.
+
+``--soft-fail`` is a REQUEST, not the default state. Passed explicitly it turns
+the exhausted-quota failure back into a skip, for a caller that has already been
+approved and is only re-asking (the workflow's recheck step, which runs with the
+account slot in hand); passed nowhere, the failure stands.
 
 No credential is ever printed: the token is read from the environment, handed to
 the Kaggle client, and never echoed, logged or written to an output file.
@@ -150,6 +163,16 @@ MAX_KERNEL_PAGES = 5
 # the second stands the job down.
 GONE_MARKERS = ("404", "not found", "notfound", "does not exist")
 
+# What an exhausted weekly quota says, verbatim, in the log line and in the job
+# summary. It is addressed to whoever opened the pull request, who did not cause
+# it and cannot clear it: nothing was learned about their code, the hours come
+# back on Kaggle's own refresh, and there is nothing for them to fix. The
+# measured numbers are appended rather than replacing it, so the reader can see
+# WHEN it clears; this sentence stays intact.
+QUOTA_EXHAUSTED_MESSAGE = (
+    "GPU capacity exhausted - please wait until next week - you can ignore this CI failure"
+)
+
 
 def _looks_gone(exc: BaseException) -> bool:
     """Did this status lookup fail because the kernel no longer exists?"""
@@ -172,13 +195,24 @@ def _summary(text: str) -> None:
             fh.write(text + "\n")
 
 
-def _decide(run: bool, reason: str) -> int:
+def _decide(
+    run: bool,
+    reason: str,
+    exit_code: int = 0,
+) -> int:
+    """Publish the answer and return the process exit code.
+
+    ``exit_code`` defaults to 0 because almost every answer here is a skip. The
+    one caller that passes 1 is the exhausted-quota branch; ``should_run`` is
+    still written first either way, so a step reading the output sees "false"
+    rather than an empty string.
+    """
     _out("should_run", "true" if run else "false")
     _out("reason", reason)
-    verdict = "RUN" if run else "SKIP"
+    verdict = "RUN" if run else ("FAIL" if exit_code else "SKIP")
     print(f"[gate] {verdict}: {reason}", flush = True)
     _summary(f"### Kaggle T4 gate: {verdict}\n\n{reason}\n")
-    return 0
+    return exit_code
 
 
 def sampled_in(run_id: str, percent: int) -> tuple[bool, int]:
@@ -461,14 +495,39 @@ def main() -> int:
         "CI yields to it. See "
         "ALLOWED_IN_FLIGHT_FOREIGN_KERNELS before raising it",
     )
+    # THREE states, not two, which is why this is store_const against a default
+    # of None rather than store_true. An error in the gate is a skip whether or
+    # not anyone asked (that has always been the default and stays it), but an
+    # exhausted quota is a failure UNLESS a caller asked for soft failure, and
+    # "the flag defaults to on" would make that request unaskable: every
+    # invocation would look like it had been made and the red would never
+    # appear. So None means "nobody said", True means "asked", False means
+    # "--no-soft-fail", and the two questions read the value separately below.
     ap.add_argument(
         "--soft-fail",
-        action = "store_true",
-        default = True,
-        help = "treat a gate error as a skip rather than a failure",
+        dest = "soft_fail",
+        action = "store_const",
+        const = True,
+        default = None,
+        help = "stand down rather than fail even when the weekly GPU quota is "
+        "exhausted. For a caller already past the gate that is only "
+        "re-asking; see the workflow's recheck step",
     )
-    ap.add_argument("--no-soft-fail", dest = "soft_fail", action = "store_false")
+    ap.add_argument(
+        "--no-soft-fail",
+        dest = "soft_fail",
+        action = "store_const",
+        const = False,
+        help = "treat an error in the gate itself as a failure too",
+    )
     args = ap.parse_args()
+
+    # An error in the gate says nothing about the code under test, so it stays a
+    # skip unless --no-soft-fail was passed.
+    errors_are_skips = args.soft_fail is not False
+    # Exhaustion is a fact about the account, and only an explicit request
+    # softens it.
+    exhaustion_is_soft = args.soft_fail is True
 
     label_name = args.label_name.strip().lower()
 
@@ -545,7 +604,7 @@ def main() -> int:
         if isinstance(exc, KeyboardInterrupt):
             raise
         msg = f"could not authenticate to Kaggle: {type(exc).__name__}"
-        if not args.soft_fail:
+        if not errors_are_skips:
             print(f"[gate] {msg}", flush = True)
             return 1
         return _decide(False, msg)
@@ -560,15 +619,23 @@ def main() -> int:
     if quota.get("ok"):
         need = args.budget_hours + args.reserve_hours
         if quota["remaining_hours"] < need:
+            # THE ONE RED STAND-DOWN, and it is answered here rather than after
+            # the survey on purpose: one quota call, no kernel pushed, no
+            # session spent to report that there are no sessions left. The
+            # required sentence comes first and whole; the numbers behind it
+            # follow so the reader can see when the hours come back.
             return _decide(
                 False,
-                f"insufficient weekly GPU quota: {quota['remaining_hours']}h "
-                f"remaining of {quota['total_hours']}h, and this run needs up "
-                f"to {args.budget_hours}h on top of a {args.reserve_hours}h "
-                f"reserve. Quota refreshes at {quota.get('refresh_at')}",
+                f"{QUOTA_EXHAUSTED_MESSAGE}. "
+                f"{quota['remaining_hours']}h of the weekly {quota['total_hours']}h "
+                f"accelerator quota is left, and this run needs up to "
+                f"{args.budget_hours}h on top of a {args.reserve_hours}h reserve. "
+                f"Quota refreshes at {quota.get('refresh_at')}",
+                exit_code = 0 if exhaustion_is_soft else 1,
             )
     else:
-        # An unreadable quota is not permission to spend it.
+        # An unreadable quota is not permission to spend it -- and it is not
+        # evidence of exhaustion either, so it stays a green skip.
         return _decide(
             False,
             "could not read the Kaggle accelerator quota, so the remaining budget is unknown",
