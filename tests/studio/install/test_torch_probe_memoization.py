@@ -216,3 +216,46 @@ class TestConsumersShareTheProbe:
         boom = subprocess.TimeoutExpired(cmd = "python", timeout = 90)
         with patch.object(stack_mod.subprocess, "run", side_effect = boom):
             assert stack_mod._probe_installed_torch_version() is None
+
+
+class TestEveryPipEntryPointInvalidates:
+    """pip_install_try installs torch too, so it must clear the memo.
+
+    studio/install_python_stack.py's Windows AMD path reinstalls the ROCm torch
+    trio through pip_install_try inside _ensure_rocm_torch. The repair paths run
+    at two points with the torchao version probe between them, so a memo that
+    survives that install pins torchao against the torch that was just replaced.
+    """
+
+    def _install_try(self):
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            return stack_mod.pip_install_try("torch repair", "torch")
+
+    def test_pip_install_try_invalidates_the_cache(self):
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
+            assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cu128"
+
+        assert self._install_try() is True
+
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
+        with patch.object(stack_mod.subprocess, "run", return_value = out) as mock_run:
+            assert stack_mod._probe_torch_runtime()[2] == "2.10.0+rocm7.1"
+        assert mock_run.call_count == 1
+
+    def test_the_torchao_probe_sees_the_reinstalled_torch(self):
+        # The consumer that actually reads a stale answer: _select_torchao_spec runs
+        # between the two repair points.
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
+            assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
+
+        self._install_try()
+
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
+        with patch.object(stack_mod.subprocess, "run", return_value = out):
+            assert stack_mod._probe_installed_torch_version() == "2.10.0+rocm7.1"
