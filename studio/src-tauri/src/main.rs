@@ -1951,11 +1951,20 @@ fn main() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
+            // Keyed on the main window, not has_visible_windows: the ask panel
+            // counts as a visible window, so a Dock click while only the panel
+            // is up would otherwise restore nothing and the activation monitor
+            // would then hide the panel too, leaving no window at all.
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen {
-                has_visible_windows: false,
-                ..
-            } => show_main_window(app),
+            tauri::RunEvent::Reopen { .. } => {
+                let main_hidden = app
+                    .get_webview_window("main")
+                    .map(|window| !window.is_visible().unwrap_or(false))
+                    .unwrap_or(true);
+                if main_hidden {
+                    show_main_window(app);
+                }
+            }
             tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
                 // cleanup, this blocks the main event-loop thread until that path is done.
