@@ -327,30 +327,56 @@ jobs:
         working-directory: studio/src-tauri
         run: cargo check --all-targets --release
 
-  macos-check:
-    # The selection-pill native layer is cfg(target_os = "macos") and only ever
-    # compiled by the manual release workflow otherwise; this keeps it from
-    # rotting between releases. Check + tests only: no npm, no bundling, no
-    # codesigning.
-    name: Rust check + tests (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 20
+  macos-unit-tests:
+    name: Rust unit tests (macos)
+    # Not macos-14: it browns out from 2026-10-05 and is removed 2026-11-02,
+    # which the other macOS workflows here have already moved off. Both are
+    # Apple Silicon, so this job keeps testing the arm64 paths.
+    runs-on: macos-15
+    # A cold cache compiles both the debug and the release dependency tree.
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '24'
+
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 10GB
+          # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
-      - name: cargo check
-        working-directory: studio/src-tauri
-        run: cargo check --locked
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
 
-      - name: cargo test
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # tauri-build resolves frontendDist at compile time, so dist/ must exist
+      # before cargo test, exactly as in the Linux and Windows jobs.
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Rust unit tests (studio/src-tauri)
         working-directory: studio/src-tauri
-        run: cargo test --locked --no-fail-fast
+        run: cargo test --no-fail-fast
+
+      # `cargo test` builds only the debug profile, and the browser guard is
+      # installed under `not(debug_assertions)`, so nothing above compiles its
+      # call site. Check the release profile so that path cannot rot.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release

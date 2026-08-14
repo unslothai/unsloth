@@ -4,14 +4,22 @@
 import functools
 import re
 import threading
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from auth.storage import rotate_preview_link_secret
+
+from routes.provider_credentials import current_credential_write, require_ui_session
+
+from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
@@ -46,23 +54,35 @@ from utils.model_memory_settings import (
     set_model_memory_settings,
     should_mlock,
 )
+from utils.vram_budget_settings import (
+    VRAM_FRACTION_DEFAULT,
+    VRAM_FRACTION_MAX,
+    VRAM_FRACTION_MIN,
+    get_vram_budget_state,
+    set_vram_budget_fraction,
+)
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
+    DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
     MAX_GPU_ID,
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
+    get_media_auto_unload_idle_seconds,
     get_model_overrides,
     get_openai_auto_switch_enabled,
     resolve_model_override_key,
     resolve_model_override_keys,
     get_stored_auto_unload_idle_seconds,
+    get_stored_media_auto_unload_idle_seconds,
     get_stored_openai_auto_download_enabled,
     idle_unload_is_configured,
     set_model_override,
@@ -90,10 +110,352 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.media_generation_preset_settings import (
+    delete_media_generation_preset,
+    get_media_generation_preset_settings,
+    set_media_generation_preset_settings,
+    upsert_media_generation_preset,
+)
 
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+class ImageGenerationPresetParams(BaseModel):
+    """Bounds track DiffusionGenerateRequest. A preset the generate endpoint would refuse is not
+    a usable preset: selecting it would make every following Generate fail validation."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = ""
+    width: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = 2048, multiple_of = 16)
+    steps: int = Field(default = 9, ge = 1, le = 100)
+    guidance: float = Field(default = 0, ge = 0, le = 20)
+    batchSize: int = Field(default = 1, ge = 1, le = 32)
+    runs: int = Field(default = 1, ge = 1)
+
+
+class VideoGenerationPresetParams(BaseModel):
+    """Bounds track VideoGenerateRequest, as the image params track theirs."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = ""
+    width: int = Field(default = 768, ge = 32, le = 2048)
+    height: int = Field(default = 512, ge = 32, le = 2048)
+    durationSeconds: float = Field(default = 3, gt = 0, le = 3600)
+    steps: int = Field(default = 8, ge = 1, le = 100)
+    guidance: float = Field(default = 1, ge = 0, le = 20)
+    flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+
+
+class MediaGenerationPreset(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str = Field(..., min_length = 1, max_length = 80)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name or name == "Default":
+            raise ValueError("Preset name is reserved or empty")
+        return name
+
+
+class ImageGenerationPreset(MediaGenerationPreset):
+    params: ImageGenerationPresetParams
+
+
+class VideoGenerationPreset(MediaGenerationPreset):
+    params: VideoGenerationPresetParams
+
+
+class MediaGenerationPresetState(BaseModel):
+    """A saved generation recipe and the selection that owns it.
+
+    Model-load options are deliberately not here: they take effect only on a reload, they follow
+    the hardware and the checkpoint rather than the recipe, and the resident build already reports
+    them, so a second stored copy would only ever compete with it.
+    """
+
+    model_config = ConfigDict(extra = "forbid")
+
+    activePreset: str = Field(default = "Default", min_length = 1, max_length = 80)
+
+
+class ImageGenerationPresetState(MediaGenerationPresetState):
+    currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
+
+
+class VideoGenerationPresetState(MediaGenerationPresetState):
+    currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
+
+
+class ImageGenerationPresetSettings(ImageGenerationPresetState):
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+class VideoGenerationPresetSettings(VideoGenerationPresetState):
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+def _nested_model(annotation: Any) -> Optional[type[BaseModel]]:
+    for candidate in (annotation, *get_args(annotation)):
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+def _readable(model: type[BaseModel], value: Any) -> Any:
+    """Drop what this build's schema does not define, keeping every field it does.
+
+    `extra = "forbid"` is right for a submitted payload but wrong for reading storage back: a blob
+    holding one field from a newer build would otherwise fail validation, and a stored recipe the
+    user can no longer read is worse than one missing a field this build cannot render anyway.
+    """
+    if isinstance(value, list):
+        return [_readable(model, item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    readable = {}
+    for name, field in model.model_fields.items():
+        if name not in value:
+            continue
+        nested = _nested_model(field.annotation)
+        readable[name] = _readable(nested, value[name]) if nested else value[name]
+    return readable
+
+
+def _without_field_at_location(value: Any, location: tuple[Any, ...]) -> tuple[Any, bool]:
+    """Return a copy with one invalid leaf removed from a nested model payload."""
+    if not location:
+        return value, False
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    if not rest:
+        result.pop(key)
+        return result, True
+    nested, removed = _without_field_at_location(result[key], tuple(rest))
+    if removed:
+        result[key] = nested
+    return result, removed
+
+
+def _validated_without_invalid_fields(
+    schema: type[BaseModel], payload: dict
+) -> tuple[BaseModel, list[tuple[Any, ...]]]:
+    """Validate, dropping only the fields that fail.
+
+    Resetting the whole recipe over one unreadable field would hand the client schema defaults,
+    which it then autosaves over the rest of a perfectly good stored recipe.
+    """
+    remaining = payload
+    removed_locations = []
+    while True:
+        try:
+            return schema.model_validate(remaining), removed_locations
+        except ValidationError as exc:
+            for error in exc.errors():
+                location = tuple(error.get("loc", ()))
+                remaining, removed = _without_field_at_location(remaining, location)
+                if removed:
+                    removed_locations.append(location)
+                    break
+            else:
+                return schema(), removed_locations
+
+
+_MISSING = object()
+
+
+def _value_at_location(value: Any, location: tuple[Any, ...]) -> Any:
+    for key in location:
+        if not isinstance(value, dict) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+def _with_value_at_location(
+    value: Any, location: tuple[Any, ...], replacement: Any
+) -> tuple[Any, bool]:
+    if not location:
+        return replacement, True
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    nested, replaced = _with_value_at_location(result[key], tuple(rest), replacement)
+    if replaced:
+        result[key] = nested
+    return result, replaced
+
+
+def _preserve_recovered_defaults(schema: type[BaseModel], stored: dict, submitted: dict) -> dict:
+    """Do not mistake a recovery default for an edit to an unreadable stored field.
+
+    A downgraded GET omits known fields whose values this schema cannot validate, then Pydantic
+    supplies their defaults in the response. The client cannot tell those defaults from stored
+    values and echoes them in its next state write. Preserve the raw leaf only while the submitted
+    value is still the synthesized value; a real edit remains authoritative.
+    """
+    recovered, locations = _validated_without_invalid_fields(schema, _readable(schema, stored))
+    recovered_values = recovered.model_dump()
+    merged = submitted
+    for location in locations:
+        previous = _value_at_location(stored, location)
+        submitted_value = _value_at_location(submitted, location)
+        recovered_value = _value_at_location(recovered_values, location)
+        if (
+            previous is not _MISSING
+            and submitted_value is not _MISSING
+            and recovered_value is not _MISSING
+            and submitted_value == recovered_value
+        ):
+            merged, _ = _with_value_at_location(merged, location, previous)
+    return merged
+
+
+def _validated_readable_model(schema: type[BaseModel], payload: Any) -> Optional[BaseModel]:
+    try:
+        return schema.model_validate(_readable(schema, payload))
+    except ValidationError:
+        return None
+
+
+def _get_generation_preset_settings(kind, schema):
+    stored = get_media_generation_preset_settings(kind)
+    try:
+        response = schema.model_validate(_readable(schema, stored))
+    except ValidationError:
+        # A value this build cannot represent at all. Drop only what fails: one unreadable entry
+        # costs neither the rest of the list nor the state, which is validated on its own here.
+        logger.warning("Dropping unreadable %s generation preset entries", kind)
+        presets = schema.model_fields["customPresets"].annotation
+        item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
+        readable = []
+        # Only a list is a preset collection. Recovery exists so a store this build cannot
+        # represent still reads; iterating a scalar here would answer 500 instead, which is the
+        # one outcome it is meant to prevent. _custom_presets takes the same view on the write.
+        raw_presets = stored.get("customPresets")
+        for raw in raw_presets if isinstance(raw_presets, list) else []:
+            validated = _validated_readable_model(item, raw)
+            if validated is not None:
+                readable.append(validated)
+        state = {
+            key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
+        }
+        response, _ = _validated_without_invalid_fields(
+            schema, {**state, "customPresets": readable}
+        )
+    # Saved means the store owns the CURRENT recipe, not merely that something is stored. A blob
+    # holding named presets but no recipe -- a preset write that landed while the state write did
+    # not -- would otherwise hand back schema defaults dressed as the user's own choice, and the
+    # client suppresses the resident model's defaults for exactly as long as it believes that.
+    response.saved = isinstance(stored.get("currentParams"), dict)
+    return response
+
+
+@router.get(
+    "/generation-presets/image",
+    response_model = ImageGenerationPresetSettings,
+)
+def get_image_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ImageGenerationPresetSettings:
+    return _get_generation_preset_settings("image", ImageGenerationPresetSettings)
+
+
+@router.put("/generation-presets/image")
+def update_image_generation_preset_settings(
+    payload: ImageGenerationPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "image",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            ImageGenerationPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
+@router.get(
+    "/generation-presets/video",
+    response_model = VideoGenerationPresetSettings,
+)
+def get_video_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> VideoGenerationPresetSettings:
+    return _get_generation_preset_settings("video", VideoGenerationPresetSettings)
+
+
+@router.put("/generation-presets/video")
+def update_video_generation_preset_settings(
+    payload: VideoGenerationPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "video",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            VideoGenerationPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
+def _upsert_custom_generation_preset(
+    kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
+) -> dict[str, bool]:
+    try:
+        schema = type(payload)
+        upsert_media_generation_preset(
+            kind,
+            payload.model_dump(),
+            lambda stored: _validated_readable_model(schema, stored) is not None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return {"saved": True}
+
+
+@router.put("/generation-presets/image/custom")
+def upsert_custom_image_generation_preset(
+    payload: ImageGenerationPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("image", payload)
+
+
+@router.put("/generation-presets/video/custom")
+def upsert_custom_video_generation_preset(
+    payload: VideoGenerationPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("video", payload)
+
+
+@router.delete("/generation-presets/{kind}/custom")
+def delete_custom_generation_preset(
+    kind: Literal["image", "video"],
+    name: str,
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, bool]:
+    name = name.strip()
+    if not name or name == "Default" or len(name) > 80:
+        raise HTTPException(status_code = 422, detail = "Invalid preset name")
+    delete_media_generation_preset(kind, name)
+    return {"deleted": True}
 
 
 class UploadLimitPayload(BaseModel):
@@ -107,6 +469,74 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class HuggingFaceTokenPayload(BaseModel):
+    token: str = Field(..., min_length = 1, max_length = 512)
+
+    @field_validator("token")
+    @classmethod
+    def normalize_token(cls, value: str) -> str:
+        normalized = value.strip(" \t\r\n\"'")
+        if not normalized:
+            raise ValueError("Hugging Face token cannot be empty")
+        return normalized
+
+
+class HuggingFaceTokenResponse(BaseModel):
+    token: Optional[str] = None
+    has_token: bool = False
+
+
+@router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def get_hugging_face_token(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def update_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+
+    # Warm the auth-owned key before the generation guard takes its write lock.
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token(payload.token)
+    return HuggingFaceTokenResponse(token = payload.token, has_token = True)
+
+
+@router.put("/hugging-face-token/migrate", response_model = HuggingFaceTokenResponse)
+def migrate_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    """Insert a browser legacy token only when the installation has none."""
+    require_ui_session(via_api_key)
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token_if_absent(payload.token)
+        token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def clear_hugging_face_token(
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    with current_credential_write(credential):
+        credential_secrets.delete_hf_token()
+    return HuggingFaceTokenResponse(token = None, has_token = False)
 
 
 class HelperPrecachePayload(BaseModel):
@@ -140,6 +570,35 @@ class ModelMemoryResponse(BaseModel):
     memlock_limit_bytes: Optional[int] = None
 
 
+class VramBudgetPayload(BaseModel):
+    # None clears the stored budget so env/default applies again; it cannot also
+    # mean "leave untouched" as the model-memory switches do, since there is one
+    # field. Hence required, not defaulted: with a default, {} would mean "clear it"
+    # and a client that dropped the field would silently discard the stored budget.
+    fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
+
+    @field_validator("fraction", mode = "before")
+    @classmethod
+    def _reject_bool(cls, value: object) -> object:
+        # bool subclasses int, so non-strict parsing turns True into 1.0 and stores
+        # the max budget instead of 422; pydantic coerces before the util's guard.
+        if isinstance(value, bool):
+            raise ValueError("fraction must be a number, not a boolean")
+        return value
+
+
+class VramBudgetResponse(BaseModel):
+    fraction: float
+    # False when inherited from UNSLOTH_VRAM_FRACTION or the default, so the UI
+    # knows whether clearing it would change anything.
+    is_stored: bool
+    default_fraction: float = VRAM_FRACTION_DEFAULT
+    min_fraction: float = VRAM_FRACTION_MIN
+    max_fraction: float = VRAM_FRACTION_MAX
+    # Read when a load sizes itself, so a change cannot reach a running child.
+    reload_required: bool
+
+
 class HuggingFaceCachePayload(BaseModel):
     cache_home: Optional[str] = Field(default = None, max_length = 4096)
 
@@ -163,6 +622,9 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
     auto_download_model: Optional[bool] = None
+    auto_unload_api_only: Optional[bool] = None
+    # The image/video TTL is its own setting, not a share of the chat one.
+    media_auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -176,6 +638,12 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
     # Stored, not effective: the UI must round-trip the saved value across an auto-switch toggle.
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
+    # When true, the idle unload spares models loaded from the UI, not just via the API.
+    auto_unload_api_only: bool = DEFAULT_AUTO_UNLOAD_API_ONLY
+    # Stored, then effective: the UI shows the saved seconds and flags when a veto
+    # (residency, or API-loaded only) is holding the image/video unload off.
+    media_auto_unload_idle_seconds: int = DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS
+    media_idle_unload_active: bool = False
 
 
 # A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
@@ -271,6 +739,12 @@ class ModelOverridePayload(BaseModel):
 
 class ModelOverridesResponse(BaseModel):
     overrides: dict[str, dict]
+    # Filled only when the caller named a model: the entry ITS load would apply,
+    # resolved here rather than in the browser. The folding rules are Python's
+    # (casefold is not toLowerCase, and an ambiguous fold matches nothing on
+    # purpose), so a client mirroring them can only approximate.
+    resolved: Optional[dict] = None
+    resolved_key: Optional[str] = None
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -371,6 +845,45 @@ def _model_memory_response() -> ModelMemoryResponse:
     )
 
 
+def _vram_budget_reload_required(fraction: float) -> bool:
+    """True when a child is running that was sized against a different budget.
+
+    Compares against the fraction the child actually launched with, not merely
+    "is something loaded", so re-saving the same value does not nag for a reload.
+    Exact equality is fine: both sides come from the same clamp, so a stored 0.97
+    and a launched 0.97 are the same float.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        # A planned-but-unspawned load has no _process, so is_active is False while
+        # the child is already committed to its captured fraction; answer from the
+        # pending value there, as _active_launch_placement does for Model Memory.
+        pending = getattr(backend, "_vram_fraction_pending", None)
+        if pending is not None:
+            return float(pending) != float(fraction)
+        if not backend.is_active:
+            return False
+        launched = getattr(backend, "_vram_fraction_launched", None)
+        # A child predating this field, or from a path that never set it, cannot be
+        # compared; say no rather than nagging on every save.
+        if launched is None:
+            return False
+        return float(launched) != float(fraction)
+    except Exception:
+        return False
+
+
+def _vram_budget_response() -> VramBudgetResponse:
+    fraction, is_stored = get_vram_budget_state()
+    return VramBudgetResponse(
+        fraction = fraction,
+        is_stored = is_stored,
+        reload_required = _vram_budget_reload_required(fraction),
+    )
+
+
 def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
@@ -466,6 +979,28 @@ def update_model_memory(
     return _model_memory_response()
 
 
+@router.get("/vram-budget", response_model = VramBudgetResponse)
+def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
+    return _vram_budget_response()
+
+
+@router.put("/vram-budget", response_model = VramBudgetResponse)
+def update_vram_budget(
+    payload: VramBudgetPayload, current_subject: str = Depends(get_current_subject)
+) -> VramBudgetResponse:
+    try:
+        set_vram_budget_fraction(payload.fraction)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid VRAM budget."),
+            event = "settings.update_vram_budget_failed",
+            log = logger,
+        ) from exc
+    return _vram_budget_response()
+
+
 class CodingAgentsResponse(BaseModel):
     # All agents `unsloth start` supports, in the CLI's declared order.
     agents: tuple[str, ...] = CODING_AGENTS
@@ -489,6 +1024,9 @@ def get_openai_auto_switch(
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
         auto_unload_keep_kv = get_auto_unload_keep_kv(),
         auto_download_model = get_stored_openai_auto_download_enabled(),
+        auto_unload_api_only = get_auto_unload_api_only(),
+        media_auto_unload_idle_seconds = get_stored_media_auto_unload_idle_seconds(),
+        media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
     )
 
 
@@ -497,11 +1035,20 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds, keep_kv, auto_download = set_openai_auto_switch(
+        (
+            enabled,
+            idle_seconds,
+            keep_kv,
+            auto_download,
+            api_only,
+            media_idle_seconds,
+        ) = set_openai_auto_switch(
             payload.enabled,
             payload.auto_unload_idle_seconds,
             payload.auto_unload_keep_kv,
             payload.auto_download_model,
+            payload.auto_unload_api_only,
+            payload.media_auto_unload_idle_seconds,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -523,14 +1070,34 @@ def update_openai_auto_switch(
         idle_unload_active = idle_unload_active,
         auto_unload_keep_kv = keep_kv,
         auto_download_model = auto_download,
+        auto_unload_api_only = api_only,
+        media_auto_unload_idle_seconds = media_idle_seconds,
+        media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
     )
 
 
 @router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def get_openai_auto_switch_overrides(
+    model_id: Optional[str] = None,
+    alias_id: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
 ) -> ModelOverridesResponse:
-    return ModelOverridesResponse(overrides = get_model_overrides())
+    """Every stored override, and optionally the one a named model's load would use.
+
+    The resolution is the loader's own (``resolve_override_for_load``), so what a
+    panel shows and what a load applies cannot disagree.
+    """
+    resolved_key: Optional[str] = None
+    resolved: Optional[dict] = None
+    if model_id:
+        from utils.openai_auto_switch_settings import resolve_override_for_load
+        resolved_key, resolved = resolve_override_for_load(model_id, alias_id, gguf_variant)
+    return ModelOverridesResponse(
+        overrides = get_model_overrides(),
+        resolved = resolved,
+        resolved_key = resolved_key,
+    )
 
 
 def _bare_model_id(model_id: str) -> Optional[str]:
@@ -540,6 +1107,35 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     # Must look like a quant, not a short path segment; a bpw modifier and stem label both count.
     split = split_quant_suffix(model_id)
     return split[0] if split is not None else None
+
+
+def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
+    """Whether a load for this model would still pick flags off another entry.
+
+    The carry-over copies a legacy bare ``repo`` row's flags onto the first
+    ``repo:QUANT`` save and leaves the bare row in place, and a load reads the
+    qualified key first and the bare one after it. So clearing the box for the quant
+    is only a clear while the quant keeps a row of its own: an all-default save
+    stores nothing, and the next load falls through to a row no page can show.
+
+    Answered rather than repaired. Stripping the flags off the bare row was the first
+    fix and it is too broad: that row is the fallback for every quant that has no row,
+    so forgetting Q4's flags took Q6's with them, and it did nothing at all when a
+    sibling quant had a row of its own.
+    """
+    from utils.openai_auto_switch_settings import get_model_override
+
+    for candidate in (
+        _bare_model_id(model_id),
+        _legacy_standalone_gguf_key(model_id),
+    ):
+        if (
+            candidate
+            and candidate != target_id
+            and get_model_override(candidate).get("llama_extra_args")
+        ):
+            return True
+    return False
 
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
@@ -650,7 +1246,7 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import drop_managed_flags, validate_extra_args
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -697,7 +1293,22 @@ def update_openai_auto_switch_override(
                         if requested_extra_args is not None:
                             break
         # Not validated on an explicit remove: a 400 would only leave the override in place.
-        extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
+        if payload.remove is True:
+            extra_args = []
+        elif payload.llama_extra_args is None:
+            # Carried over, not sent: the caller is saving some other field and this
+            # value predates the request. A flag denylisted since it was written is
+            # dropped rather than refused, or an unrelated save fails naming a flag
+            # the user may not remember writing (and cannot fix from this payload).
+            extra_args, dropped_flags = drop_managed_flags(requested_extra_args)
+            if dropped_flags:
+                logger.warning(
+                    "model_override.dropped_managed_flags model_id=%s flags=%s",
+                    payload.model_id,
+                    ", ".join(dropped_flags),
+                )
+        else:
+            extra_args = validate_extra_args(requested_extra_args)
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -748,9 +1359,19 @@ def update_openai_auto_switch_override(
                 # A fill retires nothing below, so it must not create the higher-priority
                 # spelling of a row the server already holds.
                 target_id = _fill_target_id(target_id)
+            # An explicit clear keeps a row even when nothing else is set, so long as a
+            # fallback would otherwise answer for this model: "no launch flags" and
+            # "nothing stored" are the same thing everywhere else, and different here.
+            # Written on the quant's own key, so no other quant is touched.
+            keep_empty = (
+                payload.llama_extra_args == []
+                and not payload.fill_absent_fields
+                and _fallback_supplies_extra_args(payload.model_id, target_id)
+            )
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
+                keep_empty_extra_args = keep_empty,
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
@@ -1317,6 +1938,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "projects": True,
     "images": True,
     "video": False,
+    "audio": False,
     "train": True,
     "recipes": False,
     "export": False,
@@ -1365,6 +1987,7 @@ class PersonalizationSidebarNavItem(BaseModel):
         "projects",
         "images",
         "video",
+        "audio",
         "train",
         "recipes",
         "export",
@@ -1529,3 +2152,133 @@ def update_personalization_settings(
     # Return the stored record, not the defaults-filled request, so the response
     # matches storage (and the next GET) for fields the client omitted.
     return PersonalizationPayload.model_validate(merged)
+
+
+# ── Logs: read the log files from inside the app ─────────────────────────────
+# Backs the Settings > Logs tab. The session log always existed, but its
+# path was only printed to a console the desktop user never sees.
+
+
+class DebugLogSourceModel(BaseModel):
+    id: str
+    family: str
+    label: str
+    realpath: str
+    size_bytes: int
+    modified_at: float
+    is_current: bool
+
+
+class DebugLogSourcesResponse(BaseModel):
+    sources: list[DebugLogSourceModel]
+    default_source_id: Optional[str] = None
+    file_logging_disabled: bool = False
+
+
+class DebugLogResponse(BaseModel):
+    status: Literal["ok", "empty", "missing", "unreadable", "disabled"]
+    reason: Optional[str] = None
+    source_id: Optional[str] = None
+    realpath: Optional[str] = None
+    lines: list[str] = Field(default_factory = list)
+    cursor: Optional[str] = None
+    reset: bool = False
+    reset_reason: Optional[str] = None
+    dropped_bytes: int = 0
+    truncated_head: bool = False
+    # The reader stopped at the response cap and the rest arrives on the next
+    # poll. Without this the caller cannot tell a complete answer from a partial
+    # one, which is invisible in manual mode because no next poll is coming.
+    more_pending: bool = False
+    # File logging is off, so anything readable here is a PREVIOUS session and
+    # will never grow. The status stays "ok" because the content is real and
+    # worth reading; saying nothing made a stale log look live.
+    file_logging_disabled: bool = False
+    size_bytes: int = 0
+
+
+@router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
+def get_debug_log_sources(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> DebugLogSourcesResponse:
+    """Every log file the viewer may read, newest first within each family.
+
+    Individual files, not one entry per family: the llama runner writes one file
+    per load ATTEMPT, so after a retry the useful one is often not the newest.
+    """
+    from utils import debug_log_sources
+
+    sources = debug_log_sources.list_sources()
+    return DebugLogSourcesResponse(
+        sources = [DebugLogSourceModel(**vars(source)) for source in sources],
+        default_source_id = debug_log_sources.default_source_id(),
+        file_logging_disabled = debug_log_sources.file_logging_disabled(),
+    )
+
+
+@router.get("/debug/logs", response_model = DebugLogResponse)
+def get_debug_log(
+    source: Optional[str] = None,
+    cursor: Optional[str] = None,
+    lines: int = 1000,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> DebugLogResponse:
+    """The tail of one log, then only what was appended after `cursor`.
+
+    Every content state answers 200. This is polled once a second in Live mode,
+    and a 404 or a 500 on "the file is not there yet" would make the viewer
+    flash an error on every tick; the caller reads `status` instead.
+    """
+    from utils import debug_log_reader, debug_log_sources
+
+    source_id = source or debug_log_sources.default_source_id()
+    if not source_id:
+        disabled = debug_log_sources.file_logging_disabled()
+        return DebugLogResponse(
+            status = "disabled" if disabled else "missing",
+            reason = (
+                "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1)."
+                if disabled
+                else "No log files have been written yet."
+            ),
+        )
+
+    path = debug_log_sources.resolve_source_id(source_id)
+    if path is None:
+        # An id the enumeration no longer produces. 404 here (unlike the content
+        # states above) so a stale picker refetches its sources.
+        raise HTTPException(status_code = 404, detail = "Unknown log source.")
+
+    try:
+        result = debug_log_reader.read_since(path, cursor, lines)
+    except FileNotFoundError:
+        return DebugLogResponse(
+            status = "missing",
+            reason = "The log file was removed.",
+            source_id = source_id,
+        )
+    except (OSError, PermissionError) as exc:
+        # The message embeds the path, so it goes through redaction too.
+        from utils.log_redaction import redact_log_text
+        return DebugLogResponse(
+            status = "unreadable",
+            reason = redact_log_text(str(exc)),
+            source_id = source_id,
+        )
+
+    return DebugLogResponse(
+        status = "empty" if (result.size_bytes == 0 and not result.lines) else "ok",
+        source_id = source_id,
+        realpath = str(path),
+        lines = result.lines,
+        cursor = result.cursor,
+        reset = result.reset,
+        reset_reason = result.reset_reason,
+        dropped_bytes = result.dropped_bytes,
+        truncated_head = result.truncated_head,
+        more_pending = result.more_pending,
+        file_logging_disabled = debug_log_sources.source_is_frozen(source_id),
+        size_bytes = result.size_bytes,
+    )

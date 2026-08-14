@@ -630,16 +630,17 @@ def test_a_text_only_gguf_is_unaffected_either_way():
 
 def test_the_drop_precedes_everything_the_projector_feeds():
     """launch_mmproj_path drives the --mmproj flag, the mmproj VRAM budget and the
-    audio-encoder probe, so clearing it later would launch a projector the guard believes
-    it dropped (or offer audio input that is gone)."""
+    capability probe, so clearing it later would launch a projector the guard believes
+    it dropped (or offer audio or image input that is gone)."""
     src = _load_model_source()
     gate_at = src.index("_pv_mmproj_unpinnable = bool(")
     assert gate_at < src.index('cmd.extend(["--mmproj", launch_mmproj_path])')
     assert gate_at < src.index("self._mmproj_vram_bytes(launch_mmproj_path)")
     # The probe reads launch_mmproj_path, or the env projector only if the gate dropped
-    # nothing, so both the gate and that choice precede it.
-    assert gate_at < src.index("_audio_probe = launch_mmproj_path or (")
-    assert gate_at < src.index("read_mmproj_audio_capability(_audio_probe)")
+    # nothing, so both the gate and that choice precede it. It answers audio input and
+    # image input alike, so a dropped projector cannot leave either advertised.
+    assert gate_at < src.index("_mmproj_probe = launch_mmproj_path or (")
+    assert gate_at < src.index("mmproj_capabilities(_mmproj_probe)")
     # ...and the session flag the frontend reads follows the same variable.
     assert "self._is_vision = effective_is_vision" in src
 
@@ -1227,9 +1228,7 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
     that loads fine without it. It strips the spec group, and takes the child env with
     it."""
     src = _load_model_source()
-    retry = src[
-        src.index("_fb_tail = cmd[_spec_start") : src.index("fallback_cmd = cmd[:_spec_start]")
-    ]
+    retry = src[src.index("_fb_tail = cmd[_spec_at") : src.index("fallback_cmd = cmd[:_spec_at]")]
     # Whitespace-insensitive: the guard wraps across lines once both drafters are named.
     compact = "".join(retry.split())
     assert "_extra_args_requests_mtp(extra_args,env=_launch_spec_env)" in compact

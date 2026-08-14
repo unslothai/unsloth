@@ -74,6 +74,7 @@ import {
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker";
+import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -255,6 +256,7 @@ function toLoraSummary(lora: {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  audio_type?: string | null;
 }): ChatLoraSummary {
   const idTail = lora.adapter_path.split("/").filter(Boolean).at(-1) ?? "";
   const updatedAt =
@@ -267,6 +269,7 @@ function toLoraSummary(lora: {
     updatedAt,
     source: lora.source ?? undefined,
     exportType: lora.export_type ?? undefined,
+    audioType: lora.audio_type ?? null,
   };
 }
 
@@ -420,6 +423,9 @@ async function syncInferenceStatusToStore(options?: {
  * the refresh below leaves it intact.
  */
 export async function resyncInferenceStatusAfterServerModelChange(): Promise<void> {
+  // Both llama.cpp update paths land here, and an update replaces the binary whose
+  // --help the flag catalogue describes.
+  invalidateLlamaFlagCatalog();
   if (!isExternalModelId(useChatRuntimeStore.getState().params.checkpoint)) {
     useChatRuntimeStore.getState().clearCheckpoint();
   }
@@ -986,6 +992,11 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          // No store fallback and no reset with the rest below: undefined means
+          // "this config never read them", and the route preserves the stored
+          // flags when the field is omitted. Falling back to another model's
+          // value, or to null, would clear flags the user set elsewhere.
+          const loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
           let loadNBatch =
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
@@ -1072,6 +1083,14 @@ export function useChatModelRuntime() {
                       : {}),
                     ...(validateNUbatch != null
                       ? { n_ubatch: validateNUbatch }
+                      : {}),
+                    // The same list the load below sends. A --ctx-size or cache
+                    // override in here changes the memory this preflight estimates,
+                    // so omitting it approves a different command: during training
+                    // that means approving the switch, unloading the resident model,
+                    // and having /load refuse the target with the real arguments.
+                    ...(!targetIsDiffusion && loadLlamaExtraArgs !== undefined
+                      ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                       : {}),
                   }
                 : {}),
@@ -1270,6 +1289,14 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              // Sent only once known, and [] is the explicit "launch with none":
+              // the flags are llama-server's, so a transformers load never carries
+              // them, and neither does a diffusion GGUF: that one is GGUF-shaped but
+              // runs through the visual runner, which builds its command without
+              // these, so sending them would record arguments the process never got.
+              ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
+                ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
+                : {}),
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
               ...(isGguf && loadNUbatch != null
@@ -1444,6 +1471,30 @@ export function useChatModelRuntime() {
               loadedNParallel: committedSlots,
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
+              // What this model is running, for the rollback below. An omitted field
+              // inherited the resident process's list, so the last thing we knew
+              // still holds unless this was a different model.
+              //
+              // An explicit empty list is recorded as empty, not as null: the
+              // rollback sends this field only when it has one, and omitting it is
+              // what makes /load inherit, so a model that was launched with no
+              // extras would come back carrying the arguments of the load that just
+              // failed. null stays for "we were never told".
+              //
+              // The server's own echo first, since it is the only account of what
+              // the launch actually carried: a reload that omits the field but sets
+              // max_seq_length has its inherited --ctx-size stripped before launch,
+              // and the status refresh that would notice runs while modelLoading is
+              // still true and reseeds nothing. Without this the next rollback
+              // resent a flag the successful reload had removed.
+              loadedLlamaExtraArgs:
+                loadResponse.requested_llama_extra_args !== undefined
+                  ? (loadResponse.requested_llama_extra_args ?? [])
+                  : loadLlamaExtraArgs !== undefined
+                    ? (loadLlamaExtraArgs ?? [])
+                    : resetsPerModelSettings
+                      ? null
+                      : (stateBeforeUnload.loadedLlamaExtraArgs ?? null),
               nUbatch: committedNUbatch,
               loadedNUbatch: committedNUbatch,
               customContextLength: keepCustomCtx,
@@ -1567,6 +1618,13 @@ export function useChatModelRuntime() {
                     : {}),
                   ...(stateBeforeUnload.loadedNUbatch != null
                     ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
+                    : {}),
+                  // Explicit, unlike the batch pair above: the failed switch left the
+                  // TARGET resident, so an omitted field here inherits across models,
+                  // which the route refuses, and the previous model would come back
+                  // without the arguments it was running.
+                  ...(stateBeforeUnload.loadedLlamaExtraArgs != null
+                    ? { llama_extra_args: stateBeforeUnload.loadedLlamaExtraArgs }
                     : {}),
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.

@@ -29,6 +29,7 @@ export {
 export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
+  ExternalConnectionRef,
   ExternalModelOption,
   LoraModelOption,
   ModelOption,

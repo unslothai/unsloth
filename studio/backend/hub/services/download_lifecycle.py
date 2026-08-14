@@ -337,7 +337,7 @@ def finalize_worker_exit(
                 )
 
                 note_downloaded(repo_id)
-                invalidate_index()
+                invalidate_index(additions_only = True)
                 # Rebuild here, not on the first request, to keep the scan off the
                 # request path.
                 warm_index_soon()
@@ -460,6 +460,7 @@ def _try_transport_retry(
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
     bytes_before: "Optional[int]" = _UNSAMPLED,
+    allow_ambient_token: bool = True,
 ) -> bool:
     """Reclaim *key* under *retry_transport* and spawn a recovery worker.
 
@@ -473,6 +474,9 @@ def _try_transport_retry(
     purges the XET partial an HTTP resume would corrupt. ``TRANSPORT_XET`` is
     the stall retry: same transport, same marker, one more child, bounded by
     *xet_attempt* rather than by the transport check that stops the HTTP one.
+
+    *allow_ambient_token* rides along unchanged, so a job that started anonymous cannot pick
+    the backend's own HF_TOKEN up on a lower rung.
 
     *pending_xet_failure* is a stall verdict held back from the health tracker
     and carried into the next worker, so a download that recovers on its second
@@ -649,6 +653,7 @@ def _try_transport_retry(
         spawn_kwargs = {
             "use_xet": retry_over_xet,
             "protected_blob_hashes": peer_hashes or None,
+            "allow_ambient_token": allow_ambient_token,
         }
         if cache_env is not None:
             spawn_kwargs["cache_env"] = cache_env
@@ -691,6 +696,7 @@ def _try_transport_retry(
                 xet_attempt = xet_attempt,
                 pending_xet_failure = pending_xet_failure,
                 bytes_before = bytes_before,
+                allow_ambient_token = allow_ambient_token,
             )
         _give_up()
         _set_retry_failure_state(
@@ -721,6 +727,7 @@ def _try_transport_retry(
         xet_attempt = xet_attempt,
         pending_xet_failure = pending_xet_failure,
         bytes_before = bytes_before,
+        allow_ambient_token = allow_ambient_token,
     )
 
 
@@ -774,6 +781,34 @@ def _repo_bytes_on_disk(repo_type, repo_id: str, cache_dir) -> "Optional[int]":
     except Exception:  # noqa: BLE001 - a missing measurement must never fail a download
         return None
     return None if state is None else int(state[0])
+
+
+def _sweep_ownership(metadata, own_blob_hashes, owned_for_sweep, repo_type: str, repo_id: str):
+    """(owned hashes, owns-everything) for a job that has just reached a terminal state.
+
+    A variant job whose API-side hash pre-resolution failed carries a non-null variant with an
+    EMPTY hash set, so neither claim applies and its own fresh partial waits out a grace that
+    exists to guess at a writer we already know is dead. The worker wrote a manifest naming the
+    files it fetched, so read the ownership back off that.
+    """
+    if own_blob_hashes is None:
+        return None, True
+    if owned_for_sweep:
+        return frozenset(owned_for_sweep), False
+    from hub.utils import download_manifest
+
+    manifest = download_manifest.read_manifest(
+        repo_type,
+        repo_id,
+        getattr(metadata, "variant", None),
+        hub_cache = getattr(metadata, "hub_cache", None),
+    )
+    recovered = {
+        expected.sha256
+        for expected in getattr(manifest, "expected_files", ()) or ()
+        if getattr(expected, "sha256", None)
+    }
+    return frozenset(recovered), False
 
 
 def _job_bytes_on_disk(repo_type, repo_id: str, cache_dir, blob_hashes) -> "Optional[int]":
@@ -902,13 +937,15 @@ def register_worker(
     bytes_before: "Optional[int]" = _UNSAMPLED,
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
+    allow_ambient_token: bool = True,
 ) -> bool:
     """Watch *proc* to completion and drive the recovery ladder off its exit.
 
     *xet_attempt* (1-based) bounds the XET->XET stall retry, the way ``transport == TRANSPORT_XET``
     bounds the terminal XET->HTTP one. *pending_xet_failure* is an earlier attempt's stall verdict,
     held back from the health tracker until the XET phase ends so one download can never spend the
-    two consecutive failures that demote a machine.
+    two consecutive failures that demote a machine. *allow_ambient_token* is the token policy this
+    job was started under, carried onto every rung of the ladder.
     """
     if not registry.register_process(key, proc):
         kill_and_reap_process(proc, label = label, logger = logger)
@@ -924,6 +961,13 @@ def register_worker(
     _own_blob_hashes = (
         getattr(_metadata, "blob_hashes", frozenset())
         if getattr(_metadata, "variant", None)
+        else None
+    )
+    # Companions (a shared mmproj) live only in the progress set, and this worker was writing
+    # one when it died just as much as it was writing the main quant.
+    _owned_for_sweep = (
+        getattr(_metadata, "progress_blob_hashes", None) or _own_blob_hashes
+        if _own_blob_hashes is not None
         else None
     )
     # Sampled before the worker can write, so "did this job move bytes over Xet" is answerable on
@@ -1067,6 +1111,7 @@ def register_worker(
                     # The ORIGINAL pre-Xet baseline: resampling would fold the killed worker's
                     # partial writes in, so a recovered attempt would read as a cached no-op.
                     bytes_before = _bytes_before,
+                    allow_ambient_token = allow_ambient_token,
                 )
         except Exception:
             if watchdog_stop is not None:
@@ -1099,6 +1144,43 @@ def register_worker(
                     )
             except Exception:
                 logger.exception("post-finalize marker cleanup failed for %s", key)
+            try:
+                # The second look for anything prepare_cache_for_transport spared as too
+                # recently written. A download runs for long enough that a partial orphaned
+                # before it started is well past the grace by now, and the peer set still
+                # shields a same-repo variant writing a shared companion right now.
+                # This job's own blobs skip the abandonment wait, but ONLY once the job is
+                # genuinely finished. A cancelled worker's partial was written seconds ago, so
+                # the wait would strand it for the rest of the session; and its writer has just
+                # been reaped, which is the very thing the wait is there to guess at. A retry
+                # relaunched above leaves the job active, and then it is not ours to assume.
+                terminal = registry.get_job(key).state not in ("running", "cancelling")
+                _owned, _owns_all = (
+                    _sweep_ownership(
+                        _metadata, _own_blob_hashes, _owned_for_sweep, repo_type, repo_id
+                    )
+                    if terminal
+                    else (None, False)
+                )
+                swept = download_registry.sweep_abandoned_partials(
+                    repo_type,
+                    repo_id,
+                    protected_blob_hashes = registry.peer_blob_hashes(key),
+                    # A companion a sibling is writing right now is still held back by
+                    # peer_blob_hashes above, whatever this job believes it owns.
+                    owned_blob_hashes = _owned,
+                    owns_all_blobs = _owns_all,
+                    # The cache this worker actually wrote to. Resolving the live one instead
+                    # would miss the orphan whenever the download location changed mid-run,
+                    # and sweep a cache this job never touched.
+                    root = _cache_dir,
+                )
+                if swept:
+                    logger.info(
+                        "%sswept %d unresumable partial blob(s) for %s", log_prefix, swept, repo_id
+                    )
+            except Exception:
+                logger.exception("abandoned-partial sweep failed for %s", key)
             finally:
                 hf_cache_scan.invalidate_hf_cache_scans()
 
@@ -1119,6 +1201,7 @@ def launch_worker(
     repo_id: str,
     transport: str,
     watch_name: str,
+    allow_ambient_token: bool = True,
 ) -> str:
     # Only the Xet success-recording consumes this, and sampling lazy-loads unsloth_zoo (so torch
     # and transformers) on the request path. An HTTP start skips it entirely.
@@ -1165,6 +1248,7 @@ def launch_worker(
         transport = transport,
         watch_name = watch_name,
         bytes_before = _baseline,
+        allow_ambient_token = allow_ambient_token,
     )
     return registry.get_job(key).state
 

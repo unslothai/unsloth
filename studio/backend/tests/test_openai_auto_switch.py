@@ -11,6 +11,8 @@ import asyncio
 import json
 import os
 import threading
+import time
+import types
 
 import pytest
 from fastapi import HTTPException
@@ -37,6 +39,7 @@ class _FakeBackend:
     effective_parallel_slots = 1
     _slot_save_binary = None
     _gguf_path = None
+    _loaded_by_user_action = False
 
     def __init__(
         self,
@@ -183,6 +186,164 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert req.model_path == "unsloth/B-GGUF"
     assert req.gguf_variant == "Q4_K_M"
     assert backend.model_identifier == "unsloth/B-GGUF"
+
+
+def test_resident_model_skips_the_filesystem_resolver(monkeypatch):
+    backend = _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    warmed = []
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+
+    def _unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("the resident model must not touch the filesystem index")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _unexpected_resolve)
+    _run_hook("unsloth/Muse-Glimmer-30B-GGUF")
+    assert rec.calls == []
+    assert warmed == [1]
+
+
+def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    calls = []
+    warmed = []
+
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
+    resolver.invalidate_index(additions_only = True)
+    assert resolver._scan[0] < 0.0  # additions-only: the time of the invalidation
+    assert resolver.index_is_built() is False
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+
+    assert calls == []
+    assert warmed == [1]
+    assert len(rec.calls) == 1
+
+
+def test_non_additive_invalidation_keeps_unservable_check_cold(monkeypatch):
+    from types import SimpleNamespace
+
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    resolver._scan = (time.monotonic(), {"unsloth/a-gguf": old})
+    resolver.invalidate_index()
+    assert resolver.index_is_built() is False
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    removed = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/removed-root/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/b-gguf": removed}))
+    scans = []
+    calls = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    # #8389 made a hub-style id a CONCRETE reference, so a name the refresh just proved is not
+    # here is refused rather than quietly answered by whatever is resident. This test predates
+    # that and used to assert the hook returned; what it is actually about -- one rescan, then a
+    # re-resolve that does not rescan, and the resident model left alone -- is unchanged, so the
+    # refusal is asserted alongside it instead of the test being weakened to swallow it.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+
+    assert excinfo.value.status_code == 404
+    # The third call is the refusal wording asking what the RESIDENT model is; like the second it
+    # passes allow_scan = False, which is why the rescan count below is still one.
+    assert calls == [
+        ("unsloth/B-GGUF", {}),
+        ("unsloth/B-GGUF", {"allow_scan": False}),
+        ("unsloth/A-GGUF:Q4_K_M", {"allow_scan": False}),
+    ]
+    assert scans == [1]
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/a-gguf": old}))
+    scans = []
+    calls = []
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: scans.append(1) or {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert calls == [("unsloth/B-GGUF", {})]
+    assert scans == [1]
+    assert len(rec.calls) == 1
 
 
 def test_concurrent_same_target_loads_once(monkeypatch):
@@ -627,7 +788,7 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "slots": [{"id": 0, "filename": saved.name}],
     }
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False, 0)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
@@ -652,7 +813,7 @@ def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
     }
     kw._kv_resume = manifest
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False, 0)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
     monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
@@ -1614,6 +1775,32 @@ def test_already_serving_by_path_records_advertised_alias(monkeypatch):
     _run_hook("org/Repo-GGUF:Q4_K_M")
     assert rec.calls == []  # already serving -> no reload
     assert backend._openai_advertised_id == "org/Repo-GGUF"  # alias now recorded
+
+
+def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch):
+    # The resident short circuit matches on model_identifier, which is the load path
+    # for a manual local load. Answering from it skips the alias recording above, so a
+    # loose .gguf whose scanner alias is not its filename would be advertised, and
+    # reported in every response, as the filename instead.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)  # loaded by path, no advertised id
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, None, "Qwen3-4B-Instruct-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook(path)
+    assert rec.calls == []  # already serving -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+    assert inference_route._llama_public_model_id(backend) == "Qwen3-4B-Instruct-GGUF"
+    # Recorded, so the path now short circuits without the resolver.
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda _m, **_kw: pytest.fail("resolver re-entered")
+    )
+    _run_hook(path)
 
 
 def test_streaming_responses_uses_advertised_id_helper():
@@ -2955,7 +3142,11 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     # Codex P2: a chat request carrying audio_base64 must guard the target before the
     # switch -- audio rides the same companion mmproj as vision -- so a text-only
     # target can't be loaded and evict the working audio model. Assert the handler
-    # flags require_vision so the hook's multimodal probe runs.
+    # flags require_vision so the hook's multimodal probe runs, and that it asks for
+    # the projector alone: an audio model's projector carries no vision tower, so
+    # requiring one would refuse the very models that serve the request.
+    from models.inference import ChatMessage, ImageContentPart, ImageUrl
+
     class _Reached(Exception):
         pass
 
@@ -2967,8 +3158,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        require_image = True,
     ):
-        captured["require_vision"] = require_vision
+        captured.update(require_vision = require_vision, require_image = require_image)
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -2976,7 +3168,18 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured["require_vision"] is True
+    assert captured == {"require_vision": True, "require_image": False}
+
+    # An image in the same request does need the vision tower.
+    img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
+    payload = _chat_request(
+        model = "org/B-GGUF",
+        audio_base64 = "AAAA",
+        messages = [ChatMessage(role = "user", content = [img])],
+    )
+    with pytest.raises(_Reached):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert captured == {"require_vision": True, "require_image": True}
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
@@ -3090,7 +3293,7 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: False)
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             inference_route._maybe_auto_switch_model(
@@ -3111,11 +3314,99 @@ def test_require_vision_allows_vision_target(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p: True)
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: True)
     asyncio.run(
         inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
     )
     assert len(rec.calls) == 1  # vision target still switches
+
+
+def test_an_audio_only_target_still_switches_for_an_audio_request(monkeypatch, tmp_path):
+    # End to end through the real probe: a Voxtral-style snapshot whose projector
+    # declares audio and no vision tower must still be swapped in for an audio
+    # request, or the model that can serve it is exactly the one refused.
+    import struct
+
+    key = "clip.has_audio_encoder"
+    (tmp_path / "Voxtral-Mini-3B-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+    (tmp_path / "mmproj-F16.gguf").write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
+    )
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (str(tmp_path), "Q4_K_M", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "t", require_vision = True, require_image = False
+        )
+    )
+    assert len(rec.calls) == 1
+
+
+def test_require_vision_probes_the_quant_the_load_will_open(monkeypatch):
+    # The resolver hands the gate a directory plus the quant to load, so the probe must
+    # see the same pair the load does (#8772).
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/cache/snap", "UD-Q4_K_XL", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    probed: list[tuple] = []
+    monkeypatch.setattr(
+        inference_route,
+        "_target_is_vision",
+        lambda path, variant = None, need_image = True: probed.append((path, variant, need_image))
+        or True,
+    )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
+    )
+    assert probed == [("/cache/snap", "UD-Q4_K_XL", True)]
+
+
+def test_an_audio_request_is_not_refused_for_want_of_a_vision_tower(tmp_path):
+    # ultravox / Voxtral / Qwen3-ASR serve audio through a projector with no vision
+    # tower, so gating their swap on image capability would 400 a request they can
+    # serve, for as long as the model is not already resident.
+    import struct
+
+    key = "clip.has_audio_encoder"
+    (tmp_path / "Voxtral-Mini-3B-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+    (tmp_path / "mmproj-F16.gguf").write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key.encode()
+        + struct.pack("<I", 7)
+        + struct.pack("<?", True)
+    )
+
+    assert inference_route._target_is_vision(str(tmp_path), None, False) is True
+    assert inference_route._target_is_vision(str(tmp_path), None, True) is False
+
+
+def test_target_is_vision_reads_a_subdir_quants_projector(tmp_path):
+    # End to end through the real probe: a repo filing every quant under a subdir has no
+    # weight file at the snapshot root for the root-level detector to find.
+    variant_dir = tmp_path / "UD-Q4_K_XL"
+    variant_dir.mkdir()
+    (variant_dir / "Qwen3-VL-235B-UD-Q4_K_XL.gguf").write_bytes(b"\0" * 32)
+    (tmp_path / "mmproj-F32.gguf").write_bytes(b"\0" * 32)
+
+    assert inference_route._target_is_vision(str(tmp_path), "UD-Q4_K_XL") is True
 
 
 def test_require_vision_ignores_reload_stash(monkeypatch):
@@ -3131,7 +3422,7 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     monkeypatch.setattr(
-        inference_route, "_target_is_vision", lambda _p: False
+        inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False
     )  # would reject if used
     # 404 because the restored A is not the requested B, whose quant makes it a real reference.
     with pytest.raises(HTTPException):
@@ -4594,6 +4885,33 @@ def _chat_error(payload):
     return exc.value.status_code, exc.value.detail
 
 
+def test_chat_mistyped_gguf_repo_404s_before_vision_guard(monkeypatch):
+    # #8376: image request with a mistyped GGUF id must 404, not 400 on the loaded model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("unsloth/text-only-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_download_enabled", lambda: False
+    )
+    monkeypatch.setattr(
+        resolver,
+        "describe_local_miss",
+        lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ()),
+    )
+    payload = _chat_request(
+        model = "unsloth/typo-vision-GGUF",
+        image_base64 = "aGVsbG8=",
+    )
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, request, "tester"))
+    assert exc.value.status_code == 404
+    assert exc.value.detail["error"]["code"] == "model_not_found"
+    assert rec.calls == []
+
+
 def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
     # The reported bug: the model is not here, so the switch did nothing and /inference/load
     # cannot fix it. Name it and list what can serve.
@@ -4789,9 +5107,25 @@ def _drive_idle_loop(
     kw,
     poll_seconds = 0.02,
     run_for = 0.2,
+    until = None,
+    timeout = 10.0,
 ):
+    """Pass `until` when the test asserts something the loop must DO: a loaded
+    runner can otherwise be cancelled mid-sequence (save recorded, unload not),
+    which is a flake, not a failure. Name the LAST state the test asserts: the
+    loop signals most of these from inside a to_thread body and still has
+    bookkeeping to run after it, so an earlier landmark cancels that away.
+    The fixed window always runs afterwards, both as settle time for that
+    bookkeeping and because most of these tests also assert the loop then
+    stops, which needs a stretch of loop time to be worth anything."""
+    import time as _time
+
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = poll_seconds))
+        if until is not None:
+            deadline = _time.monotonic() + timeout
+            while not until() and _time.monotonic() < deadline:
+                await asyncio.sleep(poll_seconds / 4)
         await asyncio.sleep(run_for)
         task.cancel()
         try:
@@ -4835,7 +5169,8 @@ def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch,
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    # The stash is the last thing the loop writes, after the in-thread unload.
+    _drive_idle_loop(kw, until = lambda: events == ["save", "unload"] and kw._kv_resume)
     # KV must be saved while the server is still alive, then exactly one unload.
     assert events == ["save", "unload"]
     assert kw.get_last_unloaded_model()[:2] == ("unsloth/Idle-GGUF", "Q4_K_M")
@@ -4872,7 +5207,7 @@ def test_idle_save_failure_still_unloads_plain(monkeypatch):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: kw.get_last_unloaded_model() is not None)
     assert unloads == [1]  # the save failure must not skip the unload
     assert kw.get_last_unloaded_model() is not None
     assert kw.take_kv_resume() is None
@@ -4902,7 +5237,7 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: unloads)
     assert saves == []
     assert unloads == [1]
     assert kw.take_kv_resume() is None
@@ -4944,7 +5279,7 @@ def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    _drive_idle_loop(kw, until = lambda: unloads)
     assert unloads == [1]  # still unloads; only the stash is dropped
     assert kw.take_kv_resume() is None
     assert not state_file.exists()
@@ -4982,7 +5317,8 @@ def test_idle_ttl_disabled_mid_save_skips_unload(monkeypatch, tmp_path):
     backend.unload_model = lambda: unloads.append(1)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
-    _drive_idle_loop(kw)
+    # Skipping the unload is an inaction, but dropping the saved state is not.
+    _drive_idle_loop(kw, until = lambda: not state_file.exists())
     assert unloads == []  # the unload was cancelled by the setting change
     assert kw.take_kv_resume() is None
     assert not state_file.exists()
@@ -5183,7 +5519,8 @@ def test_stale_stash_cleanup_waits_for_lifecycle_gate(monkeypatch, tmp_path):
         assert state_file.exists()
     finally:
         kw._lifecycle_lock.release()
-    _drive_idle_loop(kw)
+    # The unlink trails the _kv_resume clear, so wait on the file, not the stash.
+    _drive_idle_loop(kw, until = lambda: not state_file.exists())
     assert kw._kv_resume is None  # gate freed: genuinely stale stash purged
     assert not state_file.exists()
 
@@ -5217,11 +5554,21 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl, api_only, media_idle = settings.set_openai_auto_switch(
+        False, None, False
+    )
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
+    assert settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # nor the media TTL
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv, auto_dl) == (False, 600, False, False)
+    assert (enabled, idle, keep_kv, auto_dl, api_only, media_idle) == (
+        False,
+        600,
+        False,
+        False,
+        False,
+        0,
+    )
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
@@ -5269,6 +5616,61 @@ def test_setter_rejects_idle_below_floor(monkeypatch):
     assert settings.set_openai_auto_switch(True, 0)[1] == 0
     assert settings.set_openai_auto_switch(True, 60)[1] == 60
     assert settings.set_openai_auto_switch(True, 3600)[1] == 3600
+
+
+def test_media_idle_setting_roundtrip_and_default(monkeypatch):
+    # The image/video TTL is persisted on its own key, in the same write as the rest
+    # of the section, and starts off: a chat TTL alone must not evict a pipeline.
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
+
+    assert settings.set_openai_auto_switch(True, 300)[5] == 0
+    assert settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY not in store
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    assert settings.get_auto_unload_idle_seconds() == 300
+
+    assert settings.set_openai_auto_switch(True, 300, None, None, None, 600)[5] == 600
+    assert store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] == 600
+    assert settings.get_media_auto_unload_idle_seconds() == 600
+    assert settings.get_stored_media_auto_unload_idle_seconds() == 600
+    # None leaves the stored value untouched, and the floor is the chat one.
+    assert settings.set_openai_auto_switch(False, None)[5] == 600
+    with pytest.raises(ValueError, match = "at least 60"):
+        settings.set_openai_auto_switch(True, None, None, None, None, 30)
+    assert settings.set_openai_auto_switch(True, None, None, None, None, 0)[5] == 0
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+
+
+def test_settings_route_reports_the_media_idle_ttl(monkeypatch):
+    import routes.settings as settings_route
+
+    monkeypatch.setattr(settings_route, "get_stored_media_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings_route, "get_media_auto_unload_idle_seconds", lambda: 600)
+    resp = settings_route.get_openai_auto_switch("tester")
+    assert resp.media_auto_unload_idle_seconds == 600
+    assert resp.media_idle_unload_active is True
+    # Vetoed (residency, or API-loaded only): the saved number stays, the flag drops,
+    # so the UI can say the unload is paused rather than silently doing nothing.
+    monkeypatch.setattr(settings_route, "get_media_auto_unload_idle_seconds", lambda: 0)
+    resp = settings_route.get_openai_auto_switch("tester")
+    assert resp.media_auto_unload_idle_seconds == 600
+    assert resp.media_idle_unload_active is False
+
+
+def test_put_route_rejects_media_idle_below_floor():
+    import routes.settings as settings_route
+    from fastapi import HTTPException
+
+    payload = settings_route.OpenAIAutoSwitchPayload(
+        enabled = True, media_auto_unload_idle_seconds = 30
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch(payload, "tester")
+    assert excinfo.value.status_code == 400
 
 
 def test_put_route_rejects_idle_below_floor():
@@ -6271,7 +6673,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         def set_job(self, key, state):
             self.state = state
 
-    resolver._scan = (1234.0, {"already-here": "entry"})
+    resolver._scan = (time.monotonic(), {"already-here": "entry"})
     assert (
         download_lifecycle.finalize_worker_exit(
             _Registry(),
@@ -6287,7 +6689,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         == "complete"
     )
     stamp, entries = resolver._scan
-    assert stamp == 0.0, "a finished download left the scan looking fresh"
+    assert stamp < 0.0 and resolver._snapshot_is_trusted(stamp, time.monotonic())
     # Evidence for models already indexed has to survive, or a bare request for one
     # of them during the rebuild is answered by whatever is resident.
     assert entries == {"already-here": "entry"}
@@ -6297,8 +6699,6 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
     # The request path reads this cache without scanning, so emptying it leaves no
     # evidence until the rebuild lands. Only a completed download invalidates, and
     # that only adds, so the entries stay true.
-    import time
-
     entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
     resolver.invalidate_index()
@@ -6308,6 +6708,147 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
         "Q4_K_M",
         "org/old",
     )
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_trusted_cache_rechecks_snapshot_after_freshness(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    snapshot = (time.monotonic(), {"org/old": entry})
+    monkeypatch.setattr(resolver, "_scan", snapshot)
+    invalidated = False
+
+    def _invalidate_while_deciding_trust():
+        nonlocal invalidated
+        if not invalidated:
+            invalidated = True
+            resolver.invalidate_index()
+        return snapshot[0]
+
+    monkeypatch.setattr(resolver.time, "monotonic", _invalidate_while_deciding_trust)
+
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
+    from types import SimpleNamespace
+
+    import routes.models as model_routes
+
+    event_loop_thread = threading.get_ident()
+    calls = []
+
+    def _add(path):
+        calls.append(("add", threading.get_ident()))
+        return {"id": 7, "path": path, "created_at": "fake"}, True
+
+    def _remove(folder_id):
+        calls.append((f"remove:{folder_id}", threading.get_ident()))
+        return True
+
+    def _invalidate():
+        calls.append(("invalidate", threading.get_ident()))
+
+    monkeypatch.setattr("storage.studio_db.add_scan_folder_with_status", _add)
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(resolver, "invalidate_index", _invalidate)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+
+    async def _run():
+        folder = await model_routes.add_scan_folder_endpoint(
+            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+        )
+        removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
+        return folder, removed
+
+    folder, removed = asyncio.run(_run())
+
+    assert folder["path"] == "/models/custom"
+    assert removed == {"ok": True}
+    assert [name for name, _ in calls] == ["add", "invalidate", "remove:7", "invalidate"]
+    assert all(thread_id != event_loop_thread for _, thread_id in calls)
+
+
+def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
+    removed = []
+    warmed = []
+
+    def _remove(folder_id):
+        removed.append(folder_id)
+        return True
+
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", _remove)
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    asyncio.run(model_routes.remove_scan_folder_endpoint(7, current_subject = "tester"))
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    assert local_inventory.remove_scan_folder_response(8) == {"ok": True}
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+    assert removed == [7, 8]
+    assert warmed == [1, 1]
+
+
+def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.storage import scan_folders
+    from storage import studio_db
+
+    class _Connection:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+            self.committed = False
+            self.closed = False
+
+        def execute(self, _sql, _params):
+            return SimpleNamespace(rowcount = self.rowcount)
+
+        def commit(self):
+            self.committed = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
+    for storage in (studio_db, scan_folders):
+        for rowcount, expected in ((1, True), (0, False)):
+            connection = _Connection(rowcount)
+            monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
+
+            assert storage.remove_scan_folder(7) is expected
+            assert connection.committed
+            assert connection.closed
+
+
+def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    invalidated = []
+    warmed = []
+    monkeypatch.setattr(resolver, "invalidate_index", lambda: invalidated.append(1))
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", lambda _folder_id: False)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", lambda _folder_id: False)
+
+    assert asyncio.run(model_routes.remove_scan_folder_endpoint(404, current_subject = "tester")) == {
+        "ok": True
+    }
+    assert local_inventory.remove_scan_folder_response(404) == {"ok": True}
+    assert invalidated == []
+    assert warmed == []
 
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
@@ -6936,3 +7477,439 @@ def test_mlx_kv_bits_survives_the_whole_override_projection():
         kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
         assert kwargs["mlx_kv_bits"] == 4
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
+
+
+def _idle_backend(kw, monkeypatch, *, user_loaded):
+    """A loaded, long-idle GGUF backend wired into the idle loop."""
+    import time
+
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend._loaded_by_user_action = user_loaded
+
+    def _unload():
+        backend.is_loaded = False
+
+    backend.unload_model = _unload
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    return backend
+
+
+def test_api_only_setting_roundtrip_and_default(monkeypatch):
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+
+    # Off on an install that never stored it, so existing setups are unchanged.
+    assert settings.get_auto_unload_api_only() is False
+    assert settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY not in store
+    assert settings.set_openai_auto_switch(True, 60, None, None, True)[4] is True
+    assert settings.get_auto_unload_api_only() is True
+    # None leaves the stored value untouched (older clients can't reset it).
+    assert settings.set_openai_auto_switch(True, 60, None, None, None)[4] is True
+    with pytest.raises(ValueError, match = "true or false"):
+        settings.set_openai_auto_switch(True, 60, None, None, "garbage")
+
+
+def test_idle_unload_still_frees_a_user_loaded_model_by_default(monkeypatch):
+    # Backwards compatibility: with the toggle off, provenance changes nothing.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+
+    _drive_idle_loop(kw, until = lambda: backend.is_loaded is False)
+    assert backend.is_loaded is False
+
+
+def test_api_only_spares_a_user_loaded_model_but_not_an_api_one(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+
+    pinned = _idle_backend(kw, monkeypatch, user_loaded = True)
+    _drive_idle_loop(kw)
+    assert pinned.is_loaded is True
+    assert kw.get_last_unloaded_model() is None  # nothing stashed either
+
+    api_loaded = _idle_backend(kw, monkeypatch, user_loaded = False)
+    _drive_idle_loop(kw, until = lambda: api_loaded.is_loaded is False)
+    assert api_loaded.is_loaded is False
+
+
+def test_an_idle_restored_model_is_api_provenance(monkeypatch):
+    # The restore runs through the auto-switch path, so the model it brings back
+    # is unloadable again on the next idle rather than pinned forever.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    backend.is_loaded = False
+    backend.model_identifier = None
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls and backend._loaded_by_user_action is False
+
+    backend.unload_model = lambda: setattr(backend, "is_loaded", False)
+    _drive_idle_loop(kw, until = lambda: backend.is_loaded is False)
+    assert backend.is_loaded is False
+
+
+def test_unload_clears_the_user_load_flag():
+    # Otherwise the next API load inherits the pin and never frees its VRAM.
+    import inspect
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    assert backend._loaded_by_user_action is False  # off until a UI load says otherwise
+    backend._loaded_by_user_action = True
+    backend.unload_model()
+    assert backend._loaded_by_user_action is False
+    # Not cleared on a bare process kill: a respawn or MTP-free reload replays
+    # the same load and must keep the provenance it had.
+    assert "_loaded_by_user_action" not in inspect.getsource(LlamaCppBackend._kill_process)
+
+
+def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
+    import inspect
+
+    backend = _FakeBackend("unsloth/A-GGUF")
+    backend._loaded_by_user_action = False
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _already_loaded(*_a, **_kw):
+        return None  # the dedupe path returns without touching the backend
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _already_loaded)
+    request = LoadRequest(model_path = "unsloth/A-GGUF")
+
+    # An explicit UI load pins, including when it deduped onto the resident model.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester", user_initiated = True))
+    assert backend._loaded_by_user_action is True
+
+    # Preview shares this helper and must not pin, so it keeps the default.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester"))
+    assert backend._loaded_by_user_action is False
+    import routes.preview as preview_route
+
+    assert "user_initiated" not in inspect.getsource(preview_route._serve_chat)
+
+
+def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_path):
+    # A KV save can take seconds; the loop re-reads the TTL and keep-KV after it
+    # for exactly that reason, so provenance has to be re-read there too.
+    from core.inference import llama_keepwarm as kw
+
+    on = {"now": False}
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: on["now"])
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+
+    manifest = {"dir": str(tmp_path), "slots": [{"id": 0, "filename": "f.bin", "n_saved": 1}]}
+    deleted = []
+    monkeypatch.setattr(kw, "_delete_resume_files", lambda m: deleted.append(m))
+
+    def _save(should_abort = None):
+        on["now"] = True  # the user flips the toggle while the save runs
+        return manifest
+
+    backend.save_slots_for_resume = _save
+
+    # Sparing the model is an inaction; deleting what the save wrote is not.
+    _drive_idle_loop(kw, until = lambda: deleted)
+    assert backend.is_loaded is True
+    assert deleted == [manifest]  # nothing was unloaded, so nothing may be stashed
+    assert kw._kv_resume is None
+
+
+def _age_resolver_clock(monkeypatch, seconds):
+    """Advance the resolver's monotonic clock by *seconds*.
+
+    Ageing a snapshot by rewriting its stamp assumes the host has been up longer
+    than the age; a fresh CI runner has not, and the subtraction flips the sign.
+    """
+    base = time.monotonic()
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: base + seconds))
+
+
+def test_additions_only_trust_expires_if_the_rebuild_never_lands(monkeypatch):
+    # A background rebuild that keeps failing must not leave the retained entries
+    # trusted forever: a model deleted on disk would still trigger a switch.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+    _age_resolver_clock(monkeypatch, 600.0)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is None
+
+
+def test_additions_only_trust_outlasts_a_scan_slower_than_the_ttl(monkeypatch):
+    # The window tracks the rebuild's own cost, so the install this fix targets (a
+    # multi-second multi-root scan) is not pushed back onto the request path.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 16.0)
+    resolver.invalidate_index(additions_only = True)
+    _age_resolver_clock(monkeypatch, resolver._CACHE_TTL_S * 4)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+
+
+def test_a_dead_warm_worker_releases_the_slot(monkeypatch):
+    # BaseException out of the scan used to leave _warming set, killing background
+    # warming for the life of the process and putting scans back on requests.
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+
+    def _die():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(resolver, "_build_index", _die)
+    resolver.warm_index_soon()
+    for _ in range(100):
+        if not resolver._warming:
+            break
+        time.sleep(0.05)
+    assert resolver._warming is False
+    assert resolver._warm_pending is False
+
+
+def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
+    # monotonic() counts from boot, so on a host whose uptime is still under the
+    # TTL an invalidated stamp used to read as recent and serve what was revoked.
+    # Patch the module's reference, not the real time module: a stray warm thread
+    # shares that one, and a frozen global clock hangs its duty-cycle arithmetic.
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: 1.0))
+    for kwargs in ({}, {"additions_only": True}):
+        monkeypatch.setattr(resolver, "_scan", (1.0, {"org/a": "entry"}))
+        resolver.invalidate_index(**kwargs)
+        built = []
+        monkeypatch.setattr(resolver, "_build_index", lambda: (built.append(1), {})[1])
+        resolver._index()
+        assert built == [1], kwargs
+
+
+# The resident short circuit is the one path that answers without consulting the
+# index, so it must never say yes where the pre-existing resident check says no.
+# Anything it accepts, main would have accepted too: a miss only costs the scan.
+_IDENTITIES = [
+    "unsloth/Muse-GGUF",
+    "/srv/models/unsloth--Muse-GGUF",
+    "/srv/models/Muse.gguf",
+    None,
+]
+_REQUESTS = [
+    "unsloth/Muse-GGUF",
+    "unsloth/muse-gguf",
+    "unsloth/Muse-GGUF:Q4_K_M",
+    "unsloth/Muse-GGUF:Q8_0",
+    "unsloth/Muse-GGUF:latest",
+    "unsloth/Other-GGUF",
+    "/srv/models/Muse.gguf",
+    "/srv/models/MUSE.gguf",
+    "muse.gguf",
+    "../../etc/passwd",
+    "unsloth/",
+    ":Q4_K_M",
+    "unsloth/Muse GGUF",
+]
+
+
+@pytest.mark.parametrize("identity", _IDENTITIES)
+@pytest.mark.parametrize("requested", _REQUESTS)
+@pytest.mark.parametrize("quant", [None, "Q4_K_M"])
+def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
+    monkeypatch, identity, requested, quant
+):
+    backend = _FakeBackend(identity, hf_variant = quant) if identity else _FakeBackend(None)
+    backend.is_loaded = identity is not None
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    fast = inference_route._loaded_identity_satisfies(requested)
+    assert not (
+        fast and not inference_route._loaded_satisfies(requested)
+    ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+
+
+def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
+    backend = _FakeBackend("unsloth/Muse-GGUF", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q8_0") is False
+    assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q4_K_M") is True
+
+
+def test_clearing_the_box_for_a_quant_survives_the_next_load(override_store):
+    # The carry-over copies a legacy bare entry's flags onto the first per-quant save,
+    # and leaves the bare entry standing. Clearing the box then writes an empty list,
+    # an entry with nothing usable left is not stored, and the next load falls through
+    # to the bare key: the box comes up empty and the server still runs them.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    carried = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    assert carried.overrides["unsloth/B-GGUF:Q4_K_M"]["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]
+
+    cleared = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    # The row survives the all-default save, saying explicitly that this quant has
+    # none, which is what stops the lookup before it reaches the bare key.
+    assert cleared.overrides["unsloth/B-GGUF:Q4_K_M"] == {"llama_extra_args": []}
+    _key, resolved = settings.resolve_override_for_load("unsloth/B-GGUF", variant = "Q4_K_M")
+    assert not resolved.get("llama_extra_args")
+
+
+def test_the_clear_leaves_the_legacy_row_for_the_quants_still_reading_it(override_store):
+    # The bare row is the fallback for every quant that has none of its own, so
+    # clearing Q4's box must not take Q6's flags with it. Only the row the user
+    # edited changes.
+    settings.set_model_override(
+        "unsloth/B-GGUF",
+        llama_extra_args = ["--numa", "distribute"],
+        max_seq_length = 4096,
+    )
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    bare = settings.get_model_override("unsloth/B-GGUF")
+    assert bare["llama_extra_args"] == ["--numa", "distribute"]
+    assert bare["max_seq_length"] == 4096
+    _key, sibling = settings.resolve_override_for_load("unsloth/B-GGUF", variant = "Q6_K")
+    assert sibling["llama_extra_args"] == ["--numa", "distribute"]
+
+
+def test_the_clear_holds_when_another_quant_has_a_row_of_its_own(override_store):
+    # The first fix stripped the bare row and was gated on no sibling row existing,
+    # which is the wrong question: a sibling with a row of its own never reads the
+    # bare one, so the gate only stopped the clear from working at all.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    _key, resolved = settings.resolve_override_for_load("unsloth/B-GGUF", variant = "Q4_K_M")
+    assert not resolved.get("llama_extra_args")
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]
+
+
+def test_a_clear_with_no_fallback_behind_it_stores_nothing(override_store):
+    # Nothing would answer for this model anyway, so the row goes as it always has:
+    # the tombstone exists to stop a fallback, not to leave a row per cleared box.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--numa", "distribute"])
+    cleared = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
+    assert "unsloth/B-GGUF:Q4_K_M" not in cleared.overrides
+
+
+def test_an_explicit_forget_still_removes_the_row(override_store):
+    # remove = True is the other operation, and it must not leave a tombstone behind
+    # for the picker to read as a saved setting.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--top-k", "20"])
+    forgotten = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = True)
+    assert "unsloth/B-GGUF:Q4_K_M" not in forgotten.overrides
+
+
+def test_a_save_that_did_not_touch_the_box_leaves_the_fallback(override_store):
+    # Omitting the field is how every save that never opened the editor behaves, and
+    # it means "keep them", not "clear them".
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]
+
+
+def test_a_fill_pass_never_clears_a_fallback(override_store):
+    # The migration writes only what is missing, and mirrors both spellings of a model;
+    # clearing from it would delete flags it is supposed to be preserving.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--numa", "distribute"])
+    _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = [],
+        remove = False,
+        fill_absent_fields = True,
+    )
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
+        "--numa",
+        "distribute",
+    ]
+
+
+def test_clearing_one_quant_stops_the_legacy_repo_row_from_answering(monkeypatch):
+    # The carry-over copies a legacy bare `repo` row's flags onto the first
+    # `repo:QUANT` save and leaves the bare row in place, and a load reads the
+    # qualified key first and the bare one after it. So an all-default save for the
+    # quant, which stores nothing, falls straight back through to a row no page can
+    # show, and the flags the user just cleared come back on the next load. The
+    # cleared box is kept as an explicit empty list instead: a row that resolves, and
+    # supplies no arguments.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--top-k", "40"])
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [])
+
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {"llama_extra_args": []}
+    key, override = settings.resolve_override_for_load("unsloth/B-GGUF", None, "Q4_K_M")
+    assert key == "unsloth/B-GGUF:Q4_K_M"
+    assert override.get("llama_extra_args") == []
+    # And the bare row is untouched, because it is still the fallback for every other
+    # quant of this repo that has no row of its own.
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == ["--top-k", "40"]
+    other_key, other = settings.resolve_override_for_load("unsloth/B-GGUF", None, "Q8_0")
+    assert other_key == "unsloth/B-GGUF"
+    assert other["llama_extra_args"] == ["--top-k", "40"]
+
+
+def test_an_empty_save_with_nothing_to_suppress_still_stores_nothing(monkeypatch):
+    # The tombstone exists only to stop a fallback. With no row behind this one,
+    # "no launch flags" and "nothing stored" are the same thing, and writing an empty
+    # row would leave an entry the settings page then lists as configured.
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [])
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_a_fill_never_writes_the_tombstone(monkeypatch):
+    # fill_absent_fields only adds what is missing, so an empty list in a fill is the
+    # absence of a request, not a clear: writing a row for it would suppress the
+    # fallback the user never asked to be rid of.
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--top-k", "40"])
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], fill_absent_fields = True)
+    assert "llama_extra_args" not in settings.get_model_override("unsloth/B-GGUF:Q4_K_M")
+    key, override = settings.resolve_override_for_load("unsloth/B-GGUF", None, "Q4_K_M")
+    assert override.get("llama_extra_args") == ["--top-k", "40"]
+
+
+def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
+    # The two spellings of the same payload, kept apart by one flag: everywhere else
+    # an empty list is a field nobody set, and only the save that means "cleared"
+    # asks for it to be stored.
+    assert settings.normalize_model_override({"llama_extra_args": []}) == {}
+    assert settings.normalize_model_override(
+        {"llama_extra_args": []}, keep_empty_extra_args = True
+    ) == {"llama_extra_args": []}
+    # And the flag only decides what an EMPTY list means. A list with tokens in it is
+    # stored either way: this module deliberately does not judge them (the route runs
+    # validate_extra_args before it gets here), so the flag must not become a second,
+    # quieter filter.
+    for keep in (False, True):
+        assert settings.normalize_model_override(
+            {"llama_extra_args": ["--top-k", "40"]}, keep_empty_extra_args = keep
+        ) == {"llama_extra_args": ["--top-k", "40"]}

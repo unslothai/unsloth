@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 
 from auth import storage as auth_storage
-from core.inference.message_content import content_to_text
+from core.inference.message_content import message_text_with_pastes
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
@@ -201,7 +201,7 @@ def _safe_error(exc: BaseException) -> str:
 
 
 def _extract_text(message: dict) -> str:
-    return content_to_text(message.get("content")).strip()
+    return message_text_with_pastes(message).strip()
 
 
 def _research_question_context(thread_id: str, user_message_id: str) -> tuple[str, str]:
@@ -1132,7 +1132,10 @@ class ResearchSupervisor:
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
-            name = "deep-research workflow",
+            # The name is load-bearing, not a label: the external-provider route
+            # scopes its saved-credential exception to exactly this workflow, so
+            # the two sides must not drift apart.
+            name = auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
         )
@@ -1143,8 +1146,29 @@ class ResearchSupervisor:
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
+            # Keep every model hop in this durable run on one isolated Codex
+            # prompt-cache session rather than sharing the transport fallback.
+            "thread_id": f"research:{run['id']}",
+            # Gathered page text lands in these prompts and research never reads tool calls
+            # back, so this hop must stay out of the tool loop. Both opt-outs are needed:
+            # --enable-tools overrides a per-request enable_tools, and an omitted
+            # enabled_tools resolves to every built-in, python and terminal included.
+            "tool_choice": "none",
+            "enabled_tools": [],
             "temperature": inference.get("temperature", 0.2),
         }
+
+        # Route the hop to whichever saved connection the run was created with.
+        # The route's _sanitize_config already refused anything but an enabled
+        # saved connection of a studio-tools-capable provider type.
+        if inference.get("providerType"):
+            payload.update(
+                {
+                    "provider_id": inference["providerId"],
+                    "provider_type": inference["providerType"],
+                    "external_model": inference["externalModel"],
+                }
+            )
         if inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
         if enable_thinking is not None:

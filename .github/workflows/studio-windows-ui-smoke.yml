@@ -405,6 +405,20 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      # The same layout regression the Linux job runs, on the platform whose
+      # scrollbars actually take width and whose font metrics are its own: the
+      # card's floor and the action row's wrap threshold are both measurements,
+      # and a measurement taken on one platform is a guess on the others.
+      - name: Update banner layout regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18897
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_update_banner
+        run: |
+          mkdir -p logs/playwright_update_banner
+          python tests/studio/playwright_update_banner_layout.py
+
       - name: Stop second Unsloth
         if: always()
         run: |
@@ -423,6 +437,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_update_banner
             logs/studio-permissions-*.log
           # 1 day, matching the repository-wide cap. A larger value here is
           # silently clamped to that cap today, so stating 7 only invites the

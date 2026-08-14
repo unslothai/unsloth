@@ -834,6 +834,9 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
             "chat_template_override_reason",
+            # Read from requested_extra_args, which is what the load was invoked
+            # with rather than the rewritten launch list.
+            "requested_llama_extra_args",
         }
         unresolved = sorted(
             name
@@ -1026,7 +1029,12 @@ class TestLoadHubDownloadExclusion:
 
         class FakeBackend:
             @_with_gguf_load_marker
-            def load_model(self, intent):
+            # The marker forwards the scoped cancel event, so a loader must accept it.
+            def load_model(
+                self,
+                intent,
+                load_cancel_event = None,
+            ):
                 started.set()
                 release.wait(timeout = 2)
                 finished.set()
