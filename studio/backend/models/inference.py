@@ -1331,6 +1331,18 @@ class ChatCompletionRequest(BaseModel):
         ge = 1,
         description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
     )
+    run_tools_locally: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "asking the provider to run its own hosted builtins. Only meaningful "
+            "for providers that ship hosted tools of the same name (OpenAI, "
+            "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
+            "the same request means hosted search to a client written before "
+            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "behaviour, so an older client is unaffected."
+        ),
+    )
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
