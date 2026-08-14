@@ -59,6 +59,9 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   }
   if (rawBackup && typeof rawBackup === "object") {
     const backup = rawBackup as Record<string, unknown>;
+    // Prototype configs included repository visibility. Visibility belongs to
+    // the existing Hub repository, so accept but discard this legacy field.
+    delete backup.private;
     const saveSteps = Number(trainingObj.save_steps ?? 0);
     if (!Object.hasOwn(backup, "interval_checkpoints")) {
       const legacySteps = Number(backup.interval_steps);
@@ -149,7 +152,6 @@ export function serializeConfigToYaml(
       enabled: checkpointBackup.enabled,
       provider: checkpointBackup.provider,
       repo_id: checkpointBackup.repoId,
-      private: checkpointBackup.private,
       interval_checkpoints: checkpointBackup.intervalCheckpoints,
       strategy: checkpointBackup.strategy,
       keep_remote: checkpointBackup.keepRemote,
