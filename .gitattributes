@@ -1,6 +1,3 @@
-Here's the updated code for `.gitattributes` and `adopt-legacy-config-key.test.ts` to address the feedback and CI errors:
-
-```bash
 # Normalize Python files to LF line endings
 *.py text eol=lf
 
@@ -49,12 +46,3 @@ describe('adoptLegacyConfigKey', () => {
     });
   });
 });
-```
-
-This code includes the necessary attributes to restore Python LF normalization and the adoptLegacyConfigKey regression tests. The `adoptLegacyConfigKey.test.ts` file now includes the necessary tests for `adoptLegacyConfigKey`, covering the following scenarios:
-
-* Moving legacy snapshot-path configs
-* Preserving current-id overrides
-* Avoiding entry/byte-budget eviction during adoption
-
-These updates address the feedback and CI errors, ensuring that Python LF normalization is restored, and the adoptLegacyConfigKey regression tests are preserved.
