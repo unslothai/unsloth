@@ -314,18 +314,24 @@ async def _drain(owner: str, backend: Any, deadline: float) -> bool:
         await asyncio.sleep(_POLL_S)
 
 
-async def _await_loaded(backend: Any, pick: MediaModelPick, deadline: float) -> bool:
-    """Poll the background load until the model is resident; False if it is still going."""
+async def _await_loaded(backend: Any, name: str, pick: MediaModelPick, deadline: float) -> bool:
+    """Poll the background load until the REQUESTED model is resident; False if still going.
+
+    Checked against the pick, not merely "something is loaded": a user load accepted between
+    two polls supersedes this one, and returning success there would generate on the
+    replacement while reporting the requested model.
+    """
     while True:
         progress = await asyncio.to_thread(backend.load_progress) or {}
         phase = progress.get("phase")
         if phase == "error":
             raise RuntimeError(progress.get("error") or "The model failed to load.")
         if phase in (None, "ready"):
-            if (await asyncio.to_thread(backend.status)).get("loaded"):
+            status = await asyncio.to_thread(backend.status)
+            if _satisfied_by(status, name, pick):
                 return True
-            # Nothing in flight and nothing resident: the worker cleared without reporting.
-            raise RuntimeError(f"'{pick.model_id}' did not load.")
+            # Loaded, but not this pick: a load that landed after ours replaced it.
+            raise RuntimeError(f"'{pick.model_id}' was replaced by another load before it served.")
         if time.monotonic() >= deadline:
             return False
         await asyncio.sleep(_POLL_S)
@@ -353,6 +359,21 @@ def _refuse(
     )
 
 
+def _planner_for(owner: str, pick: MediaModelPick) -> Any:
+    """The engine whose download plan describes the load this pick will actually run."""
+    if owner != DIFFUSION:
+        return _backend_for(owner)
+    from core.inference.diffusion import resolve_model_kind
+    from core.inference.diffusion_engine_router import engine_for, predict_engine
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    fam = detect_family_for_pick(pick.model_path, pick.gguf_filename, None)
+    if fam is None:
+        return _backend_for(owner)
+    kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
+    return engine_for(predict_engine(fam, model_kind = kind))
+
+
 def _missing_download_bytes(owner: str, pick: MediaModelPick) -> int:
     """Bytes this pick would still have to fetch, or 0 when nothing is missing.
 
@@ -362,12 +383,16 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> int:
     the setting promises it cannot do. Same planner ``/images/download-plan`` serves, so the
     answer matches what the UI would have staged.
 
+    Planned against the engine that will LOAD this pick, the way /images/download-plan does:
+    the resident engine can be native sd.cpp while the target loads through diffusers, and its
+    planner refuses the pick, which the catch below would read as nothing missing.
+
     Returns 0 when the plan itself cannot be built: that is almost always an unreachable Hub,
     where no download can happen either, and refusing a cached model over it would be worse.
     """
-    backend = _backend_for(owner)
     try:
-        plan = backend.download_plan(
+        planner = _planner_for(owner, pick)
+        plan = planner.download_plan(
             pick.model_path,
             gguf_filename = pick.gguf_filename,
             model_kind = pick.model_kind,
@@ -467,11 +492,14 @@ async def maybe_auto_switch_media_model(
                     code = "model_busy",
                     retry_after = _RETRY_AFTER_S,
                 )
-            # Held from the last drain check through load registration. The load path cancels
-            # active work during teardown, so a generation admitted in that gap would be cut
-            # short by the very swap that just waited for the queue to clear.
+            # Held ACROSS the last drain observation, not after it: a request admitted between
+            # a passing drain and the gate is tracked but has not marked the backend active
+            # yet, so it would read as idle and be cancelled by the load's teardown.
             async with admission_gate(owner):
-                if await asyncio.to_thread(_backend_busy, backend):
+                # What the drain waited out may have been the very load this request wanted.
+                if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
+                    return
+                if not await _drain(owner, backend, time.monotonic()):
                     raise _refuse(
                         _BUSY_MSG.format(kind = kind),
                         status_code = 409,
@@ -482,7 +510,7 @@ async def maybe_auto_switch_media_model(
                 await _start_load(owner, pick, current_subject)
             try:
                 # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
-                ready = await _await_loaded(_backend_for(owner), pick, deadline)
+                ready = await _await_loaded(_backend_for(owner), name, pick, deadline)
             except RuntimeError as exc:
                 # The loader already redacts this text; a bare raise would 500 with it.
                 raise _refuse(

@@ -244,6 +244,8 @@ class _FakeMediaBackend:
 def backend(monkeypatch):
     fake = _FakeMediaBackend()
     monkeypatch.setattr(mas, "_backend_for", lambda owner: fake)
+    # The real planner resolves the engine router and reaches the Hub; this suite is offline.
+    monkeypatch.setattr(mas, "_planner_for", lambda owner, pick: fake)
     return fake
 
 
@@ -255,6 +257,7 @@ def loads(monkeypatch, backend):
     async def _start(owner, pick, current_subject):
         started.append((owner, pick))
         backend.repo_id = pick.model_path
+        backend.gguf_variant = mas._pick_quant(pick)
         backend.phase = "ready"
         mk.note_load_origin(owner, pick.model_path, user_action = False)
 
@@ -482,9 +485,9 @@ def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
     _switch("z-image-Q8_0")
 
     assert [pick.gguf_filename for _owner, pick in loads] == ["z-image-Q8_0.gguf"]
-    # And the one that IS loaded still short-circuits.
+    # And the sibling that IS now loaded still short-circuits.
     loads.clear()
-    _switch("z-image-Q4_K_M")
+    _switch("z-image-Q8_0")
     assert loads == []
 
 
@@ -556,6 +559,71 @@ def test_the_drain_and_the_load_share_one_budget(catalog, enabled, tmp_path, bac
     assert excinfo.value.status_code == 503
     # The load wait inherits what the drain left, so the whole switch stays inside the budget.
     assert time.monotonic() - began < 2.0
+
+
+def test_a_load_that_lands_while_draining_is_not_repeated(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A retry can acquire the switch lock while the earlier attempt's load is still running.
+    # Draining waits that out, and without a recheck the retry tears down what just landed.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+    backend.loading = ("black-forest-labs/FLUX.1-dev",)
+
+    async def _drain_lands_the_model(_owner, _backend, _deadline):
+        backend.loading = ()
+        backend.repo_id = str(pipeline)
+        return True
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mas, "_drain", _drain_lands_the_model)
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert loads == []
+
+
+def test_a_replacement_load_is_not_reported_as_the_requested_model(
+    catalog, enabled, tmp_path, backend, monkeypatch
+):
+    # A user load accepted between two polls supersedes ours. Returning success on "something
+    # is resident" would generate on the replacement while naming the requested model.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    async def _start(owner, pick, current_subject):
+        backend.repo_id = "Qwen/Qwen-Image"
+        backend.phase = "ready"
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 503
+    assert "replaced" in excinfo.value.detail["error"]["message"]
+
+
+def test_the_download_plan_asks_the_engine_that_will_load_the_pick(catalog, tmp_path, monkeypatch):
+    # The resident engine can be native sd.cpp while the target loads through diffusers; its
+    # planner refuses the pick, and that refusal would read as nothing missing.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    pick = mas.resolve_local_media_model("black-forest-labs/FLUX.1-dev", task = mas.IMAGE_TASK)
+    asked: list = []
+
+    class _Planner:
+        def download_plan(self, model_path, **kwargs):
+            asked.append(model_path)
+            return {"total_bytes": 7}
+
+    monkeypatch.setattr(mas, "_planner_for", lambda owner, p: _Planner())
+
+    assert mas._missing_download_bytes(arb.DIFFUSION, pick) == 7
+    assert asked == [pick.model_path]
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
