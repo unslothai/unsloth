@@ -1,0 +1,484 @@
+# Unforgettable — technical reference
+
+This note is for a human or AI developer extending the package. Companion user doc: [`README.md`](README.md). Design history: [`plans/MemoryWheels.md`](plans/MemoryWheels.md) and [`plans/MemoryPhases.md`](plans/MemoryPhases.md). Phase locks that the tree implements: [`plans/MemPhase1.md`](plans/MemPhase1.md) through [`plans/MemPhase5.md`](plans/MemPhase5.md).
+
+The tree is the source of truth. Plans stay as the charter; this file describes what is actually shipped.
+
+---
+
+## 1. Architecture
+
+### 1.1 Purpose
+
+Unforgettable is the **main car** of the Memory Wheels stack: progressive memory under standing watch, so one user-facing AI can remember, correct, rehearse after failure, and (rarely) internalize stable skill.
+
+It is not a second RAG. Studio `rag.db` and chat history are **not** B. It is not a continuous fine-tune. Base weights stay frozen. It is not a physics twin unless the host provides one; the coding-domain sim is a **filesystem clone + test harness**.
+
+### 1.2 Three substrates
+
+Keep these distinct. Mixing them is how designs fail.
+
+| Substrate | Module home | Write | Correct | Good for |
+|-----------|-------------|-------|---------|----------|
+| **A working** | `loop/context.py` `EpisodeState` | Every step | Drop at episode end | What is true *now* (mode, traces, repaired-plan notes) |
+| **B structured** | `store/` | Tools, extract + `admit()`, bookkeeping | Supersede / deprecate / reject | Facts, playbooks, error→fix, twin notes |
+| **C parametric** | `sidecar/` | Batched PEFT after eval | Drop adapter row | Fluent skill that should work with less retrieve |
+
+World and sim are **contact surfaces**, not memory buckets. Traces from either may propose writes to A/B/C under gates.
+
+Rule of thumb: if you must edit it tomorrow with a sentence, it belongs in B. If it should change behavior when retrieval misses, consider C later. If it is only true for this run, keep it in A.
+
+### 1.3 Timescale stack (wheels)
+
+```
+Throne     throne/policy.py     objectives, act/sim, admission, confirm, promote
+Outer B/C  store/ + sidecar/    admit into B routinely; pack/train C rarely
+Middle     loop/episode.py      one HTTP request = one episode
+Inner      Host.generate        one tool-loop pass in the active rim sandbox
+```
+
+`decide()` in `throne/policy.py` is a pure function. Confirm, clone, and extract sit **outside** it.
+
+### 1.4 Contact axis (dual rims)
+
+```
+                    INNER / MIDDLE
+                          |
+              +-----------+-----------+
+              v                       v
+         WORLD RIM                 SIM RIM
+         project sandbox           cloned session dir
+         world eyes                sim eyes (same graders + test harness)
+              |                       |
+              +-----------+-----------+
+                          v
+                 traces → extract → admit → B
+```
+
+- World session: host-reported (`payload.session_id` / `project-<id>` / thread sandbox).
+- Sim session: `sim-{episode[:8]}-{n}` (Studio) or `sim-{episode}-{n}` (FakeHost). Must not equal world and must not start with `project-`.
+- Clone: `rims.clone.clone_tree` (`copytree`, skip `.unsloth_sandbox` / remap json / `*.deleting-*`, refuse same resolved path).
+- Shared action interface: `Host.run_action(session_id, "python"|"terminal", …)` — same tools, different cwd.
+
+Default act path (`MemoryWheels` §6, `decide()` at `throne/policy.py:83`):
+
+1. World-act.
+2. Recognized failure → `ENTER_SIM` (max 1 clone by default).
+3. Sim until tests/tools pass or `max_sim_turns` (default 8 generate turns after an optional diagnostic).
+4. `RETRY_WORLD` with a repaired-plan suffix (confirm optional).
+5. Still fail → `ESCALATE` (extract, do not loop forever).
+
+### 1.5 Record kinds, provenance, admission
+
+Kinds (`constants.py`): `claim`, `procedure`, `error_fix`, `entity`, `episode`, `directive`, `twin_note`.
+
+Statuses: `active`, `superseded`, `deprecated`, `proposed`, `rejected`.
+
+Provenance (trust, lower weight first at retrieve): `world` 0, `mixed` 1, `human` 2, `sim` 3, `infer` 4.
+
+`admit()` total order is locked (`agents/admissions.py:45-60`):
+
+1. namespace deny → rejected
+2. namespace propose → proposed
+3. `force_proposed_reason` (gate contradiction) → proposed
+4. `bookkeeping` (deterministic twin_note, episode row) → active
+5. sim claim **or** sim procedure → proposed
+6. not explicit (extract) → proposed
+7. `infer` and kind ≠ directive → proposed
+8. else → active
+
+Do not reorder this without a new phase lock. Operator promote is CLI `admit`.
+
+### 1.6 What later phases parked
+
+Phase 6 / research only: online distill, live serving-weight updates, attention-map match, productized parametric unlearn, auto twin calibration. Do not block the chariot on those.
+
+---
+
+## 2. Boundaries with Unsloth
+
+The Unsloth monorepo contains three license/role zones. Unforgettable is the Apache memory product.
+
+| Zone | Path | License | Role vs Unforgettable |
+|------|------|---------|------------------------|
+| **This package** | `unforgettable/` | Apache 2.0 | Brains: store, policy, episode, tools, sidecar |
+| **Studio face** | `studio/backend/core/unforgettable_host.py`, plus tiny hooks | AGPL | Host implementation, virtual-model route, tool dispatch, stream rewrite |
+| **Unsloth core** | `unsloth/` | Apache 2.0 | Engine room for **C only**: `FastLanguageModel.from_pretrained` + `get_peft_model` + TRL `SFTTrainer`, lazy-imported inside `sidecar/train.py` |
+| **Studio trainer** | `studio/backend/core/training/` | AGPL | **Do not import.** Sidecar has its own recipe |
+| **unsloth_cli** | `unsloth_cli/` | Apache | **Do not import.** |
+| **Studio RAG** | `studio/backend` `rag.db` | AGPL | Unrelated. B is `memory/memory.db` |
+| **Grok Build** | not in tree | — | Reference only (remember / search / inject / flush / dream-as-hygiene) |
+
+### 2.1 Dependency arrow
+
+```
+studio  ──imports──►  unforgettable
+unforgettable  ──must not import──►  studio, studio.backend, unsloth_cli
+unforgettable.sidecar  ──lazy, inside UnslothTrainBackend only──►  unsloth, torch, trl
+```
+
+`tests/test_import_hygiene.py` is the tripwire: no `from studio` / `import studio` in production modules; sidecar package import must not load `unsloth` or `torch`.
+
+### 2.2 Host protocol (the only Studio contract)
+
+`unforgettable/host.py` defines `Host`. Studio implements `StudioHost`. Tests implement `FakeHost` (`tests/test_episode.py:55`). A future TUI implements `Host` and is done.
+
+Required-in-practice methods:
+
+| Method | Duty |
+|--------|------|
+| `memory_db_path()` | SQLite path |
+| `world_session_id(request)` | World rim id |
+| `create_sim_session(episode_id)` | New sim id + claimed dir |
+| `sandbox_path(session_id)` | Absolute tree |
+| `remove_sim_session(session_id)` | Teardown |
+| `generate(GenerateRequest)` | One inner tool-loop pass; `session_id` selects the rim |
+| `complete(messages, max_tokens=)` | One-shot, **no tools**, for LLM extract |
+
+Optional (`getattr` skip):
+
+| Method | Missing behavior |
+|--------|------------------|
+| `run_action(...)` | No test command / no harness grade |
+| `confirm(...)` | If confirm is required → `ESCALATE` |
+
+`GenerateRequest` is a narrow DTO (not `ChatCompletionRequest`): messages, session, tools, `on_chunk`, `adapter_path`.
+
+### 2.3 Studio call sites (AGPL, keep thin)
+
+| File | What it may do |
+|------|----------------|
+| `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, enabled-tool union |
+| `studio/backend/routes/inference.py` | If `is_virtual_model(model)` and not `in_inner_generate()` → `handle_chat_completions`; catalog entry |
+| `studio/backend/core/inference/tools.py` | `*MEMORY_TOOLS` + `*CONTACT_TOOLS` on `ALL_TOOLS`; `execute_tool` dispatches `memory_*` / `rims_*` to Apache `dispatch` |
+| `studio/backend/core/inference/tool_stream_exec.py` | Copies ContextVars into the tool worker so episode bind survives the thread |
+| `studio/backend/models/inference.py` | Documents virtual model id + Unforgettable extra fields |
+
+Policy, schema, clone, and admit **must not** grow in those files. If a function starts owning B or throne, move it back to Apache.
+
+### 2.4 Data files (do not mix)
+
+| File | Owner |
+|------|--------|
+| `$STUDIO_HOME/memory/memory.db` | Unforgettable B (+ packs/adapters tables) |
+| `$STUDIO_HOME/memory/adapters/<id>/` | C LoRA dirs |
+| `$STUDIO_HOME/rag/…` / `rag.db` | Studio RAG — never write here |
+| chat message tables | Episode A on disk — not B |
+| `~/.unforgettable/memory.db` | Headless / test default when no `UNFORGETTABLE_DB` / `STUDIO_HOME` |
+
+### 2.5 Packaging
+
+Root `pyproject.toml` includes `"unforgettable*"` in `setuptools.packages.find`. The wheel license metadata stays Apache-2.0 for the project; Studio files keep AGPL SPDX headers. `unforgettable/LICENSE` makes the package relocatable.
+
+There is no `console_scripts` entry. Entry is `python -m unforgettable`.
+
+Root `[tool.pytest.ini_options] testpaths = ["tests/security"]`. **Bare `pytest` at repo root does not collect this package.**
+
+---
+
+## 3. Source files
+
+Production modules only. Tests are listed in §5. Plans under `plans/` are charter, not runtime.
+
+### 3.1 Package root
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Version `0.1.0`; `VIRTUAL_MODEL_ID`, `is_virtual_model`, `inner_model_id` |
+| `__main__.py` | `python -m unforgettable` → `cli.main` |
+| `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback |
+| `constants.py` | Kinds, statuses, provenances, namespace defaults, `PROVENANCE_WEIGHT` |
+| `host.py` | `Host` protocol, `GenerateRequest` / `GenerateResult` / `ToolTrace`, run-action constants |
+| `LICENSE` | Apache 2.0 text |
+| `README.md` | User-facing overview |
+| `TECHNICAL.md` | This file |
+
+### 3.2 `store/` — B notebook
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Public store façade |
+| `db.py` | Per-call SQLite connections, WAL, `foreign_keys=ON`, lazy `ensure_schema` |
+| `schema.py` | `namespaces`, `records`, FTS5, `admissions_log`, `rollouts`, `compiled`, `compiled_blocked`, `retrieve_uses`, `inject_stats`, `packs`, `pack_items`, `adapters` |
+| `records.py` | CRUD, supersede (one transaction), deprecate, admissions log, rollouts, retrieve_uses, inject_stats |
+| `search.py` | FTS5 MATCH (AND + stopwords), then provenance-weight sort |
+| `titles.py` | `normalize_title()` shared by compact and gate eyes |
+| `compact.py` | Deterministic hygiene: empty proposed, title-dedupe, fold superseded chains |
+| `compile.py` | Standing membership cache; live format of B; sticky `uncompile` |
+| `trajectories.py` | Graded rollout retrieve (episode FTS + join); never injects episode bodies |
+
+### 3.3 `agents/` — internal B maintainers
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Re-exports admit / retrieve / extract |
+| `admissions.py` | Locked `admit()` predicate table + log |
+| `retriever.py` | `RetrievePolicy`, char budget, stakes, sim lesson bias, format inject |
+| `extractor.py` | Naive fail→success, twin-drift, episode summary, bounded `llm_extract` |
+
+### 3.4 `tools/` — OpenAI function surface
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | `MEMORY_TOOLS`, `CONTACT_TOOLS`, `dispatch` |
+| `specs.py` | Function JSON schemas (underscore names) |
+| `handlers.py` | Dispatch: write/search/get/supersede/deprecate/compact/compile + `rims_enter_sim` |
+
+### 3.5 `loop/` — middle wheel
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | `run`, `EpisodeRequest` / `EpisodeState`, `note_tool_result` |
+| `context.py` | Request/state dataclasses; last-user text; created-sim tracking |
+| `episode.py` | `run()`: inject, generate loop, clone, harness, confirm, extract, probes, teardown |
+| `runtime.py` | ContextVars for db / episode / namespace / contact / traces |
+
+### 3.6 `rims/` — contact surfaces
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | `clone_tree`, `ContactMode` |
+| `types.py` | `ContactMode = "world" \| "sim"` |
+| `clone.py` | Pure filesystem clone; same-path refuse |
+| `detect.py` | Test-command resolution + tree detector (`pytest` / `npm test` / `go test`) |
+
+### 3.7 `throne/`
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Policy façade |
+| `policy.py` | `Action`, `Policy`, `require_confirm_retry`, `policy_from_request`, `decide` |
+
+### 3.8 `eyes/`
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Eyes façade |
+| `protocols.py` | `RecognizedFailure`, `WorldEyes` / `SimEyes` / `GateEyes`, `Contradiction` |
+| `basic.py` | Tool-result eyes, runner fingerprints, user phrases, `grade_run_action` |
+| `gate.py` | Title-contradiction scan, `review_write`, `LogGateEyes` |
+| `probes.py` | `Probe:` procedures; CLI and post-extract run |
+
+### 3.9 `sidecar/` — C
+
+| File | Description |
+|------|-------------|
+| `__init__.py` | Re-exports `pack_from_admitted_b` only; no Unsloth import |
+| `pack.py` | Eligibility, votes, holdout-by-episode, persist |
+| `format.py` | Title→body SFT messages; world fail/pass preference pairs |
+| `train.py` | `TrainBackend`, `FakeTrainBackend`, lazy `UnslothTrainBackend`, `train_pack` |
+| `eval.py` | Holdout lean score vs base; optional probes |
+| `adapters.py` | Registry: shadow → promote / discard / rollback |
+
+### 3.10 `plans/` (not imported)
+
+`MemoryWheels.md`, `MemoryPhases.md`, `MemPhase1.md`–`MemPhase5.md`. Charter and PR history. Runtime code must not depend on them.
+
+---
+
+## 4. Implementation overview
+
+### 4.1 Store and schema
+
+`get_connection` (`store/db.py:37`) opens a per-call connection, enables WAL + FK, and runs `ensure_schema` once per resolved path under a lock.
+
+`records` is the soul of B (Phase 1). Later phases add tables with `CREATE TABLE IF NOT EXISTS` — no `ALTER` on `records` except additive missing columns (`schema.py:161`). FTS5 (`record_fts`) indexes title+body; `record_id` is stored UNINDEXED and maintained in Python (`records._rewrite_fts`).
+
+Supersede (`records.supersede_record`, `store/records.py:210`) marks the old row superseded and inserts the successor **in one connection**. Handlers run `review_write` + `admit` first and pass the resulting status (`tools/handlers.py` `_supersede`). A proposed sim claim cannot be laundered to active by superseding.
+
+`set_record_status` to `active` strips trailing `[deprecated] …` suffixes so CLI `admit` after compact does not re-inject the scar.
+
+### 4.2 Retrieve and standing compile
+
+Default retrieve kinds exclude `episode` (`agents/retriever.py` `DEFAULT_RETRIEVE_KINDS`). Search tokenizes the query, drops a small stoplist, and ANDs quoted terms (`store/search.py` `_match_query`). Hits are filtered, then sorted by `PROVENANCE_WEIGHT` then FTS rank.
+
+`RetrievePolicy` (`retriever.py:43`): `max_records=6`, `max_chars=2400`, `snippet_chars=280`, `high_stakes` (world only drops sim/infer), `max_twin_notes` (1 world / 3 sim), `contact`, `exclude_ids`. After FTS, compiled ids are dropped; `top_k` over-fetches by `len(exclude_ids)` so standing members do not starve retrieve.
+
+Compiled form is **membership + live format**, not a stored skill blob (`store/compile.py`). A standing section always ends with `Source: {uuid}`. Eligibility: active `procedure`, provenance in `{world, mixed, human}`, not a `Probe:` title, not the `test command` nomination. Auto-pin after two distinct world-retrieve + world-pass episodes (`procedure_hits`). `unpin_compiled` inserts `compiled_blocked` so `maybe_compile` will not silently re-pin; explicit `compile ID` clears the block.
+
+`loop/episode.py` `_inject_bundle` assembles preamble + standing + retrieve + trajectories and writes `retrieve_uses` + `inject_stats`. CLI `load` prints the char split.
+
+On `ENTER_SIM` / `RETRY_WORLD` the bundle is rebuilt (sim retrieve turns off the high-stakes provenance filter and prefers sim/mixed lessons). `CONTINUE_SIM` does not FTS again; it does refresh the repaired-plan suffix.
+
+### 4.3 Episode loop
+
+`run()` (`loop/episode.py`) is the middle wheel:
+
+1. Bind ContextVars (`loop/runtime.py` `bind_episode`).
+2. Resolve optional `adapter_id` → `adapter_path` + train-source exclude set (`_resolve_attached_adapter`). Missing/discarded adapter is ignored.
+3. First-turn `_rebuild(contact="world")`.
+4. Before the first world generate: closed user-phrase list (`that failed`, …) can enter sim with zero world generates.
+5. `host.generate` in the active session. `_pass_failure` skips `memory_*`, treats `rims_enter_sim` as fail-wins, then `inspect_tool_result` (traceback, `Error:`, Studio sentinels, runner fingerprints, exit-code).
+6. In sim, if a test command is known and `run_action` exists, **grade wins** over “I fixed it” (`_maybe_run_sim_tests` + `grade_run_action`).
+7. `decide` then optional `confirm` (`_confirm_retry_world`).
+8. `ENTER_SIM`: `create_sim_session`, `track_sim`, refuse bad ids, `clone_tree`, resolve test command, rebuild inject, optional diagnostic `run_action` (does not burn a sim turn).
+9. `RETRY_WORLD` / `CONTINUE_SIM`: rebuild inject + `_repair_context` (last failure, sim grade, clipped last generate text). World retry does **not** copy sim files onto world.
+10. `_extract`: `from_episode` (prefers last **world** success), `from_drift`, optional `llm_extract` via `Host.complete`, episode row, last-event rollouts, `maybe_compile`. `keep_sim` only for **active** `error_fix` or **active** `twin_note` on this episode.
+11. Optional ≤3 `Probe:` runs on a **fresh** clone of current world.
+12. `finally`: remove every created sim except the kept one; `reset_episode`.
+
+`llm_extract` (`extractor.py:169`) is bounded: last 24 non-memory traces / 8k chars, max 8 drafts, forced `provenance=infer`, parse-fail → `[]`. Forbidden kinds: `directive`, `episode`. Skip when fewer than two non-memory traces and no failure events.
+
+### 4.4 Eyes and throne
+
+`inspect_tool_result` / `grade_run_action` (`eyes/basic.py`) share fingerprints. Studio world strings (`Execution timed out after`, `Execution cancelled.`, `Blocked command(s) for safety:`, `Execution error:`, `No command provided.`) are failures on `python`/`terminal`, not success.
+
+`review_write` (`eyes/gate.py`) forces proposed when a new **claim** shares a normalized title with an active claim of a different normalized body. Procedures are not gated that way (compact title-dedupes them).
+
+`require_confirm_retry` (`throne/policy.py:46`): `confirm_retry is False` wins; else True; else `stakes=="high"`; else `permission_mode=="ask"`. Studio product default `auto` does **not** show a retry card.
+
+### 4.5 Sidecar C
+
+`pack_from_admitted_b` (`sidecar/pack.py`): only active `procedure`/`error_fix` with trusted provenance; probes and `test command` dropped; traces **vote** (and hold out by episode); they do not donate episode text. `include_sim` default false; sim/pass votes only with world/pass and no twin_note. Sim rows never become assistant gold.
+
+`train_pack` refuses fewer than `PACK_MIN_TRAIN` (4) train items. Fake backend writes `adapter_config.json` + `fake_gold.json`. Unsloth backend lazy-imports, refuses `UNSLOTH_ENABLE_FULL_FINETUNING=1` and `full_finetuning=True`, writes a LoRA dir. Preference recipe: Fake writes `pairs.jsonl`; Unsloth DPO is not wired (`NotImplementedError`).
+
+`eval_adapter`: holdout title-only complete vs gold. Empty completions on both sides (`adapter_lean == base_lean == 0`) **fail**. CLI `eval` selects Fake vs Unsloth from `adapters.backend` and passes `base_model` into `UnslothTrainBackend.complete` (load base, then PEFT adapter).
+
+`promote_adapter` refuses without metrics / without `passed`. One promoted row; previous promoted → discarded. `rollback_adapter` discards current; does not repromote. Files are never deleted by the registry.
+
+Live Studio inject does **not** shrink on promote alone. Shrink + `GenerateRequest.adapter_path` only when `EpisodeRequest.adapter_id` is set. `StudioHost.generate` may ignore `adapter_path` this phase.
+
+### 4.6 ContextVars and Studio threads
+
+`bind_episode` sets `_db_path`, `_episode_id`, `_namespace`, `_traces`, `_contact`. `execute_tool` calls `note_tool_result` and `dispatch` (which reads `current_db_path()`). Studio’s inner loop runs tools in `stream_tool_execution` on a worker thread (`studio/backend/core/inference/tool_stream_exec.py`). That thread is started with `contextvars.copy_context().run` so the bind survives. A raw `threading.Thread` would write to `~/.unforgettable/memory.db` and leave `_pass_failure` blind. Apache `tests/test_runtime_context.py` locks both behaviors.
+
+`StudioHost.run_action` uses `asyncio.to_thread` (copies context). Extract uses `complete`, not `generate`, so it cannot re-enter the act/sim loop.
+
+---
+
+## 5. Automated tests
+
+Apache suite: **205** tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`.
+
+| File | What it locks |
+|------|----------------|
+| `test_import_hygiene.py` | No `studio` imports; sidecar import does not load `unsloth`/`torch`; no module-level Unsloth in sidecar except indented `train.py` |
+| `test_virtual_model.py` | `unforgettable` / `unforgettable/<id>` alias strip |
+| `test_store.py` | Schema CRUD, supersede history, deprecate hidden from search, world > infer rank |
+| `test_admissions.py` | Locked `admit()` order including bookkeeping vs force_proposed vs sim procedure |
+| `test_gate.py` | Contradiction `review_write`, conflicting write stays proposed, admissions log |
+| `test_retrieve.py` | Char budget, high-stakes, episode exclusion, twin cap, sim contact, exclude compiled |
+| `test_compact.py` | Dedupe kinds, namespace isolation, empty proposed age, fold chains, dry-run |
+| `test_compile.py` | Hits, probes/test-command/sim/proposed refuse, sticky uncompile, refresh after deprecate, standing caps |
+| `test_trajectories.py` | Episode FTS join, ranking, high-stakes drop, no episode body, cap 2 |
+| `test_extract.py` | LLM drafts proposed infer, parse-fail, provenance overwrite, skip without `complete` |
+| `test_eyes.py` | Runner fingerprints vs “failed to import”, enter_sim, user phrases, Studio sentinels |
+| `test_rims_action.py` | Detector order, resolve requested vs procedure vs tree |
+| `test_rims_throne.py` | Clone ignore list, same-path refuse, `decide()` fail→sim→retry, confirm matrix |
+| `test_probes.py` | Prefix identity, CLI `--run`, episode cap 3, skip without sim/`run_action` |
+| `test_tools.py` | Tool names, CRUD, admit log id, supersede stays proposed, compact/compile dry-run defaults |
+| `test_cli.py` | Subcommands, `--db`, compact/pack dry-run help, fake train, honest eval, promote/rollback |
+| `test_episode.py` | Happy path + drift + enter_sim + user phrase + harness + timeout + confirm + standing + re-retrieve + compile + adapter shrink; FakeHost |
+| `test_stream_forward.py` | `on_chunk` forwarded into `GenerateRequest` |
+| `test_runtime_context.py` | `copy_context` carries db + traces; raw thread does not |
+| `test_sidecar_pack.py` | Drop reasons, no episode gold, sim vote matrix, holdout-by-episode, preference pairs |
+| `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl |
+| `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails |
+| `test_sidecar_adapters.py` | Promote gate, one promoted, rollback keeps files, probe-fail refuse |
+
+Names that later phases must keep green: `test_episode_fail_sim_retry_writes_error_fix`, `test_episode_sim_ok_world_retry_fail_writes_twin_note`, `test_retrieve_injects_before_generate`, `test_episode_standing_excludes_from_retrieve`, `test_episode_re_retrieve_on_enter_sim`, `test_episode_maybe_compile_after_second_world_pass`.
+
+### 5.1 Studio-face tests (AGPL)
+
+`studio/backend/tests/test_unforgettable_stream.py` — `_rewrite_inner_frame` (tool frames unchanged, `finish_reason` nulled, inner `[DONE]` dropped), stream drain/`aclose`, enabled-tools union, `run_action`/`confirm` SSE, ContextVar copy through `stream_tool_execution`. Needs Studio backend on `PYTHONPATH` and Studio Python extras (`structlog`, …).
+
+There is no frontend Unforgettable test (no memory UI yet).
+
+---
+
+## 6. Build and test
+
+### 6.1 Layout and install
+
+From the Unsloth repository root (this package is not published separately):
+
+```bash
+# Editable install of the monorepo (pulls unforgettable* via setuptools include)
+python -m pip install -e .
+
+# or with uv
+uv pip install -e .
+```
+
+Python: `>=3.9,<3.15` (`pyproject.toml`). Apache Unforgettable itself needs only the stdlib (and pytest to run tests). SQLite must have FTS5 (default CPython).
+
+Optional extras:
+
+- **Studio chat face:** install the repo’s Studio extra / follow Studio setup so `studio/backend` imports work.
+- **Real C training:** Unsloth + GPU + `trl` + `datasets` + `peft`. Not required for `train --backend fake` or for CI.
+
+### 6.2 Import smoke (no pytest)
+
+```bash
+python -c "import unforgettable, unforgettable.sidecar, unforgettable.loop.episode; print(unforgettable.__version__)"
+python -c "import sys, unforgettable.sidecar; assert 'unsloth' not in sys.modules and 'torch' not in sys.modules"
+python -m unforgettable --help
+```
+
+`git grep` of `unforgettable/*.py` (excluding tests) must not show `from studio` or `import studio`.
+
+### 6.3 Apache test suite (required, no GPU)
+
+Root `pytest` is **not** enough: `[tool.pytest.ini_options] testpaths = ["tests/security"]`.
+
+```bash
+# from repo root; pythonpath already includes "."
+python -m pytest unforgettable/tests
+
+# quieter / fail-fast
+python -m pytest unforgettable/tests -q --tb=short
+
+# one module
+python -m pytest unforgettable/tests/test_episode.py -q
+```
+
+Expect **205 passed**. Runtime is a few seconds on a laptop.
+
+If the environment has no `pytest` in the project venv:
+
+```bash
+uv pip install pytest
+# or: python -m pip install pytest
+```
+
+### 6.4 Studio-face tests (optional here, required if you touch AGPL wiring)
+
+Needs Studio’s import path and its Python deps (`structlog`, `huggingface_hub`, … — whatever `studio/backend` imports at collection time).
+
+```bash
+PYTHONPATH=studio/backend python -m pytest studio/backend/tests/test_unforgettable_stream.py -q
+```
+
+If collection fails on missing Studio extras, install Studio’s backend requirements (see `studio/backend/requirements/` and Studio README). Do not weaken `test_import_hygiene` to make this pass.
+
+### 6.5 Manual Studio smoke
+
+1. Start Studio with a loaded inner model.
+2. `GET /v1/models` includes `id: unforgettable`.
+3. `POST /v1/chat/completions` with `model: unforgettable`, `stream: true` yields multiple `delta.content` events and live `tool_start`/`tool_end` before a single `[DONE]`.
+4. After a coding fail, a `sim-*` sandbox appears; after clean proposed-only success it is removed.
+5. `python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" list` shows episode / proposed extract rows.
+
+### 6.6 Sidecar on a GPU box (optional)
+
+```bash
+python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" pack --dry-run
+python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" pack
+python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" train --backend unsloth --base <hf-or-local-id>
+python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" eval <adapter-id>
+python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id>
+```
+
+`--base` is required for `--backend unsloth` (exit 2 otherwise). Full fine-tune is refused. CI must use `--backend fake` and must not construct `UnslothTrainBackend.train` against a real model.
+
+### 6.7 What “green” means
+
+- `unforgettable` imports with no Studio on `sys.path`.
+- `import unforgettable.sidecar` does not import `unsloth` or `torch`.
+- `pytest unforgettable/tests` 205 passed.
+- FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
+- FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
+- Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.
+
+When adding code: new brains go in `unforgettable/` (Apache header). Studio only grows if the public face needs it (stream, catalog, payload fields, later UI). If a Studio function starts owning schema or policy, move it back.
