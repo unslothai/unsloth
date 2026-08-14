@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import random
 from typing import Any, Optional
 
 
@@ -31,5 +32,21 @@ def split_dataset_for_evaluation(dataset: Any, *, seed: int = 3407) -> Optional[
 
     eval_rows = max(MIN_EVAL_ROWS, min(128, int(0.05 * total_rows)))
     eval_rows = min(eval_rows, total_rows // 2)
-    split = dataset.train_test_split(test_size = eval_rows, seed = seed)
-    return split["train"], split["test"]
+    if hasattr(dataset, "train_test_split"):
+        split = dataset.train_test_split(test_size = eval_rows, seed = seed)
+        return split["train"], split["test"]
+
+    # VLM formatting returns a plain list so image objects remain in the exact
+    # structure expected by the multimodal collator. Split that list directly
+    # rather than converting it back into an Arrow dataset.
+    if isinstance(dataset, list):
+        indices = list(range(total_rows))
+        random.Random(seed).shuffle(indices)
+        eval_indices = set(indices[:eval_rows])
+        train = [row for index, row in enumerate(dataset) if index not in eval_indices]
+        evaluation = [row for index, row in enumerate(dataset) if index in eval_indices]
+        return train, evaluation
+
+    raise TypeError(
+        "Evaluation splitting requires a Hugging Face dataset or a formatted dataset list"
+    )
