@@ -153,3 +153,42 @@ def test_the_endpoints_stay_out_of_the_access_log():
     # test_debug_log_self_feedback.py proves it over the real middleware.
     assert _is_quiet_success("GET", "/api/settings/debug/logs", 200, False) is True
     assert _is_quiet_success("GET", "/api/settings/debug/logs/sources", 200, False) is True
+
+
+def test_a_stale_session_is_flagged_when_file_logging_is_off(client, monkeypatch):
+    """An old file with logging now off must not read as a live view.
+
+    Reported on the PR: with UNSLOTH_STUDIO_NO_FILE_LOG=1 and a log left over
+    from a previous run, the read path answered a plain "ok" and the viewer sat
+    there looking live while nothing would ever be appended to it again.
+    """
+    _seed_server_log("a previous session\n")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NO_FILE_LOG", "1")
+    body = client.get("/api/settings/debug/logs").json()
+    assert body["status"] == "ok"
+    assert body["lines"] == ["a previous session"]
+    assert body["file_logging_disabled"] is True
+
+
+def test_file_logging_disabled_is_false_on_an_ordinary_read(client):
+    _seed_server_log()
+    assert client.get("/api/settings/debug/logs").json()["file_logging_disabled"] is False
+
+
+def test_a_burst_larger_than_one_response_says_more_is_pending(client):
+    """The remainder is delivered, and the caller is told to come back for it."""
+    from utils import debug_log_reader
+
+    path = _seed_server_log()
+    cursor = client.get("/api/settings/debug/logs").json()["cursor"]
+    burst = debug_log_reader.MAX_LINES_PER_RESPONSE + 500
+    with path.open("a", encoding = "utf-8") as handle:
+        handle.write("".join(f"line {index}\n" for index in range(burst)))
+
+    first = client.get("/api/settings/debug/logs", params = {"cursor": cursor}).json()
+    assert len(first["lines"]) == debug_log_reader.MAX_LINES_PER_RESPONSE
+    assert first["more_pending"] is True
+
+    second = client.get("/api/settings/debug/logs", params = {"cursor": first["cursor"]}).json()
+    assert second["more_pending"] is False
+    assert first["lines"] + second["lines"] == [f"line {index}" for index in range(burst)]

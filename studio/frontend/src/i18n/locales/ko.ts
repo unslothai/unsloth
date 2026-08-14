@@ -177,6 +177,8 @@ export const ko = {
       missing: "로그 파일을 찾을 수 없습니다.",
       unreadable: "로그 파일을 읽을 수 없습니다.",
       droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
     },
     voice: {
       title: "음성",

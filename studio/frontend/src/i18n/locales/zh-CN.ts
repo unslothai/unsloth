@@ -175,6 +175,8 @@ export const zhCN = {
       missing: "未找到日志文件。",
       unreadable: "无法读取日志文件。",
       droppedNotice: "已跳过部分行：日志的写入速度超过了读取速度。",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
     },
     voice: {
       title: "语音",

@@ -144,6 +144,8 @@ export const it = {
       missing: "Nessun file di log trovato.",
       unreadable: "Non è stato possibile leggere il file di log.",
       droppedNotice: "Alcune righe sono state saltate: il log è stato scritto più velocemente di quanto potesse essere letto.",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
     },
     voice: {
       title: "Voce",

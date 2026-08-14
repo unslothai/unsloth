@@ -179,6 +179,8 @@ export const ptBR = {
       missing: "Nenhum arquivo de log foi encontrado.",
       unreadable: "Não foi possível ler o arquivo de log.",
       droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
     },
     voice: {
       title: "Voz",

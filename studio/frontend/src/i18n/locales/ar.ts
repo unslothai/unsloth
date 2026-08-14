@@ -177,6 +177,8 @@ export const ar = {
       missing: "لم يُعثر على أي ملف سجل.",
       unreadable: "تعذّرت قراءة ملف السجل.",
       droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
     },
     voice: {
       title: "الصوت",

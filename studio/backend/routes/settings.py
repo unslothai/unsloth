@@ -2088,6 +2088,14 @@ class DebugLogResponse(BaseModel):
     reset_reason: Optional[str] = None
     dropped_bytes: int = 0
     truncated_head: bool = False
+    # The reader stopped at the response cap and the rest arrives on the next
+    # poll. Without this the caller cannot tell a complete answer from a partial
+    # one, which is invisible in manual mode because no next poll is coming.
+    more_pending: bool = False
+    # File logging is off, so anything readable here is a PREVIOUS session and
+    # will never grow. The status stays "ok" because the content is real and
+    # worth reading; saying nothing made a stale log look live.
+    file_logging_disabled: bool = False
     size_bytes: int = 0
 
 
@@ -2172,5 +2180,7 @@ def get_debug_log(
         reset_reason = result.reset_reason,
         dropped_bytes = result.dropped_bytes,
         truncated_head = result.truncated_head,
+        more_pending = result.more_pending,
+        file_logging_disabled = debug_log_sources.file_logging_disabled(),
         size_bytes = result.size_bytes,
     )

@@ -41,6 +41,8 @@ export interface DebugLogPage {
   resetReason: string | null;
   droppedBytes: number;
   truncatedHead: boolean;
+  morePending: boolean;
+  fileLoggingDisabled: boolean;
   sizeBytes: number;
 }
 
@@ -106,6 +108,8 @@ export async function loadDebugLog(
     resetReason: body.reset_reason ?? null,
     droppedBytes: Number(body.dropped_bytes ?? 0),
     truncatedHead: Boolean(body.truncated_head),
+    morePending: Boolean(body.more_pending),
+    fileLoggingDisabled: Boolean(body.file_logging_disabled),
     sizeBytes: Number(body.size_bytes ?? 0),
   };
 }

@@ -57,6 +57,14 @@ export function DebuggingTab() {
   const [realpath, setRealpath] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
+  // Reported by the reader, and until now read by nobody: a burst larger than
+  // one response continues on the next poll, which in manual mode never comes
+  // unless the user knows to ask for it.
+  const [morePending, setMorePending] = useState(false);
+  // File logging is off and an older session's log is still on disk, so the
+  // pane shows real content that will never grow. Without saying so, a stale
+  // log is indistinguishable from a live one.
+  const [staleSession, setStaleSession] = useState(false);
   const { copied, copy } = useCopyFeedback();
 
   // In a ref as well as state: the poll loop must not restart per line arrived.
@@ -173,6 +181,8 @@ export function DebuggingTab() {
         cursorRef.current = page.cursor;
         if (page.realpath) setRealpath(page.realpath);
         setDropped((previous) => nextDroppedState(previous, page));
+        setMorePending(page.morePending);
+        setStaleSession(page.fileLoggingDisabled);
         setNotice(
           page.status === "ok" || page.status === "empty"
             ? null
@@ -345,6 +355,16 @@ export function DebuggingTab() {
         {dropped ? (
           <p className="text-xs text-amber-500">
             {t("settings.debugging.droppedNotice")}
+          </p>
+        ) : null}
+        {morePending ? (
+          <p className="text-xs text-muted-foreground">
+            {t("settings.debugging.morePending")}
+          </p>
+        ) : null}
+        {staleSession ? (
+          <p className="text-xs text-amber-500">
+            {t("settings.debugging.staleSession")}
           </p>
         ) : null}
         {/* One text surface, not an element per line: this repaints on every

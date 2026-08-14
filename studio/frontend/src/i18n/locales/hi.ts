@@ -180,6 +180,8 @@ export const hi = {
       missing: "कोई लॉग फ़ाइल नहीं मिली।",
       unreadable: "लॉग फ़ाइल पढ़ी नहीं जा सकी।",
       droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
     },
     voice: {
       title: "आवाज़",

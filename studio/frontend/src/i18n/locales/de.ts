@@ -181,6 +181,8 @@ export const de = {
       missing: "Es wurde keine Protokolldatei gefunden.",
       unreadable: "Die Protokolldatei konnte nicht gelesen werden.",
       droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
     },
     voice: {
       title: "Sprachfunktionen",
