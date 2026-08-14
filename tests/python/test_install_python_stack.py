@@ -992,6 +992,28 @@ class TestPipConfigPolicySurvivesThePin:
         assert env["PIP_REQUIRE_HASHES"] == "1"
         assert env["PIP_ONLY_BINARY"] == ":all:"
 
+    def test_the_two_binary_policies_combine_rather_than_overwrite(self, tmp_path, monkeypatch):
+        """Each is a restriction in force. Letting pip.conf's package list narrow uv's
+        :all: lets the fallback build the sdist uv had just refused."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        env = self._pinned_env(
+            "global.only-binary='numpy'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+        )
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+
+    def test_two_scoped_policies_are_unioned(self, tmp_path, monkeypatch):
+        (tmp_path / "uv.toml").write_text(
+            '[pip]\nno-build-package = ["torch"]\n', encoding = "utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        env = self._pinned_env(
+            "global.only-binary='numpy'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+        )
+        assert env["PIP_ONLY_BINARY"] == "numpy,torch"
+
     def test_a_scoped_pip_conf_policy_keeps_its_scope(self):
         env = self._pinned_env(
             "global.only-binary='some-other-package'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
@@ -1089,6 +1111,29 @@ class TestTheWheelHelperGetsThePolicyToo:
             )
         assert env["PIP_REQUIRE_HASHES"] == "1"
         assert env["SOME_CALLER_SETTING"] == "kept", "the caller's own environment survives"
+
+    def test_an_optional_wheel_drops_the_pip_attempt_rather_than_aborting(self):
+        """flash-attn is optional and every other failure there leaves the install
+        running without it, so a policy pip cannot be told about must not take the whole
+        install down through the environment builder."""
+        from backend.utils import wheel_utils
+
+        ran: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            ran.append(cmd)
+            return mock.Mock(returncode = 1, stdout = "")
+
+        with mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/uv"):
+            attempts = wheel_utils.install_wheel(
+                "https://example.invalid/flash_attn.whl",
+                python_executable = "python",
+                use_uv = True,
+                run = fake_run,
+                allow_pip_fallback = False,
+            )
+        assert [name for name, _result in attempts] == ["uv"]
+        assert not any("pip" in cmd and cmd[0] == "python" for cmd in ran)
 
     def test_the_caller_environment_is_untouched_without_a_policy(self):
         base = {"PATH": "/usr/bin"}
@@ -1620,7 +1665,10 @@ class TestUvConfigDiscoveryMatchesUv:
         [
             ("[tool.uv]", True),
             ("[tool.uv.pip]", True),
+            # An array table is still uv's configuration, and uv stops searching there.
+            ("[[tool.uv.index]]", True),
             ("[tool.uvicorn]", False),
+            ("[[tool.uvicorn.thing]]", False),
             ("# [tool.uv]", False),
         ],
     )

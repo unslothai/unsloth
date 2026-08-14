@@ -454,12 +454,15 @@ def install_wheel(
     uv_needs_system: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     env_for_cmd: Callable[[list[str], dict], dict] | None = None,
+    allow_pip_fallback: bool = True,
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     """Install a wheel by URL, uv first and pip second.
 
     `env_for_cmd` lets the caller decide each attempt's environment from the command.
     The pip attempt is a FALLBACK for a uv attempt that may have failed on the operator's
     policy, and pip reads none of uv's, so without that hook it installs what uv refused.
+    `allow_pip_fallback = False` drops that attempt entirely, for a policy pip cannot be
+    told about at all.
     """
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
 
@@ -484,6 +487,9 @@ def install_wheel(
         attempts.append(("uv", result))
         if result.returncode == 0:
             return attempts
+
+    if not allow_pip_fallback:
+        return attempts
 
     pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps", wheel_url]
     result = run(

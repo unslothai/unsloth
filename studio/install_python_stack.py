@@ -3797,6 +3797,10 @@ def _ensure_flash_attn() -> None:
             # That helper falls back to pip on its own, and this wheel URL carries no
             # hash, so without the policy the pip attempt installs what uv refused.
             env_for_cmd = _install_env_over,
+            # And when pip cannot be told the policy at all, the attempt is dropped
+            # rather than refused: flash-attn is optional, and every other failure here
+            # leaves the install running without it.
+            allow_pip_fallback = not _untranslatable_strict_policy(),
         ):
             if wheel_result.returncode == 0:
                 # Verify rather than trust the exit code, so setup reports what happened.
@@ -4193,7 +4197,12 @@ def _pyproject_uv_table_by_line(text: str) -> bool:
     """
     for line in text.splitlines():
         header = _toml_line_value(line)
-        if header == "[tool.uv]" or header.startswith("[tool.uv."):
+        if not header.startswith("["):
+            continue
+        # `[[tool.uv.index]]` is an array table and still uv's configuration, so the
+        # brackets come off before the name is compared.
+        name = header.strip("[]").strip()
+        if name == "tool.uv" or name.startswith("tool.uv."):
             return True
     return False
 
@@ -4932,6 +4941,19 @@ def _untranslatable_strict_policy() -> "list[str]":
     return blockers
 
 
+def _merged_only_binary(first: str, second: str) -> str:
+    """The wider of two format controls, since each one is a restriction in force."""
+    everything = False
+    packages: "list[str]" = []
+    for value in (first, second):
+        _all, _names = _pm_policy_scope(_pm_policy_config_names(value))
+        everything = everything or _all
+        packages += _names
+    if everything:
+        return ":all:"
+    return ",".join(sorted(dict.fromkeys(packages)))
+
+
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
@@ -4990,10 +5012,15 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
             # resolves the two the other way the fallback is "no config at all", which is
             # the wrong policy rather than the wrong wheel.
             env["UV_CONFIG_FILE"] = str(_projection)
-    env.update(_uv_policy_as_pip_policy())
-    # pip's own configuration decides last for a pip command: this is the file the
-    # PIP_CONFIG_FILE above just took away, and the operator wrote it for pip.
-    env.update(_pip_config_as_pip_env(cmd))
+    # Two sources for the same variable, and they are RESTRICTIONS, so they combine
+    # rather than overwrite: uv's no-build translating to :all: must not be narrowed to
+    # pip.conf's own package list, or the fallback builds the sdist uv just refused.
+    for overlay in (_uv_policy_as_pip_policy(), _pip_config_as_pip_env(cmd)):
+        for name, value in overlay.items():
+            if name == "PIP_ONLY_BINARY" and name in env:
+                env[name] = _merged_only_binary(env[name], value)
+            else:
+                env[name] = value
     return env
 
 

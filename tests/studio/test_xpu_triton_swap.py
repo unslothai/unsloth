@@ -116,6 +116,7 @@ def _load_real_index_env_scrub():
         ("def _pip_command_name(", "\n\n\n", 0),
         ("def _pip_config_as_pip_env(", "\n\n\n", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
+        ("def _merged_only_binary(", "\n\n\n", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
