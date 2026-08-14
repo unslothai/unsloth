@@ -355,3 +355,53 @@ test("the thread read that gates sends aborts when it times out", () => {
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
   assert.match(sync, /getStoredChatThreadReadResult\(activeThreadId, \{ bounded: true \}\)/);
 });
+
+test("one chat's pairing ending does not release another chat's run", () => {
+  // Holding the promises per chat is pointless if every settle resolves all of them,
+  // which is what the first attempt at this did.
+  const close = slice(store, "function closeThreadScopedPairingGate", "\n}");
+  assert.match(close, /pairingSettledByThreadId\.get\(threadId\)\?\.resolve\(\)/);
+  assert.doesNotMatch(
+    close,
+    /for \(const \{ resolve \} of pairingSettledByThreadId\.values\(\)\) resolve\(\)/,
+    "every gate is still released at once",
+  );
+  // leaving mid-read must NOT open the gate: that chat's snapshot never arrived
+  const commit = slice(
+    store,
+    "export function commitHeldThreadScopedEditsToTheirThread",
+    "\n}",
+  );
+  assert.match(commit, /closeThreadScopedPairingGate\(null\)/);
+});
+
+test("a run cannot wait on a gate that will never open", () => {
+  const wait = slice(store, "export function awaitThreadScopedPairing", "\n}");
+  assert.match(wait, /Promise\.race\(\[/);
+  assert.match(wait, /THREAD_PAIRING_WAIT_MS/);
+});
+
+test("a write that lands clears the replay entry it would otherwise be reverted by", () => {
+  // The replay carries the previous session's writer id, so the server will apply it
+  // whenever it arrives, including over an edit made since.
+  const write = slice(store, "function writeThreadScopedSettings", "\n}");
+  assert.match(write, /forgetReplayedThreadSettings\(threadId\)/);
+});
+
+test("a failed write stays tracked for the terminal beacon", () => {
+  const track = slice(store, "function trackUnsettledThreadSettingsWrite", "\n}");
+  assert.match(track, /\.then\(\(landed\) =>/);
+  assert.match(track, /if \(landed &&/);
+});
+
+test("the replay cannot block the session's writes forever", () => {
+  const replay = slice(store, "export function replayUnconfirmedThreadSettings", "\n}");
+  assert.match(replay, /THREAD_SETTINGS_REPLAY_TIMEOUT_MS/);
+  assert.match(replay, /signal: timeout\.signal/);
+});
+
+test("a fork stops when the chat's settings could not be saved", () => {
+  const merge = slice(store, "async function mergeThreadScopedSettingsIntoRow", "\n}");
+  assert.match(merge, /throw error;/);
+  assert.match(composer, /Could not fork this chat/);
+});

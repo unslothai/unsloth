@@ -845,6 +845,7 @@ function buildThreadScopedSnapshot(
 }
 
 const THREAD_SETTINGS_REPLAY_KEY = "unsloth_chat_thread_settings_replay";
+const THREAD_SETTINGS_REPLAY_TIMEOUT_MS = 10_000;
 
 /**
  * Snapshots a terminal event sent but could not confirm, kept where the next session
@@ -885,11 +886,17 @@ export function replayUnconfirmedThreadSettings(): void {
   }
   const sent: Promise<unknown>[] = [];
   for (const [threadId, body] of Object.entries(pending)) {
+    // Bounded: every settings write in the session waits for these, so a socket that
+    // never settles would leave the whole session unable to persist anything.
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), THREAD_SETTINGS_REPLAY_TIMEOUT_MS);
     const request = authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: timeout.signal,
     })
+      .finally(() => clearTimeout(timer))
       // Only an ok response means it landed. authFetch resolves for 404 and 5xx too,
       // and the missing-row case this exists for is exactly the one that 404s, so
       // dropping the entry on any settled promise would throw the edit away for good.
@@ -969,7 +976,7 @@ function sendThreadScopedSettingsBeacon(
 // One chain per thread. The write REPLACES settings_json rather than merging it, so two
 // unordered writes do not merge into the newer one, they pick a winner: a slow first
 // request landing after a fast second restores the settings the user just moved away from.
-const threadSettingsWriteChains = new Map<string, Promise<void>>();
+const threadSettingsWriteChains = new Map<string, Promise<unknown>>();
 // Newest snapshot issued per thread, so a write that is still waiting its turn can tell it
 // has been superseded and skip its PATCH rather than reinstate what it captured.
 const threadSettingsWriteTickets = new Map<string, number>();
@@ -1001,10 +1008,11 @@ function takeThreadSettingsWriteTicket(threadId: string): number {
   return ticket;
 }
 
+/** Resolves true when the snapshot reached the row, so callers can tell it landed. */
 function writeThreadScopedSettings(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
-): Promise<void> {
+): Promise<boolean> {
   // Built now, not inside the chain: the snapshot must describe the store as it is at the
   // moment of the edit, not as it will be once the previous write has finished.
   const settings = buildThreadScopedSnapshot(threadId, snapshot);
@@ -1020,9 +1028,11 @@ function writeThreadScopedSettings(
     .then(() => threadSettingsReplaySettled)
     .catch(() => undefined)
     .then(async () => {
-      // superseded while queued: sending this would undo the newer snapshot.
+      // superseded while queued: sending this would undo the newer snapshot, and the
+      // newer one is what the replay entry should be measured against, so this counts
+      // as landed for the purposes of the caller.
       if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
-        return;
+        return true;
       }
       const controller = new AbortController();
       threadSettingsWriteAborts.set(threadId, controller);
@@ -1035,10 +1045,17 @@ function writeThreadScopedSettings(
           { settings, settingsSeq, settingsWriter: threadSettingsWriter },
           { signal: controller.signal },
         );
+        // This session's values are now the row's, so a leftover replay entry from the
+        // last one would revert them if it were ever retried.
+        forgetReplayedThreadSettings(threadId);
+        return true;
       } catch {
         // the chat still behaves as edited; only the snapshot for the next visit is lost.
         // An abort lands here too, and that one is deliberate: a newer snapshot won.
         if (!controller.signal.aborted) warnSettingsPersistenceFailure();
+        // An abort means a newer write won and is tracked in its place; a real failure
+        // means nothing reached the row, and the caller needs to know.
+        return controller.signal.aborted;
       } finally {
         if (threadSettingsWriteAborts.get(threadId) === controller) {
           threadSettingsWriteAborts.delete(threadId);
@@ -1117,8 +1134,11 @@ function trackUnsettledThreadSettingsWrite(
   // terminal event then found nothing to resend for a write still in flight.
   const entry: UnsettledThreadSettingsWrite = { snapshot };
   unsettledThreadSettingsWrites.set(threadId, entry);
-  void writeThreadScopedSettings(threadId, snapshot).finally(() => {
-    if (unsettledThreadSettingsWrites.get(threadId) === entry) {
+  void writeThreadScopedSettings(threadId, snapshot).then((landed) => {
+    // Only a write that reached the row stops being unsettled. Dropping it on failure
+    // left nothing for a terminal event to beacon, so the edit was lost on close and
+    // came back reverted, which is the opposite of what this tracking is for.
+    if (landed && unsettledThreadSettingsWrites.get(threadId) === entry) {
       unsettledThreadSettingsWrites.delete(threadId);
     }
   });
@@ -1215,28 +1235,38 @@ export function beginThreadScopedPairing(threadId: string): void {
         ? readThreadScopedSettings(useChatRuntimeStore.getState())
         : globalThreadScopedDefaults;
   }
-  setThreadScopedSettingsPending(true);
+  openThreadScopedPairingGate(threadId);
 }
 
 /** Sends are held while this is true; see the field's own note. */
-function setThreadScopedSettingsPending(pending: boolean): void {
-  if (
-    useChatRuntimeStore.getState().threadScopedSettingsPending !== pending
-  ) {
-    useChatRuntimeStore.setState({ threadScopedSettingsPending: pending });
+function openThreadScopedPairingGate(threadId: string): void {
+  if (!useChatRuntimeStore.getState().threadScopedSettingsPending) {
+    useChatRuntimeStore.setState({ threadScopedSettingsPending: true });
   }
-  if (pending) {
-    const threadId = pendingPairingThreadId;
-    if (threadId !== null && !pairingSettledByThreadId.has(threadId)) {
-      let resolve!: () => void;
-      const promise = new Promise<void>((r) => {
-        resolve = r;
-      });
-      pairingSettledByThreadId.set(threadId, { promise, resolve });
-    }
-  } else {
-    for (const { resolve } of pairingSettledByThreadId.values()) resolve();
-    pairingSettledByThreadId.clear();
+  if (!pairingSettledByThreadId.has(threadId)) {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pairingSettledByThreadId.set(threadId, { promise, resolve });
+  }
+}
+
+/**
+ * Release ONE chat's gate. Releasing all of them let a run started for A be freed by B's
+ * pairing ending, which is the whole reason these are held per chat; the composer flag
+ * is separate, and only tracks whether the chat now on screen is still waiting.
+ */
+function closeThreadScopedPairingGate(threadId: string | null): void {
+  if (threadId !== null) {
+    pairingSettledByThreadId.get(threadId)?.resolve();
+    pairingSettledByThreadId.delete(threadId);
+  }
+  const stillWaiting =
+    pendingPairingThreadId !== null &&
+    pairingSettledByThreadId.has(pendingPairingThreadId);
+  if (useChatRuntimeStore.getState().threadScopedSettingsPending !== stillWaiting) {
+    useChatRuntimeStore.setState({ threadScopedSettingsPending: stillWaiting });
   }
 }
 
@@ -1258,16 +1288,30 @@ export function awaitThreadScopedPairing(
   threadId: string | null | undefined,
 ): Promise<void> {
   if (!threadId) return Promise.resolve();
-  return pairingSettledByThreadId.get(threadId)?.promise ?? Promise.resolve();
+  const gate = pairingSettledByThreadId.get(threadId);
+  if (!gate) return Promise.resolve();
+  // Bounded. Leaving a chat mid-read leaves its gate shut on purpose, since its
+  // snapshot never arrived, and a run must not wait on it for the life of the tab.
+  return Promise.race([
+    gate.promise,
+    new Promise<void>((resolve) =>
+      setTimeout(resolve, THREAD_PAIRING_WAIT_MS),
+    ),
+  ]);
 }
+
+const THREAD_PAIRING_WAIT_MS = 10_000;
 
 /** The chat turned out to own no snapshot: send the held edits to the defaults, as before. */
 export function releaseHeldThreadScopedEdits(): void {
   const held = heldThreadScopedEdits;
+  const threadId = pendingPairingThreadId;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
   pairingWindowDefaultsThreadId = null;
-  setThreadScopedSettingsPending(false);
+  // The answer is in: this chat owns no snapshot, so the defaults ARE its settings and
+  // a run waiting on it can go.
+  closeThreadScopedPairingGate(threadId);
   for (const edit of held) edit.writeGlobal?.();
 }
 
@@ -1292,7 +1336,11 @@ export function commitHeldThreadScopedEditsToTheirThread(
   // and then re-pairs the same chat, and the store holds the edit by then, so letting
   // the retry resample would take that edit for the installation default. Leaving for a
   // different chat resamples anyway, because the id no longer matches.
-  setThreadScopedSettingsPending(false);
+  //
+  // The gate is NOT opened here. This runs when the user leaves mid-read, and this
+  // chat's snapshot was never loaded, so a run still waiting on it must not be told the
+  // settings are known: the store now shows the chat the user moved to.
+  closeThreadScopedPairingGate(null);
   if (threadId === null || held.length === 0) return Promise.resolve();
   const changes = heldThreadScopedChanges(held);
   if (keepalive) {
@@ -1346,8 +1394,13 @@ async function mergeThreadScopedSettingsIntoRow(
           settingsSeq,
           settingsWriter: threadSettingsWriter,
         });
-      } catch {
+        forgetReplayedThreadSettings(threadId);
+      } catch (error) {
         warnSettingsPersistenceFailure();
+        // Rethrown as well as toasted: a fork waits on this to know the row holds the
+        // edit before the backend copies it, and a resolved promise would let it make
+        // a fork carrying the pre-edit snapshot.
+        throw error;
       }
     })
     .finally(() => {
@@ -3279,6 +3332,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // The window is over, so the next visit to this chat samples afresh rather than
         // reusing what the installation defaults were the last time round.
         pairingWindowDefaultsThreadId = null;
+        // Its snapshot is now the one in the store, so anything waiting on it can go.
+        closeThreadScopedPairingGate(threadId);
       } else if (
         // A drop to the defaults for the chat that is still open and still waiting on its
         // read keeps holding: those edits are that chat's, and releasing them here is the

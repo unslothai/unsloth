@@ -5966,7 +5966,17 @@ const useForkMessageAction = () => {
       // 400ms debounce, or one held because this chat's own read has not landed. The
       // fork would otherwise open on the modes the chat had before, not the ones on
       // screen when it was made.
-      await settleThreadScopedSettingsForCopy(remoteId);
+      try {
+        await settleThreadScopedSettingsForCopy(remoteId);
+      } catch {
+        // The row does not hold what is on screen, so a fork made now would carry the
+        // pre-edit modes and look like it had lost the change. Better to say so.
+        toast.error("Could not fork this chat", {
+          description:
+            "Its settings could not be saved, so the fork would not match. Please retry.",
+        });
+        return;
+      }
       const result = await forkChatThread(remoteId, {
         messageId,
         newThreadId: crypto.randomUUID(),
