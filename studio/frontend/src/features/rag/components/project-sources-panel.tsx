@@ -6,9 +6,9 @@ import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef } from "react";
 import {
-  PROJECT_SOURCES_UPDATED_EVENT,
   invalidateProjectSources,
   listProjectDocuments,
+  subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
@@ -51,21 +51,17 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce
-  // through invalidateProjectSources; refresh the mounted list when they do.
-  useEffect(() => {
-    const onSourcesUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ projectId?: string }>).detail;
-      if (detail?.projectId === projectId) void refresh({ quiet: true });
-    };
-    window.addEventListener(PROJECT_SOURCES_UPDATED_EVENT, onSourcesUpdated);
-    return () => {
-      window.removeEventListener(
-        PROJECT_SOURCES_UPDATED_EVENT,
-        onSourcesUpdated,
-      );
-    };
-  }, [projectId, refresh]);
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
+  // they are done; refresh the mounted list so a source saved from a chat shows
+  // up here without a remount. The list only polls while a row it already knows
+  // is indexing, so nothing else would ever fetch it.
+  useEffect(
+    () =>
+      subscribeProjectSourcesUpdated(projectId, () => {
+        void refresh({ quiet: true });
+      }),
+    [projectId, refresh],
+  );
 
   const empty = documents.length === 0;
 
