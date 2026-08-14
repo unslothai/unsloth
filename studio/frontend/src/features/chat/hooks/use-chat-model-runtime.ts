@@ -6,7 +6,10 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import {
   type PerModelConfig,
+  activeLlamaArgumentsHydrationMatches,
   applyPerModelConfigToRuntime,
+  currentEffectiveLlamaLoadIdentity,
+  fetchActiveLlamaServerArguments,
   llamaExtraArgsPayload,
   normalizeMaxSeqLength,
 } from "@/features/model-picker";
@@ -849,6 +852,50 @@ export function useChatModelRuntime() {
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+          const priorRuntime = useChatRuntimeStore.getState();
+          const previousCouldBeGguf =
+            previousModel?.isGguf === true ||
+            previousVariant != null ||
+            priorRuntime.activeNativePathToken != null ||
+            (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+          if (
+            previousCouldBeGguf &&
+            priorRuntime.launchedLlamaExtraArgs === undefined &&
+            priorRuntime.runtimeRevision != null
+          ) {
+            const requested = {
+              effectiveLoadIdentifier: currentEffectiveLlamaLoadIdentity({
+                activeLoadId: priorRuntime.activeLoadId,
+                residentCheckpoint: priorRuntime.residentCheckpoint,
+                selectedCheckpoint: previousCheckpoint,
+              }),
+              ggufVariant: previousVariant,
+              runtimeRevision: priorRuntime.runtimeRevision,
+            };
+            try {
+              const response = await fetchActiveLlamaServerArguments();
+              const current = useChatRuntimeStore.getState();
+              if (
+                activeLlamaArgumentsHydrationMatches(response, requested, {
+                  effectiveLoadIdentifier: currentEffectiveLlamaLoadIdentity({
+                    activeLoadId: current.activeLoadId,
+                    residentCheckpoint: current.residentCheckpoint,
+                    selectedCheckpoint: previousCheckpoint,
+                  }),
+                  ggufVariant: current.activeGgufVariant,
+                  runtimeRevision: current.runtimeRevision,
+                })
+              ) {
+                useChatRuntimeStore.setState({
+                  loadedLlamaExtraArgs: [...response.llama_extra_args],
+                  launchedLlamaExtraArgs: [...response.llama_extra_args],
+                });
+              }
+            } catch {
+              // Saved settings remain the rollback fallback when private
+              // active-argument hydration is temporarily unavailable.
+            }
+          }
           let previousWasUnloaded = false;
           const pendingLoadConfig =
             typeof selection !== "string" ? selection.config : undefined;

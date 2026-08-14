@@ -61,9 +61,9 @@ export async function fetchLlamaServerArguments(): Promise<LlamaServerArgumentsR
     managed_flags: [...result.managed_flags],
     managed_flag_groups: result.managed_flag_groups.map((group) => [...group]),
   };
-  if (result.authoritative) {
-    cachedAuthoritativeCatalog = cloneCatalog(result);
-  }
+  cachedAuthoritativeCatalog = result.authoritative
+    ? cloneCatalog(result)
+    : null;
   return result;
 }
 

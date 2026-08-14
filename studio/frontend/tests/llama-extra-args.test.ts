@@ -62,6 +62,10 @@ test("argv editing preserves syntax, arity, aliases, and completion intent", () 
     parseLlamaExtraArgs(formatLlamaExtraArgs(tokens)).tokens,
     tokens,
   );
+  assert.equal(
+    parseLlamaExtraArgs('""').error?.message,
+    "Arguments cannot be empty.",
+  );
   const rows = llamaExtraArgRows(["-Cr0-7", "--fit"], catalog);
   assert.deepEqual(
     rows.map(({ flag, value, separator }) => ({ flag, value, separator })),

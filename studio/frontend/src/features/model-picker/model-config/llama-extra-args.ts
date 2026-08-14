@@ -194,6 +194,13 @@ export function parseLlamaExtraArgs(text: string): ParsedLlamaExtraArgs {
         },
       };
     }
+    if (value.length === 0) {
+      return {
+        tokens,
+        spans,
+        error: { message: "Arguments cannot be empty.", offset: start },
+      };
+    }
     tokens.push(value);
     spans.push({ start, end: i, value });
   }

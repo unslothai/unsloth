@@ -2170,6 +2170,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         """-ngld 0 keeps the drafter in host memory. Charging it against the
         training job's VRAM is not a conservative estimate, it is the wrong
         resource, and it 409s a load that takes no VRAM for the drafter at all."""
+        import os
+
         import utils.models.model_config as mc
 
         cfg = SimpleNamespace(
@@ -2198,7 +2200,12 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 speculative_type = "auto",
                 llama_extra_args = [*extras, "--spec-draft-ngl", "0"],
             )
+            with patch.dict(os.environ, {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"}):
+                ambient = self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "auto", llama_extra_args = extras
+                )
         self.assertAlmostEqual(on_gpu - on_cpu, 8.0, places = 6)
+        self.assertAlmostEqual(ambient, on_gpu, places = 6)
 
     def test_a_bare_model_draft_overrides_the_repository_sidecar(self):
         """No --spec-type needed for the override to win: the loader ranks the

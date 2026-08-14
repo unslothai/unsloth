@@ -84,12 +84,9 @@ export function LlamaExtraArgsEditor({
     void fetchLlamaServerArguments()
       .then((response) => {
         if (cancelled) return;
-        const effective = response.authoritative
-          ? response
-          : cachedAuthoritativeLlamaServerArguments();
-        setCatalog(llamaServerDiagnosticCatalog(effective ?? response));
-        setCatalogAuthoritative(effective?.authoritative ?? false);
-        setCatalogState(effective?.authoritative ? "available" : "unavailable");
+        setCatalog(llamaServerDiagnosticCatalog(response));
+        setCatalogAuthoritative(response.authoritative);
+        setCatalogState(response.authoritative ? "available" : "unavailable");
       })
       .catch(() => {
         if (!cancelled) {
@@ -105,8 +102,10 @@ export function LlamaExtraArgsEditor({
                   })
                 : null,
           );
-          setCatalogAuthoritative(authoritative?.authoritative ?? false);
-          setCatalogState(authoritative ? "available" : "unavailable");
+          // A cached catalog is useful diagnostic context, but an outage cannot
+          // prove that the installed binary still accepts it.
+          setCatalogAuthoritative(false);
+          setCatalogState("unavailable");
         }
       });
     return () => {

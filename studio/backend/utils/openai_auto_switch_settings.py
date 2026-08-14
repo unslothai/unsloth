@@ -58,6 +58,15 @@ MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
+_model_override_mutation_lock = threading.RLock()
+
+
+def model_override_mutation_lock() -> threading.RLock:
+    """Serialize saved-override writes with an auto-switch launch boundary."""
+
+    return _model_override_mutation_lock
+
+
 _cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -914,13 +923,14 @@ def set_model_override(
     from storage.studio_db import upsert_app_setting_map_entry
 
     # Atomic per-entry merge so two PUTs for different models can't drop each other.
-    upsert_app_setting_map_entry(
-        MODEL_OVERRIDES_SETTING_KEY,
-        model_id.strip(),
-        entry or None,
-        fill_absent_fields = fill_absent_fields,
-    )
-    _invalidate(MODEL_OVERRIDES_SETTING_KEY)
+    with _model_override_mutation_lock:
+        upsert_app_setting_map_entry(
+            MODEL_OVERRIDES_SETTING_KEY,
+            model_id.strip(),
+            entry or None,
+            fill_absent_fields = fill_absent_fields,
+        )
+        _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry
 
 
@@ -936,9 +946,10 @@ def delete_model_override(model_id: str) -> None:
 
     from storage.studio_db import upsert_app_setting_map_entry
 
-    upsert_app_setting_map_entry(
-        MODEL_OVERRIDES_SETTING_KEY,
-        model_id.strip(),
-        None,
-    )
-    _invalidate(MODEL_OVERRIDES_SETTING_KEY)
+    with _model_override_mutation_lock:
+        upsert_app_setting_map_entry(
+            MODEL_OVERRIDES_SETTING_KEY,
+            model_id.strip(),
+            None,
+        )
+        _invalidate(MODEL_OVERRIDES_SETTING_KEY)

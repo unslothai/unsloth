@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Installed-version argument discovery for ``llama-server``.
 
 The subprocess result is cached by binary revision and shared with the legacy

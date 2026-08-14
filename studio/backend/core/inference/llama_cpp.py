@@ -64,6 +64,7 @@ from core.inference.llama_server_args import (
     fit_is_effectively_on,
     flag_policy,
     resolve_effective_memory_state,
+    resolve_flag_alias,
     assess_extra_args,
     scrub_denied_env,
     scrub_memory_env,
@@ -10348,9 +10349,17 @@ class LlamaCppBackend:
             re.IGNORECASE,
         )
         if unknown_arg:
+            raw_argument = unknown_arg.group(1)
+            argument = resolve_flag_alias(raw_argument)
+            if argument is None or not (
+                argument.startswith("--")
+                or flag_policy(argument) is not None
+                or safe_flag_policy(argument) is not None
+            ):
+                argument = "a custom argument"
             return (
                 "llama-server does not recognise the argument "
-                f"'{unknown_arg.group(1)}'. Check it in this model's extra "
+                f"'{argument}'. Check it in this model's extra "
                 "arguments, or reinstall llama.cpp if you did not set it."
             )
 
@@ -10360,10 +10369,18 @@ class LlamaCppBackend:
             re.IGNORECASE,
         )
         if bad_arg_value:
-            argument = bad_arg_value.group(1).strip()
+            argument = resolve_flag_alias(bad_arg_value.group(1).strip())
+            if argument is None or not (
+                argument.startswith("--")
+                or flag_policy(argument) is not None
+                or safe_flag_policy(argument) is not None
+            ):
+                argument = "a custom argument"
             reason = (bad_arg_value.group(2) or "").strip()
             if reason.lower() in {"stoi", "stof", "stod", "stoul", "stoll"}:
                 reason = "the value is not a number"
+            elif reason:
+                reason = "invalid value"
             detail = f": {reason}" if reason else ""
             return (
                 f"llama-server rejected the value for '{argument}'{detail}. "

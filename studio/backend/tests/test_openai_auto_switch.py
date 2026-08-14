@@ -80,6 +80,7 @@ class _LoadRecorder:
         self.backend = backend
         self.calls = []
         self.fail = fail
+        self.before_reload_confirmed = None
 
     async def __call__(
         self,
@@ -88,12 +89,18 @@ class _LoadRecorder:
         current_subject = None,
         *,
         current_request_counted = False,
+        on_reload_confirmed = None,
         args_origin = None,
     ):
         # Mirror the production load boundary before recording any replacement.
         await inference_route._wait_for_model_switch_idle(
             current_request_counted = current_request_counted
         )
+        if self.before_reload_confirmed is not None:
+            self.before_reload_confirmed()
+        if on_reload_confirmed is not None:
+            on_reload_confirmed(cancel = False)
+            on_reload_confirmed(cancel = True)
         self.calls.append(request)
         if getattr(request, "llama_extra_args", None) is not None:
             assert args_origin == inference_route.LlamaArgsOrigin.STORED_UI_OVERRIDE
@@ -976,6 +983,16 @@ def test_auto_switch_rereads_saved_arguments_after_the_lifecycle_gate(monkeypatc
 
     assert len(rec.calls) == 1
     assert rec.calls[0].llama_extra_args == ["--top-k", "40"]
+
+    backend.is_loaded = False
+    rec.calls.clear()
+    rec.before_reload_confirmed = lambda: saved.update(
+        llama_extra_args = ["--temperature", "0.2"]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+    assert excinfo.value.status_code == 409
+    assert rec.calls == []
 
 
 def test_auto_switch_compares_saved_args_to_requested_fallback_identity(monkeypatch):
@@ -4855,8 +4872,11 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
         current_subject = None,
         *,
         current_request_counted = False,
+        on_reload_confirmed = None,
         args_origin = None,
     ):
+        if on_reload_confirmed is not None:
+            on_reload_confirmed(cancel = False)
         assert args_origin == inference_route.LlamaArgsOrigin.STORED_UI_OVERRIDE
         with slock:
             state["cur"] += 1

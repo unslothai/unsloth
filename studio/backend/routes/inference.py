@@ -2420,6 +2420,10 @@ def _llama_args_field_present(request: Any) -> bool:
     return "llama_extra_args" in getattr(request, "model_fields_set", set())
 
 
+def _llama_args_value_supplied(request: Any) -> bool:
+    return _llama_args_field_present(request) and getattr(request, "llama_extra_args", None) is not None
+
+
 def _reject_api_key_custom_arguments(request: Any, via_api_key: bool) -> None:
     """Reject field presence, so null and [] cannot masquerade as omission."""
 
@@ -5579,6 +5583,7 @@ async def _maybe_auto_switch_model(
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
         idle_unload_is_configured,
+        model_override_mutation_lock,
         model_override_load_kwargs,
         resolve_model_override_candidates,
     )
@@ -5814,6 +5819,7 @@ async def _maybe_auto_switch_model(
                 ),
             )
         key = _switch_key(override_id, variant)
+        override_launch_lock = None
         _note_switch_waiter(key, 1)
         waiter_noted = True
         try:
@@ -5829,6 +5835,21 @@ async def _maybe_auto_switch_model(
                         # other swaps/generations. Re-read after the final gate so a
                         # stale captured override can never reach teardown or spawn.
                         load_kwargs = _fresh_load_kwargs()
+
+                        def _require_current_saved_llama_args(*, cancel: bool) -> None:
+                            nonlocal override_launch_lock
+                            if cancel and override_launch_lock is None:
+                                override_launch_lock = model_override_mutation_lock()
+                                override_launch_lock.acquire()
+                            current = _fresh_load_kwargs()
+                            if list(current.get("llama_extra_args") or []) != list(
+                                load_kwargs.get("llama_extra_args") or []
+                            ):
+                                raise HTTPException(
+                                    status_code = 409,
+                                    detail = "Saved llama.cpp custom arguments changed during loading. Retry the request.",
+                                )
+
                         if _already_serving():
                             _record_serving_alias()
                             return
@@ -5853,6 +5874,7 @@ async def _maybe_auto_switch_model(
                                 fastapi_request,
                                 current_subject,
                                 current_request_counted = True,
+                                on_reload_confirmed = _require_current_saved_llama_args,
                                 args_origin = LlamaArgsOrigin.STORED_UI_OVERRIDE,
                             )
                         except HTTPException as exc:
@@ -5876,6 +5898,7 @@ async def _maybe_auto_switch_model(
                                 fastapi_request,
                                 current_subject,
                                 current_request_counted = True,
+                                on_reload_confirmed = _require_current_saved_llama_args,
                                 args_origin = LlamaArgsOrigin.STORED_UI_OVERRIDE,
                             )
                         # Advertise the repo id (not the concrete load path) as the loaded
@@ -5885,6 +5908,8 @@ async def _maybe_auto_switch_model(
                         # scoped to API loads.
                         get_llama_cpp_backend()._loaded_by_user_action = False
                 finally:
+                    if override_launch_lock is not None:
+                        override_launch_lock.release()
                     # Deregister before releasing the gate: otherwise a swap on another
                     # loop counts this finished request as queued and unloads its model.
                     _note_switch_waiter(key, -1)
@@ -6507,7 +6532,7 @@ def _estimate_gguf_required_gb(
         # -ngld 0 / --spec-draft-device cpu applies to whichever separate drafter
         # launches, Studio's included, so none of them belongs in a VRAM budget. An
         # embedded head ignores draft-only flags and is inside the weights anyway.
-        _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ)
+        _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args)
         _forced_dspark = bool(
             (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
             and not _extras_own_drafter
@@ -6658,7 +6683,7 @@ def _estimate_gguf_required_gb(
         # A host-memory drafter competes for RAM, not for the training job's VRAM.
         # Charging it is not a safe over-estimate, it is the wrong resource, and it
         # 409s a load that takes no VRAM for the drafter at all.
-        if _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ):
+        if _extra_args_draft_offloaded_to_cpu(llama_extra_args):
             _extras_bytes = 0
         elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:
@@ -8124,7 +8149,7 @@ async def _load_model_impl(
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         _preconfig_reuse_allowed = (
-            args_origin == LlamaArgsOrigin.UI_REQUEST or _llama_args_field_present(request)
+            args_origin == LlamaArgsOrigin.UI_REQUEST or _llama_args_value_supplied(request)
         )
         if (
             _preconfig_reuse_allowed

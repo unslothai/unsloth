@@ -491,24 +491,26 @@ class TestMissingSharedLibrary:
 
     def test_an_unknown_argument_names_the_flag_and_both_possible_owners(self):
         msg = _classify(
-            "error: invalid argument: --not-a-real-flag",
+            "error: invalid argument: --not-a-real-flag=TOPSECRET",
             "/models/x.gguf",
             "local/x",
             1,
         )
         assert "--not-a-real-flag" in msg
+        assert "TOPSECRET" not in msg
         assert "extra arguments" in msg
         assert "reinstall llama.cpp" in msg
 
     def test_a_rejected_value_is_not_reported_as_an_unknown_flag(self):
         msg = _classify(
-            'error while handling argument "--numa": invalid value',
+            'error while handling argument "--numa": invalid value TOPSECRET',
             "/models/x.gguf",
             "local/x",
             1,
         )
         assert "--numa" in msg
         assert "invalid value" in msg
+        assert "TOPSECRET" not in msg
         assert "does not recognise" not in msg
 
     def test_a_std_numeric_conversion_failure_is_translated(self):
@@ -1296,6 +1298,7 @@ class TestAnEncodedSecretIsStillRedacted:
             "A=1," * 25000,
             'TOKEN="' + "y" * 100000,
         ],
+        ids=["escaped-quotes", "long-value", "repeated-pairs", "unterminated-quote"],
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
@@ -1518,6 +1521,7 @@ class TestTheRedactionHolesCodexFound:
     @pytest.mark.parametrize(
         "blob",
         ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
+        ids=["unterminated-quote", "dotted-pairs", "repeated-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
         import time
