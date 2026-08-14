@@ -1011,9 +1011,7 @@ def test_an_empty_argument_the_model_meant_survives(executed):
                         },
                     }
                 ),
-                _hosted_event(
-                    {"type": "tool_end", "tool_call_id": "edit_1", "result": "Edited"}
-                ),
+                _hosted_event({"type": "tool_end", "tool_call_id": "edit_1", "result": "Edited"}),
                 _call_line(),
                 _finish(),
             ],

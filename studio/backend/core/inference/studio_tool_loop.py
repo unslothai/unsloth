@@ -162,7 +162,9 @@ def _carries_image_sentinel(result: str) -> bool:
         images = json.loads(payload)
     except (ValueError, RecursionError):
         return False
-    return isinstance(images, list) and bool(images) and all(isinstance(i, str) and i for i in images)
+    return (
+        isinstance(images, list) and bool(images) and all(isinstance(i, str) and i for i in images)
+    )
 
 
 def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
