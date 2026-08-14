@@ -104,7 +104,14 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
     gpu_layers 0 with "-ngl 20" was approved as a load that places nothing on any device
     and cannot compete with training for VRAM, and then launched twenty layers on it."""
 
-    def _validate(self, route, *, gpu_layers, extra_args, diffusion_kind = True):
+    def _validate(
+        self,
+        route,
+        *,
+        gpu_layers,
+        extra_args,
+        diffusion_kind = True,
+    ):
         seen: list = []
 
         def _capture(_config, request, **kwargs):
@@ -182,9 +189,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
                 return_value = ("someone/gguf", "someone/gguf", False),
             ),
             patch.object(route.ModelConfig, "from_identifier", return_value = config),
-            patch.object(
-                route, "_resolve_inherited_extra_args", return_value = ["-ngl", "20"]
-            ),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = ["-ngl", "20"]),
             patch.object(route, "_classify_diffusion_gguf", return_value = False),
             patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
             patch.object(route, "_effective_load_in_4bit", return_value = True),
