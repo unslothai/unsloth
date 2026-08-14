@@ -21,6 +21,7 @@ function read(path: string): string {
 
 const store = read("../src/features/chat/stores/chat-runtime-store.ts");
 const provider = read("../src/features/chat/runtime-provider.tsx");
+const composer = read("../src/components/assistant-ui/thread.tsx");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -200,4 +201,34 @@ test("compare mode drops the thread-scoped state rather than keeping the last ch
     "return;",
   );
   assert.match(disabled, /applyThreadScopedSettings\(null, null\)/);
+});
+
+test("a retry does not resample the defaults over the edit it is holding", () => {
+  // retryThreadRead commits and re-pairs with the edited value still in the store, so
+  // sampling per attempt would take that edit for the installation default.
+  const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
+  assert.match(begin, /if \(pairingWindowDefaultsThreadId !== threadId\) \{/);
+  // and the sample is let go once the window closes, or the next visit reuses it
+  assert.match(
+    slice(store, "applyThreadScopedSettings: (threadId, settings) =>", "} else if ("),
+    /pairingWindowDefaultsThreadId = null;/,
+  );
+});
+
+test("a pending pin answers the override rather than the null it has stored", () => {
+  // A chat being pinned has no snapshot yet, so falling through reads null and a model
+  // load puts the global values back over the edit the queued write will persist.
+  const override = slice(store, "export function threadScopedOverride", "\n}");
+  assert.match(override, /threadSettingsWriteSnapshot\[key\] !== undefined/);
+});
+
+test("the prompt queue waits for this chat's settings too, not just a direct send", () => {
+  // handleSubmit reaches the queue branch first, and the queued prompt is snapshotted
+  // from whatever the store shows at that moment.
+  const submit = slice(
+    composer,
+    "const handleSubmit = useCallback(",
+    "startHydratedPromptQueue(",
+  );
+  assert.match(submit, /threadScopedSettingsPending && !overlay/);
 });

@@ -3472,6 +3472,14 @@ const Composer: FC<{
         parkIfWaitingOnAttachments();
         return;
       }
+      // Before the queue branch below, not after it: a prompt queued while this chat's
+      // own settings are still on their way is snapshotted from the installation
+      // defaults on screen, so a chat stored as "ask" would queue as "off".
+      if (threadScopedSettingsPending && !overlay) {
+        event.preventDefault();
+        enqueueSend("settings");
+        return;
+      }
 
       // React may not have rendered threadIsRunning yet when several submits
       // arrive immediately after a send. The imperative runtime is already
@@ -3608,10 +3616,12 @@ const Composer: FC<{
       disableQueue,
       hasAttachments,
       hasPendingAudio,
+      enqueueSend,
       interceptSend,
       isResearchActive,
       overlay,
       parkIfWaitingOnAttachments,
+      threadScopedSettingsPending,
       promptQueueActive,
       promptQueueThreadIds,
       preStreamThreadIds,

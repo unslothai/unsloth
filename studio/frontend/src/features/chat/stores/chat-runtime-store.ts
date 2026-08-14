@@ -710,14 +710,23 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   // wrote nothing to localStorage either. A model load or a status poll landing in that
   // window would read the old value, revert the pill, and then be persisted by the write
   // the edit itself scheduled. The store already holds the edit, so prefer it.
-  // A pending PIN carries its own snapshot and is authoritative, so it is left alone.
+  // A pending PIN carries its own snapshot, which is what the chat is about to be
+  // stored as, so that answers instead of the live store. Falling through to
+  // activeThreadScopedSettings here reads null, because a chat being pinned had no
+  // snapshot to begin with, and the load then puts the global values back over the
+  // edit the queued write is about to persist.
   if (
     threadSettingsWriteThreadId !== null &&
-    threadSettingsWriteThreadId === threadScopedSettingsThreadId &&
-    threadSettingsWriteSnapshot === null
+    threadSettingsWriteThreadId === threadScopedSettingsThreadId
   ) {
-    const live = readThreadScopedSettings(useChatRuntimeStore.getState());
-    if (live[key] !== undefined) return live[key];
+    if (threadSettingsWriteSnapshot !== null) {
+      if (threadSettingsWriteSnapshot[key] !== undefined) {
+        return threadSettingsWriteSnapshot[key];
+      }
+    } else {
+      const live = readThreadScopedSettings(useChatRuntimeStore.getState());
+      if (live[key] !== undefined) return live[key];
+    }
   }
   return activeThreadScopedSettings?.[key];
 }
@@ -1070,6 +1079,8 @@ function scheduleThreadScopedSettingsWrite(
 let pendingPairingThreadId: string | null = null;
 /** The store's thread-scoped values as they stood when the current pairing began. */
 let pairingWindowDefaults: ThreadScopedSettings | null = null;
+/** and the chat it was sampled for, so a retry does not resample over its own edit. */
+let pairingWindowDefaultsThreadId: string | null = null;
 let heldThreadScopedEdits: {
   field: string;
   writeGlobal: (() => void) | null;
@@ -1084,9 +1095,15 @@ export function beginThreadScopedPairing(threadId: string): void {
   // here because there is nowhere later to recover it from: an edit made during the
   // window overwrites the store, and on the first pairing of a session there is no
   // earlier capture to fall back on.
-  pairingWindowDefaults = readThreadScopedSettings(
-    useChatRuntimeStore.getState(),
-  );
+  //
+  // Once per chat, not once per attempt: a retry after a failed read runs with the held
+  // edit already in the store, and re-sampling would take that edit for a default.
+  if (pairingWindowDefaultsThreadId !== threadId) {
+    pairingWindowDefaultsThreadId = threadId;
+    pairingWindowDefaults = readThreadScopedSettings(
+      useChatRuntimeStore.getState(),
+    );
+  }
   setThreadScopedSettingsPending(true);
 }
 
@@ -1104,6 +1121,7 @@ export function releaseHeldThreadScopedEdits(): void {
   const held = heldThreadScopedEdits;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
+  pairingWindowDefaultsThreadId = null;
   setThreadScopedSettingsPending(false);
   for (const edit of held) edit.writeGlobal?.();
 }
@@ -3102,6 +3120,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         for (const edit of heldThreadScopedEdits) heldFields.add(edit.field);
         heldThreadScopedEdits = [];
         pendingPairingThreadId = null;
+        // The window is over, so the next visit to this chat samples afresh rather than
+        // reusing what the installation defaults were the last time round.
+        pairingWindowDefaultsThreadId = null;
       } else if (
         // A drop to the defaults for the chat that is still open and still waiting on its
         // read keeps holding: those edits are that chat's, and releasing them here is the
