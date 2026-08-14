@@ -145,18 +145,6 @@ export function mapBackendModelConfigToTrainingPatch(
       uploadOnStop: backup.upload_on_stop !== false,
       uploadOnComplete: backup.upload_on_complete !== false,
     };
-  } else {
-    patch.checkpointBackup = {
-      enabled: false,
-      provider: "huggingface",
-      repoId: null,
-      private: true,
-      intervalSteps: saveSteps ?? 100,
-      strategy: "latest",
-      keepRemote: 1,
-      uploadOnStop: true,
-      uploadOnComplete: true,
-    };
   }
 
   const evalSteps = toNumber(training?.eval_steps);

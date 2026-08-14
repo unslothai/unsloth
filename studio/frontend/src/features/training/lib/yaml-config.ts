@@ -83,8 +83,9 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     training: trainingObj as BackendModelConfig["training"],
     lora: (raw.lora ?? undefined) as BackendModelConfig["lora"],
     logging: (raw.logging ?? undefined) as BackendModelConfig["logging"],
-    checkpoint_backup: (raw.checkpoint_backup ??
-      undefined) as BackendModelConfig["checkpoint_backup"],
+    checkpoint_backup: (raw.checkpoint_backup ?? {
+      enabled: false,
+    }) as BackendModelConfig["checkpoint_backup"],
   };
 }
 
