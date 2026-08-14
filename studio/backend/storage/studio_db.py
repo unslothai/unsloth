@@ -366,10 +366,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # server, and no client-side cancel reaches a handler that is already running: the
     # older write has to be refused here. Scoped to the writer that sent it, so two
     # browsers are never ordered against each other; see write_chat_thread_settings.
-    if "settings_seq" not in chat_thread_cols:
-        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_seq INTEGER")
-    if "settings_writer" not in chat_thread_cols:
-        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_writer TEXT")
+    # {writer id: highest seq seen from it}. One writer and one seq is not enough: a
+    # write from another tab overwrites them, and the delayed request the ordering exists
+    # to refuse is then compared against a watermark that is no longer its own.
+    if "settings_seqs" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_seqs TEXT")
     if "project_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
@@ -1743,6 +1744,9 @@ class ChatThreadPreconditionFailed(Exception):
 
 
 # Same order the title migration picks its opening message in.
+# Watermarks kept per thread, one per tab that has written its settings.
+_MAX_SETTINGS_WRITERS = 32
+
 _OPENING_USER_MESSAGE = """(
     SELECT id FROM chat_messages
     WHERE thread_id = ? AND role = 'user'
@@ -1858,23 +1862,26 @@ def _write_chat_thread_settings_in_conn(
     carrying settings AND guarded metadata can apply them together or not at all.
     """
     row = conn.execute(
-        "SELECT settings_json, settings_seq, settings_writer FROM chat_threads WHERE id = ?",
+        "SELECT settings_json, settings_seqs FROM chat_threads WHERE id = ?",
         (id,),
     ).fetchone()
     if row is None:
         return None
-    keys = row.keys()
-    stored_seq = row["settings_seq"] if "settings_seq" in keys else None
-    stored_writer = row["settings_writer"] if "settings_writer" in keys else None
-    if (
-        seq is not None
-        and writer is not None
-        and stored_seq is not None
-        and stored_writer == writer
-        and seq <= stored_seq
-    ):
-        # This writer has already had a newer snapshot stored; this one is the straggler.
-        return False
+    seqs = _json_loads(row["settings_seqs"], None) if "settings_seqs" in row.keys() else None
+    seqs = seqs if isinstance(seqs, dict) else {}
+    if seq is not None and writer is not None:
+        seen = seqs.get(writer)
+        if isinstance(seen, int) and seq <= seen:
+            # This writer has already had a newer snapshot stored; this one is the
+            # straggler. Held per writer, so a write from another tab in between does
+            # not wipe the watermark this comparison depends on.
+            return False
+        seqs[writer] = seq
+        # One entry per tab that has ever written, so bound it. The oldest watermarks
+        # belong to tabs that are long gone; a returning one starts from a fresh id.
+        if len(seqs) > _MAX_SETTINGS_WRITERS:
+            for stale in sorted(seqs, key = lambda w: seqs[w])[: len(seqs) - _MAX_SETTINGS_WRITERS]:
+                seqs.pop(stale, None)
     stored = _json_loads(row["settings_json"], None)
     stored = stored if isinstance(stored, dict) else {}
     if clear:
@@ -1888,15 +1895,8 @@ def _write_chat_thread_settings_in_conn(
             changes = replace or {}
         settings_json = json.dumps({**base, **changes})
     conn.execute(
-        """UPDATE chat_threads
-           SET settings_json = ?, settings_seq = ?, settings_writer = ?
-           WHERE id = ?""",
-        (
-            settings_json,
-            seq if seq is not None else stored_seq,
-            writer if writer is not None else stored_writer,
-            id,
-        ),
+        "UPDATE chat_threads SET settings_json = ?, settings_seqs = ? WHERE id = ?",
+        (settings_json, json.dumps(seqs) if seqs else None, id),
     )
     return True
 

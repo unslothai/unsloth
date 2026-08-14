@@ -115,6 +115,7 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
@@ -3445,6 +3446,12 @@ export function createOpenAIStreamAdapter(
       unstable_assistantMessageId,
     }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
+      // Every run reaches here: the composer, Reload, Continue, and send from the edit
+      // composer. Waiting for the open chat's own settings in this one place is what
+      // keeps the message-level controls from starting a run on the installation
+      // defaults that stand in while the read is out, which for a chat stored as "ask"
+      // would mean running tools without asking.
+      await awaitThreadScopedPairing();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.

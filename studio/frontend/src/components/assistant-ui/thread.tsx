@@ -122,7 +122,7 @@ import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled"
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import {
-  awaitThreadScopedSettingsWrite,
+  settleThreadScopedSettingsForCopy,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
@@ -5961,10 +5961,12 @@ const useForkMessageAction = () => {
     }
     setPending(true);
     try {
-      // The fork copies settings_json inside its own transaction, so a pill toggled
-      // moments ago and still sitting in the 400ms debounce would not be in the copy:
-      // the fork would open on the modes the chat had before, not the ones on screen.
-      await awaitThreadScopedSettingsWrite(remoteId);
+      // The fork copies settings_json inside its own transaction, so anything not yet
+      // in the row is not in the copy: a pill toggled moments ago and still in the
+      // 400ms debounce, or one held because this chat's own read has not landed. The
+      // fork would otherwise open on the modes the chat had before, not the ones on
+      // screen when it was made.
+      await settleThreadScopedSettingsForCopy(remoteId);
       const result = await forkChatThread(remoteId, {
         messageId,
         newThreadId: crypto.randomUUID(),

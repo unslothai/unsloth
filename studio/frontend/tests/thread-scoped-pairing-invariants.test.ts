@@ -35,9 +35,12 @@ test("the read waits for this chat's own write before it can be believed", () =>
   // A chat edited, left and re-entered has its PATCH in flight; a GET that overtakes it
   // returns the pre-edit snapshot, which is then applied over what the user set.
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
-  assert.match(
-    sync,
-    /awaitThreadScopedSettingsWrite\(activeThreadId\)\s*\.then\(\(\) => getStoredChatThreadReadResult\(activeThreadId\)\)/,
+  assert.match(sync, /awaitThreadScopedSettingsWrite\(activeThreadId\)/);
+  // and the read only happens after it, not alongside
+  assert.ok(
+    sync.indexOf("awaitThreadScopedSettingsWrite") <
+      sync.indexOf("getStoredChatThreadReadResult"),
+    "the read is not sequenced after the write",
   );
 });
 
@@ -76,7 +79,8 @@ test("the defaults are captured when pairing begins, not reconstructed later", (
   // An edit during the window overwrites the store, and on the session's first pairing
   // there is no earlier capture to fall back on: the value has to be taken up front.
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
-  assert.match(begin, /pairingWindowDefaults = readThreadScopedSettings\(/);
+  assert.match(begin, /pairingWindowDefaults =/);
+  assert.match(begin, /readThreadScopedSettings\(/);
   const capture = slice(
     store,
     "if (threadScopedSettingsThreadId === null) {",
@@ -136,7 +140,9 @@ test("a normal flush stays resendable until it lands", () => {
   // visibilitychange(hidden) then pagehide: the first flushes normally and clears the
   // pending snapshot, so the terminal event would find nothing to beacon.
   const flush = slice(store, "function flushThreadScopedSettingsWrite", "\n}");
-  assert.match(flush, /unsettledThreadSettingsWrites\.set\(threadId, snapshot\)/);
+  assert.match(flush, /trackUnsettledThreadSettingsWrite\(threadId, snapshot\)/);
+  const track = slice(store, "function trackUnsettledThreadSettingsWrite", "\n}");
+  assert.match(track, /unsettledThreadSettingsWrites\.set\(threadId, snapshot\)/);
   const terminal = slice(store, "function flushSettingsOnPageHidden", "\n}");
   assert.match(terminal, /commitHeldThreadScopedEditsToTheirThread\(true\)/);
   assert.match(terminal, /beaconUnsettledThreadSettingsWrites\(\)/);
@@ -231,4 +237,60 @@ test("the prompt queue waits for this chat's settings too, not just a direct sen
     "startHydratedPromptQueue(",
   );
   assert.match(submit, /threadScopedSettingsPending && !overlay/);
+});
+
+test("the defaults sample is never taken from the outgoing chat's values", () => {
+  // Switching A -> B, the store still holds A's pills when B's pairing opens, so
+  // sampling it would make A's choices the default every snapshot-less chat follows.
+  const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
+  assert.match(
+    begin,
+    /threadScopedSettingsThreadId === null\s*\?\s*readThreadScopedSettings\(/,
+  );
+  assert.match(begin, /:\s*globalThreadScopedDefaults;/);
+});
+
+test("the read that gates sends cannot hang forever", () => {
+  // The underlying GET has no timeout, and neither the catch nor the retry budget can
+  // run for a promise that never settles, so every send stays parked.
+  const sync = slice(provider, "const sync = () => {", "// The read did not answer");
+  assert.match(sync, /Promise\.race\(\[/);
+  assert.match(sync, /THREAD_READ_TIMEOUT_MS/);
+});
+
+test("every run waits for the chat's settings, not just the composer", () => {
+  // Reload, Continue and send-from-edit never touch handleSubmit; they all reach the
+  // adapter, so the wait belongs there.
+  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const run = slice(adapter, "await useChatRuntimeStore.getState().hydratePersistedSettings();", "let runtime =");
+  assert.match(run, /await awaitThreadScopedPairing\(\);/);
+});
+
+test("a replay entry survives a failed replay", () => {
+  // authFetch resolves for 404 and 5xx, and the missing-row case this exists for is
+  // exactly the one that 404s.
+  const replay = slice(store, "export function replayUnconfirmedThreadSettings", "\n}");
+  assert.match(replay, /if \(res\.ok\) forgetReplayedThreadSettings\(threadId\)/);
+  assert.doesNotMatch(
+    replay,
+    /localStorage\.removeItem\(THREAD_SETTINGS_REPLAY_KEY\);\n    if \(!raw\)/,
+    "the whole batch is still dropped before it is known to have landed",
+  );
+});
+
+test("a debounce-fired write is resendable on a terminal event too", () => {
+  // Once the timer fires there is no pending debounce left to find, so the in-flight
+  // request is the only copy and teardown cancels it.
+  const schedule = slice(store, "function scheduleThreadScopedSettingsWrite", "\n}");
+  assert.match(schedule, /trackUnsettledThreadSettingsWrite\(pendingThreadId, pendingSnapshot\)/);
+});
+
+test("forking settles a held edit, not just the debounce", () => {
+  const composerSrc = composer;
+  assert.match(composerSrc, /await settleThreadScopedSettingsForCopy\(remoteId\)/);
+  const settle = slice(store, "export async function settleThreadScopedSettingsForCopy", "\n}");
+  assert.match(settle, /commitHeldThreadScopedEditsToTheirThread\(\)/);
+  // and the pairing's own wait must NOT commit, or sync closes the window it just opened
+  const await_ = slice(store, "export async function awaitThreadScopedSettingsWrite", "\n}");
+  assert.doesNotMatch(await_, /commitHeldThreadScopedEditsToTheirThread/);
 });

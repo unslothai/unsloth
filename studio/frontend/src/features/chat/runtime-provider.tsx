@@ -1700,6 +1700,8 @@ function ActiveThreadSync({
 // A thread read that fails leaves the chat unpaired, so it is worth a couple of goes.
 const THREAD_READ_RETRY_MS = 1_500;
 const THREAD_READ_RETRIES = 2;
+// And one that never answers at all has to become a failure, or it holds sends forever.
+const THREAD_READ_TIMEOUT_MS = 8_000;
 
 // gated on hydration, or the initial /api/chat/settings response lands after a thread's own values.
 function ThreadScopedSettingsSync({
@@ -1770,7 +1772,21 @@ function ThreadScopedSettingsSync({
       // read can overtake the write and return the pre-edit snapshot, which then goes back
       // over the values the user set and is written out again by the next edit.
       void awaitThreadScopedSettingsWrite(activeThreadId)
-        .then(() => getStoredChatThreadReadResult(activeThreadId))
+        .then(() =>
+          // Bounded, because this read is what holds sends back: the underlying GET has
+          // no timeout of its own, and one that never settles would park every send in
+          // the chat behind "Loading this chat's settings" with nothing to release it.
+          // A timeout is a failed attempt like any other, so it retries and then gives up.
+          Promise.race([
+            getStoredChatThreadReadResult(activeThreadId),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error("thread settings read timed out")),
+                THREAD_READ_TIMEOUT_MS,
+              ),
+            ),
+          ]),
+        )
         .then(({ thread, cacheable }) => {
           if (cancelled || paired) return;
           // A legacy fallback row means the backend GET FAILED and Dexie answered instead.

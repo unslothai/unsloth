@@ -852,10 +852,10 @@ export function replayUnconfirmedThreadSettings(): void {
   let pending: Record<string, unknown> = {};
   try {
     const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
-    localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
     if (!raw) return;
     pending = JSON.parse(raw) as Record<string, unknown>;
   } catch {
+    localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
     return;
   }
   for (const [threadId, body] of Object.entries(pending)) {
@@ -863,7 +863,32 @@ export function replayUnconfirmedThreadSettings(): void {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }).catch(() => undefined);
+    })
+      // Only an ok response means it landed. authFetch resolves for 404 and 5xx too,
+      // and the missing-row case this exists for is exactly the one that 404s, so
+      // dropping the entry on any settled promise would throw the edit away for good.
+      .then((res) => {
+        if (res.ok) forgetReplayedThreadSettings(threadId);
+      })
+      .catch(() => undefined);
+  }
+}
+
+/** Drop one entry, leaving the rest for the next attempt. */
+function forgetReplayedThreadSettings(threadId: string): void {
+  if (!canUseStorage()) return;
+  try {
+    const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
+    if (!raw) return;
+    const pending = JSON.parse(raw) as Record<string, unknown>;
+    delete pending[threadId];
+    if (Object.keys(pending).length === 0) {
+      localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
+    } else {
+      localStorage.setItem(THREAD_SETTINGS_REPLAY_KEY, JSON.stringify(pending));
+    }
+  } catch {
+    // Leaving it behind only costs one more replay next time.
   }
 }
 
@@ -997,6 +1022,19 @@ function writeThreadScopedSettings(
  * snapshot, which then gets applied over the values the user set and written back on the
  * next edit. Pending debounce included, or the read races the timer instead.
  */
+export async function settleThreadScopedSettingsForCopy(
+  threadId: string,
+): Promise<void> {
+  // An edit made while this chat's read was still out lives in neither the debounce nor
+  // the chain, so settling those alone leaves it behind and the copy takes the old row.
+  // Only for a caller that is about to read the row server side: the pairing itself
+  // waits on this function's sibling, which must not close the window it just opened.
+  if (pendingPairingThreadId === threadId) {
+    await commitHeldThreadScopedEditsToTheirThread();
+  }
+  await awaitThreadScopedSettingsWrite(threadId);
+}
+
 export async function awaitThreadScopedSettingsWrite(
   threadId: string,
 ): Promise<void> {
@@ -1020,10 +1058,21 @@ function flushThreadScopedSettingsWrite(keepalive = false): void {
     sendThreadScopedSettingsBeacon(threadId, snapshot);
     return;
   }
-  // Some browsers fire visibilitychange(hidden) and then pagehide. The first flushes
-  // normally and clears the pending snapshot, so the terminal event would find nothing
-  // to beacon and a discarded page takes the ordinary fetch with it. Hold the snapshot
-  // until its write settles so the terminal path can send it again, keepalive.
+  trackUnsettledThreadSettingsWrite(threadId, snapshot);
+}
+
+/**
+ * Start a normal write and keep its snapshot until it settles.
+ *
+ * Some browsers fire visibilitychange(hidden) and then pagehide. The first flushes
+ * normally and clears the pending snapshot, so the terminal event would find nothing to
+ * beacon and a discarded page takes the ordinary fetch with it. Holding the snapshot
+ * lets the terminal path send it again, keepalive.
+ */
+function trackUnsettledThreadSettingsWrite(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+): void {
   unsettledThreadSettingsWrites.set(threadId, snapshot);
   void writeThreadScopedSettings(threadId, snapshot).finally(() => {
     if (unsettledThreadSettingsWrites.get(threadId) === snapshot) {
@@ -1067,7 +1116,10 @@ function scheduleThreadScopedSettingsWrite(
     threadSettingsWriteThreadId = null;
     threadSettingsWriteSnapshot = null;
     if (pendingThreadId !== null) {
-      void writeThreadScopedSettings(pendingThreadId, pendingSnapshot);
+      // Tracked the same way a manual flush is: once the timer has fired there is no
+      // pending debounce left for a terminal event to find, so without this the write
+      // in flight is the only copy and the page teardown cancels it.
+      trackUnsettledThreadSettingsWrite(pendingThreadId, pendingSnapshot);
     }
   }, THREAD_SETTINGS_DEBOUNCE_MS);
 }
@@ -1100,9 +1152,14 @@ export function beginThreadScopedPairing(threadId: string): void {
   // edit already in the store, and re-sampling would take that edit for a default.
   if (pairingWindowDefaultsThreadId !== threadId) {
     pairingWindowDefaultsThreadId = threadId;
-    pairingWindowDefaults = readThreadScopedSettings(
-      useChatRuntimeStore.getState(),
-    );
+    // Switching straight from one saved chat to another, the store still holds the
+    // OUTGOING chat's values at this point, so it is not a source of defaults. The
+    // capture made when that chat was paired is, and it exists whenever a chat is
+    // applied. Only with no chat applied does the store itself hold the defaults.
+    pairingWindowDefaults =
+      threadScopedSettingsThreadId === null
+        ? readThreadScopedSettings(useChatRuntimeStore.getState())
+        : globalThreadScopedDefaults;
   }
   setThreadScopedSettingsPending(true);
 }
@@ -1114,6 +1171,31 @@ function setThreadScopedSettingsPending(pending: boolean): void {
   ) {
     useChatRuntimeStore.setState({ threadScopedSettingsPending: pending });
   }
+  if (pending) {
+    if (!pairingSettled) {
+      pairingSettled = new Promise<void>((resolve) => {
+        resolvePairingSettled = resolve;
+      });
+    }
+  } else {
+    resolvePairingSettled?.();
+    resolvePairingSettled = null;
+    pairingSettled = null;
+  }
+}
+
+let pairingSettled: Promise<void> | null = null;
+let resolvePairingSettled: (() => void) | null = null;
+
+/**
+ * Resolves once the open chat's own settings are known, or immediately if they already
+ * are. Every run goes through the adapter, so awaiting this there is what stops a
+ * Reload, a Continue or an edit-and-send from starting on the installation defaults
+ * that stand in while the read is out: a chat stored as "ask" would run as "off".
+ * Bounded by the read's own timeout, so it cannot wait forever.
+ */
+export function awaitThreadScopedPairing(): Promise<void> {
+  return pairingSettled ?? Promise.resolve();
 }
 
 /** The chat turned out to own no snapshot: send the held edits to the defaults, as before. */
@@ -1138,19 +1220,22 @@ export function releaseHeldThreadScopedEdits(): void {
  */
 export function commitHeldThreadScopedEditsToTheirThread(
   keepalive = false,
-): void {
+): Promise<void> {
   const threadId = pendingPairingThreadId;
   const held = heldThreadScopedEdits;
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
+  pairingWindowDefaultsThreadId = null;
   setThreadScopedSettingsPending(false);
-  if (threadId === null || held.length === 0) return;
+  if (threadId === null || held.length === 0) return Promise.resolve();
   const changes = heldThreadScopedChanges(held);
   if (keepalive) {
     sendThreadScopedSettingsBeacon(threadId, changes, true);
-    return;
+    return Promise.resolve();
   }
-  void mergeThreadScopedSettingsIntoRow(threadId, changes);
+  // Returned rather than fired and forgotten: forking copies settings_json server side,
+  // so it has to be able to wait for a held edit to reach the row first.
+  return mergeThreadScopedSettingsIntoRow(threadId, changes);
 }
 
 /** What the user actually touched, read off the store, which still holds their edits. */

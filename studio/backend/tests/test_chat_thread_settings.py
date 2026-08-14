@@ -462,13 +462,13 @@ def test_two_merges_of_different_fields_both_survive(tmp_path, monkeypatch):
     assert got.codeToolsEnabled is True
 
 
-def test_the_seq_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
+def test_the_watermark_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
     # Same upgrade path as settings_json: an install that predates the column.
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     conn = sqlite3.connect(studio_db_path())
     try:
-        conn.execute("ALTER TABLE chat_threads DROP COLUMN settings_seq")
+        conn.execute("ALTER TABLE chat_threads DROP COLUMN settings_seqs")
         conn.commit()
     finally:
         conn.close()
@@ -531,3 +531,46 @@ def test_settings_and_a_passing_guard_both_land(tmp_path, monkeypatch):
     got = thread_from_row(studio_db.get_chat_thread("thread-1"))
     assert got.title == "renamed"
     assert got.settings.toolsEnabled is True
+
+
+def test_another_tab_writing_does_not_clear_a_writer_watermark(tmp_path, monkeypatch):
+    # The race the ordering exists for: A's newer keepalive lands, B writes, then A's
+    # older request finally arrives. With one writer column, B's write has replaced the
+    # watermark and A's straggler is no longer compared against its own.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+
+    studio_db.write_chat_thread_settings(
+        "thread-1", merge = {"toolsEnabled": True}, seq = 5, writer = "tab-a"
+    )
+    studio_db.write_chat_thread_settings(
+        "thread-1", merge = {"codeToolsEnabled": True}, seq = 1, writer = "tab-b"
+    )
+    # tab A's straggler, older than what A already had stored
+    studio_db.write_chat_thread_settings(
+        "thread-1", merge = {"toolsEnabled": False}, seq = 2, writer = "tab-a"
+    )
+
+    got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
+    assert got.toolsEnabled is True
+    assert got.codeToolsEnabled is True
+
+
+def test_watermarks_do_not_grow_without_bound(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    for i in range(studio_db._MAX_SETTINGS_WRITERS + 10):
+        studio_db.write_chat_thread_settings(
+            "thread-1", merge = {"toolsEnabled": True}, seq = i + 1, writer = f"tab-{i}"
+        )
+
+    conn = sqlite3.connect(studio_db_path())
+    try:
+        raw = conn.execute(
+            "SELECT settings_seqs FROM chat_threads WHERE id = ?", ("thread-1",)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    import json as _json
+
+    assert len(_json.loads(raw)) <= studio_db._MAX_SETTINGS_WRITERS
