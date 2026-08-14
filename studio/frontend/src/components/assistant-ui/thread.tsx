@@ -39,9 +39,11 @@ import {
   attachmentsPastedText,
   isPastedTextFile,
   pasteClipboardFiles,
+  extractYoutubeVideoId,
   pasteLongTextAsFile,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
+  YoutubeTranscriptPrompt,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -2112,8 +2114,14 @@ const Composer: FC<{
   );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true });
+  // A pasted YouTube link offers a transcript attachment above the composer.
+  const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+      if (extractYoutubeVideoId(pastedText)) {
+        setYoutubeLink(pastedText.trim());
+      }
       // Bulk text pastes attach as a file instead of filling the input, except
       // in image-edit mode, whose submit path takes an inline instruction only.
       const input = event.currentTarget;
@@ -2160,6 +2168,12 @@ const Composer: FC<{
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
+  // Derived, not cleared in an effect: the offer retracts as soon as the link
+  // leaves the draft, which also covers sending.
+  const youtubeOfferUrl =
+    youtubeLink !== null && composerText.includes(youtubeLink)
+      ? youtubeLink
+      : null;
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -3783,6 +3797,16 @@ const Composer: FC<{
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      {youtubeOfferUrl && !isDictating && !disabled ? (
+        // Keyed by URL: pasting a second link while the first is still fetching
+        // remounts the prompt, so its cleanup aborts the request that is no
+        // longer the one on offer.
+        <YoutubeTranscriptPrompt
+          key={youtubeOfferUrl}
+          url={youtubeOfferUrl}
+          onClose={() => setYoutubeLink(null)}
+        />
+      ) : null}
       {isTauri ? (
         // Phase 1 native model owns Tauri local-path drops. Restore browser
         // attachment drops in Tauri once Phase 1d adds token bridging.
