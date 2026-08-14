@@ -211,10 +211,15 @@ test("the composer reads indexing from the hooks, not the listed rows", () => {
     ),
     "utf8",
   );
-  assert.match(folders, /noteProjectWork\(workProjectId, 1\)/);
-  assert.match(folders, /noteProjectWork\(workProjectId, -1\)/);
-  // Abort is the path an unmount, a scope change and an unlink all take.
-  assert.match(folders, /addEventListener\("abort", endWork\)/);
+  // Tied to the job, not to the component that started it: leaving the Sources
+  // tab aborts its event stream, the sync carries on.
+  assert.match(folders, /watchProjectFolderJob\(scopeId, initial\.id\)/);
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(api, /noteProjectWork\(projectId, 1\)/);
+  assert.match(api, /noteProjectWork\(projectId, -1\)/);
   const bar = readFileSync(
     new URL(
       "../src/features/rag/components/thread-documents-bar.tsx",
@@ -222,5 +227,77 @@ test("the composer reads indexing from the hooks, not the listed rows", () => {
     ),
     "utf8",
   );
-  assert.match(bar, /const hasIndexing = threadIndexing \|\| projectIndexing;/);
+  assert.match(
+    bar,
+    /const hasIndexing =\s*threadIndexing \|\| projectIndexing \|\| projectListLoading;/,
+  );
+});
+
+// A list slower than the poll interval used to retire itself: each tick took a
+// newer ticket before the previous response landed, so every response was
+// dropped. The row being watched never reached completed and a queued send
+// waited on it forever.
+test("a poll tick is skipped while one is still out", () => {
+  let inFlight = false;
+  let started = 0;
+  const tick = () => {
+    if (inFlight) return;
+    inFlight = true;
+    started += 1;
+  };
+
+  tick();
+  tick();
+  tick();
+  assert.equal(started, 1, "one request, however many ticks pass");
+
+  inFlight = false;
+  tick();
+  assert.equal(started, 2, "the next tick goes out once it has landed");
+});
+
+test("the poll and the initial list are wired that way", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    hook,
+    /if \(!refreshInFlight\.current\) \{\s*void refresh\(\{ quiet: true \}\);/,
+  );
+  // Reopening a project whose job is already running: nothing is listed yet and
+  // no upload of ours is counted, so the gate has to hold for the first list.
+  const bar = readFileSync(
+    new URL(
+      "../src/features/rag/components/thread-documents-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    bar,
+    /threadIndexing \|\| projectIndexing \|\| projectListLoading/,
+  );
+});
+
+// Two tabs on the same project share its sources, and a CustomEvent reaches
+// only the tab that fired it.
+test("an invalidation crosses tabs", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(api, /getProjectChannel\(\)\?\.postMessage\(\{ projectId \}\)/);
+  assert.match(api, /new BroadcastChannel\(PROJECT_SOURCES_CHANGED_EVENT\)/);
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /subscribeProjectSourcesBroadcast\(\);/);
 });

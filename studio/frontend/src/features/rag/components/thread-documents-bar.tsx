@@ -421,6 +421,7 @@ export function ThreadDocumentsBar({
     documents: projectDocuments,
     uploading: projectUploading,
     hasIndexing: projectIndexing,
+    loading: projectListLoading,
     upload: uploadToProject,
     remove: removeFromProject,
   } = useRagDocuments(
@@ -431,9 +432,11 @@ export function ThreadDocumentsBar({
   // Tell the composer whether any doc is still indexing, so it can hold a queued
   // send until retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope
   // is null, so both lists are empty and this reads false.
-  // From the hooks, not the rows: a project upload started in the Sources panel
-  // is in flight before either instance has a row for it.
-  const hasIndexing = threadIndexing || projectIndexing;
+  // From the hooks, not the rows: work started in the Sources panel is in flight
+  // before either instance has a row for it. Reopening a project is the same
+  // question unanswered: a job may already be running, and its row arrives with
+  // the first list, so hold the gate until that lands.
+  const hasIndexing = threadIndexing || projectIndexing || projectListLoading;
   useEffect(() => {
     onIndexingChange?.(hasIndexing);
   }, [hasIndexing, onIndexingChange]);

@@ -12,6 +12,7 @@ import {
   noteProjectWork,
   projectWorkCount,
   streamJobEvents,
+  subscribeProjectSourcesBroadcast,
   uploadKnowledgeBaseDocument,
   uploadProjectDocument,
   uploadThreadDocument,
@@ -103,6 +104,7 @@ export function useRagDocuments(
   // one landing last would put the pre-mutation list back and, with it, drop the
   // indexing state the composer gates sends on.
   const refreshSeq = useRef(0);
+  const refreshInFlight = useRef(false);
 
   const scopeKey = scope
     ? scope.type === "kb"
@@ -218,6 +220,7 @@ export function useRagDocuments(
     async (opts?: { quiet?: boolean }) => {
       if (!scopeKey) return;
       const requestId = ++refreshSeq.current;
+      refreshInFlight.current = true;
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
@@ -254,6 +257,9 @@ export function useRagDocuments(
           });
         }
       } finally {
+        if (refreshSeq.current === requestId) {
+          refreshInFlight.current = false;
+        }
         if (!opts?.quiet) setLoading(false);
       }
     },
@@ -320,7 +326,15 @@ export function useRagDocuments(
     documents.some((d) => d.status === "pending" || d.status === "running");
   useEffect(() => {
     if (!scopeKey || !hasIndexing) return;
-    const id = setInterval(() => void refresh({ quiet: true }), 4000);
+    // Skip a tick while one is still out. Starting another would retire it
+    // through the sequence gate, and a list slower than the interval would
+    // then never publish: the row this is watching never reaches completed and
+    // a queued send waits forever.
+    const id = setInterval(() => {
+      if (!refreshInFlight.current) {
+        void refresh({ quiet: true });
+      }
+    }, 4000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey, hasIndexing]);
@@ -335,6 +349,7 @@ export function useRagDocuments(
         ?.projectId;
       if (changed === projectScopeId) void refresh({ quiet: true });
     };
+    subscribeProjectSourcesBroadcast();
     window.addEventListener(PROJECT_SOURCES_CHANGED_EVENT, onChanged);
     return () =>
       window.removeEventListener(PROJECT_SOURCES_CHANGED_EVENT, onChanged);

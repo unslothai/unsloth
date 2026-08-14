@@ -225,11 +225,48 @@ export async function projectHasSources(projectId: string): Promise<boolean> {
 export const PROJECT_SOURCES_CHANGED_EVENT = "unsloth-project-sources-changed";
 
 export function invalidateProjectSources(projectId: string): void {
+  publishProjectSourcesChanged(projectId);
+  getProjectChannel()?.postMessage({ projectId });
+}
+
+function publishProjectSourcesChanged(projectId: string): void {
   projectSourcesCache.delete(projectId);
   if (typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent(PROJECT_SOURCES_CHANGED_EVENT, { detail: { projectId } }),
   );
+}
+
+/** A project's sources are shared by every tab on this origin, and a CustomEvent
+ * reaches only the tab that fired it. Without this a second tab keeps listing
+ * the sources it saw first, and its cached "no sources" answer stands for the
+ * probe's whole TTL. Opened lazily so importing this module starts nothing. */
+let projectChannel: BroadcastChannel | null | undefined;
+
+function getProjectChannel(): BroadcastChannel | null {
+  if (projectChannel !== undefined) {
+    return projectChannel;
+  }
+  if (
+    typeof window === "undefined" ||
+    typeof BroadcastChannel === "undefined"
+  ) {
+    projectChannel = null;
+    return null;
+  }
+  projectChannel = new BroadcastChannel(PROJECT_SOURCES_CHANGED_EVENT);
+  projectChannel.onmessage = (event: MessageEvent) => {
+    const projectId = (event.data as { projectId?: string } | null)?.projectId;
+    if (projectId) {
+      publishProjectSourcesChanged(projectId);
+    }
+  };
+  return projectChannel;
+}
+
+/** Listeners only hear another tab once the channel is open. */
+export function subscribeProjectSourcesBroadcast(): void {
+  getProjectChannel();
 }
 
 /**
@@ -261,6 +298,37 @@ export function noteProjectWork(projectId: string, delta: number): void {
 
 export function projectWorkCount(projectId: string): number {
   return projectWorkInFlight.get(projectId) ?? 0;
+}
+
+const watchedFolderJobs = new Set<string>();
+
+/** Count a folder sync as work on its project until the backend job ends.
+ * Tied to the job rather than to whoever started it: leaving the Sources tab
+ * aborts that component's event stream but not the job, and the composer has to
+ * stay gated until the sources it is adding are actually in. Bounded, so a job
+ * that never reports a terminal state cannot gate a project for the session. */
+export function watchProjectFolderJob(projectId: string, jobId: string): void {
+  if (watchedFolderJobs.has(jobId)) {
+    return;
+  }
+  watchedFolderJobs.add(jobId);
+  noteProjectWork(projectId, 1);
+  void (async () => {
+    try {
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        const job = await getFolderSyncJob(jobId);
+        if (job.status === "completed" || job.status === "failed") {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+    } catch {
+      // A job that cannot be read cannot be waited on.
+    } finally {
+      watchedFolderJobs.delete(jobId);
+      noteProjectWork(projectId, -1);
+    }
+  })();
 }
 
 export async function listLinkedFolders(
