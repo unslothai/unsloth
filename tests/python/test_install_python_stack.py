@@ -567,6 +567,7 @@ class TestStrictPmPolicyOptOut:
         off the checkout and from an unscanned state."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        monkeypatch.setattr(ips, "_UV_POLICY_PROJECTION", None)
 
     HOSTILE = dict(
         TestHardenedPipConfigRelaxation.HOSTILE,
@@ -663,7 +664,18 @@ class TestStrictPmPolicyOptOut:
         with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
             assert ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"]) is None
 
-    def test_a_pinned_uv_command_carries_the_file_policy_as_uv_flags(
+    def _pinned_env(self, tmp_path, monkeypatch, config: str, env: dict):
+        """The child env for a pinned repair, with `config` as the cwd's uv.toml."""
+        (tmp_path / "uv.toml").write_text(config, encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        monkeypatch.setattr(ips, "_UV_POLICY_PROJECTION", None)
+        with mock.patch.dict(os.environ, env, clear = True):
+            return ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+
+    def test_a_pinned_uv_command_is_served_the_file_policy_without_the_index(
         self, tmp_path, monkeypatch
     ):
         """UV_NO_CONFIG=1 is what keeps a uv.toml INDEX from outranking the CLI pin, and it
@@ -671,55 +683,65 @@ class TestStrictPmPolicyOptOut:
         command that actually runs under no build restriction at all, so an sdist-only
         mirror builds from source in the mode that promised the policy verbatim.
 
-        uv documents --no-config as disabling config DISCOVERY, and environment settings as
-        taking precedence over persistent configuration, so the flags survive the switch.
-        """
-        (tmp_path / "uv.toml").write_text(
+        --config-file replaces discovery, so the generated file carries the policy across
+        without carrying the mirror that made the pin necessary."""
+        env = self._pinned_env(
+            tmp_path,
+            monkeypatch,
             "no-build = true\nrequire-hashes = true\nexclude-newer = '2026-01-01'\n",
-            encoding = "utf-8",
+            {"UNSLOTH_STRICT_PM_POLICY": "1"},
         )
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        projected = Path(env["UV_CONFIG_FILE"]).read_text(encoding = "utf-8")
+        assert "no-build = true" in projected
+        assert "require-hashes = true" in projected
+        assert 'exclude-newer = "2026-01-01"' in projected
+        settings = [line for line in projected.splitlines() if not line.startswith("#")]
+        assert not any(
+            "index" in line or "find-links" in line for line in settings
+        ), f"the operator's mirror must not travel with the policy: {settings}"
+        assert env["UV_NO_CONFIG"] == "1", "discovery stays off whichever variable wins"
+
+    def test_the_projection_is_written_once(self, tmp_path, monkeypatch):
+        """Every torch repair builds an env, and a file per command would litter."""
+        first = self._pinned_env(
+            tmp_path, monkeypatch, "no-build = true\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+        )["UV_CONFIG_FILE"]
         with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
-            env = ips._install_env_for_cmd(
-                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
-            )
-        assert env["UV_NO_CONFIG"] == "1", "the pin still outranks the file's index"
-        assert env["UV_NO_BUILD"] == "1"
-        assert env["UV_REQUIRE_HASHES"] == "true"
-        assert env["UV_EXCLUDE_NEWER"] == "2026-01-01"
+            second = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torchvision", "--index-url", "https://x/cu128"]
+            )["UV_CONFIG_FILE"]
+        assert first == second
 
     def test_the_default_mode_carries_no_file_policy_into_a_pinned_command(
         self, tmp_path, monkeypatch
     ):
         """The translation is the switch's job. Without it a torch repair on a hardened
         host fails exactly as #8530 did."""
-        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
-        with mock.patch.dict(os.environ, {}, clear = True):
-            env = ips._install_env_for_cmd(
-                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
-            )
-        assert "UV_NO_BUILD" not in env and "PIP_ONLY_BINARY" not in env
+        env = self._pinned_env(tmp_path, monkeypatch, "no-build = true\n", {})
+        assert "UV_CONFIG_FILE" not in env and "PIP_ONLY_BINARY" not in env
+        assert env["UV_NO_CONFIG"] == "1"
+
+    def test_an_unconfigured_host_gets_no_projection(self, tmp_path, monkeypatch):
+        """Nothing to carry, nothing written: the pinned command runs as it always did."""
+        env = self._pinned_env(tmp_path, monkeypatch, "", {"UNSLOTH_STRICT_PM_POLICY": "1"})
+        assert "UV_CONFIG_FILE" not in env
 
     def test_a_package_scoped_policy_translates_at_its_own_scope(self, tmp_path, monkeypatch):
         """`no-build-package = ["some-other-package"]` is a policy about that package.
         Widening it to :all: fails Studio's four wheel-less requirements over a setting
         that never covered them."""
-        (tmp_path / "uv.toml").write_text(
-            'no-build-package = ["some-other-package"]\n', encoding = "utf-8"
+        env = self._pinned_env(
+            tmp_path,
+            monkeypatch,
+            'no-build-package = ["some-other-package"]\n',
+            {"UNSLOTH_STRICT_PM_POLICY": "1"},
         )
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
-        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
-            env = ips._install_env_for_cmd(
-                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
-            )
-        # pip's format control is comma-separated, uv's variable is space-delimited.
+        # pip's format control is comma-separated; uv's pip table takes only-binary, which
+        # is the same restriction spelled the way that interface reads it.
         assert env["PIP_ONLY_BINARY"] == "some-other-package"
-        assert env["UV_NO_BUILD_PACKAGE"] == "some-other-package"
-        assert "UV_NO_BUILD" not in env
+        projected = Path(env["UV_CONFIG_FILE"]).read_text(encoding = "utf-8")
+        assert 'only-binary = ["some-other-package"]' in projected
+        assert "no-build = true" not in projected
 
     def test_an_empty_package_list_translates_to_nothing(self, tmp_path, monkeypatch):
         (tmp_path / "uv.toml").write_text("no-build-package = []\n", encoding = "utf-8")

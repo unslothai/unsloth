@@ -42,10 +42,11 @@ def _load_real_index_env_scrub():
     """
     import os as _os
     import sys as _sys
+    import tempfile as _tempfile
     from pathlib import Path as _Path
 
     src = STACK.read_text(encoding = "utf-8")
-    ns: dict = {"os": _os, "sys": _sys, "Path": _Path}
+    ns: dict = {"os": _os, "sys": _sys, "tempfile": _tempfile, "Path": _Path}
     for anchor, end, keep in (
         ("IS_WINDOWS = ", "\n", 0),
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
@@ -67,9 +68,11 @@ def _load_real_index_env_scrub():
         ("def _uv_config_candidates(", "\n\n\n", 0),
         ("def _scan_uv_policy_config(", "\n\n\n", 0),
         ("def _scan_uv_policy_config_by_line(", "\n\n\n", 0),
+        ("def _uv_policy_settings_from_files(", "\n\n\n", 0),
         ("def _uv_policy_settings(", "\n\n\n", 0),
         ("def _uv_policy_as_pip_policy(", "\n\n\n", 0),
-        ("def _uv_policy_as_uv_env(", "\n\n\n", 0),
+        ('_UV_POLICY_PROJECTION: "', "\n", 0),
+        ("def _uv_policy_config_projection(", "\n\n\n", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):

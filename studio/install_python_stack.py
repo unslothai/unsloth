@@ -4360,24 +4360,20 @@ def _report_pm_policy_relaxation() -> None:
     )
 
 
-def _uv_policy_settings() -> "dict[str, object]":
-    """The build and integrity policy uv is under, from its environment and its files.
+def _uv_policy_settings_from_files() -> "dict[str, object]":
+    """The build and integrity policy uv's own CONFIG FILES set.
 
-    One reader for two translations: pip's, for the fallback uv's own variables never
-    reach, and uv's own, for a pinned command that reads no config file. Reading the FILES
-    matters because a uv.toml is where #8530's policy lived, and uv honours both.
+    Separate from the environment because the two are carried differently: a pinned
+    command inherits the environment already, and it is the file half that --no-config
+    takes away and _uv_policy_config_projection() has to hand back.
 
     Scope is carried rather than flattened. `no-build-package = ["foo"]` is a policy about
     foo, and widening it to every package fails installs the operator never restricted.
     """
-    no_build_all = _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
+    no_build_all = False
     packages: "list[str]" = []
-    # uv documents UV_NO_BUILD_PACKAGE as a space-delimited list.
-    packages += _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
-    require_hashes = _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES"))
-    exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
-    if not _pm_policy_value_is_on(exclude_newer):
-        exclude_newer = ""
+    require_hashes = False
+    exclude_newer = ""
     for _name, key, value in _uv_policy_config():
         if key == "require-hashes":
             require_hashes = True
@@ -4391,13 +4387,36 @@ def _uv_policy_settings() -> "dict[str, object]":
                 no_build_all = True
             else:
                 packages += names
-    if no_build_all:
-        packages = []
     return {
         "no_build_all": no_build_all,
-        "no_build_packages": sorted(dict.fromkeys(packages)),
+        "no_build_packages": [] if no_build_all else sorted(dict.fromkeys(packages)),
         "require_hashes": require_hashes,
         "exclude_newer": exclude_newer,
+    }
+
+
+def _uv_policy_settings() -> "dict[str, object]":
+    """The same policy, from uv's environment as well as its files, for pip's translation.
+
+    Reading the FILES matters because a uv.toml is where #8530's policy lived, and uv
+    honours both.
+    """
+    settings = _uv_policy_settings_from_files()
+    packages = list(settings["no_build_packages"])
+    # uv documents UV_NO_BUILD_PACKAGE as a space-delimited list.
+    packages += _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
+    no_build_all = settings["no_build_all"] or _pm_policy_value_is_on(
+        os.environ.get("UV_NO_BUILD")
+    )
+    exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
+    if not _pm_policy_value_is_on(exclude_newer):
+        exclude_newer = ""
+    return {
+        "no_build_all": no_build_all,
+        "no_build_packages": [] if no_build_all else sorted(dict.fromkeys(packages)),
+        "require_hashes": settings["require_hashes"]
+        or _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES")),
+        "exclude_newer": settings["exclude_newer"] or exclude_newer,
     }
 
 
@@ -4429,31 +4448,62 @@ def _uv_policy_as_pip_policy() -> "dict[str, str]":
     return translated
 
 
-def _uv_policy_as_uv_env() -> "dict[str, str]":
-    """The same policy in uv's OWN variables, for the one command that reads no config.
+_UV_POLICY_PROJECTION: "Path | None" = None
 
-    A pinned command runs with UV_NO_CONFIG=1, because a uv.toml index outranks the CLI
-    pin and would install the wrong torch. That switch takes the operator's policy down
-    with their index, so under strict mode the policy travels as environment variables
-    instead: uv documents --no-config as disabling config DISCOVERY, and settings from
-    environment variables take precedence over persistent configuration either way.
 
-    Environment policy is already inherited by these commands, so only what was read from
-    a FILE is added here, and an explicit UV_* setting is never overwritten.
+def _uv_policy_config_projection() -> "Path | None":
+    """A uv.toml carrying the operator's POLICY and none of their index, written once.
+
+    A pinned command cannot read the operator's own config file: their index lives in the
+    same file as their policy, and a uv.toml index outranks the CLI pin, so honouring the
+    file would resolve a CUDA/ROCm/XPU repair from their mirror. --config-file REPLACES
+    discovery rather than adding to it, which is what lets strict mode hand uv the policy
+    without the index. None when the files set no policy, and the command then runs under
+    --no-config alone, exactly as before.
+
+    A file rather than UV_NO_BUILD / UV_NO_BUILD_PACKAGE because the `uv pip` interface
+    takes those settings from the [pip] table: measured against uv 0.10.7,
+    `UV_NO_BUILD=1 uv pip install <sdist-only>` installs happily while the same policy in
+    a --config-file refuses with "Wheels are required ... because building from source is
+    disabled". UV_REQUIRE_HASHES and UV_EXCLUDE_NEWER do apply and are inherited anyway.
+
+    Only what a FILE set is projected, and only the four keys uv's pip table takes, so a
+    key uv would reject can never reach the command and fail an install over a report.
     """
-    if not _strict_pm_policy():
-        return {}
-    settings = _uv_policy_settings()
-    translated: "dict[str, str]" = {}
-    if settings["no_build_all"] and not os.environ.get("UV_NO_BUILD"):
-        translated["UV_NO_BUILD"] = "1"
-    elif settings["no_build_packages"] and not os.environ.get("UV_NO_BUILD_PACKAGE"):
-        translated["UV_NO_BUILD_PACKAGE"] = " ".join(settings["no_build_packages"])
-    if settings["require_hashes"] and not os.environ.get("UV_REQUIRE_HASHES"):
-        translated["UV_REQUIRE_HASHES"] = "true"
-    if settings["exclude_newer"] and not os.environ.get("UV_EXCLUDE_NEWER"):
-        translated["UV_EXCLUDE_NEWER"] = str(settings["exclude_newer"])
-    return translated
+    global _UV_POLICY_PROJECTION
+    if _UV_POLICY_PROJECTION is not None:
+        return _UV_POLICY_PROJECTION
+    settings = _uv_policy_settings_from_files()
+    lines: "list[str]" = []
+    if settings["no_build_all"]:
+        lines.append("no-build = true")
+    elif settings["no_build_packages"]:
+        lines.append(
+            "only-binary = [" + ", ".join(f'"{name}"' for name in settings["no_build_packages"]) + "]"
+        )
+    if settings["require_hashes"]:
+        lines.append("require-hashes = true")
+    if settings["exclude_newer"]:
+        lines.append(f'exclude-newer = "{settings["exclude_newer"]}"')
+    if not lines:
+        return None
+    try:
+        directory = Path(tempfile.mkdtemp(prefix = "unsloth-uv-policy-"))
+        path = directory / "uv.toml"
+        path.write_text(
+            "# Generated by Unsloth's installer under "
+            f"{_STRICT_PM_POLICY_ENV_VAR}=1: your build and integrity policy, carried to a\n"
+            "# command that pins its own index and so cannot read your configuration file.\n"
+            "[pip]\n" + "\n".join(lines) + "\n",
+            encoding = "utf-8",
+        )
+    except OSError:
+        # No writable temp directory. The command still runs under --no-config, which is
+        # the pre-strict behaviour, and _report_pm_policy_relaxation has already named the
+        # policy: a repair that cannot start is worse than one that relaxes a policy.
+        return None
+    _UV_POLICY_PROJECTION = path
+    return path
 
 
 def _untranslatable_strict_policy() -> "list[str]":
@@ -4481,9 +4531,9 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the package-scoped --no-binary in _sdist_only_build_args() instead.
 
     UNSLOTH_STRICT_PM_POLICY=1 drops the relaxations: hash mode is left alone, the policy
-    env vars survive a pinned command, and a policy read from uv's config files is
-    translated into both uv's own variables (the file itself is out of reach here) and
-    pip's (for the fallback that would otherwise undo them).
+    env vars survive a pinned command, a policy read from uv's config files is re-served
+    to uv from a generated index-free file, and it is translated into PIP_* as well for
+    the fallback that would otherwise undo it.
 
     What strict does NOT do is let a config FILE reach a pinned command. Config discovery
     carries the operator's index as well as their policy, and a uv.toml index outranks the
@@ -4509,7 +4559,14 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
             env.pop(name, None)
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
-    env.update(_uv_policy_as_uv_env())
+    if strict:
+        _projection = _uv_policy_config_projection()
+        if _projection is not None:
+            # Both, deliberately. --config-file replaces discovery, so this alone keeps the
+            # operator's index out; keeping --no-config beside it means that if a uv ever
+            # resolves the two the other way the fallback is "no config at all", which is
+            # the wrong policy rather than the wrong wheel.
+            env["UV_CONFIG_FILE"] = str(_projection)
     env.update(_uv_policy_as_pip_policy())
     return env
 
