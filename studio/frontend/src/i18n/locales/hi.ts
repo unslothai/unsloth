@@ -17,7 +17,6 @@ export const hi = {
     searchAriaLabel: "{noun} खोजें",
     modelSourceAriaLabel: "मॉडल स्रोत",
     hubSectionAriaLabel: "Hub सेक्शन",
-    pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
     modelDropped: "अब उपलब्ध नहीं",
     modelDroppedByProvider: "{provider} · अब उपलब्ध नहीं",
     modelDisabled: "सक्षम नहीं",
@@ -158,7 +157,32 @@ export const hi = {
       about: "परिचय",
       data: "डेटा",
       agents: "एजेंट",
+      debugging: "लॉग",
       voice: "आवाज़",
+    },
+    debugging: {
+      logSection: "लॉग फ़ाइल",
+      source: "लॉग फ़ाइल",
+      sourceHint: "मॉडल रनर अपने अलग लॉग लिखते हैं, इसलिए लोड या जनरेशन विफल होने का कारण अक्सर सर्वर लॉग के बजाय वहीं मिलता है।",
+      path: "स्थान",
+      pathCopy: "पथ कॉपी करें",
+      refreshSection: "रिफ़्रेश",
+      mode: "मोड",
+      modeLive: "लाइव",
+      modeInterval: "हर 3 सेकंड",
+      modeManual: "मैन्युअल",
+      refreshNow: "अभी रिफ़्रेश करें",
+      privacyNote: "इस दृश्य में क्रेडेंशियल छिपा दिए जाते हैं। डिस्क पर मौजूद फ़ाइल में वे नहीं छिपाए जाते।",
+      copyVisible: "दिख रहा लॉग कॉपी करें",
+      empty: "अभी तक कुछ भी लॉग नहीं हुआ है।",
+      disabled: "फ़ाइल में लॉगिंग बंद है (UNSLOTH_STUDIO_NO_FILE_LOG=1)।",
+      missing: "कोई लॉग फ़ाइल नहीं मिली।",
+      unreadable: "लॉग फ़ाइल पढ़ी नहीं जा सकी।",
+      timeout: "लॉग अनुरोध का समय समाप्त हो गया। सर्वर तक पहुंच नहीं हो पा रही है।",
+      droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
+      morePending: "और पंक्तियां अभी पढ़ी जा रही हैं; वे अगले रिफ्रेश पर आएंगी।",
+      staleSession: "फ़ाइल लॉगिंग बंद है, इसलिए यह पुराना सत्र है और अपडेट नहीं होगा।",
+      keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
       title: "आवाज़",
@@ -373,6 +397,13 @@ export const hi = {
         idleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद VRAM खाली करें। 0 पर मॉडल लोड रहता है; न्यूनतम 60 सेकंड।",
         idleSecondsAriaLabel: "निष्क्रिय ऑटो-अनलोड की अवधि (सेकंड में)",
+        mediaIdleUnload: "इमेज और वीडियो के लिए निष्क्रिय ऑटो-अनलोड",
+        mediaIdleUnloadDescription:
+          "इतने सेकंड तक निष्क्रिय रहने के बाद इमेज और वीडियो मॉडल अनलोड करके VRAM खाली करें। यह अपनी अलग सेटिंग है: ऊपर वाली सेटिंग केवल चैट मॉडल पर लागू होती है। 0 पर वे लोड रहते हैं; न्यूनतम 60 सेकंड।",
+        mediaIdleSecondsAriaLabel:
+          "इमेज और वीडियो के निष्क्रिय ऑटो-अनलोड की अवधि (सेकंड में)",
+        mediaIdlePaused:
+          "‘मॉडल को GPU मेमोरी में रखें’ या ‘केवल API द्वारा लोड किए गए मॉडल अनलोड करें’ चालू रहने तक रुका हुआ है।",
         idleNeedsEnable: "पहले ‘अनुरोध के अनुसार मॉडल बदलें’ चालू करें।",
         idleActiveViaEnv:
           "निष्क्रिय ऑटो-अनलोड UNSLOTH_MODEL_IDLE_TTL एनवायरनमेंट वेरिएबल के माध्यम से सक्रिय है।",
@@ -422,6 +453,11 @@ export const hi = {
         launchAtLogin: "लॉगिन पर Unsloth चलाएं",
         launchAtLoginDescription:
           "लॉगिन करने पर Unsloth को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
+
+        closeToTray: "सिस्टम ट्रे में बंद करें",
+        closeToTrayDescription:
+          "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
+        closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
@@ -719,6 +755,39 @@ export const hi = {
         free: "{value} खाली",
         total: "{value} कुल",
       },
+      llamaBackend: {
+        title: "GGUF इनफ़रेंस इंजन",
+        label: "कंप्यूट बैकएंड",
+        description: "वह बैकएंड जिस पर llama.cpp GGUF मॉडल चलाता है।",
+        runningOn: "llama.cpp अभी {backend} पर चल रहा है।",
+        hint: "इस बैकएंड के लिए llama.cpp बिल्ड इंस्टॉल करता है और अपडेट के बाद भी वही रखता है। जब स्वचालित चुनाव क्रैश हो या आपका GPU ड्राइवर उसे सपोर्ट न करे, तब उपयोगी है। केवल वही बैकएंड दिखते हैं जिनका बिल्ड इस मशीन के लिए मौजूद है; ट्रेनिंग पर कोई असर नहीं पड़ता।",
+        autoWith: "स्वचालित ({backend})",
+        apply: "लागू करें",
+        applying: "इंस्टॉल हो रहा है...",
+        applyHint: "नया बिल्ड डाउनलोड करके llama.cpp को फिर से शुरू करता है। लोड किया गया मॉडल अनलोड हो जाएगा।",
+        applyHintWithSize: "{size} डाउनलोड करके llama.cpp को फिर से शुरू करता है। लोड किया गया मॉडल अनलोड हो जाएगा।",
+        switchedTo: "अब llama.cpp {backend} पर चल रहा है।",
+        switchFailed: "llama.cpp बैकएंड नहीं बदला जा सका।",
+        switchInterrupted: "स्विच पूरा होने से पहले बाधित हो गया।",
+        envLocked: "पर्यावरण चर UNSLOTH_LLAMA_CPP_BACKEND ने इसे {backend} पर तय किया है, जो इस सेटिंग पर भारी पड़ता है।",
+        backends: {
+          auto: "स्वचालित",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "कोई प्रबंधित llama.cpp इंस्टॉल नहीं मिला, इसलिए बदलने के लिए कोई बैकएंड नहीं है।",
+          localLink: "llama.cpp आपकी अपनी लिंक की हुई लोकल डायरेक्टरी है, इसलिए Unsloth उसे नहीं बदलेगा।",
+          sourceBuild: "यह llama.cpp सोर्स से बनाया गया है, इसलिए इसका बैकएंड यहाँ से नहीं बदला जा सकता।",
+          unresolved: "उपलब्ध बैकएंड की जाँच नहीं हो सकी। अपना कनेक्शन देखकर दोबारा कोशिश करें।",
+        },
+        // दिखाया नहीं जाता: सेटिंग्स खोज के लिए अतिरिक्त शब्द।
+        llamaBackendKeywords:
+          "llama.cpp backend gguf इनफ़रेंस cuda rocm hip vulkan metal cpu gpu एक्सेलेरेटर prebuilt बदलें इंजन",
+      },
       modelMemory: {
         title: "मॉडल मेमोरी",
         keepResident: "मॉडल को GPU मेमोरी में रखें",
@@ -932,12 +1001,14 @@ export const hi = {
       exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
-        "JSONL, NDJSON या CSV एक्सपोर्ट को हाल के सेक्शन में इंपोर्ट करें।",
+        "Open WebUI, JSONL, NDJSON या CSV एक्सपोर्ट को Recents में इंपोर्ट करें।",
       importChatsAction: "इंपोर्ट करें",
       importNoConversations: "फ़ाइल में कोई वार्तालाप नहीं मिला।",
       importedOneChat: "1 वार्तालाप हाल के सेक्शन में इंपोर्ट किया गया।",
       importedChatCount:
         "{count} वार्तालाप हाल के सेक्शन में इंपोर्ट किए गए।",
+      importingChats: "चैट इंपोर्ट हो रही हैं: अब तक {count} ({percent}%)...",
+      importedChatCountPartial: "{count} बातचीत Recents में इंपोर्ट की गईं; {failed} सेव नहीं हो सकीं।",
       importFailed: "इंपोर्ट विफल रहा।",
       clearHistory: "चैट इतिहास साफ़ करें",
       clearHistoryDescription: "इस डिवाइस से चैट इतिहास हटाएं।",

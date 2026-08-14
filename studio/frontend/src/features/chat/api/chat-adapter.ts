@@ -5,6 +5,8 @@ import {
   SANDBOX_FILE_TOOLS,
   type SandboxFile,
   extractCreatedFiles,
+  isSandboxToolResult,
+  sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
@@ -97,6 +99,7 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
@@ -192,6 +195,7 @@ import {
   streamChatCompletions,
   validateModel,
 } from "./chat-api";
+import { selectCodeToolNames } from "./code-tool-placement";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -1001,45 +1005,6 @@ export interface McpImageToolResult {
 }
 
 /**
- * A python/terminal result carrying the chat's sandbox context alongside the
- * text the model actually saw.
- */
-/** ``files`` as the cards need it: absent, or entries with a usable name. */
-export function isSandboxFileList(val: unknown): boolean {
-  if (val === undefined || val === null) return true;
-  if (!Array.isArray(val)) return false;
-  return val.every(
-    (entry) =>
-      typeof entry === "object" &&
-      entry !== null &&
-      typeof (entry as { name?: unknown }).name === "string",
-  );
-}
-
-export function isSandboxToolResult(
-  val: unknown,
-): val is { text: string; sessionId: string } {
-  if (typeof val !== "object" || val === null) return false;
-  const v = val as {
-    text?: unknown;
-    sessionId?: unknown;
-    images?: unknown;
-    files?: unknown;
-  };
-  // images too: it is always in Studio's own wrapper, and a tool result that
-  // merely has text and sessionId is someone else's, whose other fields would
-  // be dropped on export.
-  return (
-    typeof v.text === "string" &&
-    typeof v.sessionId === "string" &&
-    Array.isArray(v.images) &&
-    // Persisted content can carry anything: the cards map over this and read
-    // name off each entry, so anything else takes the whole chat view down.
-    isSandboxFileList(v.files)
-  );
-}
-
-/**
  * The text the model actually saw, for a result that may be wrapped.
  *
  * Chat replay and every export path have to agree on this: exports feed
@@ -1823,7 +1788,7 @@ async function resolveSandboxSessionId(
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | undefined> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
-  return projectId ? `project-${projectId}` : threadId;
+  return sandboxSessionIdFor(threadId, projectId);
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
@@ -3676,10 +3641,13 @@ export function createOpenAIStreamAdapter(
         if (
           !selectedCheckpoint ||
           (researchExternalSelection &&
-            researchExternalProvider?.providerType !== "openai_codex")
+            providerModelSupportsStudioTools(
+              researchExternalProvider?.providerType,
+              researchExternalSelection.modelId,
+            ) !== true)
         ) {
           throw new Error(
-            "Deep research requires a selected local model or ChatGPT/Codex subscription.",
+            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
           );
         }
         const reasoningRequested =
@@ -3691,6 +3659,7 @@ export function createOpenAIStreamAdapter(
             researchExternalSelection && researchExternalProvider
               ? {
                   providerId: researchExternalProvider.id,
+                  providerType: researchExternalProvider.providerType,
                   modelId: researchExternalSelection.modelId,
                 }
               : undefined,
@@ -4160,6 +4129,21 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
+      // Which side of the connection the Code pill runs code on. Hosted
+      // `code_execution` and local `python` / `terminal` are two trust
+      // boundaries, not two spellings of one feature, so the stored pill keeps
+      // meaning the provider's sandbox wherever it meant that before the Studio
+      // loop reached these providers. See code-tool-placement.ts.
+      const {
+        local: studioLocalCodeTools,
+        hosted: hostedCodeToolsForThisTurn,
+      } = selectCodeToolNames({
+        codeToolsEnabled,
+        hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          externalProvider?.providerType,
+        ),
+      });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -5055,6 +5039,7 @@ export function createOpenAIStreamAdapter(
                 getExternalMaxOutputTokens(
                   externalProvider?.providerType,
                   externalSelection?.modelId,
+                  externalProvider?.maxOutputTokens,
                 ),
               ),
 
@@ -5066,11 +5051,17 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // ChatGPT/Codex function calls are executed by Studio. Other
-              // external providers keep their provider-hosted tool envelope.
+              // Studio executes the calls for any provider that advertises the
+              // capability. Providers that do not keep their provider-hosted
+              // tool envelope in the branch below.
+              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
+              // resolved to the provider's own sandbox is a hosted request and
+              // belongs in the branch below. Sending this body for it would
+              // attach permission_mode to a passthrough turn, which the route
+              // answers with a 400.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
-                codeToolsEnabled ||
+                studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled)
@@ -5081,7 +5072,21 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+                      ...studioLocalCodeTools,
+                      // Hosted tools Studio has no local stand-in for. Their
+                      // pills stay lit whether or not a Studio tool is on, so
+                      // listing only the local names here would silently drop
+                      // Images (or Fetch) the moment Search, Code, MCP or a
+                      // project's automatic RAG selected this branch. Search
+                      // deliberately does not ride along: that is the one
+                      // Studio runs itself just above. Code rides along only
+                      // when it resolved to the provider's sandbox, which is
+                      // mutually exclusive with the local names above.
+                      ...(imageGenerationEnabledForThisTurn
+                        ? ["image_generation"]
+                        : []),
+                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                      ...hostedCodeToolsForThisTurn,
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
@@ -5094,6 +5099,19 @@ export function createOpenAIStreamAdapter(
                       runtime.toolCallTimeout >= 9999
                         ? 9999
                         : runtime.toolCallTimeout * 60,
+                    // Self-hosted models often write a call as text rather than
+                    // emitting structured tool_calls, so the external loop heals
+                    // like the local one. Omitting this left the backend on its
+                    // process default, which is not what the user set in Settings.
+                    // nudge_tool_calls is deliberately absent: it is the
+                    // non-streaming client-tool passthrough retry, which this
+                    // streaming server-side loop does not perform.
+                    auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // This branch runs the tools here, so say so by name:
+                    // enabled_tools ["web_search"] is byte-identical to what an
+                    // older bundle sent meaning hosted search, so without this
+                    // flag Search silently stayed hosted.
+                    run_tools_locally: true,
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
@@ -5731,9 +5749,18 @@ export function createOpenAIStreamAdapter(
                       } catch {
                         parsedResult = rawResult;
                       }
-                    } else if (createdFiles.length > 0) {
-                      // Files but no images: still structured, so the card can
-                      // offer downloads.
+                    } else if (
+                      createdFiles.length > 0 ||
+                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                    ) {
+                      // Structured with files, for the download card, and with
+                      // neither, because the session is the only record of WHERE
+                      // this call ran: _created_file_sentinels emits nothing
+                      // when a concurrent call shared the directory, so a run
+                      // that wrote files can arrive bare and a moved chat would
+                      // then name a folder from its current scope. Downstream is
+                      // unaffected: both toolResultModelText and the outbound
+                      // translator unwrap a sandbox wrapper to this same .text.
                       parsedResult = {
                         text: rawResult,
                         images: [],

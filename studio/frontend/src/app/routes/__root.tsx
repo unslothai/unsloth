@@ -91,6 +91,18 @@ function PersonalizationSyncMount() {
   return null;
 }
 
+// The chat settings are the installation's, and the Models page and the model
+// picker read them too, so hydration cannot wait for ChatPage to mount.
+function ChatSettingsHydrationMount() {
+  const hydratePersistedSettings = useChatRuntimeStore(
+    (state) => state.hydratePersistedSettings,
+  );
+  useEffect(() => {
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
+  return null;
+}
+
 
 function CredentialBootstrapGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -355,6 +367,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}

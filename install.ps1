@@ -1,16 +1,12 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
-# Usage:  irm https://unsloth.ai/install.ps1 | iex
-#         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# Usage, options and the web one-liner: see "Unsloth Studio (web UI)" in the README
+# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here, because
+# AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
 #
-# irm | iex cannot forward arguments, so web installs take options as env vars set
-# before the pipe (flags still work via .\install.ps1):
-#   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
-#   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
-#   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
-#   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-#   .\install.ps1 --no-torch                                                # equivalent flag
-# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+# The web entry point cannot forward arguments, so it takes options as environment variables set
+# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
+# local run takes the equivalent flags (--no-torch, --skip-autostart, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -20,7 +16,7 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
     # The user's PowerShell profile has already run by the time this does, and the documented
-    # "irm https://unsloth.ai/install.ps1 | iex" entry point has no script file to re-launch
+    # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
     #
     # Off, not Latest: this script predates strict mode, testing environment variables that are
@@ -60,7 +56,7 @@ function Install-UnslothStudio {
     # (27.8 MB) took 41.34s with the bar on against 0.08s with it off, and the uv archive the
     # same. That is the multi-minute "slow download" users report. -UseBasicParsing does NOT
     # avoid it and PowerShell 7 never had the cost; only this preference does. Same scoping rule
-    # as the table above: no qualifier, so the caller's own preference survives "irm ... | iex".
+    # as the table above: no qualifier, so the caller's own preference survives a piped web run.
     $ProgressPreference = 'SilentlyContinue'
 
     # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
@@ -90,7 +86,7 @@ function Install-UnslothStudio {
             } catch { }
         }
     }
-    # A FUNCTION-local, not $script: or an environment variable: under "irm ... | iex" this runs
+    # A FUNCTION-local, not $script: or an environment variable: under a piped web run this runs
     # in the caller's own session, and the value can carry credentials (http://user:secret@proxy
     # is the ordinary corporate form) that must not outlive the install on any of the dozens of
     # return paths. Module-qualified serializer, as in the probe: a profile alias or function
@@ -108,11 +104,16 @@ function Install-UnslothStudio {
     $PSNativeCommandUseErrorActionPreference = $false
 
     # Reset per invocation, for the reason at $script:IsIntelXpu further down: under
-    # "irm ... | iex" $script: is the caller's session scope, so a second run in the same
+    # a piped web run, $script: is the caller's session scope, so a second run in the same
     # console would start on the first run's state. These two are the only ones no later
     # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
     $script:UvInstallDestDir = $null
+    # Same reason, and this one caches a decision about the machine: a policy added or
+    # removed between two runs in one console, or a replaced launcher under a hash rule,
+    # would otherwise be answered from the first run's probe.
+    $script:ShimLaunchBlockedCache = $null
+    $script:ShimLaunchBlockedPath = $null
 
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
@@ -1095,22 +1096,349 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    function New-StudioShortcuts {
+    # ── Managed CLI invocation, Application Control safe ──
+    # Windows materializes the `unsloth` console script as a generated, unsigned .exe.
+    # AppLocker, WDAC and Smart App Control deny it while the venv's python.exe, a copy
+    # of the signed CPython binary, still runs, so setup died at "running unsloth studio
+    # setup" (#8490). Everything here goes through the interpreter instead; the console
+    # script is still installed and hardlinked, so an unaffected machine sees no change.
+    #
+    # Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs. Two
+    # halves, both load bearing:
+    #   argv[0] BEFORE the import, because unsloth_cli/__init__ decides at import time
+    #   whether it is the console script (UTF-8 streams, the -np<N> rewrite) and typer
+    #   reads it for the program name in usage text.
+    #   sys.path[:1] drops the working directory `python -c` adds and a console script
+    #   does not, so a stray `unsloth_cli` folder cannot shadow the managed package. It
+    #   is a no-op under -P or PYTHONSAFEPATH. -I would drop it too, but -I implies -E,
+    #   and discarding PYTHONPATH, PYTHONWARNINGS and user site-packages diverges from
+    #   the console script on machines with no policy at all.
+    # Written into every generated bin\unsloth.cmd and required by every ownership
+    # check that accepts one. Mirrored in scripts/uninstall.ps1 and studio/setup.ps1.
+    $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
+    $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
+
+    # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
+    # the same way Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED.
+    # $LASTEXITCODE cannot answer this: no process was created, so it still holds the
+    # exit code of whichever native command ran last.
+    function Test-ApplicationControlBlock {
+        param($ErrorRecord)
+
+        $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+        while ($ex) {
+            # Win32Exception carries NativeErrorCode; outer wrappers keep only the HRESULT
+            # form of the same code (0x800704EC).
+            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 1260) { return $true }
+            if ($ex.HResult -eq -2147023636) { return $true }
+            $ex = $ex.InnerException
+        }
+        return $false
+    }
+
+    # Print guidance; returns the failure reason as its only pipeline output, matching
+    # Write-PathAccessDenied. Never suggests turning a security policy off: the fix is
+    # for whoever owns the policy, and Unsloth already stopped needing the blocked file.
+    function Write-ApplicationControlBlocked {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+        Write-StudioLine "[ERROR] Windows Application Control blocked the managed Python runtime." -ForegroundColor Red
+        Write-StudioLine "        Windows error 1260 (ERROR_ACCESS_DISABLED_BY_POLICY)" -ForegroundColor Yellow
+        Write-StudioLine "        Blocked program: $Path" -ForegroundColor Yellow
+        Write-StudioLine "        Ask your administrator to review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
+        Write-StudioLine "        or CodeIntegrity/Operational event 3077." -ForegroundColor Yellow
+        return "Windows Application Control blocked the managed Python runtime at $Path (Windows error 1260)."
+    }
+
+    # One pre-quoted command line, not an argument array: Start-Process joins
+    # -ArgumentList with spaces and quotes nothing, so the trampoline as an array
+    # element reaches python as a dozen arguments. It holds no double quote and no
+    # backslash, so wrapping it is unambiguous under CommandLineToArgvW.
+    function Get-ManagedUnslothCliCommandLine {
+        param([string[]]$Arguments = @())
+
+        $quoted = '"' + $script:UnslothCliTrampoline + '"'
+        # Callers pass bare subcommands today, but the signature invites a path:
+        # unquoted, `--model C:\my models\a.gguf` arrives as three arguments.
+        $safeArgs = @($Arguments | ForEach-Object {
+            if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+        })
+        return (@("-X", "utf8", "-c", $quoted) + $safeArgs) -join " "
+    }
+
+    # Run the managed `unsloth` CLI through the interpreter. The exit code is published
+    # in $script:ManagedUnslothCliExit rather than returned, because the child's stdout
+    # shares this function's output stream and capturing it would stop the install
+    # streaming to the console and the Tauri log. $null means the interpreter never
+    # started under Application Control, which is not an exit code.
+    function Invoke-ManagedUnslothCli {
         param(
-            [Parameter(Mandatory = $true)][string]$UnslothExePath
+            [Parameter(Mandatory = $true)][string]$Python,
+            [string[]]$Arguments = @()
         )
 
-        if (-not (Test-Path -LiteralPath $UnslothExePath)) {
-            substep "cannot create shortcuts, unsloth.exe not found at $UnslothExePath" "Yellow"
+        # -X utf8, not the env var, so the child decodes whatever the console code page
+        # is. No -I: it would discard PYTHONPATH and friends, which the console script
+        # honors, and the trampoline already drops the -c working-directory entry.
+        # Same form as the desktop's build_managed_cli_command.
+        $pythonArgs = @("-X", "utf8", "-c", $script:UnslothCliTrampoline) + $Arguments
+        $script:ManagedUnslothCliExit = $null
+        try {
+            # Otherwise a child that exits 0 inherits the last native command's code.
+            $global:LASTEXITCODE = 0
+            & $Python @pythonArgs
+            $script:ManagedUnslothCliExit = [int]$LASTEXITCODE
+        } catch {
+            # $PSNativeCommandUseErrorActionPreference is off, so a nonzero exit never
+            # lands here: anything caught is a failure to create the process at all.
+            if (-not (Test-ApplicationControlBlock $_)) { throw }
+        }
+    }
+
+    # Does Application Control deny this launcher here? Windows cannot be asked without
+    # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
+    # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
+    # child, 1260 straight back); an unaffected machine pays one `--version`, measured
+    # at a quarter second. A process that started is not blocked whatever it does next,
+    # so the timeout path still answers "not blocked" and just stops waiting.
+    function Test-ShimLaunchBlocked {
+        param([Parameter(Mandatory = $true)][string]$Path)
+
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+        # Both the PATH-shadow warning and the launch instructions ask, and the answer
+        # cannot change between them.
+        if ($null -ne $script:ShimLaunchBlockedCache -and
+            $script:ShimLaunchBlockedPath -eq $Path) {
+            return $script:ShimLaunchBlockedCache
+        }
+        $script:ShimLaunchBlockedPath = $Path
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Path
+            $psi.Arguments = "--version"
+            # UseShellExecute = false surfaces a denial as a Win32Exception rather than
+            # a shell dialog, and is required before output can be redirected.
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            try {
+                # Drain both pipes BEFORE waiting. With two redirected streams and no
+                # reader, a child that fills a pipe buffer blocks writing while we block
+                # waiting, and neither side moves. It is reachable here: the trampoline
+                # no longer passes -I, so PYTHONPROFILEIMPORTTIME=1 in the environment
+                # reaches this child and produces ~24 KB of stderr against a 4 KB buffer.
+                # Reading them sequentially would not help, since the child can fill one
+                # while we block on the other; async is the only correct answer.
+                $stdout = $proc.StandardOutput.ReadToEndAsync()
+                $stderr = $proc.StandardError.ReadToEndAsync()
+                if ($proc.WaitForExit(20000)) {
+                    # The timed overload does not wait for the readers to finish; the
+                    # parameterless one does, and returns at once for an exited process.
+                    $proc.WaitForExit()
+                } else {
+                    # It started, so it is not blocked, but leaving it running would
+                    # hold the launcher open against the next update.
+                    try { $proc.Kill() } catch { }
+                }
+                # Observed so a faulted read cannot surface later as an unobserved task.
+                foreach ($reader in @($stdout, $stderr)) {
+                    try { $null = $reader.Result } catch { }
+                }
+            } finally {
+                $proc.Dispose()
+            }
+            $script:ShimLaunchBlockedCache = $false
+            return $false
+        } catch {
+            $script:ShimLaunchBlockedCache = (Test-ApplicationControlBlock $_)
+            return $script:ShimLaunchBlockedCache
+        }
+    }
+
+    # Which launcher should the printed instructions name? The .cmd, when the .exe
+    # cannot be used: either a policy denies it, or it is not there at all. The second
+    # case is real -- antivirus quarantine takes the unsigned .exe, and the hardlink and
+    # its copy fallback can both fail -- and Test-ShimLaunchBlocked answers $false for a
+    # missing file, since nothing refused to start it. Naming a path that does not exist
+    # is the one outcome worse than naming a blocked one.
+    function Test-UnslothCmdShimPreferred {
+        param(
+            [Parameter(Mandatory = $true)][string]$ShimExe,
+            [Parameter(Mandatory = $true)][string]$ShimCmd
+        )
+
+        if (-not (Test-Path -LiteralPath $ShimCmd -PathType Leaf)) { return $false }
+        if (-not (Test-Path -LiteralPath $ShimExe -PathType Leaf)) { return $true }
+        return (Test-ShimLaunchBlocked -Path $ShimExe)
+    }
+
+    # Relative path from $From (a directory) to $To, or $null with no common root
+    # (different volumes, UNC vs local). Longhand because Path.GetRelativePath is .NET
+    # Core only and Uri.MakeRelativeUri percent-encodes the spaces, '#' and '%' that
+    # appear in real profile paths.
+    function Get-RelativeShimPath {
+        param(
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$From,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$To
+        )
+
+        if ([string]::IsNullOrWhiteSpace($From) -or [string]::IsNullOrWhiteSpace($To)) { return $null }
+        $fromParts = @($From.TrimEnd('\', '/') -split '[\\/]+' | Where-Object { $_ -ne "" })
+        $toParts = @($To -split '[\\/]+' | Where-Object { $_ -ne "" })
+        if ($fromParts.Count -eq 0 -or $toParts.Count -eq 0) { return $null }
+        # Drive letter or share name: no common root means no relative path exists.
+        if ($fromParts[0] -ne $toParts[0]) { return $null }
+        $shared = 0
+        while ($shared -lt $fromParts.Count -and $shared -lt $toParts.Count -and
+               $fromParts[$shared] -eq $toParts[$shared]) {
+            $shared++
+        }
+        # Guarded: a PowerShell range whose start passes its end counts DOWN, so
+        # $toParts[2..1] returns the path reversed, not the empty tail it reads like.
+        if ($shared -ge $toParts.Count) { return $null }
+        $up = @("..") * ($fromParts.Count - $shared)
+        $down = @($toParts[$shared..($toParts.Count - 1)])
+        return (@($up + $down) -join '\')
+    }
+
+    # The `unsloth.cmd` companion to the shim .exe. A pure function of the two paths, so
+    # a re-run reproduces it byte for byte, and %~dp0 keeps profile paths containing
+    # spaces, '$', brackets and apostrophes out of the file. CRLF and ASCII, no BOM:
+    # cmd.exe reads a BOM as part of the first command.
+    #
+    # Scope, stated plainly: this answers EXE-and-DLL enforcement of the unsigned
+    # console script, which is issue #8490. A machine that also enforces AppLocker's
+    # Script collection denies .cmd and .ps1 alike, and install.ps1 itself would not
+    # have run there. The interpreter route is what carries such a machine; the shim
+    # is the convenience on top of it.
+    function Get-UnslothCmdShimContent {
+        param(
+            [Parameter(Mandatory = $true)][string]$ShimDir,
+            [Parameter(Mandatory = $true)][string]$PythonPath
+        )
+
+        $relative = Get-RelativeShimPath -From $ShimDir -To $PythonPath
+        $target = if ($relative) { "%~dp0$relative" } else {
+            # Different volume: an absolute path is the only option left. '%' is the one
+            # character cmd still expands inside double quotes, so double it.
+            $PythonPath -replace '%', '%%'
+        }
+        $lines = @(
+            "@echo off",
+            "rem Runs the Unsloth CLI through the managed interpreter. The generated",
+            "rem unsloth.exe beside it is unsigned, and Windows Application Control",
+            "rem denies it on managed machines; this file is the way through.",
+            # The ownership marker, and the only reason a .cmd may stand in for the other
+            # sentinels. It gates a recursive delete, so it has to be something nobody
+            # writes by accident: `from unsloth_cli import app` is a plausible line in
+            # anyone's hand-rolled wrapper, this is not.
+            "rem $script:UnslothCmdShimMarker",
+            # With delayed expansion on (cmd /V:ON, or the machine-wide default) a '!'
+            # is eaten out of every argument. exit /b ends the scope, so nothing leaks.
+            "setlocal DisableDelayedExpansion",
+            "`"$target`" -X utf8 -c `"$script:UnslothCliTrampoline`" %*",
+            "@exit /b %errorlevel%"
+        )
+        return (($lines -join "`r`n") + "`r`n")
+    }
+
+    # Write bin\unsloth.cmd, but only when the bytes would change, so a re-run is a
+    # no-op. Never fatal: the .exe shim is still the primary launcher and nothing
+    # requires this file to exist.
+    function Write-UnslothCmdShim {
+        param(
+            [Parameter(Mandatory = $true)][string]$ShimDir,
+            [Parameter(Mandatory = $true)][string]$PythonPath
+        )
+
+        # Probes inside the try too: this runs under the venv rollback guard, so a throw
+        # here would undo a successful install over an optional launcher.
+        $shimCmd = Join-Path $ShimDir "unsloth.cmd"
+        try {
+            if (Test-Path -LiteralPath $shimCmd -PathType Container) {
+                substep "cannot write $shimCmd, a directory is in the way" "Yellow"
+                return
+            }
+            # A run killed between the write and the rename leaves its temp file behind,
+            # and the next run has a different PID and would never look at it. Swept
+            # before the unchanged-content return below, which is the path an interrupted
+            # install takes on its way out. Only this file's own temps, only ones no
+            # live process is still writing.
+            Get-ChildItem -LiteralPath $ShimDir -Filter "unsloth.cmd.*.tmp" -File `
+                -ErrorAction SilentlyContinue | ForEach-Object {
+                $ownerPid = 0
+                if ([int]::TryParse(($_.Name -replace '^unsloth\.cmd\.', '' -replace '\.tmp$', ''),
+                                    [ref]$ownerPid) -and $ownerPid -eq $PID) { return }
+                if ($ownerPid -gt 0 -and (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) { return }
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+            }
+            $content = Get-UnslothCmdShimContent -ShimDir $ShimDir -PythonPath $PythonPath
+            $desired = (New-Object System.Text.UTF8Encoding($false)).GetBytes($content)
+            # Bytes, not ReadAllText: that strips a BOM before comparing and PowerShell's
+            # -eq is case insensitive, so a BOM-prefixed file (which cmd.exe reads as part
+            # of the first command) would be declared unchanged and left broken forever.
+            if (Test-Path -LiteralPath $shimCmd -PathType Leaf) {
+                $existing = [System.IO.File]::ReadAllBytes($shimCmd)
+                if (@(Compare-Object $existing $desired -SyncWindow 0).Count -eq 0) { return }
+                # This directory is the installer's own, so the file is replaced either
+                # way, but a file that carries neither our marker nor our trampoline was
+                # written by something else and its owner deserves to read that it went.
+                if (-not (Test-UnslothCmdShimFile -Path $shimCmd)) {
+                    substep "replacing an unrecognised $shimCmd" "Yellow"
+                }
+            }
+            # Publish by rename so a shell reading it mid-install never sees half a file.
+            $tmp = "$shimCmd.$PID.tmp"
+            [System.IO.File]::WriteAllBytes($tmp, $desired)
+            try {
+                Move-Item -LiteralPath $tmp -Destination $shimCmd -Force -ErrorAction Stop
+            } finally {
+                Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            substep "could not write $shimCmd`: $($_.Exception.Message)" "Yellow"
+        }
+    }
+
+    # Is this bin\unsloth.cmd one we wrote? The name alone is a plausible wrapper for
+    # anything built on unsloth, and callers use the answer to decide whether a
+    # user-chosen directory may be deleted. Mirrored in scripts/uninstall.ps1
+    # (_IsUnslothCmdShim) and studio/setup.ps1.
+    function Test-UnslothCmdShimFile {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+        try {
+            if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 8192) { return $false }
+            $text = [System.IO.File]::ReadAllText($Path)
+        } catch {
+            # Unreadable proves nothing, and "proves nothing" must not mean "deletable".
+            return $false
+        }
+        return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
+    }
+
+    function New-StudioShortcuts {
+        param(
+            [Parameter(Mandatory = $true)][string]$ManagedPythonPath
+        )
+
+        if (-not (Test-Path -LiteralPath $ManagedPythonPath)) {
+            substep "cannot create shortcuts, managed Python not found at $ManagedPythonPath" "Yellow"
             return
         }
         try {
             # Persist an absolute path in launcher scripts so shortcut working
             # directory changes do not break process startup.
-            $UnslothExePath = (Resolve-Path -LiteralPath $UnslothExePath).Path
+            $ManagedPythonPath = (Resolve-Path -LiteralPath $ManagedPythonPath).Path
             # Escape for single-quoted embedding in generated launcher script.
             # This prevents runtime variable expansion for paths containing '$'.
-            $SingleQuotedExePath = $UnslothExePath -replace "'", "''"
+            $SingleQuotedPythonPath = $ManagedPythonPath -replace "'", "''"
+            # Same escaping for the trampoline: it contains apostrophes of its own.
+            $SingleQuotedTrampoline = $script:UnslothCliTrampoline -replace "'", "''"
 
             # $StudioDataDir = LOCALAPPDATA\Unsloth Studio, or $StudioHome\share in env-mode.
             if (-not $StudioDataDir -or [string]::IsNullOrWhiteSpace($StudioDataDir)) {
@@ -1348,7 +1676,10 @@ try {
     }
 
     `$powershellExe = Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    `$studioExe = '$SingleQuotedExePath'
+    # The managed interpreter, not the generated unsloth.exe console script: that one is
+    # unsigned and Application Control denies it on managed machines (#8490).
+    `$studioPython = '$SingleQuotedPythonPath'
+    `$studioEntry = '$SingleQuotedTrampoline'
     `$launchPort = Find-FreeLaunchPort
     if (-not `$launchPort) {
         `$msg = "No free port found in range `$basePort-`$(`$basePort + `$maxPortOffset)"
@@ -1360,12 +1691,18 @@ try {
     }
     # Single-quote the path in the child -Command so `$` / backtick in custom
     # roots don't get reparsed; double any apostrophes so 'O''Brien' survives.
-    `$studioCommand = "& '" + (`$studioExe -replace "'", "''") + "' studio -p " + `$launchPort
+    # The entry point is single-quoted for the same reason: it carries apostrophes
+    # around 'unsloth', and unquoted they would end the string mid-expression.
+    `$studioCommand = "& '" + (`$studioPython -replace "'", "''") + "' -X utf8 -c '" +
+        (`$studioEntry -replace "'", "''") + "' studio -p " + `$launchPort
+    # RemoteSigned, not Bypass: the child runs an inline -Command against an executable, so no
+    # script file is loaded and the two behave identically here. No reason to spend a scored
+    # token on a launch that needs no policy relief.
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
         '-ExecutionPolicy',
-        'Bypass',
+        'RemoteSigned',
         '-Command',
         `$studioCommand
     )
@@ -1417,8 +1754,46 @@ exit 0
 
             # Write UTF-8 with BOM for reliable decoding by Windows PowerShell 5.1,
             # even when install.ps1 is executed from PowerShell 7.
+            #
+            # Content-compared first, like the .cmd shim: the launcher is regenerated by
+            # every reinstall and by every `unsloth studio update` (--shortcuts-only),
+            # and rewriting identical bytes moves its timestamp for no reason. A re-run
+            # has to be a true no-op on disk.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-            [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+            # Bytes including the BOM, not ReadAllText: that decodes and discards the
+            # preamble, so a BOM-less launcher written by an older installer would be
+            # called unchanged and never gain the BOM 5.1 needs to decode it.
+            $desiredLauncher = $utf8Bom.GetPreamble() + $utf8Bom.GetBytes($launcherContent)
+            $launcherUnchanged = $false
+            if (Test-Path -LiteralPath $launcherPs1 -PathType Leaf) {
+                try {
+                    $existingLauncher = [System.IO.File]::ReadAllBytes($launcherPs1)
+                    $launcherUnchanged =
+                        (@(Compare-Object $existingLauncher $desiredLauncher -SyncWindow 0).Count -eq 0)
+                } catch {
+                    # Unreadable is not "unchanged"; fall through and rewrite it.
+                    $launcherUnchanged = $false
+                }
+            }
+            if (-not $launcherUnchanged) {
+                [System.IO.File]::WriteAllBytes($launcherPs1, $desiredLauncher)
+            }
+            # WriteAllBytes replaces the unnamed data stream and leaves any other NTFS stream on
+            # an existing file alone, so a launcher that somehow acquired a mark of the web keeps
+            # it across the rewrite. The shortcut loads this under RemoteSigned, which refuses a
+            # marked unsigned script, so clear the mark on the file we just authored. A no-op on
+            # every ordinary install, where the stream was never there.
+            #
+            # Outside the content check on purpose: a launcher whose bytes already match still
+            # has to lose the mark, and clearing an absent stream neither writes nor restamps
+            # the file, so an unchanged re-run stays a no-op on disk either way.
+            #
+            # -Confirm:$false: Unblock-File declares SupportsShouldProcess at the default
+            # Medium impact, so a profile setting $ConfirmPreference to Medium or Low would
+            # prompt here, even for a launcher that never had the stream. ErrorAction does
+            # not suppress a ShouldProcess prompt, and a noninteractive host turns it into
+            # an error that skips shortcut setup entirely.
+            Unblock-File -LiteralPath $launcherPs1 -Confirm:$false -ErrorAction SilentlyContinue
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
             # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
@@ -1516,28 +1891,62 @@ exit 0
             # launch-studio.ps1 with a hidden window. We deliberately avoid a
             # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
             # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            #
+            # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
+            # Microsoft's detections key on, and install.rs makes the same call for the app's own
+            # launch. This launcher is written locally, so RemoteSigned loads it either way.
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
-            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPs1`""
+            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
+            # A launcher on a share is a REMOTE script to PowerShell and RemoteSigned refuses an
+            # unsigned one, so a roaming profile would get a shortcut that exits without starting
+            # Studio. Bypass for that case only, and without the hidden window: a console beats
+            # nothing launching. A mapped drive (H:, Z:) is the same share and the same zone, and
+            # DriveInfo on the root reports Network for both.
+            $launcherIsRemote = $launcherPs1 -like "\\*"
+            if (-not $launcherIsRemote) {
+                try {
+                    $launcherIsRemote = ([System.IO.DriveInfo]::new(
+                        [System.IO.Path]::GetPathRoot($launcherPs1))).DriveType -eq 'Network'
+                } catch {}
+            }
+            if ($launcherIsRemote) {
+                $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
+            }
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
                 $createdShortcutCount = 0
                 $createdShortcutPaths = @()
+                $desiredIconLocation = if ($hasValidIcon) { "$iconPath,0" } else { $null }
                 foreach ($linkPath in @($desktopLink, $startMenuLink)) {
                     if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
                     try {
                         $shortcut = $wshell.CreateShortcut($linkPath)
-                        $shortcut.TargetPath = $shortcutTarget
-                        $shortcut.Arguments = $shortcutArgs
-                        $shortcut.WorkingDirectory = $appDir
-                        # Start minimized so the brief PowerShell console flash is muted.
-                        $shortcut.WindowStyle = 7
-                        $shortcut.Description = "Launch Unsloth Studio"
-                        if ($hasValidIcon) {
-                            $shortcut.IconLocation = "$iconPath,0"
+                        # CreateShortcut returns an existing .lnk populated, so the
+                        # incumbent's fields are readable before anything is assigned.
+                        # Save() rewrites even when every field matches, moving the
+                        # timestamp on a no-op reinstall. IconLocation carries the ",0"
+                        # index back, so compare against the string we would set.
+                        $shortcutUnchanged = (Test-Path -LiteralPath $linkPath -PathType Leaf) -and
+                            ($shortcut.TargetPath -eq $shortcutTarget) -and
+                            ($shortcut.Arguments -eq $shortcutArgs) -and
+                            ($shortcut.WorkingDirectory -eq $appDir) -and
+                            ($shortcut.WindowStyle -eq 7) -and
+                            ($shortcut.Description -eq "Launch Unsloth Studio") -and
+                            ((-not $desiredIconLocation) -or ($shortcut.IconLocation -eq $desiredIconLocation))
+                        if (-not $shortcutUnchanged) {
+                            $shortcut.TargetPath = $shortcutTarget
+                            $shortcut.Arguments = $shortcutArgs
+                            $shortcut.WorkingDirectory = $appDir
+                            # Start minimized so the brief PowerShell console flash is muted.
+                            $shortcut.WindowStyle = 7
+                            $shortcut.Description = "Launch Unsloth Studio"
+                            if ($hasValidIcon) {
+                                $shortcut.IconLocation = $desiredIconLocation
+                            }
+                            $shortcut.Save()
                         }
-                        $shortcut.Save()
                         $createdShortcutCount++
                         $createdShortcutPaths += $linkPath
                     } catch {
@@ -1601,18 +2010,50 @@ exit 0
     # Regen .lnk + launcher only; used by `unsloth studio update`.
     if ($ShortcutsOnly) {
         if ($TauriMode) { return }
-        $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
-        if (-not (Test-Path -LiteralPath $UnslothExe)) {
-            Write-StudioLine "[ERROR] unsloth.exe missing at $UnslothExe; run install.ps1 first." -ForegroundColor Red
+        # The launcher runs the interpreter, so that is what has to be there. Checking
+        # unsloth.exe instead would refuse to regenerate shortcuts on exactly the
+        # machines that need them, where the console script is present but denied.
+        $ShortcutPython = Join-Path $VenvDir "Scripts\python.exe"
+        if (-not (Test-Path -LiteralPath $ShortcutPython)) {
+            Write-StudioLine "[ERROR] managed Python missing at $ShortcutPython; run install.ps1 first." -ForegroundColor Red
             # throw (not Exit-InstallFailure) so non-Tauri callers see rc != 0.
-            throw "unsloth.exe missing"
+            throw "managed Python missing"
         }
-        New-StudioShortcuts -UnslothExePath $UnslothExe
+        # `unsloth studio update` reaches the installer only through here, so without
+        # this an install predating the .cmd never gets one -- and that population is
+        # exactly the one that needs the escape hatch.
+        # No-op when the bytes already match, and never fatal.
+        # Created, not required: installers older than the shim directory never made
+        # one, and those are precisely the installs that reach this branch through
+        # `unsloth studio update` and never see the full installer again. Requiring
+        # it here left them without the escape hatch forever. Directory creation is
+        # idempotent, and a failure to create it must not fail an update, so the
+        # write stays inside the same non-fatal helper.
+        $ShortcutShimDir = Join-Path $StudioHome "bin"
+        try {
+            [System.IO.Directory]::CreateDirectory($ShortcutShimDir) | Out-Null
+        } catch {
+            substep "could not create $ShortcutShimDir`: $($_.Exception.Message)" "Yellow"
+        }
+        if (Test-Path -LiteralPath $ShortcutShimDir -PathType Container) {
+            Write-UnslothCmdShim -ShimDir $ShortcutShimDir -PythonPath $ShortcutPython
+            # An installer older than the shim directory put the venv's Scripts dir on
+            # PATH instead, so the .cmd we just wrote would sit somewhere nothing looks.
+            # Add-ToUserPath is idempotent and a no-op for every modern install, so this
+            # only moves a machine that update is the sole route back into the installer
+            # for. Env mode never writes the registry.
+            if ($StudioRedirectMode -ne 'env') {
+                if (Add-ToUserPath -Directory $ShortcutShimDir -Position 'Prepend') {
+                    substep "added $ShortcutShimDir to PATH"
+                }
+            }
+        }
+        New-StudioShortcuts -ManagedPythonPath $ShortcutPython
         return
     }
 
     # ── Leave Windows system directories before installing ──
-    # "Run as administrator" starts in C:\Windows\System32, so `irm ... | iex` installs
+    # "Run as administrator" starts in C:\Windows\System32, so a piped web run installs
     # from there and `unsloth studio setup` refuses only after PyTorch has downloaded,
     # then rolls back. Relocating is safe: nothing here reads the caller's directory
     # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
@@ -2501,6 +2942,55 @@ exit 0
         }
     }
 
+    function Get-UvExecutableVerdict {
+        # "ok", "failed" or "unknown". Only the binary itself answering non-zero is "failed".
+        # A launch that throws or a wait that times out is "unknown", because the probe got no
+        # verdict: Start-Process -NoNewWindow with redirected streams does not behave in a
+        # Windows container or on the arm64 image the way it does in a desktop session, and
+        # treating that as a broken binary turned three clean-machine CI legs into hard install
+        # failures. The digest already proved these bytes are astral's pinned release, so no
+        # verdict publishes, as the pre-pin code did. Every path says why.
+        param([string]$Path)
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
+        # Redirected: uv's version line is not part of this installer's output.
+        $outFile = [System.IO.Path]::GetTempFileName()
+        $errFile = [System.IO.Path]::GetTempFileName()
+        try {
+            $proc = Start-Process -FilePath $Path -ArgumentList "--version" -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+            if (-not $proc.WaitForExit(20000)) {
+                try { $proc.Kill() } catch {}
+                substep "uv did not answer --version within 20s; installing it unprobed." "Yellow"
+                return "unknown"
+            }
+            # The timed overload can return before the exit code is cached, which is how
+            # arm64 and the Windows containers reported an EMPTY code and had a working uv
+            # read as broken. The parameterless wait settles it and returns at once, since
+            # the process has already exited. No code at all is still no verdict.
+            try { $proc.WaitForExit() } catch {}
+            $code = $null
+            try { $code = $proc.ExitCode } catch {}
+            if ($null -eq $code -or "$code" -eq "") {
+                substep "uv --version gave no exit code; installing it unprobed." "Yellow"
+                return "unknown"
+            }
+            if ($code -eq 0) { return "ok" }
+            $detail = ""
+            try {
+                $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+            } catch {}
+            if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
+            substep "uv --version exited $code.$detail" "Yellow"
+            return "failed"
+        } catch {
+            substep "could not probe uv: $($_.Exception.Message); installing it unprobed." "Yellow"
+            return "unknown"
+        } finally {
+            Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # Fallback for hosts without winget. Same archive, destination and user-PATH
     # prepend as astral's install.ps1, but it fetches a data file with a pinned
     # SHA-256 instead of script text run in-process, which is what AMSI and cloud
@@ -2538,10 +3028,14 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
-        # Same mirrors and precedence as astral's installer; each serves the
-        # identical asset, so the pin holds across all of them. UV_DOWNLOAD_URL is
-        # not honoured: it points at an arbitrary version the pin would reject.
-        $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
+        # astral's sources in astral's order, each exclusive when set: a host that sets one
+        # usually cannot reach the public endpoints at all, so trying those first would stall.
+        # The pin still applies, so a source serving a different build fails the digest.
+        $uvBase = if ($env:UV_DOWNLOAD_URL) {
+            @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+            @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
             @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
         } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
             @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -2554,39 +3048,77 @@ exit 0
         $zip  = Join-Path $work $asset
         try {
             [System.IO.Directory]::CreateDirectory($work) | Out-Null
+            # Digest per mirror, not once after the loop: a proxy answering 200 with its own
+            # body is a successful download by every measure Invoke-WebRequest has, and checking
+            # afterwards spends the only attempt on it.
             $downloaded = $false
             foreach ($base in $uvBase) {
                 substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"
                 try {
                     Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
-                    $downloaded = $true
-                    break
                 } catch {
                     substep "uv download failed: $($_.Exception.Message)" "Yellow"
+                    continue
                 }
-            }
-            if (-not $downloaded) { return $false }
-
-            $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-            if ($actual -ne $wanted) {
+                $actual = ""
+                try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
+                if ($actual -eq $wanted) {
+                    $downloaded = $true
+                    break
+                }
                 substep "uv download failed checksum verification -- discarding it." "Red"
                 substep "expected $wanted, got $actual" "Red"
-                return $false
+                Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
             }
+            if (-not $downloaded) { return $false }
 
             # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
             Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
             [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
-            $haveUv = $false
+
+            $stagedUv = Join-Path $work "uv.exe"
+            if (-not (Test-Path -LiteralPath $stagedUv)) {
+                substep "uv.exe was not present in $asset." "Yellow"
+                return $false
+            }
+            # Run it where it landed, before the destination is touched. A host can have a
+            # working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
+            # copying first would leave the user with neither. A policy scoped to the destination
+            # path is not covered here: the caller's fallback handles it.
+            if ((Get-UvExecutableVerdict -Path $stagedUv) -eq "failed") {
+                substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
+                return $false
+            }
+
+            # uvw.exe is the windowless launcher and has no console to answer a probe on, so
+            # the staged uv.exe above stands for the set: it came from the same verified
+            # archive. Copy-Item under Stop so a locked or ACL-denied destination fails the
+            # install rather than leaving half a set behind quietly.
+            $ok = $true
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
                 $src = Join-Path $work $exe
-                if (Test-Path -LiteralPath $src) {
-                    Copy-Item -LiteralPath $src -Destination (Join-Path $destDir $exe) -Force
-                    if ($exe -eq "uv.exe") { $haveUv = $true }
+                if (-not (Test-Path -LiteralPath $src)) { continue }
+                $dst = Join-Path $destDir $exe
+                try {
+                    Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+                } catch {
+                    $ok = $false
+                    break
+                }
+                if ($exe -eq "uv.exe") {
+                    # Copy-Item is non-terminating under some callers preference, so compare
+                    # against the archive we verified: a stale uv.exe must not pass for ours.
+                    $copied = $false
+                    try {
+                        $copied = (Test-Path -LiteralPath $dst) -and
+                            (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                            (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                    } catch { $copied = $false }
+                    if (-not $copied) { $ok = $false; break }
                 }
             }
-            if (-not $haveUv) {
-                substep "uv.exe was not present in $asset." "Yellow"
+            if (-not $ok) {
+                substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false
             }
         } finally {
@@ -2942,11 +3474,15 @@ exit 0
         # existing $StudioHome\unsloth_studio that lacks Unsloth sentinels.
         # -PathType Leaf rejects a directory at the sentinel path. Accept the
         # in-VENV ownership marker so partial-install retries are not blocked.
+        # The .cmd counts too, and for the same reason the uninstaller accepts it: a
+        # policy's quarantine can take the unsigned .exe and leave a root that is still
+        # ours. Content-checked, never by name -- this guard gates a recursive delete.
         if (
             $StudioRedirectMode -eq 'env' -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and
+            -not (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
         ) {
             Write-StudioLine "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
@@ -3158,6 +3694,9 @@ exit 0
     $ROCmGpuLabel = $null
     $ROCmVersion = $null
     $ROCmGfxArch = $null
+    # Declared with its neighbours, not inside the block below: the arms that read
+    # it are outside that gate, so an NVIDIA host would leave it undefined.
+    $ROCmUnsupportedGfxArch = $null
     if (-not $HasNvidiaSmi) {
         # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
         # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
@@ -3309,6 +3848,12 @@ exit 0
                 } catch {}
             }
         }
+        # This scan fills the LABEL the arch inference reads, so its gate is load-bearing:
+        # widening it turned a CPU install into a ROCm one on hosts amd-smi had already
+        # claimed. CIM, not Get-WmiObject, which PowerShell 7 removed: the catch below is
+        # silent, so a supported Radeon named only by Windows took the CPU path there, and
+        # the report-only peer scan cannot undo that. Same class and fields as every other
+        # adapter scan in this file, and identical output under Windows PowerShell 5.1.
         if (-not $HasROCm) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
@@ -3319,7 +3864,7 @@ exit 0
                 # If the filter leaves none, keep the full list: code 45 ("not connected") is
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
-                $amdAdapters = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match "AMD|Radeon" })
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
@@ -3327,6 +3872,33 @@ exit 0
                 if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
             } catch {}
         }
+        # Peer names for the REPORT ONLY, kept apart from the scan above: that one feeds the
+        # inference and runs only without a runtime, this one only the uncovered-card verdict.
+        $wmiAmdNames = @()
+        if (-not $ROCmGfxArch) {
+            try {
+                $peerAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $healthyPeers = @($peerAdapters | Where-Object {
+                    ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+                $usePeers = @(if ($healthyPeers.Count -gt 0) { $healthyPeers } else { $peerAdapters })
+                $wmiAmdNames = @($usePeers | ForEach-Object { $_.Name })
+            } catch {}
+        }
+        # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
+        # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
+        # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
+        # ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never
+        # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
+        # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
+        # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
+        # 460/550/560, a different die) is left out.
+        $unsupportedNameArchTable = @(
+            @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
+            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
+            @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
+            @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
+        )
         # ── Arch resolution: env-var override → name inference ──────────────
         # Runs even when the probe can't confirm a runtime ($HasROCm false): the
         # WMI-name gfx arch drives both ROCm llama.cpp and torch. repo.amd.com
@@ -3364,6 +3936,45 @@ exit 0
                         substep "gfx arch inferred from GPU name: $ROCmGfxArch" "Cyan"
                         substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$ROCmGfxArch to skip inference next time" "Cyan"
                         break
+                    }
+                }
+                # 3. Still nothing: the card may be a generation ROCm never covered rather
+                #    than one we failed to recognise (unslothai#8529). Reporting only --
+                #    $ROCmGfxArch stays null, so CPU fallback is reached by the same path.
+                #    Gated on NO adapter being covered: $wmiGpu takes index 0, so on a host
+                #    pairing an RX 5700 with an RX 7900 the label is the 5700 and the "no
+                #    SDK or override can help" wording below would be false (masking to the
+                #    7900 and setting gfx1100 installs). Such a host keeps the arch-unknown
+                #    arm, which says exactly that. studio/setup.ps1 already scores every
+                #    adapter before it reaches its own lookup.
+                if (-not $ROCmGfxArch) {
+                    # HIP/ROCR only: CUDA_VISIBLE_DEVICES masks NVIDIA devices and says
+                    # nothing about which Radeon was chosen.
+                    $unsupMasked = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES) |
+                        Where-Object { $null -ne $_ }
+                    $coveredPeer = $false
+                    if ($unsupMasked) {
+                        # A masked-out peer cannot answer for the card the user named, but the
+                        # label is only that card when there is nothing else to select: both
+                        # sources above keep adapter 0, so HIP_VISIBLE_DEVICES=1 beside a
+                        # supported peer would blame the wrong GPU. Stay quiet, rather than
+                        # guess an order Win32_VideoController does not promise matches HIP's.
+                        $coveredPeer = ($wmiAmdNames.Count -gt 1)
+                    } else {
+                        foreach ($peerName in $wmiAmdNames) {
+                            foreach ($row in $nameArchTable) {
+                                if ($peerName -match $row.P) { $coveredPeer = $true; break }
+                            }
+                            if ($coveredPeer) { break }
+                        }
+                    }
+                    if (-not $coveredPeer) {
+                        foreach ($row in $unsupportedNameArchTable) {
+                            if ($ROCmGpuLabel -match $row.P) {
+                                $ROCmUnsupportedGfxArch = $row.A
+                                break
+                            }
+                        }
                     }
                 }
             }
@@ -3582,7 +4193,7 @@ exit 0
     # qualify, UHD / HD / Iris Xe do not.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
-    # Reset every invocation: under "irm ... | iex" $script: is the caller's session scope, so a
+    # Reset every invocation: under a piped web run $script: is the caller's session scope, so a
     # second run would inherit a stale $true and reroute a now-NVIDIA host to the xpu index.
     $script:IsIntelXpu = $false
     # $AmdHasGpuWheels keeps a wheel-served AMD host out of the XPU reroute below; an AMD host
@@ -3647,13 +4258,19 @@ exit 0
         step "gpu" "Intel GPU detected" "Green"
         substep "$IntelGpuLabel"
         # The reroute below prints the index: only it knows the mirror URL and any pin.
-    } elseif ($HasROCm) {
+    } elseif ($HasROCm -and -not $ROCmUnsupportedGfxArch) {
+        # Guarded like the HIP SDK arm below: amd-smi can report a GPU with no gfx token
+        # and only a market name, setting $HasROCm without an arch. Calling that card
+        # "AMD ROCm" contradicts the wheel note this run also prints.
         step "gpu" $ROCmGpuLabel
         $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
         substep "HIP SDK: $hipSdkPath"
         if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
-    } elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
-        # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+    } elseif ($HipSdkInstalled -and $ROCmGpuLabel -and -not $ROCmUnsupportedGfxArch) {
+        # HIP SDK installed but ROCm can't see the device (driver issue, not SDK issue).
+        # Excludes cards already known to be out of scope: the #8529 reporters installed
+        # the HIP SDK BECAUSE this arm said to, so unguarded it hides the arm below from
+        # exactly the users it is for.
         $sdkVer = if ($ROCmVersionFull) { " (HIP $ROCmVersionFull)" } else { "" }
         step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
@@ -3667,6 +4284,38 @@ exit 0
         step "gpu" "AMD ROCm ($ROCmGfxArch)" "Cyan"
         substep "Detected: $ROCmGpuLabel" "Cyan"
         substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
+    } elseif ($ROCmUnsupportedGfxArch) {
+        # Detected, identified, out of scope for ROCm PyTorch. Ranks above the "arch
+        # unknown" arm below: the arch is known here, and that arm's advice cannot
+        # succeed on this GPU (unslothai#8529).
+        # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+        # NotImplementedError at import (unsloth/device_type.py). The Vulkan setter is
+        # single-quoted so PowerShell prints $env:... rather than expanding it; a pasted
+        # VAR=value resolves as a command name here and sets nothing.
+        # Both claims below are conditional: an explicit index pin reaches the ROCm install
+        # path further down even for an arch Unsloth has no wheels for, and studio/setup.ps1
+        # THROWS on the Vulkan variable on Windows ARM64, where no bundle is published.
+        $unsupPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
+                       (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
+        $unsupArm64 = (Get-HostMachineArch) -eq "arm64"
+        step "gpu" "AMD GPU detected ($ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
+        substep "Detected: $ROCmGpuLabel" "Yellow"
+        if ($unsupPinned) {
+            substep "Unsloth ships no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, but the torch index" "Yellow"
+            substep "you pinned is used as given, so torch is whatever that index publishes." "Yellow"
+        } else {
+            substep "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+            substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
+            substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
+        }
+        if ($unsupArm64) {
+            substep "GGUF chat would need Vulkan on this GPU, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+        } else {
+            substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+            substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run this installer. It' "Yellow"
+            substep "selects the llama.cpp bundle at install time, so setting it afterwards has" "Yellow"
+            substep "no effect until you install or update again." "Yellow"
+        }
     } elseif ($ROCmGpuLabel) {
         step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
@@ -4095,6 +4744,8 @@ exit 0
             }
         } elseif ($ROCmGfxArch) {
             substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
+        } elseif ($ROCmUnsupportedGfxArch) {
+            substep "AMD GPU ($ROCmUnsupportedGfxArch) has no ROCm PyTorch wheels Unsloth installs -- falling back to CPU-only PyTorch" "Yellow"
         } else {
             substep "AMD GPU detected but arch unknown -- falling back to CPU-only PyTorch" "Yellow"
         }
@@ -4143,8 +4794,24 @@ exit 0
             substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmGfxArch." "Yellow"
             substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
-            if ($HipSdkInstalled -and -not $HasROCm) {
+            if ($HipSdkInstalled -and -not $HasROCm -and -not $ROCmUnsupportedGfxArch) {
+                # Guarded like the gpu step above: an installed HIP SDK is the SYMPTOM on
+                # these cards, so it must not outrank the arm saying why it cannot help.
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
+            } elseif ($ROCmUnsupportedGfxArch) {
+                # Same words as the $ROCmGfxArch arm above, for a card whose arch we know
+                # from its name rather than from a probe (unslothai#8529).
+                substep "Installing CPU PyTorch -- Unsloth has no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch." "Yellow"
+                substep "Unsloth training and GPU inference are unavailable on CPU torch." "Yellow"
+                substep "Neither the HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can give this GPU ROCm." "Yellow"
+                if ((Get-HostMachineArch) -eq "arm64") {
+                    # No Windows ARM64 Vulkan bundle exists, and studio/setup.ps1 throws on the
+                    # variable, so the usual advice would abort the next update instead of helping.
+                    substep "GGUF chat would need Vulkan here, and no Windows ARM64 Vulkan bundle is published: build llama.cpp from source, or run this on x64." "Yellow"
+                } else {
+                    substep 'For GPU GGUF chat through Vulkan, set $env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"' "Yellow"
+                    substep "and re-run this installer; the bundle is chosen at install time, not at launch." "Yellow"
+                }
             } elseif ($ROCmGpuLabel) {
                 substep "Installing CPU-only PyTorch (AMD GPU arch unknown -- install the HIP SDK" "Yellow"
                 substep "or set UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm)." "Yellow"
@@ -4199,7 +4866,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -4213,7 +4880,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -4340,7 +5007,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -4352,7 +5019,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -4380,7 +5047,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.10" "unsloth>=2026.8.15" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.11" "unsloth>=2026.8.16" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -4602,7 +5269,7 @@ exit 0
     # PyPI, the consumer path, so everything Python-side (studio/setup.ps1,
     # install_python_stack.py and every requirements/constraints file they reach via
     # Path(__file__)) would be the released wheel's and a branch could not be
-    # validated. `& $UnslothExe studio setup` below goes through the CLI, and an
+    # validated. The `studio setup` handoff below goes through the CLI, and an
     # editable overlay makes _PACKAGE_ROOT in unsloth_cli/commands/studio.py resolve to
     # the working tree by PEP 660 __file__, so setup.ps1 comes from this ref. NOT
     # --local: that also installs `unsloth-zoo @ git+https://...`, which genuinely needs
@@ -4629,14 +5296,42 @@ exit 0
     # never touches the system Node/npm.
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
+    # Tested, never executed: pip generates the console script whatever the policy says
+    # about running it, so it stays the cheapest "this wheel shipped the CLI" signal.
+    #
+    # Cheapest, but no longer required. A policy DENIES this file and leaves it on disk,
+    # so it answers there, but antivirus QUARANTINES it, deleting it out of a venv that
+    # is otherwise perfectly able to run. Nothing after this point executes it -- the
+    # setup handoff, the shortcuts and bin\unsloth.cmd all go through $VenvPython -- so
+    # failing here would refuse to install or repair Studio for exactly the machines
+    # this change is for. Ask the interpreter instead, and only then give up.
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path -LiteralPath $UnslothExe)) {
-        Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
-        Write-StudioLine "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
-        Write-StudioLine "        Expected: $UnslothExe" -ForegroundColor Yellow
-        Write-StudioLine "        This usually means an older unsloth version was installed that does not include the Unsloth CLI." -ForegroundColor Yellow
-        Write-StudioLine "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
-        return (Exit-InstallFailure "unsloth CLI was not installed correctly")
+        $cliImportable = $false
+        if (Test-Path -LiteralPath $VenvPython) {
+            # The trampoline's own import, so this answers for what actually launches.
+            Invoke-ManagedUnslothCli -Python $VenvPython -Arguments @("--version")
+            $cliImportable = ($script:ManagedUnslothCliExit -eq 0)
+        }
+        if ($cliImportable) {
+            substep "the generated unsloth.exe is gone (antivirus quarantine); the managed CLI still runs." "Yellow"
+        } else {
+            Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
+            Write-StudioLine "[ERROR] unsloth CLI was not installed correctly." -ForegroundColor Red
+            Write-StudioLine "        Expected: $UnslothExe" -ForegroundColor Yellow
+            Write-StudioLine "        This usually means an older unsloth version was installed that does not include the Unsloth CLI." -ForegroundColor Yellow
+            Write-StudioLine "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
+            return (Exit-InstallFailure "unsloth CLI was not installed correctly")
+        }
+    }
+    # This is the file the handoff actually starts, so it gets its own check rather
+    # than being discovered as a launch failure halfway through setup.
+    if (-not (Test-Path -LiteralPath $VenvPython)) {
+        Write-TauriLog "ERROR" "managed Python is missing"
+        Write-StudioLine "[ERROR] The managed Python interpreter is missing." -ForegroundColor Red
+        Write-StudioLine "        Expected: $VenvPython" -ForegroundColor Yellow
+        Write-StudioLine "        Re-run the installer to rebuild the environment." -ForegroundColor Yellow
+        return (Exit-InstallFailure "managed Python is missing at $VenvPython")
     }
     # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
     $env:SKIP_STUDIO_BASE = "1"
@@ -4725,8 +5420,8 @@ exit 0
         Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
     }
     try {
-        & $UnslothExe @studioArgs
-        $setupExit = $LASTEXITCODE
+        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
+        $setupExit = $script:ManagedUnslothCliExit
     } finally {
         if ($hadPreviousUnslothStudioHome) {
             $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
@@ -4759,6 +5454,12 @@ exit 0
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
+    }
+    # $null, not a code: Application Control refused to create the process, so there is
+    # no exit code to report. Checked first because in PowerShell $null -ne 0 is true,
+    # and the branch below would print "exit code " with nothing after it.
+    if ($null -eq $setupExit) {
+        return (Exit-InstallFailure (Write-ApplicationControlBlocked -Path $VenvPython))
     }
     if ($setupExit -ne 0) {
         if (-not $TauriMode) {
@@ -4838,13 +5539,30 @@ exit 0
         } else {
             Write-StudioLine "[WARN] Could not create unsloth launcher at $ShimExe" -ForegroundColor Yellow
             Write-StudioLine "       $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-StudioLine "       Launch unsloth studio directly via '$UnslothExe' until the next successful install." -ForegroundColor Yellow
+            # The interpreter, not $UnslothExe: this arm is reached on machines whose
+            # policy denies the generated console script, where that advice cannot work.
+            Write-StudioLine "       Until the next successful install, start Studio with:" -ForegroundColor Yellow
+            Write-StudioLine "       & '$VenvPython' -I -m unsloth_cli studio -p 8888" -ForegroundColor Yellow
         }
     }
-    # Add to PATH only when launcher exists. Env-mode: session-only export,
-    # no registry change (workspace path may be deleted later).
+    # Companion launcher for machines whose policy denies the generated .exe. PATHEXT
+    # resolves .EXE ahead of .CMD, so bare `unsloth` still picks the .exe wherever it
+    # runs; where it is denied, `unsloth.cmd` is what the user has left.
+    Write-UnslothCmdShim -ShimDir $ShimDir -PythonPath $VenvPython
+
+    # Add to PATH only when a launcher exists. Either one counts: if the .exe could not
+    # be hardlinked or copied, or a policy's quarantine removed it, the .cmd beside it
+    # is a working launcher and its directory still belongs on PATH. Env-mode:
+    # session-only export, no registry change (workspace path may be deleted later).
+    # Test-UnslothCmdShimFile, not Test-Path: Write-UnslothCmdShim warns and leaves an
+    # unwritable file alone, so a foreign bin\unsloth.cmd in a custom root can survive
+    # this run. Counting it would put its directory on PATH and advertise someone
+    # else's command as the policy-safe launcher.
+    $ShimCmd = Join-Path $ShimDir "unsloth.cmd"
+    $ShimUsable = (Test-Path -LiteralPath $ShimExe -PathType Leaf) -or
+                  (Test-UnslothCmdShimFile -Path $ShimCmd)
     $pathAdded = $false
-    if (Test-Path -LiteralPath $ShimExe) {
+    if ($ShimUsable) {
         if ($StudioRedirectMode -ne 'env') {
             $pathAdded = Add-ToUserPath -Directory $ShimDir -Position 'Prepend'
         }
@@ -4864,7 +5582,7 @@ exit 0
 
     # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy
     # User PATH entry (Machine > User > current $env:Path) would win.
-    if ($StudioRedirectMode -eq 'env' -and (Test-Path -LiteralPath $ShimExe)) {
+    if ($StudioRedirectMode -eq 'env' -and $ShimUsable) {
         $env:Path = "$ShimDir;$env:Path"
         step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
     }
@@ -4876,7 +5594,7 @@ exit 0
     }
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
-    New-StudioShortcuts -UnslothExePath $UnslothExe
+    New-StudioShortcuts -ManagedPythonPath $VenvPython
 
     # Warn if another 'unsloth' wins on PATH (different venv, system pip).
     # Mirrors install.sh; absolute path is still the most reliable launch.
@@ -4888,9 +5606,15 @@ exit 0
         $_pathCmd = Get-Command unsloth -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($_pathCmd) {
             $_pathExe = $_pathCmd.Source
+            # This installer's own unsloth.cmd is not a foreign 'unsloth'. It only wins
+            # when the .exe beside it is gone, and hashing it against a PE would always
+            # differ and always warn.
+            $_ourCmdShim = Join-Path $ShimDir "unsloth.cmd"
+            $_isOurCmdShim = $_pathExe -and
+                ($_pathExe.TrimEnd('\', '/') -ieq $_ourCmdShim.TrimEnd('\', '/'))
             $_installedHash = (Get-FileHash -LiteralPath $UnslothExe -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
             $_pathHash      = (Get-FileHash -LiteralPath $_pathExe   -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
-            if ($_installedHash -and $_pathHash -and ($_installedHash -ne $_pathHash)) {
+            if ((-not $_isOurCmdShim) -and $_installedHash -and $_pathHash -and ($_installedHash -ne $_pathHash)) {
                 Write-StudioLine ""
                 step "warning" "another 'unsloth' wins on PATH:" "Yellow"
                 substep $_pathExe
@@ -4898,6 +5622,11 @@ exit 0
                 substep $UnslothExe
                 substep "to use this install, call the absolute path above,"
                 substep "or put its dir earlier on PATH."
+                # That absolute path is the generated console script, which is exactly
+                # what an Application Control policy denies; name the launcher that works.
+                if (Test-ShimLaunchBlocked -Path $ShimExe) {
+                    substep "(Windows blocks that file here; use $_ourCmdShim instead)"
+                }
                 Write-StudioLine ""
             }
         }
@@ -4918,8 +5647,11 @@ exit 0
             $_runtimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
             try {
                 $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
-                $studioAutoStartProcess = Start-Process -FilePath $UnslothExe `
-                    -ArgumentList @("studio", "-p", "8888") `
+                # Through the interpreter, not the generated console script: the
+                # autostart must not be the one step an Application Control policy
+                # can still refuse after a clean install.
+                $studioAutoStartProcess = Start-Process -FilePath $VenvPython `
+                    -ArgumentList (Get-ManagedUnslothCliCommandLine -Arguments @("studio", "-p", "8888")) `
                     -NoNewWindow -PassThru
             } finally {
                 if ($null -eq $_runtimeGateHandoff) {
@@ -4930,7 +5662,16 @@ exit 0
             }
         } else {
             step "launch" "to start later, run:"
-            substep "unsloth studio -p 8888"
+            # PATHEXT resolves .EXE before .CMD, so bare `unsloth` picks the generated
+            # console script, which a denying machine cannot run. Probed, not assumed:
+            # an unaffected machine must see the line it has always seen.
+            if (Test-UnslothCmdShimPreferred -ShimExe $ShimExe -ShimCmd $ShimCmd) {
+                substep "unsloth.cmd studio -p 8888"
+                substep "(the generated unsloth.exe is not usable on this machine;"
+                substep " unsloth.cmd beside it runs the same CLI through the managed Python)"
+            } else {
+                substep "unsloth studio -p 8888"
+            }
             substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
             substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             Write-StudioLine ""
@@ -4940,17 +5681,29 @@ exit 0
         # Single-quote the printed paths so $-vars / backticks in custom roots
         # do not reparse when the user pastes the command.
         $_actLiteral = "'" + ((Join-Path $VenvDir "Scripts\Activate.ps1") -replace "'", "''") + "'"
+        # Activating the venv puts Scripts\unsloth.exe first and PATHEXT prefers .EXE,
+        # so every bare `unsloth` below is unusable where the policy denies it. Same
+        # probe, same reason: unaffected machines must see unchanged text.
+        $_shimBlocked = Test-UnslothCmdShimPreferred -ShimExe $ShimExe -ShimCmd $ShimCmd
+        $_bareLaunch = if ($_shimBlocked) { "unsloth.cmd studio -p 8888" } else { "unsloth studio -p 8888" }
         if ($StudioRedirectMode -eq 'env') {
-            # Env-mode skips registry PATH; print the absolute shim path.
-            $_shim = Join-Path $StudioHome "bin\unsloth.exe"
+            # Env-mode skips registry PATH; print the absolute shim path. The .cmd
+            # beside it goes through the interpreter, so it is the one that works where
+            # the policy denies the generated .exe -- named only when it is needed.
+            $_shimLeaf = if ($_shimBlocked) { "bin\unsloth.cmd" } else { "bin\unsloth.exe" }
+            $_shim = Join-Path $StudioHome $_shimLeaf
             $_shimLiteral = "'" + ($_shim -replace "'", "''") + "'"
             substep "& $_shimLiteral studio -p 8888"
             substep "or activate env first:"
             substep "& $_actLiteral"
-            substep "unsloth studio -p 8888"
+            substep $_bareLaunch
         } else {
             substep "& $_actLiteral"
-            substep "unsloth studio -p 8888"
+            substep $_bareLaunch
+        }
+        if ($_shimBlocked) {
+            substep "(the generated unsloth.exe is not usable on this machine;"
+            substep " unsloth.cmd runs the same CLI through the managed Python)"
         }
         substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
         substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"

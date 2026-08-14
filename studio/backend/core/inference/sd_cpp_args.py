@@ -13,6 +13,7 @@ one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -172,6 +173,56 @@ def metal_text_encoder_flags() -> list[str]:
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes ggml-metal entirely.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
+
+
+def device_backend_flags(
+    device_name: Optional[str], offload: Optional[list[str]] = None
+) -> list[str]:
+    """Pin the diffusion, text-encoder and VAE graphs to one ggml device (e.g. ``CUDA1``).
+
+    Without this sd.cpp uses its own default device, ordinal 0 whatever the user chose, so on a
+    mixed box the checkpoint lands on the first card rather than the one that can hold it. Empty
+    for an automatic pick, which keeps sd.cpp's choice.
+
+    ``--clip-on-cpu`` / ``--vae-on-cpu`` are the deprecated spellings of ``te=cpu`` / ``vae=cpu``,
+    so pinning a device over them would win last and undo the low_vram policy. Only the modules
+    that policy left on the GPU are pinned.
+    """
+    if not device_name:
+        return []
+    flags = offload or []
+    te = "cpu" if "--clip-on-cpu" in flags else device_name
+    vae = "cpu" if "--vae-on-cpu" in flags else device_name
+    return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
+
+
+def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
+    """``flags`` with every ``--backend <spec>`` pair removed.
+
+    Two callers, both wrong if they read the pin.
+
+    The status and the saved recipe derive "was anything offloaded?" from these flags being
+    empty, so a pin on a `fast` load (whose policy is deliberately no flags) would report an
+    offload that never happened, purely because a card was selected.
+
+    And sd.cpp CONCATENATES repeated ``--backend`` values rather than replacing
+    (``examples/common/common.cpp``, ``concat = ','``), with an explicit per-module entry beating
+    the bare default (``ggml_extend_backend.cpp``). Appending ``--backend cpu`` to a spec that
+    says ``diffusion=CUDA0`` therefore leaves the denoiser on CUDA, making the CPU-backend restart
+    -- the recovery from a ggml op the device cannot run -- a silent no-op.
+    """
+    out: list[str] = []
+    skip = False
+    for flag in flags:
+        if skip:
+            skip = False
+            continue
+        if flag == "--backend":
+            skip = True
+            continue
+        out.append(flag)
+    return out
+
 
 # The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when ggml_metal_device_supports_op() returns false, since a single-backend graph has nowhere else to put the node. The SIGABRT takes sd-server down mid-generation.
 _GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")

@@ -17,7 +17,6 @@ export const ptBR = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
-    pickModelFile: "Escolher um arquivo de modelo no disco",
     modelDropped: "Não é mais oferecido",
     modelDroppedByProvider: "{provider} · não é mais oferecido",
     modelDisabled: "Não ativado",
@@ -158,6 +157,31 @@ export const ptBR = {
       voice: "Voz",
       data: "Dados",
       agents: "Agentes",
+      debugging: "Registros",
+    },
+    debugging: {
+      logSection: "Arquivo de log",
+      source: "Arquivo de log",
+      sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
+      path: "Local",
+      pathCopy: "Copiar caminho",
+      refreshSection: "Atualização",
+      mode: "Modo",
+      modeLive: "Ao vivo",
+      modeInterval: "A cada 3 segundos",
+      modeManual: "Manual",
+      refreshNow: "Atualizar agora",
+      privacyNote: "As credenciais são mascaradas nesta visualização. No arquivo em disco elas não são mascaradas.",
+      copyVisible: "Copiar log visível",
+      empty: "Nada foi registrado ainda.",
+      disabled: "O log em arquivo está desativado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Nenhum arquivo de log foi encontrado.",
+      unreadable: "Não foi possível ler o arquivo de log.",
+      timeout: "A solicitacao do registro expirou. O servidor pode estar inacessivel.",
+      droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
+      morePending: "Mais linhas ainda estao sendo lidas; elas chegam na proxima atualizacao.",
+      staleSession: "O registro em arquivo esta desativado, portanto esta e uma sessao anterior e nao sera atualizada.",
+      keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {
       title: "Voz",
@@ -375,6 +399,14 @@ export const ptBR = {
           "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
         idleSecondsAriaLabel:
           "Segundos até o descarregamento automático por inatividade",
+        mediaIdleUnload:
+          "Descarregamento automático por inatividade de imagem e vídeo",
+        mediaIdleUnloadDescription:
+          "Libera a VRAM descarregando os modelos de imagem e vídeo após esta quantidade de segundos de inatividade. É uma configuração própria: a de cima cobre apenas o modelo de chat. 0 os mantém carregados; o mínimo é 60.",
+        mediaIdleSecondsAriaLabel:
+          "Segundos até o descarregamento automático por inatividade de imagem e vídeo",
+        mediaIdlePaused:
+          "Pausado enquanto Manter o modelo na memória da GPU ou Descarregar apenas modelos carregados pela API estiver ativado.",
         idleNeedsEnable: "Primeiro, ative Trocar de modelo por requisição.",
         idleActiveViaEnv: "Ativo por meio de UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",
@@ -423,6 +455,12 @@ export const ptBR = {
         launchAtLogin: "Executar o Unsloth ao fazer login",
         launchAtLoginDescription:
           "Inicia o Unsloth em segundo plano quando você faz login. Ele permanece na barra de menus ou na bandeja do sistema até você abri-lo.",
+
+        closeToTray: "Fechar para a bandeja do sistema",
+        closeToTrayDescription:
+          "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
+        closeToTraySaveError:
+          "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
@@ -723,6 +761,39 @@ export const ptBR = {
         free: "{value} livres",
         total: "{value} total",
       },
+      llamaBackend: {
+        title: "GGUF inference engine",
+        label: "Compute backend",
+        description: "The backend llama.cpp uses to run GGUF models.",
+        runningOn: "llama.cpp currently runs on {backend}.",
+        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
+        autoWith: "Automatic ({backend})",
+        apply: "Apply",
+        applying: "Installing...",
+        applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",
+        applyHintWithSize: "Downloads {size} and restarts llama.cpp. A loaded model is unloaded.",
+        switchedTo: "llama.cpp now runs on {backend}.",
+        switchFailed: "Could not change the llama.cpp backend.",
+        switchInterrupted: "The switch was interrupted before completion.",
+        envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        backends: {
+          auto: "Automatic",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
+          localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
+          sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          unresolved: "The available backends could not be checked. Check your connection and try again.",
+        },
+        // Not rendered: extra terms the settings search matches these rows on.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
+      },
       modelMemory: {
         title: "Memória do modelo",
         keepResident: "Manter o modelo na memória da GPU",
@@ -939,11 +1010,13 @@ export const ptBR = {
       exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
-        "Importe um arquivo exportado em JSONL, NDJSON ou CSV para Recentes.",
+        "Importe um export do Open WebUI, JSONL, NDJSON ou CSV para Recentes.",
       importChatsAction: "Importar",
       importNoConversations: "Nenhuma conversa encontrada no arquivo.",
       importedOneChat: "1 conversa foi importada para Recentes.",
       importedChatCount: "{count} conversas foram importadas para Recentes.",
+      importingChats: "Importando chats: {count} até agora ({percent}%)...",
+      importedChatCountPartial: "{count} conversas importadas para Recentes; {failed} não puderam ser salvas.",
       importFailed: "Falha na importação.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",

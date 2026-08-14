@@ -536,28 +536,24 @@ class TestExtraArgsMtpDetection:
         # robust to that and to any formatter line-wrapping.
         assert "_extra_args_requests_separate_draft(extra_args" in compact
         assert "or_user_draft_via_extras" in compact  # OR'd into the reserve gate
-        # The drafter check must NOT force extras-only (env={}); the default
-        # env=None lets it see an env LLAMA_ARG_SPEC_DRAFT_MODEL, so an env-only
-        # drafter still engages the reserve (codex review 4507014299).
-        assert "bool(_extra_args_mtp_draft_path(extra_args))" in compact
+        # Budgeting and spawn share the scrubbed child environment, so ambient
+        # LLAMA_ARG_* values cannot reserve for a drafter the child will not load.
+        assert "bool(_extra_args_mtp_draft_path(extra_args,env=_spec_env))" in compact
 
-    def test_env_only_drafter_engages_separate_draft_reserve(self, monkeypatch):
-        # An env-provided drafter (no --model-draft in extras) must still engage
-        # the draft reserve, or auto-fit spends the drafter's VRAM and OOMs. Mirror
-        # load_model's _user_draft_via_extras gate (codex review 4507014299).
+    def test_ambient_drafter_is_scrubbed_from_separate_draft_reserve(self, monkeypatch):
+        # Ambient LLAMA_ARG_* state is removed before both preflight and spawn.
+        # An explicit Studio-managed mapping remains supported for internal use.
         monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/large.gguf")
         monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", raising = False)
-        ea = ["--spec-type", "draft-simple"]  # _spec_env is {} (extras set spec-type)
+        ea = ["--spec-type", "draft-simple"]
         assert _extra_args_requests_separate_draft(ea, env = {}) is True
-        assert _extra_args_mtp_draft_path(ea) == "/large.gguf"  # env=None -> os.environ
-        # -> _user_draft_via_extras True; _env_draft_for_budget sizes the drafter.
+        assert _extra_args_mtp_draft_path(ea) is None
         assert _extra_args_mtp_draft_path([], env = dict(os.environ)) == "/large.gguf"
 
-    def test_the_fit_reads_the_env_only_when_the_extras_own_the_spec_type(self):
-        # An emitted --spec-type/--spec-default cannot override the env, since llama.cpp
-        # appends. So the launch scrubs LLAMA_ARG_SPEC_TYPE whenever Unsloth owns the
-        # spec block, and the reserve consults the env only where it still reaches the
-        # child: the extras own --spec-type, and their flags and the env accumulate.
+    def test_fit_and_launch_share_the_scrubbed_spec_environment(self):
+        # Preflight must consult the same child environment the subprocess receives;
+        # otherwise ambient LLAMA_ARG_* state can reserve memory for a mode that never
+        # launches. The later pop remains a defensive boundary for managed spec blocks.
         # Whitespace-stripped so the check survives formatter line-wrapping.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_spec_env:Mapping[str,str]=_child_spec_env(extra_args)" in compact
@@ -604,9 +600,9 @@ class TestExtraArgsMtpDetection:
         # separate sidecar wins over one, and an unused head must not keep the
         # reserve alive. Hence "no embedded head OR a separate drafter was chosen".
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
+        # The shared scrubbed environment honors only explicitly managed values.
         assert (
-            "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
+            "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=_spec_env)" in compact
         )
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
         # flat reserve suppressed for a CPU drafter that is the one being launched
@@ -625,10 +621,13 @@ class TestExtraArgsMtpDetection:
     def test_load_model_ranks_subsets_by_active_pin_fraction(self):
         # Auto/cap subset ranking uses the active budget fraction (lowered by the
         # flat MTP reserve), not a hard-coded 0.95, so the ranking order matches
-        # the fit budget that is then tested (Finding G4).
+        # the fit budget that is then tested (Finding G4). _vram_frac is that
+        # fraction resolved once per load: the user's budget, else the constant.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_gpu_usable(g,pin_fraction)" in compact
-        assert "_gpu_usable(g,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
+        assert "_gpu_usable(g,_vram_frac-_flat_mtp_reserve)" in compact
+        # Resolved once, so a mid-load save cannot split ranking from fitting.
+        assert "_vram_frac=_active_vram_fraction()" in compact
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -1015,7 +1014,7 @@ class TestExtraArgsMtpDetection:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_extra_args_main_cache_type_for_budget(extra_args)" in load
 
-    def test_load_model_tensor_drops_any_quantized_cache_axis(self):
+    def test_load_model_tensor_reconciles_any_quantized_cache_axis(self):
         # The heavier-by-bytes budget type can mask a quantized axis (an f16
         # budget hides a paired q4_0), so the tensor-safety drop must test each
         # --cache-type-k/-v extra, not just cache_type_kv -- else the quantized
@@ -1023,7 +1022,17 @@ class TestExtraArgsMtpDetection:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_ck_extra,_cv_extra=parse_cache_override_per_axis(extra_args)" in load
         assert "forcin(cache_type_kv,_ck_extra,_cv_extra)" in load
-        assert "iftensor_paralleland_cache_non_tensor_safe:" in load
+        # Custom cache arguments outrank the UI tensor toggle; a managed cache
+        # may still be dropped for the tensor attempt and restored on fallback.
+        assert "_custom_cache_non_tensor_safe=any(" in load
+        assert (
+            "if(tensor_paralleland_custom_cache_non_tensor_safeandsplit_mode_overrideisNone):"
+            in load
+        )
+        assert (
+            "elif(tensor_paralleland_cache_non_tensor_safeandnot_custom_cache_non_tensor_safe):"
+            in load
+        )
 
     def test_load_model_layer_downgrade_restores_original_cache_extras(self):
         # Tensor mode strips asymmetric --cache-type-k/-v (it rejects quantized),
@@ -1034,7 +1043,8 @@ class TestExtraArgsMtpDetection:
         assert "_tensor_dropped_extra_args=list(extra_args)" in load
         # The original extras are restored via one shared closure, called at all
         # three tensor->layer downgrade points.
-        assert "strip_split_mode_only(_tensor_dropped_extra_argsif" in load
+        assert "_restored_extras=(_tensor_dropped_extra_argsif" in load
+        assert "strip_split_mode_only(_restored_extras)" in load
         assert load.count("_restore_after_tensor_downgrade()") >= 3
 
     def test_load_model_tensor_skips_reserve_for_cpu_drafter(self):
