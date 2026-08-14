@@ -713,15 +713,11 @@ _FIXTURES = {
         True,  # a command list built once and passed by name is ordinary subprocess use
     ),
     "crash_imported_under_an_alias": (
-        "from os import abort as die\n"
-        "def child():\n"
-        "    die()\n",
+        "from os import abort as die\ndef child():\n    die()\n",
         True,  # the bound name is `die`; the rules are written against `abort`
     ),
     "aliased_string_at": (
-        "from ctypes import string_at as boom\n"
-        "def child():\n"
-        "    boom(0)\n",
+        "from ctypes import string_at as boom\ndef child():\n    boom(0)\n",
         True,
     ),
     "method_sharing_a_helper_name_is_not_suppression": (
@@ -752,10 +748,7 @@ _FIXTURES = {
         False,
     ),
     "rebound_alias_is_not_a_crash": (
-        "from os import abort\n"
-        "def child():\n"
-        "    abort = lambda: None\n"
-        "    abort()\n",
+        "from os import abort\ndef child():\n    abort = lambda: None\n    abort()\n",
         False,
     ),
     "sigkill_is_not_a_deliberate_crash": (
