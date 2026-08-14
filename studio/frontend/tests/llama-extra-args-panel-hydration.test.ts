@@ -122,3 +122,25 @@ test("the hidden validation re-runs when the binary changes", () => {
   assert.match(PANEL, /subscribeLlamaFlagCatalog\(\(\) =>\s*\n?\s*setHiddenCatalogEpoch/);
   assert.match(PANEL, /hiddenCatalogEpoch,\n\s*\]\);/);
 });
+
+const OVERRIDES = readFileSync(
+  path.join(HERE, "..", "src/features/model-picker/api/model-overrides.ts"),
+  "utf8",
+);
+
+test("the legacy overrides fallback searches the caller's own identities", () => {
+  // A backend that predates the resolved field answers with the whole map, and the
+  // caller has to say which keys to look under. The auto-load and compare callers
+  // pass none, so the default of [] searched nothing and they launched without the
+  // stored arguments against an older server.
+  assert.match(OVERRIDES, /fallbackKeys\.length > 0\s*\n?\s*\? fallbackKeys/);
+  assert.match(OVERRIDES, /modelOverrideKey\(loadId, ggufVariant\)/);
+  assert.match(OVERRIDES, /modelOverrideKey\(aliasId, ggufVariant\)/);
+});
+
+test("the hidden hydration check knows the slot floor", () => {
+  // The floor is already fetched here, and the backend refuses a batch below it
+  // deterministically, so releasing Load without it opens a window where a click
+  // reaches that 400.
+  assert.match(PANEL, /batchFloor: Math\.max\(\s*\n?\s*2,\s*\n?\s*configRef\.current\.nParallel \?\? managed\?\.defaultParallelSlots/);
+});

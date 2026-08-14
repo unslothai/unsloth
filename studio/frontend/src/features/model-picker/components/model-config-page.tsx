@@ -1849,6 +1849,16 @@ export function ModelConfigPage({
             windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
             defaultParallelSlots: managed?.defaultParallelSlots ?? 0,
             probeOk: false,
+          },
+          {
+            // The slot floor is already known here, and the backend refuses a batch
+            // below it deterministically. Left out, this released Load on a stored
+            // "--batch-size 2" against a four-slot server, and a click in the window
+            // before the full catalogue check lands reaches that 400.
+            batchFloor: Math.max(
+              2,
+              configRef.current.nParallel ?? managed?.defaultParallelSlots ?? 2,
+            ),
           }),
         );
         // Read from a ref rather than inside the updater below: an updater must stay

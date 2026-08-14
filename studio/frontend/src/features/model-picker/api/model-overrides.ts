@@ -216,7 +216,22 @@ export async function fetchLoadExtraArgs(
   if (body.resolved !== undefined) {
     return body.resolved?.llama_extra_args ?? [];
   }
-  return resolveStoredExtraArgs(body.overrides ?? {}, fallbackKeys);
+  // A backend that predates the resolved field answers with the whole map, and the
+  // caller has to say which keys to look under. Derived here when it did not: the
+  // panel passes its own richer list (it knows the alias the settings page used),
+  // while the auto-load and compare callers have only these two identities, and
+  // defaulting to none made them read an empty map and launch without the stored
+  // arguments against an older server.
+  const derived =
+    fallbackKeys.length > 0
+      ? fallbackKeys
+      : [
+          modelOverrideKey(loadId, ggufVariant),
+          modelOverrideKey(aliasId, ggufVariant),
+          loadId,
+          aliasId,
+        ].filter((key, index, all) => all.indexOf(key) === index);
+  return resolveStoredExtraArgs(body.overrides ?? {}, derived);
 }
 
 /**

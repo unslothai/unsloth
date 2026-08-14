@@ -1480,12 +1480,21 @@ export function useChatModelRuntime() {
               // what makes /load inherit, so a model that was launched with no
               // extras would come back carrying the arguments of the load that just
               // failed. null stays for "we were never told".
+              //
+              // The server's own echo first, since it is the only account of what
+              // the launch actually carried: a reload that omits the field but sets
+              // max_seq_length has its inherited --ctx-size stripped before launch,
+              // and the status refresh that would notice runs while modelLoading is
+              // still true and reseeds nothing. Without this the next rollback
+              // resent a flag the successful reload had removed.
               loadedLlamaExtraArgs:
-                loadLlamaExtraArgs !== undefined
-                  ? (loadLlamaExtraArgs ?? [])
-                  : resetsPerModelSettings
-                    ? null
-                    : (stateBeforeUnload.loadedLlamaExtraArgs ?? null),
+                loadResponse.requested_llama_extra_args !== undefined
+                  ? (loadResponse.requested_llama_extra_args ?? [])
+                  : loadLlamaExtraArgs !== undefined
+                    ? (loadLlamaExtraArgs ?? [])
+                    : resetsPerModelSettings
+                      ? null
+                      : (stateBeforeUnload.loadedLlamaExtraArgs ?? null),
               nUbatch: committedNUbatch,
               loadedNUbatch: committedNUbatch,
               customContextLength: keepCustomCtx,

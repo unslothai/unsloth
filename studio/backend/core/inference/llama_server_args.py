@@ -128,6 +128,16 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 # positional check below does not refuse a legitimate second value.
 _TWO_VALUE_FLAGS: frozenset[str] = frozenset({"--control-vector-layer-range"})
 
+# Flags that take a second value on SOME builds. Today's llama.cpp writes the scale
+# into the value ("--lora-scaled FNAME:SCALE"), and older ones took it as a separate
+# token ("--lora-scaled FNAME SCALE"); both spellings are already handled in
+# _sidecar_weight_files. So the second token is allowed but never required: demanding
+# it would refuse the current syntax, and refusing it broke a list that loaded before
+# the positional check existed.
+_OPTIONAL_SECOND_VALUE_FLAGS: frozenset[str] = frozenset(
+    {"--lora-scaled", "--control-vector-scaled"}
+)
+
 # Shape bounds. Not a security boundary -- the denylist is -- but a pasted file or a
 # runaway generator should fail here, naming the limit, rather than at execve or in
 # llama-server's own parser. Generous enough that a grammar or a JSON schema fits.
@@ -290,6 +300,11 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             if flag in _TWO_VALUE_FLAGS:
                 pending_values = 1 if attached else 2
                 pending_two_value = pending_values
+            elif flag in _OPTIONAL_SECOND_VALUE_FLAGS:
+                # Allowed, not owed: pending_two_value stays 0, so nothing here
+                # insists on the second token.
+                pending_values = 1 if attached else 2
+                pending_two_value = 0
             else:
                 pending_values = 0 if attached else 1
                 pending_two_value = 0

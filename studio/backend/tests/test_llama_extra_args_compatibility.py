@@ -359,6 +359,25 @@ def test_a_batch_below_the_floor_is_refused_before_the_launch():
         assert _lsa.check_batch_floor(args, slots) is None
 
 
+def test_a_scaled_sidecar_may_take_its_scale_separately():
+    # Today's llama.cpp writes it into the value ("--lora-scaled FNAME:SCALE"), older
+    # builds took it as its own token, and _sidecar_weight_files reads both. Allowed
+    # and never required: demanding the second token would refuse the current syntax,
+    # and refusing it broke a list that loaded before the positional check existed.
+    for good in (
+        ["--lora-scaled", "/a.gguf", "0.5"],
+        ["--lora-scaled", "/a.gguf:0.5"],
+        ["--lora-scaled", "/a.gguf"],
+        ["--control-vector-scaled", "/v.gguf", "0.8"],
+        ["--control-vector-scaled", "/v.gguf:0.8", "--top-k", "20"],
+        ["--lora-scaled", "/a.gguf", "0.5", "--top-k", "20"],
+    ):
+        assert _lsa.validate_extra_args(good) == good
+    # A third bare token still belongs to nothing.
+    with pytest.raises(ValueError, match = "bare value"):
+        _lsa.validate_extra_args(["--lora-scaled", "/a.gguf", "0.5", "stray"])
+
+
 def test_a_two_value_flag_is_kept_whole():
     # Half of this option is not a smaller version of it: llama-server refuses
     # "--control-vector-layer-range 1" on the command line, so a list that carries it

@@ -799,8 +799,15 @@ test("a rollback restores the previous model with its arguments", () => {
     runtime,
     /stateBeforeUnload\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: stateBeforeUnload\.loadedLlamaExtraArgs \}/,
   );
-  // And the snapshot is kept on every successful load, not only an explicit one.
-  assert.match(runtime, /loadedLlamaExtraArgs: loadLlamaExtraArgs !== undefined/);
+  // And the snapshot is kept on every successful load, not only an explicit one,
+  // taken from the server's own echo first: a reload that omits the field but sets
+  // max_seq_length has its inherited --ctx-size stripped before launch, and the
+  // status refresh that would notice runs while the load is still in flight.
+  assert.match(
+    runtime,
+    /loadedLlamaExtraArgs: loadResponse\.requested_llama_extra_args !== undefined/,
+  );
+  assert.match(runtime, /: loadLlamaExtraArgs !== undefined/);
 });
 
 test("a hydrated list is judged even when the row cannot be", () => {
@@ -1153,6 +1160,39 @@ test("the sanitizer drops what the validator refuses on shape", () => {
     ["--cache-type-k", "q8_0"],
     ["--numa", "distribute"],
     ["--ctx_size", "4096"],
+  ]) {
+    assert.deepEqual(sanitizeStoredExtraArgs(list, managed), list);
+  }
+});
+
+test("a scaled sidecar may take its scale as a second token", () => {
+  // Today's llama.cpp writes it into the value ("--lora-scaled FNAME:SCALE") and
+  // older builds took it separately ("--lora-scaled FNAME SCALE"); the launcher
+  // reads both in _sidecar_weight_files. So the second token is allowed and never
+  // required: demanding it would refuse the current syntax, and refusing it broke a
+  // list that loaded before the positional check existed.
+  const scaled: LlamaFlagCatalog = {
+    ...CATALOG,
+    flags: {
+      ...CATALOG.flags,
+      "--lora-scaled": "path with scaling",
+      "--control-vector-scaled": "control vector with scaling",
+    },
+  };
+  const errors = (input: string) =>
+    diagnoseExtraArgs(input, scaled).filter((d) => d.level === "error");
+  assert.deepEqual(errors("--lora-scaled /a.gguf 0.5"), []);
+  assert.deepEqual(errors("--lora-scaled /a.gguf:0.5"), []);
+  assert.deepEqual(errors("--control-vector-scaled /v.gguf 0.8 --top-k 20"), []);
+  assert.deepEqual(errors("--lora-scaled /a.gguf"), []);
+  // A third bare token still has no owner.
+  assert.equal(errors("--lora-scaled /a.gguf 0.5 stray").length, 1);
+  // And the sanitizer keeps the pair rather than reading the scale as ownerless.
+  const managed = new Set<string>();
+  for (const list of [
+    ["--lora-scaled", "/a.gguf", "0.5"],
+    ["--lora-scaled", "/a.gguf:0.5"],
+    ["--control-vector-scaled", "/v.gguf", "0.8", "--top-k", "20"],
   ]) {
     assert.deepEqual(sanitizeStoredExtraArgs(list, managed), list);
   }

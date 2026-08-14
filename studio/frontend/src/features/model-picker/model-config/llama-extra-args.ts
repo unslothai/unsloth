@@ -73,6 +73,20 @@ export const EXTRA_ARGS_MAX_TOKENS = 256;
 /** The one option in llama-server's help that takes two values. */
 const TWO_VALUE_FLAGS = new Set(["--control-vector-layer-range"]);
 
+/**
+ * Options that take a second value on SOME builds.
+ *
+ * Today's llama.cpp writes the scale into the value ("--lora-scaled FNAME:SCALE"),
+ * older ones took it as a separate token ("--lora-scaled FNAME SCALE"), and
+ * _sidecar_weight_files already reads both. So the second token is allowed but never
+ * required: demanding it would refuse the current syntax, and refusing it broke a
+ * list that loaded before the positional check existed.
+ */
+const OPTIONAL_SECOND_VALUE_FLAGS = new Set([
+  "--lora-scaled",
+  "--control-vector-scaled",
+]);
+
 export type ExtraArgsParse = {
   tokens: string[];
   /** Set when a quote is left open, so the row can say so instead of silently dropping it. */
@@ -351,6 +365,11 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
       pending = attached ? 1 : 2;
       twoValuePending = pending;
       ownerAt = out.length;
+    } else if (OPTIONAL_SECOND_VALUE_FLAGS.has(flag)) {
+      // Allowed, not owed, so nothing here removes the option for want of it.
+      pending = attached ? 1 : 2;
+      twoValuePending = 0;
+      ownerAt = -1;
     } else {
       pending = attached ? 0 : 1;
       twoValuePending = 0;
@@ -848,15 +867,22 @@ export function diagnoseExtraArgs(
         attached
         ? 1
         : 2
-      : attached
-        ? 0
-        : // A flag THIS build documents as taking no value claims none, so the next
-          // bare token has no owner. Only when the catalogue actually knows the
-          // flag: an unverified one keeps the benefit of the doubt.
-          catalog?.switches.has(flag)
+      : OPTIONAL_SECOND_VALUE_FLAGS.has(flag)
+        ? // Allowed, not owed: the second token is taken if it is there.
+          attached
+          ? 1
+          : 2
+        : attached
           ? 0
-          : 1;
-    pendingOwner = pendingValues > 0 ? flag : null;
+          : // A flag THIS build documents as taking no value claims none, so the
+            // next bare token has no owner. Only when the catalogue actually knows
+            // the flag: an unverified one keeps the benefit of the doubt.
+            catalog?.switches.has(flag)
+            ? 0
+            : 1;
+    // Never reported as owing a value: only the flags whose arity is certain are.
+    pendingOwner =
+      pendingValues > 0 && !OPTIONAL_SECOND_VALUE_FLAGS.has(flag) ? flag : null;
   }
   noteOwed(pendingOwner, pendingValues);
 
