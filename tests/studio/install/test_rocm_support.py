@@ -6681,7 +6681,14 @@ class TestRocmMiscomputingArchDemotion:
     host most in need of the gate therefore kept the wheels the gate exists to remove.
     """
 
-    def _demotion_calls(self, monkeypatch, label, archs, env = None, codes_fn = None):
+    def _demotion_calls(
+        self,
+        monkeypatch,
+        label,
+        archs,
+        env = None,
+        codes_fn = None,
+    ):
         calls = []
         monkeypatch.setattr(stack_mod, "NO_TORCH", False)
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
@@ -6692,8 +6699,11 @@ class TestRocmMiscomputingArchDemotion:
         )
         monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", lambda: None)
         monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append((a, k)))
-        for _var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
-                     "UNSLOTH_ROCM_GFX_ARCH"):
+        for _var in (
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_ROCM_GFX_ARCH",
+        ):
             monkeypatch.delenv(_var, raising = False)
         for _var, _val in (env or {}).items():
             monkeypatch.setenv(_var, _val)
@@ -6712,12 +6722,12 @@ class TestRocmMiscomputingArchDemotion:
         """HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh workaround and makes
         rocminfo answer gfx1030, so the probe must ignore it or the arch hides itself."""
         seen = {}
+
         def _codes(**kw):
             seen.update(kw)
             return ["gfx1030"] if not kw.get("ignore_hsa_override") else ["gfx1033"]
-        calls = self._demotion_calls(
-            monkeypatch, "2.10.0+rocm7.1", [], codes_fn = _codes
-        )
+
+        calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], codes_fn = _codes)
         assert seen.get("ignore_hsa_override") is True
         assert len(calls) == 1
 
@@ -6739,11 +6749,18 @@ class TestRocmMiscomputingArchDemotion:
             ("2.10.0+cu128", ["gfx1033"], None, "CUDA torch demoted"),
             ("2.10.0", ["gfx1033"], None, "CPU torch reinstalled for nothing"),
             # The documented escape hatch stays authoritative.
-            ("2.10.0+rocm7.1", ["gfx1033"],
-             {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.2"},
-             "explicit ROCm pin overridden"),
-            ("2.10.0+rocm7.1", ["gfx1033"],
-             {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}, "explicit family pin overridden"),
+            (
+                "2.10.0+rocm7.1",
+                ["gfx1033"],
+                {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.2"},
+                "explicit ROCm pin overridden",
+            ),
+            (
+                "2.10.0+rocm7.1",
+                ["gfx1033"],
+                {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"},
+                "explicit family pin overridden",
+            ),
         ],
     )
     def test_no_demotion_outside_the_measured_case(self, monkeypatch, label, archs, env, why):
@@ -6754,8 +6771,10 @@ class TestRocmMiscomputingArchDemotion:
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
         monkeypatch.setattr(stack_mod, "IS_MACOS", False)
         monkeypatch.setattr(stack_mod, "_installed_torch_label_on_disk", lambda: "2.10.0+cu128")
+
         def _boom(**_kw):
             raise AssertionError("probed the AMD arch on a host with no ROCm torch")
+
         monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", _boom)
         monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", _boom)
         for _var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
