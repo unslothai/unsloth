@@ -612,12 +612,21 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # Scoping the cache under STUDIO_HOME also means it leaves with the install rather
 # than accumulating in a shared cache across upgrades.
 #
-# An explicit UV_CACHE_DIR from the caller always wins; uv creates the directory
-# itself, so a failed mkdir here is not fatal.
+# An explicit UV_CACHE_DIR from the caller always wins. A failed mkdir must not be
+# merely ignored: uv aborts with "Failed to initialize cache at ..." on a cache path it
+# cannot create, so keeping the export would turn a co-location optimisation into a hard
+# install failure on a host where uv's own default cache would have worked. Reachable
+# with a writable STUDIO_HOME whose "cache" entry is a file or an unwritable directory
+# (a leftover from an install run under a different user). Fall back to uv's default by
+# restoring the unset state instead.
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
-    mkdir -p "$UV_CACHE_DIR" 2>/dev/null || true
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null; then
+        echo "[WARN] Cannot create $UV_CACHE_DIR -- using uv's default cache." >&2
+        echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
+        unset UV_CACHE_DIR
+    fi
 fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
@@ -3388,8 +3397,17 @@ get_torch_index_url() {
         # index. Keeping the gate in the function body means every harness gets it.
         #
         # Escape hatch: a pinned UNSLOTH_TORCH_INDEX_URL returns long before this point.
-        case "$(printf '%s' "${_amd_gfx_probe%%:*}" | tr '[:upper:]' '[:lower:]')" in
-            gfx1033)
+        #
+        # Match a TOKEN, not the whole probe. _probe_amd_gfx_arch keeps every `grep -oE`
+        # hit and rocminfo names each GPU agent twice -- its own "Name: gfx1033" and its
+        # "ISA Info" line "amdgcn-amd-amdhsa--gfx1033" -- so a single-GPU Deck already
+        # reads "gfx1033\ngfx1033". An exact-string case on that matched nothing and fell
+        # through to the version-keyed ROCm index below. Flatten to one space-delimited,
+        # lowercased, suffix-stripped line (the surrounding spaces keep gfx10330 out).
+        _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+        case "$_amd_gfx_tokens" in
+            *" gfx1033 "*)
                 echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
                 echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
                 echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
@@ -4050,10 +4068,22 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             # reroute fires on UNSLOTH_ROCM_GFX_ARCH alone and would take the */cpu that
             # gate just chose straight back to gfx103X-all. Drop it here too, so the only
             # way to ROCm on Van Gogh stays the documented UNSLOTH_TORCH_INDEX_URL pin.
+            #
+            # Clearing the local variable is not enough either: setup.sh copies
+            # UNSLOTH_ROCM_GFX_ARCH straight into --rocm-gfx, and
+            # install_llama_prebuilt.py's _apply_host_overrides reads any forwarded gfx
+            # as proof of ROCm (has_rocm = True). On a Van Gogh host with no ROCm that
+            # skips the AMD-without-ROCm Vulkan branch this release adds -- the bundle
+            # measured 112.8 tok/s against 49.8 for CPU -- and asks for a ROCm prebuilt
+            # or a HIP source build the host cannot run. Drop the rejected override so
+            # setup.sh re-probes instead: a host that really does have ROCm still finds
+            # gfx1033 through its own rocminfo call, and the documented
+            # UNSLOTH_TORCH_INDEX_URL pin returns long before this block.
             case "${_linux_inferred_gfx%%:*}" in
                 gfx1033)
                     echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- keeping CPU-only PyTorch (studio/ROCM_RDNA2_APU.md)." >&2
-                    _linux_inferred_gfx="" ;;
+                    _linux_inferred_gfx=""
+                    unset UNSLOTH_ROCM_GFX_ARCH ;;
             esac
             if [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""

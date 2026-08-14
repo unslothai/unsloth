@@ -68,6 +68,27 @@ echo "=== the directory is actually created (uv would too, but not before we log
 _run "$_TMP/mk" '' >/dev/null
 assert_eq "cache dir created" "yes" "$([ -d "$_TMP/mk/cache/uv" ] && echo yes || echo no)"
 
+echo "=== an uncreatable cache falls back to uv's default, it does not stay exported ==="
+# uv aborts with "Failed to initialize cache at ..." on a cache path it cannot create, so
+# keeping the export after a failed mkdir turns a disk optimisation into a hard install
+# failure on a host where uv's own default cache would have worked. Reachable with a
+# writable STUDIO_HOME whose "cache" entry is not a usable directory.
+: > "$_TMP/blocked"          # STUDIO_HOME is a FILE -> $STUDIO_HOME/cache/uv cannot exist
+assert_eq "uncreatable cache is dropped" "<unset>" "$(_run "$_TMP/blocked" '')"
+mkdir -p "$_TMP/rofile" && : > "$_TMP/rofile/cache"   # writable home, "cache" is a file
+assert_eq "cache-as-file is dropped"     "<unset>" "$(_run "$_TMP/rofile" '')"
+# ... and the fallback really is usable, unlike the path we just refused.
+if command -v uv >/dev/null 2>&1; then
+    _uv_rc=$("$_SH" -c "
+        STUDIO_HOME='$_TMP/rofile'
+        unset UV_CACHE_DIR
+        . '$_FN_FILE'
+        uv venv '$_TMP/rofile/venv' >/dev/null 2>&1
+        printf '%s' \"\$?\"
+    ")
+    assert_eq "uv still runs after the fallback" "0" "$_uv_rc"
+fi
+
 echo "=== a caller-set UV_CACHE_DIR is never overridden ==="
 assert_eq "explicit value kept" "/custom/uvcache" "$(_run "$_TMP/studio" '/custom/uvcache')"
 
