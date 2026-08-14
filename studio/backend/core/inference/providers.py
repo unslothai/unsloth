@@ -626,13 +626,17 @@ def _metadata_host(hostname: str) -> bool:
 #   * a name that does not resolve is allowed, because a docker-compose or
 #     service-discovery name (http://my_ollama:11434) may only be resolvable in
 #     the client's network namespace, not in this one;
-#   * the lookup is bounded and its verdict cached, so a slow or unreachable
+#   * the lookup is bounded and its answer cached, so a slow or unreachable
 #     resolver cannot stall a request that validates the same URL every time.
+#     A client is built per request, not per token, and the route validates the
+#     same URL again, so the cache is what keeps that to one lookup.
 _DNS_TIMEOUT_SECONDS = 2.0
 _DNS_CACHE_TTL_SECONDS = 300.0
 _DNS_CACHE_MAX_ENTRIES = 512
-_metadata_dns_cache: dict[str, tuple[float, bool]] = {}
-_metadata_dns_lock = threading.Lock()
+# hostname -> (expiry, addresses). ``None`` addresses means the resolver did not
+# answer, which the two callers below read in opposite directions.
+_dns_cache: dict[str, tuple[float, tuple[str, ...] | None]] = {}
+_dns_cache_lock = threading.Lock()
 
 # Hostnames of the providers this build ships. They are hard-coded destinations,
 # not caller-controlled names, so learning their addresses buys nothing.
@@ -647,27 +651,51 @@ _REGISTRY_HOSTNAMES = frozenset(
 )
 
 
-def _getaddrinfo_bounded(hostname: str, port: int) -> list[Any] | None:
-    """``getaddrinfo`` with a wall-clock bound. ``None`` means "no answer"."""
+def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ...] | None:
+    """Addresses for ``hostname``, or ``None`` when the resolver did not answer.
+
+    Both callers share this: the always-on metadata check, which treats "no
+    answer" as nothing to refuse, and the opt-in private-address check, which
+    treats it as a refusal. One lookup and one cache entry serve both, so
+    turning the opt-in on does not double the resolver traffic.
+    """
     import socket
 
-    result: list[Any] = []
+    now = time.monotonic()
+    with _dns_cache_lock:
+        cached = _dns_cache.get(hostname)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+    resolved: list[str] = []
+    answered = False
 
     def _resolve() -> None:
+        nonlocal answered
         try:
-            result.extend(socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM))
+            infos = socket.getaddrinfo(
+                hostname,
+                port or (443 if scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
         except (OSError, UnicodeError, ValueError):
-            pass
+            return
+        resolved.extend(str(info[4][0]) for info in infos)
+        answered = True
 
     # Daemon thread, so a resolver that never answers cannot hold up shutdown;
-    # the validator abandons it after the timeout and treats the name as
-    # unresolvable (allowed), the same as any other lookup failure.
+    # the validator abandons it after the timeout and treats the name the same
+    # way it treats any other lookup failure.
     thread = threading.Thread(target = _resolve, daemon = True)
     thread.start()
     thread.join(_DNS_TIMEOUT_SECONDS)
-    if thread.is_alive():
-        return None
-    return result or None
+    addresses = tuple(resolved) if answered and not thread.is_alive() else None
+
+    with _dns_cache_lock:
+        if len(_dns_cache) >= _DNS_CACHE_MAX_ENTRIES:
+            _dns_cache.clear()
+        _dns_cache[hostname] = (now + _DNS_CACHE_TTL_SECONDS, addresses)
+    return addresses
 
 
 def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
@@ -681,39 +709,20 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
         return False
     except ValueError:
         pass
-
-    now = time.monotonic()
-    with _metadata_dns_lock:
-        cached = _metadata_dns_cache.get(hostname)
-        if cached is not None and cached[0] > now:
-            return cached[1]
-
-    infos = _getaddrinfo_bounded(hostname, port or (443 if scheme == "https" else 80))
-    verdict = any(_metadata_host(str(info[4][0])) for info in infos or ())
-
-    with _metadata_dns_lock:
-        if len(_metadata_dns_cache) >= _DNS_CACHE_MAX_ENTRIES:
-            _metadata_dns_cache.clear()
-        _metadata_dns_cache[hostname] = (now + _DNS_CACHE_TTL_SECONDS, verdict)
-    return verdict
+    return any(_metadata_host(address) for address in _resolve_host(hostname, port, scheme) or ())
 
 
 def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
     """Raise when ``hostname`` is, or resolves to, a non-public address."""
-    import socket
-
     try:
         addresses = [ipaddress.ip_address(hostname)]
     except ValueError:
-        try:
-            infos = socket.getaddrinfo(
-                hostname,
-                port or (443 if scheme == "https" else 80),
-                type = socket.SOCK_STREAM,
-            )
-        except (OSError, UnicodeError) as exc:
-            raise ValueError("Provider base URL hostname could not be resolved.") from exc
-        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+        resolved = _resolve_host(hostname, port, scheme)
+        if resolved is None:
+            # Unlike the metadata check, this one fails closed: an operator who
+            # set the flag asked for anything unproven to be refused.
+            raise ValueError("Provider base URL hostname could not be resolved.") from None
+        addresses = [ipaddress.ip_address(address.split("%", 1)[0]) for address in resolved]
     if not addresses or any(not ip.is_global for ip in addresses):
         raise ValueError(
             "Provider base URL points at a private address, which is disabled on this "

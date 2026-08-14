@@ -63,9 +63,9 @@ def _default_policy(monkeypatch):
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
     # The metadata lookup caches its verdict per hostname; a stale entry would
     # carry one test's stubbed resolver into the next.
-    _providers._metadata_dns_cache.clear()
+    _providers._dns_cache.clear()
     yield
-    _providers._metadata_dns_cache.clear()
+    _providers._dns_cache.clear()
 
 
 @pytest.mark.parametrize("url", _SUPPORTED)
@@ -135,14 +135,36 @@ def test_dns_alias_verdict_is_cached(monkeypatch):
     assert len(calls) == 1
 
 
-def test_unresolvable_names_stay_allowed(monkeypatch):
-    """docker-compose / service-discovery names resolve in the client's netns."""
+def test_the_opt_in_path_shares_the_one_lookup(monkeypatch):
+    """Turning the private-address flag on does not double the resolver load."""
+    calls = []
+
+    def _record(host, port, *args, **kwargs):
+        calls.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    assert validate_provider_base_url("https://gw.example/v1") == "https://gw.example/v1"
+    assert len(calls) == 1
+
+
+def test_unresolvable_names_are_refused_only_under_the_opt_in(monkeypatch):
+    """The same "no answer" reads as allow by default and refuse when opted in.
+
+    docker-compose and service-discovery names resolve in the client's network
+    namespace, not this one, so the default path cannot read silence as guilt.
+    """
 
     def _unresolvable(*args, **kwargs):
         raise socket.gaierror("not resolvable here")
 
     monkeypatch.setattr(socket, "getaddrinfo", _unresolvable)
     assert validate_provider_base_url("http://my_ollama:11434/v1") == "http://my_ollama:11434/v1"
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    with pytest.raises(ValueError, match = "could not be resolved"):
+        validate_provider_base_url("http://my_ollama:11434/v1")
 
 
 def test_a_slow_resolver_does_not_stall_validation(monkeypatch):
