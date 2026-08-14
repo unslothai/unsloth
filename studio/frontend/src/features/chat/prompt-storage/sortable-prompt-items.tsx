@@ -149,6 +149,7 @@ export function SortablePromptItems({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pointerYRef = useRef(0);
+  const pointerIdRef = useRef<number | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const prevRects = useRef(new Map<string, DOMRect>());
   const uidsRef = useRef(uids);
@@ -218,6 +219,7 @@ export function SortablePromptItems({
       // pen contacts report button 0, so they still drag; isPrimary keeps a
       // second finger from starting a competing drag.
       if (e.button !== 0 || !e.isPrimary) return;
+      pointerIdRef.current = e.pointerId;
       // Deliberately no setPointerCapture here. Reordering makes React move the
       // row's DOM node (insertBefore detaches and reattaches it), and detaching
       // a node implicitly releases its pointer capture -- so a captured grip
@@ -278,34 +280,49 @@ export function SortablePromptItems({
     };
     raf = requestAnimationFrame(tick);
 
-    const onUp = () => setDraggingUid(null);
+    const endDrag = () => {
+      pointerIdRef.current = null;
+      setDraggingUid(null);
+    };
+
+    // These listeners are on the window, so every pointer on the device reaches
+    // them. Without this filter a second finger's movement would reorder using
+    // its own clientY, and its release would end the first finger's drag.
+    const isDragPointer = (e: PointerEvent) =>
+      pointerIdRef.current === null || e.pointerId === pointerIdRef.current;
 
     const onMove = (e: PointerEvent) => {
+      if (!isDragPointer(e)) return;
       // Releasing the button outside the window delivers neither pointerup nor
       // pointercancel here, because the grip deliberately does not capture the
       // pointer. The first move back over the page reports no buttons held, so
       // treat that as the release we missed -- otherwise the drag stays live and
       // keeps autoscrolling and reordering long after the user let go.
       if (e.buttons === 0) {
-        onUp();
+        endDrag();
         return;
       }
       pointerYRef.current = e.clientY;
       evaluate();
     };
 
+    const onPointerEnd = (e: PointerEvent) => {
+      if (!isDragPointer(e)) return;
+      endDrag();
+    };
+
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
+    window.addEventListener("pointerup", onPointerEnd);
+    window.addEventListener("pointercancel", onPointerEnd);
     // Covers the release happening entirely outside the page, where no further
     // move arrives to trigger the buttons check above.
-    window.addEventListener("blur", onUp);
+    window.addEventListener("blur", endDrag);
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-      window.removeEventListener("blur", onUp);
+      window.removeEventListener("pointerup", onPointerEnd);
+      window.removeEventListener("pointercancel", onPointerEnd);
+      window.removeEventListener("blur", endDrag);
     };
   }, [draggingUid, applyOrder]);
 

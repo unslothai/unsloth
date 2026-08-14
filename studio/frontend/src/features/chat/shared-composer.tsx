@@ -1759,6 +1759,14 @@ export function SharedComposer({
     (items: string[]) => {
       const filtered = items.filter((p) => p.trim());
       if (!filtered.length) return;
+      // Ordinary sends gate on `busy`, and this path did not: starting a list
+      // mid-generation overwrote the queue refs and fired sendRef 100ms later,
+      // on top of the run already in flight. The queue refs are equally
+      // clobberable by a second list started while the first is still stepping.
+      if (busy || isQueueRunningRef.current) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
       const hasCompareHandles = Boolean(
         handlesRef.current["model1"] || handlesRef.current["model2"],
       );
@@ -1786,7 +1794,7 @@ export function SharedComposer({
         sendRef.current?.();
       }, 100);
     },
-    [handlesRef, model1?.id, model2?.id],
+    [busy, handlesRef, model1?.id, model2?.id],
   );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top

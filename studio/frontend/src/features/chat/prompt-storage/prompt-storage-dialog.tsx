@@ -1232,6 +1232,9 @@ function ExportModal({
 type PromptDraft = { name: string; text: string };
 type ListDraft = { name: string; items: string[] };
 
+const EMPTY_PROMPT_DRAFT: PromptDraft = { name: "", text: "" };
+const EMPTY_LIST_DRAFT: ListDraft = { name: "", items: ["", ""] };
+
 function relativeTime(ts: number): string {
   const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
   if (secs < 60) return "just now";
@@ -1464,17 +1467,25 @@ function PromptDetail({
   );
 }
 
+// The in-progress entry lives in the parent, like the edit drafts: selecting a
+// row in the rail hides this form, and local state would be thrown away without
+// warning the moment someone clicked away from a half-written prompt.
 function NewPromptForm({
+  draft,
+  onDraftChange,
   onClose,
   onRefresh,
   onCreated,
 }: {
+  draft: PromptDraft;
+  onDraftChange: (draft: PromptDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
   onCreated: (id: string) => void;
 }): ReactElement {
-  const [name, setName] = useState("");
-  const [text, setText] = useState("");
+  const { name, text } = draft;
+  const setName = (value: string) => onDraftChange({ ...draft, name: value });
+  const setText = (value: string) => onDraftChange({ ...draft, text: value });
 
   const handleSave = useCallback(async () => {
     const trimText = text.trim();
@@ -1584,6 +1595,12 @@ function PromptListDetail({
     onRefresh();
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
+  // Run what the editor is showing. Queueing entry.items would fire the stored
+  // list while the pane displays something else, and in the worst case -- every
+  // draft item deleted -- the button stayed enabled off the stored length and
+  // silently ran the whole old list.
+  const runnableItems = items.filter((t) => t.trim());
+
   // See PromptDetail: export the visible draft, not the last saved copy.
   const exportValue: PromptListEntry = dirty
     ? {
@@ -1678,7 +1695,7 @@ function PromptListDetail({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3.5 mr-1" />Save
         </Button>
         {onRunList && (
-          <Button size="sm" onClick={() => onRunList(entry.items)} disabled={entry.items.length === 0}>
+          <Button size="sm" onClick={() => onRunList(runnableItems)} disabled={runnableItems.length === 0}>
             <PlayIcon className="size-3 mr-1" />Run
           </Button>
         )}
@@ -1687,17 +1704,24 @@ function PromptListDetail({
   );
 }
 
+// See NewPromptForm: the in-progress list lives in the parent so clicking a row
+// in the rail cannot silently discard a partially authored list.
 function NewPromptListForm({
+  draft,
+  onDraftChange,
   onClose,
   onRefresh,
   onCreated,
 }: {
+  draft: ListDraft;
+  onDraftChange: (draft: ListDraft) => void;
   onClose: () => void;
   onRefresh: () => Promise<void>;
   onCreated: (id: string) => void;
 }): ReactElement {
-  const [name, setName] = useState("");
-  const [items, setItems] = useState<string[]>(["", ""]);
+  const { name, items } = draft;
+  const setName = (value: string) => onDraftChange({ ...draft, name: value });
+  const setItems = (value: string[]) => onDraftChange({ ...draft, items: value });
 
   const handleSave = useCallback(async () => {
     const filtered = items.filter((t) => t.trim());
@@ -1717,7 +1741,7 @@ function NewPromptListForm({
     onClose();
   }, [name, items, onClose, onRefresh, onCreated]);
 
-  const addItem = useCallback(() => setItems((prev) => [...prev, ""]), []);
+  const addItem = () => setItems([...items, ""]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
@@ -1787,6 +1811,15 @@ export function PromptStorageDialog({
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [promptDrafts, setPromptDrafts] = useState<Record<string, PromptDraft>>({});
   const [listDrafts, setListDrafts] = useState<Record<string, ListDraft>>({});
+
+  // In-progress new entries, held here rather than inside the forms so that
+  // hiding a form (by selecting a row in the rail) does not destroy the work.
+  const [newPromptDraft, setNewPromptDraft] = useState<PromptDraft>(EMPTY_PROMPT_DRAFT);
+  const [newListDraft, setNewListDraft] = useState<ListDraft>(EMPTY_LIST_DRAFT);
+  const newPromptStarted =
+    newPromptDraft.name.trim() !== "" || newPromptDraft.text.trim() !== "";
+  const newListStarted =
+    newListDraft.name.trim() !== "" || newListDraft.items.some((t) => t.trim() !== "");
 
   const setPromptDraft = useCallback((id: string, draft: PromptDraft | undefined) => {
     setPromptDrafts((prev) => {
@@ -2115,6 +2148,12 @@ export function PromptStorageDialog({
               >
                 <PlusIcon className="size-3.5" />
                 {activeTab === "prompts" ? "New prompt" : "New prompt list"}
+                {(activeTab === "prompts" ? newPromptStarted : newListStarted) && (
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-primary"
+                    title="Unsaved draft"
+                  />
+                )}
               </button>
 
               <div className="min-h-0 flex-1 overflow-y-auto flex flex-col gap-0.5">
@@ -2183,7 +2222,12 @@ export function PromptStorageDialog({
               {activeTab === "prompts" &&
                 (showNewPrompt ? (
                   <NewPromptForm
-                    onClose={() => setShowNewPrompt(false)}
+                    draft={newPromptDraft}
+                    onDraftChange={setNewPromptDraft}
+                    onClose={() => {
+                      setNewPromptDraft(EMPTY_PROMPT_DRAFT);
+                      setShowNewPrompt(false);
+                    }}
                     onRefresh={refreshEntries}
                     onCreated={selectCreatedPrompt}
                   />
@@ -2210,7 +2254,12 @@ export function PromptStorageDialog({
               {activeTab === "lists" &&
                 (showNewList ? (
                   <NewPromptListForm
-                    onClose={() => setShowNewList(false)}
+                    draft={newListDraft}
+                    onDraftChange={setNewListDraft}
+                    onClose={() => {
+                      setNewListDraft(EMPTY_LIST_DRAFT);
+                      setShowNewList(false);
+                    }}
                     onRefresh={refreshLists}
                     onCreated={selectCreatedList}
                   />
