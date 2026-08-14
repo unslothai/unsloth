@@ -2282,6 +2282,19 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether an inherited LLAMA_ARG_CTX_SIZE is the zero that pins native length.
+
+    llama.cpp resolves the variable through -c's own handler, so 0 means
+    fit_params_min_ctx = UINT32_MAX here exactly as it does on the command line.
+    Anything unparseable is left to llama.cpp to reject."""
+    value = (os.environ if env is None else env).get("LLAMA_ARG_CTX_SIZE")
+    try:
+        return int(str(value).strip()) == 0
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 def _kv_offload_from_args(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -15131,6 +15144,22 @@ class LlamaCppBackend:
                 # arg handler and silently force hardware_concurrency(). #5692
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
+                # Same shape, for the context. Auto-layers omits -c so --fit can size
+                # it, and with no -c to win the CLI/env race an inherited
+                # LLAMA_ARG_CTX_SIZE reaches the very handler the flag would, so a 0
+                # sets fit_params_min_ctx = UINT32_MAX and the fit never runs. Only a
+                # zero, and only where a pass-through zero would go too, so a positive
+                # inherited context stays the legitimate way to set one.
+                if (
+                    not any(token in cmd for token in ("-c", "--ctx-size"))
+                    and _env_asks_for_the_native_context(env)
+                    and self._metal_drops_zero_ctx_override(0, _caller_owns_budget)
+                ):
+                    env.pop("LLAMA_ARG_CTX_SIZE", None)
+                    logger.warning(
+                        "Dropping the inherited LLAMA_ARG_CTX_SIZE=0: on Metal it pins "
+                        "the model's native length and disables --fit."
+                    )
                 # A build whose help has no --flash-attn never registers the option,
                 # so it never reads LLAMA_ARG_FLASH_ATTN either (llama.cpp resolves
                 # each env var through the arg that declares it). Leaving an

@@ -52,6 +52,8 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E4
 _floor = LlamaCppBackend._metal_zero_ctx_floor
 _drops = LlamaCppBackend._metal_drops_zero_ctx_override
 _REAL_POPEN = subprocess.Popen
+# argv and child env of the most recent _launch, for the tests that assert on the env.
+_LAST_LAUNCH: dict = {}
 
 
 def _write_gguf(path: Path) -> Path:
@@ -120,6 +122,7 @@ def _launch(
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return _REAL_POPEN(cmd, **kwargs)
         captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
         return type(
             "Process",
             (),
@@ -144,7 +147,19 @@ def _launch(
                 extra_args = extra_args,
             )
         )
+    _LAST_LAUNCH.clear()
+    _LAST_LAUNCH.update(captured)
     return captured["cmd"], backend
+
+
+def _launch_env(tmp_path, monkeypatch, *, env_ctx, **kwargs):
+    """As _launch, returning what the child inherits as LLAMA_ARG_CTX_SIZE."""
+    if env_ctx is None:
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+    else:
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", env_ctx)
+    cmd, _ = _launch(tmp_path, monkeypatch, **kwargs)
+    return cmd, _LAST_LAUNCH["env"].get("LLAMA_ARG_CTX_SIZE")
 
 
 @pytest.fixture
@@ -322,6 +337,52 @@ class TestAutoLayers:
             extra_args = ["-c", "0"],
         )
         assert _ctx_values(cmd)[-1] == "0"
+
+
+class TestAnInheritedContextEnvironment:
+    """LLAMA_ARG_CTX_SIZE runs -c's own handler, before argv.
+
+    So the command line wins wherever Studio emits one. Auto-layers emits none,
+    on purpose, which leaves an inherited 0 to set fit_params_min_ctx =
+    UINT32_MAX and cancel the --fit this mode is entirely sized by.
+    """
+
+    AUTO_LAYERS = {"gpu_memory_mode": "manual", "gpu_layers": -1}
+
+    def test_a_zero_is_dropped_where_no_context_is_emitted(self, tmp_path, monkeypatch):
+        cmd, env_ctx = _launch_env(tmp_path, monkeypatch, env_ctx = "0", **self.AUTO_LAYERS)
+        assert _ctx_values(cmd) == []
+        assert env_ctx is None
+
+    def test_a_positive_inherited_context_is_kept(self, tmp_path, monkeypatch):
+        """Still the legitimate way to set a context for an Auto-layers launch."""
+        cmd, env_ctx = _launch_env(tmp_path, monkeypatch, env_ctx = "8192", **self.AUTO_LAYERS)
+        assert _ctx_values(cmd) == []
+        assert env_ctx == "8192"
+
+    def test_an_emitted_context_leaves_the_environment_alone(self, tmp_path, monkeypatch):
+        """Automatic mode passes -c, and argv is parsed after the environment."""
+        cmd, env_ctx = _launch_env(tmp_path, monkeypatch, env_ctx = "0")
+        assert _ctx_values(cmd) == ["4096"]
+        assert env_ctx == "0"
+
+    def test_a_caller_owned_budget_is_left_alone(self, tmp_path, monkeypatch):
+        cmd, env_ctx = _launch_env(
+            tmp_path, monkeypatch, env_ctx = "0", gpu_memory_mode = "manual", gpu_layers = 20
+        )
+        assert env_ctx == "0"
+
+    def test_off_metal_nothing_is_touched(self, tmp_path, monkeypatch):
+        cmd, env_ctx = _launch_env(
+            tmp_path, monkeypatch, env_ctx = "0", metal = False, **self.AUTO_LAYERS
+        )
+        assert env_ctx == "0"
+
+    @pytest.mark.parametrize("value", ["", "  ", "abc", "-1"])
+    def test_only_a_zero_counts(self, tmp_path, monkeypatch, value):
+        """Anything else is llama.cpp's to interpret, or reject."""
+        cmd, env_ctx = _launch_env(tmp_path, monkeypatch, env_ctx = value, **self.AUTO_LAYERS)
+        assert env_ctx == value
 
 
 class TestAVirtualisedMetalDevice:
