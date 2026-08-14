@@ -210,10 +210,13 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
 def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch, overrides):
     """Shape 3: one Studio-only name (or MCP) is unambiguous, so the feature
     works on hosted providers too."""
+    # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function
+    # body, so it is never an attribute of ``routes.inference``: patching the route set a dead
+    # name, and ``raising = False`` hid that while the real function spawned stdio MCP servers
+    # and wrote discovery cache and cool-off state. Default ``raising`` catches a future move.
     monkeypatch.setattr(
-        "routes.inference.get_enabled_mcp_tools",
+        "core.inference.tools.get_enabled_mcp_tools",
         lambda: _noop_mcp(),
-        raising = False,
     )
     inf = _install(monkeypatch, "openai")
     with pytest.raises(LoopEntered):
