@@ -56,6 +56,18 @@ def _raising(exc: str) -> str:
     )
 
 
+def _ffmpeg(present: bool) -> str:
+    """Pin the FFmpeg answer. A runner that happens to have it installed would
+    otherwise flip the two loader states this distinction rests on."""
+    return textwrap.dedent(
+        f"""
+        import ctypes.util, os
+        ctypes.util.find_library = lambda n: {'"/usr/lib/libavutil.so"' if present else 'None'}
+        os.environ['PATH'] = ''
+        """
+    )
+
+
 def _probe(preamble: str) -> str:
     """The state the installers would read: the sentinel line, not all of stdout."""
     out = subprocess.run(
@@ -91,11 +103,24 @@ def test_an_unloadable_torchcodec_is_distinguished_from_an_absent_one():
     assert loadable == "ok"
 
     unloadable = _probe(
-        _raising(
+        _ffmpeg(False)
+        + _raising(
             "RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')"
         )
     )
     assert unloadable == "ffmpeg"
+
+
+def test_ffmpeg_advice_needs_ffmpeg_to_actually_be_missing():
+    # The loader message names a missing FFmpeg, a torch mismatch and another native
+    # dependency in one breath, so the text cannot pick between them. With FFmpeg
+    # already on the loader path it is one of the others, and sending someone to
+    # install FFmpeg would point them at the wrong thing.
+    same_error = _raising(
+        "RuntimeError('Could not load libtorchcodec. 1. FFmpeg is not properly installed')"
+    )
+    assert _probe(_ffmpeg(True) + same_error) == "native"
+    assert _probe(_ffmpeg(False) + same_error) == "ffmpeg"
 
 
 def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
@@ -126,7 +151,8 @@ def test_an_unrelated_import_failure_is_not_blamed_on_ffmpeg():
 
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
 def test_both_installers_report_the_ffmpeg_case(script):
-    line = _step_line(script.read_text(encoding = "utf-8"), "installed but cannot load")
+    # Spelled out past "cannot load", since the non-FFmpeg loader failure opens the same way.
+    line = _step_line(script.read_text(encoding = "utf-8"), "installed but cannot load its FFmpeg")
     # Names the real dependency, and what still works, like the whisper.cpp steps do.
     assert "FFmpeg" in line
     assert "soundfile" in line
@@ -139,6 +165,15 @@ def test_both_installers_keep_ffmpeg_advice_out_of_the_other_failure(script):
     line = _step_line(script.read_text(encoding = "utf-8"), "installed but fails to import")
     assert "install an FFmpeg" not in line, "the non-FFmpeg failure still sends them at FFmpeg"
     assert "reinstall torchcodec" in line
+
+
+@pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
+def test_both_installers_report_the_loader_failure_that_is_not_ffmpeg(script):
+    line = _step_line(script.read_text(encoding = "utf-8"), "installed but cannot load its native")
+    assert "install an FFmpeg" not in line, "FFmpeg is already there; this sends them at it anyway"
+    # Both remaining causes, since nothing available here picks between them.
+    assert "does not support" in line
+    assert "torch" in line
 
 
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])

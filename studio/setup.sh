@@ -3331,6 +3331,20 @@ import signal
 _alarm = getattr(signal, "alarm", None)
 if _alarm is not None:
     _alarm(60)
+
+
+def _ffmpeg_on_loader_path():
+    import ctypes.util, glob, os
+    if any(ctypes.util.find_library(n) for n in ("avutil", "avcodec", "avformat")):
+        return True
+    # find_library does not glob, and Windows ships these as avutil-59.dll and
+    # friends, so PATH is walked for the versioned names it would otherwise miss.
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if d and glob.glob(os.path.join(d, "avutil-*.dll")):
+            return True
+    return False
+
+
 try:
     import torchcodec  # noqa: F401
 except ModuleNotFoundError as e:
@@ -3341,10 +3355,14 @@ except ModuleNotFoundError as e:
 except Exception:
     import traceback
     # torchcodec folds every native load failure into one message naming
-    # libtorchcodec, which lists FFmpeg, an ABI mismatch and another runtime
-    # dependency together. This only separates that loader from an unrelated
-    # import error; it does not pick between the causes it lists.
-    print("TORCHCODEC=" + ("ffmpeg" if "libtorchcodec" in traceback.format_exc() else "broken"))
+    # libtorchcodec, which lists a missing FFmpeg, a torch mismatch and another
+    # runtime dependency together, so the text alone cannot pick between them.
+    # Ask the system instead: no FFmpeg on the loader path is the one cause that
+    # can be established here, and it is the only one worth naming a fix for.
+    if "libtorchcodec" not in traceback.format_exc():
+        print("TORCHCODEC=broken")
+    else:
+        print("TORCHCODEC=" + ("native" if _ffmpeg_on_loader_path() else "ffmpeg"))
 else:
     print("TORCHCODEC=ok")
 '
@@ -3358,6 +3376,8 @@ else:
 
     if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
         step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "$C_WARN"
+    elif [ "$_TORCHCODEC_STATE" = "native" ]; then
+        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; either the FFmpeg here is a major it does not support (it takes 4 to 7) or this build does not match your torch" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "broken" ]; then
         step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; reinstall torchcodec against this torch build" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "ok" ]; then
