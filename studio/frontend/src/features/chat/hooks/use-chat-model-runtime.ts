@@ -13,7 +13,11 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
-import { type OffloadCounts, isPartialOffload } from "../lib/partial-offload";
+import {
+  type OffloadCounts,
+  isPartialOffload,
+  partialOffloadDescription,
+} from "../lib/partial-offload";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -1291,6 +1295,7 @@ export function useChatModelRuntime() {
             offloadCounts = {
               offloaded: loadResponse.offloaded_layers,
               total: loadResponse.offload_total_layers,
+              gpuMemoryMode: loadResponse.gpu_memory_mode,
             };
 
             // If cancelled while loading, don't update UI to show
@@ -1925,7 +1930,7 @@ export function useChatModelRuntime() {
           const loadedDescription = cpuFallbackReason
             ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
             : partialOffload
-              ? `${offloadCounts.offloaded} of ${offloadCounts.total} layers are on the GPU. The rest run on CPU, so generation will be slower. A smaller quantization would fit entirely on the GPU.`
+              ? partialOffloadDescription(offloadCounts)
               : undefined;
           const showLoadedToast =
             cpuFallbackReason || partialOffload ? toast.warning : toast.success;

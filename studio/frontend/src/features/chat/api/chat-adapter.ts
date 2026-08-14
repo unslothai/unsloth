@@ -204,6 +204,11 @@ import {
   watchResearchRun,
 } from "../stores/research-run-store";
 import { cancelResearchRun, createResearchRun } from "./research-api";
+import {
+  type OffloadCounts,
+  isPartialOffload,
+  partialOffloadDescription,
+} from "../lib/partial-offload";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -2544,16 +2549,29 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const showAutoLoadSuccess = (
     message: string,
     cpuFallbackReason?: CpuFallbackReason | null,
+    offloadCounts?: OffloadCounts,
   ): void => {
+    // This is the path a new user hits first: a chat sent with no model loaded
+    // auto-loads the default, so an auto-fit split has to be reported here too or
+    // the case the warning exists for is the one case that stays silent.
+    const partialOffload =
+      !cpuFallbackReason && isPartialOffload(offloadCounts ?? {});
     const options = {
       description: cpuFallbackReason
         ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-        : undefined,
+        : partialOffload
+          ? partialOffloadDescription(offloadCounts ?? {})
+          : undefined,
       duration: 5000,
       icon: undefined,
     };
-    const showToast = cpuFallbackReason ? toast.warning : toast.success;
-    const title = cpuFallbackReason ? `${message} on CPU` : message;
+    const showToast =
+      cpuFallbackReason || partialOffload ? toast.warning : toast.success;
+    const title = cpuFallbackReason
+      ? `${message} on CPU`
+      : partialOffload
+        ? `${message}, partly on CPU`
+        : message;
     if (autoLoadToastDismissed) {
       showToast(title, options);
       return;
@@ -2990,7 +3008,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ggufVariant: candidate.ggufVariant,
         });
       }
-      showAutoLoadSuccess(candidate.successLabel, loadResp.cpu_fallback_reason);
+      showAutoLoadSuccess(candidate.successLabel, loadResp.cpu_fallback_reason, {
+        offloaded: loadResp.offloaded_layers,
+        total: loadResp.offload_total_layers,
+        gpuMemoryMode: loadResp.gpu_memory_mode,
+      });
     });
     return true;
   }
@@ -3300,6 +3322,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
+          {
+            offloaded: loadResp.offloaded_layers,
+            total: loadResp.offload_total_layers,
+            gpuMemoryMode: loadResp.gpu_memory_mode,
+          },
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };
