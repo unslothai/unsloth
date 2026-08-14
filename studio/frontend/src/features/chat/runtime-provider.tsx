@@ -1714,6 +1714,14 @@ function ThreadScopedSettingsSync({
 
   useEffect(() => {
     const { applyThreadScopedSettings } = useChatRuntimeStore.getState();
+    // An unsaved chat carries a runtime-made id that no row can exist for, so its read
+    // can only 404. Opening a pairing window for it holds every edit behind a round
+    // trip that is certain to say "no snapshot", which is how an edit made on a fresh
+    // /chat stopped reaching the installation defaults straight away.
+    if (isAssistantLocalThreadId(activeThreadId)) {
+      applyThreadScopedSettings(null, null);
+      return;
+    }
     if (!enabled) {
       // Compare panes share one composer between two threads, so there is no single
       // chat whose snapshot could apply: compare runs on the installation defaults and

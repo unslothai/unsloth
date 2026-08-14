@@ -405,3 +405,17 @@ test("a fork stops when the chat's settings could not be saved", () => {
   assert.match(merge, /throw error;/);
   assert.match(composer, /Could not fork this chat/);
 });
+
+test("an unsaved chat's edit reaches the installation defaults without a round trip", () => {
+  // assistant-ui gives an unsaved thread a `__LOCALID_` id (RemoteThreadListThreadList
+  // RuntimeCore), which no row can exist for, so its read can only 404. Holding edits
+  // behind that certain-to-fail read is what stopped a pill clicked on a fresh /chat
+  // from reaching localStorage straight away, which playwright_chat_ui asserts.
+  const effect = slice(
+    provider,
+    "const { applyThreadScopedSettings } = useChatRuntimeStore.getState();",
+    "if (!enabled) {",
+  );
+  assert.match(effect, /isAssistantLocalThreadId\(activeThreadId\)/);
+  assert.match(effect, /applyThreadScopedSettings\(null, null\)/);
+});
