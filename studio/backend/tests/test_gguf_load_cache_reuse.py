@@ -834,6 +834,7 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
             "chat_template_override_reason",
+            "runtime_revision",
         }
         unresolved = sorted(
             name
@@ -845,6 +846,8 @@ class TestLoadHubDownloadExclusion:
         fields = route._llama_runtime_fields(backend)
         assert fields["is_mlx"] is False
         assert fields["mlx_kv_bits_requested"] is None
+        assert "llama_extra_args" not in fields
+        assert fields["runtime_revision"] is None
 
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)
@@ -1184,24 +1187,26 @@ class TestLoadHubDownloadExclusion:
                             ),
                         ),
                         current_subject = "test-user",
+                        args_origin = route.LlamaArgsOrigin.UI_REQUEST,
                     )
                 )
 
-        assert exc_info.value.status_code == 409
+        assert exc_info.value.status_code == (400 if request_extra_args else 409)
+        if not captured:
+            return "quarantined"
         assert captured["repo"] == REPO
         return captured["require_mmproj"]
 
     def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
-        # Inheritance must resolve before the hub-download guard: an inherited
-        # --no-mmproj decides require_mmproj, so resolving later rejects a load
-        # over a download the effective arguments disable (#7251).
-        assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
+        # Filesystem/media controls are now quarantined atomically before the
+        # hub guard rather than being partially applied.
+        assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) == "quarantined"
         # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
         assert self._capture_hub_guard_require_mmproj([]) is True
         # An explicit request list wins over the stored one, both ways.
-        assert (
-            self._capture_hub_guard_require_mmproj([], request_extra_args = ["--no-mmproj"]) is False
-        )
+        assert self._capture_hub_guard_require_mmproj(
+            [], request_extra_args = ["--no-mmproj"]
+        ) == "quarantined"
         assert (
             self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
         )

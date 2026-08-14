@@ -5,8 +5,9 @@
 // browser localStorage, so an API auto-switch load (no browser in the loop) came up with none of
 // the user's settings. routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
-import { authFetch } from "@/features/auth";
+import { authFetch } from "@/features/auth/api";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { llamaExtraArgsPayload } from "../model-config/llama-extra-args";
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
@@ -76,6 +77,28 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
   return body.overrides ?? {};
 }
 
+export function findModelOverride(
+  overrides: ApiModelOverrides,
+  modelId: string,
+  ggufVariant?: string | null,
+): ApiModelOverride | null {
+  const candidates = ggufVariant
+    ? [modelOverrideKey(modelId, ggufVariant), modelOverrideKey(modelId)]
+    : [modelOverrideKey(modelId)];
+  const entries = Object.entries(overrides);
+  for (const candidate of candidates) {
+    if (Object.hasOwn(overrides, candidate)) {
+      return overrides[candidate] ?? null;
+    }
+    const folded = candidate.toLowerCase();
+    const matches = entries.filter(
+      ([key]) => key.toLowerCase() === folded,
+    );
+    if (matches.length === 1) return matches[0][1] ?? null;
+  }
+  return null;
+}
+
 /**
  * Translate the UI's per-model config into the backend's schema. Only fields the user set are
  * sent: an absent field reads as "app default", so nulls would pin defaults and stop the model
@@ -87,6 +110,7 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     return {};
   }
   const payload: ApiModelOverride = {};
+  Object.assign(payload, llamaExtraArgsPayload(config.llamaExtraArgs));
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;
   }
@@ -217,12 +241,6 @@ async function sendModelOverride(
       // Say which operation this is: an all-default save carries no fields, shape-identical
       // to a forget, and guessing wrong wipes flags the UI cannot show or restore.
       remove: config === null && !options?.keepLaunchFlags,
-      // Flags have no UI control, so the backend preserves them when omitted; a forget
-      // means all of it, so that path sends an explicit [].
-      ...(config === null && !options?.keepLaunchFlags
-        ? // biome-ignore lint/style/useNamingConvention: API schema
-          { llama_extra_args: [] }
-        : {}),
       ...toApiOverride(config),
     }),
   });

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
-import { prepareHfTokenForUse } from "@/features/hf-auth";
+import { authFetch } from "@/features/auth/api";
+import { prepareHfTokenForUse } from "@/features/hf-auth/confirm-token";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
 import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
@@ -12,6 +12,7 @@ import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
+import { serializeLlamaExtraArgsRequestBody } from "@/features/model-picker/model-config/llama-extra-args";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import type {
@@ -235,12 +236,13 @@ export async function loadModel(
     const response = await authFetch("/api/inference/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: serializeLlamaExtraArgsRequestBody({
         ...payload,
+        llama_extra_args: undefined,
         hf_token: preparedToken.token,
         native_path_lease: payload.nativePathLease ?? null,
         nativePathLease: undefined,
-      }),
+      }, payload.llama_extra_args),
       signal: options?.signal,
     });
     return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
@@ -279,7 +281,7 @@ export async function validateModel(
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: serializeLlamaExtraArgsRequestBody({
       model_path: payload.model_path,
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: preparedToken.token,
@@ -305,7 +307,7 @@ export async function validateModel(
       // with /load in both directions.
       speculative_type: payload.speculative_type ?? null,
       spec_draft_n_max: payload.spec_draft_n_max ?? null,
-    }),
+    }, payload.llama_extra_args),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }

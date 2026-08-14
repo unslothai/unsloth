@@ -2776,7 +2776,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertEqual(seen["cache_type"], "f32")
             with patch.dict(self.route.os.environ, {"LLAMA_ARG_CACHE_TYPE_K": "f32"}):
                 r._estimate_gguf_kv_gb("m", 4096)
-            self.assertEqual(seen["cache_type"], "f32")
+            # Ambient llama.cpp defaults are scrubbed at the child boundary and
+            # therefore cannot influence preflight sizing either.
+            self.assertEqual(seen["cache_type"], "f16")
             with patch.dict(
                 self.route.os.environ,
                 {
@@ -2785,7 +2787,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 },
             ):
                 r._estimate_gguf_kv_gb("m", 4096)
-            self.assertEqual(seen["cache_type"], "q4_0")
+            self.assertEqual(seen["cache_type"], "f16")
             r._estimate_gguf_kv_gb(
                 "m",
                 4096,

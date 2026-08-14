@@ -377,7 +377,7 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     entry: dict[str, Any] = {}
 
     extra_args = payload.get("llama_extra_args")
-    if isinstance(extra_args, (list, tuple)) and extra_args:
+    if "llama_extra_args" in payload and isinstance(extra_args, (list, tuple)):
         entry["llama_extra_args"] = [str(arg) for arg in extra_args]
 
     # 0 / negative means "unset"; the loader reads absence as the app default.
@@ -528,33 +528,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
 
-    if kwargs.get("llama_extra_args"):
-        # One entry can hold a pass-through flag *and* the first-class field it shadows: the
-        # settings page has no control for flags, so a save carries the stored ones over
-        # (routes/settings.py) while writing the field just edited, and a legacy or
-        # API-authored entry can start out that way. Sending both explicitly puts the flag
-        # after Unsloth's own on the command line, where llama.cpp's last-wins parse hands it
-        # the load, so a stale "--ctx-size 8192" would quietly outrank a freshly saved 32768.
-        # The /load route strips exactly these groups off inherited extras
-        # (_resolve_inherited_extra_args); the stripper is imported rather than mirrored so
-        # the two paths cannot drift over which flag belongs to which group -- the allow-list
-        # this module stays out of is validate_extra_args, which remains the caller's job.
-        from core.inference.llama_server_args import strip_shadowing_flags
-        kwargs["llama_extra_args"] = strip_shadowing_flags(
-            kwargs["llama_extra_args"],
-            # Only the groups this override actually supplies, as the route gates on its
-            # request's set fields: a flag with no first-class field behind it is the user's
-            # only way to set that knob and still passes through.
-            strip_context = "max_seq_length" in kwargs,
-            strip_cache = "cache_type_kv" in kwargs,
-            strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
-            strip_template = "chat_template_override" in kwargs,
-            # Sent only when on, so it is always the Tensor Parallelism toggle overriding the
-            # flag; an override that leaves the toggle off keeps a row/none/layer split mode.
-            strip_split_mode = bool(kwargs.get("tensor_parallel")),
-            strip_batch = "n_batch" in kwargs,
-            strip_ubatch = "n_ubatch" in kwargs,
-        )
+    # Keep allowed custom arguments intact even when the same saved entry also
+    # contains first-class Studio fields. The backend appends custom arguments
+    # last, so they are the explicit source of truth for overlapping knobs.
     return kwargs
 
 
@@ -663,6 +639,47 @@ def get_model_override(model_id: str) -> dict:
         return {}
     override = get_model_overrides().get(key)
     return override if isinstance(override, dict) else {}
+
+
+def resolve_model_override_candidates(
+    target_id: str,
+    variant: Optional[str] = None,
+    *,
+    override_id: Optional[str] = None,
+    file_variant: Optional[str] = None,
+) -> tuple[Optional[str], dict]:
+    """Resolve the first stored override in the loader's compatibility order.
+
+    Each candidate is resolved exact-first and then by one unambiguous folded
+    match.  Ambiguity is a miss for that candidate, not permission to guess.
+    An entry containing only ``llama_extra_args=[]`` is still a match and stops
+    the fallback chain.
+    """
+
+    advertised_id = override_id or target_id
+    candidates = (
+        f"{target_id}:{variant}" if variant else None,
+        f"{advertised_id}:{variant}" if variant else None,
+        target_id,
+        f"{target_id}:{file_variant}" if file_variant else None,
+        advertised_id,
+    )
+    seen_candidates: set[str] = set()
+    seen_keys: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen_candidates:
+            continue
+        seen_candidates.add(candidate)
+        entry = get_model_override(candidate)
+        if not entry:
+            continue
+        key = resolve_model_override_key(candidate) or candidate
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        if isinstance(entry, dict):
+            return key, entry
+    return None, {}
 
 
 def _folded_override_matches(model_id: str, overrides: dict) -> list[str]:
@@ -825,3 +842,23 @@ def set_model_override(
     )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry
+
+
+def delete_model_override(model_id: str) -> None:
+    """Delete one stored override entry.
+
+    Deletion is intentionally separate from ``llama_extra_args=[]`` because an
+    empty list is a persisted, authoritative clear that must stop fallback to a
+    lower-priority bare-model override.
+    """
+    if not model_id or not model_id.strip():
+        raise ValueError("model_id is required.")
+
+    from storage.studio_db import upsert_app_setting_map_entry
+
+    upsert_app_setting_map_entry(
+        MODEL_OVERRIDES_SETTING_KEY,
+        model_id.strip(),
+        None,
+    )
+    _invalidate(MODEL_OVERRIDES_SETTING_KEY)

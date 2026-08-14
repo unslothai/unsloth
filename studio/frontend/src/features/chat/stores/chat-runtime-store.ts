@@ -125,7 +125,8 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
   try {
     const parsed = JSON.parse(
-      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) || "{}",
+      window.localStorage.getItem(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY) ||
+        "{}",
     ) as Partial<ResearchWebsitePolicy>;
     return {
       allowedDomains: Array.isArray(parsed.allowedDomains)
@@ -565,7 +566,9 @@ export function saveSpeculativeType(value: string | null): void {
 // GPU Memory strategy is a standing preference (like speculative type), not a
 // per-model setting: a "manual" choice persists across model switches and reloads.
 export function readPersistedGpuMemoryMode(): "auto" | "manual" {
-  return loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto") === "manual" ? "manual" : "auto";
+  return loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto") === "manual"
+    ? "manual"
+    : "auto";
 }
 
 export function saveGpuMemoryMode(value: "auto" | "manual"): void {
@@ -593,7 +596,8 @@ function largestRemainder(shares: number[], total: number): number[] {
   const byFrac = shares
     .map((x, i) => ({ i, frac: x - Math.floor(x) }))
     .sort((a, b) => b.frac - a.frac);
-  for (let k = 0; rem > 0 && k < byFrac.length; k++, rem--) out[byFrac[k].i] += 1;
+  for (let k = 0; rem > 0 && k < byFrac.length; k++, rem--)
+    out[byFrac[k].i] += 1;
   return out;
 }
 
@@ -653,11 +657,7 @@ export function reconcilePersistedGpuIds(
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
 ): number[] | null {
-  return reconcilePersistedGpuSelection(
-    ids,
-    savedIndexKind,
-    forDiffusion,
-  ).ids;
+  return reconcilePersistedGpuSelection(ids, savedIndexKind, forDiffusion).ids;
 }
 
 export function reconcilePersistedGpuSelection(
@@ -886,23 +886,23 @@ type ChatRuntimeStore = {
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
   /**
-     * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
-     * model neither interrupts an external-provider chat nor needs its consent, which is why
-     * the backend keeps those out of `active_generations` too.
-     */
+   * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
+   * model neither interrupts an external-provider chat nor needs its consent, which is why
+   * the backend keeps those out of `active_generations` too.
+   */
   localRunByThreadId: Record<string, boolean>;
   /**
-     * Which runs set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. A list, not one
-     * entry: runs without a resolved thread id share the "__default" key, so one entry would let
-     * a newer run's clear delete an older run's flag while it still generates.
-     */
+   * Which runs set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. A list, not one
+   * entry: runs without a resolved thread id share the "__default" key, so one entry would let
+   * a newer run's clear delete an older run's flag while it still generates.
+   */
   runOwnerByThreadId: Record<string, ThreadRunOwner[]>;
   cancelByThreadId: Record<string, () => void>;
   /**
-     * Backend cancels for the threads generating in the background. `cancelByThreadId` only holds
-     * the visible thread's `cancelRun()`, so the adapter parks a closure here that POSTs that
-     * run's own cancel_id. A list for the same reason as `runOwnerByThreadId`: "__default" is shared.
-     */
+   * Backend cancels for the threads generating in the background. `cancelByThreadId` only holds
+   * the visible thread's `cancelRun()`, so the adapter parks a closure here that POSTs that
+   * run's own cancel_id. A list for the same reason as `runOwnerByThreadId`: "__default" is shared.
+   */
   serverCancelByThreadId: Record<string, (() => void)[]>;
   autoTitle: boolean;
   hfToken: string;
@@ -919,6 +919,8 @@ type ChatRuntimeStore = {
    * invisible here: the selection survives it.
    */
   residentCheckpoint: string | null | undefined;
+  /** Revision of the resident managed runtime; null until shared status/load supplies one. */
+  runtimeRevision: string | null;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
   ggufContextLength: number | null;
@@ -1035,14 +1037,14 @@ type ChatRuntimeStore = {
    */
   webFetchToolsEnabled: boolean;
   /**
-     * Live tool status per conversation ("Running Python: ...") with its start time. Keyed by
-     * thread, or one chat's tool call shows above every other composer; the timestamp keeps the
-     * counter running across a thread switch.
-     */
+   * Live tool status per conversation ("Running Python: ...") with its start time. Keyed by
+   * thread, or one chat's tool call shows above every other composer; the timestamp keeps the
+   * counter running across a thread switch.
+   */
   /**
-     * Per-run entries, newest last. Unresolved threads share "__default", so one scalar per key
-     * meant a finishing run's clear removed a sibling's status while its tool was still running.
-     */
+   * Per-run entries, newest last. Unresolved threads share "__default", so one scalar per key
+   * meant a finishing run's clear removed a sibling's status while its tool was still running.
+   */
   toolStatusByThreadId: Record<string, ToolStatusEntry[]>;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
    *  appended by tool_output, cleared on tool_end or run end. */
@@ -1144,10 +1146,10 @@ type ChatRuntimeStore = {
    *  denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
   /**
-     * Live denoising frame per conversation ("__default" until the id exists). Transient: set per
-     * step, cleared when the run ends, never persisted. Keyed, not global: two denoising chats
-     * overwrote each other's frame, so the visible preview flickered or vanished.
-     */
+   * Live denoising frame per conversation ("__default" until the id exists). Transient: set per
+   * step, cleared when the run ends, never persisted. Keyed, not global: two denoising chats
+   * overwrote each other's frame, so the visible preview flickered or vanished.
+   */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking
@@ -1156,6 +1158,12 @@ type ChatRuntimeStore = {
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
+  /** undefined = legacy/unhydrated no opinion; [] = explicit clear. */
+  llamaExtraArgs: string[] | undefined;
+  /** Active args hydrated from the Studio-only endpoint; null until unavailable/non-GGUF. */
+  loadedLlamaExtraArgs: string[] | null;
+  /** Exact custom-argument argv of the last successful managed load. */
+  launchedLlamaExtraArgs: string[] | undefined;
   activeThreadId: string | null;
   activeThreadEpoch: number;
   queuedSettingsEpoch: number;
@@ -1175,10 +1183,10 @@ type ChatRuntimeStore = {
   pendingImageEditReference: PendingImageEditReference | null;
   contextUsage: ContextUsageSnapshot | null;
   /**
-     * Per-thread copy of the above, so the bar survives a switch away and back. `contextUsage` is
-     * the VISIBLE conversation's usage and a background run may not write it, so without this a
-     * run finishing off-screen leaves nothing to restore.
-     */
+   * Per-thread copy of the above, so the bar survives a switch away and back. `contextUsage` is
+   * the VISIBLE conversation's usage and a background run may not write it, so without this a
+   * run finishing off-screen leaves nothing to restore.
+   */
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
@@ -1206,29 +1214,29 @@ type ChatRuntimeStore = {
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /**
-     * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
-     * `owner` narrows the clear to the run that set the flag: unresolved thread ids share the
-     * "__default" key, so a blind delete would drop a sibling's live entry. Owners accumulate,
-     * so the flag survives until the last one clears.
-     */
+   * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
+   * `owner` narrows the clear to the run that set the flag: unresolved thread ids share the
+   * "__default" key, so a blind delete would drop a sibling's live entry. Owners accumulate,
+   * so the flag survives until the last one clears.
+   */
   setThreadRunning: (
     threadId: string,
     running: boolean,
     options?: { local?: boolean; owner?: () => void },
   ) => void;
   /**
-     * Re-key a first turn's run handles once its thread is persisted.
-     *
-     * A run that starts before its id exists files everything under "__default". Nothing moved it
-     * afterwards, so once the user navigated away the sidebar found no run and showed no spinner;
-     * stopChatThread had no handle either and the generation carried on holding a slot.
-     */
+   * Re-key a first turn's run handles once its thread is persisted.
+   *
+   * A run that starts before its id exists files everything under "__default". Nothing moved it
+   * afterwards, so once the user navigated away the sidebar found no run and showed no spinner;
+   * stopChatThread had no handle either and the generation carried on holding a slot.
+   */
   adoptDefaultThreadRun: (threadId: string) => void;
   /**
-     * Which key this run's handles live under now. `adoptDefaultThreadRun` re-keys them mid-run,
-     * so a run that started under "__default" must look its owner up instead of reusing the key
-     * it captured, or its writes and its final clear miss the entries.
-     */
+   * Which key this run's handles live under now. `adoptDefaultThreadRun` re-keys them mid-run,
+   * so a run that started under "__default" must look its owner up instead of reusing the key
+   * it captured, or its writes and its final clear miss the entries.
+   */
   runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string, cancel?: () => void) => void;
@@ -1292,9 +1300,9 @@ type ChatRuntimeStore = {
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
   /**
-     * `owner` is the run's identity token, as for `setThreadRunning`: unresolved threads share
-     * "__default", so without it one run's cleanup clears a concurrent run's status.
-     */
+   * `owner` is the run's identity token, as for `setThreadRunning`: unresolved threads share
+   * "__default", so without it one run's cleanup clears a concurrent run's status.
+   */
   setToolStatus: (
     threadId: string,
     status: string | null,
@@ -1313,7 +1321,7 @@ type ChatRuntimeStore = {
     canvas: DiffusionCanvasFrame,
   ) => void;
   /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe the
-     * frame another chat is still painting. */
+   * frame another chat is still painting. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
@@ -1567,6 +1575,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   lastModelLoadError: null,
   activeGgufVariant: null,
   residentCheckpoint: undefined,
+  runtimeRevision: null,
   activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
@@ -1682,6 +1691,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
+  llamaExtraArgs: undefined,
+  loadedLlamaExtraArgs: null,
+  launchedLlamaExtraArgs: undefined,
   activeThreadId: null,
   activeThreadEpoch: 0,
   queuedSettingsEpoch: 0,
@@ -1874,7 +1886,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the transient run maps move. Anything already filed under the real id wins,
       // since that is a later, better-identified run.
       const moved: Partial<ChatRuntimeStore> = {};
-      const move = <T,>(
+      const move = <T>(
         map: Record<string, T>,
         name: keyof ChatRuntimeStore,
       ) => {
@@ -1920,7 +1932,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   registerThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const next = { ...state.serverCancelByThreadId };
-      next[threadId] = [...(state.serverCancelByThreadId[threadId] ?? []), cancel];
+      next[threadId] = [
+        ...(state.serverCancelByThreadId[threadId] ?? []),
+        cancel,
+      ];
       return { serverCancelByThreadId: next };
     }),
   // `cancel` narrows removal to the run that registered it: unresolved thread ids share the
@@ -2041,11 +2056,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-    set(
-      incognito
-        ? { incognito, deepResearchEnabled: false }
-        : { incognito },
-    );
+    set(incognito ? { incognito, deepResearchEnabled: false } : { incognito });
   },
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
@@ -2065,6 +2076,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Nothing is picked, so there is nothing for residency to describe. Back
       // to unknown rather than null: null would be read as "was evicted".
       residentCheckpoint: undefined,
+      runtimeRevision: null,
       activeModelIsLocal: false,
       activeLoadId: null,
       activeNativePathToken: null,
@@ -2144,6 +2156,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       defaultChatTemplate: null,
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
+      llamaExtraArgs: undefined,
+      loadedLlamaExtraArgs: null,
+      launchedLlamaExtraArgs: undefined,
       pendingImageEditReference: null,
     }));
   },
@@ -2557,7 +2572,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   clearActiveDiffusionCanvasForThread: (threadId) =>
     set((state) => {
       const key = threadId || "__default";
-      if (state.activeDiffusionCanvasByThreadId[key] === undefined) return state;
+      if (state.activeDiffusionCanvasByThreadId[key] === undefined)
+        return state;
       const next = { ...state.activeDiffusionCanvasByThreadId };
       delete next[key];
       return { activeDiffusionCanvasByThreadId: next };

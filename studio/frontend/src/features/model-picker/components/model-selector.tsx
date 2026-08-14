@@ -38,6 +38,7 @@ import {
   isOllamaLinkPath,
   modelDisplayName,
 } from "../model-config/model-identity";
+import { modelConfigInstanceKey } from "../model-config/config-signature";
 import {
   type PerModelConfig,
   resolveInitialConfig,
@@ -502,6 +503,13 @@ function ModelSelectorContent({
   }
 
   const visibleConfigTarget = open ? configTarget : null;
+  const visibleLoadedConfig =
+    visibleConfigTarget &&
+    value === visibleConfigTarget.id &&
+    (activeGgufVariant ?? null) ===
+      (visibleConfigTarget.ggufVariant ?? null)
+      ? (activeModelConfig ?? null)
+      : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
     const isGguf = meta.isGguf ?? Boolean(meta.ggufVariant);
@@ -559,7 +567,11 @@ function ModelSelectorContent({
       >
         {visibleConfigTarget ? (
           <ModelConfigPage
-            key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
+            key={modelConfigInstanceKey(
+              visibleConfigTarget.id,
+              visibleConfigTarget.ggufVariant,
+              visibleLoadedConfig,
+            )}
             target={visibleConfigTarget}
             onBack={() => setConfigTarget(null)}
             onRun={(config, isDiffusion) =>
@@ -570,13 +582,7 @@ function ModelSelectorContent({
                 forceReload: true,
               })
             }
-            loadedConfig={
-              value === visibleConfigTarget.id &&
-              (activeGgufVariant ?? null) ===
-                (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeModelConfig ?? null)
-                : null
-            }
+            loadedConfig={visibleLoadedConfig}
             loadedContextLength={
               value === visibleConfigTarget.id &&
               (activeGgufVariant ?? null) ===

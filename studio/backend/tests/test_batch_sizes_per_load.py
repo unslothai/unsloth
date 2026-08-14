@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import sys
 import types as _types
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -144,8 +143,9 @@ def test_override_store_round_trip():
     assert "n_batch" not in model_override_load_kwargs(entry, is_gguf = False)
 
 
-def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
-    # the already-loaded dedupe must see the same override the slow path launches
+def test_fast_path_intent_keeps_inherited_custom_batch_flag_authoritative():
+    # An explicit custom batch flag owns the effective llama.cpp setting even when the
+    # request also carries the Studio field. Dedupe must therefore keep the same args.
     from routes.inference import _active_gguf_intent
 
     backend = _loaded_backend()
@@ -161,20 +161,17 @@ def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
     overriding = _active_gguf_intent(
         LoadRequest(model_path = "owner/repo", n_batch = 4096), backend, **kwargs
     )
-    assert overriding.extra_args == ("--top-k", "20")
-    assert overriding.extra_args_inherited is False
+    assert overriding.extra_args == ("-b", "512", "--top-k", "20")
+    assert overriding.extra_args_inherited is True
 
     inheriting = _active_gguf_intent(LoadRequest(model_path = "owner/repo"), backend, **kwargs)
     assert inheriting.extra_args == ("-b", "512", "--top-k", "20")
     assert inheriting.extra_args_inherited is True
 
 
-def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatch):
+def test_slow_path_intent_keeps_inherited_custom_batch_flag_authoritative(monkeypatch):
     # Sibling of the fast-path case above. A bare repo id with no gguf_variant skips
-    # _active_gguf_intent entirely, so without the same bookkeeping here the dedupe
-    # compares the LAUNCHED extras (still carrying -b 512) against themselves and reports
-    # already_loaded -- leaving the server at effective batch 512 for an Apply that asked
-    # for 4096.
+    # _active_gguf_intent, but the slow path must preserve the exact same custom args.
     from types import SimpleNamespace
 
     from routes import inference as route
@@ -198,7 +195,7 @@ def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatc
     # n_ctx must match the resident one, or the dedupe short-circuits before the extras.
     request = LoadRequest(model_path = "owner/repo", n_batch = 4096, max_seq_length = 8192)
     resolved = route._resolve_inherited_extra_args(request, config, config.identifier, None)
-    assert resolved == ["--top-k", "20"]
+    assert resolved == ["-b", "512", "--top-k", "20"]
 
     intent = route._resolve_gguf_load_intent(
         config,
@@ -211,19 +208,11 @@ def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatc
         ),
         n_parallel = 1,
     )
-    assert intent.extra_args_inherited is False
-    # Match the resident batch too, so the stripped inherited -b is the ONLY reason left to
-    # reload. Without this the batch-field comparison alone satisfies the assert and the
-    # extras are never reached.
+    assert intent.extra_args_inherited is True
+    # The Studio field remains part of the requested intent, while the custom -b controls
+    # the effective llama.cpp value. An identical resident launch therefore dedupes.
     backend._requested_n_batch = 4096
-    assert backend._runtime_matches_intent(intent, ["--top-k", "20"]) is False
-    # Control: with the flag no longer inherited, the same intent dedupes.
-    assert (
-        backend._runtime_matches_intent(
-            replace(intent, extra_args_inherited = True), ["--top-k", "20"]
-        )
-        is True
-    )
+    assert backend._runtime_matches_intent(intent, resolved) is True
 
     # An Apply that does not name the field still inherits the flag untouched.
     plain = LoadRequest(model_path = "owner/repo", max_seq_length = 8192)
@@ -536,12 +525,12 @@ def test_guard_device_count_follows_the_split_the_loader_would_pick():
         assert _guard_device_count([1, 2], pool) == 2
 
 
-def test_override_strips_shadowing_batch_flags():
+def test_override_keeps_custom_batch_flag_authoritative():
     kwargs = model_override_load_kwargs(
         {"n_batch": 4096, "llama_extra_args": ["-b", "512", "--top-k", "20"]},
         is_gguf = True,
     )
-    assert kwargs["llama_extra_args"] == ["--top-k", "20"]
+    assert kwargs["llama_extra_args"] == ["-b", "512", "--top-k", "20"]
     # a flag with no first-class field behind it still passes through
     kwargs = model_override_load_kwargs(
         {"llama_extra_args": ["-ub", "256"]},

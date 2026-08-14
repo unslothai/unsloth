@@ -63,6 +63,10 @@ export function applyPerModelConfigToRuntime(
       ? false
       : (config.tensorParallel ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
+    llamaExtraArgs:
+      config.llamaExtraArgs === undefined
+        ? undefined
+        : [...config.llamaExtraArgs],
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is
     // a standing preference so an absent mode falls back to the persisted one.
     // The per-GPU split ratio is never remembered, so it always resets. The GPU
@@ -112,6 +116,9 @@ export function currentRuntimePerModelConfig(
     nUbatch: s.nUbatch ?? null,
     tensorParallel: s.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
+    ...(s.llamaExtraArgs === undefined
+      ? {}
+      : { llamaExtraArgs: [...s.llamaExtraArgs] }),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
     // model's GPU Memory settings back (see applyPerModelConfigToRuntime). The
     // split ratio is intentionally never remembered.
@@ -142,6 +149,7 @@ export function perModelConfigsEqual(
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
+    JSON.stringify(a.llamaExtraArgs) === JSON.stringify(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
 }

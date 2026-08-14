@@ -74,7 +74,11 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    GgufLoadIntent,
+    LlamaCppBackend,
+    _extra_args_main_device,
+)
 
 _GB = 1024**3
 
@@ -143,6 +147,10 @@ _ALLOWED_TP_DROP_GUARDS = {
     # launch under the CPU-only GPU mask (no visible devices) aborts the server
     # instead of the intended CPU-only load (#6414).
     "gpu_memory_mode == 'manual' and gpu_layers == 0",
+    # An explicit custom quantized KV cache owns the cache setting. Studio's TP toggle
+    # yields unless the custom args also explicitly request a split mode, in which case
+    # both custom choices are preserved for llama.cpp to validate.
+    "tensor_parallel and _custom_cache_non_tensor_safe and (split_mode_override is None)",
     # Virtualised Metal: offloaded layers return corrupt tokens, so the load is rewritten
     # to manual/0 and nothing is left to split (no multi-GPU given up, a paravirtual Mac
     # has one emulated device). Guarded on the hardware alone, since the rewrite applies
@@ -640,16 +648,9 @@ def _matches_request(request, backend) -> bool:
     effective_extra = (
         request.llama_extra_args
         if request.llama_extra_args is not None
-        else routes.strip_shadowing_flags(
-            backend_extra,
-            strip_split_mode = routes._should_strip_split_mode(request, backend_extra),
-            strip_tensor_split = routes._should_strip_tensor_split(request),
-            strip_offload = request.gpu_memory_mode == "manual",
-        )
+        else backend_extra
     )
     compare_extra = list(effective_extra or ())
-    if request.llama_extra_args is not None and request.gpu_ids:
-        compare_extra = backend._strip_device_extra_args(compare_extra)
     intent = GgufLoadIntent(
         model_identifier = backend.model_identifier or request.model_path,
         n_ctx = request.max_seq_length,
@@ -661,7 +662,11 @@ def _matches_request(request, backend) -> bool:
         gpu_layers = request.gpu_layers,
         n_cpu_moe = request.n_cpu_moe,
         tensor_split = request.tensor_split,
-        gpu_ids = request.gpu_ids,
+        gpu_ids = (
+            None
+            if request.gpu_ids and _extra_args_main_device(effective_extra) is not None
+            else request.gpu_ids
+        ),
         n_parallel = request.n_parallel or 1,
         extra_args = effective_extra,
         preserve_multi_gpu_on_layer = (
@@ -691,14 +696,14 @@ def test_tensor_off_echo_preserves_multi_gpu_fallback():
     )
 
 
-def test_route_dedupe_reloads_when_swa_full_env_changes(monkeypatch):
+def test_route_dedupe_ignores_scrubbed_ambient_swa_full(monkeypatch):
     from models.inference import LoadRequest
 
     backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
     monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
 
     request = LoadRequest(model_path = "owner/repo")
-    assert _matches_request(request, backend) is False
+    assert _matches_request(request, backend) is True
 
 
 def test_route_dedupe_ignores_swa_full_for_diffusion(monkeypatch):
@@ -852,7 +857,7 @@ def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
     assert _backend(False).adopt_load_intent_if_matched(GgufLoadIntent(**kwargs)) is True
 
 
-# ── route dedup: gpu_ids device strip (#7164/#7188) ───────────────────────────
+# ── route dedup: custom device precedence ─────────────────────────────────────
 
 
 def _dedup_loaded_backend(*, extra_args):
@@ -871,11 +876,9 @@ def _dedup_loaded_backend(*, extra_args):
     return b
 
 
-def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
-    """A GGUF loaded with explicit gpu_ids had a user --device stripped from its stored
-    extras. A repeat identical request re-sending --device must still dedupe: the request-
-    side strip (gated on gpu_ids) compares equal to the stripped backend extras, so the
-    load hits the fast path instead of a needless reload / training 409 (#7188)."""
+def test_custom_device_dedupes_when_request_echoes_gpu_ids():
+    """The custom device owns placement. A repeat request may still echo the Studio GPU
+    picker, but normalization drops that picker intent and keeps the custom argv."""
     from models.inference import LoadRequest
 
     req = LoadRequest(
@@ -883,7 +886,5 @@ def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
         gpu_ids = [0],
         llama_extra_args = ["--device", "Vulkan3", "--top-k", "5"],
     )
-    backend = _dedup_loaded_backend(extra_args = ["--top-k", "5"])
-    backend._gpu_ids = [0]
-    backend._requested_gpu_ids = [0]
+    backend = _dedup_loaded_backend(extra_args = ["--device", "Vulkan3", "--top-k", "5"])
     assert _matches_request(req, backend) is True

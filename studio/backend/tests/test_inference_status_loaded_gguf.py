@@ -14,7 +14,7 @@ import os
 import pytest
 
 import routes.inference as inference_route
-from models.inference import _InferenceRuntimeFields
+from models.inference import _InferenceRuntimeFields, InferenceStatusResponse, LoadResponse
 
 
 class _StatusBackend:
@@ -60,6 +60,7 @@ class _StatusBackend:
         self.gpu_layers = 0
         self.n_cpu_moe = 0
         self.n_moe_layers = 0
+        self.extra_args = []
 
     def __getattr__(self, name):
         # Not a MagicMock on purpose: a bool or int field must fail validation, not pass.
@@ -90,6 +91,159 @@ def test_a_loaded_repo_gguf_reports_its_public_id(status_route):
     assert status.model_identifier == "org/A-GGUF"
     # Not a path, so provenance falls through to the filesystem check and stays False.
     assert status.is_local_model is False
+    assert "llama_extra_args" not in status.model_dump()
+    assert status.runtime_revision
+
+
+def test_a_loaded_gguf_does_not_echo_effective_custom_arguments(status_route):
+    backend = _StatusBackend("org/A-GGUF", native_grant_backed = False)
+    backend.extra_args = ["--fit-target", "1024"]
+    status = status_route(backend)
+    assert "llama_extra_args" not in status.model_dump()
+
+
+def test_studio_hydration_is_revision_bound_and_ui_only(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _StatusBackend("org/A-GGUF", native_grant_backed = False)
+    backend.hf_variant = "Q4_K_M"
+    backend.extra_args = ["--top-k", "20"]
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    response = asyncio.run(
+        inference_route.get_active_llama_server_arguments("tester", via_api_key = False)
+    )
+    assert response.model_identifier == "org/A-GGUF"
+    assert response.gguf_variant == "Q4_K_M"
+    assert response.runtime_revision == inference_route._llama_runtime_revision(backend)
+    assert response.llama_extra_args == ["--top-k", "20"]
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route.get_active_llama_server_arguments("tester", via_api_key = True)
+        )
+    assert excinfo.value.status_code == 403
+
+
+def test_studio_hydration_reads_identity_revision_and_args_under_one_lock(monkeypatch):
+    class _Guard:
+        held = False
+
+        def __enter__(self):
+            assert self.held is False
+            self.held = True
+            return self
+
+        def __exit__(self, *_exc):
+            self.held = False
+
+    class _AtomicBackend:
+        def __init__(self):
+            self._lock = _Guard()
+            self._process = object()
+            self._model_identifier = "/cache/snapshots/A/model.gguf"
+            self._variant = "Q4_K_M"
+            self._args = ["--top-k", "20"]
+
+        def _read(self, value):
+            assert self._lock.held is True, "hydration field escaped the atomic snapshot"
+            return value
+
+        @property
+        def is_loaded(self):
+            return self._read(True)
+
+        @property
+        def model_identifier(self):
+            return self._read(self._model_identifier)
+
+        @property
+        def hf_variant(self):
+            return self._read(self._variant)
+
+        @property
+        def extra_args(self):
+            return list(self._read(self._args))
+
+    backend = _AtomicBackend()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    response = asyncio.run(
+        inference_route.get_active_llama_server_arguments("tester", via_api_key = False)
+    )
+
+    assert response.model_identifier == "/cache/snapshots/A/model.gguf"
+    assert response.gguf_variant == "Q4_K_M"
+    assert response.llama_extra_args == ["--top-k", "20"]
+    assert response.runtime_revision
+    assert backend._lock.held is False
+
+
+def test_studio_hydration_returns_exact_private_identity_without_shared_disclosure(
+    monkeypatch,
+):
+    leased = os.path.join(os.sep, "models", "private", "A-Q4_K_M.gguf")
+    backend = _StatusBackend(leased, native_grant_backed = True)
+    backend.hf_variant = None
+    backend.extra_args = ["--top-k", "20"]
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    response = asyncio.run(
+        inference_route.get_active_llama_server_arguments("tester", via_api_key = False)
+    )
+    assert response.model_identifier == leased
+    shared = asyncio.run(inference_route.get_status("tester"))
+    assert shared.model_identifier is None
+    assert "llama_extra_args" not in shared.model_dump()
+
+
+def test_argument_catalog_is_ui_session_only():
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route.get_llama_server_arguments("tester", via_api_key = True)
+        )
+    assert excinfo.value.status_code == 403
+
+
+def test_shared_mount_json_omits_raw_arguments_for_load_and_status():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    def status_payload():
+        return {"is_gguf": True, "llama_extra_args": ["--top-k", "20"]}
+
+    def load_payload():
+        return {
+            "status": "loaded",
+            "model": "org/A-GGUF",
+            "display_name": "A",
+            "is_gguf": True,
+            "inference": {},
+            "llama_extra_args": ["--top-k", "20"],
+        }
+
+    for prefix in ("/api/inference", "/v1"):
+        app.add_api_route(
+            f"{prefix}/status-contract",
+            status_payload,
+            methods = ["GET"],
+            response_model = InferenceStatusResponse,
+        )
+        app.add_api_route(
+            f"{prefix}/load-contract",
+            load_payload,
+            methods = ["GET"],
+            response_model = LoadResponse,
+        )
+
+    client = TestClient(app)
+    for prefix in ("/api/inference", "/v1"):
+        assert "llama_extra_args" not in client.get(f"{prefix}/status-contract").json()
+        assert "llama_extra_args" not in client.get(f"{prefix}/load-contract").json()
 
 
 def test_a_backend_without_the_flag_still_reports(status_route):

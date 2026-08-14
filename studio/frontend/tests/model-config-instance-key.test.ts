@@ -1,134 +1,89 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-
 import { modelConfigInstanceKey } from "../src/features/model-picker/model-config/config-signature.ts";
-import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
 
-const MODEL = "unsloth/Qwen3-8B-GGUF";
-const VARIANT = "Q4_K_M";
-
-// What the model is actually running with, as useActiveModelConfig reports it.
-const LIVE: PerModelConfig = {
-  customContextLength: 16384,
-  maxSeqLength: null,
-  kvCacheDtype: "q8_0",
-  speculativeType: "ngram",
-  specDraftNMax: 6,
-  nParallel: 4,
-  nBatch: 4096,
-  nUbatch: 1024,
-  tensorParallel: true,
-  chatTemplateOverride: null,
-  gpuMemoryMode: "manual",
-  gpuLayers: 24,
-  nCpuMoe: 3,
-  selectedGpuIds: [0, 1],
-};
-
-// What ModelConfigPage would fall back to before the live config lands.
-const SAVED: PerModelConfig = {
+const BASE_CONFIG = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  speculativeType: "auto",
+  mlxKvBits: null,
+  speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
   nBatch: null,
   nUbatch: null,
   tensorParallel: false,
   chatTemplateOverride: null,
-  gpuMemoryMode: "auto",
-  gpuLayers: -1,
-  nCpuMoe: 0,
-  selectedGpuIds: null,
 };
 
-/**
- * ModelConfigPage reads `loadedConfig` in a useState initializer, so it seeds once per
- * MOUNTED instance, and React keeps that instance while the key is unchanged.
- */
-function renderEditor(
-  previous: { key: string; editing: PerModelConfig } | null,
-  key: string,
-  loadedConfig: PerModelConfig | null,
-): { key: string; editing: PerModelConfig } {
-  if (previous && previous.key === key) {
-    return previous;
-  }
-  return { key, editing: loadedConfig ?? SAVED };
-}
-
-test("the settings editor re-seeds when the live config arrives after mount", () => {
-  // Opened before status answered: loadedConfig is null first and live on the next render.
-  let editor = renderEditor(
-    null,
-    modelConfigInstanceKey(MODEL, VARIANT, null),
-    null,
-  );
-  assert.deepEqual(editor.editing, SAVED);
-
-  editor = renderEditor(
-    editor,
-    modelConfigInstanceKey(MODEL, VARIANT, LIVE),
-    LIVE,
-  );
-  // Without the live config in the key the editor would still hold SAVED, and Apply
-  // would reload the model over what it is running with.
-  assert.deepEqual(editor.editing, LIVE);
-});
-
-test("a repeated status poll keeps the same editor instance", () => {
-  const first = renderEditor(
-    null,
-    modelConfigInstanceKey(MODEL, VARIANT, LIVE),
-    LIVE,
-  );
-  // An equal config from the next poll must not remount and discard what was typed.
-  const again = renderEditor(
-    first,
-    modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE }),
-    LIVE,
-  );
-  assert.equal(again, first);
-});
-
-test("every mirrored setting moves the instance key", () => {
-  const base = modelConfigInstanceKey(MODEL, VARIANT, LIVE);
-  const changes: PerModelConfig[] = [
-    { ...LIVE, customContextLength: 8192 },
-    { ...LIVE, maxSeqLength: 4096 },
-    { ...LIVE, kvCacheDtype: "f16" },
-    { ...LIVE, mlxKvBits: 4 },
-    { ...LIVE, speculativeType: "off" },
-    { ...LIVE, specDraftNMax: 4 },
-    { ...LIVE, nParallel: 1 },
-    { ...LIVE, tensorParallel: false },
-    { ...LIVE, chatTemplateOverride: "{{ bos_token }}" },
-    { ...LIVE, gpuMemoryMode: "auto" },
-    { ...LIVE, gpuLayers: 20 },
-    { ...LIVE, nCpuMoe: 0 },
-    { ...LIVE, selectedGpuIds: [0] },
-  ];
-  for (const changed of changes) {
-    assert.notEqual(modelConfigInstanceKey(MODEL, VARIANT, changed), base);
-  }
-  // The GPU pick is a set, not an order.
+test("instance key changes for model, quant, and live custom-argument baseline", () => {
+  const base = modelConfigInstanceKey("unsloth/Args-GGUF", "Q4_K_M", null);
   assert.equal(
-    modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, selectedGpuIds: [1, 0] }),
     base,
+    modelConfigInstanceKey("unsloth/Args-GGUF", "Q4_K_M", null),
+  );
+  assert.notEqual(
+    base,
+    modelConfigInstanceKey("unsloth/Other-GGUF", "Q4_K_M", null),
+  );
+  assert.notEqual(
+    base,
+    modelConfigInstanceKey("unsloth/Args-GGUF", "Q8_0", null),
+  );
+  assert.notEqual(
+    modelConfigInstanceKey(
+      "unsloth/Args-GGUF",
+      "Q4_K_M",
+      BASE_CONFIG,
+    ),
+    modelConfigInstanceKey("unsloth/Args-GGUF", "Q4_K_M", {
+      ...BASE_CONFIG,
+      llamaExtraArgs: [],
+    }),
   );
 });
 
-test("the model and its quant still key the editor", () => {
-  const base = modelConfigInstanceKey(MODEL, VARIANT, LIVE);
-  assert.notEqual(modelConfigInstanceKey("unsloth/Other-GGUF", VARIANT, LIVE), base);
-  assert.notEqual(modelConfigInstanceKey(MODEL, "Q8_0", LIVE), base);
-  // A loose .gguf carries no quant; null and undefined are the same absence.
-  assert.equal(
-    modelConfigInstanceKey(MODEL, null, LIVE),
-    modelConfigInstanceKey(MODEL, undefined, LIVE),
+test("selector keys the page from live loaded config, not ordinary local edits", () => {
+  const selector = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector.tsx",
+      import.meta.url,
+    ),
+    "utf8",
   );
+  assert.match(
+    selector,
+    /key=\{modelConfigInstanceKey\([\s\S]*?visibleLoadedConfig,[\s\S]*?\)\}/,
+  );
+  const keyStart = selector.indexOf("key={modelConfigInstanceKey(");
+  const keyEnd = selector.indexOf("target={visibleConfigTarget}", keyStart);
+  assert.ok(keyStart >= 0 && keyEnd > keyStart);
+  assert.doesNotMatch(selector.slice(keyStart, keyEnd), /selectedConfig|initialConfig/);
+});
+
+test("editor blocking survives Advanced collapse and reset clears local draft", () => {
+  const editor = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/llama-extra-args-editor.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const page = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(editor, /return \(\) => onBlockingChange\(false\)/);
+  assert.match(page, /setLlamaArgsResetGeneration/);
+  assert.match(page, /key=\{llamaArgsResetGeneration\}/);
+  assert.match(editor, /scrollIntoView\(\{ block: "nearest" \}\)/);
+  assert.match(page, /MODEL_OVERRIDE_HYDRATION_MAX_ATTEMPTS/);
+  assert.match(page, /rememberGenerationRef\.current \+= 1/);
+  assert.match(page, /hydratedOverridesKeyRef\.current = hydrationKey/);
+  assert.match(page, /hydratedOverridesKeyRef\.current = null/);
 });

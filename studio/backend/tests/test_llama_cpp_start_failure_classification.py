@@ -483,6 +483,47 @@ class TestMissingSharedLibrary:
         msg = _classify(self._LOADER_OUT, "/models/x.gguf", "local/x")
         assert "libgomp.so.1" in msg
 
+    def test_an_unknown_argument_names_the_flag_and_both_possible_owners(self):
+        msg = _classify(
+            "error: invalid argument: --not-a-real-flag",
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--not-a-real-flag" in msg
+        assert "extra arguments" in msg
+        assert "reinstall llama.cpp" in msg
+
+    def test_a_rejected_value_is_not_reported_as_an_unknown_flag(self):
+        msg = _classify(
+            'error while handling argument "--numa": invalid value',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "--numa" in msg
+        assert "invalid value" in msg
+        assert "does not recognise" not in msg
+
+    def test_a_std_numeric_conversion_failure_is_translated(self):
+        msg = _classify(
+            'error while handling argument "--top-k": stoi',
+            "/models/x.gguf",
+            "local/x",
+            1,
+        )
+        assert "not a number" in msg
+        assert "stoi" not in msg
+
+    def test_argument_error_scanning_is_bounded_to_the_output_tail(self):
+        import time
+
+        out = "x" * 10_000_000 + "\nerror: invalid argument: --bad"
+        start = time.perf_counter()
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert time.perf_counter() - start < 0.2
+        assert "--bad" in msg
+
     def test_a_normal_failure_is_untouched(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
         assert "enough memory" in msg.lower()

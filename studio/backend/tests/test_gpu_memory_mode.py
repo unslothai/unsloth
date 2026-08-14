@@ -209,8 +209,9 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
     assert gate != -1, "load_model must branch on manual + Auto layers (gpu_layers < 0)"
     block = src[gate : gate + 1400]
     assert "gpus = []" in block, "Auto-layers branch must empty the probed GPU set"
-    # --fit aborts under --split-mode tensor, so a raw-extras split-mode is stripped.
-    assert "strip_split_mode_only(extra_args)" in block
+    # Custom split flags remain authoritative even when Studio defaults this branch
+    # to --fit; an incompatible explicit combination is llama.cpp's to report.
+    assert "strip_split_mode_only(extra_args)" not in block
     assert "requested_ctx if requested_ctx > 0 else 0" in block
     # The branch sits before GPU selection assigns gpu_indices; --fit on is its emission.
     assert gate < src.find("gpu_indices, use_fit = None, True")
@@ -304,19 +305,19 @@ def test_load_request_accepts_valid_tensor_split(good):
     assert LoadRequest(model_path = "owner/repo", tensor_split = good).tensor_split == good
 
 
-def test_route_normalizes_explicit_extras_before_reload_dedupe():
+def test_route_preserves_explicit_extras_before_reload_dedupe():
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
     preserve = load_impl.index("_gpu_layers_override = parse_gpu_layers_override")
     translate = load_impl.index(
         'request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})'
     )
-    strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
     normalize = load_impl.index(
         'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
     )
     dedupe = load_impl.index("_reuse_loaded_gguf(")
-    assert preserve < translate < strip < normalize < dedupe
+    assert "_stripped_explicit = strip_shadowing_flags" not in load_impl
+    assert preserve < translate < normalize < dedupe
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
@@ -670,9 +671,11 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
 
 @pytest.mark.parametrize(
     ("gpu_ids", "expected_ids", "matches"),
-    [([], None, False), ([0], (0,), True)],
+    [([], None, False), ([0], (0,), False)],
 )
-def test_gpu_ids_control_owned_device_extra_args(gpu_ids, expected_ids, matches):
+def test_custom_main_gpu_change_requires_reload_with_or_without_gpu_ids(
+    gpu_ids, expected_ids, matches
+):
     backend = _loaded_backend("auto")
     if gpu_ids:
         backend._gpu_ids = backend._requested_gpu_ids = [0]

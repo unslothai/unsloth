@@ -104,9 +104,15 @@ function ensureActiveModelInStoreList(
   if (existing) {
     // Backend capability outranks catalog metadata, and adoption has no later
     // syncModelCapabilities call. Write only on an actual change.
-    if (Object.entries(caps).some(([k, v]) => existing[k as keyof typeof caps] !== v)) {
+    if (
+      Object.entries(caps).some(
+        ([k, v]) => existing[k as keyof typeof caps] !== v,
+      )
+    ) {
       store.setModels(
-        store.models.map((m) => (m.id === checkpointId ? { ...m, ...caps } : m)),
+        store.models.map((m) =>
+          m.id === checkpointId ? { ...m, ...caps } : m,
+        ),
       );
     }
     return;
@@ -146,7 +152,10 @@ export function applyActiveModelStatusToStore(
   // Only reached with a model actually active, so this is the one place both
   // the status poll and the readopt path can publish residency from. Without
   // it a load would look unloaded until the next poll, up to 10s later.
-  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+  useChatRuntimeStore.setState({
+    residentCheckpoint: checkpointId,
+    runtimeRevision: status.runtime_revision ?? null,
+  });
 
   const store = useChatRuntimeStore.getState();
   const previousCheckpoint =
@@ -355,6 +364,10 @@ export function applyActiveModelStatusToStore(
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
+    ...(hydratingExistingModel && {
+      loadedLlamaExtraArgs: null,
+      launchedLlamaExtraArgs: undefined,
+    }),
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
@@ -424,7 +437,8 @@ export function applyActiveModelStatusToStore(
         mlxKvBits: status.mlx_kv_bits_requested ?? null,
         loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
-        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
+        chatTemplateOverrideReason:
+          status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would
@@ -439,7 +453,8 @@ export function applyActiveModelStatusToStore(
     // re-sends it. /status omits the echo for non-GGUF and sends an explicit
     // null for diffusion, so an absent field on a GGUF is an older backend.
     ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+      (status.is_gguf === false ||
+        status.requested_parallel_slots === null) && {
         loadedNParallel: null,
       }),
     // Per-model: a change underneath this tab blanks the control like

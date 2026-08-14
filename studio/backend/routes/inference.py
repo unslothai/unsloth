@@ -36,8 +36,9 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import fields as dataclass_fields, replace
+from enum import Enum
 
 
 import re as _re
@@ -1278,8 +1279,8 @@ try:
         parse_gpu_layers_override,
         parse_split_mode_override,
         resolve_tensor_parallel,
-        strip_shadowing_flags,
         validate_extra_args,
+        validate_stored_extra_args,
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
@@ -1331,8 +1332,8 @@ except ImportError:
         parse_gpu_layers_override,
         parse_split_mode_override,
         resolve_tensor_parallel,
-        strip_shadowing_flags,
         validate_extra_args,
+        validate_stored_extra_args,
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
@@ -2188,6 +2189,7 @@ from models.inference import (
     AudioGalleryItem,
     AudioGalleryListResponse,
     LoadResponse,
+    ActiveLlamaArgumentsResponse,
     LoadProgressResponse,
     UnloadResponse,
     InferenceStatusResponse,
@@ -2247,7 +2249,7 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth import storage as auth_storage
-from auth.authentication import API_KEY_PREFIX, get_current_subject
+from auth.authentication import API_KEY_PREFIX, authenticated_via_api_key, get_current_subject
 from state import active_generations
 
 
@@ -2334,6 +2336,78 @@ if TYPE_CHECKING:
 router = APIRouter()
 # Unsloth-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
+
+
+class LlamaArgsOrigin(str, Enum):
+    """Authority and inheritance source for a llama-server load."""
+
+    UI_REQUEST = "ui_request"
+    API_REQUEST = "api_request"
+    STORED_UI_OVERRIDE = "stored_ui_override"
+    INTERNAL_NO_ARGS = "internal_no_args"
+
+
+def _require_llama_argument_ui_session(via_api_key: bool) -> None:
+    if via_api_key is True:
+        raise HTTPException(
+            status_code = 403,
+            detail = "llama.cpp custom argument settings require an authenticated Studio UI session.",
+        )
+
+
+def _llama_args_field_present(request: Any) -> bool:
+    return "llama_extra_args" in getattr(request, "model_fields_set", set())
+
+
+def _reject_api_key_custom_arguments(request: Any, via_api_key: bool) -> None:
+    """Reject field presence, so null and [] cannot masquerade as omission."""
+
+    if via_api_key is True and _llama_args_field_present(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = "API-key requests cannot supply llama.cpp custom arguments.",
+        )
+
+
+@studio_router.get("/llama-server/arguments")
+async def get_llama_server_arguments(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Argument catalog for the installed llama-server build.
+
+    Studio-only by router placement: this is intentionally not part of the
+    OpenAI-compatible /v1 surface.
+    """
+    del current_subject
+    _require_llama_argument_ui_session(via_api_key)
+    return await asyncio.to_thread(LlamaCppBackend.get_server_argument_catalog)
+
+
+@studio_router.get(
+    "/llama-server/active-arguments", response_model = ActiveLlamaArgumentsResponse
+)
+async def get_active_llama_server_arguments(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> ActiveLlamaArgumentsResponse:
+    """Hydrate the Studio editor without disclosing arguments on shared APIs."""
+
+    del current_subject
+    _require_llama_argument_ui_session(via_api_key)
+    backend = get_llama_cpp_backend()
+    snapshot = _active_llama_arguments_snapshot(backend)
+    if snapshot is None:
+        return ActiveLlamaArgumentsResponse()
+    return ActiveLlamaArgumentsResponse(
+        # This endpoint is authenticated Studio UI state, unlike the shared
+        # status/load models. Return the exact load identity so native-path
+        # editors can prove model equality before hydrating their arguments.
+        model_identifier = snapshot.model_identifier,
+        gguf_variant = snapshot.gguf_variant,
+        runtime_revision = _llama_runtime_revision_from_snapshot(snapshot),
+        llama_extra_args = list(snapshot.extra_args),
+    )
 
 
 # Packaged desktop runs at tauri://localhost (macOS/Linux) or http://tauri.localhost
@@ -4246,6 +4320,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
         chat_template_override_reason = None,
+        runtime_revision = _llama_runtime_revision(llama_backend),
         speculative_type = llama_backend.requested_spec_mode,
         requested_parallel_slots = (
             None if llama_backend.is_diffusion else llama_backend.requested_parallel_slots
@@ -4428,32 +4503,13 @@ def _active_gguf_intent(
     native_grant_backed: bool,
 ) -> GgufLoadIntent:
     backend_extra = list(llama_backend.extra_args or ())
-    request_fields_set = getattr(request, "model_fields_set", set())
     inherits_extras = request.llama_extra_args is None
     if inherits_extras:
-        effective_extra = strip_shadowing_flags(
-            backend_extra,
-            strip_split_mode = _should_strip_split_mode(request, backend_extra),
-            strip_tensor_split = _should_strip_tensor_split(request),
-            strip_offload = request.gpu_memory_mode == "manual",
-        )
-        # mirror _resolve_inherited_extra_args, or a stale inherited -b / -ub reads as equal
-        batch_stripped_extra = strip_shadowing_flags(
-            effective_extra,
-            strip_context = False,
-            strip_cache = False,
-            strip_spec = False,
-            strip_template = False,
-            strip_split_mode = False,
-            strip_batch = "n_batch" in request_fields_set,
-            strip_ubatch = "n_ubatch" in request_fields_set,
-        )
-        # a strip that changed the list is an override, so the dedupe compares the stripped one
-        batch_overrides_inherit = batch_stripped_extra != effective_extra
-        effective_extra = batch_stripped_extra
+        # Explicit custom llama.cpp arguments remain authoritative when the
+        # settings Apply path omits the field and inherits the resident list.
+        effective_extra = backend_extra
     else:
         effective_extra = request.llama_extra_args
-        batch_overrides_inherit = False
     source = llama_backend.last_load_intent or GgufLoadIntent(
         model_identifier = model_identifier,
         gguf_path = None if llama_backend.hf_repo else llama_backend.gguf_path,
@@ -4480,7 +4536,7 @@ def _active_gguf_intent(
         dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
-        extra_args_inherited = inherits_extras and not batch_overrides_inherit,
+        extra_args_inherited = inherits_extras,
     )
 
 
@@ -4665,6 +4721,73 @@ def _llama_status_model_ids(llama_backend) -> "tuple[Optional[str], Optional[str
         # No label registered, so report the clean public id, not the snapshot's sha.
         display_model_id = _llama_public_model_id(llama_backend) or display_model_id
     return display_model_id, (None if native_grant_backed else model_id)
+
+
+class _ActiveLlamaArgumentsSnapshot(NamedTuple):
+    """One lock-coherent view of the managed runtime used for UI hydration."""
+
+    runtime_identity: int
+    model_identifier: Optional[str]
+    gguf_variant: Optional[str]
+    extra_args: tuple[str, ...]
+
+
+def _active_llama_arguments_snapshot(llama_backend) -> Optional[_ActiveLlamaArgumentsSnapshot]:
+    """Capture identity, revision inputs, and argv under the backend state lock.
+
+    The hydration response must never combine model/revision A with arguments B.
+    Lightweight test doubles and pre-lock legacy backends have no lock, so they
+    still get a coherent best-effort read through ``nullcontext``.
+    """
+
+    lock = getattr(llama_backend, "_lock", None)
+    guard = lock if hasattr(lock, "__enter__") else nullcontext()
+    with guard:
+        if not getattr(llama_backend, "is_loaded", False):
+            return None
+        process = getattr(llama_backend, "_process", None)
+        return _ActiveLlamaArgumentsSnapshot(
+            runtime_identity = id(process) if process is not None else id(llama_backend),
+            model_identifier = getattr(llama_backend, "model_identifier", None),
+            gguf_variant = getattr(llama_backend, "hf_variant", None),
+            extra_args = tuple(getattr(llama_backend, "extra_args", None) or ()),
+        )
+
+
+def _llama_runtime_revision_from_snapshot(snapshot: _ActiveLlamaArgumentsSnapshot) -> str:
+    revision_inputs = (
+        snapshot.runtime_identity,
+        snapshot.model_identifier,
+        snapshot.gguf_variant,
+        snapshot.extra_args,
+    )
+    # Private paths and argument values influence freshness but never leave the
+    # process.  The browser receives only this fixed-width digest.
+    return _hashlib.sha256(repr(revision_inputs).encode("utf-8", "surrogatepass")).hexdigest()[
+        :24
+    ]
+
+
+def _llama_runtime_revision(llama_backend) -> Optional[str]:
+    """Opaque identity for one active managed runtime, with no argv disclosure."""
+
+    snapshot = _active_llama_arguments_snapshot(llama_backend)
+    return None if snapshot is None else _llama_runtime_revision_from_snapshot(snapshot)
+
+
+def _llama_requested_extra_args(llama_backend) -> list[str]:
+    """The caller configuration represented by a possibly degraded runtime.
+
+    Runtime fallbacks may remove an argument before spawn while retaining the
+    original request so the same saved configuration deduplicates instead of
+    triggering an auto-switch loop. Backends predating that split expose only
+    the launched list.
+    """
+
+    requested = getattr(llama_backend, "requested_extra_args", None)
+    if requested is None:
+        requested = getattr(llama_backend, "extra_args", None)
+    return list(requested or [])
 
 
 def _llama_status_checkpoint_id(llama_backend) -> Optional[str]:
@@ -5350,9 +5473,9 @@ async def _maybe_auto_switch_model(
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
-        get_model_override,
         idle_unload_is_configured,
         model_override_load_kwargs,
+        resolve_model_override_candidates,
     )
     from core.inference.local_model_resolver import (
         resolve_local_gguf,
@@ -5385,29 +5508,62 @@ async def _maybe_auto_switch_model(
         await _reject_unservable_model(requested_model, fastapi_request)
         return
 
-    # The common Studio path names the model that is already serving. Resolve that
-    # from resident state before consulting the filesystem index: rebuilding a stale
-    # multi-root index here used to hold the request for seconds before streaming.
+    # Preserve the resident fast path without trusting resident custom argv.
+    # Resolve the exact host-saved list from resident identity; if it differs,
+    # force the normal reload path without touching the filesystem index.
+    resident_resolution = None
+    resident_backend = get_llama_cpp_backend()
     if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
-        warm_index_soon()
-        return
+        resident_target = getattr(resident_backend, "model_identifier", None)
+        resident_variant = getattr(resident_backend, "hf_variant", None)
+        resident_override_id = (
+            getattr(resident_backend, "_openai_advertised_id", None)
+            or _llama_public_model_id(resident_backend, requested_model)
+            or requested_model
+        )
+        if resident_target:
+            _saved_key, saved_override = resolve_model_override_candidates(
+                resident_target,
+                resident_variant,
+                override_id = resident_override_id,
+            )
+            try:
+                saved_args = (
+                    validate_stored_extra_args(saved_override.get("llama_extra_args"))
+                    if "llama_extra_args" in saved_override
+                    else []
+                )
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Saved llama.cpp custom arguments are quarantined and require repair in Studio.",
+                ) from exc
+            warm_index_soon()
+            if _llama_requested_extra_args(resident_backend) == saved_args:
+                return
+            resident_resolution = (
+                resident_target,
+                resident_variant,
+                resident_override_id,
+            )
 
     async def _resolve_and_switch() -> None:
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
         reload_only = requested_model == _RELOAD_ONLY_MODEL
-        resolved = None
+        resolved = resident_resolution
         if auto_switch_on and not reload_only:
             # Fresh hits and entries retained across an additions-only download are
             # safe to use immediately. An expired/config-invalidated hit, a cold
             # cache, and every miss must refresh before an unrelated resident model
             # can answer or an entry from a removed scan root can trigger a switch.
-            resolved = resolve_trusted_cached_local_gguf(requested_model)
-            if resolved is not None:
-                warm_index_soon()
-            else:
-                resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+            if resolved is None:
+                resolved = resolve_trusted_cached_local_gguf(requested_model)
+                if resolved is not None:
+                    warm_index_soon()
+                else:
+                    resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
@@ -5442,6 +5598,48 @@ async def _maybe_auto_switch_model(
             # takes the local branch and cannot trigger a download. override_id is the
             # advertised repo id, the launch-override key and the public model id.
             target_id, variant, override_id = resolved
+
+        # Resolve and validate the saved override before any resident fast path,
+        # waiter registration, lifecycle gate, teardown, or auto-switch mutation.
+        file_variant = None
+        if not variant and target_id.lower().endswith(".gguf"):
+            from hub.utils.gguf import extract_quant_label
+
+            file_variant = extract_quant_label(os.path.basename(target_id))
+        def _fresh_load_kwargs() -> dict[str, Any]:
+            """Reread the authoritative override at each destructive boundary."""
+
+            _override_key, fresh_override = resolve_model_override_candidates(
+                target_id,
+                variant,
+                override_id = override_id,
+                file_variant = file_variant,
+            )
+            fresh_kwargs: dict[str, Any] = {
+                "model_path": target_id,
+                "gguf_variant": variant,
+            }
+            fresh_kwargs.update(
+                model_override_load_kwargs(
+                    fresh_override,
+                    is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
+                )
+            )
+            if "llama_extra_args" in fresh_override:
+                try:
+                    fresh_kwargs["llama_extra_args"] = validate_stored_extra_args(
+                        fresh_override.get("llama_extra_args")
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = "Saved llama.cpp custom arguments are quarantined and require repair in Studio.",
+                    ) from exc
+            return fresh_kwargs
+
+        # First admission check: reject a quarantined saved value before waiter
+        # registration or any lifecycle gate/state mutation.
+        load_kwargs = _fresh_load_kwargs()
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
@@ -5466,12 +5664,12 @@ async def _maybe_auto_switch_model(
                 loaded_keys.add(advertised.lower())
             if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
-            if bare:
-                return True
-            if variant:
+            if not bare and variant:
                 loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
-                return loaded_variant == variant.lower()
-            return True
+                if loaded_variant != variant.lower():
+                    return False
+            expected_args = list(load_kwargs.get("llama_extra_args") or [])
+            return _llama_requested_extra_args(backend) == expected_args
 
         def _record_serving_alias() -> None:
             # When an advertised alias already resolves to the loaded model (e.g. a
@@ -5522,43 +5720,13 @@ async def _maybe_auto_switch_model(
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
                     async with inference_lifecycle_gate():
+                        # Settings remain editable while this request waits behind
+                        # other swaps/generations. Re-read after the final gate so a
+                        # stale captured override can never reach teardown or spawn.
+                        load_kwargs = _fresh_load_kwargs()
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Apply the saved launch config so an API swap loads as the picker
-                        # would. Order: variant-qualified keys before bare ids, and the
-                        # load path before the advertised id, since the settings UI keys
-                        # local rows by that path while override_id is a derived alias, so
-                        # reading the alias first let an older entry shadow a fresh save. A
-                        # cached repo has no path entry and resolves on the second try; an
-                        # early build keyed a loose .gguf by its filename label, so
-                        # "<path>:LABEL" is read too, after the bare path used today.
-                        file_variant = None
-                        if not variant and target_id.lower().endswith(".gguf"):
-                            from hub.utils.gguf import extract_quant_label
-                            file_variant = extract_quant_label(os.path.basename(target_id))
-                        override = {}
-                        for override_key in (
-                            f"{target_id}:{variant}" if variant else None,
-                            f"{override_id}:{variant}" if variant else None,
-                            target_id,
-                            f"{target_id}:{file_variant}" if file_variant else None,
-                            override_id,
-                        ):
-                            if not override_key:
-                                continue
-                            override = get_model_override(override_key)
-                            if override:
-                                break
-                        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                        load_kwargs.update(
-                            model_override_load_kwargs(
-                                override,
-                                # Set for every GGUF the resolver returns; the reload
-                                # stash carries the quant it froze.
-                                is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
-                            )
-                        )
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids
@@ -5580,6 +5748,7 @@ async def _maybe_auto_switch_model(
                                 fastapi_request,
                                 current_subject,
                                 current_request_counted = True,
+                                args_origin = LlamaArgsOrigin.STORED_UI_OVERRIDE,
                             )
                         except HTTPException as exc:
                             # The pre-flight check cannot mirror every loader gpu_ids rule,
@@ -5602,6 +5771,7 @@ async def _maybe_auto_switch_model(
                                 fastapi_request,
                                 current_subject,
                                 current_request_counted = True,
+                                args_origin = LlamaArgsOrigin.STORED_UI_OVERRIDE,
                             )
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
@@ -6707,39 +6877,6 @@ async def _prepare_load_placement(
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
-def _inherited_batch_flags_stripped(request) -> bool:
-    """Whether inheriting the resident extras drops a -b / -ub a set field supersedes.
-
-    _active_gguf_intent computes this inline (``batch_overrides_inherit``). Without it here
-    ``extra_args_inherited`` stays True, so _runtime_matches_intent compares the launched
-    extras (still carrying the stale flag) instead of the stripped override, and an Apply
-    that only raises the batch size reports ``already_loaded``.
-    """
-    if getattr(request, "llama_extra_args", None) is not None:
-        return False
-    fields_set = getattr(request, "model_fields_set", set())
-    strip_batch = "n_batch" in fields_set
-    strip_ubatch = "n_ubatch" in fields_set
-    if not (strip_batch or strip_ubatch):
-        return False
-    stored = list(getattr(get_llama_cpp_backend(), "extra_args", None) or ())
-    if not stored:
-        return False
-    return (
-        strip_shadowing_flags(
-            stored,
-            strip_context = False,
-            strip_cache = False,
-            strip_spec = False,
-            strip_template = False,
-            strip_split_mode = False,
-            strip_batch = strip_batch,
-            strip_ubatch = strip_ubatch,
-        )
-        != stored
-    )
-
-
 def _resolve_gguf_load_intent(
     config: ModelConfig,
     request: LoadRequest,
@@ -6801,11 +6938,7 @@ def _resolve_gguf_load_intent(
         n_parallel = n_parallel,
         is_vision = config.is_vision,
         gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals,
-        extra_args_inherited = (
-            getattr(request, "llama_extra_args", None) is None
-            # a strip that changed the list is an override, so the dedupe compares it
-            and not _inherited_batch_flags_stripped(request)
-        ),
+        extra_args_inherited = getattr(request, "llama_extra_args", None) is None,
     )
 
 
@@ -7059,94 +7192,94 @@ def _resolve_inherited_extra_args(
     model_identifier: str,
     extra_llama_args: Optional[list[str]],
     effective_chat_template_override: Optional[str] = None,
+    *,
+    args_origin: LlamaArgsOrigin = LlamaArgsOrigin.UI_REQUEST,
 ) -> Optional[list[str]]:
-    """Effective pass-through extras for a GGUF request that omitted the field:
-    the previous same-model load's extras, shadow-stripped, so a settings-Apply
-    reload (which does not round-trip the extras field) keeps them (#5401)."""
-    if getattr(request, "llama_extra_args", None) is not None:
-        return extra_llama_args
+    """Resolve the exact effective list before dedupe, teardown, or launch.
+
+    UI omission may inherit only the same resident model+variant. API omission
+    may use only a host-saved override for this model; it never adopts unsaved
+    resident argv. Internal loads default to an authoritative empty list.
+    """
+
+    del effective_chat_template_override
+
+    def _validate_saved(args: Any, *, actionable: bool) -> list[str]:
+        try:
+            return validate_stored_extra_args(args)
+        except (TypeError, ValueError) as exc:
+            detail = (
+                "Saved llama.cpp custom arguments are quarantined by the current "
+                "security policy. Open Run Settings and clear or replace them."
+                if actionable
+                else "Saved llama.cpp custom arguments are quarantined and require repair in Studio."
+            )
+            raise HTTPException(status_code = 409, detail = detail) from exc
+
+    field_present = _llama_args_field_present(request)
+    supplied_args = getattr(request, "llama_extra_args", None)
+    if field_present:
+        if supplied_args is None:
+            if args_origin == LlamaArgsOrigin.STORED_UI_OVERRIDE:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Saved llama.cpp custom arguments are quarantined and require repair in Studio.",
+                )
+            # API field presence is rejected before this resolver. Python/UI
+            # compatibility callers historically use explicit None for omission.
+            field_present = False
+        else:
+            if args_origin == LlamaArgsOrigin.STORED_UI_OVERRIDE:
+                return _validate_saved(supplied_args, actionable = False)
+            try:
+                return validate_extra_args(supplied_args)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
     if not getattr(config, "is_gguf", False):
         return extra_llama_args
+
+    if args_origin in (
+        LlamaArgsOrigin.INTERNAL_NO_ARGS,
+        LlamaArgsOrigin.STORED_UI_OVERRIDE,
+    ):
+        return []
+
+    resolved_variant = getattr(config, "gguf_variant", None) or getattr(
+        request, "gguf_variant", None
+    )
+
+    if args_origin == LlamaArgsOrigin.API_REQUEST:
+        from utils.openai_auto_switch_settings import resolve_model_override_candidates
+
+        override_id = getattr(config, "identifier", None) or model_identifier
+        file_variant = None
+        if not resolved_variant and model_identifier.lower().endswith(".gguf"):
+            from hub.utils.gguf import extract_quant_label
+
+            file_variant = extract_quant_label(os.path.basename(model_identifier))
+        _key, override = resolve_model_override_candidates(
+            model_identifier,
+            resolved_variant,
+            override_id = override_id,
+            file_variant = file_variant,
+        )
+        if "llama_extra_args" not in override:
+            return []
+        return _validate_saved(override.get("llama_extra_args"), actionable = False)
+
     llama_backend = get_llama_cpp_backend()
-    stored_args = getattr(llama_backend, "extra_args", None)
-    if not stored_args:
+    resident_args = getattr(llama_backend, "extra_args", None)
+    if resident_args is None:
         return extra_llama_args
-    # Inherit the previous load's extras (the chat-settings Apply path doesn't
-    # round-trip them; an explicit [] still clears). Gated on (model_identifier,
-    # hf_variant) to refuse cross-model pickup, and shadowing flags are
-    # stripped so an inherited override can't win the last-wins CLI
-    # parse against a freshly-supplied first-class field.
     source = getattr(llama_backend, "extra_args_source", None)
-    # Compare against the resolved variant, not the request field: callers
-    # commonly omit gguf_variant for local ``.gguf`` paths and HF auto-pick
-    # flows. ``config.gguf_variant`` is the variant load_model was actually
-    # invoked with, so both sides of the comparison key off the same string.
-    resolved_variant = (config.gguf_variant or "").lower()
-    request_variant = (request.gguf_variant or "").lower()
-    stored_variant = (source[1] or "").lower() if source else ""
-    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
-    if request.gguf_variant:
-        variant_mismatch = request_variant != stored_variant
-    else:
-        variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
-    same_source = same_model and not variant_mismatch
-    if not same_source:
-        logger.info(
-            "Not inheriting llama_extra_args: stored args came from %s, loading %s",
-            source,
-            (model_identifier, resolved_variant),
-        )
-        # Cross-model: clear explicitly so the backend doesn't
-        # inherit via "no opinion" semantics.
-        extra_llama_args = []
-    else:
-        # Strip only the groups whose first-class field was set by the caller, so
-        # an inherited --chat-template-file survives an Apply that omits
-        # chat_template_override. A bundled family template (e.g. gemma-4) counts as
-        # a first-class template even when the request omits chat_template_override,
-        # so strip the inherited --chat-template-file then too -- else the stale arg
-        # (appended last) shadows the bundled template while Studio reports its caps.
-        fields_set = getattr(request, "model_fields_set", set())
-        stripped = strip_shadowing_flags(
-            stored_args,
-            strip_context = "max_seq_length" in fields_set,
-            strip_cache = "cache_type_kv" in fields_set,
-            strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
-            strip_template = (
-                "chat_template_override" in fields_set
-                or effective_chat_template_override is not None
-            ),
-            strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # manual + per-GPU ratio emits its own --tensor-split; drop
-            # an inherited one (appended last would override it) while
-            # keeping the user's --split-mode row/none/layer choice.
-            strip_tensor_split = _should_strip_tensor_split(request),
-            # manual emits its own --fit/--gpu-layers, so an inherited offload flag
-            # must not last-wins-override it. auto leaves a user's inherited -ngl
-            # alone. getattr: a validate request reuses this resolver, no offload fields.
-            strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
-            # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
-            strip_batch = "n_batch" in fields_set,
-            strip_ubatch = "n_ubatch" in fields_set,
-        )
-        try:
-            extra_llama_args = validate_extra_args(stripped)
-        except ValueError:
-            # Shouldn't happen on already-validated args; degrade to
-            # no-extras rather than 400 if managed flags changed.
-            logger.warning(
-                "Stored llama_extra_args failed revalidation; loading without them: %s",
-                stripped,
-            )
-            extra_llama_args = []
-        else:
-            if extra_llama_args:
-                logger.info(
-                    "Inheriting llama_extra_args from previous "
-                    "load (same model, shadow-stripped): %s",
-                    extra_llama_args,
-                )
-    return extra_llama_args
+    source_model = (source[0] or "").casefold() if source else ""
+    source_variant = (source[1] or "").casefold() if source else ""
+    same_model = bool(source_model and source_model == model_identifier.casefold())
+    same_variant = source_variant == (resolved_variant or "").casefold()
+    if not (same_model and same_variant):
+        return []
+    return _validate_saved(resident_args, actionable = True)
 
 
 def _model_json_response(model, status_code: int = 200) -> Response:
@@ -7590,6 +7723,7 @@ async def _run_tracked_load_model_impl(
     attempt: Optional[_ScopedLoadAttempt] = None,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    args_origin: LlamaArgsOrigin = LlamaArgsOrigin.INTERNAL_NO_ARGS,
 ):
     global _running_load_attempt
 
@@ -7606,6 +7740,7 @@ async def _run_tracked_load_model_impl(
             current_subject,
             current_request_counted = current_request_counted,
             on_reload_confirmed = on_reload_confirmed,
+            args_origin = args_origin,
             load_cancel_event = attempt.cancel_event,
         )
     finally:
@@ -7630,6 +7765,7 @@ async def load_model(
     request: LoadRequest,
     fastapi_request: Request,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """
     Load a model for inference.
@@ -7640,8 +7776,23 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    _reject_api_key_custom_arguments(request, via_api_key)
+    try:
+        validate_extra_args(request.llama_extra_args)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return await _tunnel_safe_json(
-        load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
+        load_model_gated(
+            request,
+            fastapi_request,
+            current_subject,
+            user_initiated = via_api_key is not True,
+            args_origin = (
+                LlamaArgsOrigin.API_REQUEST
+                if via_api_key is True
+                else LlamaArgsOrigin.UI_REQUEST
+            ),
+        ),
         label = "Model load",
     )
 
@@ -7652,6 +7803,7 @@ async def load_model_gated(
     current_subject: str,
     *,
     user_initiated: bool = False,
+    args_origin: LlamaArgsOrigin = LlamaArgsOrigin.INTERNAL_NO_ARGS,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
@@ -7686,6 +7838,7 @@ async def load_model_gated(
                     action = "Loading a model",
                     cancel = cancel,
                 ),
+                args_origin = args_origin,
             )
         # Record provenance only once the model is resident, and here rather than
         # inside the impl so the already-loaded fast paths are covered too. Preview
@@ -7706,12 +7859,45 @@ async def _load_model_impl(
     current_request_counted: bool = False,
     on_reload_confirmed = None,
     load_cancel_event: Optional[threading.Event] = None,
+    args_origin: LlamaArgsOrigin = LlamaArgsOrigin.INTERNAL_NO_ARGS,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:
         if load_cancel_event is not None and load_cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
+
+    if args_origin == LlamaArgsOrigin.API_REQUEST:
+        _reject_api_key_custom_arguments(request, True)
+    # Validate before progress/monitor state, model resolution, or lifecycle
+    # work. A rejected argument list must be side-effect free.
+    try:
+        extra_llama_args = validate_extra_args(request.llama_extra_args)
+    except (TypeError, ValueError) as exc:
+        if args_origin == LlamaArgsOrigin.STORED_UI_OVERRIDE:
+            raise HTTPException(
+                status_code = 409,
+                detail = "Saved llama.cpp custom arguments are quarantined and require repair in Studio.",
+            ) from exc
+        logger.warning("inference.validate_extra_args_failed: %s", exc)
+        raise HTTPException(
+            status_code = 400,
+            detail = redact_native_paths(str(exc)),
+        )
+    # Re-narrow []-from-None back to None so the inheritance path below can
+    # tell "caller omitted" from "caller explicit []".
+    extra_llama_args: Optional[list[str]] = (
+        None if request.llama_extra_args is None else extra_llama_args
+    )
+
+    # Reconcile an explicit custom layer count into the first-class field used
+    # for budgeting while leaving the raw flag authoritative at launch.
+    if request.gpu_memory_mode == "manual" and extra_llama_args:
+        _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
+        if _gpu_layers_override is not None:
+            request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})
+
+    request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
 
     # A new load starts here; arm the progress throttle so this load's first
     # sampled step logs even if it reports 100% immediately (cached/small load).
@@ -7732,57 +7918,6 @@ async def _load_model_impl(
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
     try:
-        # Validate user pass-through args up front so a managed-flag collision
-        # returns 400 before any model work.
-        try:
-            extra_llama_args = validate_extra_args(request.llama_extra_args)
-        except ValueError as exc:
-            # Keep the curated validation message (names the flag); just strip paths.
-            logger.warning("inference.validate_extra_args_failed: %s", exc)
-            raise HTTPException(
-                status_code = 400,
-                detail = redact_native_paths(str(exc)),
-            )
-        # Re-narrow []-from-None back to None so the inheritance path below can
-        # tell "caller omitted" from "caller explicit []".
-        extra_llama_args: Optional[list[str]] = (
-            None if request.llama_extra_args is None else extra_llama_args
-        )
-
-        # Manual mode owns the offload flags. Preserve an explicit layer count
-        # by translating its last-wins value into the first-class field before
-        # stripping the raw flags. This keeps CLI pass-through such as
-        # ``-ngl 20`` from being silently replaced by the manual default (-1).
-        # The inherited path already strips offload flags. Manual + per-GPU
-        # ratio owns --tensor-split the same way.
-        if request.gpu_memory_mode == "manual" and extra_llama_args:
-            _gpu_layers_override = parse_gpu_layers_override(extra_llama_args)
-            if _gpu_layers_override is not None:
-                request = request.model_copy(update = {"gpu_layers": _gpu_layers_override})
-            _stripped_explicit = strip_shadowing_flags(
-                extra_llama_args,
-                strip_context = False,
-                strip_cache = False,
-                strip_spec = False,
-                strip_template = False,
-                strip_split_mode = False,
-                strip_tensor_split = _should_strip_tensor_split(request),
-                strip_offload = True,
-            )
-            if _stripped_explicit != extra_llama_args:
-                logger.info(
-                    "Manual GPU memory owns the offload flags; stripping them "
-                    "from explicit llama_extra_args: %s -> %s",
-                    extra_llama_args,
-                    _stripped_explicit,
-                )
-                extra_llama_args = _stripped_explicit
-
-        # Keep every downstream consumer on the normalized explicit list. In
-        # particular, the already-loaded comparator must not compare the raw
-        # request's managed offload flags against the stripped launch state.
-        request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
-
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
         )
@@ -7807,6 +7942,11 @@ async def _load_model_impl(
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = await asyncio.to_thread(get_inference_backend)
         llama_backend = get_llama_cpp_backend()
+        # A policy update invalidates the managed process itself; never reuse a
+        # runtime whose remembered argv is now quarantined.
+        _reconcile_args = getattr(llama_backend, "reconcile_argument_policy", None)
+        if callable(_reconcile_args):
+            _reconcile_args()
 
         # Resolve once so dedupe, admission and launch use the same slot count.
         _n_parallel = _resolve_parallel_slots(request, fastapi_request)
@@ -7832,7 +7972,14 @@ async def _load_model_impl(
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
-        if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
+        _preconfig_reuse_allowed = (
+            args_origin == LlamaArgsOrigin.UI_REQUEST or _llama_args_field_present(request)
+        )
+        if (
+            _preconfig_reuse_allowed
+            and llama_backend.is_loaded
+            and (request.gguf_variant or is_direct_gguf_request)
+        ):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
                     request,
@@ -7945,6 +8092,7 @@ async def _load_model_impl(
             model_identifier,
             extra_llama_args,
             effective_chat_template_override,
+            args_origin = args_origin,
         )
 
         # Invalid GPU IDs must fail before the training coexistence guard.
@@ -8625,6 +8773,7 @@ async def validate_model(
     request: ValidateModelRequest,
     fastapi_request: Request = None,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """
     Lightweight validation endpoint for model identifiers.
@@ -8640,6 +8789,11 @@ async def validate_model(
     native_grant_backed = False
     model_log_label = request.model_path
     try:
+        _reject_api_key_custom_arguments(request, via_api_key)
+        try:
+            validate_extra_args(request.llama_extra_args)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
@@ -8669,7 +8823,15 @@ async def validate_model(
             )
 
         effective_extra_args = _resolve_inherited_extra_args(
-            request, config, model_identifier, None
+            request,
+            config,
+            model_identifier,
+            None,
+            args_origin = (
+                LlamaArgsOrigin.API_REQUEST
+                if via_api_key is True
+                else LlamaArgsOrigin.UI_REQUEST
+            ),
         )
 
         # Apply the same placement policy as /load before the frontend unloads
@@ -9641,6 +9803,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
     """
     try:
         llama_backend = get_llama_cpp_backend()
+        _reconcile_args = getattr(llama_backend, "reconcile_argument_policy", None)
+        if callable(_reconcile_args):
+            _reconcile_args()
 
         # The cold subprocess and GitHub probes must not block the event loop or
         # consume the default executor used by local token streaming.

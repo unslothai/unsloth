@@ -19,7 +19,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-
 def _stub_module(name: str, **attrs):
     if name in sys.modules:
         return
@@ -67,7 +66,7 @@ if "httpx" not in sys.modules:
         )
         sys.modules["httpx"] = module
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _extra_args_main_device
 
 _REAL_POPEN = subprocess.Popen
 
@@ -136,7 +135,7 @@ def _launch(backend, gguf, **load_kwargs):
     return captured
 
 
-def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
+def test_custom_vulkan_device_overrides_picker_device(tmp_path):
     backend, gguf = _backend(
         tmp_path,
         vulkan = True,
@@ -152,12 +151,12 @@ def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
     )
 
     cmd = result["cmd"]
-    assert cmd[cmd.index("--device") + 1] == "Vulkan1"
+    assert _extra_args_main_device(cmd) == "Vulkan0"
     assert cmd.count("--device") == 1
-    assert "--main-gpu" not in cmd
+    assert "--main-gpu" in cmd
     assert cmd[cmd.index("--top-k") + 1] == "5"
-    assert backend.requested_gpu_ids == [0, 1]
-    assert backend.gpu_ids == [1]
+    assert backend.requested_gpu_ids is None
+    assert backend.gpu_ids is None
 
 
 @pytest.mark.parametrize(
@@ -165,7 +164,7 @@ def test_vulkan_selection_uses_ordinals_and_owns_device_flags(tmp_path):
     [
         (None, None, "Vulkan1", False),
         (None, ["--device", "Vulkan1", "-dev=Vulkan0"], "Vulkan0", True),
-        ([1], ["--device", "Vulkan1", "-dev=Vulkan0"], "Vulkan1", False),
+        ([1], ["--device", "Vulkan1", "-dev=Vulkan0"], "Vulkan0", True),
     ],
 )
 def test_vulkan_fit_and_mtp_drafter_follow_placement_owner(
@@ -200,7 +199,7 @@ def test_vulkan_fit_and_mtp_drafter_follow_placement_owner(
     assert planned
     assert all(gpus == [(1, 8_000)] for gpus in planned)
     cmd = result["cmd"]
-    assert cmd[cmd.index("--device") + 1] == "Vulkan1"
+    assert _extra_args_main_device(cmd) == ("Vulkan0" if extra_args else "Vulkan1")
     assert cmd[cmd.index("--spec-draft-device") + 1] == expected_draft
     assert ("-dev=Vulkan0" in cmd) is user_device_survives
 

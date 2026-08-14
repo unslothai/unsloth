@@ -88,12 +88,15 @@ class _LoadRecorder:
         current_subject = None,
         *,
         current_request_counted = False,
+        args_origin = None,
     ):
         # Mirror the production load boundary before recording any replacement.
         await inference_route._wait_for_model_switch_idle(
             current_request_counted = current_request_counted
         )
         self.calls.append(request)
+        if getattr(request, "llama_extra_args", None) is not None:
+            assert args_origin == inference_route.LlamaArgsOrigin.STORED_UI_OVERRIDE
         if self.fail:
             from fastapi import HTTPException
             raise HTTPException(status_code = 503, detail = "load failed")
@@ -898,8 +901,11 @@ def test_auto_switch_applies_model_override(monkeypatch):
     )
     monkeypatch.setattr(
         settings,
-        "get_model_override",
-        lambda model_id: {"llama_extra_args": ["--n-gpu-layers", "20"], "max_seq_length": 4096},
+        "resolve_model_override_candidates",
+        lambda *a, **k: (
+            "unsloth/B-GGUF:Q4_K_M",
+            {"llama_extra_args": ["--n-gpu-layers", "20"], "max_seq_length": 4096},
+        ),
     )
 
     _run_hook("unsloth/B-GGUF")
@@ -923,13 +929,150 @@ def test_auto_switch_applies_partial_override(monkeypatch):
         recorder = rec,
     )
     monkeypatch.setattr(
-        settings, "get_model_override", lambda model_id: {"llama_extra_args": ["--flash-attn"]}
+        settings,
+        "resolve_model_override_candidates",
+        lambda *a, **k: (
+            "unsloth/B-GGUF:Q4_K_M",
+            {"llama_extra_args": ["--flash-attn"]},
+        ),
     )
 
     _run_hook("unsloth/B-GGUF")
     req = rec.calls[0]
     assert req.llama_extra_args == ["--flash-attn"]
     assert req.max_seq_length == 0  # untouched default
+
+
+def test_auto_switch_rereads_saved_arguments_after_the_lifecycle_gate(monkeypatch):
+    """A settings edit while the request waits must win before teardown/spawn."""
+
+    from contextlib import asynccontextmanager
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    saved = {"llama_extra_args": ["--flash-attn"]}
+    monkeypatch.setattr(
+        settings,
+        "resolve_model_override_candidates",
+        lambda *a, **k: ("unsloth/B-GGUF:Q4_K_M", dict(saved)),
+    )
+
+    @asynccontextmanager
+    async def _editing_gate():
+        saved["llama_extra_args"] = ["--top-k", "40"]
+        yield
+
+    monkeypatch.setattr(kw, "inference_lifecycle_gate", _editing_gate)
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert len(rec.calls) == 1
+    assert rec.calls[0].llama_extra_args == ["--top-k", "40"]
+
+
+def test_auto_switch_compares_saved_args_to_requested_fallback_identity(monkeypatch):
+    """A healthy degraded launch must not reload its failed request forever."""
+
+    backend = _FakeBackend(
+        "/cache/snapshots/B/model.gguf",
+        hf_variant = "Q4_K_M",
+        advertised_id = "unsloth/B-GGUF",
+    )
+    backend.extra_args = ["--spec-default"]
+    backend.requested_extra_args = ["--spec-type", "draft-mtp"]
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (
+            "/cache/snapshots/B/model.gguf",
+            "Q4_K_M",
+            "unsloth/B-GGUF",
+        ),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "resolve_model_override_candidates",
+        lambda *a, **k: (
+            "unsloth/B-GGUF:Q4_K_M",
+            {"llama_extra_args": ["--spec-type", "draft-mtp"]},
+        ),
+    )
+
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+
+    assert rec.calls == []
+
+
+def test_auto_switch_quarantines_the_entire_newly_blocked_legacy_list(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "resolve_model_override_candidates",
+        lambda *a, **k: (
+            "unsloth/B-GGUF:Q4_K_M",
+            {
+                "llama_extra_args": [
+                    "--log-file",
+                    "/tmp/old.log",
+                    "--top-k",
+                    "20",
+                ]
+            },
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+    assert excinfo.value.status_code == 409
+    assert rec.calls == []
+
+
+def test_auto_switch_quarantines_a_present_saved_null(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "resolve_model_override_candidates",
+        lambda *a, **k: (
+            "unsloth/B-GGUF:Q4_K_M",
+            {"llama_extra_args": None},
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+    assert excinfo.value.status_code == 409
+    assert rec.calls == []
 
 
 def _mock_override_store(monkeypatch):
@@ -983,6 +1126,26 @@ def _put(model_id, **fields):
     )
 
 
+def test_override_settings_are_ui_session_only(monkeypatch):
+    from fastapi import HTTPException
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    with pytest.raises(HTTPException) as read_exc:
+        settings_route.get_openai_auto_switch_overrides("tester", via_api_key = True)
+    assert read_exc.value.status_code == 403
+
+    payload = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", llama_extra_args = []
+    )
+    with pytest.raises(HTTPException) as write_exc:
+        settings_route.update_openai_auto_switch_override(
+            payload, "tester", via_api_key = True
+        )
+    assert write_exc.value.status_code == 403
+    assert settings.get_model_overrides() == {}
+
+
 def test_model_override_roundtrip(monkeypatch):
     _mock_override_store(monkeypatch)
 
@@ -993,8 +1156,14 @@ def test_model_override_roundtrip(monkeypatch):
         "llama_extra_args": ["--n-gpu-layers", "20"],
         "max_seq_length": 4096,
     }
-    # An override with no fields removes the entry rather than storing an empty one.
+    # Explicit [] is stored data: it blocks fallback to a lower-priority entry.
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
+    assert settings.get_model_override("unsloth/B-GGUF") == {"llama_extra_args": []}
+    assert settings.model_override_load_kwargs(
+        settings.get_model_override("unsloth/B-GGUF"), is_gguf = True
+    )["llama_extra_args"] == []
+
+    settings.delete_model_override("unsloth/B-GGUF")
     assert settings.get_model_override("unsloth/B-GGUF") == {}
     assert settings.get_model_overrides() == {}
 
@@ -1024,6 +1193,82 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
     empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
     resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
     assert "unsloth/B-GGUF" not in resp2.overrides
+
+
+def test_override_route_quarantines_legacy_managed_args_during_unrelated_save(monkeypatch):
+    from fastapi import HTTPException
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(
+        "unsloth/B-GGUF",
+        llama_extra_args=["--slot-save-path", "/tmp/slots", "--top-k", "20"],
+        max_seq_length=2048,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _put("unsloth/B-GGUF", max_seq_length=4096)
+    assert excinfo.value.status_code == 409
+    saved = settings.get_model_override("unsloth/B-GGUF")
+    assert saved["llama_extra_args"] == [
+        "--slot-save-path",
+        "/tmp/slots",
+        "--top-k",
+        "20",
+    ]
+    assert saved["max_seq_length"] == 2048
+
+
+def test_override_fill_revalidates_and_quarantines_legacy_args(monkeypatch):
+    from fastapi import HTTPException
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(
+        "unsloth/B-GGUF",
+        llama_extra_args = ["--slot-save-path", "/tmp/slots"],
+        max_seq_length = 2048,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _put("unsloth/B-GGUF", max_seq_length = 4096, fill_absent_fields = True)
+    assert excinfo.value.status_code == 409
+    assert settings.get_model_override("unsloth/B-GGUF")["max_seq_length"] == 2048
+
+
+def test_override_carry_quarantines_a_present_saved_null(monkeypatch):
+    from fastapi import HTTPException
+
+    store = _mock_override_store(monkeypatch)
+    store[settings.MODEL_OVERRIDES_SETTING_KEY] = {
+        "unsloth/B-GGUF": {
+            "llama_extra_args": None,
+            "max_seq_length": 2048,
+        }
+    }
+    settings._cache.clear()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _put("unsloth/B-GGUF", max_seq_length = 4096)
+    assert excinfo.value.status_code == 409
+    assert settings.get_model_override("unsloth/B-GGUF")["max_seq_length"] == 2048
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        pytest.param(["x"] * 257, id = "too-many-tokens"),
+        pytest.param(["contains\x00nul"], id = "control-character"),
+        pytest.param(["é" * 16385], id = "multibyte-over-32-kib"),
+        pytest.param(["x" * (32 * 1024 + 1)], id = "total-over-32-kib"),
+    ],
+)
+def test_override_route_enforces_llama_extra_arg_size_limits(
+    override_store, extra_args
+):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        _put("unsloth/B-GGUF", llama_extra_args = extra_args)
+    assert excinfo.value.status_code == 400
 
 
 def test_model_override_rejects_zero_max_seq_length():
@@ -4619,7 +4864,9 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
         current_subject = None,
         *,
         current_request_counted = False,
+        args_origin = None,
     ):
+        assert args_origin == inference_route.LlamaArgsOrigin.STORED_UI_OVERRIDE
         with slock:
             state["cur"] += 1
             state["max"] = max(state["max"], state["cur"])
@@ -5539,7 +5786,12 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
             "llama_extra_args": [],
         }
     )
-    assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
+    assert entry == {
+        "max_seq_length": 8192,
+        "speculative_type": "mtp",
+        "gpu_ids": [1, 0, 2],
+        "llama_extra_args": [],
+    }
 
 
 def test_normalize_model_override_rejects_oversized_chat_template():
@@ -5609,11 +5861,7 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
 
 
-def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
-    # The settings page has no control for pass-through flags, so a save carries over the
-    # ones already stored while writing the field the user just edited, leaving one entry
-    # holding both. Sent together they reach llama-server with the extras appended last,
-    # and its parser takes the final -c, so the stale flag would pin the old context.
+def test_a_carried_ctx_flag_remains_authoritative_over_saved_context(monkeypatch):
     _mock_override_store(monkeypatch)
     _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--ctx-size", "8192", "--top-k", "40"])
     saved = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
@@ -5634,13 +5882,10 @@ def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
     _run_hook("unsloth/B-GGUF")
     request = rec.calls[0]
     assert request.max_seq_length == 32768
-    # The shadowing flag goes; the sampling flag beside it is nobody's first-class field.
-    assert request.llama_extra_args == ["--top-k", "40"]
+    assert request.llama_extra_args == ["--ctx-size", "8192", "--top-k", "40"]
 
 
-def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
-    # Same rule the /load route applies to inherited extras: one group per first-class
-    # field actually being sent, so a flag with nothing to shadow still passes through.
+def test_load_kwargs_keep_custom_arguments_over_overlapping_saved_fields():
     override = {
         "llama_extra_args": [
             "-c",
@@ -5661,21 +5906,20 @@ def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
         "chat_template_override": "{{ bos_token }}",
         "tensor_parallel": True,
     }
-    stripped = settings.model_override_load_kwargs(override, is_gguf = True)
-    assert stripped["llama_extra_args"] == ["--top-p", "0.9"]
+    loaded = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert loaded["llama_extra_args"] == override["llama_extra_args"]
 
-    # Nothing is supplied to shadow them, so every flag survives.
     kept = settings.model_override_load_kwargs(
         {"llama_extra_args": override["llama_extra_args"]}, is_gguf = True
     )
     assert kept["llama_extra_args"] == override["llama_extra_args"]
 
-    # And one field strips one group.
+    # One overlapping field still does not delete its custom counterpart.
     ctx_only = settings.model_override_load_kwargs(
         {"llama_extra_args": override["llama_extra_args"], "max_seq_length": 32768},
         is_gguf = True,
     )
-    assert ctx_only["llama_extra_args"] == override["llama_extra_args"][2:]
+    assert ctx_only["llama_extra_args"] == override["llama_extra_args"]
 
 
 def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
@@ -5755,6 +5999,27 @@ def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
     assert req.gpu_layers == 20
 
 
+def test_auto_switch_qualified_explicit_clear_stops_bare_args(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {
+        "unsloth/B-GGUF:Q4_K_M": {"llama_extra_args": []},
+        "unsloth/B-GGUF": {"llama_extra_args": ["--flash-attn"]},
+    }
+    monkeypatch.setattr(settings, "get_model_override", lambda model_id: stored.get(model_id, {}))
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert rec.calls[0].llama_extra_args == []
+
+
 def test_auto_switch_falls_back_to_bare_repo_override(monkeypatch):
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
@@ -5780,9 +6045,9 @@ def test_override_route_preserves_launch_flags_across_a_settings_only_update(ove
     assert entry["llama_extra_args"] == ["--flash-attn"]
     assert entry["max_seq_length"] == 4096
 
-    # An explicit empty list is the UI's "forget", and with no fields left the entry goes.
-    gone = _put("unsloth/B-GGUF", llama_extra_args = [])
-    assert "unsloth/B-GGUF" not in gone.overrides
+    # An explicit empty list is an authoritative saved clear, not Forget.
+    cleared = _put("unsloth/B-GGUF", llama_extra_args = [])
+    assert cleared.overrides["unsloth/B-GGUF"] == {"llama_extra_args": []}
 
 
 def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
@@ -6089,6 +6354,23 @@ def test_bare_payload_without_remove_flag_still_removes(override_store):
     settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
     resp = _put("unsloth/B-GGUF")
     assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_direct_put_explicit_empty_args_persists_clear(override_store):
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+    resp = _put("unsloth/B-GGUF", llama_extra_args = [])
+    assert resp.overrides["unsloth/B-GGUF"] == {"llama_extra_args": []}
+
+
+def test_qualified_clear_stops_bare_override_fallback(override_store):
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [])
+
+    qualified = settings.get_model_override("unsloth/B-GGUF:Q4_K_M")
+    assert qualified == {"llama_extra_args": []}
+    assert settings.model_override_load_kwargs(qualified, is_gguf = True) == {
+        "llama_extra_args": []
+    }
 
 
 def test_remove_false_with_real_fields_saves_normally(override_store):
@@ -7127,12 +7409,8 @@ def test_a_cached_repo_still_resolves_by_its_repo_id(monkeypatch):
     assert req2.max_seq_length == 16384
 
 
-def test_a_fill_does_not_replay_a_stored_flag_through_validation(monkeypatch):
-    """The migration now writes for entries it used to skip, and an omitted
-    llama_extra_args is normally carried over from the stored entry. Replaying a
-    flag that has been denylisted since it was saved would 400 the one-time
-    migration, which then retries on every start. A fill keeps the stored flags
-    without sending them back."""
+def test_a_fill_quarantines_a_stored_flag_under_the_current_policy(monkeypatch):
+    """Every persistence path revalidates the complete stored argument list."""
     import routes.settings as settings_route
     from core.inference import llama_server_args
 
@@ -7152,10 +7430,12 @@ def test_a_fill_does_not_replay_a_stored_flag_through_validation(monkeypatch):
     fill = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF:Q4_K_M", custom_context_length = 32768, fill_absent_fields = True
     )
-    resp = settings_route.update_openai_auto_switch_override(fill, "tester")
-    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    with pytest.raises(HTTPException) as fill_exc:
+        settings_route.update_openai_auto_switch_override(fill, "tester")
+    assert fill_exc.value.status_code == 409
+    entry = settings.get_model_override("unsloth/B-GGUF:Q4_K_M")
     assert entry["llama_extra_args"] == ["--flash-attn"]
-    assert entry["custom_context_length"] == 32768
+    assert "custom_context_length" not in entry
     assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
 
     # An ordinary save still validates what it is handed.

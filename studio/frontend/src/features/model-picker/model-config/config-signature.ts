@@ -61,6 +61,9 @@ export function loadedConfigSignature(
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
+    config.llamaExtraArgs === undefined
+      ? "absent"
+      : `${config.llamaExtraArgs.length}:${hashString(JSON.stringify(config.llamaExtraArgs))}`,
     gpuFieldsSignature(config),
   ].join("|");
 }

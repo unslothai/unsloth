@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Boundary validator for user-supplied llama-server pass-through args.
+"""Security boundary for user-supplied ``llama-server`` arguments.
 
-Reject only flags Unsloth manages (model identity, auth, network, parallel
-slots). Everything else (sampling, ``-c``, ``-ngl``, ``--flash-attn``,
-``--cache-type-*``, ``--spec-*``, ``--jinja``, ...) is appended after
-Unsloth's auto-set flags so llama.cpp's last-wins parser lets the user override.
-
-Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+The policy is deliberately deny-known: every currently documented argument
+that can reach the filesystem, network, another process, or server control
+plane is classified and blocked here.  Compute, sampling, and decoding flags
+remain available, and an option unknown to this build keeps the historical
+pass-through behaviour.  Callers must revalidate remembered values because a
+previously unclassified flag can become blocked after a llama.cpp update.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Mapping, NamedTuple, Optional
 
 # Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
 # Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
@@ -27,76 +27,397 @@ PARALLEL_MAX = 64
 BATCH_MIN = 1
 BATCH_MAX = 65536
 
-# Each group = every alias (short + long) of one hard-denied flag.
-# Extend the matching group when llama.cpp adds a new alias.
-_DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
-    # Parallel slots: owned by typer --parallel and LoadRequest.n_parallel; a
-    # pass-through would desync the slot bookkeeping from llama-server.
-    frozenset({"-np", "--parallel", "--n-parallel"}),
-    # Model identity: Unsloth resolves it from LoadRequest; a second -m would
-    # load a different model than Unsloth thinks it loaded.
-    frozenset({"-m", "--model"}),
-    # Public model id: Unsloth sets a sanitized --alias so the OpenAI API never
-    # exposes the local .gguf path. A user-supplied alias is appended after
-    # Unsloth's and, with llama.cpp's last-wins parsing, would reintroduce the
-    # path leak this is meant to prevent.
-    frozenset({"-a", "--alias"}),
-    frozenset({"-mu", "--model-url"}),
-    frozenset({"-dr", "--docker-repo"}),
-    frozenset({"-hf", "-hfr", "--hf-repo"}),
-    frozenset({"-hff", "--hf-file"}),
-    frozenset({"-hfv", "-hfrv", "--hf-repo-v"}),
-    frozenset({"-hffv", "--hf-file-v"}),
-    frozenset({"-hft", "--hf-token"}),
-    frozenset({"-mm", "--mmproj"}),
-    frozenset({"-mmu", "--mmproj-url"}),
-    # Networking: Unsloth binds + proxies; retargeting orphans the proxy.
-    frozenset({"--host"}),
-    frozenset({"--port"}),
-    frozenset({"--path"}),
-    frozenset({"--api-prefix"}),
-    frozenset({"--reuse-port"}),
-    # Auth / TLS: Unsloth terminates auth; upstream --api-key / TLS shadows
-    # Unsloth's key and breaks the proxy hop.
-    frozenset({"--api-key"}),
-    frozenset({"--api-key-file"}),
-    frozenset({"--ssl-key-file"}),
-    frozenset({"--ssl-cert-file"}),
-    # Built-in web UI. --webui/--no-webui is the legacy spelling; upstream
-    # renamed to --ui/--no-ui + --ui-*. Keep both so prebuilt and system
-    # llama.cpp binaries match.
-    frozenset({"--webui", "--no-webui"}),
-    frozenset({"--ui", "--no-ui"}),
-    frozenset({"--ui-config"}),
-    frozenset({"--ui-config-file"}),
-    frozenset({"--ui-mcp-proxy", "--no-ui-mcp-proxy"}),
-    frozenset({"--models-dir"}),
-    frozenset({"--models-preset"}),
-    frozenset({"--models-max"}),
-    frozenset({"--models-autoload", "--no-models-autoload"}),
-    # Server-mode flips: --embedding is set from the GGUF pooling type at load, not by hand.
-    frozenset({"--embedding", "--embeddings"}),
-    frozenset({"--rerank", "--reranking"}),
-    # Pooling decides whether the managed embedding launch is safe. A pass-through
-    # override appended after --embedding could switch it to NONE or RANK.
-    frozenset({"--pooling"}),
-    # llama-server's own built-in tools flag would silently stack on top of
-    # Unsloth's --enable-tools / --disable-tools policy resolver.
-    frozenset({"--tools"}),
-    # Slot-state dir: Studio owns it for KV persistence across idle unload.
-    frozenset({"--slot-save-path"}),
+# Keep the argv boundary bounded even when a caller bypasses the Studio UI.
+# These limits are mirrored by the raw editor, but this validator remains the
+# authoritative load-time guard for API and remembered-setting callers.
+EXTRA_ARGS_MAX_TOKENS = 256
+EXTRA_ARGS_MAX_UTF8_BYTES = 32 * 1024
+
+class LlamaServerFlagPolicy(NamedTuple):
+    """Canonical alias and arity record for a blocked capability."""
+
+    canonical: str
+    aliases: tuple[str, ...] = ()
+    value_arity: int = 0
+    category: str = "Server administration"
+
+    @property
+    def spellings(self) -> tuple[str, ...]:
+        return (self.canonical, *self.aliases)
+
+
+def _blocked(
+    canonical: str,
+    *aliases: str,
+    value_arity: int = 0,
+    category: str,
+) -> LlamaServerFlagPolicy:
+    return LlamaServerFlagPolicy(canonical, aliases, value_arity, category)
+
+
+def _safe(
+    canonical: str,
+    *aliases: str,
+    value_arity: int = 1,
+    category: str = "Unclassified",
+) -> LlamaServerFlagPolicy:
+    """Describe a documented pass-through flag whose syntax is unambiguous."""
+
+    return LlamaServerFlagPolicy(canonical, aliases, value_arity, category)
+
+
+# Checked against the installed llama-server help (b10360 at implementation
+# time).  Historical aliases remain because Studio can use system/prebuilt
+# binaries from adjacent llama.cpp releases.
+BLOCKED_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
+    # Non-serving terminal actions.
+    _blocked("--help", "-h", "--usage", category = "Terminal action"),
+    _blocked("--version", category = "Terminal action"),
+    _blocked("--list-devices", category = "Terminal action"),
+    _blocked("--cache-list", "-cl", category = "Terminal action"),
+    _blocked("--completion-bash", category = "Terminal action"),
+    # Local model/material reads and writes.
+    _blocked("--model", "-m", value_arity = 1, category = "Filesystem read"),
+    _blocked("--mmproj", "-mm", value_arity = 1, category = "Filesystem read"),
+    _blocked("--lora", value_arity = 1, category = "Filesystem read"),
+    _blocked("--lora-scaled", value_arity = 1, category = "Filesystem read"),
+    _blocked("--lora-init-without-apply", category = "Server administration"),
+    _blocked("--control-vector", value_arity = 1, category = "Filesystem read"),
+    _blocked("--control-vector-scaled", value_arity = 1, category = "Filesystem read"),
+    _blocked("--control-vector-layer-range", value_arity = 2, category = "Filesystem read"),
+    _blocked("--grammar-file", value_arity = 1, category = "Filesystem read"),
+    _blocked("--json-schema-file", "-jf", value_arity = 1, category = "Filesystem read"),
+    _blocked("--chat-template-file", value_arity = 1, category = "Filesystem read"),
+    _blocked("--lookup-cache-static", "-lcs", value_arity = 1, category = "Filesystem read"),
+    _blocked("--lookup-cache-dynamic", "-lcd", value_arity = 1, category = "Filesystem read/write"),
+    _blocked("--log-file", value_arity = 1, category = "Filesystem write"),
+    _blocked("--log-prompts-dir", value_arity = 1, category = "Filesystem write"),
+    _blocked("--slot-save-path", value_arity = 1, category = "Filesystem write"),
+    _blocked("--media-path", value_arity = 1, category = "Filesystem read"),
+    _blocked("--models-dir", value_arity = 1, category = "Filesystem read"),
+    _blocked("--models-preset", value_arity = 1, category = "Filesystem read"),
+    # Download/RPC capability, including the built-in downloadable presets.
+    _blocked("--rpc", value_arity = 1, category = "Network/RPC"),
+    _blocked("--model-url", "-mu", value_arity = 1, category = "Network/downloader"),
+    _blocked("--docker-repo", "-dr", value_arity = 1, category = "Network/downloader"),
+    _blocked("--hf-repo", "-hf", "-hfr", value_arity = 1, category = "Network/downloader"),
+    _blocked("--hf-file", "-hff", value_arity = 1, category = "Network/downloader"),
+    _blocked("--hf-repo-v", "-hfv", "-hfrv", value_arity = 1, category = "Network/downloader"),
+    _blocked("--hf-file-v", "-hffv", value_arity = 1, category = "Network/downloader"),
+    _blocked("--mmproj-url", "-mmu", value_arity = 1, category = "Network/downloader"),
+    _blocked("--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft", value_arity = 1, category = "Network/downloader"),
+    _blocked("--embd-gemma-default", category = "Network/downloader"),
+    _blocked("--fim-qwen-1.5b-default", category = "Network/downloader"),
+    _blocked("--fim-qwen-3b-default", category = "Network/downloader"),
+    _blocked("--fim-qwen-7b-default", category = "Network/downloader"),
+    _blocked("--fim-qwen-7b-spec", category = "Network/downloader"),
+    _blocked("--fim-qwen-14b-spec", category = "Network/downloader"),
+    _blocked("--fim-qwen-30b-default", category = "Network/downloader"),
+    _blocked("--gpt-oss-20b-default", category = "Network/downloader"),
+    _blocked("--gpt-oss-120b-default", category = "Network/downloader"),
+    _blocked("--vision-gemma-4b-default", category = "Network/downloader"),
+    _blocked("--vision-gemma-12b-default", category = "Network/downloader"),
+    # Credentials and transport security.
+    _blocked("--api-key", value_arity = 1, category = "Authentication"),
+    _blocked("--api-key-file", value_arity = 1, category = "Authentication"),
+    _blocked("--hf-token", "-hft", value_arity = 1, category = "Authentication"),
+    _blocked("--ssl-key-file", value_arity = 1, category = "TLS"),
+    _blocked("--ssl-cert-file", value_arity = 1, category = "TLS"),
+    # Listening, routing, UI and media exposure.
+    _blocked("--host", value_arity = 1, category = "Routing/listening"),
+    _blocked("--port", value_arity = 1, category = "Routing/listening"),
+    _blocked("--reuse-port", category = "Routing/listening"),
+    _blocked("--path", value_arity = 1, category = "Routing/listening"),
+    _blocked("--api-prefix", value_arity = 1, category = "Routing/listening"),
+    _blocked("--cors-origins", value_arity = 1, category = "Routing/listening"),
+    _blocked("--cors-methods", value_arity = 1, category = "Routing/listening"),
+    _blocked("--cors-headers", value_arity = 1, category = "Routing/listening"),
+    _blocked("--cors-credentials", "--no-cors-credentials", category = "Routing/listening"),
+    _blocked("--alias", "-a", value_arity = 1, category = "Routing/listening"),
+    _blocked("--tags", value_arity = 1, category = "Routing/listening"),
+    _blocked("--ui", "--webui", "--no-ui", "--no-webui", category = "UI/media"),
+    _blocked("--ui-config", "--webui-config", value_arity = 1, category = "UI/media"),
+    _blocked("--ui-config-file", "--webui-config-file", value_arity = 1, category = "UI/media"),
+    _blocked("--ui-mcp-proxy", "--webui-mcp-proxy", "--no-ui-mcp-proxy", "--no-webui-mcp-proxy", category = "UI/media"),
+    _blocked("--mmproj-auto", "--no-mmproj", "--no-mmproj-auto", category = "UI/media"),
+    # Tool/process execution surfaces.
+    _blocked("--tools", value_arity = 1, category = "Tools/agent/process"),
+    _blocked("--tools-runtime", value_arity = 1, category = "Tools/agent/process"),
+    _blocked("--mcp-servers-config", value_arity = 1, category = "Tools/agent/process"),
+    _blocked("--mcp-servers-json", value_arity = 1, category = "Tools/agent/process"),
+    _blocked("--agent", "-ag", "-no-ag", "--no-agent", category = "Tools/agent/process"),
+    # Server lifecycle, mode and administrative endpoints.
+    _blocked("--parallel", "-np", "--n-parallel", value_arity = 1, category = "Server administration"),
+    _blocked("--embedding", "--embeddings", category = "Server administration"),
+    _blocked("--rerank", "--reranking", category = "Server administration"),
+    _blocked("--pooling", value_arity = 1, category = "Server administration"),
+    _blocked("--timeout", "-to", value_arity = 1, category = "Server administration"),
+    _blocked("--sse-ping-interval", value_arity = 1, category = "Server administration"),
+    _blocked("--threads-http", value_arity = 1, category = "Server administration"),
+    _blocked("--metrics", category = "Server administration"),
+    _blocked("--props", category = "Server administration"),
+    _blocked("--slots", "--no-slots", category = "Server administration"),
+    _blocked("--models-max", value_arity = 1, category = "Server administration"),
+    _blocked("--models-autoload", "--no-models-autoload", category = "Server administration"),
+    _blocked("--sleep-idle-seconds", value_arity = 1, category = "Server administration"),
+    _blocked("--log-disable", category = "Server administration"),
 )
 
-_DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
+# Documented compute, sampling, decoding and performance flags that require a
+# following value in the installed llama-server.  They remain pass-through;
+# this inventory only lets Studio reject an incomplete argv before teardown.
+# Optional-value switches such as ``--flash-attn [on|off|auto]`` and ordinary
+# booleans are deliberately absent. Unknown future flags remain pass-through.
+KNOWN_SAFE_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
+    _safe("--threads", "-t"),
+    _safe("--threads-batch", "-tb"),
+    _safe("--cpu-mask", "-C"),
+    _safe("--cpu-range", "-Cr"),
+    _safe("--cpu-strict"),
+    _safe("--prio"),
+    _safe("--poll"),
+    _safe("--cpu-mask-batch", "-Cb"),
+    _safe("--cpu-range-batch", "-Crb"),
+    _safe("--cpu-strict-batch"),
+    _safe("--prio-batch"),
+    _safe("--poll-batch"),
+    _safe("--ctx-size", "-c"),
+    _safe("--predict", "-n", "--n-predict"),
+    _safe("--batch-size", "-b"),
+    _safe("--ubatch-size", "-ub"),
+    _safe("--keep"),
+    _safe("--rope-scaling"),
+    _safe("--rope-scale"),
+    _safe("--rope-freq-base"),
+    _safe("--rope-freq-scale"),
+    _safe("--yarn-orig-ctx"),
+    _safe("--yarn-ext-factor"),
+    _safe("--yarn-attn-factor"),
+    _safe("--yarn-beta-slow"),
+    _safe("--yarn-beta-fast"),
+    _safe("--cache-type-k", "-ctk"),
+    _safe("--cache-type-v", "-ctv"),
+    _safe("--defrag-thold", "-dt"),
+    _safe("--load-mode", "-lm"),
+    _safe("--numa"),
+    _safe("--device", "-dev"),
+    _safe("--override-tensor", "-ot"),
+    _safe("--n-cpu-moe", "-ncmoe"),
+    _safe("--gpu-layers", "-ngl", "--n-gpu-layers"),
+    _safe("--split-mode", "-sm"),
+    _safe("--tensor-split", "-ts"),
+    _safe("--main-gpu", "-mg"),
+    _safe("--fit-target", "-fitt"),
+    _safe("--fit-ctx", "-fitc"),
+    _safe("--override-kv"),
+    _safe("--verbosity", "-lv", "--log-verbosity"),
+    _safe("--spec-draft-type-k", "-ctkd", "--cache-type-k-draft"),
+    _safe("--spec-draft-type-v", "-ctvd", "--cache-type-v-draft"),
+    _safe("--samplers"),
+    _safe("--seed", "-s"),
+    _safe("--sampler-seq", "--sampling-seq"),
+    _safe("--temp", "--temperature"),
+    _safe("--top-k"),
+    _safe("--top-p"),
+    _safe("--min-p"),
+    _safe("--top-nsigma", "--top-n-sigma"),
+    _safe("--xtc-probability"),
+    _safe("--xtc-threshold"),
+    _safe("--typical", "--typical-p"),
+    _safe("--repeat-last-n"),
+    _safe("--repeat-penalty"),
+    _safe("--presence-penalty"),
+    _safe("--frequency-penalty"),
+    _safe("--dry-multiplier"),
+    _safe("--dry-base"),
+    _safe("--dry-allowed-length"),
+    _safe("--dry-penalty-last-n"),
+    _safe("--dry-sequence-breaker"),
+    _safe("--adaptive-target"),
+    _safe("--adaptive-decay"),
+    _safe("--dynatemp-range"),
+    _safe("--dynatemp-exp"),
+    _safe("--mirostat"),
+    _safe("--mirostat-lr"),
+    _safe("--mirostat-ent"),
+    _safe("--logit-bias", "-l"),
+    _safe("--grammar"),
+    _safe("--json-schema", "-j"),
+    # PR #8702 compatibility: an explicitly supplied local drafter remains a
+    # pass-through choice. Keep it typed so missing values fail before launch,
+    # and classified so its path can still be redacted from startup logs.
+    _safe(
+        "--spec-draft-model",
+        "-md",
+        "--model-draft",
+        category = "Filesystem read",
+    ),
+    _safe("--spec-draft-threads", "-td", "--threads-draft"),
+    _safe("--spec-draft-threads-batch", "-tbd", "--threads-batch-draft"),
+    _safe("--spec-draft-cpu-mask", "-Cd", "--cpu-mask-draft"),
+    _safe("--spec-draft-cpu-range", "-Crd", "--cpu-range-draft"),
+    _safe("--spec-draft-cpu-strict", "--cpu-strict-draft"),
+    _safe("--spec-draft-prio", "--prio-draft"),
+    _safe("--spec-draft-poll", "--poll-draft"),
+    _safe("--spec-draft-cpu-mask-batch", "-Cbd", "--cpu-mask-batch-draft"),
+    _safe("--spec-draft-cpu-strict-batch", "--cpu-strict-batch-draft"),
+    _safe("--spec-draft-prio-batch", "--prio-batch-draft"),
+    _safe("--spec-draft-poll-batch", "--poll-batch-draft"),
+    _safe("--spec-draft-override-tensor", "-otd", "--override-tensor-draft"),
+    _safe("--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"),
+    _safe("--spec-draft-n-max"),
+    _safe("--spec-draft-n-min"),
+    _safe("--spec-draft-p-split", "--draft-p-split"),
+    _safe("--spec-draft-p-min", "--draft-p-min"),
+    _safe("--spec-draft-device", "-devd", "--device-draft"),
+    _safe("--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"),
+    _safe("--spec-type"),
+    _safe("--spec-ngram-mod-n-min"),
+    _safe("--spec-ngram-mod-n-max"),
+    _safe("--spec-ngram-mod-n-match"),
+    _safe("--spec-ngram-simple-size-n"),
+    _safe("--spec-ngram-simple-size-m"),
+    _safe("--spec-ngram-simple-min-hits"),
+    _safe("--spec-ngram-map-k-size-n"),
+    _safe("--spec-ngram-map-k-size-m"),
+    _safe("--spec-ngram-map-k-min-hits"),
+    _safe("--spec-ngram-map-k4v-size-n"),
+    _safe("--spec-ngram-map-k4v-size-m"),
+    _safe("--spec-ngram-map-k4v-min-hits"),
+    _safe("--ctx-checkpoints", "-ctxcp", "--swa-checkpoints"),
+    _safe("--checkpoint-min-step", "-cms"),
+    _safe("--cache-ram", "-cram"),
+    _safe("--reverse-prompt", "-r"),
+    _safe("--image-min-tokens"),
+    _safe("--image-max-tokens"),
+    _safe("--mtmd-batch-max-tokens"),
+    _safe("--embd-normalize"),
+    _safe("--chat-template-kwargs"),
+    _safe("--cache-reuse"),
+    _safe("--reasoning-format"),
+    _safe("--reasoning-budget"),
+    _safe("--reasoning-budget-message"),
+    _safe("--chat-template"),
+    _safe("--slot-prompt-similarity", "-sps"),
+)
+
+_POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
+    spelling: policy
+    for policy in BLOCKED_FLAG_POLICIES
+    for spelling in policy.spellings
+}
+_SAFE_POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
+    spelling: policy
+    for policy in KNOWN_SAFE_FLAG_POLICIES
+    for spelling in policy.spellings
+}
+_DENYLIST_GROUPS: tuple[frozenset[str], ...] = tuple(
+    frozenset(policy.spellings) for policy in BLOCKED_FLAG_POLICIES
+)
+_DENYLIST: frozenset[str] = frozenset(_POLICY_BY_SPELLING)
+# Documented no/optional-value aliases are part of syntax resolution even
+# though they do not need an arity policy.  Keeping them here prevents a
+# shorter attached alias from stealing an exact token (``-m`` must never claim
+# ``-mlock``; the same invariant covers every installed multi-character alias).
+_DECLARED_SAFE_SHORT_ALIASES: frozenset[str] = frozenset(
+    {
+        "-bs",
+        "-cb",
+        "-cmoe",
+        "-cmoed",
+        "-dio",
+        "-e",
+        "-fa",
+        "-fit",
+        "-kvo",
+        "-kvu",
+        "-mlock",
+        "-ncmoed",
+        "-ndio",
+        "-nkvo",
+        "-no-kvu",
+        "-no-mmap",
+        "-nocb",
+        "-nr",
+        "-rea",
+        "-sp",
+        "-v",
+    }
+)
+_DECLARED_EXACT_SPELLINGS: frozenset[str] = frozenset(
+    set(_POLICY_BY_SPELLING)
+    | set(_SAFE_POLICY_BY_SPELLING)
+    | set(_DECLARED_SAFE_SHORT_ALIASES)
+)
+_ATTACHED_SHORT_SPELLINGS: tuple[str, ...] = tuple(
+    sorted(
+        {
+            spelling
+            for spelling, policy in {
+                **_POLICY_BY_SPELLING,
+                **_SAFE_POLICY_BY_SPELLING,
+            }.items()
+            if policy.value_arity > 0
+            and spelling.startswith("-")
+            and not spelling.startswith("--")
+        },
+        key = len,
+        reverse = True,
+    )
+)
 
 
-def _flag_name(token: str) -> Optional[str]:
+class LlamaServerArgsError(ValueError):
+    """Safe, typed admission failure.  It never stores or renders a flag value."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        canonical_flag: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.canonical_flag = canonical_flag
+        self.category = category
+
+
+class ExtraArgsAssessment(NamedTuple):
+    """Non-throwing result used to quarantine a complete remembered list."""
+
+    args: tuple[str, ...]
+    error: Optional[LlamaServerArgsError] = None
+
+    @property
+    def quarantined(self) -> bool:
+        return self.error is not None
+
+
+def managed_flag_groups() -> tuple[tuple[str, ...], ...]:
+    """Stable managed aliases exposed to diagnostics/catalog consumers."""
+    return tuple(tuple(sorted(group)) for group in _DENYLIST_GROUPS)
+
+
+def managed_flags() -> tuple[str, ...]:
+    """Every stable flag blocked by the authoritative admission policy."""
+    return tuple(sorted(_DENYLIST))
+
+
+def declared_exact_aliases() -> tuple[str, ...]:
+    """All aliases which must win before attached-short value parsing."""
+
+    return tuple(sorted(_DECLARED_EXACT_SPELLINGS))
+
+
+def resolve_flag_alias(token: str) -> Optional[str]:
     """Flag name for ``token``, or None if it isn't a flag.
 
     Peels `--key=value` to `--key`, normalises long-option underscores like
     llama.cpp, treats `-1`/`-0.5` as values (shorts always start with a letter),
-    and normalises attached `-np8` / `-np-1` / `-np8x` to `-np`. Mirrors the
-    CLI's `_expand_attached_np_short`.
+    and normalises attached blocked short forms such as ``-np8`` and
+    ``-mC:\\model.gguf`` to their declared alias.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
@@ -106,43 +427,247 @@ def _flag_name(token: str) -> Optional[str]:
     name = token.split("=", 1)[0]
     if name.startswith("--"):
         name = name.replace("_", "-")
-    if len(name) > 3 and name.startswith("-np"):
-        suffix = name[3:]
-        if suffix[0].isdigit() or (
-            len(suffix) > 1 and suffix[0] in {"-", "+"} and suffix[1].isdigit()
-        ):
-            return "-np"
+    # Exact declared aliases always win over attached-short interpretation.
+    if name in _DECLARED_EXACT_SPELLINGS:
+        return name
+    # Longest prefix across both safe and blocked aliases prevents a shorter
+    # safe alias from hiding a longer blocked one (``-t`` versus ``-to10``),
+    # while still preserving safe forms such as ``-mg0`` over blocked ``-m``.
+    for short in _ATTACHED_SHORT_SPELLINGS:
+        if name.startswith(short) and len(name) > len(short):
+            return short
     return name
+
+
+def _flag_name(token: str) -> Optional[str]:
+    """Compatibility name for the centralized exact-first alias resolver."""
+
+    return resolve_flag_alias(token)
+
+
+def flag_policy(flag: str) -> Optional[LlamaServerFlagPolicy]:
+    """Return the canonical blocked policy for any supported token spelling."""
+    normalised = _flag_name(flag)
+    return _POLICY_BY_SPELLING.get(normalised) if normalised is not None else None
+
+
+def safe_flag_policy(flag: str) -> Optional[LlamaServerFlagPolicy]:
+    """Return syntax metadata for a documented pass-through flag."""
+
+    normalised = _flag_name(flag)
+    return _SAFE_POLICY_BY_SPELLING.get(normalised) if normalised is not None else None
+
+
+def _attached_short_value(token: str, flag: Optional[str]) -> Optional[str]:
+    """Return an attached short-option value, or None for separate/long forms."""
+
+    stripped = token.strip()
+    if (
+        flag is not None
+        and flag.startswith("-")
+        and not flag.startswith("--")
+        and stripped.startswith(flag)
+        and len(stripped) > len(flag)
+        and stripped[len(flag)] != "="
+    ):
+        return stripped[len(flag) :]
+    return None
+
+
+def _has_forbidden_characters(token: str) -> bool:
+    # Tabs remain legal argv data.  Every line separator and C0/C1 control is
+    # rejected so neither a request nor a remembered value can forge log lines.
+    # Lone UTF-16 surrogates cannot be encoded into a Windows child command line.
+    return any(
+        char != "\t"
+        and (
+            ord(char) < 32
+            or 0x7F <= ord(char) <= 0x9F
+            or 0xD800 <= ord(char) <= 0xDFFF
+            or char in {"\u2028", "\u2029"}
+        )
+        for char in token
+    )
+
+
+def _coerce_args(args: Optional[Iterable[str]]) -> list[str]:
+    if args is None:
+        return []
+    if isinstance(args, (str, bytes)):
+        raise LlamaServerArgsError(
+            "malformed", "llama-server extra args must be a list of strings"
+        )
+    out: list[str] = []
+    try:
+        for raw in args:
+            if not isinstance(raw, str):
+                raise LlamaServerArgsError(
+                    "malformed",
+                    "llama-server extra args must be a list of strings",
+                )
+            out.append(raw)
+    except TypeError as exc:
+        raise LlamaServerArgsError(
+            "malformed", "llama-server extra args must be an iterable of strings"
+        ) from exc
+    return out
+
+
+def validate_argv_tokens(
+    args: Optional[Iterable[str]], *, enforce_custom_limits: bool = False
+) -> list[str]:
+    """Validate token encoding/shape without applying capability policy."""
+
+    out = _coerce_args(args)
+    if not out:
+        return []
+    if enforce_custom_limits and len(out) > EXTRA_ARGS_MAX_TOKENS:
+        raise LlamaServerArgsError(
+            "too_many_tokens",
+            f"llama-server extra args exceed the {EXTRA_ARGS_MAX_TOKENS}-token limit"
+        )
+
+    total_bytes = 0
+    for token in out:
+        if _has_forbidden_characters(token):
+            raise LlamaServerArgsError(
+                "forbidden_character",
+                "llama-server extra args cannot contain forbidden control characters, "
+                "line separators, or invalid Unicode; horizontal tabs are allowed",
+            )
+        if not token or token != token.strip() or token in {"-", "--"}:
+            raise LlamaServerArgsError(
+                "malformed",
+                "llama-server extra args cannot contain empty or whitespace-padded tokens",
+            )
+        token_bytes = len(token.encode("utf-8", "surrogatepass"))
+        total_bytes += token_bytes
+        if enforce_custom_limits and total_bytes > EXTRA_ARGS_MAX_UTF8_BYTES:
+            raise LlamaServerArgsError(
+                "too_large",
+                "llama-server extra args exceed the "
+                f"{EXTRA_ARGS_MAX_UTF8_BYTES}-byte total UTF-8 limit"
+            )
+    return out
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     """Validate user-supplied llama-server args. Returns a flat list ready to
     extend the llama-server command; raises ``ValueError`` naming the
     offending flag on the first managed token."""
-    if not args:
+    out = validate_argv_tokens(args, enforce_custom_limits = True)
+    if not out:
         return []
-    out: list[str] = []
-    for raw in args:
-        token = str(raw)
-        flag = _flag_name(token)
-        if flag is not None and flag in _DENYLIST:
-            raise ValueError(
-                f"llama-server flag '{flag}' is managed by Unsloth Studio "
-                f"and cannot be passed as an extra arg"
+    for token in out:
+        policy = flag_policy(token)
+        if policy is not None:
+            matched = _flag_name(token)
+            alias_note = (
+                f" via alias '{matched}'"
+                if matched is not None and matched != policy.canonical
+                else ""
             )
-        out.append(token)
-    parse_ctx_override(out)
-    parse_cache_override(out)
-    parse_split_mode_override(out)
-    parse_gpu_layers_override(out)
+            raise LlamaServerArgsError(
+                "blocked_flag",
+                f"llama-server flag '{policy.canonical}'{alias_note} is blocked "
+                f"({policy.category}) and managed by Unsloth Studio",
+                canonical_flag = policy.canonical,
+                category = policy.category,
+            )
+    for index, token in enumerate(out):
+        policy = safe_flag_policy(token)
+        if policy is None or policy.value_arity <= 0:
+            continue
+        if "=" in token:
+            if token.split("=", 1)[1] == "":
+                raise LlamaServerArgsError(
+                    "malformed",
+                    f"llama-server flag '{policy.canonical}' requires a value",
+                    canonical_flag = policy.canonical,
+                )
+            continue
+        matched = _flag_name(token)
+        if (
+            matched is not None
+            and matched.startswith("-")
+            and not matched.startswith("--")
+            and token.strip() != matched
+        ):
+            # llama.cpp accepts attached short values such as ``-c4096`` and
+            # ``-mg0``. The suffix satisfies the option's arity.
+            continue
+        for offset in range(1, policy.value_arity + 1):
+            value_index = index + offset
+            if value_index >= len(out) or _flag_name(out[value_index]) is not None:
+                raise LlamaServerArgsError(
+                    "malformed",
+                    f"llama-server flag '{policy.canonical}' requires a value",
+                    canonical_flag = policy.canonical,
+                )
+    try:
+        parse_ctx_override(out)
+        parse_cache_override(out)
+        parse_split_mode_override(out)
+        parse_gpu_layers_override(out)
+    except ValueError as exc:
+        raise LlamaServerArgsError("malformed", str(exc)) from exc
     return out
+
+
+def validate_stored_extra_args(args: object) -> list[str]:
+    """Validate a present persisted field; only an actual list is authoritative."""
+
+    if not isinstance(args, list):
+        raise LlamaServerArgsError(
+            "malformed",
+            "saved llama-server extra args must be a list of strings",
+        )
+    return validate_extra_args(args)
+
+
+def assess_extra_args(args: Optional[Iterable[str]]) -> ExtraArgsAssessment:
+    """Classify a complete list without exposing values or dropping a subset."""
+    try:
+        validated = validate_extra_args(args)
+    except LlamaServerArgsError as exc:
+        return ExtraArgsAssessment((), exc)
+    except ValueError as exc:
+        # Existing numeric/enum parsers also reject malformed known safe flags.
+        return ExtraArgsAssessment(
+            (),
+            LlamaServerArgsError("malformed", str(exc)),
+        )
+    return ExtraArgsAssessment(tuple(validated))
+
+
+def drop_managed_flags(
+    args: Optional[Iterable[str]],
+) -> tuple[list[str], list[str]]:
+    """Deprecated compatibility shim; invalid lists now fail atomically.
+
+    Callers handling persistence should use :func:`assess_extra_args` and mark
+    ``assessment.quarantined``.  Returning a permitted subset is intentionally
+    forbidden because it changes the saved command's meaning.
+    """
+    return validate_extra_args(args), []
 
 
 def is_managed_flag(flag: str) -> bool:
     """True if ``flag`` is Unsloth-managed. Normalises via ``_flag_name`` so
     `-np8` / `--parallel=8` classify like the canonical tokens."""
+    return flag_policy(flag) is not None
+
+
+def overlaps_studio_control(flag: str) -> bool:
+    """True when ``flag`` can override a first-class Studio setting.
+
+    Unlike :func:`is_managed_flag`, overlap is advisory: custom arguments are
+    appended last deliberately, so expert users may still override these
+    controls. Keeping this policy beside the validator lets catalog consumers
+    display warnings without duplicating backend flag groups.
+    """
     normalised = _flag_name(flag)
-    return normalised is not None and normalised in _DENYLIST
+    return normalised is not None and normalised in _STUDIO_CONTROL_OVERLAP_FLAGS
 
 
 # Pass-through flags that shadow first-class LoadRequest fields; stripped
@@ -223,9 +748,9 @@ _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
-# Host-memory placement flags. Both are full-model RAM reservations (--mlock pins
-# it, --no-mmap mallocs a copy), so the Model Memory settings own them: stripped
-# only when a toggle vetoes them, never unconditionally.
+# Host-memory placement flags. Both can create full-model RAM reservations
+# (--mlock pins it, --no-mmap mallocs a copy). Studio may emit defaults for the
+# same load-mode group, but explicit custom argv remains authoritative.
 _MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
 # Modern spelling of both, as an enum value. Takes a value, so NOT boolean.
 _LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
@@ -253,6 +778,20 @@ MEMORY_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_NO_MMAP",
     "LLAMA_ARG_NO_DIO",
 )
+
+# llama.cpp gives environment handlers the same authority as argv.  A partial
+# list inevitably misses new options, so every LLAMA_ARG_* is inherited-denied.
+# The fixed names are authentication inputs documented outside that prefix.
+LLAMA_SERVER_AUTH_ENV_VARS: frozenset[str] = frozenset(
+    {
+        "LLAMA_API_KEY",
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+    }
+)
+# Compatibility/export for older tests and callers.  The wildcard prefix is
+# enforced by scrub_llama_server_env rather than represented in this tuple.
+DENIED_ENV_VARS: tuple[str, ...] = tuple(sorted(LLAMA_SERVER_AUTH_ENV_VARS))
 
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
@@ -298,7 +837,11 @@ def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
             i += 1
             continue
 
-        if "=" in tok:
+        attached = _attached_short_value(tok, flag)
+        if attached is not None:
+            raw_value = attached
+            i += 1
+        elif "=" in tok:
             raw_value = tok.split("=", 1)[1]
             i += 1
         else:
@@ -348,7 +891,11 @@ def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Op
             i += 1
             continue
 
-        if "=" in tok:
+        attached = _attached_short_value(tok, flag)
+        if attached is not None:
+            raw_value = attached
+            i += 1
+        elif "=" in tok:
             raw_value = tok.split("=", 1)[1]
             i += 1
         else:
@@ -532,6 +1079,40 @@ _MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj", "--no-mmproj-a
 _MMPROJ_ENABLE_FLAGS: frozenset[str] = frozenset({"--mmproj-auto"})
 
 
+_STUDIO_CONTROL_OVERLAP_FLAGS: frozenset[str] = frozenset().union(
+    _CONTEXT_FLAGS,
+    _CACHE_FLAGS,
+    _SPEC_FLAGS,
+    _TEMPLATE_FLAGS,
+    _SPLIT_SHADOWING_FLAGS,
+    _DEVICE_FLAGS,
+    _OFFLOAD_SHADOWING_FLAGS,
+    _MLOCK_FLAGS,
+    _LOAD_MODE_FLAGS,
+    _LOAD_MODE_ALIAS_FLAGS,
+    _BATCH_FLAGS,
+    _UBATCH_FLAGS,
+)
+
+_MODEL_MEMORY_OVERLAP_FLAGS: frozenset[str] = frozenset().union(
+    _MLOCK_FLAGS,
+    _NO_MMAP_FLAGS,
+    _DIO_ON_FLAGS,
+    _DIO_OFF_FLAGS,
+    frozenset({"--mmap"}),
+    _LOAD_MODE_FLAGS,
+    _LOAD_MODE_ALIAS_FLAGS,
+)
+
+
+def extra_args_override_model_memory(args: Optional[Iterable[str]]) -> bool:
+    """Whether custom argv explicitly owns the Model Memory launch mode."""
+    return any(
+        (_flag_name(str(raw)) or "") in _MODEL_MEMORY_OVERLAP_FLAGS
+        for raw in (args or ())
+    )
+
+
 def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
     """True when pass-through args opt out of vision mmproj loading.
 
@@ -568,25 +1149,21 @@ def strip_shadowing_flags(
     strip_batch: bool = False,
     strip_ubatch: bool = False,
 ) -> list[str]:
-    """Strip flags that shadow first-class Unsloth settings.
+    """Low-level removal of selected llama.cpp argument groups.
 
-    Used when inheriting a previous load's ``llama_extra_args`` so an
-    inherited `-c 4096` can't override the current `max_seq_length`
-    (same for cache / spec / template / split-mode). Each ``strip_*``
-    toggle controls one group; the route only strips groups whose
-    first-class field the caller actually supplied.
+    Ordinary Run Settings do not call this to rewrite custom arguments: custom
+    argv is authoritative. The helper remains for explicit recovery paths (for
+    example a proven-crashing tensor attempt or virtualised-Metal CPU rescue)
+    and focused normalization utilities. Each ``strip_*`` toggle controls one
+    group.
 
     ``strip_split_mode`` removes both ``--split-mode`` and the coupled
     ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
-    row/none/layer choice intact. ``strip_device`` is enabled when ``gpu_ids``
-    owns placement.
-
-    ``strip_mlock`` / ``strip_no_mmap`` are enabled by the Model Memory settings
-    so a RAM-reservation flag cannot survive a load the user asked to keep
-    RAM-free. ``strip_no_mmap`` covers every spelling of mode `none`, so the
-    negative DirectIO forms go with it. All boolean: only the token is dropped.
+    row/none/layer choice intact. ``strip_no_mmap`` covers every spelling of
+    mode `none`, so the negative DirectIO forms go with it. Boolean groups drop
+    only the token; valued groups also drop their value.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -664,21 +1241,18 @@ def apply_model_memory_policy(
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags.
 
-    Returns ``(managed_flags, extras)``: what Unsloth emits itself, and the
-    user's extras with any vetoed flag removed.
+    Returns ``(managed_flags, extras)``: what Unsloth emits itself, followed by
+    the user's unchanged extras. Explicit custom arguments are authoritative;
+    the Model Memory UI supplies defaults but never deletes a user flag.
 
     "Keep model in GPU memory" page-locks the weights (``--load-mode mmap+mlock``,
     or the deprecated ``--mlock``) but ONLY when ``weights_in_host_memory``.
     mlock pins a whole mapping in host RAM, so for a model fully offloaded to a
     discrete GPU it would hold a second full copy of the weights in system RAM
     without doing anything for VRAM residency; there, residency is carried by
-    the idle-unload veto alone. Every other load-mode-bearing flag is stripped
-    from the emitted extras, because a trailing one resets the whole mode and
-    would drop the mlock.
-
-    "Don't reserve system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the
-    default mmap path. With both off nothing is stripped, so a hand-typed flag
-    still applies.
+    the idle-unload veto alone. A later custom load-mode flag may replace that
+    default. Likewise, "Don't reserve system RAM" does not silently delete an
+    explicit custom reservation; the custom flag wins the overlap.
     """
     try:
         from utils.model_memory_settings import get_model_memory_settings
@@ -686,71 +1260,16 @@ def apply_model_memory_policy(
         # Settings unavailable (bare unit-test import): behave as before.
         return [], list(extra_args or [])
 
-    # One snapshot for both decisions: read separately, a save landing between
-    # them strips for one setting and locks for the other, so a saved --mlock
-    # could survive a committed no-reserve.
+    # One snapshot for both decisions so a concurrent save cannot mix states.
     keep_resident, no_ram_reserve = get_model_memory_settings()
     tokens = list(extra_args or [])
-    if no_ram_reserve:
-        tokens = strip_shadowing_flags(
-            tokens,
-            strip_context = False,
-            strip_cache = False,
-            strip_spec = False,
-            strip_template = False,
-            strip_split_mode = False,
-            strip_mlock = True,
-            strip_no_mmap = True,
-        )
-        tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
     if keep_resident and not no_ram_reserve and weights_in_host_memory:
         # Before the extras, like the rest of the managed block. mmap+mlock, not
         # bare mlock: it matches what --mlock meant alongside the default mmap.
         managed.extend(["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"])
-        tokens = strip_shadowing_flags(
-            tokens,
-            strip_context = False,
-            strip_cache = False,
-            strip_spec = False,
-            strip_template = False,
-            strip_split_mode = False,
-            strip_mlock = True,
-            strip_load_mode_aliases = True,
-            strip_load_mode = True,
-        )
     return managed, tokens
-
-
-def _strip_reserving_load_modes(tokens: list[str]) -> list[str]:
-    """Drop only ``--load-mode`` values that lock or reserve host RAM.
-
-    No-reserve vetoes the reservation, not the loader. ``mmap`` and ``dio``
-    hold no full host copy, so a DirectIO preset survives instead of silently
-    falling back to mmap. Unknown values are left alone rather than rewritten.
-    """
-    out: list[str] = []
-    i, n = 0, len(tokens)
-    while i < n:
-        token = tokens[i]
-        if _flag_name(token) not in _LOAD_MODE_FLAGS:
-            out.append(token)
-            i += 1
-            continue
-        if "=" in token:
-            value, step = token.split("=", 1)[1], 1
-        elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
-            value, step = tokens[i + 1], 2
-        else:
-            value, step = "", 1
-        value = value.strip().lower()
-        if value in _LOAD_MODE_MLOCK_VALUES or value in _LOAD_MODE_RESERVING_VALUES:
-            i += step
-            continue
-        out.extend(tokens[i : i + step])
-        i += step
-    return out
 
 
 def model_memory_owns_placement() -> bool:
@@ -802,6 +1321,36 @@ def scrub_memory_env(env: dict) -> list[str]:
     for name in removed:
         env.pop(name, None)
     return removed
+
+
+def scrub_llama_server_env(
+    env: dict[str, str],
+    *,
+    managed_env: Optional[Mapping[str, str]] = None,
+) -> list[str]:
+    """Create the final Studio-owned llama-server environment boundary.
+
+    All inherited ``LLAMA_ARG_*`` and documented llama authentication inputs
+    are removed.  A caller may then add a small explicit ``managed_env`` map;
+    this makes the exception auditable instead of trusting ambient process
+    state.  Unrelated entries (PATH, CUDA visibility, loader paths, etc.) are
+    preserved.
+    """
+    removed = sorted(
+        name
+        for name in tuple(env)
+        if name.startswith("LLAMA_ARG_") or name in LLAMA_SERVER_AUTH_ENV_VARS
+    )
+    for name in removed:
+        env.pop(name, None)
+    if managed_env:
+        env.update({str(name): str(value) for name, value in managed_env.items()})
+    return removed
+
+
+def scrub_denied_env(env: dict[str, str]) -> list[str]:
+    """Backward-compatible name for the complete environment scrub."""
+    return scrub_llama_server_env(env)
 
 
 # Mirrors llama_cpp's _LLAMA_ARG_TRUE/FALSE_VALUES; duplicated so this module

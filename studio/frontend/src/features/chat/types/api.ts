@@ -42,9 +42,9 @@ export interface LoadModelRequest {
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
   /**
-     * Stop any chats still generating instead of getting a 409: a load replaces the single
-     * llama-server they all decode on. Set only after the user confirms.
-     */
+   * Stop any chats still generating instead of getting a 409: a load replaces the single
+   * llama-server they all decode on. Set only after the user confirms.
+   */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
@@ -57,6 +57,11 @@ export interface LoadModelRequest {
   /** sha256 fingerprint pinning user approval of this exact custom-code version. */
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
+  /**
+   * Custom llama-server tokens. Omit to preserve legacy/current arguments;
+   * [] explicitly clears them.
+   */
+  llama_extra_args?: string[];
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
   /**
@@ -258,6 +263,8 @@ export interface LoadModelResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** Changes whenever the managed inference runtime is replaced. */
+  runtime_revision?: string | null;
 }
 
 export interface UnloadModelRequest {
@@ -345,6 +352,8 @@ export interface InferenceStatusResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** Changes whenever the managed inference runtime is replaced. */
+  runtime_revision?: string | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

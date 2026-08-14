@@ -79,38 +79,34 @@ class TestFlagPolicy:
         assert managed == ["--load-mode", "mmap+mlock"]
         assert out == ["--temp", "0.7"]
 
-    def test_load_mode_is_stripped_from_extras(self, policy):
-        # A user --load-mode would last-wins-override the managed one, and
-        # "--load-mode mlock" is a RAM reservation no-reserve must veto.
-        _, out = policy(
-            True, False, ["--load-mode", "none", "--temp", "0.7"], supports_load_mode = True
-        )
-        assert out == ["--temp", "0.7"]
-        _, out = policy(False, True, ["-lm", "mlock", "--temp", "0.7"])
-        assert out == ["--temp", "0.7"]
+    def test_custom_load_mode_is_preserved_after_the_ui_default(self, policy):
+        extras = ["--load-mode", "none", "--temp", "0.7"]
+        managed, out = policy(True, False, extras, supports_load_mode = True)
+        assert managed == ["--load-mode", "mmap+mlock"]
+        assert out == extras
+        assert resolve_effective_memory_state(managed + out, {}) == (False, True)
 
-    def test_load_mode_strip_is_not_boolean(self, policy):
-        # It takes a value, so the value must go with the flag, not survive.
-        _, out = policy(False, True, ["--load-mode", "mmap+mlock"])
-        assert out == []
+    def test_custom_mlock_is_not_deleted_by_no_reserve(self, policy):
+        extras = ["-lm", "mlock", "--temp", "0.7"]
+        managed, out = policy(False, True, extras)
+        assert managed == []
+        assert out == extras
+        assert resolve_effective_memory_state(out, {}) == (True, True)
 
-    def test_keep_resident_does_not_double_emit_mlock(self, policy):
-        # A user --mlock folds into the managed one, not a second copy.
+    def test_keep_resident_keeps_an_explicit_duplicate(self, policy):
         managed, out = policy(True, False, ["--mlock", "--temp", "0.7"])
         assert managed == ["--mlock"]
-        assert "--mlock" not in out
+        assert out == ["--mlock", "--temp", "0.7"]
 
-    def test_no_ram_reserve_strips_both_reservation_flags(self, policy):
+    def test_no_ram_reserve_does_not_strip_custom_reservations(self, policy):
         managed, out = policy(False, True, ["--mlock", "--no-mmap", "-ngl", "99"])
         assert managed == []
-        # Unrelated flags (and their values) survive untouched.
-        assert out == ["-ngl", "99"]
+        assert out == ["--mlock", "--no-mmap", "-ngl", "99"]
 
-    def test_no_ram_reserve_wins_over_keep_resident(self, policy):
-        # --mlock is itself a RAM reservation, so no-reserve vetoes it.
+    def test_no_ram_reserve_suppresses_only_the_ui_default(self, policy):
         managed, out = policy(True, True, ["--mlock", "--no-mmap", "--temp", "0.7"])
         assert managed == []
-        assert out == ["--temp", "0.7"]
+        assert out == ["--mlock", "--no-mmap", "--temp", "0.7"]
 
     def test_handles_absent_extras(self, policy):
         assert policy(True, False, None) == (["--mlock"], [])
@@ -127,9 +123,9 @@ class TestFlagPolicy:
         assert out is not passed
 
     @pytest.mark.parametrize("flag", ["--mlock", "-mlock", "--no-mmap", "-no-mmap"])
-    def test_aliases_are_stripped(self, policy, flag):
+    def test_custom_aliases_are_preserved(self, policy, flag):
         _, out = policy(False, True, [flag, "--temp", "0.7"])
-        assert out == ["--temp", "0.7"]
+        assert out == [flag, "--temp", "0.7"]
 
     def test_strip_is_boolean_and_keeps_the_next_token(self):
         # --mlock takes no value, so stripping it must not swallow "0.7".
@@ -377,6 +373,7 @@ class TestReloadRequired:
         *,
         is_loaded = True,
         is_active = True,
+        custom_override = False,
     ):
         import routes.inference
         import routes.settings as rs
@@ -391,6 +388,7 @@ class TestReloadRequired:
                 "_memory_state": state,
                 "_memory_policy_active": True,
                 "_memory_mlock_applicable": True,
+                "_memory_custom_override": custom_override,
             },
         )()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
@@ -454,11 +452,21 @@ class TestReloadRequired:
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         assert rs._model_memory_reload_required() is False
 
+    def test_a_custom_memory_argument_remains_authoritative_after_ui_changes(self, monkeypatch):
+        assert (
+            self._required(
+                False,
+                True,
+                (True, False),
+                monkeypatch,
+                custom_override = True,
+            )
+            is False
+        )
 
-class TestManagedFlagIsNotReset:
-    """Measured against llama.cpp: ANY trailing mmap-family or load-mode flag
-    resets the whole load mode, so a user preset after the managed flag would
-    silently drop the mlock."""
+
+class TestCustomMemoryFlagPrecedence:
+    """Run Settings emit defaults first; explicit custom memory flags win."""
 
     @pytest.mark.parametrize("load_mode", [True, False])
     @pytest.mark.parametrize(
@@ -479,18 +487,17 @@ class TestManagedFlagIsNotReset:
             ["-ndio"],
         ],
     )
-    def test_nothing_after_the_managed_flag_can_reset_it(self, policy, load_mode, preset):
+    def test_custom_memory_flag_resets_the_ui_default(self, policy, load_mode, preset):
         managed, extras = policy(
             True, False, preset + ["--temp", "0.7"], supports_load_mode = load_mode
         )
-        assert managed  # residency emitted something
-        # The resolved state of the full argv must still be mlock.
-        mlock, _ = resolve_effective_memory_state(managed + extras, {})
-        assert mlock is True, (managed, extras)
-        assert extras == ["--temp", "0.7"], extras
+        assert managed
+        assert extras == preset + ["--temp", "0.7"]
+        assert resolve_effective_memory_state(managed + extras, {}) == (
+            resolve_effective_memory_state(extras, {})
+        )
 
-    def test_affirmative_mmap_survives_when_nothing_is_managed(self, policy):
-        """--mmap is not a reservation, so no-reserve leaves it alone."""
+    def test_custom_mmap_survives_when_no_reserve_is_selected(self, policy):
         _, extras = policy(False, True, ["--mmap", "--temp", "0.7"])
         assert extras == ["--mmap", "--temp", "0.7"]
 
@@ -660,13 +667,12 @@ class TestHostResidencyGate:
         managed, _ = policy(True, False, [], supports_load_mode = False, weights_in_host_memory = True)
         assert managed == ["--mlock"]
 
-    def test_no_ram_reserve_still_strips_a_user_flag_off_a_discrete_gpu(self, policy):
-        # The gate only suppresses what the policy ADDS. Removal is unchanged.
+    def test_no_ram_reserve_does_not_strip_a_custom_flag_off_a_discrete_gpu(self, policy):
         managed, out = policy(
             False, True, ["--mlock", "--temp", "0.7"], weights_in_host_memory = False
         )
         assert managed == []
-        assert out == ["--temp", "0.7"]
+        assert out == ["--mlock", "--temp", "0.7"]
 
     def test_both_off_is_still_a_pass_through_either_way(self, policy):
         for host in (True, False):
@@ -932,10 +938,10 @@ class TestNegativeDirectIoIsARamReservation:
             assert resolve_effective_memory_state([negative, "--mlock"], {}) == (True, True)
 
     @pytest.mark.parametrize("flag", ["--no-direct-io", "-ndio"])
-    def test_no_ram_reserve_strips_them(self, policy, flag):
+    def test_no_ram_reserve_preserves_custom_negative_direct_io(self, policy, flag):
         managed, out = policy(False, True, [flag, "--temp", "0.7"])
         assert managed == []
-        assert out == ["--temp", "0.7"]
+        assert out == [flag, "--temp", "0.7"]
 
     @pytest.mark.parametrize("flag", ["--direct-io", "-dio"])
     def test_no_ram_reserve_leaves_the_affirmative_ones(self, policy, flag):
@@ -1300,9 +1306,8 @@ class TestLegacyNegativeEnvAliases:
         )
 
 
-class TestNonReservingLoadModesSurvive:
-    """No-reserve vetoes the reservation, not the loader: dio and mmap hold no
-    full host copy, so a DirectIO preset must not silently become mmap."""
+class TestCustomLoadModesSurvive:
+    """No Model Memory toggle silently deletes an explicit custom load mode."""
 
     @pytest.mark.parametrize("value", ["dio", "mmap"])
     def test_a_non_reserving_mode_is_kept(self, policy, value):
@@ -1310,19 +1315,19 @@ class TestNonReservingLoadModesSurvive:
         assert out == ["--load-mode", value, "--temp", "0.7"]
 
     @pytest.mark.parametrize("value", ["none", "mlock", "mmap+mlock"])
-    def test_a_reserving_or_locking_mode_is_dropped(self, policy, value):
+    def test_a_reserving_or_locking_mode_is_kept(self, policy, value):
         _managed, out = policy(False, True, ["--load-mode", value, "--temp", "0.7"])
-        assert out == ["--temp", "0.7"]
+        assert out == ["--load-mode", value, "--temp", "0.7"]
 
     def test_the_attached_spelling_is_handled_too(self, policy):
         _managed, out = policy(False, True, ["--load-mode=mlock", "-c", "4096"])
-        assert out == ["-c", "4096"]
+        assert out == ["--load-mode=mlock", "-c", "4096"]
         _managed, out = policy(False, True, ["--load-mode=dio", "-c", "4096"])
         assert out == ["--load-mode=dio", "-c", "4096"]
 
     def test_the_short_alias_is_handled_too(self, policy):
         _managed, out = policy(False, True, ["-lm", "mlock"])
-        assert out == []
+        assert out == ["-lm", "mlock"]
         _managed, out = policy(False, True, ["-lm", "dio"])
         assert out == ["-lm", "dio"]
 
@@ -1340,12 +1345,11 @@ class TestNonReservingLoadModesSurvive:
         _managed, out = policy(False, True, ["--load-mode", "dio"])
         assert resolve_effective_memory_state(out, {}) == (False, False)
 
-    def test_keep_resident_still_strips_every_mode(self, policy):
-        """The mlock branch is unchanged: a trailing mode of ANY value resets
-        the whole thing and would drop the managed lock."""
+    def test_custom_mode_overrides_keep_resident(self, policy):
         managed, out = policy(True, False, ["--load-mode", "dio"], supports_load_mode = True)
         assert managed == ["--load-mode", "mmap+mlock"]
-        assert out == []
+        assert out == ["--load-mode", "dio"]
+        assert resolve_effective_memory_state(managed + out, {}) == (False, False)
 
 
 def _fake_backend(**attrs):
@@ -2140,36 +2144,35 @@ class TestACpuDevicePinIsHostResident:
         )
 
 
-class TestAGpuIdsPinOverridesADeviceFlag:
-    """gpu_ids owns placement: the launch drops the device flags from argv and
-    the env twin, so the child really is on the GPU. Classifying on the raw
-    extras would pin a redundant host copy for a --device the child never sees.
-    Built with the same helpers the launch uses, so the two cannot drift."""
+class TestCustomDeviceOverridesAGpuIdsPin:
+    """An explicit custom --device owns placement over the GPU picker."""
 
     @staticmethod
     def _child(extra_args, env, gpu_ids):
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import LlamaCppBackend, _extra_args_main_device
 
         env = dict(env or {})
         if gpu_ids is not None:
-            extra_args = LlamaCppBackend._strip_device_extra_args(extra_args)
-            LlamaCppBackend._clear_device_placement_env(env)
+            if _extra_args_main_device(extra_args) is not None:
+                gpu_ids = None
+            else:
+                LlamaCppBackend._clear_device_placement_env(env)
         return extra_args, env
 
     @pytest.mark.parametrize(
         "extras", [["--device", "cpu"], ["--device", "none"], ["-dev", "cpu"], ["--device=none"]]
     )
-    def test_a_pin_makes_the_gate_ignore_the_device_flag(self, monkeypatch, extras):
+    def test_a_custom_device_makes_the_gate_ignore_the_pin(self, monkeypatch, extras):
         extra_args, env = self._child(extras, None, gpu_ids = [0])
-        assert extra_args == [], "the launch drops these, so the gate must not see them"
+        assert extra_args == extras
         assert (
             TestHostMemoryGate._gate(
                 monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args, env = env
             )
-            is False
+            is True
         )
 
-    def test_a_pin_drops_the_env_twin_too(self, monkeypatch):
+    def test_a_pin_without_custom_argv_still_drops_the_env_twin_at_launch(self, monkeypatch):
         extra_args, env = self._child(None, {"LLAMA_ARG_DEVICE": "none"}, gpu_ids = [0])
         assert env == {}
         assert (
@@ -2189,30 +2192,27 @@ class TestAGpuIdsPinOverridesADeviceFlag:
             is True
         )
 
-    def test_a_pin_leaves_the_other_placement_extras_alone(self, monkeypatch):
-        """Only the device family is stripped, so -ot still forces host residency."""
+    def test_a_custom_device_and_other_placement_extras_both_survive(self, monkeypatch):
         extra_args, _env = self._child(
             ["--device", "cpu", "-ot", r"\.ffn_.*=CPU"], None, gpu_ids = [0]
         )
-        assert extra_args == ["-ot", r"\.ffn_.*=CPU"]
+        assert extra_args == ["--device", "cpu", "-ot", r"\.ffn_.*=CPU"]
         assert (
             TestHostMemoryGate._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args)
             is True
         )
 
-    def test_the_launch_really_sanitizes_before_classifying(self):
-        """Source check: the gate call must receive the stripped extras and env,
-        so this cannot regress into reading the raw ones again."""
+    def test_the_launch_really_suppresses_gpu_ids_before_classifying(self):
         import inspect
         import re
 
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        strip = src.find("_mem_extra_args = self._strip_device_extra_args(extra_args)")
-        assert strip != -1, "the launch no longer strips device flags for the gate"
-        assert re.search(r"self\._clear_device_placement_env\(_mem_env\)", src)
-        call = src.find("self._weights_in_host_memory(", strip)
+        override = src.find("Custom --device overrides the Run Settings GPU selection")
+        assert override != -1
+        assert re.search(r"gpu_ids = None", src[override : override + 600])
+        call = src.find("self._weights_in_host_memory(", override)
         assert call != -1 and "extra_args = _mem_extra_args" in src[call : call + 400]
 
 

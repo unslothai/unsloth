@@ -32,6 +32,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
+  const llamaExtraArgs = useChatRuntimeStore((s) => s.llamaExtraArgs);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -67,6 +68,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nUbatch: nUbatch ?? null,
       tensorParallel: tensorParallel ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
+      ...(isGguf && llamaExtraArgs !== undefined
+        ? { llamaExtraArgs: [...llamaExtraArgs] }
+        : {}),
     };
     if (!isGguf) {
       return base;
@@ -93,6 +97,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     nUbatch,
     tensorParallel,
     chatTemplateOverride,
+    llamaExtraArgs,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,

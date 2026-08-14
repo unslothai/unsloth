@@ -65,6 +65,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    delete_model_override,
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
@@ -104,6 +105,15 @@ from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cac
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+def _require_llama_argument_ui_session(via_api_key: bool) -> None:
+    """Keep llama-server argument policy and persisted overrides UI-session only."""
+    if via_api_key is True:
+        raise HTTPException(
+            status_code = 403,
+            detail = "llama.cpp custom argument settings require an authenticated Studio UI session.",
+        )
 
 
 class UploadLimitPayload(BaseModel):
@@ -375,7 +385,7 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable)`` for the running child.
+    """``(state, policy_active, mlock_applicable, custom_override)`` for the child.
 
     ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
     caller can tell "no process" apart from "a process with no load-mode".
@@ -386,14 +396,15 @@ def _active_launch_placement():
         backend = get_llama_cpp_backend()
         pending = bool(getattr(backend, "_memory_launch_pending", False))
         if not backend.is_active and not pending:
-            return _NO_LAUNCH, False, True
+            return _NO_LAUNCH, False, True, False
         return (
             getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
+            bool(getattr(backend, "_memory_custom_override", False)),
         )
     except Exception:
-        return _NO_LAUNCH, False, True
+        return _NO_LAUNCH, False, True, False
 
 
 def _model_memory_reload_required() -> bool:
@@ -410,8 +421,10 @@ def _model_memory_reload_required() -> bool:
     same window before Popen, where the placement is decided but _process is
     still None.
     """
-    state, policy_active, mlock_applicable = _active_launch_placement()
+    state, policy_active, mlock_applicable, custom_override = _active_launch_placement()
     if state is _NO_LAUNCH:
+        return False
+    if custom_override:
         return False
 
     # Same predicate the duplicate-load comparator uses, so the reload hint and
@@ -434,7 +447,7 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     """
     if not want_mlock:
         return False
-    state, _policy_active, _applicable = _active_launch_placement()
+    state, _policy_active, _applicable, _custom_override = _active_launch_placement()
     if state is _NO_LAUNCH:
         return True
     return bool(state and state[0])
@@ -576,7 +589,8 @@ def get_openai_auto_switch(
 
 @router.put("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
 def update_openai_auto_switch(
-    payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
+    payload: OpenAIAutoSwitchPayload,
+    current_subject: str = Depends(get_current_subject),
 ) -> OpenAIAutoSwitchResponse:
     try:
         enabled, idle_seconds, keep_kv, auto_download, api_only = set_openai_auto_switch(
@@ -613,7 +627,9 @@ def update_openai_auto_switch(
 @router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def get_openai_auto_switch_overrides(
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> ModelOverridesResponse:
+    _require_llama_argument_ui_session(via_api_key)
     return ModelOverridesResponse(overrides = get_model_overrides())
 
 
@@ -732,17 +748,25 @@ def _serialized_override_write(func):
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 @_serialized_override_write
 def update_openai_auto_switch_override(
-    payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
+    payload: ModelOverridePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import (
+        validate_extra_args,
+        validate_stored_extra_args,
+    )
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
+        _require_llama_argument_ui_session(via_api_key)
         if payload.fill_absent_fields and payload.remove is True:
             # A fill that is also a delete has no meaning; picking one loses or resurrects.
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
+        carries_existing_extra_args = requested_extra_args is None
+        stored_extra_args_present = False
         # fill_absent_fields is a write mode, not a saved field: leaving it in would make
         # every payload look non-empty and break the legacy "no fields means remove".
         saved_fields = payload.model_dump(
@@ -752,37 +776,66 @@ def update_openai_auto_switch_override(
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            is_removal = not payload.tensor_parallel and not {
-                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-            }
+            # Legacy compatibility: a genuinely field-less payload removes the
+            # entry. An explicit [] is data (authoritative clear), not deletion.
+            is_removal = (
+                "llama_extra_args" not in payload.model_fields_set
+                and not payload.fill_absent_fields
+                and not payload.tensor_parallel
+                and not {
+                    key: value for key, value in saved_fields.items() if key != "tensor_parallel"
+                }
+            )
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
-            # A fill keeps the stored flags without echoing them back through validation: one
-            # denylisted since it was saved would 400 the migration, which then retries forever.
-            if not (payload.fill_absent_fields and stored):
+            if "llama_extra_args" in stored:
                 requested_extra_args = stored.get("llama_extra_args")
-                if requested_extra_args is None:
-                    # First per-quant save for flags under the bare repo id; carry them over.
-                    bare_id = _bare_model_id(payload.model_id)
-                    if bare_id:
-                        requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
-                if requested_extra_args is None:
-                    # And for a standalone .gguf upgraded from the build that keyed it by its
-                    # filename label: the bare path written here is read before that key, so
-                    # its flags would go dark with no page able to show or restore them.
-                    legacy_id = _legacy_standalone_gguf_key(payload.model_id)
-                    if legacy_id:
-                        requested_extra_args = get_model_override(legacy_id).get("llama_extra_args")
-                if requested_extra_args is None:
-                    # Same for the other spelling of a cached repo, which this save retires
-                    # below: its flags have nowhere else to live, and the page cannot show them.
-                    for alias_id in cached_repo_alias_keys(payload.model_id):
-                        requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
-                        if requested_extra_args is not None:
-                            break
-        # Not validated on an explicit remove: a 400 would only leave the override in place.
-        extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
-        if payload.remove is True:
+                stored_extra_args_present = True
+            if not stored_extra_args_present:
+                # First per-quant save for flags under the bare repo id; carry them over.
+                bare_id = _bare_model_id(payload.model_id)
+                bare_override = get_model_override(bare_id) if bare_id else {}
+                if "llama_extra_args" in bare_override:
+                    requested_extra_args = bare_override.get("llama_extra_args")
+                    stored_extra_args_present = True
+            if not stored_extra_args_present:
+                # And for a standalone .gguf upgraded from the build that keyed it by its
+                # filename label: the bare path written here is read before that key, so
+                # its flags would go dark with no page able to show or restore them.
+                legacy_id = _legacy_standalone_gguf_key(payload.model_id)
+                legacy_override = get_model_override(legacy_id) if legacy_id else {}
+                if "llama_extra_args" in legacy_override:
+                    requested_extra_args = legacy_override.get("llama_extra_args")
+                    stored_extra_args_present = True
+            if not stored_extra_args_present:
+                # Same for the other spelling of a cached repo, which this save retires
+                # below: its flags have nowhere else to live, and the page cannot show them.
+                for alias_id in cached_repo_alias_keys(payload.model_id):
+                    alias_override = get_model_override(alias_id)
+                    if "llama_extra_args" in alias_override:
+                        requested_extra_args = alias_override.get("llama_extra_args")
+                        stored_extra_args_present = True
+                        break
+        # Revalidate caller-supplied and carried-forward lists with the same
+        # current policy.  A stale list is quarantined as a whole: silently
+        # storing or executing the permitted subset would change the saved
+        # launch semantics and conceal the value the user needs to repair.
+        if is_removal or (requested_extra_args is None and not stored_extra_args_present):
+            extra_args = None
+        elif carries_existing_extra_args:
+            try:
+                extra_args = validate_stored_extra_args(requested_extra_args)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Saved llama.cpp custom arguments are quarantined by the current "
+                        "security policy. Open Run Settings and clear or replace them."
+                    ),
+                ) from exc
+        else:
+            extra_args = validate_extra_args(requested_extra_args)
+        if is_removal:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
             # clearing one of two leaves the survivor as the sole fold match.
@@ -790,16 +843,12 @@ def update_openai_auto_switch_override(
                 payload.model_id,
             ]
             for target_id in target_ids:
-                set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
+                delete_model_override(target_id)
             # A standalone .gguf is keyed by its bare path now, but a load also reads the
             # filename-derived <path>:LABEL an upgraded install holds, which would outlive this.
             legacy_id = _legacy_standalone_gguf_key(payload.model_id)
             if legacy_id and legacy_id not in target_ids:
-                set_model_override(
-                    legacy_id,
-                    llama_extra_args = [],
-                    max_seq_length = None,
-                )
+                delete_model_override(legacy_id)
             # The mirror image of the carry-over above: a save under repo:QUANT copies the
             # flags off a legacy bare `repo` entry and leaves it in place, and the loader falls
             # back to it when the qualified key misses, so clearing only the qualified key hands
@@ -815,15 +864,11 @@ def update_openai_auto_switch_override(
                     target_ids,
                 )
             ):
-                set_model_override(
-                    bare_id,
-                    llama_extra_args = [],
-                    max_seq_length = None,
-                )
+                delete_model_override(bare_id)
             # And the other spelling of a cached repo: the loader reads the load path before
             # the advertised id, so clearing only the id leaves the path entry still applying.
             for alias_id in cached_repo_alias_keys(payload.model_id):
-                set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
+                delete_model_override(alias_id)
         else:
             # Save under the key a load resolves to, as the removal branch does: the literal
             # id would leave two keys for one model, making every other casing ambiguous.
@@ -860,8 +905,10 @@ def update_openai_auto_switch_override(
             # adds, and the migration mirroring both spellings must not delete either.
             if not payload.fill_absent_fields:
                 for alias_id in cached_repo_alias_keys(target_id):
-                    set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
-    except ValueError as exc:
+                    delete_model_override(alias_id)
+    except HTTPException:
+        raise
+    except (TypeError, ValueError) as exc:
         raise log_and_http_error(
             exc,
             400,

@@ -1,17 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
-import { BulbIcon } from "@/lib/bulb-icon";
-import { MicIcon } from "@/lib/mic-icon";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,41 +18,45 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
-import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
+import {
+  DEFAULT_MAX_SEQ_LENGTH,
+  type PerModelConfig,
+  llamaExtraArgsPayload,
+  normalizeMaxSeqLength,
+  resolveInitialConfig,
+} from "@/features/model-picker";
+import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
+import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { isTauri } from "@/lib/api-base";
 import {
   AUDIO_ACCEPT,
   fileToBase64,
   getAudioSizeError,
 } from "@/lib/audio-utils";
-import { isTauri } from "@/lib/api-base";
+import { BulbIcon } from "@/lib/bulb-icon";
+import { MicIcon } from "@/lib/mic-icon";
 import { isDownloadCancelled } from "@/lib/native-files";
-import { isMultimodalResponse } from "./types/api";
-import { getImageInputUnavailableReason } from "./utils/image-input-support";
-import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
-import { pasteClipboardFiles } from "./utils/clipboard-files";
-import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
-import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
-import { cancelPreStreamRunReservations } from "./utils/pre-stream-run-reservation";
-import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useAui } from "@assistant-ui/react";
-import {
-  ArrowUpIcon,
-  Columns2Icon,
-  GlobeIcon,
-  HeadphonesIcon,
-  MoreHorizontalIcon,
-  PlusIcon,
-  SquareIcon,
-  XIcon,
-} from "lucide-react";
 import {
   AttachmentIcon,
   Bookmark02Icon,
@@ -70,87 +69,27 @@ import {
   McpServerIcon,
   PencilRulerIcon,
 } from "@hugeicons/core-free-icons";
-import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { toast } from "@/lib/toast";
+import { useNavigate } from "@tanstack/react-router";
 import {
-  PromptStorageDialog,
-  exportConversationShareGPT,
-  exportConversationRawJsonl,
-  exportConversationCsv,
-  exportConversationMarkdown,
-} from "./prompt-storage/prompt-storage-dialog";
-import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
-import { McpComposerButton } from "./mcp-composer-button";
-import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
-import { PermissionModeComposerPill } from "./permission-mode-select";
-import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
-import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
-import { NewProjectDialog } from "./components/new-project-dialog";
-import { useChatProjects } from "./hooks/use-chat-projects";
-import { confirmRemoteCodeIfNeeded } from "@/features/security";
+  ArrowUpIcon,
+  Columns2Icon,
+  GlobeIcon,
+  HeadphonesIcon,
+  MoreHorizontalIcon,
+  PlusIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
 import {
-  DEFAULT_MAX_SEQ_LENGTH,
-  normalizeMaxSeqLength,
-  resolveInitialConfig,
-  type PerModelConfig,
-} from "@/features/model-picker";
-import {
-  confirmTransformersUpgradeIfNeeded,
-  useTransformersUpgradeDialogStore,
-} from "@/features/transformers-upgrade";
-import { prepareHfTokenForUse } from "@/features/hf-auth";
-import {
-  fetchGgufStagedMetadata,
-  loadModel,
-  validateModel,
-} from "./api/chat-api";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
-import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import {
-  parseExternalModelId,
-  providerModelSupportsVision,
-
-  providerModelSupportsStudioTools,
-} from "./external-providers";
-import { compareModelDisplayName } from "./lib/external-model-label";
-import { useExternalProvidersStore } from "./stores/external-providers-store";
-import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
-import { useIsMobile } from "@/hooks/use-mobile";
-import {
-  PLUS_MENU_ORDER,
-  type PlusMenuItemId,
-  usePlusMenuPrefsStore,
-} from "./stores/plus-menu-prefs-store";
-import {
-  resolveComparePlacement,
-  shouldPinDiffusionPlacement,
-} from "./lib/gpu-placement";
-import {
-  loadedGpuMemoryFields,
-  type ReasoningEffort,
-  reconcilePersistedGpuIds,
-  resolveLoadedSpeculativeSettings,
-  persistGpuMemoryModeOnLoad,
-  resolveSpeculativeSettingsForLoad,
-  saveSpeculativeType,
-  useChatRuntimeStore,
-} from "./stores/chat-runtime-store";
-import {
-  getExternalReasoningCapabilities,
-  providerSupportsBuiltinCodeExecution,
-  providerSupportsBuiltinImageGeneration,
-  providerSupportsBuiltinWebFetch,
-} from "./provider-capabilities";
-import {
-  type CompositionEvent,
   type ClipboardEvent,
+  type CompositionEvent,
   type FC,
+  Fragment,
   type KeyboardEvent,
   type MutableRefObject,
   type ReactElement,
   type ReactNode,
-  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -158,6 +97,70 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  fetchGgufStagedMetadata,
+  loadModel,
+  validateModel,
+} from "./api/chat-api";
+import { type PromptEntry, listPromptEntries } from "./api/prompts-api";
+import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { NewProjectDialog } from "./components/new-project-dialog";
+import {
+  parseExternalModelId,
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
+} from "./external-providers";
+import { useChatProjects } from "./hooks/use-chat-projects";
+import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import { compareModelDisplayName } from "./lib/external-model-label";
+import {
+  resolveComparePlacement,
+  shouldPinDiffusionPlacement,
+} from "./lib/gpu-placement";
+import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
+import { McpComposerButton } from "./mcp-composer-button";
+import { PermissionModeComposerPill } from "./permission-mode-select";
+import {
+  resolveFitMaxSeqLength,
+  resolveManualAutoCtxPin,
+} from "./presets/preset-policy";
+import {
+  PromptStorageDialog,
+  exportConversationCsv,
+  exportConversationMarkdown,
+  exportConversationRawJsonl,
+  exportConversationShareGPT,
+} from "./prompt-storage/prompt-storage-dialog";
+import {
+  getExternalReasoningCapabilities,
+  providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
+  providerSupportsBuiltinWebFetch,
+} from "./provider-capabilities";
+import {
+  type ReasoningEffort,
+  loadedGpuMemoryFields,
+  persistGpuMemoryModeOnLoad,
+  reconcilePersistedGpuIds,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
+  saveSpeculativeType,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
+import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  PLUS_MENU_ORDER,
+  type PlusMenuItemId,
+  usePlusMenuPrefsStore,
+} from "./stores/plus-menu-prefs-store";
+import { isMultimodalResponse } from "./types/api";
+import { pasteClipboardFiles } from "./utils/clipboard-files";
+import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
+import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
+import { cancelPreStreamRunReservations } from "./utils/pre-stream-run-reservation";
+import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
 
 export type CompareMessagePart =
   | { type: "text"; text: string }
@@ -376,14 +379,12 @@ export function RegisterCompareHandle({
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
       appendMessage: (content) =>
-        aui
-          .thread()
-          .append({
-            role: "user",
-            content,
-            createdAt: new Date(),
-            startRun: false,
-          } as never),
+        aui.thread().append({
+          role: "user",
+          content,
+          createdAt: new Date(),
+          startRun: false,
+        } as never),
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -393,13 +394,12 @@ export function RegisterCompareHandle({
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
         new Promise<void>((resolve, reject) => {
-          const runtime =
-            aui.threads().__internal_getAssistantRuntime?.();
+          const runtime = aui.threads().__internal_getAssistantRuntime?.();
           const itemState = aui.threadListItem().getState();
           const threadIds = Array.from(
             new Set(
-              [itemState.id, itemState.remoteId].filter(
-                (id): id is string => Boolean(id),
+              [itemState.id, itemState.remoteId].filter((id): id is string =>
+                Boolean(id),
               ),
             ),
           );
@@ -555,8 +555,7 @@ export function SharedComposer({
       const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
-    } catch {
-    }
+    } catch {}
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
@@ -645,9 +644,11 @@ export function SharedComposer({
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   // Empty until a compare run; gates Export chat off.
-  const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
-    (id): id is string => Boolean(id),
-  );
+  const exportThreadIds = [
+    model1ThreadId,
+    model2ThreadId,
+    activeThreadId,
+  ].filter((id): id is string => Boolean(id));
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
   );
@@ -732,7 +733,8 @@ export function SharedComposer({
     effectiveReasoningStyle === "enable_thinking_effort" &&
     !supportsPreserveThinking;
   const thinkingActiveLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+    ? reasoningLockedOn ||
+      (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Two-pill gating: Search lights up on a local tool runtime (supportsTools:
   // Code/python + local web_search) OR a provider-run server-side web_search
@@ -767,8 +769,7 @@ export function SharedComposer({
   // supportsBuiltinWebSearch). Don't let local `supportsTools` re-enable a
   // pill the Gemini backend silently drops: detect image-tier Gemini and
   // gate strictly on provider builtin support.
-  const isGeminiImageTier =
-    isExternalGemini && supportsBuiltinImageGeneration;
+  const isGeminiImageTier = isExternalGemini && supportsBuiltinImageGeneration;
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
   const searchDisabled =
@@ -794,7 +795,8 @@ export function SharedComposer({
       externalSelection?.modelId,
     ) === true;
   const ragDisabled =
-    modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
+    modelLoaded &&
+    ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
   const showRagPill = !isExternalModel || externalUsesStudioTools;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
   // permissions always show; the rest are conditional. Narrow viewports
@@ -856,13 +858,18 @@ export function SharedComposer({
       return;
     }
     queueIndexRef.current = nextIndex;
-    setQueueProgress({ current: nextIndex + 1, total: queueRef.current.length });
+    setQueueProgress({
+      current: nextIndex + 1,
+      total: queueRef.current.length,
+    });
     const next = queueRef.current[nextIndex];
     toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
       description: next.length > 80 ? next.slice(0, 80) + "…" : next,
     });
     setText(next);
-    setTimeout(() => { sendRef.current?.(); }, 100);
+    setTimeout(() => {
+      sendRef.current?.();
+    }, 100);
   }
 
   // Compare mode: advance the queue on cycle end, but stop on a failed step so we
@@ -885,7 +892,8 @@ export function SharedComposer({
   useEffect(() => {
     const wasRunning = prevRunningRef.current;
     prevRunningRef.current = running;
-    if (!isQueueRunningRef.current || !wasRunning || running || comparing) return;
+    if (!isQueueRunningRef.current || !wasRunning || running || comparing)
+      return;
     advanceQueue();
   }, [running, comparing]);
 
@@ -895,11 +903,13 @@ export function SharedComposer({
     if (!ta) return;
     ta.style.height = "auto";
     const styles = window.getComputedStyle(ta);
-    const lineHeight = parseFloat(styles.lineHeight) || 20;
+    const lineHeight = Number.parseFloat(styles.lineHeight) || 20;
     const paddingY =
-      parseFloat(styles.paddingTop) + parseFloat(styles.paddingBottom);
+      Number.parseFloat(styles.paddingTop) +
+      Number.parseFloat(styles.paddingBottom);
     const borderY =
-      parseFloat(styles.borderTopWidth) + parseFloat(styles.borderBottomWidth);
+      Number.parseFloat(styles.borderTopWidth) +
+      Number.parseFloat(styles.borderBottomWidth);
     const maxHeight = lineHeight * 6 + paddingY + borderY;
     const next = Math.min(ta.scrollHeight, maxHeight);
     ta.style.height = `${next}px`;
@@ -923,7 +933,11 @@ export function SharedComposer({
             continue;
           }
           fileToBase64(file).then((base64) => {
-            setPendingAudio({ name: file.name, base64, contentType: file.type });
+            setPendingAudio({
+              name: file.name,
+              base64,
+              contentType: file.type,
+            });
             setPendingAudioStore(base64, file.name);
           });
           continue;
@@ -965,7 +979,8 @@ export function SharedComposer({
         },
         () =>
           toast.error("Could not paste files.", {
-            description: "Compare supports images and audio within the attachment size limits.",
+            description:
+              "Compare supports images and audio within the attachment size limits.",
           }),
       );
     },
@@ -1311,10 +1326,9 @@ export function SharedComposer({
             diffusionUnknown,
           ),
         );
-        const effectiveNCpuMoe =
-          resolvedIsDiffusion
-            ? 0
-            : (ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe);
+        const effectiveNCpuMoe = resolvedIsDiffusion
+          ? 0
+          : (ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe);
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
             ? reconcilePersistedGpuIds(
@@ -1357,6 +1371,9 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          ...llamaExtraArgsPayload(
+            targetIsGguf ? ownConfig.llamaExtraArgs : undefined,
+          ),
           tensor_parallel: effectiveTensorParallel,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
@@ -1386,8 +1403,7 @@ export function SharedComposer({
             upgrade: validation.transformers_upgrade,
             // No installable release: custom-code models may fall back to the trust_remote_code gate below.
             trustRemoteCodeFallback: validation.requires_trust_remote_code,
-            forceCancelActive:
-              compareStopDecision?.forceCancelActive ?? false,
+            forceCancelActive: compareStopDecision?.forceCancelActive ?? false,
           });
           // The install unloads the active model before the swap (even when the
           // swap then fails); if a later gate cancels or the load fails, the UI
@@ -1395,8 +1411,8 @@ export function SharedComposer({
           if (
             useTransformersUpgradeDialogStore
               .getState()
-              .consumeServerUnloadedChat()
-            && currentStore.params.checkpoint
+              .consumeServerUnloadedChat() &&
+            currentStore.params.checkpoint
           ) {
             upgradeUnloadedActive = true;
           }
@@ -1436,13 +1452,15 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
+          ...llamaExtraArgsPayload(
+            targetIsGguf ? ownConfig.llamaExtraArgs : undefined,
+          ),
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_bits: ownConfig.mlxKvBits ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
-          force_cancel_active:
-            compareStopDecision?.forceCancelActive ?? false,
+          force_cancel_active: compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
             ? {
                 gpu_memory_mode: effectiveGpuMemoryMode,
@@ -1524,6 +1542,16 @@ export function SharedComposer({
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
+          llamaExtraArgs:
+            targetIsGguf && ownConfig.llamaExtraArgs !== undefined
+              ? [...ownConfig.llamaExtraArgs]
+              : undefined,
+          loadedLlamaExtraArgs: null,
+          launchedLlamaExtraArgs:
+            targetIsGguf && ownConfig.llamaExtraArgs !== undefined
+              ? [...ownConfig.llamaExtraArgs]
+              : undefined,
+          runtimeRevision: resp.runtime_revision ?? null,
           // The context baseline this pane loaded with (see keepCustomCtx above),
           // so a later Apply/Reset can't silently revert a Manual+Auto pin.
           loadedCustomContextLength: keepCustomCtx,
@@ -1542,7 +1570,9 @@ export function SharedComposer({
           customContextLength: targetIsGguf
             ? (ownConfig.customContextLength ?? keepCustomCtx)
             : null,
-          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
+          ggufContextLength: resp.is_gguf
+            ? (resp.context_length ?? null)
+            : null,
           ggufNativeContextLength: resp.is_gguf
             ? (resp.native_context_length ?? null)
             : null,
@@ -1603,7 +1633,9 @@ export function SharedComposer({
 
       const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";
       const name2 = model2?.id ? compareModelDisplayName(model2.id) : "";
-      const toastId = toast("Comparing models…", { duration: Infinity });
+      const toastId = toast("Comparing models…", {
+        duration: Number.POSITIVE_INFINITY,
+      });
 
       setComparing(true);
       try {
@@ -1612,14 +1644,14 @@ export function SharedComposer({
           toast("Loading Model 1…", {
             id: toastId,
             description: name1,
-            duration: Infinity,
+            duration: Number.POSITIVE_INFINITY,
           });
           const status1 = await ensureModelLoaded(model1);
           releaseCompareModelLifecycle();
           toast("Generating with Model 1…", {
             id: toastId,
             description: `${name1} (${status1})`,
-            duration: Infinity,
+            duration: Number.POSITIVE_INFINITY,
           });
           const done = handle1.waitForRunEnd();
           handle1.startRun();
@@ -1631,11 +1663,10 @@ export function SharedComposer({
           acquireCompareModelLifecycle();
           const needsLoad = compareSelectionNeedsLoad(model2);
           if (needsLoad) {
-            const currentStopDecision =
-              await confirmStopRunningChatsIfNeeded(
-                "Loading the second model for comparison",
-                "reload",
-              );
+            const currentStopDecision = await confirmStopRunningChatsIfNeeded(
+              "Loading the second model for comparison",
+              "reload",
+            );
             if (!currentStopDecision.proceed) {
               throw new Error("Second comparison model load cancelled.");
             }
@@ -1643,7 +1674,7 @@ export function SharedComposer({
             toast("Loading Model 2…", {
               id: toastId,
               description: name2,
-              duration: Infinity,
+              duration: Number.POSITIVE_INFINITY,
             });
           }
           const status2 = await ensureModelLoaded(model2);
@@ -1651,7 +1682,7 @@ export function SharedComposer({
           toast("Generating with Model 2…", {
             id: toastId,
             description: `${name2} (${status2})`,
-            duration: Infinity,
+            duration: Number.POSITIVE_INFINITY,
           });
           const done = handle2.waitForRunEnd();
           handle2.startRun();
@@ -1753,7 +1784,11 @@ export function SharedComposer({
         <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
         Chat with Files
         {ragEnabled && !ragDisabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -1766,7 +1801,11 @@ export function SharedComposer({
         <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
         MCP
         {mcpEnabledForChat ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
         ) : null}
       </DropdownMenuItem>
     ),
@@ -1841,7 +1880,8 @@ export function SharedComposer({
                     await fn(id);
                   }
                 })().catch((error) => {
-                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
+                  if (!isDownloadCancelled(error))
+                    toast.error("Export failed.");
                 });
               }}
             >
@@ -1860,7 +1900,11 @@ export function SharedComposer({
         <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
         Canvas
         {artifactsEnabled ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
         ) : null}
       </DropdownMenuItem>
     ) : null,
@@ -1946,10 +1990,15 @@ export function SharedComposer({
           setIsQueueRunning(true);
           setQueueProgress({ current: 1, total: filtered.length });
           toast(`Prompt 1 / ${filtered.length}`, {
-            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+            description:
+              filtered[0].length > 80
+                ? filtered[0].slice(0, 80) + "…"
+                : filtered[0],
           });
           setText(filtered[0]);
-          setTimeout(() => { sendRef.current?.(); }, 100);
+          setTimeout(() => {
+            sendRef.current?.();
+          }, 100);
         }}
       />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
@@ -1961,7 +2010,9 @@ export function SharedComposer({
           strokeWidth={2}
           className="size-6 text-primary"
         />
-        <span className="text-sm font-medium text-primary">Drop files here</span>
+        <span className="text-sm font-medium text-primary">
+          Drop files here
+        </span>
       </div>
       {(pendingImages.length > 0 || pendingAudio) && (
         <div className="mb-2 flex w-full flex-row flex-wrap items-center gap-2 px-1.5 pt-0.5 pb-1">
@@ -2039,7 +2090,7 @@ export function SharedComposer({
             ref={fileInputRef}
             type="file"
             accept={IMAGE_ACCEPT}
-            multiple
+            multiple={true}
             className="hidden"
             onChange={(e) => {
               addFiles(e.target.files);
@@ -2375,8 +2426,8 @@ export function SharedComposer({
                           }}
                         >
                           <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                            icon={Tick02Icon}
+                            strokeWidth={2}
                             className={cn(
                               "unsloth-tick size-4",
                               effectiveReasoningVisualEnabled && "opacity-0",
@@ -2406,8 +2457,8 @@ export function SharedComposer({
                             }}
                           >
                             <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                              icon={Tick02Icon}
+                              strokeWidth={2}
                               className={cn(
                                 "unsloth-tick size-4",
                                 !(
@@ -2439,8 +2490,8 @@ export function SharedComposer({
                         }}
                       >
                         <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                          icon={Tick02Icon}
+                          strokeWidth={2}
                           className={cn(
                             "unsloth-tick size-4",
                             !effectiveReasoningEnabled && "opacity-0",
@@ -2465,8 +2516,8 @@ export function SharedComposer({
                       }}
                     >
                       <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                        icon={Tick02Icon}
+                        strokeWidth={2}
                         className={cn(
                           "unsloth-tick size-4",
                           !preserveThinking && "opacity-0",
@@ -2519,19 +2570,7 @@ export function SharedComposer({
           ) : null}
           {
             <>
-              {!isDictating ? (
-                <TooltipIconButton
-                  tooltip="Dictate"
-                  side="bottom"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 rounded-full text-muted-foreground"
-                  onClick={startDictation}
-                  aria-label="Dictate"
-                >
-                  <MicIcon className="unsloth-dictate-icon size-4" />
-                </TooltipIconButton>
-              ) : (
+              {isDictating ? (
                 <TooltipIconButton
                   tooltip={
                     isDictationFinalizing
@@ -2550,6 +2589,18 @@ export function SharedComposer({
                   }
                 >
                   <SquareIcon className="size-3 animate-pulse fill-current" />
+                </TooltipIconButton>
+              ) : (
+                <TooltipIconButton
+                  tooltip="Dictate"
+                  side="bottom"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 rounded-full text-muted-foreground"
+                  onClick={startDictation}
+                  aria-label="Dictate"
+                >
+                  <MicIcon className="unsloth-dictate-icon size-4" />
                 </TooltipIconButton>
               )}
             </>

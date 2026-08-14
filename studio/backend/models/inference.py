@@ -337,6 +337,14 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Extra arguments intended for the follow-up llama-server load. "
+            "Omit to inherit/no-op, pass [] to clear, or pass a non-empty list "
+            "to replace. Ignored for non-GGUF models."
+        ),
+    )
     # Intended load settings so validate's coexistence check matches the follow-up
     # /load; defaults preserve old behavior for callers that omit them.
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
@@ -568,6 +576,13 @@ class _InferenceRuntimeFields(BaseModel):
     """Runtime fields shared by load and status responses."""
 
     is_vision: bool = Field(False, description = "Whether model is a vision model")
+    runtime_revision: Optional[str] = Field(
+        None,
+        description = (
+            "Opaque revision of the active GGUF runtime. Studio uses it to reject "
+            "stale editor-hydration responses; it contains no launch arguments."
+        ),
+    )
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
@@ -768,6 +783,23 @@ class _InferenceRuntimeFields(BaseModel):
             "Micro-batch size (--ubatch-size) the load was invoked with, or None "
             "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
+    )
+
+
+class ActiveLlamaArgumentsResponse(BaseModel):
+    """Studio-only editor hydration for the active managed llama-server."""
+
+    model_identifier: Optional[str] = Field(
+        None,
+        description = "Exact load identity of the active GGUF model for Studio matching.",
+    )
+    gguf_variant: Optional[str] = Field(None, description = "Active GGUF variant identity")
+    runtime_revision: Optional[str] = Field(
+        None, description = "Opaque active-runtime revision used for stale-response rejection"
+    )
+    llama_extra_args: List[str] = Field(
+        default_factory = list,
+        description = "Editable custom arguments for this exact active runtime",
     )
 
 

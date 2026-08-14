@@ -23,6 +23,7 @@ _spec = importlib.util.spec_from_file_location("_lsa_test_only", _LSA_PATH)
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
+overlaps_studio_control = _lsa.overlaps_studio_control
 parse_cache_override = _lsa.parse_cache_override
 parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
@@ -30,10 +31,17 @@ parse_gpu_layers_override = _lsa.parse_gpu_layers_override
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
+scrub_denied_env = _lsa.scrub_denied_env
+assess_extra_args = _lsa.assess_extra_args
+flag_policy = _lsa.flag_policy
+safe_flag_policy = _lsa.safe_flag_policy
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 strip_split_mode_only = _lsa.strip_split_mode_only
 extra_args_disable_mmproj = _lsa.extra_args_disable_mmproj
+drop_managed_flags = _lsa.drop_managed_flags
 validate_extra_args = _lsa.validate_extra_args
+validate_stored_extra_args = _lsa.validate_stored_extra_args
+resolve_flag_alias = _lsa.resolve_flag_alias
 
 
 # ── Pass-through (allowed) ───────────────────────────────────────────
@@ -54,7 +62,7 @@ validate_extra_args = _lsa.validate_extra_args
         # Tier-2 knobs that map to LoadRequest fields
         ["--cache-type-k", "q8_0"],
         ["--cache-type-v", "q8_0"],
-        ["--chat-template-file", "/tmp/tpl.jinja"],
+        ["--chat-template", "chatml"],
         ["--chat-template-kwargs", '{"reasoning_effort":"high"}'],
         ["--spec-type", "ngram-mod"],
         ["--spec-default"],
@@ -110,6 +118,58 @@ def test_empty_list_returns_empty_list():
     assert validate_extra_args([]) == []
 
 
+def test_extra_arg_limits_accept_exact_boundaries():
+    token = "x" * _lsa.EXTRA_ARGS_MAX_UTF8_BYTES
+    assert validate_extra_args([token]) == [token]
+    assert validate_extra_args(["x"] * _lsa.EXTRA_ARGS_MAX_TOKENS) == ["x"] * 256
+    assert validate_extra_args(["column\tvalue"]) == ["column\tvalue"]
+
+
+@pytest.mark.parametrize(
+    "args,error",
+    [
+        (["x"] * 257, "256-token"),
+        (["contains\x00nul"], "control characters"),
+        (["contains\x07bell"], "control characters"),
+        (["contains\rcarriage-return"], "control characters"),
+        (["contains\nnewline"], "line separators"),
+        (["contains\u0085nel"], "line separators"),
+        (["contains\u2028line-separator"], "line separators"),
+        (["contains\u2029paragraph-separator"], "line separators"),
+        (["x" * (32 * 1024 + 1)], "32768-byte"),
+    ],
+)
+def test_extra_arg_limits_reject_oversized_or_nul_input(args, error):
+    with pytest.raises(ValueError, match = error):
+        validate_extra_args(args)
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--ctx-size=8192",
+        "-ctk",
+        "--spec-type",
+        "--chat-template-file",
+        "--split-mode",
+        "--device",
+        "-ngl",
+        "--n-cpu-moe",
+        "--mlock",
+        "--load-mode",
+        "--batch-size",
+        "-ub",
+    ],
+)
+def test_overlap_classifier_covers_first_class_controls(flag):
+    assert overlaps_studio_control(flag)
+
+
+@pytest.mark.parametrize("flag", ["--top-k", "--temp", "--model", "--host"])
+def test_overlap_classifier_is_distinct_from_sampling_and_managed_policy(flag):
+    assert not overlaps_studio_control(flag)
+
+
 def test_value_with_equals_form_passes_through():
     assert validate_extra_args(["--top-k=20"]) == ["--top-k=20"]
 
@@ -134,6 +194,15 @@ def test_non_flag_token_passes_through():
         "-np",
         "--parallel",
         "--n-parallel",
+        # Terminal actions exit instead of serving.
+        "-h",
+        "--help",
+        "--usage",
+        "--version",
+        "--list-devices",
+        "-cl",
+        "--cache-list",
+        "--completion-bash",
         # Model identity (every alias; bumping llama.cpp must keep every
         # form rejected, not just the long one).
         "-m",
@@ -175,9 +244,13 @@ def test_non_flag_token_passes_through():
         "--ui",
         "--no-ui",
         "--ui-config",
+        "--webui-config",
         "--ui-config-file",
+        "--webui-config-file",
         "--ui-mcp-proxy",
         "--no-ui-mcp-proxy",
+        "--webui-mcp-proxy",
+        "--no-webui-mcp-proxy",
         "--models-dir",
         "--models-preset",
         "--models-max",
@@ -192,6 +265,21 @@ def test_non_flag_token_passes_through():
         "--pooling",
         # llama-server's own --tools clashes with Unsloth's tool policy.
         "--tools",
+        "-ag",
+        "--agent",
+        "-no-ag",
+        "--no-agent",
+        "--tools-runtime",
+        "--mcp-servers-config",
+        "--mcp-servers-json",
+        "--cors-origins",
+        "--cors-headers",
+        "--cors-methods",
+        "--cors-credentials",
+        "--no-cors-credentials",
+        "--media-path",
+        "--log-file",
+        "--log-disable",
         # Slot-state dir: Studio owns it for KV persistence across idle unload.
         "--slot-save-path",
     ],
@@ -199,6 +287,92 @@ def test_non_flag_token_passes_through():
 def test_denylist_rejects_all_aliases(denied):
     with pytest.raises(ValueError, match = denied):
         validate_extra_args([denied, "value"])
+
+
+def test_denied_llama_environment_cannot_bypass_the_argv_policy():
+    env = {name: "inherited" for name in _lsa.DENIED_ENV_VARS}
+    env.update(
+        {
+            "PATH": "/usr/bin",
+            "CUDA_VISIBLE_DEVICES": "0",
+            "LLAMA_ARG_TOP_K": "20",
+            "LLAMA_ARG_FUTURE_TOOL": "on",
+        }
+    )
+
+    removed = scrub_denied_env(env)
+    assert set(removed) == set(_lsa.DENIED_ENV_VARS) | {
+        "LLAMA_ARG_TOP_K",
+        "LLAMA_ARG_FUTURE_TOOL",
+    }
+    assert env == {"PATH": "/usr/bin", "CUDA_VISIBLE_DEVICES": "0"}
+
+
+def test_only_explicit_studio_managed_llama_env_is_added_back():
+    env = {"PATH": "/usr/bin", "LLAMA_ARG_TOP_K": "99"}
+    removed = _lsa.scrub_llama_server_env(
+        env,
+        managed_env = {"LLAMA_ARG_STUDIO_TEST": "managed"},
+    )
+    assert removed == ["LLAMA_ARG_TOP_K"]
+    assert env == {"PATH": "/usr/bin", "LLAMA_ARG_STUDIO_TEST": "managed"}
+
+
+@pytest.mark.parametrize(
+    "stored,canonical,category",
+    [
+        (["--log-file", "/var/log/llama.log"], "--log-file", "Filesystem write"),
+        (["--slot-save-path", "/tmp/slots"], "--slot-save-path", "Filesystem write"),
+        (["--media-path", "/srv/media"], "--media-path", "Filesystem read"),
+        (["--rpc", "127.0.0.1:5000"], "--rpc", "Network/RPC"),
+        (["--agent"], "--agent", "Tools/agent/process"),
+    ],
+)
+def test_legacy_stored_args_are_quarantined_atomically(stored, canonical, category):
+    assessment = assess_extra_args(["--top-k", "20", *stored])
+    assert assessment.quarantined is True
+    assert assessment.args == ()
+    assert assessment.error.canonical_flag == canonical
+    assert assessment.error.category == category
+    assert not any(value in str(assessment.error) for value in stored[1:])
+
+
+def test_deprecated_drop_helper_never_returns_a_permitted_subset():
+    with pytest.raises(_lsa.LlamaServerArgsError):
+        drop_managed_flags(["--top-k", "20", "--log-file", "/tmp/x"])
+
+
+def test_poisoned_or_oversized_stored_args_are_quarantined_whole():
+    poisoned = assess_extra_args(["--chat-template", "a\x00b", "--top-k", "20"])
+    oversized = assess_extra_args(["--verbose"] * (_lsa.EXTRA_ARGS_MAX_TOKENS + 10))
+    assert poisoned.quarantined and poisoned.args == ()
+    assert oversized.quarantined and oversized.args == ()
+
+
+def test_llama_server_launch_scrubs_denied_environment_before_spawn():
+    source = (
+        _LSA_PATH.with_name("llama_cpp.py")
+        .read_text(encoding = "utf-8")
+    )
+    scrub = source.index("_denied_env = scrub_denied_env(env)")
+    spawn = source.index("self._process = subprocess.Popen(", scrub)
+    assert scrub < spawn
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "--webui_config={}",
+        "--webui_config_file=ui.json",
+        "--webui_mcp_proxy=true",
+        "--no_webui_mcp_proxy",
+        "-np8",
+        "-np-1",
+    ],
+)
+def test_managed_flag_normalization_rejects_equals_underscores_and_attached_parallel(token):
+    with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
+        validate_extra_args([token])
 
 
 @pytest.mark.parametrize(
@@ -241,18 +415,49 @@ def test_slot_save_path_is_managed_in_all_forms():
     assert is_managed_flag("--slot-save-path") is True
     assert is_managed_flag("--slot-save-path=/tmp/x") is True
     # --slots (read-only diagnostics endpoint) stays a user choice.
-    assert is_managed_flag("--slots") is False
+    assert is_managed_flag("--slots") is True
 
 
 @pytest.mark.parametrize(
     "padded",
-    [" --parallel", "--parallel ", "\t--parallel", "  -np", "-np \n", "-np\t"],
+    [" --parallel", "--parallel ", "\t--parallel", "  -np", "-np\t"],
 )
 def test_denylist_rejects_whitespace_padded_forms(padded):
-    # `_flag_name` trims whitespace before lookup; else a trailing space
-    # could slip a managed flag past the boundary.
-    with pytest.raises(ValueError, match = "parallel|np"):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
         validate_extra_args([padded, "8"])
+    assert excinfo.value.code == "malformed"
+
+
+@pytest.mark.parametrize("token", ["", "-", "--", " value", "value ", "\tvalue"])
+def test_child_invalid_or_whitespace_padded_tokens_are_malformed(token):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args([token])
+    assert excinfo.value.code == "malformed"
+
+
+@pytest.mark.parametrize("token", ["--top-k=", "-c="])
+def test_required_inline_values_cannot_be_empty(token):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args([token])
+    assert excinfo.value.code == "malformed"
+
+
+def test_internal_horizontal_tab_remains_legal_argv_data():
+    assert validate_extra_args(["value\twith-tab"]) == ["value\twith-tab"]
+
+
+@pytest.mark.parametrize(
+    "codepoint",
+    [*range(0x20), *range(0x7F, 0xA0), 0xD800, 0xDFFF, 0x2028, 0x2029],
+)
+def test_all_c0_c1_surrogates_and_unicode_line_separators_are_rejected_except_tab(
+    codepoint,
+):
+    if codepoint == 0x09:
+        pytest.skip("horizontal tab is intentionally accepted inside a token")
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args([f"left{chr(codepoint)}right"])
+    assert excinfo.value.code == "forbidden_character"
 
 
 @pytest.mark.parametrize(
@@ -283,6 +488,157 @@ def test_first_denied_flag_short_circuits():
     # Validation stops at the first denied flag; the message names it.
     with pytest.raises(ValueError, match = "--port"):
         validate_extra_args(["--port", "1", "--host", "x"])
+
+
+@pytest.mark.parametrize(
+    "policy,spelling",
+    [
+        (policy, spelling)
+        for policy in _lsa.BLOCKED_FLAG_POLICIES
+        for spelling in policy.spellings
+    ],
+)
+def test_every_checked_in_capability_alias_is_blocked_with_safe_metadata(
+    policy, spelling
+):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args([spelling, "private-value"])
+    error = excinfo.value
+    assert error.code == "blocked_flag"
+    assert error.canonical_flag == policy.canonical
+    assert error.category == policy.category
+    assert "private-value" not in str(error)
+
+
+@pytest.mark.parametrize(
+    "token,canonical",
+    [
+        ("--grammar_file=C:/private/grammar.gbnf", "--grammar-file"),
+        ("--json_schema_file=C:/private/schema.json", "--json-schema-file"),
+        ("--chat_template_file=C:/private/template.jinja", "--chat-template-file"),
+        ("--lookup_cache_dynamic=C:/private/cache", "--lookup-cache-dynamic"),
+        ("--log_prompts_dir=C:/private/prompts", "--log-prompts-dir"),
+        ("--tools_runtime=ssh:private-host", "--tools-runtime"),
+        ("-mC:/private/model.gguf", "--model"),
+        ("-lcsC:/private/cache", "--lookup-cache-static"),
+        ("-np8", "--parallel"),
+    ],
+)
+def test_blocked_inline_underscore_and_attached_forms(token, canonical):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args([token])
+    assert excinfo.value.canonical_flag == canonical
+
+
+def test_unknown_option_cannot_consume_or_hide_a_later_blocked_flag():
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args(["--future-option", "--top-k", "20", "--rpc=host:5000"])
+    assert excinfo.value.canonical_flag == "--rpc"
+
+
+def test_unknown_flags_keep_legacy_pass_through_and_catalog_classification():
+    args = ["--future-compute-knob", "value"]
+    assert validate_extra_args(args) == args
+    assert flag_policy(args[0]) is None
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--model-draft", "C:/models/custom-draft.gguf"],
+        ["--spec-draft-model", "C:/models/custom-draft.gguf"],
+        ["-md", "C:/models/custom-draft.gguf"],
+        ["--model_draft=C:/models/custom-draft.gguf"],
+    ],
+)
+def test_local_model_draft_selectors_keep_pr_8702_pass_through(args):
+    assert validate_extra_args(args) == args
+    assert flag_policy(args[0]) is None
+
+
+def test_known_safe_missing_value_uses_typed_malformed_error():
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args(["--ctx-size"])
+    assert excinfo.value.code == "malformed"
+    assert "requires a value" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "policy,spelling",
+    [
+        (policy, spelling)
+        for policy in _lsa.KNOWN_SAFE_FLAG_POLICIES
+        for spelling in policy.spellings
+    ],
+)
+def test_every_known_safe_value_flag_rejects_a_missing_value(policy, spelling):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args([spelling])
+    assert excinfo.value.code == "malformed"
+    assert excinfo.value.canonical_flag == policy.canonical
+
+
+def test_known_safe_inline_and_repeated_values_remain_pass_through():
+    args = ["--top-k=20", "--temperature", "0.7", "--top-k", "40"]
+    assert validate_extra_args(args) == args
+
+
+@pytest.mark.parametrize("token", ["-c4096", "-mg0", "-s-1", "-ctkq8_0"])
+def test_known_safe_attached_short_values_remain_pass_through(token):
+    assert validate_extra_args([token]) == [token]
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["-cmoe", "-cmoed", "-ndio", "-no-mmap", "-nkvo", "-no-kvu"],
+)
+def test_declared_multi_character_aliases_win_before_attached_short_parsing(alias):
+    assert resolve_flag_alias(alias) == alias
+
+
+@pytest.mark.parametrize(
+    "token,canonical",
+    [("-to10", "--timeout"), ("-np8", "--parallel"), ("-mprivate.gguf", "--model")],
+)
+def test_longer_blocked_attached_alias_beats_a_shorter_safe_prefix(token, canonical):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_extra_args([token])
+    assert excinfo.value.canonical_flag == canonical
+
+
+def test_optional_value_switches_are_not_made_mandatory():
+    assert validate_extra_args(["--flash-attn", "--fit", "--reasoning"]) == [
+        "--flash-attn",
+        "--fit",
+        "--reasoning",
+    ]
+
+
+def test_explicit_empty_saved_args_are_permitted_not_quarantined():
+    assessment = assess_extra_args([])
+    assert assessment.args == ()
+    assert assessment.quarantined is False
+
+
+@pytest.mark.parametrize("stored", [None, "--top-k 20", ("--top-k", "20")])
+def test_present_saved_field_requires_an_actual_json_list(stored):
+    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
+        validate_stored_extra_args(stored)
+    assert excinfo.value.code == "malformed"
+
+
+def test_present_saved_explicit_empty_list_remains_authoritative():
+    assert validate_stored_extra_args([]) == []
+
+
+def test_string_instead_of_token_list_is_quarantined_as_malformed():
+    assessment = assess_extra_args("--top-k 20")
+    assert assessment.quarantined is True
+    assert assessment.error.code == "malformed"
+
+
+def test_safe_short_alias_sharing_a_blocked_prefix_is_not_misclassified():
+    assert validate_extra_args(["-mg", "0"]) == ["-mg", "0"]
 
 
 # ── Numeric values that look flag-ish ─────────────────────────────────
@@ -316,7 +672,7 @@ def test_is_managed_flag_true_for_denied():
 def test_is_managed_flag_false_for_pass_through():
     assert is_managed_flag("--top-k") is False
     assert is_managed_flag("--cache-type-k") is False
-    assert is_managed_flag("--chat-template-file") is False
+    assert is_managed_flag("--chat-template-file") is True
     # Soft-managed flags pass through (last-wins override)
     assert is_managed_flag("-c") is False
     assert is_managed_flag("--ctx-size") is False
@@ -404,7 +760,7 @@ def test_strip_shadowing_flags_keeps_device_by_default():
 
 
 def test_strip_shadowing_flags_drops_device_when_requested():
-    # strip_device drops device placement flags when gpu_ids owns placement.
+    # The low-level recovery helper can remove a complete device group.
     for flag in ("--device", "-dev", "--main-gpu", "-mg"):
         out = strip_shadowing_flags(
             [flag, "Vulkan1", "--top-k", "20"],

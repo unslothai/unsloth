@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { GpuIndexKind } from "@/hooks/use-gpu-info";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
+import { areLlamaExtraArgsWithinLimits } from "./llama-extra-args";
 import {
   ggufVariantFromStorageKey,
   modelIdFromStorageKey,
@@ -9,8 +12,6 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
-import type { GpuIndexKind } from "@/hooks/use-gpu-info";
-import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -25,6 +26,11 @@ export interface PerModelConfig {
   nUbatch: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
+  /**
+   * Raw llama-server tokens. Absent means this client has no opinion and must
+   * preserve legacy/server-created flags; [] is an authoritative clear.
+   */
+  llamaExtraArgs?: string[];
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still parse. null/absent
   // selectedGpuIds means automatic. --tensor-split is not remembered: it is bound to the GPU set.
   gpuMemoryMode?: "auto" | "manual";
@@ -85,9 +91,7 @@ export function isServedByMlx(
   chatOnlyReason?: string | null,
 ): boolean {
   return (
-    !isGguf &&
-    deviceType === "mac" &&
-    !NO_MLX_REASONS.has(chatOnlyReason ?? "")
+    !isGguf && deviceType === "mac" && !NO_MLX_REASONS.has(chatOnlyReason ?? "")
   );
 }
 
@@ -129,9 +133,11 @@ export {
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-// v2 added nBatch / nUbatch; a v1 client's normalizer would rewrite them away
-const STORAGE_SCHEMA_VERSION = 2;
+// v2 added nBatch / nUbatch. v3 adds llamaExtraArgs, whose absent-vs-empty
+// distinction an older normalizer would rewrite away.
+const STORAGE_SCHEMA_VERSION = 3;
 const PRE_BATCH_SCHEMA_VERSION = 1;
+const BATCH_SCHEMA_VERSION = 2;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
@@ -155,6 +161,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "nUbatch",
   "tensorParallel",
   "chatTemplateOverride",
+  "llamaExtraArgs",
   "gpuMemoryMode",
   "gpuLayers",
   "nCpuMoe",
@@ -286,9 +293,9 @@ let unpersisted: { open: boolean; stored: boolean | null } | null = null;
 const advancedOpenListeners = new Set<() => void>();
 
 /** null until the switch is used, so an untouched panel is free to open the
-*  section for a model that carries non-default advanced values.
-*  Read straight from storage rather than cached: a write from another tab while every panel
-*  was unmounted has no listener to catch it, and its storage event is not replayed on mount. */
+ *  section for a model that carries non-default advanced values.
+ *  Read straight from storage rather than cached: a write from another tab while every panel
+ *  was unmounted has no listener to catch it, and its storage event is not replayed on mount. */
 export function readAdvancedSettingsOpen(): boolean | null {
   const stored = loadAdvancedSettingsOpen();
   if (!unpersisted) {
@@ -643,11 +650,17 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     nBatch:
       typeof partial.nBatch === "number" && Number.isFinite(partial.nBatch)
-        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nBatch)))
+        ? Math.max(
+            N_BATCH_MIN,
+            Math.min(N_BATCH_MAX, Math.round(partial.nBatch)),
+          )
         : null,
     nUbatch:
       typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
-        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
+        ? Math.max(
+            N_BATCH_MIN,
+            Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)),
+          )
         : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
@@ -658,13 +671,19 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
         ? partial.chatTemplateOverride
         : null,
+    ...(Object.hasOwn(partial, "llamaExtraArgs") &&
+    Array.isArray(partial.llamaExtraArgs) &&
+    partial.llamaExtraArgs.every((token) => typeof token === "string") &&
+    areLlamaExtraArgsWithinLimits(partial.llamaExtraArgs)
+      ? { llamaExtraArgs: [...partial.llamaExtraArgs] }
+      : {}),
     ...normalizeGpuFields(partial),
   };
 }
 
 /**
-* A config in the exact shape storage keeps it in: the UI carries sentinels storage does not
-* (Speculative Decoding "auto" canonicalizes to null), which would read as non-default. */
+ * A config in the exact shape storage keeps it in: the UI carries sentinels storage does not
+ * (Speculative Decoding "auto" canonicalizes to null), which would read as non-default. */
 export function normalizePerModelConfig(raw: unknown): PerModelConfig {
   return normalize(raw);
 }
@@ -684,10 +703,10 @@ function normalize(raw: unknown): PerModelConfig {
 
 function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
   const normalized = normalize(config);
-  // records without the v2-only batch fields keep v1 so older clients can still rewrite them
-  const version =
-    normalized.nBatch != null || normalized.nUbatch != null
-      ? STORAGE_SCHEMA_VERSION
+  const version = Object.hasOwn(normalized, "llamaExtraArgs")
+    ? STORAGE_SCHEMA_VERSION
+    : normalized.nBatch != null || normalized.nUbatch != null
+      ? BATCH_SCHEMA_VERSION
       : PRE_BATCH_SCHEMA_VERSION;
   return {
     version,
@@ -807,6 +826,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     (config.chatTemplateOverride ?? null) === null &&
+    config.llamaExtraArgs === undefined &&
     gpuFieldsAtDefault(config)
   );
 }
@@ -826,14 +846,20 @@ export function savePerModelConfig(
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
   /**
-  * Receives models dropped to stay inside the storage budget. Eviction is silent and still
-  * reports success, so without this their server overrides would keep applying with nothing
-  * in the UI able to forget them. */
+   * Receives models dropped to stay inside the storage budget. Eviction is silent and still
+   * reports success, so without this their server overrides would keep applying with nothing
+   * in the UI able to forget them. */
   evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
   if (
     typeof config.chatTemplateOverride === "string" &&
     !isChatTemplateWithinLimit(config.chatTemplateOverride)
+  ) {
+    return false;
+  }
+  if (
+    config.llamaExtraArgs !== undefined &&
+    !areLlamaExtraArgsWithinLimits(config.llamaExtraArgs)
   ) {
     return false;
   }
@@ -917,16 +943,16 @@ export function deletePerModelConfig(
 }
 
 /**
-* Move a saved config from an id an older release keyed it by onto the current one.
-*
-* A repo cached outside the active HF cache is now keyed by its repo id (what the picker and
-* auto-switch index use); it used to be keyed by the snapshot path it loads from. Nothing else
-* migrates that, so without this the model reads as never remembered after an upgrade.
-*
-* The key is renamed in one write rather than saved then deleted: holding both copies puts an
-* already-full map over budget, and the save then silently evicts an unrelated model whose
-* server override outlives anything the UI could forget. A rename cannot grow the entry count.
-*/
+ * Move a saved config from an id an older release keyed it by onto the current one.
+ *
+ * A repo cached outside the active HF cache is now keyed by its repo id (what the picker and
+ * auto-switch index use); it used to be keyed by the snapshot path it loads from. Nothing else
+ * migrates that, so without this the model reads as never remembered after an upgrade.
+ *
+ * The key is renamed in one write rather than saved then deleted: holding both copies puts an
+ * already-full map over budget, and the save then silently evicts an unrelated model whose
+ * server override outlives anything the UI could forget. A rename cannot grow the entry count.
+ */
 export function adoptLegacyConfigKey(
   modelId: string,
   legacyModelId: string,
@@ -987,14 +1013,14 @@ export function resolveInitialConfig(
 }
 
 /**
-* Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
-*
-* An API auto-switch hands the loader the concrete snapshot path (the resolver index only holds
-* paths), so ``model_identifier`` names that path while this model's settings are keyed by its
-* repo id. Reading the raw identifier alone reports the resident model as unremembered, blanking
-* a control it is running with, which the next save writes back over the saved record. Only a
-* namespaced collapse is adopted, per ``residentModelIdMatches``: an HF snapshot collapses onto
-* a repo id naming exactly one model, while other paths collapse onto a shareable stem. */
+ * Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
+ *
+ * An API auto-switch hands the loader the concrete snapshot path (the resolver index only holds
+ * paths), so ``model_identifier`` names that path while this model's settings are keyed by its
+ * repo id. Reading the raw identifier alone reports the resident model as unremembered, blanking
+ * a control it is running with, which the next save writes back over the saved record. Only a
+ * namespaced collapse is adopted, per ``residentModelIdMatches``: an HF snapshot collapses onto
+ * a repo id naming exactly one model, while other paths collapse onto a shareable stem. */
 export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,

@@ -43,12 +43,25 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { syncModelOverride } from "../api/model-overrides";
+import { fetchActiveLlamaServerArguments } from "../api/llama-server-arguments";
+import {
+  fetchModelOverrides,
+  findModelOverride,
+  syncModelOverride,
+} from "../api/model-overrides";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
 } from "../hooks/use-model-defaults";
+import {
+  activeLlamaArgumentsHydrationMatches,
+  currentEffectiveLlamaLoadIdentity,
+} from "../model-config/active-arguments-hydration";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
+import {
+  MODEL_OVERRIDE_HYDRATION_MAX_ATTEMPTS,
+  decideOverrideHydration,
+} from "../model-config/override-hydration";
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_MAX_SEQ_LENGTH,
@@ -79,6 +92,7 @@ import {
   subscribeAdvancedSettingsOpen,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
+import { LlamaExtraArgsEditor } from "./llama-extra-args-editor";
 import type { ModelPickTarget } from "./model-selector/types";
 import {
   NumericValueInput,
@@ -119,6 +133,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.nUbatch != null ||
     config.tensorParallel ||
     config.chatTemplateOverride != null ||
+    (config.llamaExtraArgs?.length ?? 0) > 0 ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
@@ -560,44 +575,46 @@ function MlxAdvancedSettings({
     <div className="flex flex-col gap-1">
       {servedByMlx && (
         <>
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>KV Cache Dtype</span>
-          <InfoHint>
-            Lower KV cache precision to save memory at the cost of some
-            quality. Auto keeps full precision; 8-bit is the safest reduction,
-            and lower widths save more memory.
-          </InfoHint>
-        </div>
-        <Select
-          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
-          onValueChange={(v) =>
-            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
-          }
-        >
-          <SelectTrigger
-            animateRadius={false}
-            icon={ChevronDownStandardIcon}
-            iconClassName="size-3.5"
-            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
-            {MLX_KV_BITS.map((bits) => (
-              <SelectItem key={bits} value={String(bits)}>
-                {bits}-bit
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      {outcome ? (
-        <p className="text-ui-11 leading-snug text-muted-foreground">
-          {outcome}
-        </p>
-      ) : null}
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>KV Cache Dtype</span>
+              <InfoHint>
+                Lower KV cache precision to save memory at the cost of some
+                quality. Auto keeps full precision; 8-bit is the safest
+                reduction, and lower widths save more memory.
+              </InfoHint>
+            </div>
+            <Select
+              value={
+                config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO
+              }
+              onValueChange={(v) =>
+                update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
+              }
+            >
+              <SelectTrigger
+                animateRadius={false}
+                icon={ChevronDownStandardIcon}
+                iconClassName="size-3.5"
+                className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
+                {MLX_KV_BITS.map((bits) => (
+                  <SelectItem key={bits} value={String(bits)}>
+                    {bits}-bit
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {outcome ? (
+            <p className="text-ui-11 leading-snug text-muted-foreground">
+              {outcome}
+            </p>
+          ) : null}
         </>
       )}
       <ChatTemplateSetting
@@ -626,6 +643,8 @@ function GgufAdvancedSettings({
   gpuDevices,
   gpuLayersInputRef,
   moeLayersInputRef,
+  onLlamaArgsBlockedChange,
+  llamaArgsResetGeneration,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -638,6 +657,8 @@ function GgufAdvancedSettings({
   gpuDevices: SystemGpuDevice[];
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
+  onLlamaArgsBlockedChange: (blocked: boolean) => void;
+  llamaArgsResetGeneration: number;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -839,7 +860,10 @@ function GgufAdvancedSettings({
                 const parsed = Number.parseInt(raw, 10);
                 if (Number.isFinite(parsed)) {
                   update({
-                    nBatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                    nBatch: Math.max(
+                      N_BATCH_MIN,
+                      Math.min(N_BATCH_MAX, parsed),
+                    ),
                   });
                 }
               }}
@@ -850,7 +874,8 @@ function GgufAdvancedSettings({
           </div>
           {batchBelowFloor && (
             <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
-              Too small for llama-server, so the load will raise it to {batchFloor}.
+              Too small for llama-server, so the load will raise it to{" "}
+              {batchFloor}.
               {config.nParallel != null && config.nParallel > 2
                 ? " It needs one output slot per parallel slot."
                 : " It cannot run a batch below 2."}
@@ -865,10 +890,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Micro-batch Size</span>
               <InfoHint>
-                Physical prompt micro-batch size (--ubatch-size). Leave blank for
-                the llama.cpp default (512). Larger values speed up prompt
-                processing but use more VRAM for the compute buffer; capped at the
-                batch size.
+                Physical prompt micro-batch size (--ubatch-size). Leave blank
+                for the llama.cpp default (512). Larger values speed up prompt
+                processing but use more VRAM for the compute buffer; capped at
+                the batch size.
               </InfoHint>
             </div>
             <input
@@ -887,7 +912,10 @@ function GgufAdvancedSettings({
                 const parsed = Number.parseInt(raw, 10);
                 if (Number.isFinite(parsed)) {
                   update({
-                    nUbatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                    nUbatch: Math.max(
+                      N_BATCH_MIN,
+                      Math.min(N_BATCH_MAX, parsed),
+                    ),
                   });
                 }
               }}
@@ -898,8 +926,8 @@ function GgufAdvancedSettings({
           </div>
           {ubatchExceedsBatch && (
             <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
-              Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
-              {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
+              Micro-batch is larger than the batch size, so llama.cpp will run
+              at {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
             </p>
           )}
         </div>
@@ -932,6 +960,15 @@ function GgufAdvancedSettings({
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
+
+      {!isDiffusion ? (
+        <LlamaExtraArgsEditor
+          key={llamaArgsResetGeneration}
+          value={config.llamaExtraArgs}
+          onChange={(llamaExtraArgs) => update({ llamaExtraArgs })}
+          onBlockingChange={onLlamaArgsBlockedChange}
+        />
+      ) : null}
     </>
   );
 }
@@ -946,8 +983,8 @@ interface ModelConfigPageProps {
   isDiffusion?: boolean;
   variant?: "page" | "sidebar";
   /**
-  * Page variant only: render the built-in "Run settings" title block. A host that already
-  * shows the model name as its page heading turns this off. */
+   * Page variant only: render the built-in "Run settings" title block. A host that already
+   * shows the model name as its page heading turns this off. */
   showHeader?: boolean;
 }
 
@@ -976,6 +1013,9 @@ export function ModelConfigPage({
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
   );
+  const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const runtimeRevision = useChatRuntimeStore((s) => s.runtimeRevision);
   const isActiveModel = loadedConfig != null;
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
@@ -1013,6 +1053,12 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [llamaArgsBlocked, setLlamaArgsBlocked] = useState(false);
+  const [llamaArgsResetGeneration, setLlamaArgsResetGeneration] = useState(0);
+  const hydratedOverridesKeyRef = useRef<string | null>(null);
+  const overrideHydrationGenerationRef = useRef(0);
+  const rememberGenerationRef = useRef(0);
+  const llamaArgsEditGenerationRef = useRef(0);
   // Compare against what the backend was asked for, not what it applied: staging a
   // new value must retire a verdict that answered a different request.
   const chatTemplateOutcome =
@@ -1049,7 +1095,10 @@ export function ModelConfigPage({
   // after mount, and a width that starts applying then has to surface.
   const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
   const showAdvanced =
-    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
+    advancedPreference ??
+    (autoOpenAdvanced ||
+      autoOpenForMlxKvBits ||
+      (configState.llamaExtraArgs?.length ?? 0) > 0);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
@@ -1159,11 +1208,142 @@ export function ModelConfigPage({
       config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
-  const update = (patch: Partial<PerModelConfig>) =>
+  const update = (patch: Partial<PerModelConfig>) => {
+    if (Object.hasOwn(patch, "llamaExtraArgs")) {
+      llamaArgsEditGenerationRef.current += 1;
+    }
     setConfig((current) => ({
       ...reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
       ...patch,
     }));
+  };
+
+  useEffect(() => {
+    if (!target.isGguf || !isActiveModel || runtimeRevision == null) return;
+    const requested = {
+      effectiveLoadIdentifier: target.meta.loadId ?? target.id,
+      ggufVariant: target.ggufVariant ?? null,
+      runtimeRevision,
+    };
+    const requestEditGeneration = llamaArgsEditGenerationRef.current;
+    let cancelled = false;
+    void fetchActiveLlamaServerArguments()
+      .then((response) => {
+        if (
+          cancelled ||
+          requestEditGeneration !== llamaArgsEditGenerationRef.current
+        ) {
+          return;
+        }
+        const runtime = useChatRuntimeStore.getState();
+        if (
+          !activeLlamaArgumentsHydrationMatches(response, requested, {
+            effectiveLoadIdentifier: currentEffectiveLlamaLoadIdentity({
+              activeLoadId: runtime.activeLoadId,
+              residentCheckpoint: runtime.residentCheckpoint,
+              selectedCheckpoint: runtime.params.checkpoint || null,
+            }),
+            ggufVariant: runtime.activeGgufVariant,
+            runtimeRevision: runtime.runtimeRevision,
+          })
+        ) {
+          return;
+        }
+        const hydratedArgs = [...response.llama_extra_args];
+        setConfig((current) => ({
+          ...current,
+          llamaExtraArgs: [...hydratedArgs],
+        }));
+        useChatRuntimeStore.setState({
+          llamaExtraArgs: [...hydratedArgs],
+          loadedLlamaExtraArgs: [...hydratedArgs],
+          launchedLlamaExtraArgs: [...hydratedArgs],
+        });
+      })
+      .catch(() => {
+        // Shared load/status responses intentionally cannot hydrate this field.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isActiveModel,
+    runtimeRevision,
+    target.ggufVariant,
+    target.id,
+    target.isGguf,
+    target.meta.loadId,
+  ]);
+
+  // Older browser configs and API-created overrides can already carry launch
+  // flags in the server map. The map also proves the model is remembered; adopt
+  // its flags only while this editor is absent so a racing user edit still wins.
+  useEffect(() => {
+    if (!target.isGguf) return;
+    const hydrationKey = `${configId}\n${target.ggufVariant ?? ""}`;
+    if (hydratedOverridesKeyRef.current === hydrationKey) return;
+    const requestGeneration = ++overrideHydrationGenerationRef.current;
+    const requestRememberGeneration = rememberGenerationRef.current;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const active = () =>
+      !cancelled &&
+      requestGeneration === overrideHydrationGenerationRef.current;
+    const attempt = (attemptNumber: number) => {
+      void fetchModelOverrides()
+        .then((overrides) => {
+          if (!active()) return;
+          hydratedOverridesKeyRef.current = hydrationKey;
+          const server = findModelOverride(
+            overrides,
+            configId,
+            target.ggufVariant,
+          );
+          if (!Array.isArray(server?.llama_extra_args)) return;
+          const serverArgs = server.llama_extra_args;
+          setConfig((current) => {
+            const decision = decideOverrideHydration({
+              requestGeneration,
+              currentGeneration: overrideHydrationGenerationRef.current,
+              requestRememberGeneration,
+              currentRememberGeneration: rememberGenerationRef.current,
+              hasLocalLlamaExtraArgs: Object.hasOwn(current, "llamaExtraArgs"),
+              hasServerLlamaExtraArgs: true,
+            });
+            return decision.applyArgs
+              ? { ...current, llamaExtraArgs: [...serverArgs] }
+              : current;
+          });
+          const decision = decideOverrideHydration({
+            requestGeneration,
+            currentGeneration: overrideHydrationGenerationRef.current,
+            requestRememberGeneration,
+            currentRememberGeneration: rememberGenerationRef.current,
+            hasLocalLlamaExtraArgs: false,
+            hasServerLlamaExtraArgs: true,
+          });
+          if (decision.applyRemember) {
+            setRemember(true);
+            setSavedRemember(true);
+          }
+        })
+        .catch(() => {
+          if (!active()) return;
+          hydratedOverridesKeyRef.current = null;
+          if (attemptNumber < MODEL_OVERRIDE_HYDRATION_MAX_ATTEMPTS) {
+            retryTimer = setTimeout(() => attempt(attemptNumber + 1), 200);
+          }
+        });
+    };
+    attempt(1);
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      if (overrideHydrationGenerationRef.current === requestGeneration) {
+        overrideHydrationGenerationRef.current += 1;
+      }
+    };
+  }, [configId, target.ggufVariant, target.isGguf]);
 
   // True for every mode that takes a draft depth, DSpark included, so this
   // gates the Draft Tokens row rather than naming a drafter.
@@ -1485,6 +1665,8 @@ export function ModelConfigPage({
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
+                onLlamaArgsBlockedChange={setLlamaArgsBlocked}
+                llamaArgsResetGeneration={llamaArgsResetGeneration}
               />
             )}
 
@@ -1536,7 +1718,10 @@ export function ModelConfigPage({
           <Checkbox
             id={rememberId}
             checked={remember}
-            onCheckedChange={(checked) => setRemember(checked === true)}
+            onCheckedChange={(checked) => {
+              rememberGenerationRef.current += 1;
+              setRemember(checked === true);
+            }}
           />
           <label
             htmlFor={rememberId}
@@ -1557,8 +1742,18 @@ export function ModelConfigPage({
             variant="ghost"
             size="sm"
             className="h-8"
-            disabled={atDefault}
-            onClick={() => setConfig({ ...DEFAULT_PER_MODEL_CONFIG })}
+            disabled={atDefault && !llamaArgsBlocked}
+            onClick={() => {
+              llamaArgsEditGenerationRef.current += 1;
+              setLlamaArgsBlocked(false);
+              setLlamaArgsResetGeneration((generation) => generation + 1);
+              setConfig({
+                ...DEFAULT_PER_MODEL_CONFIG,
+                ...(config.llamaExtraArgs !== undefined
+                  ? { llamaExtraArgs: [] }
+                  : {}),
+              });
+            }}
           >
             Reset
           </Button>
@@ -1568,6 +1763,7 @@ export function ModelConfigPage({
             className="h-8"
             disabled={
               stagedMetadataPending ||
+              llamaArgsBlocked ||
               (isActiveModel && atBaseline && !rememberChanged)
             }
             onClick={handleRun}

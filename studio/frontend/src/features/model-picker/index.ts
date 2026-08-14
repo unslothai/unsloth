@@ -36,6 +36,7 @@ export type {
   ModelSelectorChangeMeta,
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
+export { llamaExtraArgsPayload } from "./model-config/llama-extra-args";
 export {
   applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,
