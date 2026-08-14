@@ -111,10 +111,9 @@ def install_view_transition_killer(ctx: Any) -> None:
 # 60s change-password timeout.
 
 
-# The smoke pages are dev-server-only (no rollupOptions.input, so `vite build` emits
-# index.html alone). Each harness owns its server: a backgrounded `npm run dev &` puts the
-# npm WRAPPER in $!, so killing that orphans the node child holding the port and stdout.
-# Hence the process group, the stdout drain, and the SIGTERM-then-SIGKILL teardown below.
+# The smoke pages are dev-server-only, so each harness owns its server. A backgrounded
+# `npm run dev &` puts the npm WRAPPER in $!, and killing that orphans the node child
+# holding the port and stdout. Hence the process group, stdout drain and SIGKILL escalation.
 
 
 def drain_process_output(proc: subprocess.Popen[str], sink: deque[str] | None = None) -> None:
@@ -226,8 +225,7 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        # Callers run this from a `finally`, so a process that still will not die must not
-        # raise over the top of whatever sent us here.
+        # Called from a `finally`: never raise over the failure that sent us here.
         try:
             proc.wait(timeout = 10)
         except subprocess.TimeoutExpired:
@@ -250,8 +248,7 @@ def wait_for_smoke_page(
     deadline = time.monotonic() + timeout_s
     last = "no response"
     while time.monotonic() < deadline:
-        # Ours died (busy port under --strictPort, missing node_modules): stop now rather than
-        # polling out the full timeout, and rather than binding to whoever else holds the port.
+        # Ours died (busy port, missing node_modules): stop instead of polling out the timeout.
         if proc is not None and proc.poll() is not None:
             tail = "\n".join(getattr(proc, "vite_tail", []))
             raise RuntimeError(

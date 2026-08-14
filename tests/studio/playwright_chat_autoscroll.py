@@ -51,10 +51,8 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5193"))
-# Set SMOKE_BASE_URL to point at a server you already have; otherwise this file starts and
-# stops its own, so `python tests/studio/playwright_chat_autoscroll.py` is the whole command.
-# An exported-but-empty SMOKE_BASE_URL counts as unset; otherwise we skip starting a
-# server and then drive "" as the base URL.
+# Unset: start and stop our own server. Set: drive that one and leave it running.
+# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL

@@ -43,10 +43,8 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5183"))
-# Set SMOKE_BASE_URL to point at a server you already have; otherwise this file starts and
-# stops its own, so `python tests/studio/playwright_research_freeze.py` is the whole command.
-# An exported-but-empty SMOKE_BASE_URL counts as unset; otherwise we skip starting a
-# server and then drive "" as the base URL.
+# Unset: start and stop our own server. Set: drive that one and leave it running.
+# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -245,8 +243,8 @@ def run() -> dict:
         before = metrics(cdp)
         page.evaluate("window.__longTasks.length = 0")
         clicks_before_report = page.evaluate("window.__research.clicks()")
-        # The probe deliberately does not click: a synthetic element.click() skips hit testing,
-        # so it lands even with `body { pointer-events: none }` stranded, the freeze under test.
+        # The probe does not click: a synthetic element.click() skips hit testing, so it lands
+        # even with `body { pointer-events: none }` stranded, the freeze under test.
         page.evaluate(
             """md => {
                 window.__reportStallMs = 0;
@@ -265,8 +263,7 @@ def run() -> dict:
             }""",
             report,
         )
-        # A real input event during the parse: hit-tested, so a stranded modal layer fails it.
-        # If the main thread is blocked this lands late, but it must land.
+        # A real, hit-tested input event: lands late under a blocked thread, but it must land.
         # Record a blocked click as a verdict; raising would lose every other measurement.
         try:
             page.click('[data-smoke="click-probe"]', timeout = 10_000)

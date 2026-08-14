@@ -63,10 +63,8 @@ def test_research_freeze_asserts_the_report_stall_and_its_own_probe() -> None:
 
 
 def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
-    # A synthetic element.click() bypasses hit testing, so it lands even with
-    # `body { pointer-events: none }` stranded, which is the freeze being tested. Only a real
-    # Playwright click fails that tree, so the verdict must read the actionability result and
-    # not just the handler's own counter.
+    # A synthetic element.click() skips hit testing and passes on a stranded
+    # `pointer-events: none` tree, so the verdict must read actionability, not just the counter.
     source_text = source("playwright_research_freeze.py")
     assert "page.click('[data-smoke=\"click-probe\"]'" in source_text
     main = verdict("playwright_research_freeze.py")
@@ -75,9 +73,8 @@ def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
 
 
 def test_harnesses_own_their_dev_server() -> None:
-    # A server started beside the harness (a backgrounded `npm run dev` in a CI step) leaves the
-    # node child alive when the wrapper is killed, which strands the port and the step's stdout.
-    # Each harness starts and stops its own instead, through the shared helpers.
+    # A server started beside the harness leaves the node child alive when the wrapper is
+    # killed, stranding the port and the step's stdout. Each harness owns its own instead.
     for name in (
         "playwright_chat_autoscroll.py",
         "playwright_research_freeze.py",
@@ -86,6 +83,5 @@ def test_harnesses_own_their_dev_server() -> None:
         text = source(name)
         assert "start_vite" in text, f"{name} does not start its own server"
         assert "stop_process" in text, f"{name} never tears its server down"
-        # Status alone is satisfied by vite's SPA fallback, which answers 200 with index.html
-        # for a smoke page that no longer exists.
+        # Vite's SPA fallback answers 200 with index.html for a page that no longer exists.
         assert "wait_for_smoke_page" in text, f"{name} gates on status rather than on content"
