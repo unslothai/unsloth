@@ -104,6 +104,7 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
+from utils.process_lifetime import is_signalable_pid as _is_signalable_pid
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
@@ -17199,8 +17200,17 @@ class LlamaCppBackend:
 
     @staticmethod
     def _leading_process_group(pid):
-        """The pid's own process group, when it leads one. None otherwise."""
-        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+        """The pid's own process group, when it leads one. None otherwise.
+
+        `not pid` rejects 0 and None but not 1, and `getpgid(1) == 1`, so init
+        reads as a group leader here and the caller below would then broadcast
+        SIGKILL to every process the user owns. The pid comes from a live Popen
+        today so it cannot be 1, but the floor is a line and the consequence of
+        losing that property later is not recoverable.
+        """
+        if not _is_signalable_pid(pid):
+            return None
+        if os.name != "posix" or not hasattr(os, "getpgid"):
             return None
         try:
             pgid = os.getpgid(pid)
@@ -17211,7 +17221,9 @@ class LlamaCppBackend:
     @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
-        if pgid is None or not hasattr(os, "killpg"):
+        if not _is_signalable_pid(pgid):
+            return  # killpg(1) is kill(-1); killpg(0) is our own group
+        if not hasattr(os, "killpg"):
             return
         try:
             os.killpg(pgid, signal.SIGKILL)
@@ -17498,7 +17510,12 @@ class LlamaCppBackend:
         except Exception:
             pid = -1
 
-        if pid <= 0:
+        # `pid <= 0` let pid 1 through. The cmdline check further down is what
+        # actually keeps this honest and init cannot pass it, but the reaper in
+        # process_lifetime had a start-time identity check that was just as
+        # convincing and a record naming pid 1 still went through it, so the
+        # cheap bound goes in front of the clever one here too.
+        if not _is_signalable_pid(pid):
             cls._unlink_pidfile(path)  # garbage record
             return 0
         if pid == os.getpid():
@@ -17760,6 +17777,14 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
+                # Floored here rather than in each enumerator: both the /proc scan
+                # and the psutil scan feed this loop, and a third one added later
+                # would too. Not hypothetical for pid 1 either, since #7894
+                # established Studio can run as a container entrypoint, and a
+                # container whose entrypoint is llama-server puts a process this
+                # sweep recognises at pid 1. Killing it takes the container down.
+                if not _is_signalable_pid(pid):
+                    continue
                 # Ownership: exact match OR binary under a known root.
                 is_ours = binary in exact_binaries or any(
                     binary.is_relative_to(root) for root in resolved_roots
