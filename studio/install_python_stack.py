@@ -4068,6 +4068,8 @@ def _stage_replacement(name: str):
                 file = sys.stderr,
             )
             return None
+    if USE_UV and not _is_direct_reference(name):
+        # A direct reference is its own provenance, so it is staged as written.
         plan = _uv_staging_plan(name)
         if plan is None:
             _safe_print(
@@ -4474,16 +4476,38 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
                 requirement = pinned
     if not requirement:
         return None
-    overrides = {"PIP_EXTRA_INDEX_URL": ""}
+    # Replaying uv's answer means replacing pip's candidate sources, not adding to them.
+    # An inherited PIP_NO_INDEX would block the index uv picked, and an inherited
+    # extra index or find-links directory could satisfy the same version from a source
+    # uv never looked at, which is the provenance swap this whole path exists to stop.
+    # pip.conf can carry the same three settings, so it is dropped for this one command
+    # exactly as the pinned-index branch of _install_env_for_cmd already does. Empty
+    # rather than deleted: measured on pip 26.2, an empty value reads as unset.
+    overrides = {
+        "PIP_EXTRA_INDEX_URL": "",
+        "PIP_NO_INDEX": "",
+        "PIP_FIND_LINKS": " ".join(find_links),
+        "PIP_CONFIG_FILE": os.devnull,
+    }
     if index_url:
         overrides["PIP_INDEX_URL"] = index_url
-    if find_links:
-        overrides["PIP_FIND_LINKS"] = " ".join(find_links)
     return requirement, overrides
 
 
 def _canonical_package_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+def _is_direct_reference(requirement: str) -> bool:
+    """True when the requirement already names the source to build from.
+
+    The overlay paths hand staging a git URL or a local checkout rather than a bare
+    name, and such a requirement carries its own provenance: no index was consulted
+    to choose it, so there is nothing for uv to have decided and nothing to preserve.
+    Asking uv to resolve it would also compare a bare spec against uv's output, which
+    appends the resolved commit and so could never match.
+    """
+    return "://" in requirement or os.path.exists(requirement)
 
 
 def _uv_upload_cutoff_args() -> "list[str] | None":

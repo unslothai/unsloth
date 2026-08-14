@@ -1130,6 +1130,61 @@ class TestDuplicateCoreMetadataRepair:
         assert all(cmd[:1] != ["uv"] for cmd, _ in calls)
         assert calls[0][0][-1] == "unsloth-zoo"
 
+    @pytest.mark.parametrize(
+        "requirement",
+        (
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+            "https://example.invalid/unsloth_zoo-1.0-py3-none-any.whl",
+        ),
+    )
+    def test_a_direct_reference_is_staged_as_written(self, monkeypatch, requirement):
+        """The overlay paths hand staging a git URL or a checkout, not a bare name.
+        Such a requirement is its own provenance -- no index chose it -- and uv
+        appends the resolved commit to what it emits, so asking uv would compare a
+        bare spec against a pinned one and never match, aborting every local
+        duplicate-zoo repair before it started."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        calls = self._uv_plan(monkeypatch)
+        assert ips._stage_replacement(requirement) is None
+        assert all(cmd[:3] != ["uv", "pip", "compile"] for cmd, _ in calls)
+        assert calls[0][0][-1] == requirement
+
+    def test_a_local_checkout_is_a_direct_reference(self, tmp_path):
+        assert ips._is_direct_reference(str(tmp_path)) is True
+        assert ips._is_direct_reference("unsloth-zoo") is False
+
+    def test_replaying_uv_replaces_pips_candidate_sources(self, monkeypatch):
+        """Replaying uv's answer means replacing pip's sources, not adding to them.
+        An inherited PIP_NO_INDEX blocks the index uv picked, and an inherited extra
+        index or find-links directory can satisfy the same version from somewhere uv
+        never looked, which is the provenance swap this path exists to stop."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        for var, value in (
+            ("PIP_NO_INDEX", "1"),
+            ("PIP_EXTRA_INDEX_URL", "https://elsewhere/simple"),
+            ("PIP_FIND_LINKS", "/tmp/stale-wheels"),
+        ):
+            monkeypatch.setenv(var, value)
+        calls = self._uv_plan(monkeypatch)
+        assert ips._stage_replacement("unsloth-zoo") is None
+        env = calls[-1][1]["env"]
+        # Measured on pip 26.2: an empty value reads as unset.
+        assert env["PIP_NO_INDEX"] == ""
+        assert env["PIP_EXTRA_INDEX_URL"] == ""
+        assert env["PIP_FIND_LINKS"] == "/opt/wheels"
+        assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple"
+        # pip.conf carries the same three settings, so it is dropped for this command.
+        assert env["PIP_CONFIG_FILE"] == os.devnull
+
+    def test_no_find_links_survives_when_uv_emitted_none(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("PIP_FIND_LINKS", "/tmp/stale-wheels")
+        self._uv_plan(monkeypatch, stdout = b"unsloth-zoo==1.0\n    # from https://m/s\n")
+        _requirement, overrides = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_FIND_LINKS"] == ""
+
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
