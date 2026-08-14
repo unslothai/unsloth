@@ -18,6 +18,7 @@ from utils.hf_dataset_options import (
     valid_hf_dataset_split_instruction,
 )
 from utils.training_runs import normalize_project_name
+from core.training.checkpoint_backup.config import CheckpointBackupConfig
 
 
 # ASCII integer, optional single sign. Rejects "++512" and Unicode digits that pass str.isdigit().
@@ -465,6 +466,10 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
+    checkpoint_backup: Optional[CheckpointBackupConfig] = Field(
+        None,
+        description = "Optional non-secret policy for asynchronous checkpoint backups",
+    )
     weight_decay: float = Field(0.001, description = "Weight decay")
     # All three clip knobs are finite as well as non-negative: JSON 1e309 (and
     # FastAPI's Infinity literal) floats to inf, which clears ge=0 but never
@@ -604,6 +609,12 @@ class TrainingStartRequest(BaseModel):
         return self
 
     @model_validator(mode = "after")
+    def _validate_checkpoint_backup(self) -> "TrainingStartRequest":
+        if self.checkpoint_backup is not None:
+            self.checkpoint_backup.validate_for_save_steps(self.save_steps)
+        return self
+
+    @model_validator(mode = "after")
     def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
         # The frontend only ever sends one of these and never under Full Finetuning, but a direct
         # API/YAML/CLI caller can bypass that. Nothing downstream breaks, but reject early for a
@@ -713,6 +724,9 @@ class TrainingProgress(BaseModel):
     num_tokens: Optional[int] = Field(None, description = "Total number of tokens processed so far")
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
+    )
+    checkpoint_backup: Optional[dict] = Field(
+        None, description = "Current asynchronous checkpoint backup snapshot"
     )
 
 

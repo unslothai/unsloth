@@ -5,7 +5,13 @@ import * as yaml from "js-yaml";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
 
-const EXPECTED_TOP_KEYS = new Set(["training", "lora", "logging", "inference"]);
+const EXPECTED_TOP_KEYS = new Set([
+  "training",
+  "lora",
+  "logging",
+  "inference",
+  "checkpoint_backup",
+]);
 
 /**
  * Parse a YAML string into a BackendModelConfig suitable for
@@ -20,9 +26,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   }
 
   const raw = parsed as Record<string, unknown>;
-  const unknownKeys = Object.keys(raw).filter(
-    (k) => !EXPECTED_TOP_KEYS.has(k),
-  );
+  const unknownKeys = Object.keys(raw).filter((k) => !EXPECTED_TOP_KEYS.has(k));
   if (unknownKeys.length > 0) {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
@@ -46,10 +50,42 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     }
   }
 
+  const rawBackup = raw.checkpoint_backup;
+  if (
+    rawBackup != null &&
+    (typeof rawBackup !== "object" || Array.isArray(rawBackup))
+  ) {
+    throw new Error("Invalid checkpoint_backup: expected a YAML mapping");
+  }
+  if (rawBackup && typeof rawBackup === "object") {
+    const backup = rawBackup as Record<string, unknown>;
+    const enabled = backup.enabled === true;
+    const saveSteps = Number(trainingObj.save_steps ?? 0);
+    const interval = Number(backup.interval_steps ?? 0);
+    if (enabled && (!Number.isInteger(saveSteps) || saveSteps <= 0)) {
+      throw new Error(
+        "Interval-based backup requires local checkpoint save steps greater than zero.",
+      );
+    }
+    if (
+      enabled &&
+      (!Number.isInteger(interval) ||
+        interval <= 0 ||
+        interval % saveSteps !== 0)
+    ) {
+      throw new Error(
+        `Backup interval must be a multiple of local checkpoint save steps. With save_steps=${saveSteps}, use ${saveSteps}, ${saveSteps * 2}, ${saveSteps * 3}, ...`,
+      );
+    }
+  }
+
   return {
     training: trainingObj as BackendModelConfig["training"],
     lora: (raw.lora ?? undefined) as BackendModelConfig["lora"],
     logging: (raw.logging ?? undefined) as BackendModelConfig["logging"],
+    checkpoint_backup: (raw.checkpoint_backup ?? {
+      enabled: false,
+    }) as BackendModelConfig["checkpoint_backup"],
   };
 }
 
@@ -103,6 +139,7 @@ export function serializeConfigToYaml(
     training.vision_image_size = state.visionImageSize;
   }
 
+  const checkpointBackup = state.checkpointBackup;
   const config = {
     training,
     lora,
@@ -113,6 +150,17 @@ export function serializeConfigToYaml(
       enable_tensorboard: state.enableTensorboard,
       tensorboard_dir: state.tensorboardDir,
       log_frequency: state.logFrequency,
+    },
+    checkpoint_backup: {
+      enabled: checkpointBackup.enabled,
+      provider: checkpointBackup.provider,
+      repo_id: checkpointBackup.repoId,
+      private: checkpointBackup.private,
+      interval_steps: checkpointBackup.intervalSteps,
+      strategy: checkpointBackup.strategy,
+      keep_remote: checkpointBackup.keepRemote,
+      upload_on_stop: checkpointBackup.uploadOnStop,
+      upload_on_complete: checkpointBackup.uploadOnComplete,
     },
   };
 
