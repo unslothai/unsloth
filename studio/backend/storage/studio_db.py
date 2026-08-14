@@ -361,6 +361,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "settings_json" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_json TEXT")
+    # Orders the snapshot writes. A tab closing sends its last edit keepalive, which can
+    # overtake a PATCH already accepted by the server, and no client-side cancel reaches
+    # a handler that is already running: the older write has to be refused here.
+    if "settings_seq" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN settings_seq INTEGER")
     if "project_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN project_id TEXT")
     if "openai_code_exec_container_id" not in chat_thread_cols:
@@ -1814,6 +1819,68 @@ def update_chat_thread(
         if guarded and applied == 0:
             raise ChatThreadPreconditionFailed(id)
         return _chat_thread_from_row(row)
+    finally:
+        conn.close()
+
+
+def write_chat_thread_settings(
+    id: str,
+    *,
+    replace: Optional[dict] = None,
+    merge: Optional[dict] = None,
+    clear: bool = False,
+    seq: Optional[int] = None,
+    keep_unreadable = None,
+) -> Optional[dict]:
+    """Write a thread's settings snapshot, reading and merging in one transaction.
+
+    Doing the read in the route and the write here lets two requests on the same thread,
+    two tabs or a tab closing behind an open one, both turn a partial patch into a full
+    replacement built from the same stale snapshot, and the second one lands on top. The
+    read, the merge and the write have to be one transaction, so they are.
+
+    `seq` orders the writes. It is the client's timestamp for the edit, and a write whose
+    seq is older than the one already stored is dropped: an aborted fetch does not stop a
+    handler the server has already started, so the ordering has to be enforced here.
+
+    `keep_unreadable(stored) -> dict` names the part of the stored snapshot the caller
+    could not read, which a replacement carries forward rather than deleting. Passed in
+    rather than imported so this module stays free of the wire models.
+    """
+    conn = get_connection()
+    try:
+        # IMMEDIATE takes the write lock up front, so the read below cannot be overtaken.
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT settings_json, settings_seq FROM chat_threads WHERE id = ?", (id,)
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        stored_seq = row["settings_seq"] if "settings_seq" in row.keys() else None
+        if seq is not None and stored_seq is not None and seq <= stored_seq:
+            # A newer snapshot is already stored; this one is the straggler.
+            conn.rollback()
+            return get_chat_thread(id)
+        stored = _json_loads(row["settings_json"], None)
+        stored = stored if isinstance(stored, dict) else {}
+        if clear:
+            settings_json = None
+        else:
+            if merge is not None:
+                base = stored
+                changes = merge
+            else:
+                base = keep_unreadable(stored) if keep_unreadable else {}
+                changes = replace or {}
+            settings_json = json.dumps({**base, **changes})
+        conn.execute(
+            "UPDATE chat_threads SET settings_json = ?, settings_seq = ? WHERE id = ?",
+            (settings_json, seq if seq is not None else stored_seq, id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
+        return _chat_thread_from_row(row) if row is not None else None
     finally:
         conn.close()
 

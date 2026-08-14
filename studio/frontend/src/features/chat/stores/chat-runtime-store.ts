@@ -408,7 +408,12 @@ function flushSettingsOnPageHidden(terminal: boolean): void {
   // An edit made while its chat's read was still out lives only in heldThreadScopedEdits,
   // so the flush above does not see it. Effect cleanup is not guaranteed during unload and
   // its ordinary fetch would not outlive the page anyway, so send it from here, keepalive.
-  if (terminal) commitHeldThreadScopedEditsToTheirThread(true);
+  if (terminal) {
+    commitHeldThreadScopedEditsToTheirThread(true);
+    // And anything an earlier visibilitychange already flushed the normal way, which
+    // this event would otherwise leave to a fetch the page is about to cancel.
+    beaconUnsettledThreadSettingsWrites();
+  }
   // An edit still waiting on hydration is a user edit like any other, and the
   // tab is going away, so send it rather than let the next session hydrate over it.
   drainPreHydrationPatch();
@@ -808,8 +813,11 @@ function sendThreadScopedSettingsBeacon(
   // never read; sending a replacement built from the defaults on screen would erase
   // the rest of its row. Everything else replaces, as the debounced write does.
   const body = merge
-    ? { settingsPatch: snapshot }
-    : { settings: buildThreadScopedSnapshot(threadId, snapshot) };
+    ? { settingsPatch: snapshot, settingsSeq: nextThreadSettingsSeq() }
+    : {
+        settings: buildThreadScopedSnapshot(threadId, snapshot),
+        settingsSeq: nextThreadSettingsSeq(),
+      };
   // The beacon carries the newest values but skips the chain, so an older write would
   // otherwise land after it and put the stale snapshot back. The ticket stands down the
   // ones still queued; the abort ends the one already out, which no ticket can reach.
@@ -834,6 +842,19 @@ const threadSettingsWriteTickets = new Map<string, number>();
 // The request each thread currently has out, so a newer snapshot can stand it down.
 const threadSettingsWriteAborts = new Map<string, AbortController>();
 
+/**
+ * Stamps each snapshot write so the server can refuse an older one. Wall clock rather
+ * than a counter: two tabs write to the same row and share no counter, but they do
+ * share a clock. Never repeats within a tab even if the clock stands still or steps
+ * back, so a retry cannot be mistaken for a newer edit.
+ */
+let lastThreadSettingsSeq = 0;
+
+function nextThreadSettingsSeq(): number {
+  lastThreadSettingsSeq = Math.max(Date.now(), lastThreadSettingsSeq + 1);
+  return lastThreadSettingsSeq;
+}
+
 function takeThreadSettingsWriteTicket(threadId: string): number {
   const ticket = (threadSettingsWriteTickets.get(threadId) ?? 0) + 1;
   threadSettingsWriteTickets.set(threadId, ticket);
@@ -847,6 +868,9 @@ function writeThreadScopedSettings(
   // Built now, not inside the chain: the snapshot must describe the store as it is at the
   // moment of the edit, not as it will be once the previous write has finished.
   const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  // Stamped with the snapshot, not with the request: the seq has to say when the edit
+  // happened, not when its turn in the chain came up.
+  const settingsSeq = nextThreadSettingsSeq();
   const ticket = takeThreadSettingsWriteTicket(threadId);
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
@@ -864,7 +888,7 @@ function writeThreadScopedSettings(
         );
         await updateStoredChatThread(
           threadId,
-          { settings },
+          { settings, settingsSeq },
           { signal: controller.signal },
         );
       } catch {
@@ -916,7 +940,31 @@ function flushThreadScopedSettingsWrite(keepalive = false): void {
     sendThreadScopedSettingsBeacon(threadId, snapshot);
     return;
   }
-  void writeThreadScopedSettings(threadId, snapshot);
+  // Some browsers fire visibilitychange(hidden) and then pagehide. The first flushes
+  // normally and clears the pending snapshot, so the terminal event would find nothing
+  // to beacon and a discarded page takes the ordinary fetch with it. Hold the snapshot
+  // until its write settles so the terminal path can send it again, keepalive.
+  unsettledThreadSettingsWrites.set(threadId, snapshot);
+  void writeThreadScopedSettings(threadId, snapshot).finally(() => {
+    if (unsettledThreadSettingsWrites.get(threadId) === snapshot) {
+      unsettledThreadSettingsWrites.delete(threadId);
+    }
+  });
+}
+
+/** Flushed but not yet acknowledged, so a terminal event can still resend it. */
+const unsettledThreadSettingsWrites = new Map<
+  string,
+  ThreadScopedSettings | null
+>();
+
+/** Re-send anything a normal flush has not landed yet, with keepalive. */
+function beaconUnsettledThreadSettingsWrites(): void {
+  const unsettled = [...unsettledThreadSettingsWrites];
+  unsettledThreadSettingsWrites.clear();
+  for (const [threadId, snapshot] of unsettled) {
+    sendThreadScopedSettingsBeacon(threadId, snapshot);
+  }
 }
 
 function scheduleThreadScopedSettingsWrite(
@@ -949,6 +997,8 @@ function scheduleThreadScopedSettingsWrite(
 // wait here. Writing them globally in the meantime moved every other chat's default and was then
 // overwritten by the arriving snapshot, so the click both leaked and appeared to do nothing.
 let pendingPairingThreadId: string | null = null;
+/** The store's thread-scoped values as they stood when the current pairing began. */
+let pairingWindowDefaults: ThreadScopedSettings | null = null;
 let heldThreadScopedEdits: {
   field: string;
   writeGlobal: (() => void) | null;
@@ -959,6 +1009,13 @@ export function beginThreadScopedPairing(threadId: string): void {
   if (pendingPairingThreadId === threadId) return;
   releaseHeldThreadScopedEdits();
   pendingPairingThreadId = threadId;
+  // What the installation defaults were before this chat could edit anything. Recorded
+  // here because there is nowhere later to recover it from: an edit made during the
+  // window overwrites the store, and on the first pairing of a session there is no
+  // earlier capture to fall back on.
+  pairingWindowDefaults = readThreadScopedSettings(
+    useChatRuntimeStore.getState(),
+  );
   setThreadScopedSettingsPending(true);
 }
 
@@ -1027,6 +1084,7 @@ async function mergeThreadScopedSettingsIntoRow(
   threadId: string,
   changes: ThreadScopedSettings,
 ): Promise<void> {
+  const settingsSeq = nextThreadSettingsSeq();
   const ticket = takeThreadSettingsWriteTicket(threadId);
   const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
   const next = previous
@@ -1039,7 +1097,10 @@ async function mergeThreadScopedSettingsIntoRow(
         const { updateStoredChatThread } = await import(
           "../utils/chat-history-storage"
         );
-        await updateStoredChatThread(threadId, { settingsPatch: changes });
+        await updateStoredChatThread(threadId, {
+          settingsPatch: changes,
+          settingsSeq,
+        });
       } catch {
         warnSettingsPersistenceFailure();
       }
@@ -2987,17 +3048,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (threadScopedSettingsThreadId === null) {
         // A held edit is already in the store but belongs to its chat, not to the
         // installation. Capturing it here would promote it to the default that every
-        // snapshot-less chat follows, so keep the value captured before the window opened.
+        // snapshot-less chat follows, so take the value from before the window opened.
+        // Deleting the key instead leaves it with no fallback at all, and the edited
+        // value then stays live into the next chat, which is the same leak.
         const captured = readThreadScopedSettings(state) as Record<
           string,
           unknown
         >;
-        const previousDefaults = globalThreadScopedDefaults as
-          | Record<string, unknown>
-          | null;
+        const beforeWindow = (pairingWindowDefaults ??
+          globalThreadScopedDefaults) as Record<string, unknown> | null;
         for (const field of heldFields) {
-          if (previousDefaults && field in previousDefaults) {
-            captured[field] = previousDefaults[field];
+          if (beforeWindow && field in beforeWindow) {
+            captured[field] = beforeWindow[field];
           } else {
             delete captured[field];
           }

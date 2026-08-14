@@ -825,6 +825,8 @@ export interface UpdateChatThreadOptions {
  */
 export type ChatThreadWritePatch = Partial<ThreadRecord> & {
   settingsPatch?: ThreadRecord["settings"];
+  /** Orders snapshot writes; the server drops one older than what it already has. */
+  settingsSeq?: number;
 };
 
 export async function updateChatThread(

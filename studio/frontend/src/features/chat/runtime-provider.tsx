@@ -1806,14 +1806,29 @@ function ThreadScopedSettingsSync({
     const retryThreadRead = () => {
       if (cancelled) return;
       commitHeldThreadScopedEditsToTheirThread();
-      beginThreadScopedPairing(activeThreadId);
-      if (retryTimer === null && retriesLeft > 0) {
-        retriesLeft -= 1;
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
-          sync();
-        }, THREAD_READ_RETRY_MS);
+      if (retryTimer !== null) return;
+      if (retriesLeft <= 0) {
+        // Out of tries. Staying paired would hold every send behind "Loading this
+        // chat's settings" with nothing left to resolve it, so give up openly: the
+        // chat runs on the installation defaults, which is what it is already
+        // showing, and say so once rather than failing silently.
+        applyThreadScopedSettings(null, null);
+        releaseHeldThreadScopedEdits();
+        toast.error("Could not load this chat's settings", {
+          description:
+            "It is using the default settings. Reopen the chat to try again.",
+        });
+        return;
       }
+      // Keep the chat paired between tries, or an edit in it would fall through to
+      // the installation defaults. A fresh browser with no legacy cache has nothing
+      // else to fall back on, so it is worth a few goes.
+      beginThreadScopedPairing(activeThreadId);
+      retriesLeft -= 1;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        sync();
+      }, THREAD_READ_RETRY_MS);
     };
 
     sync();

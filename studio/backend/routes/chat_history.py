@@ -53,6 +53,7 @@ from storage.studio_db import (
     upsert_chat_legacy_imports,
     upsert_chat_message,
     upsert_chat_settings_merge,
+    write_chat_thread_settings,
     upsert_chat_thread,
 )
 
@@ -163,40 +164,52 @@ def readable_thread_settings(settings: dict) -> Optional[dict]:
     return None
 
 
-def _settings_for_write(thread_id: str, patch: dict) -> None:
-    """Resolve `settings` / `settingsPatch` in `patch` against what the row already holds.
+def _unreadable_thread_settings(stored: dict) -> dict:
+    """The part of a stored snapshot this build cannot validate, and so must not delete.
 
-    Two things are being protected. A client that could not READ part of the snapshot
-    must not delete it by writing the rest back: an older Studio opening a database a
-    newer one wrote drops the fields it cannot validate, and a blind replacement would
-    make that loss permanent instead of temporary. And a client that only knows one
-    field changed can say so with `settingsPatch`, which matters on unload, where there
-    is no time to read the row first and a replacement would erase everything else.
+    An older Studio opening a database a newer one wrote drops the fields it cannot read.
+    A blind replacement would make that loss permanent instead of temporary, so a write
+    carries forward everything the writer could not have known about: unknown keys, and
+    known keys holding values this build rejects.
+    """
+    readable = readable_thread_settings(stored) or {}
+    return {k: v for k, v in stored.items() if k not in readable}
+
+
+def _apply_settings_write(thread_id: str, patch: dict) -> bool:
+    """Take `settings` / `settingsPatch` out of `patch` and write them. True if it wrote.
+
+    `settings` replaces the snapshot, `settingsPatch` applies only the fields it names,
+    for a client that knows what changed but not what else the row holds. The read and
+    the write are one transaction in storage; doing them here would let two tabs each
+    turn a partial patch into a replacement built from the same stale snapshot.
     """
     replace = "settings" in patch
     merge = "settingsPatch" in patch
     if not (replace or merge):
-        return
+        return False
     incoming = patch.pop("settingsPatch", None)
     if merge:
         # A merge is the more specific instruction; sending both is a client bug.
         patch.pop("settings", None)
     else:
-        incoming = patch["settings"]
+        incoming = patch.pop("settings")
+    seq = patch.pop("settingsSeq", None)
     if incoming is None:
         # Clearing is the one instruction that means the whole column. A merge of
         # nothing is not an instruction at all, so it leaves the row alone.
         if replace and not merge:
-            patch["settings"] = None
-        return
-    stored = (get_chat_thread(thread_id) or {}).get("settings")
-    stored = stored if isinstance(stored, dict) else {}
-    readable = readable_thread_settings(stored) or {}
-    # Everything the writer could not have known about: unknown keys, and known keys
-    # holding values this build rejects.
-    unreadable = {k: v for k, v in stored.items() if k not in readable}
-    base = {**unreadable} if replace else {**stored}
-    patch["settings"] = {**base, **incoming}
+            write_chat_thread_settings(thread_id, clear = True, seq = seq)
+            return True
+        return False
+    write_chat_thread_settings(
+        thread_id,
+        merge = incoming if merge else None,
+        replace = None if merge else incoming,
+        seq = seq,
+        keep_unreadable = _unreadable_thread_settings,
+    )
+    return True
 
 
 class ChatThreadPatch(BaseModel):
@@ -219,6 +232,9 @@ class ChatThreadPatch(BaseModel):
     # Applies just the fields it names. For the writer that knows what changed but not
     # what else the row holds, which is any write made before the row has been read.
     settingsPatch: Optional[ChatThreadSettings] = None
+    # Orders the snapshot writes against each other. The client's clock at the moment of
+    # the edit; a write older than the one already stored is dropped rather than applied.
+    settingsSeq: Optional[int] = None
 
 
 class ChatMessage(BaseModel):
@@ -527,14 +543,18 @@ def patch_thread(
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
     if patch.get("projectId") and get_chat_project(patch["projectId"]) is None:
         raise _missing_project_error(patch["projectId"])
-    _settings_for_write(thread_id, patch)
+    wrote_settings = _apply_settings_write(thread_id, patch)
     try:
-        thread = update_chat_thread(
-            thread_id,
-            patch,
-            expected_title = expected_title,
-            expected_opening_message_id = expected_opening_message_id,
-        )
+        if not patch and wrote_settings:
+            # A settings-only PATCH; the write above is the whole of it.
+            thread = get_chat_thread(thread_id)
+        else:
+            thread = update_chat_thread(
+                thread_id,
+                patch,
+                expected_title = expected_title,
+                expected_opening_message_id = expected_opening_message_id,
+            )
     except sqlite3.IntegrityError as exc:
         # Same race as save_thread: the project can go away before this write lands.
         if not patch.get("projectId"):
