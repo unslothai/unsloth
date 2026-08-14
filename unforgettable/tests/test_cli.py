@@ -242,6 +242,16 @@ def test_load_prints_char_split_columns(db_path, capsys):
     assert "traj" in out
     assert "total" in out
     assert "n_compiled" in out
-    assert "abcdef12" in out
-    assert "world" in out
-    assert out.index("abcdef12") < out.index("oldold01")
+    rows = [line.split() for line in out.splitlines() if line and not line.startswith("-")]
+    header, newest, older = rows[0], rows[1], rows[2]
+    assert header == [
+        "episode",
+        "contact",
+        "standing",
+        "retrieve",
+        "traj",
+        "total",
+        "n_compiled",
+    ]
+    assert newest == ["abcdef12", "world", "12", "34", "0", "46", "0"]
+    assert older == ["oldold01", "sim", "1", "2", "3", "6", "2"]

@@ -179,6 +179,38 @@ def test_memory_compile_default_is_dry_run(db_path):
     assert get_compiled(rec["id"], db_path=db_path) is None
 
 
+def test_memory_compile_with_id_default_is_dry_run(db_path):
+    rec = _trusted_procedure(db_path)
+    _world_pass_use(rec["id"], "ep-1", db_path)
+    _world_pass_use(rec["id"], "ep-2", db_path)
+    payload = json.loads(dispatch("memory_compile", {"id": rec["id"]}, db_path=db_path))
+    assert payload["dry_run"] is True
+    assert payload["hits"] == 2
+    assert payload["eligible"] is True
+    assert get_compiled(rec["id"], db_path=db_path) is None
+    none_payload = json.loads(
+        dispatch("memory_compile", {"id": rec["id"], "dry_run": None}, db_path=db_path)
+    )
+    assert none_payload["dry_run"] is True
+    assert none_payload["hits"] == 2
+    assert none_payload["eligible"] is True
+    assert get_compiled(rec["id"], db_path=db_path) is None
+    probe = insert_record(
+        kind="procedure",
+        title="Probe: old login",
+        body="echo login\n",
+        provenance="human",
+        db_path=db_path,
+    )
+    probe_payload = json.loads(
+        dispatch("memory_compile", {"id": probe["id"]}, db_path=db_path)
+    )
+    assert probe_payload["dry_run"] is True
+    assert probe_payload["eligible"] is False
+    assert "hits" in probe_payload
+    assert get_compiled(probe["id"], db_path=db_path) is None
+
+
 def test_memory_compile_wet_without_id_runs_maybe_compile(db_path):
     rec = _trusted_procedure(db_path)
     _world_pass_use(rec["id"], "ep-1", db_path)
