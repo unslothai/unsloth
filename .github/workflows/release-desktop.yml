@@ -626,8 +626,7 @@ jobs:
           if (!linuxInstallLines.some((line) => line.includes('libappindicator3-dev'))) {
             throw new Error('Desktop Linux release must install libappindicator3-dev');
           }
-          const requiredTools = [
-            'AppRun-x86_64',
+          const requiredFetchedTools = [
             'linuxdeploy-x86_64.AppImage',
             'linuxdeploy-plugin-gtk.sh',
             'linuxdeploy-plugin-gstreamer.sh',
@@ -637,15 +636,22 @@ jobs:
             'studio/src-tauri/linux/prepare-complete-appimage-tools.sh',
             'utf8',
           );
+          const localAppRunInstall =
+            'install -m 755 "$script_dir/appimage-apprun.sh" "$tools_dir/AppRun-x86_64"';
+          if (!toolScript.includes(localAppRunInstall)) {
+            throw new Error('Desktop Linux release must install the repository AppRun');
+          }
           const fetchCalls = toolScript
             .split(/\r?\n/)
             .map((line) => line.trim())
             .filter((line) => /^fetch "\$[A-Z_]+_URL" "\$[A-Z_]+_SHA256" \S+$/.test(line));
           const fetchedTools = fetchCalls.map((line) => line.split(/\s+/).at(-1));
-          if (fetchCalls.length !== requiredTools.length) {
-            throw new Error(`Expected ${requiredTools.length} digest-verified fetch calls, got ${fetchCalls.length}`);
+          if (fetchCalls.length !== requiredFetchedTools.length) {
+            throw new Error(
+              `Expected ${requiredFetchedTools.length} digest-verified fetch calls, got ${fetchCalls.length}`,
+            );
           }
-          for (const tool of requiredTools) {
+          for (const tool of requiredFetchedTools) {
             if (!fetchedTools.includes(tool)) {
               throw new Error(`Desktop Linux release must digest-verify its fetch of ${tool}`);
             }

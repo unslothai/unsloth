@@ -656,10 +656,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11}
-          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland}
-          - {label: debian-12, image: 'debian:12', display_backend: x11}
-          - {label: fedora-44, image: 'fedora:44', display_backend: x11}
+          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11, install_gles: true}
+          - {label: ubuntu-22.04-no-gles, image: 'ubuntu:22.04', display_backend: x11, install_gles: false}
+          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland, install_gles: true}
+          - {label: debian-12, image: 'debian:12', display_backend: x11, install_gles: true}
+          - {label: fedora-44, image: 'fedora:44', display_backend: x11, install_gles: true}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -671,9 +672,21 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             apt-get update -qq
+
+            alsa_package=libasound2
+            if apt-cache policy "$alsa_package" | grep -q 'Candidate: (none)'; then
+              alsa_package=libasound2t64
+            fi
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              ca-certificates python3 xvfb xauth binutils libgles2 libgl1 libegl1 libgbm1 \
-              libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+              ca-certificates python3 xvfb xauth binutils libgl1 libegl1 libgbm1 \
+              libwayland-client0 libwayland-cursor0 libwayland-egl1 libwayland-server0 \
+              libx11-6 libx11-xcb1 libxcb1 libxcb-randr0 libxcb-render0 libxcb-shm0 \
+              libxext6 libxrandr2 libxi6 libxcursor1 libxfixes3 libxrender1 \
+              libxcomposite1 libxdamage1 libxinerama1 libxau6 libxdmcp6 libxshmfence1 \
+              "$alsa_package" libpulse0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+            if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libgles2
+            fi
             if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
               DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
             fi
@@ -681,10 +694,22 @@ jobs:
               grep -Ei 'webkit|javascriptcore|appindicator|libgtk-3' || true)"
           else
             dnf install -y -q ca-certificates python3 binutils xorg-x11-server-Xvfb xorg-x11-xauth \
-              mesa-libGLES mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
-              libwayland-client libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
+              mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
+              libwayland-client libwayland-cursor libwayland-egl libwayland-server \
+              libX11 libX11-xcb libxcb libXext libXrandr libXi libXcursor libXfixes \
+              libXrender libXcomposite libXdamage libXinerama libXau libXdmcp libxshmfence \
+              alsa-lib pulseaudio-libs libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
+            if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+              dnf install -y -q mesa-libGLES
+            fi
             forbidden="$(rpm -qa | grep -Ei 'webkit|javascriptcore|appindicator|gtk3' || true)"
           fi
+          if [[ "${{ matrix.install_gles }}" == "false" ]] && \
+             ldconfig -p | grep -q 'libGLESv2\.so\.2'; then
+            echo "::error::no-GLES portability lane unexpectedly provides libGLESv2.so.2"
+            exit 1
+          fi
+
           if [ -n "$forbidden" ]; then
             echo "::error::portability image unexpectedly contains a host desktop runtime"
             printf '%s\n' "$forbidden"

@@ -1771,7 +1771,7 @@ fn main() {
     // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
     // before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
-    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
+    let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -1782,7 +1782,7 @@ fn main() {
 
     #[cfg(target_os = "linux")]
     if let Some(variable) = webkit_rendering_workaround {
-        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+        info!("Set {variable}=1 for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
