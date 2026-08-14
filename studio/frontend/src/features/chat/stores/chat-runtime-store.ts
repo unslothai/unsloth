@@ -1544,6 +1544,69 @@ function getParamsByModelAfterEdit(
   return recorded ?? outgoing;
 }
 
+/** What a load staged into the current model's params before switching to the
+ * model it belongs to. The switch that follows snapshots the model being left,
+ * and by then those params already carry the other model's context length. */
+let stagedLoadParams: {
+  checkpoint: string;
+  before: Record<string, unknown>;
+  staged: PersistedInferenceParams;
+} | null = null;
+
+function noteStagedLoadParams(
+  state: ChatRuntimeStore,
+  params: InferenceParams,
+  stagedForLoad: boolean,
+  settled: boolean,
+): void {
+  if (!stagedForLoad) {
+    // An edit to the model still on screen is the truth about it.
+    if (settled) {
+      stagedLoadParams = null;
+    }
+    return;
+  }
+  // Only the first staging call: a rollback stages again, and by then the
+  // params already hold the staged value.
+  if (stagedLoadParams?.checkpoint === state.params.checkpoint) {
+    return;
+  }
+  const before: Record<string, unknown> = {};
+  const staged: PersistedInferenceParams = {};
+  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    if (!Object.is(params[key], state.params[key])) {
+      before[key] = state.params[key];
+      setInferenceParam(staged as InferenceParams, key, params[key]);
+    }
+  }
+  stagedLoadParams = hasKeys(staged)
+    ? { checkpoint: state.params.checkpoint, before, staged }
+    : null;
+}
+
+/** The outgoing params with the staged values put back, so the model being left
+ * is remembered with its own. Only what staging wrote and nothing has changed
+ * since: anything edited after it is the user's. */
+function withoutStagedLoadParams(outgoing: InferenceParams): InferenceParams {
+  const entry = stagedLoadParams;
+  if (!entry || entry.checkpoint !== outgoing.checkpoint) {
+    return outgoing;
+  }
+  stagedLoadParams = null;
+  const restored = { ...outgoing };
+  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    const stagedValue = entry.staged[key];
+    if (stagedValue !== undefined && Object.is(outgoing[key], stagedValue)) {
+      setInferenceParam(
+        restored,
+        key,
+        entry.before[key] as PersistedInferenceParams[typeof key],
+      );
+    }
+  }
+  return restored;
+}
+
 /** Snapshot the model being switched away from. Without this, a model is only
  * remembered once edited, so the settings it was actually used with are lost --
  * including the checkpoint restored at startup, which predates the map. */
@@ -1551,7 +1614,9 @@ function rememberOutgoingModel(
   state: ChatRuntimeStore,
   outgoing: InferenceParams,
 ): Record<string, PersistedInferenceParams> | null {
-  const snapshot = pickPersistedInferenceParams(outgoing);
+  const snapshot = pickPersistedInferenceParams(
+    withoutStagedLoadParams(outgoing),
+  );
   const next = trackParamsByModel(
     state,
     getRememberedParamsPatch(
@@ -1638,6 +1703,28 @@ function getHydratedPresetState(
   return nextState;
 }
 
+/** A stored entry can be partial: an older write, a field that did not survive
+ * sanitising, or one the model never set. Replay lays what it has over the
+ * params on screen, so the gaps would be filled by whichever model was selected
+ * beforehand. Fill them from the saved global set instead, which is the same
+ * answer every time. */
+function completeRememberedEntry(
+  entry: PersistedInferenceParams,
+  globals: PersistedInferenceParams | undefined,
+): PersistedInferenceParams {
+  if (!globals) {
+    return entry;
+  }
+  const completed: PersistedInferenceParams = { ...entry };
+  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    const fallback = globals[key];
+    if (completed[key] === undefined && fallback !== undefined) {
+      setInferenceParam(completed as InferenceParams, key, fallback);
+    }
+  }
+  return completed;
+}
+
 function getHydratedSettingsState(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
@@ -1656,7 +1743,15 @@ function getHydratedSettingsState(
   }
   nextState.params = params;
   if (settings.inferenceParamsByModel !== undefined) {
-    const hydrated = { ...settings.inferenceParamsByModel };
+    const hydrated: Record<string, PersistedInferenceParams> = {};
+    for (const [modelId, entry] of Object.entries(
+      settings.inferenceParamsByModel,
+    )) {
+      hydrated[modelId] = completeRememberedEntry(
+        entry,
+        settings.inferenceParams,
+      );
+    }
     for (const modelId of locallyRememberedModels) {
       const local = state.paramsByModel[modelId];
       if (local) {
@@ -1951,6 +2046,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Params staged for the model about to load describe that model, not the
       // one still on screen, so they must neither replay nor be recorded.
       const stagedForLoad = options?.stagedForLoad === true;
+      noteStagedLoadParams(
+        state,
+        params,
+        stagedForLoad,
+        !checkpointChanged && !fromModelDefaults,
+      );
       // Remember what the outgoing model was running with before replacing it.
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)

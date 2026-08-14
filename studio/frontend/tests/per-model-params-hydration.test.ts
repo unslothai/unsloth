@@ -164,6 +164,105 @@ test("a pre-hydration edit outranks the replay", async () => {
   );
 });
 
+// A stored entry can be partial: an older write, or a field that did not survive
+// sanitising. Replay lays what it has over the params on screen, so the gaps
+// would come from whichever model happened to be selected beforehand.
+test("a partial stored entry does not borrow from the previous model", async () => {
+  settingsHttp.settings = {
+    inferenceParams: { temperature: 0.5, topP: 0.9, systemPrompt: "saved" },
+    // Only one field, as an older client or a hand-written payload would leave it.
+    inferenceParamsByModel: { [QWEN]: { temperature: 0.15 } },
+  };
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: LLAMA,
+      topP: 0.11,
+      systemPrompt: "the other model's",
+    },
+    paramsByModel: {},
+    settingsHydrated: false,
+  });
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const store = useChatRuntimeStore.getState();
+  assert.equal(
+    store.paramsByModel[QWEN]?.topP,
+    0.9,
+    "filled from the saved set",
+  );
+  store.setParams({ ...store.params, checkpoint: QWEN });
+
+  const params = useChatRuntimeStore.getState().params;
+  assert.equal(params.temperature, 0.15, "what the entry does hold");
+  assert.equal(params.topP, 0.9);
+  assert.equal(
+    params.systemPrompt,
+    "saved",
+    "not the prompt the previous model was using",
+  );
+});
+
+// Staging writes the next model's context length into the params of the one
+// still on screen, and the switch that follows snapshots those params. Marking
+// the staging call alone left the value to reach the outgoing model anyway.
+test("the model being left is remembered without the staged value", () => {
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: LLAMA,
+      maxSeqLength: 4096,
+      temperature: 0.33,
+    },
+    paramsByModel: {},
+  });
+
+  // applyPerModelConfigToRuntime, staging the model about to load.
+  const staging = useChatRuntimeStore.getState();
+  staging.setParams(
+    { ...staging.params, maxSeqLength: 32768 },
+    { stagedForLoad: true },
+  );
+  // The load lands and the checkpoint moves.
+  const switching = useChatRuntimeStore.getState();
+  switching.setParams(
+    { ...switching.params, checkpoint: QWEN },
+    { fromModelDefaults: true },
+  );
+
+  const remembered = useChatRuntimeStore.getState().paramsByModel[LLAMA];
+  assert.equal(remembered?.maxSeqLength, 4096, "its own context, not Qwen's");
+  assert.equal(remembered?.temperature, 0.33, "everything else still recorded");
+});
+
+// Only what staging wrote, and only while nothing has changed it since.
+test("an edit after staging outranks the staged value", () => {
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: LLAMA,
+      maxSeqLength: 4096,
+    },
+    paramsByModel: {},
+  });
+
+  const staging = useChatRuntimeStore.getState();
+  staging.setParams(
+    { ...staging.params, maxSeqLength: 32768 },
+    { stagedForLoad: true },
+  );
+  // The user sets a context of their own before the load happens.
+  const editing = useChatRuntimeStore.getState();
+  editing.setParams({ ...editing.params, maxSeqLength: 16384 });
+  const switching = useChatRuntimeStore.getState();
+  switching.setParams({ ...switching.params, checkpoint: QWEN });
+
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[LLAMA]?.maxSeqLength,
+    16384,
+  );
+});
+
 // A model's defaults are not settings it was used with. Recording them makes
 // the next defaults hook replay them over itself: a fresh Qwen3 load applied
 // the load response, recorded it, and then the thinking-mode params were
