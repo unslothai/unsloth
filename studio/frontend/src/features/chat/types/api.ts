@@ -405,6 +405,8 @@ export interface ApiMonitorEntry {
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
+  /** Final request-specific prompt rate from engine timings. */
+  prompt_tok_per_sec?: number | null;
   stop_reason?: string | null;
 }
 
@@ -562,6 +564,8 @@ export interface OpenAIChatCompletionsRequest {
     context_length?: number;
   };
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;

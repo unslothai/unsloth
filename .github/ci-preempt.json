@@ -37,7 +37,15 @@
     "",
     "'never' is belt and braces. The sweeper already refuses to touch releases,",
     "pull_request runs and itself; listing them again means a careless edit to",
-    "'heavy' cannot reach them."
+    "'heavy' cannot reach them.",
+    "",
+    "kaggle-t4-notebook-ci.yml is in 'never' rather than under heavy.linux,",
+    "which its 90-minute ubuntu job would otherwise qualify for. Cancelling",
+    "that run does not stop the Kaggle kernel it has already pushed, and an",
+    "orphaned kernel bills the account's weekly GPU quota to its own 45-minute",
+    "ceiling with nobody left to read the result. It holds one ubuntu runner",
+    "that spends almost all of its time asleep on a poll loop, so preempting it",
+    "frees close to nothing and costs quota that is not the pool's to spend."
   ],
   "heavy": {
     "macos": [
@@ -72,6 +80,7 @@
     "publish-desktop-updater.yml",
     "ci-capacity.yml",
     "ossf.yml",
-    "stale.yml"
+    "stale.yml",
+    "kaggle-t4-notebook-ci.yml"
   ]
 }
