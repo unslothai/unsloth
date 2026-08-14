@@ -41,8 +41,10 @@ router = APIRouter()
 # Per route, not on the router: only the endpoints whose service actually reaches
 # `from datasets import` are gated. cache_inventory and downloads work from the
 # filesystem and huggingface_hub, so listing caches, reclaiming their disk space and
-# managing download jobs keep working in the ARM64 inference-only tier -- which is the
-# tier that still downloads models (issue #8495). Where it does fire it replaces a 500
+# starting, tracking and cancelling download jobs keep working in the ARM64 inference-only
+# tier -- which is the tier that still downloads models (issue #8495). Starting one is the
+# point: a cache populated now is a dataset ready for the tier that can train on it. Where
+# the gate does fire it replaces a 500
 # from a lazy import several frames down; anywhere else it costs a dict lookup.
 needs_datasets = Depends(require_datasets_http)
 

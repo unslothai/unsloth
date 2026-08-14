@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import re
 import sys
 import tempfile
 from unittest import mock
@@ -505,20 +506,31 @@ class TestOnlyDatasetRoutesAreGated:
         assert "router = APIRouter()" in source
         assert "APIRouter(dependencies" not in source
 
-    @pytest.mark.parametrize("path", ["/upload", "/local", "/local-options",
-                                      "/check-format", "/ai-assist-mapping"])
+    @staticmethod
+    def _decorator(source: str, path: str) -> str:
+        """The whole decorator for `path`, not just the line the path sits on.
+
+        A decorator that outgrows one line puts `dependencies` on a line of its own, so a
+        per-line check would report every such route as ungated whether it is or not.
+        """
+        index = source.index(f'"{path}"')
+        # `\ndef ` alone would run past every `async def` route and swallow the decorators
+        # after it, so a gated route could read as ungated.
+        end = re.compile(r"\n(?:async )?def ").search(source, index)
+        return source[index : end.start() if end else len(source)]
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/upload", "/local", "/local-options", "/check-format", "/ai-assist-mapping"],
+    )
     def test_dataset_paths_keep_the_gate(self, path):
-        source = self._source()
-        decorator = source[source.index(f'"{path}"') :]
-        assert (
-            "needs_datasets"
-            in decorator[: decorator.index("\ndef ") if "\ndef " in decorator[:400] else 400]
-        )
+        assert "needs_datasets" in self._decorator(self._source(), path)
 
     @pytest.mark.parametrize(
         "path",
         [
             "/cached",
+            "/download",
             "/download/cancel",
             "/download-status",
             "/active-downloads",
@@ -526,14 +538,10 @@ class TestOnlyDatasetRoutesAreGated:
         ],
     )
     def test_cache_and_download_paths_stay_open(self, path):
-        source = self._source()
-        for index in range(len(source)):
-            index = source.find(f'"{path}"', index)
-            if index == -1:
-                break
-            line_end = source.index("\n", index)
-            assert "needs_datasets" not in source[index:line_end], path
-            break
+        """Starting a download included: download_dataset_response and
+        hub/workers/hf_download.py::_download_dataset reach huggingface_hub and the cache
+        utilities only, so the tier that downloads models can populate dataset caches too."""
+        assert "needs_datasets" not in self._decorator(self._source(), path), path
 
 
 class TestGatesFollowTheLoader:
