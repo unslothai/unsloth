@@ -51,7 +51,6 @@ export interface TrainingStartRequest {
     enabled: boolean;
     provider: "huggingface";
     repo_id: string | null;
-    private: boolean;
     interval_checkpoints: number;
     strategy: "latest";
     keep_remote: number;

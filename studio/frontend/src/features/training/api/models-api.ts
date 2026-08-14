@@ -63,7 +63,6 @@ export interface BackendCheckpointBackupConfig {
   enabled?: boolean;
   provider?: "huggingface";
   repo_id?: string | null;
-  private?: boolean;
   interval_steps?: number;
   interval_checkpoints?: number;
   strategy?: "latest";

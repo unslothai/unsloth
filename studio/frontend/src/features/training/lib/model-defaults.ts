@@ -138,7 +138,6 @@ export function mapBackendModelConfigToTrainingPatch(
       enabled: backup.enabled === true,
       provider: "huggingface",
       repoId: typeof backup.repo_id === "string" ? backup.repo_id : null,
-      private: backup.private !== false,
       intervalCheckpoints:
         toNumber(backup.interval_checkpoints) ??
         (saveSteps && toNumber(backup.interval_steps)

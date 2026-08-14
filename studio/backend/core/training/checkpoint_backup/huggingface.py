@@ -7,17 +7,41 @@ from .manifest import upload_files
 
 
 class HuggingFaceCheckpointTransport:
-    def __init__(self, token: str, repo_id: str, private: bool = True) -> None:
+    def __init__(self, token: str, repo_id: str) -> None:
         self.token = token
         self.repo_id = repo_id
-        self.private = private
 
-    def ensure_repository(self) -> None:
+    def validate_access(self) -> None:
+        """Verify that an existing model repository is writable without mutating it."""
         from huggingface_hub import HfApi
+        from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
-        HfApi(token = self.token).create_repo(
-            repo_id = self.repo_id, private = self.private, exist_ok = True
+        api = HfApi(token = self.token)
+        try:
+            api.repo_info(repo_id = self.repo_id, repo_type = "model")
+            user = api.whoami()
+        except RepositoryNotFoundError as error:
+            raise ValueError(
+                "Repository not found. Create it on Hugging Face and try again."
+            ) from error
+        except HfHubHTTPError as error:
+            status = getattr(getattr(error, "response", None), "status_code", None)
+            if status == 401:
+                raise PermissionError("Authentication required") from error
+            if status == 403:
+                raise PermissionError("No write permission") from error
+            raise ConnectionError("Hugging Face unavailable") from error
+
+        namespace = self.repo_id.split("/", 1)[0]
+        username = user.get("name") if isinstance(user, dict) else None
+        organizations = user.get("orgs", []) if isinstance(user, dict) else []
+        writable_namespaces = {username}
+        writable_namespaces.update(
+            org.get("name") for org in organizations
+            if isinstance(org, dict) and org.get("roleInOrg") in {"admin", "write"}
         )
+        if namespace not in writable_namespaces:
+            raise PermissionError("No write permission")
 
     def upload_checkpoint(
         self,
