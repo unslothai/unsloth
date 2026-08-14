@@ -77,6 +77,10 @@ class _Tracker:
         with self._lock:
             self._last_active = time.monotonic()
 
+    def outstanding(self) -> int:
+        with self._lock:
+            return self._inflight + self._pending
+
     def is_idle(self, ttl_seconds: float) -> bool:
         with self._lock:
             return (
@@ -87,6 +91,36 @@ class _Tracker:
 
 
 _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
+
+# Per backend, not per engine object: a diffusers <-> sd.cpp switch replaces that object.
+_LOAD_ORIGINS: dict[str, bool] = {}
+_LOAD_ORIGINS_GUARD = threading.Lock()
+
+
+def note_load_origin(owner: str, *, user_action: bool) -> None:
+    """Record who asked for the model a load route is bringing up."""
+    with _LOAD_ORIGINS_GUARD:
+        _LOAD_ORIGINS[owner] = user_action
+
+
+def loaded_by_user_action(owner: str) -> bool:
+    """Whether the resident model was loaded from Studio rather than by an API request.
+
+    Unknown reads as user-loaded: sparing a model is the safe direction for the setting.
+    """
+    with _LOAD_ORIGINS_GUARD:
+        return _LOAD_ORIGINS.get(owner, True)
+
+
+def other_request_count(owner: str, *, current_request_counted: bool = False) -> int:
+    """Tracked media requests in flight on *owner*, excluding this one when it is counted.
+
+    The auto-switch drain reads this from inside a tracked request, so its own entry must
+    not make the backend look permanently busy.
+    """
+    total = _TRACKERS[owner].outstanding()
+    return max(0, total - 1) if current_request_counted else total
+
 
 # The concrete mounted paths, not any path that ends in one of them: FastAPI answers
 # /v1/anything/images/generations with a 404 without ever running an endpoint, and stamping
@@ -265,10 +299,10 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             return
         # Re-read the effective setting immediately before the teardown. One step covers both
         # backends and an unload frees several GB, so a residency veto applied while it runs
-        # (Model Memory, API-only, or the TTL itself moved) would otherwise be ignored by
-        # every teardown left in the step, freeing a model the settings page now calls pinned.
+        # (Model Memory, or the TTL itself moved) would otherwise be ignored by every teardown
+        # left in the step, freeing a model the settings page now calls pinned.
         ttl = _effective_ttl()
-        if ttl <= 0 or not tracker.is_idle(ttl):
+        if ttl <= 0 or not tracker.is_idle(ttl) or _user_pinned(tracker.owner):
             return
         await asyncio.to_thread(backend.unload)
         # Drop ownership only if nothing came back meanwhile, and check it under the arbiter
@@ -283,9 +317,19 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
 
 
 def _effective_ttl() -> float:
-    """The media TTL with the residency vetoes applied: 0 means nothing is unloaded."""
+    """The media TTL with the residency veto applied: 0 means nothing is unloaded."""
     from utils.openai_auto_switch_settings import get_media_auto_unload_idle_seconds
     return float(get_media_auto_unload_idle_seconds())
+
+
+def _user_pinned(owner: str) -> bool:
+    """Whether "only unload models loaded by the API" spares this backend's model.
+
+    Read immediately before the teardown, like the TTL: the setting can be turned on
+    while a step is running, and a model it now pins must not be freed by the rest of it.
+    """
+    from utils.openai_auto_switch_settings import get_auto_unload_api_only
+    return get_auto_unload_api_only() and loaded_by_user_action(owner)
 
 
 async def idle_unload_step() -> None:

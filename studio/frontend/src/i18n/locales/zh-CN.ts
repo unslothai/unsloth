@@ -358,8 +358,6 @@ export const zhCN = {
         mediaIdleUnloadDescription:
           "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。这是独立的设置：上面那项仅适用于聊天模型。设为 0 则保持加载，最小值为 60 秒。",
         mediaIdleSecondsAriaLabel: "图像和视频空闲自动卸载秒数",
-        mediaIdlePaused:
-          "当“将模型保留在显存中”或“仅卸载由 API 加载的模型”开启时暂停。",
         idleNeedsEnable: "请先开启“按请求切换模型”。",
         idleActiveViaEnv: "已通过 UNSLOTH_MODEL_IDLE_TTL 启用。",
         loadError: "加载模型自动切换设置失败。",

@@ -473,9 +473,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -788,7 +788,9 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "slots": [{"id": 0, "filename": saved.name}],
     }
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False, 0)
+        settings_route,
+        "set_openai_auto_switch",
+        lambda *a: (False, 300, True, False, False, 0, False),
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
@@ -813,7 +815,9 @@ def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
     }
     kw._kv_resume = manifest
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False, 0)
+        settings_route,
+        "set_openai_auto_switch",
+        lambda *a: (True, 300, True, False, False, 0, False),
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
     monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
@@ -3601,12 +3605,12 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
     assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
     assert len(assistant) == 1
     content = str(assistant[0].get("content", ""))
-    assert (
-        "<tool_call>" in content
-    ) is expect_markup, "the count must render the same replayed history the completion does"
-    assert (
-        "offline_tool[ARGS]" in content
-    ), "an inactive tool name is prose in the real prompt, so the count keeps it too"
+    assert ("<tool_call>" in content) is expect_markup, (
+        "the count must render the same replayed history the completion does"
+    )
+    assert "offline_tool[ARGS]" in content, (
+        "an inactive tool name is prose in the real prompt, so the count keeps it too"
+    )
 
 
 _PASSTHROUGH_CATALOG = [
@@ -3902,9 +3906,9 @@ def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
     body = _counted_body(payload)
     assert body["input_tokens"] == 1234
     names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
-    assert (
-        "mcp__s1__lookup" in names
-    ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
+    assert "mcp__s1__lookup" in names, (
+        "a cached MCP schema is in the completion's prompt, so it must be in the count"
+    )
 
 
 def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
@@ -4172,9 +4176,9 @@ def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch
             raise
         total = None
 
-    assert (
-        total is None
-    ), "a total counted across a model change must not be published as either model's"
+    assert total is None, (
+        "a total counted across a model change must not be published as either model's"
+    )
     assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
 
 
@@ -4459,9 +4463,9 @@ def test_a_count_never_spawns_mcp_servers():
         and any(isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets)
     ]
     assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
-    assert all(
-        isinstance(v, ast.Constant) and v.value is False for v in assigned
-    ), "a count must never enable MCP discovery"
+    assert all(isinstance(v, ast.Constant) and v.value is False for v in assigned), (
+        "a count must never enable MCP discovery"
+    )
 
     called = {
         node.func.id
@@ -5450,20 +5454,28 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl, api_only, media_idle = settings.set_openai_auto_switch(
-        False, None, False
-    )
+    (
+        enabled,
+        idle,
+        keep_kv,
+        auto_dl,
+        api_only,
+        media_idle,
+        media_switch,
+    ) = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
     assert settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # nor the media TTL
+    assert settings.MEDIA_AUTO_SWITCH_SETTING_KEY not in store  # nor media auto-switch
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv, auto_dl, api_only, media_idle) == (
+    assert (enabled, idle, keep_kv, auto_dl, api_only, media_idle, media_switch) == (
         False,
         600,
         False,
         False,
         False,
         0,
+        False,
     )
 
 
@@ -7639,9 +7651,9 @@ def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
     backend.is_loaded = identity is not None
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     fast = inference_route._loaded_identity_satisfies(requested)
-    assert not (
-        fast and not inference_route._loaded_satisfies(requested)
-    ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+    assert not (fast and not inference_route._loaded_satisfies(requested)), (
+        f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+    )
 
 
 def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):

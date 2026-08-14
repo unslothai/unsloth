@@ -22659,6 +22659,20 @@ def _assert_native_precision_unset(
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    return await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+
+
+async def load_diffusion_model_gated(
+    request: DiffusionLoadRequest,
+    current_subject: str,
+    *,
+    user_initiated: bool = False,
+):
+    """Everything ``POST /images/load`` does, plus who asked for it.
+
+    Media auto-switch awaits this rather than the route so the idle unload can tell an
+    API-loaded pipeline from one the user picked on the Images page.
+    """
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -22677,6 +22691,7 @@ async def load_diffusion_model(
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -22841,6 +22856,8 @@ async def load_diffusion_model(
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
             await asyncio.to_thread(release, DIFFUSION)
             status_dict = await asyncio.to_thread(_begin_load)
+        # Recorded once the load is accepted, so the idle unload knows whom it belongs to.
+        note_media_load_origin(DIFFUSION, user_action = user_initiated)
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -23398,10 +23415,15 @@ async def openai_image_generations(
 
     Generates ``n`` images from ``prompt`` on the loaded diffusion model and
     returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
-    and guidance have no OpenAI knob, so they default per loaded model."""
+    and guidance have no OpenAI knob, so they default per loaded model.
+
+    With media auto-switch on, ``model`` names the image model to serve on and is loaded
+    when it is not the resident one; with it off ``model`` stays informational."""
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import default_generation_params
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
 
     if body.stream:
         raise HTTPException(
@@ -23416,6 +23438,14 @@ async def openai_image_generations(
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
+
+    # Before the loaded check: the requested model may be the one this brings up.
+    await maybe_auto_switch_media_model(
+        body.model,
+        owner = DIFFUSION,
+        current_subject = current_subject,
+        openai_errors = True,
+    )
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()

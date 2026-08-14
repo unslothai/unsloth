@@ -66,6 +66,7 @@ from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MIN,
     DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
+    DEFAULT_MEDIA_AUTO_SWITCH_ENABLED,
     DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -76,6 +77,7 @@ from utils.openai_auto_switch_settings import (
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
+    get_media_auto_switch_enabled,
     get_media_auto_unload_idle_seconds,
     get_model_overrides,
     get_openai_auto_switch_enabled,
@@ -625,6 +627,8 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_api_only: Optional[bool] = None
     # The image/video TTL is its own setting, not a share of the chat one.
     media_auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
+    # And so is image/video auto-switch, for the same reason.
+    media_auto_switch_model: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -644,6 +648,8 @@ class OpenAIAutoSwitchResponse(BaseModel):
     # (residency, or API-loaded only) is holding the image/video unload off.
     media_auto_unload_idle_seconds: int = DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS
     media_idle_unload_active: bool = False
+    # When true, a media request may load the image or video model it names.
+    media_auto_switch_model: bool = DEFAULT_MEDIA_AUTO_SWITCH_ENABLED
 
 
 # A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
@@ -1021,6 +1027,7 @@ def get_openai_auto_switch(
         auto_unload_api_only = get_auto_unload_api_only(),
         media_auto_unload_idle_seconds = get_stored_media_auto_unload_idle_seconds(),
         media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model = get_media_auto_switch_enabled(),
     )
 
 
@@ -1036,6 +1043,7 @@ def update_openai_auto_switch(
             auto_download,
             api_only,
             media_idle_seconds,
+            media_auto_switch,
         ) = set_openai_auto_switch(
             payload.enabled,
             payload.auto_unload_idle_seconds,
@@ -1043,6 +1051,7 @@ def update_openai_auto_switch(
             payload.auto_download_model,
             payload.auto_unload_api_only,
             payload.media_auto_unload_idle_seconds,
+            payload.media_auto_switch_model,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -1067,6 +1076,7 @@ def update_openai_auto_switch(
         auto_unload_api_only = api_only,
         media_auto_unload_idle_seconds = media_idle_seconds,
         media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model = media_auto_switch,
     )
 
 

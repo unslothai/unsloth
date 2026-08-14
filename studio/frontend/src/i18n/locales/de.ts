@@ -388,8 +388,6 @@ export const de = {
           "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Eine eigene Einstellung: Die Einstellung darüber gilt nur für das Chat-Modell. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
         mediaIdleSecondsAriaLabel:
           "Inaktivitätsdauer bis zum automatischen Entladen von Bild und Video in Sekunden",
-        mediaIdlePaused:
-          "Pausiert, solange „Modell im GPU-Speicher behalten“ oder „Nur über die API geladene Modelle entladen“ aktiv ist.",
         idleNeedsEnable: "Aktivieren Sie zuerst „Modell je Anfrage wechseln“.",
         idleActiveViaEnv:
           "Automatisches Entladen bei Inaktivität ist über die Umgebungsvariable UNSLOTH_MODEL_IDLE_TTL aktiv.",

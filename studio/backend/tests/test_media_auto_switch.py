@@ -1,0 +1,496 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Opt-in media auto-switch: the name resolver and the switch it drives.
+
+The local-model scan is replaced with fixture entries pointing at real (empty) files, and
+the load routes with fakes, so these exercise resolution, the drain/load sequencing and the
+error envelopes without torch, diffusers, weights or a GPU.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import types
+
+import pytest
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+
+import core.inference.gpu_arbiter as arb
+import core.inference.media_auto_switch as mas
+import core.inference.media_keepwarm as mk
+import routes.models as models_route
+import utils.openai_auto_switch_settings as settings
+from auth.authentication import get_current_subject
+from core.inference.openai_auto_download import preferred_quant
+from utils.api_errors import install_api_error_handlers
+
+
+def _info(
+    model_id,
+    path,
+    *,
+    task,
+    display_name = None,
+    model_format = None,
+    source = "models_dir",
+):
+    """One local-model scan row, in the shape ``collect_local_models`` returns."""
+    return types.SimpleNamespace(
+        id = model_id,
+        model_id = model_id,
+        display_name = display_name or model_id,
+        path = str(path),
+        model_format = model_format,
+        source = source,
+        task = task,
+    )
+
+
+def _hf_cache_repo(root, repo_id, *, files):
+    """A minimal HF cache repo: ``models--org--name/snapshots/<sha>/<file> -> ../../blobs/<sha>``.
+
+    The symlinks are the point. Both bugs this layout covers only appear once the files are
+    links into ``blobs/`` and the entry path is the repo root rather than the snapshot.
+    """
+    sha = "a" * 40
+    repo_dir = root / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / sha
+    blobs = repo_dir / "blobs"
+    snapshot.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text(sha)
+    for index, name in enumerate(files):
+        blob = blobs / f"blob{index}"
+        blob.write_bytes(b"")
+        (snapshot / name).symlink_to(blob)
+    return repo_dir, snapshot
+
+
+@pytest.fixture(autouse = True)
+def _clean_index():
+    mas.invalidate_index()
+    yield
+    mas.invalidate_index()
+
+
+@pytest.fixture
+def catalog(monkeypatch):
+    """An empty local-model catalog the tests fill, with the task read off each row."""
+    rows: list = []
+    monkeypatch.setattr(models_route, "collect_local_models", lambda root: list(rows))
+    monkeypatch.setattr(models_route, "_local_model_task", lambda info: info.task)
+    return rows
+
+
+@pytest.fixture
+def enabled(monkeypatch):
+    monkeypatch.setattr(settings, "get_media_auto_switch_enabled", lambda: True)
+
+
+# ── resolving a name ────────────────────────────────────────────────
+
+
+def test_a_diffusers_directory_resolves_as_a_kindless_pick(catalog, tmp_path):
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    pick = mas.resolve_local_media_model("black-forest-labs/FLUX.1-dev", task = mas.IMAGE_TASK)
+
+    # No kind and no filename: the load route detects those, including the single-file case.
+    assert pick == mas.MediaModelPick("black-forest-labs/FLUX.1-dev", str(pipeline))
+
+
+def test_a_gguf_repo_resolves_bare_and_per_quant(catalog, tmp_path):
+    repo = tmp_path / "flux-gguf"
+    repo.mkdir()
+    for quant in ("Q4_K_M", "Q8_0"):
+        (repo / f"flux1-dev-{quant}.gguf").write_bytes(b"")
+    catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
+
+    qualified = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf:Q8_0", task = mas.IMAGE_TASK)
+    assert qualified.gguf_filename == "flux1-dev-Q8_0.gguf"
+    assert qualified.model_kind == "gguf"
+    assert qualified.model_path == str(repo)
+    # The id stays bare, so a repo with eight quants is one row in a "not found" error.
+    assert qualified.model_id == "city96/FLUX.1-dev-gguf"
+    assert mas.available_media_model_ids(mas.IMAGE_TASK) == ["city96/FLUX.1-dev-gguf"]
+
+    # A bare id means the quant a plain load would take, so both surfaces agree on one answer.
+    bare = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
+    assert bare.gguf_filename == f"flux1-dev-{preferred_quant(['Q4_K_M', 'Q8_0'])}.gguf"
+
+
+def test_a_cached_gguf_repo_resolves_to_its_repo_id(catalog, tmp_path):
+    # A snapshot entry is a symlink into blobs/, and the loader resolves a symlink before its
+    # containment check, so a snapshot directory refuses its own file ("gguf_filename must
+    # resolve to a file inside the repo"). Name the repo the way the picker names a Hub pick.
+    repo_dir, _snapshot = _hf_cache_repo(
+        tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-image-turbo-Q4_K_S.gguf"]
+    )
+    catalog.append(
+        _info(
+            "unsloth/Z-Image-Turbo-GGUF",
+            repo_dir,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
+
+    pick = mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
+
+    assert pick.model_path == "unsloth/Z-Image-Turbo-GGUF"
+    assert pick.gguf_filename == "z-image-turbo-Q4_K_S.gguf"
+
+
+def test_a_cached_pipeline_resolves_to_its_snapshot_directory(catalog, tmp_path):
+    # The scan reports the repo ROOT, which holds no model_index.json ("Local pipeline
+    # directory has no model_index.json"). The pipeline lives one level down.
+    repo_dir, snapshot = _hf_cache_repo(
+        tmp_path, "Tongyi-MAI/Z-Image-Turbo", files = ["model_index.json"]
+    )
+    catalog.append(
+        _info("Tongyi-MAI/Z-Image-Turbo", repo_dir, task = mas.IMAGE_TASK, source = "hf_cache")
+    )
+
+    pick = mas.resolve_local_media_model("Tongyi-MAI/Z-Image-Turbo", task = mas.IMAGE_TASK)
+
+    assert pick.model_path == str(snapshot)
+    assert pick.gguf_filename is None and pick.model_kind is None
+
+
+def test_a_standalone_gguf_resolves_to_its_directory(catalog, tmp_path):
+    weights = tmp_path / "z-image-Q4_K_M.gguf"
+    weights.write_bytes(b"")
+    catalog.append(_info("z-image", weights, task = mas.IMAGE_TASK, model_format = "gguf"))
+
+    pick = mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK)
+
+    assert pick == mas.MediaModelPick("z-image", str(tmp_path), "z-image-Q4_K_M.gguf", "gguf")
+
+
+def test_the_index_is_keyed_by_task(catalog, tmp_path):
+    clip = tmp_path / "wan"
+    clip.mkdir()
+    catalog.append(_info("unsloth/Wan2.2", clip, task = mas.VIDEO_TASK))
+
+    assert mas.resolve_local_media_model("unsloth/Wan2.2", task = mas.VIDEO_TASK) is not None
+    # An image request must not be answered by a video model, or the load 400s after eviction.
+    assert mas.resolve_local_media_model("unsloth/Wan2.2", task = mas.IMAGE_TASK) is None
+
+
+def test_an_unknown_name_resolves_to_nothing(catalog):
+    assert mas.resolve_local_media_model("someone/else", task = mas.IMAGE_TASK) is None
+    assert mas.resolve_local_media_model("", task = mas.IMAGE_TASK) is None
+
+
+def test_an_absolute_path_is_not_an_advertised_name(catalog, tmp_path):
+    pipeline = tmp_path / "local-only"
+    pipeline.mkdir()
+    row = _info(str(pipeline), pipeline, task = mas.IMAGE_TASK, display_name = "Local Only")
+    row.model_id = None
+    catalog.append(row)
+
+    # The scanners report the on-disk path as the id; a caller should not have to send one.
+    assert mas.resolve_local_media_model(str(pipeline), task = mas.IMAGE_TASK) is None
+    assert mas.resolve_local_media_model("Local Only", task = mas.IMAGE_TASK) is not None
+
+
+# ── the switch ──────────────────────────────────────────────────────
+
+
+class _FakeMediaBackend:
+    def __init__(self, repo_id = None):
+        self.repo_id = repo_id
+        self.loading: tuple[str, ...] = ()
+        self.active = False
+        self.phase = "ready" if repo_id else None
+
+    def status(self):
+        return {
+            "loaded": self.repo_id is not None,
+            "repo_id": self.repo_id,
+            "base_repo": None,
+            "gguf_variant": None,
+        }
+
+    def loading_repo_ids(self):
+        return self.loading
+
+    def generate_progress(self):
+        return {"active": self.active}
+
+    def load_progress(self):
+        return {"phase": self.phase}
+
+
+@pytest.fixture
+def backend(monkeypatch):
+    fake = _FakeMediaBackend()
+    monkeypatch.setattr(mas, "_backend_for", lambda owner: fake)
+    return fake
+
+
+@pytest.fixture
+def loads(monkeypatch, backend):
+    """Record every load the switch starts, and bring the fake up as the loader would."""
+    started: list = []
+
+    async def _start(owner, pick, current_subject):
+        started.append((owner, pick))
+        backend.repo_id = pick.model_path
+        backend.phase = "ready"
+        mk.note_load_origin(owner, user_action = False)
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+    return started
+
+
+def _switch(
+    name,
+    *,
+    owner = arb.DIFFUSION,
+    openai_errors = True,
+):
+    return asyncio.run(
+        mas.maybe_auto_switch_media_model(
+            name,
+            owner = owner,
+            current_subject = "test-user",
+            openai_errors = openai_errors,
+        )
+    )
+
+
+def test_the_switch_is_inert_while_the_setting_is_off(catalog, monkeypatch, loads):
+    monkeypatch.setattr(settings, "get_media_auto_switch_enabled", lambda: False)
+    # Not even an unknown name is refused: `model` keeps its old informational meaning.
+    _switch("someone/else")
+    assert loads == []
+
+
+def test_no_model_named_is_a_no_op(catalog, enabled, loads):
+    _switch(None)
+    _switch("   ")
+    assert loads == []
+
+
+def test_an_unresolvable_name_is_refused_and_lists_what_is_downloaded(
+    catalog, enabled, tmp_path, loads
+):
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("someone/else")
+
+    assert excinfo.value.status_code == 404
+    error = excinfo.value.detail["error"]
+    assert error["code"] == "model_not_found"
+    assert error["param"] == "model"
+    assert "black-forest-labs/FLUX.1-dev" in error["message"]
+    assert loads == []
+
+
+def test_a_video_refusal_carries_a_plain_detail(catalog, enabled, loads):
+    # /api/inference/video/generate is not an OpenAI surface, so it must not grow an envelope.
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("someone/else", owner = arb.VIDEO, openai_errors = False)
+
+    assert isinstance(excinfo.value.detail, str)
+
+
+def test_a_resident_model_is_not_reloaded(catalog, enabled, tmp_path, backend, loads):
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "black-forest-labs/FLUX.1-dev"
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert loads == []
+
+
+def test_a_model_loaded_by_path_still_counts_as_serving(catalog, enabled, tmp_path, backend, loads):
+    # A model this module loaded reports the local path it was given, not the repo id.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = str(pipeline)
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert loads == []
+
+
+def test_a_different_model_is_loaded_before_the_request_proceeds(
+    catalog, enabled, tmp_path, backend, loads
+):
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+    # The load came from the API, so "only unload models loaded by the API" may free it.
+    assert mk.loaded_by_user_action(arb.DIFFUSION) is False
+
+
+def test_a_busy_backend_is_not_swapped_out_from_under_its_generation(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.0)
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+    backend.active = True
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.headers["Retry-After"] == "15"
+    assert loads == []
+
+
+def test_a_load_still_running_at_the_deadline_asks_for_a_retry(
+    catalog, enabled, tmp_path, backend, monkeypatch
+):
+    monkeypatch.setattr(mas, "_LOAD_WAIT_S", 0.0)
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    async def _start(owner, pick, current_subject):
+        backend.phase = "downloading"
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.headers["Retry-After"] == "15"
+
+
+def test_a_failed_load_surfaces_its_error(catalog, enabled, tmp_path, backend, monkeypatch):
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    async def _start(owner, pick, current_subject):
+        backend.phase = "error"
+        backend.load_progress = lambda: {"phase": "error", "error": "not enough VRAM"}
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    # A 503 naming the reason, not a bare 500 carrying the loader's exception.
+    assert excinfo.value.status_code == 503
+    assert "not enough VRAM" in excinfo.value.detail["error"]["message"]
+
+
+# ── route wiring ────────────────────────────────────────────────────
+
+
+def test_a_companion_base_repo_does_not_count_as_serving(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A GGUF borrows the full pipeline as its text-encoder/VAE base; a request for that
+    # pipeline must load it, not be answered by the GGUF that borrows it.
+    pipeline = tmp_path / "flux-dev"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "city96/FLUX.1-dev-gguf"
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+
+
+def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
+    import core.inference.video as video_module
+    from routes.video import router as video_router
+
+    calls: list = []
+
+    async def _switch_stub(requested_model, *, owner, current_subject, openai_errors):
+        calls.append((requested_model, owner, openai_errors))
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
+
+    class _Backend:
+        def begin_generate(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(video_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/api/inference/video/generate",
+        json = {"prompt": "a sloth", "model": "unsloth/Wan2.2"},
+    )
+
+    assert resp.status_code == 200
+    # Not the OpenAI envelope: this route is a Studio surface and its errors are plain details.
+    assert calls == [("unsloth/Wan2.2", arb.VIDEO, False)]
+
+
+def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
+    import core.inference.diffusion as diffusion_module
+    import core.inference.image_gallery as gallery_module
+    from routes.inference import router
+
+    calls: list = []
+
+    async def _switch_stub(requested_model, *, owner, current_subject, openai_errors):
+        calls.append((requested_model, owner, openai_errors))
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
+
+    class _Backend:
+        is_loaded = True
+
+        def status(self):
+            return {"loaded": True, "repo_id": "unsloth/Z-Image-Turbo-GGUF", "base_repo": None}
+
+        def generate(self, **kwargs):
+            return {"images": [object()], "seed": 1, "repo_id": "unsloth/Z-Image-Turbo-GGUF"}
+
+    backend = _Backend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    monkeypatch.setattr(
+        gallery_module,
+        "save",
+        lambda image, meta: {
+            **meta,
+            "id": "img0",
+            "url": "/api/inference/images/gallery/img0/file",
+        },
+    )
+
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(router, prefix = "/v1")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/v1/images/generations",
+        json = {"prompt": "p", "size": "256x256", "model": "black-forest-labs/FLUX.1-dev"},
+    )
+
+    assert resp.status_code == 200
+    assert calls == [("black-forest-labs/FLUX.1-dev", arb.DIFFUSION, True)]

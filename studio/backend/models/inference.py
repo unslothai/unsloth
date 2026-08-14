@@ -3475,6 +3475,12 @@ class VideoGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
+    model: Optional[str] = Field(
+        None,
+        description = "Video model to generate on. Only read when media auto-switch is on, "
+        "where a downloaded model that is not the resident one is loaded first; omit to use "
+        "whatever is loaded. The Video page never sends it.",
+    )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
     # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The
     # enforced rule is the LOADED family's own (its resolution presets and k * frame_step + frame_offset lattice), which the

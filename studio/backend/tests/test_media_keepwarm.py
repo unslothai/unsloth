@@ -79,6 +79,7 @@ def media(monkeypatch):
         monkeypatch.setattr(tracker, "seen", None)
         monkeypatch.setattr(tracker, "was_busy", False, raising = False)
         monkeypatch.setattr(tracker, "completed", None, raising = False)
+    monkeypatch.setattr(mk, "_LOAD_ORIGINS", {})
     return engines
 
 
@@ -158,21 +159,15 @@ def test_media_ttl_env_behaves_like_the_chat_env(store, monkeypatch):
     assert settings.get_media_auto_unload_idle_seconds() == 0
 
 
-def test_api_only_disables_the_media_ttl(store, monkeypatch):
-    # "Only unload models loaded by the API" promises a model the user loaded from
-    # Studio stays resident, and nothing but the user ever loads an image or video
-    # model: /images/load and /video/load are the only entry points, and
-    # /v1/images/generations 503s rather than loading one. So with the setting on
-    # there is nothing here the idle unload is allowed to free.
+def test_api_only_does_not_veto_the_media_ttl(store, monkeypatch):
+    # Media auto-switch gives an API request its own way to load a pipeline, so "only
+    # unload models loaded by the API" is a per-model rule here (see the tick tests
+    # below) rather than something that holds the whole TTL off.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    assert settings.get_media_auto_unload_idle_seconds() == 0
-    # The env-backed TTL is vetoed too, exactly as residency vetoes it.
+    assert settings.get_media_auto_unload_idle_seconds() == 600
     del store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY]
     monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
-    assert settings.get_media_auto_unload_idle_seconds() == 0
-    # The stored seconds survive it, so turning the veto off brings them back.
-    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = False
     assert settings.get_media_auto_unload_idle_seconds() == 900
 
 
@@ -378,21 +373,34 @@ def test_a_different_model_restarts_the_ttl(media, monkeypatch):
 
 
 def test_api_only_spares_a_model_the_user_loaded(media, store):
-    # The whole feature is off while the setting is on, and off means today's behaviour:
-    # nothing resolved, nothing unloaded.
+    # Unknown provenance reads as user-loaded, so an install that never recorded one is
+    # spared exactly as it was before media auto-switch existed.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
+    mk.note_load_origin(arb.DIFFUSION, user_action = True)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
     assert media[arb.VIDEO].unloads == 0
-    # Turned off again, the same idle models are collectable: the setting was the only
-    # thing sparing them, so this does not cost the feature anything else.
+    # Turned off again, the same idle models are collectable.
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = False
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 1
     assert media[arb.VIDEO].unloads == 1
+
+
+def test_api_only_still_frees_a_model_the_api_loaded(media, store):
+    # The other half of the per-model rule: auto-switch marks its own load, and that one
+    # is what the setting exists to collect.
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
+    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
+    mk.note_load_origin(arb.DIFFUSION, user_action = False)
+    mk.note_load_origin(arb.VIDEO, user_action = True)
+    _step()
+    _step(*_BOTH)
+    assert media[arb.DIFFUSION].unloads == 1
+    assert media[arb.VIDEO].unloads == 0
 
 
 def test_a_cached_reload_of_another_h3_partition_is_not_unloaded(media, monkeypatch):

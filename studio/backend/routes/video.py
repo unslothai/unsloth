@@ -191,12 +191,27 @@ async def video_download_plan(
 async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    return await load_video_model_gated(request, current_subject, user_initiated = True)
+
+
+async def load_video_model_gated(
+    request: VideoLoadRequest,
+    current_subject: str,
+    *,
+    user_initiated: bool = False,
+):
+    """Everything ``POST /video/load`` does, plus who asked for it.
+
+    Media auto-switch awaits this rather than the route so the idle unload can tell an
+    API-loaded pipeline from one the user picked on the Video page.
+    """
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
+    from core.inference.media_keepwarm import note_load_origin
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
@@ -289,6 +304,8 @@ async def load_video_model(
         else:
             await asyncio.to_thread(release, VIDEO)
             status_dict = await asyncio.to_thread(_begin_load)
+        # Recorded once the load is accepted, so the idle unload knows whom it belongs to.
+        note_load_origin(VIDEO, user_action = user_initiated)
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -311,12 +328,25 @@ async def generate_video(
     takes minutes, and secure mode's tunnel caps the origin response window near
     100 seconds, so the response must not span the generation. The worker runs the
     generate + gallery-persist pipeline; the terminal outcome (completed with the
-    saved record / failed with a client-safe error) arrives via generate-progress."""
+    saved record / failed with a client-safe error) arrives via generate-progress.
+
+    With media auto-switch on, ``model`` names the video model to generate on and is loaded
+    when it is not the resident one."""
+    from core.inference.gpu_arbiter import VIDEO
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
     from core.inference.video import get_video_backend
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_NOT_LOADED_MSG,
         VideoShapeError,
+    )
+
+    # Before the backend is resolved: the requested model may be the one this brings up.
+    await maybe_auto_switch_media_model(
+        request.model,
+        owner = VIDEO,
+        current_subject = current_subject,
+        openai_errors = False,
     )
 
     backend = get_video_backend()

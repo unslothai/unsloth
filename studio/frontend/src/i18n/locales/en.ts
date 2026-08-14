@@ -367,12 +367,14 @@ export const en = {
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
         idleSecondsAriaLabel: "Idle auto-unload seconds",
+        mediaEnable: "Switch image and video model by request",
+        mediaEnableDescription:
+          "Load a downloaded image or video model named in an API request before generating. Its own setting: the one above covers the chat model only. Off by default.",
         mediaIdleUnload: "Idle auto-unload for image and video",
         mediaIdleUnloadDescription:
           "Free VRAM by unloading the image and video models after this many idle seconds. Its own setting: the one above covers the chat model only. 0 keeps them loaded, minimum 60.",
         mediaIdleSecondsAriaLabel: "Image and video idle auto-unload seconds",
-        mediaIdlePaused:
-          "Paused while Keep model in GPU memory or Only unload models loaded by the API is on.",
+        mediaIdlePaused: "Paused while Keep model in GPU memory is on.",
         idleNeedsEnable: "Turn on Switch model by request first.",
         idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
