@@ -46,6 +46,17 @@ const modelPickerSource = readFileSync(
   ),
   "utf8",
 );
+const chatPickerInventorySource = readFileSync(
+  new URL(
+    "../src/features/model-picker/inventory/use-chat-picker-inventory.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const hubInventoryViewModelSource = readFileSync(
+  new URL("../src/features/hub/inventory/view-models.ts", import.meta.url),
+  "utf8",
+);
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
@@ -261,6 +272,14 @@ test("local native audio architecture metadata drives runtime and consent", () =
   ]) {
     assert.match(audioCatalogSource, new RegExp(`"${audioType}"`));
   }
+});
+
+test("cached native audio architecture metadata reaches picker rows", () => {
+  assert.match(
+    hubInventoryViewModelSource,
+    /audio_type\?: string \| null;[\s\S]*audioType: row\.audio_type \?\? null/,
+  );
+  assert.match(chatPickerInventorySource, /audio_type: row\.audioType \?\? null/);
 });
 
 test("custom-code audio models require consent and pass its fingerprint", () => {

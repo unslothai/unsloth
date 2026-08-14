@@ -1021,7 +1021,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           return;
         }
         if (generation !== stagedTtsGeneration.current) return;
-        if (plan.entries.length > 0) {
+        const plannedEntries =
+          meta.isDownloaded === true && meta.loadId
+            ? plan.entries.filter((entry) => !entry.checkpoint)
+            : plan.entries;
+        if (plannedEntries.length > 0) {
           pendingStagedTtsLoad.current = {
             repoId,
             ggufFilename,
@@ -1030,7 +1034,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             generation,
           };
           stageTtsDownload(
-            plan.entries.map((entry) => ({
+            plannedEntries.map((entry) => ({
               repoId: entry.repo_id,
               files: entry.files,
               bytes: entry.bytes,

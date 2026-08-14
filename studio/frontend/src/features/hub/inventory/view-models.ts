@@ -170,6 +170,7 @@ export function buildCachedInventoryRow(
     has_variant_state?: boolean;
     pipeline_tag?: string | null;
     task?: string | null;
+    audio_type?: string | null;
     single_file?: boolean;
     companion?: boolean;
     tags?: string[];
@@ -233,6 +234,7 @@ export function buildCachedInventoryRow(
     hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
+    audioType: row.audio_type ?? null,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
     tags: row.tags,

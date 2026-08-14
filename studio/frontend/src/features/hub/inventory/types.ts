@@ -56,6 +56,7 @@ export interface CachedInventoryRow {
   pipelineTag?: string | null;
   // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;
+  audioType?: string | null;
   // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
   // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these

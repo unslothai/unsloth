@@ -1000,9 +1000,8 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
     def test_higgs_rejects_python_39_before_gpu_resolution(self):
         with patch.object(self.route.sys, "version_info", (3, 9, 18)):
             for audio_type in ("higgs_tts2", "higgs_tts3"):
-                with self.subTest(audio_type = audio_type):
-                    with self.assertRaisesRegex(HTTPException, "Python 3.10"):
-                        self._run(audio_type, DeviceType.CUDA, selected = [0])
+                with self.assertRaisesRegex(HTTPException, "Python 3.10"):
+                    self._run(audio_type, DeviceType.CUDA, selected = [0])
 
     def test_companion_sizes_are_aggregated_for_gpu_selection(self):
         config = SimpleNamespace(

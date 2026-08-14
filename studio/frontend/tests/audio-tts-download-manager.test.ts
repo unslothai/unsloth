@@ -62,11 +62,11 @@ test("Hub TTS repos and native companion codecs use a cache-aware exact-file pla
   assert.match(apiSource, /\/api\/inference\/audio\/download-plan/);
   assert.match(
     source,
-    /meta\.source === "hub" && !ggufFilename[\s\S]*await getAudioDownloadPlan\([\s\S]*plan\.entries\.length > 0/,
+    /meta\.source === "hub" && !ggufFilename[\s\S]*await getAudioDownloadPlan\([\s\S]*plannedEntries\.length > 0/,
   );
   assert.match(
     source,
-    /plan\.entries\.map\(\(entry\) => \(\{[\s\S]*repoId: entry\.repo_id,[\s\S]*files: entry\.files,[\s\S]*bytes: entry\.bytes,[\s\S]*checkpoint: entry\.checkpoint/,
+    /plannedEntries\.map\(\(entry\) => \(\{[\s\S]*repoId: entry\.repo_id,[\s\S]*files: entry\.files,[\s\S]*bytes: entry\.bytes,[\s\S]*checkpoint: entry\.checkpoint/,
   );
   assert.doesNotMatch(
     source,
@@ -79,6 +79,17 @@ test("a cached Hub TTS model can still load when the metadata plan is offline", 
   assert.match(
     source,
     /catch \(error\) \{[\s\S]*meta\.isDownloaded === true[\s\S]*loadTtsModelRef\.current\([\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*meta\.loadId,[\s\S]*meta\.audioType/,
+  );
+});
+
+test("remembered-cache TTS rows stage companions without duplicating the checkpoint", () => {
+  assert.match(
+    source,
+    /const plannedEntries =\s*meta\.isDownloaded === true && meta\.loadId[\s\S]*plan\.entries\.filter\(\(entry\) => !entry\.checkpoint\)/,
+  );
+  assert.match(
+    source,
+    /if \(plannedEntries\.length > 0\)[\s\S]*plannedEntries\.map\(\(entry\) => \(\{/,
   );
 });
 
