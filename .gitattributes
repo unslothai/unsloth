@@ -1,10 +1,9 @@
-# Normalize Python files to LF line endings
-*.py text eol=lf
+# Normalize TypeScript files to LF line endings
+*.ts text eol=lf
+*.tsx text eol=lf
 
-# Always check out shell scripts with LF endings. Without this rule a Windows
-# clone (core.autocrlf=true) rewrites them to CRLF, and the trailing \r breaks
-# them when run in WSL/Linux (e.g. `set -e` -> "set: Illegal option -").
-*.sh text eol=lf
+# Normalize JavaScript files to LF line endings
+*.js text eol=lf
 
 # The vendored Swagger UI / ReDoc bundles are pinned by sha256 in
 # studio/backend/assets/docs_ui/docs_ui_manifest.json and must stay byte-identical to the
