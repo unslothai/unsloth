@@ -646,6 +646,27 @@ _REGISTRY_HOSTNAMES = frozenset(
 )
 
 
+def _transport_host(hostname: str) -> str:
+    """The ASCII host httpx will dial, so the checked name is the dialled name.
+
+    ``socket.getaddrinfo`` encodes a Unicode host with the stdlib ``idna`` codec
+    (IDNA 2003), httpx with the ``idna`` package (IDNA 2008), and the two differ
+    on the deviation characters: straße.de resolves as strasse.de through the
+    resolver and as xn--strae-oqa.de through httpx, which are different hosts
+    owned by different people. Mirrors httpx's `_urlparse.encode_host`.
+    """
+    if hostname.isascii():
+        return hostname.lower()
+    try:
+        import idna
+
+        return idna.encode(hostname.lower()).decode("ascii")
+    except Exception:
+        # httpx raises InvalidURL here, so the request cannot happen at all;
+        # resolving the name as written is then as good an answer as any.
+        return hostname
+
+
 def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ...] | None:
     """Addresses for ``hostname``, or ``None`` when the resolver did not answer.
 
@@ -655,6 +676,7 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
     """
     import socket
 
+    hostname = _transport_host(hostname)
     now = time.monotonic()
     with _dns_cache_lock:
         cached = _dns_cache.get(hostname)
@@ -683,7 +705,12 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
     thread = threading.Thread(target = _resolve, daemon = True)
     thread.start()
     thread.join(_DNS_TIMEOUT_SECONDS)
-    addresses = tuple(resolved) if answered and not thread.is_alive() else None
+    if thread.is_alive():
+        # A timeout is not an answer, so it is not remembered as one: the
+        # transport waits longer than this and would still get the address a
+        # deliberately slow authoritative server sends after the deadline.
+        return None
+    addresses = tuple(resolved) if answered else None
 
     with _dns_cache_lock:
         if len(_dns_cache) >= _DNS_CACHE_MAX_ENTRIES:

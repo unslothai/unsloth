@@ -167,12 +167,56 @@ def test_unresolvable_names_are_refused_only_under_the_opt_in(monkeypatch):
         validate_provider_base_url("http://my_ollama:11434/v1")
 
 
+def test_a_unicode_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
+    """getaddrinfo speaks IDNA 2003, httpx IDNA 2008, and they differ on ß."""
+    seen = []
+
+    def _record(host, port, *args, **kwargs):
+        seen.append(host)
+        if host == "xn--fa-hia.attacker.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://faß.attacker.test/v1")
+    # Not fass.attacker.test, which is what the resolver would have been asked
+    # for and is a different host with a different owner.
+    assert seen == ["xn--fa-hia.attacker.test"]
+
+
+def test_a_timed_out_lookup_is_not_remembered(monkeypatch):
+    """A slow authoritative server cannot buy a 300s window of "safe"."""
+    import time as _time
+
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.1)
+    calls = []
+
+    def _slow(host, port, *args, **kwargs):
+        calls.append(host)
+        _time.sleep(30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    for _ in range(2):
+        assert validate_provider_base_url("http://slow.example/v1") == "http://slow.example/v1"
+    assert len(calls) == 2
+
+
 def test_a_slow_resolver_does_not_stall_validation(monkeypatch):
     """A resolver that never answers is abandoned, and the URL is allowed."""
     import time as _time
 
     monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.1)
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _time.sleep(30))
+
+    def _never_answers(*args, **kwargs):
+        # Returns a real (empty) answer rather than None: the abandoned daemon
+        # thread wakes up long after this test and would otherwise raise inside
+        # an unrelated later one.
+        _time.sleep(30)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _never_answers)
     started = _time.monotonic()
     assert validate_provider_base_url("http://slow.example/v1") == "http://slow.example/v1"
     assert _time.monotonic() - started < 5
