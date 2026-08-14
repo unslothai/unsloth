@@ -23,6 +23,7 @@ from core.unforgettable_host import (
     VIRTUAL_MODEL_ID,
     StudioHost,
     _forward_inner_stream,
+    _parse_sse_json,
     _rewrite_inner_frame,
     union_unforgettable_enabled_tools,
 )
@@ -219,3 +220,69 @@ def test_studio_host_run_action_emits_tool_start_and_end(monkeypatch):
 
     denied = asyncio.run(host.run_action("sim-1", "web_search", {}))
     assert denied == "Error: run_action supports python|terminal only, got 'web_search'"
+
+
+def test_studio_host_confirm_emits_tool_start_and_end(monkeypatch):
+    seen = {}
+
+    def wait_tool_decision(slot, approval_id, cancel_event = None, timeout = None):
+        seen["slot"] = slot
+        seen["approval_id"] = approval_id
+        seen["cancel_event"] = cancel_event
+        time.sleep(0.08)
+        return "allow"
+
+    monkeypatch.setattr("state.tool_approvals.begin_tool_decision", lambda session, approval: {"session": session})
+    monkeypatch.setattr("state.tool_approvals.wait_tool_decision", wait_tool_decision)
+    monkeypatch.setattr("state.tool_approvals.new_approval_id", lambda: "approval-retry-1")
+    monkeypatch.setattr(
+        "core.inference.tool_stream_exec.TOOL_HEARTBEAT_INTERVAL_S",
+        0.02,
+    )
+    host = StudioHost(
+        payload = None,
+        request = None,
+        current_subject = "u",
+        inner = None,
+        inner_model = "default",
+    )
+    frames: list[bytes] = []
+
+    def on_chunk(data: bytes) -> None:
+        frames.append(data)
+
+    allowed = asyncio.run(
+        host.confirm(
+            "Retry the repaired plan in the world?",
+            kind = "retry_world",
+            on_chunk = on_chunk,
+            session_id = "world",
+        )
+    )
+    assert allowed is True
+    assert seen["approval_id"] == "approval-retry-1"
+    assert seen["cancel_event"] is host.cancel_event
+    data_frames = [frame for frame in frames if frame.startswith(b"data: ")]
+    assert len(data_frames) >= 2
+    start = _parse_sse_json(_rewrite_inner_frame(data_frames[0]).decode("utf-8"))
+    end = _parse_sse_json(_rewrite_inner_frame(data_frames[-1]).decode("utf-8"))
+    assert start is not None
+    assert start["type"] == "tool_start"
+    assert start["tool_name"] == "rims_retry_world"
+    assert start["approval_id"] == "approval-retry-1"
+    assert start["awaiting_confirmation"] is True
+    assert start["tool_call_id"] == "approval-retry-1"
+    assert start["arguments"] == {
+        "prompt": "Retry the repaired plan in the world?",
+        "kind": "retry_world",
+    }
+    assert end is not None
+    assert end["type"] == "tool_end"
+    assert end["tool_name"] == "rims_retry_world"
+    assert end["tool_call_id"] == "approval-retry-1"
+    assert end["result"] == "allowed"
+    assert b": keep-alive\n\n" in frames
+
+    assert asyncio.run(host.confirm("x")) is False
+    host.cancel_event.set()
+    assert asyncio.run(host.confirm("x", on_chunk = on_chunk)) is False

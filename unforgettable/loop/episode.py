@@ -33,7 +33,7 @@ from unforgettable.eyes.basic import (
     inspect_tool_result,
     user_declares_failure,
 )
-from unforgettable.eyes.gate import review_write
+from unforgettable.eyes.gate import LogGateEyes, review_write
 from unforgettable.eyes.probes import MAX_EPISODE_PROBES, run_probes
 from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
@@ -102,6 +102,24 @@ async def _maybe_run_sim_tests(
     )
     state.traces.extend(current_traces()[before:])
     return True, grade_run_action("terminal", result, contact="sim")
+
+
+async def _confirm_retry_world(host, request, state, action, policy, db_path: str) -> str:
+    if action != Action.RETRY_WORLD or not policy.require_confirm_retry:
+        return action
+    fn = getattr(host, "confirm", None)
+    allowed = False
+    if fn is not None:
+        allowed = await fn(
+            "Retry the repaired plan in the world?",
+            kind="retry_world",
+            on_chunk=request.on_chunk,
+            session_id=state.world_session,
+        )
+    if not allowed:
+        LogGateEyes().note("retry_world: denied", db_path=db_path)
+        return Action.ESCALATE
+    return action
 
 
 async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
@@ -178,6 +196,9 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     else:
                         event = "finished"
             action = decide(event, state, policy)
+            action = await _confirm_retry_world(
+                host, request, state, action, policy, db_path
+            )
             actions.append(action)
             if action == Action.ENTER_SIM:
                 sim_id = host.create_sim_session(episode_id)
@@ -201,6 +222,9 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     if grade is None:
                         state.note_success(f"tests: {state.test_command}", "sim")
                         action = decide("success", state, policy)
+                        action = await _confirm_retry_world(
+                            host, request, state, action, policy, db_path
+                        )
                         actions.append(action)
                         if action == Action.RETRY_WORLD:
                             state.enter_world()

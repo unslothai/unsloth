@@ -96,3 +96,14 @@ class Host(Protocol):
     ) -> str:
         """May be absent; episode.run uses getattr."""
         ...
+
+    async def confirm(
+        self,
+        prompt: str,
+        *,
+        kind: str = "retry_world",
+        on_chunk: OnChunk | None = None,
+        session_id: str | None = None,
+    ) -> bool:
+        """May be absent; missing + required → ESCALATE."""
+        ...

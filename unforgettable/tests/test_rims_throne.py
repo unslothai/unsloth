@@ -19,9 +19,9 @@ from pathlib import Path
 import pytest
 
 from unforgettable.eyes.basic import inspect_tool_result
-from unforgettable.loop.context import EpisodeState
+from unforgettable.loop.context import EpisodeRequest, EpisodeState
 from unforgettable.rims.clone import clone_tree
-from unforgettable.throne.policy import Action, decide
+from unforgettable.throne.policy import Action, decide, policy_from_request, require_confirm_retry
 
 
 def test_clone_tree_copies_and_skips_markers(tmp_path: Path):
@@ -72,3 +72,28 @@ def test_throne_world_failure_enters_sim_then_retry():
     assert decide("success", state) == Action.FINISH
     state.clone_count = 1
     assert decide("failure", state) == Action.ESCALATE
+
+
+def test_require_confirm_retry_matrix():
+    assert require_confirm_retry(stakes="high", permission_mode=None, confirm_retry=None)
+    assert require_confirm_retry(stakes=None, permission_mode="ask", confirm_retry=None)
+    assert not require_confirm_retry(
+        stakes="high", permission_mode="ask", confirm_retry=False
+    )
+    for mode in ("full", "off", "auto", None):
+        assert not require_confirm_retry(
+            stakes=None, permission_mode=mode, confirm_retry=None
+        )
+    assert require_confirm_retry(stakes=None, permission_mode=None, confirm_retry=True)
+
+    def wired(**kwargs) -> bool:
+        return policy_from_request(
+            EpisodeRequest(messages=[], **kwargs)
+        ).require_confirm_retry
+
+    assert wired(stakes="high") is True
+    assert wired(permission_mode="ask") is True
+    assert wired(stakes="high", confirm_retry=False) is False
+    for mode in ("full", "off", "auto", None):
+        assert wired(permission_mode=mode) is False
+    assert wired(confirm_retry=True) is True

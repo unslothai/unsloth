@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,15 @@ from unforgettable.tools.handlers import dispatch
 
 
 class FakeHost:
-    def __init__(self, root: Path, results: list[GenerateResult], *, run_action=None):
+    def __init__(
+        self,
+        root: Path,
+        results: list[GenerateResult],
+        *,
+        run_action=None,
+        confirm_result=True,
+        cancel_event=None,
+    ):
         self.db = root / "memory.db"
         self.world = root / "world"
         self.world.mkdir()
@@ -52,8 +61,11 @@ class FakeHost:
         self.sims: dict[str, Path] = {}
         self.removed: list[str] = []
         self.calls: list[str] = []
+        self.confirm_calls = 0
         self._results = list(results)
         self._run_action = run_action
+        self.confirm_result = confirm_result
+        self.cancel_event = cancel_event
         self.last_messages = None
         self.last_run_action_kwargs = None
 
@@ -141,6 +153,19 @@ class FakeHost:
             text += f"exit code {completed.returncode}"
         return text
 
+    async def confirm(
+        self,
+        prompt: str,
+        *,
+        kind: str = "retry_world",
+        on_chunk=None,
+        session_id: str | None = None,
+    ) -> bool:
+        self.confirm_calls += 1
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            return False
+        return bool(self.confirm_result)
+
 
 def _fail_world() -> GenerateResult:
     return GenerateResult(
@@ -177,6 +202,7 @@ def test_episode_fail_sim_retry_writes_error_fix(tmp_path: Path):
     assert host.calls[0] == "world"
     assert host.calls[1].startswith("sim-")
     assert host.calls[2] == "world"
+    assert host.confirm_calls == 0
     assert Action.ENTER_SIM in outcome.actions
     assert Action.RETRY_WORLD in outcome.actions
     assert outcome.error_fix_id
@@ -466,3 +492,49 @@ def test_episode_refuses_project_or_world_sim_session(tmp_path: Path):
     world_host = WorldSimHost(world_root, [_fail_world()])
     with pytest.raises(ValueError, match="refusing to share world sandbox as sim: 'world'"):
         asyncio.run(run(world_host, _user_request()))
+
+
+def test_episode_confirm_deny_escalates_no_third_generate(tmp_path: Path):
+    host = FakeHost(
+        tmp_path,
+        [_fail_world(), _ok("fixed in sim", "sim"), _ok("works in world", "world")],
+        confirm_result=False,
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "run the tests"}],
+                confirm_retry=True,
+            ),
+        )
+    )
+    assert Action.ESCALATE in outcome.actions
+    assert Action.RETRY_WORLD not in outcome.actions
+    assert len(host.calls) == 2
+    assert host.calls[0] == "world"
+    assert host.calls[1].startswith("sim-")
+    assert host.confirm_calls == 1
+
+
+def test_episode_confirm_cancel_escalates(tmp_path: Path):
+    cancel = threading.Event()
+    cancel.set()
+    host = FakeHost(
+        tmp_path,
+        [_fail_world(), _ok("fixed in sim", "sim"), _ok("works in world", "world")],
+        cancel_event=cancel,
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "run the tests"}],
+                confirm_retry=True,
+            ),
+        )
+    )
+    assert Action.ESCALATE in outcome.actions
+    assert Action.RETRY_WORLD not in outcome.actions
+    assert len(host.calls) == 2
+    assert host.confirm_calls == 1

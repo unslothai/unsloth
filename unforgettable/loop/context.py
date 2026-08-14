@@ -33,6 +33,8 @@ class EpisodeRequest:
     on_chunk: Optional[OnChunk] = None
     stakes: Optional[str] = None
     test_command: Optional[str] = None
+    confirm_retry: Optional[bool] = None
+    permission_mode: Optional[str] = None
     max_clones: Optional[int] = None
     max_sim_turns: Optional[int] = None
 

@@ -36,10 +36,28 @@ class Action:
 class Policy:
     max_clones: int = 1
     max_sim_turns: int = 8
+    require_confirm_retry: bool = False
 
 
 def default_policy() -> Policy:
     return Policy()
+
+
+def require_confirm_retry(
+    *,
+    stakes: str | None,
+    permission_mode: str | None,
+    confirm_retry: bool | None,
+) -> bool:
+    if confirm_retry is False:
+        return False
+    if confirm_retry is True:
+        return True
+    if stakes == "high":
+        return True
+    if permission_mode == "ask":
+        return True
+    return False
 
 
 def policy_from_request(request: "EpisodeRequest") -> Policy:
@@ -51,7 +69,15 @@ def policy_from_request(request: "EpisodeRequest") -> Policy:
         max_clones = requested_clones
     if requested_turns is not None and requested_turns >= 1:
         max_sim_turns = requested_turns
-    return Policy(max_clones=max_clones, max_sim_turns=max_sim_turns)
+    return Policy(
+        max_clones=max_clones,
+        max_sim_turns=max_sim_turns,
+        require_confirm_retry=require_confirm_retry(
+            stakes=getattr(request, "stakes", None),
+            permission_mode=getattr(request, "permission_mode", None),
+            confirm_retry=getattr(request, "confirm_retry", None),
+        ),
+    )
 
 
 def decide(event: str, state: "EpisodeState", policy: Policy | None = None) -> str:

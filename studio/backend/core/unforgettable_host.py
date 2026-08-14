@@ -40,6 +40,9 @@ _log = logging.getLogger(__name__)
 # Fallback chunk id when the inner path is not a stream we can drain.
 _BUFFERED_STREAM_CHUNK_ID = "chatcmpl-unforgettable"
 
+# Hold the first confirm keepalive back so the Allow / Deny card flushes alone.
+_TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
+
 
 def in_inner_generate() -> bool:
     return bool(_INNER.get())
@@ -451,6 +454,67 @@ class StudioHost:
             )
         return result
 
+    async def confirm(
+        self,
+        prompt: str,
+        *,
+        kind: str = "retry_world",
+        on_chunk = None,
+        session_id = None,
+    ) -> bool:
+        from core.inference.tool_stream_exec import TOOL_HEARTBEAT_INTERVAL_S
+        from state.tool_approvals import (
+            begin_tool_decision,
+            new_approval_id,
+            wait_tool_decision,
+        )
+
+        if on_chunk is None:
+            return False
+        if self.cancel_event.is_set():
+            return False
+        approval_id = new_approval_id()
+        slot = begin_tool_decision(session_id or self.world_session_id(None), approval_id)
+        start_event = {
+            "type": "tool_start",
+            "tool_name": "rims_retry_world",
+            "tool_call_id": approval_id,
+            "arguments": {"prompt": prompt, "kind": kind},
+            "approval_id": approval_id,
+            "awaiting_confirmation": True,
+        }
+        await _emit_on_chunk(
+            on_chunk,
+            _as_sse_bytes("data: " + json.dumps(start_event, separators = (",", ":"))),
+        )
+        waiter = asyncio.create_task(asyncio.to_thread(
+            wait_tool_decision,
+            slot,
+            approval_id,
+            self.cancel_event,
+        ))
+        verdict = "deny"
+        try:
+            done, _ = await asyncio.wait({waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S)
+            while not done:
+                await _emit_on_chunk(on_chunk, b": keep-alive\n\n")
+                done, _ = await asyncio.wait({waiter}, timeout = TOOL_HEARTBEAT_INTERVAL_S)
+            verdict = waiter.result()
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+        end_event = {
+            "type": "tool_end",
+            "tool_name": "rims_retry_world",
+            "tool_call_id": approval_id,
+            "result": "allowed" if verdict == "allow" else "denied",
+        }
+        await _emit_on_chunk(
+            on_chunk,
+            _as_sse_bytes("data: " + json.dumps(end_event, separators = (",", ":"))),
+        )
+        return verdict == "allow"
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -494,6 +558,8 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
         inner_model = model,
         stakes = getattr(payload, "stakes", None),
         test_command = getattr(payload, "test_command", None),
+        confirm_retry = getattr(payload, "confirm_retry", None),
+        permission_mode = getattr(payload, "permission_mode", None),
         max_clones = getattr(payload, "max_clones", None),
         max_sim_turns = getattr(payload, "max_sim_turns", None),
     )
