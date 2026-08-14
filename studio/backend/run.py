@@ -1741,9 +1741,7 @@ class _TeeStream:
         head, newline, tail = buf.rpartition("\n")
         if newline:
             complete = head + newline
-            self._log_fh.write(
-                "\n".join(self._last_frame(line) for line in complete.split("\n"))
-            )
+            self._log_fh.write("\n".join(self._last_frame(line) for line in complete.split("\n")))
         if tail:
             # An unterminated remainder: hold it only if it is a redraw, otherwise
             # write it now so a hang cannot swallow real output.
