@@ -40,6 +40,13 @@ if ! grep -Rqs 'unset[[:space:]]\+GIO_EXTRA_MODULES' \
   echo "Complete AppImage does not reject host GIO_EXTRA_MODULES" >&2
   exit 1
 fi
+# Desktop integration reads .DirIcon, so an absolute build-machine symlink
+# there ships an iconless launcher.
+[[ -e "$appdir/.DirIcon" ]] || { echo "Complete AppImage has no resolvable .DirIcon" >&2; exit 1; }
+case "$(readlink "$appdir/.DirIcon" 2>/dev/null)" in
+  /*) echo "Complete AppImage pins .DirIcon to a build-machine path" >&2; exit 1 ;;
+esac
+
 binary="$(find "$appdir/usr/bin" -maxdepth 1 -type f -name 'unsloth*' -perm -111 -print -quit 2>/dev/null)"
 [[ -n "$binary" ]] || { echo "Complete AppImage has no Unsloth executable" >&2; exit 1; }
 

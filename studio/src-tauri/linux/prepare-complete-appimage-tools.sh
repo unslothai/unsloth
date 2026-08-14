@@ -67,4 +67,12 @@ cat >> "$HOOKFILE" <<EOF
 unset GIO_EXTRA_MODULES
 export GIO_MODULE_DIR="\$APPDIR/$gio_module_rel"
 EOF
+
+# Tauri writes .DirIcon as an absolute build-machine symlink, so it dangles on
+# every user's machine and desktop integration shows no icon. Relink relative.
+# Tauri points it at "$APPDIR/<product>.png", so the basename is the whole fix.
+dir_icon_target="$(readlink "$APPDIR/.DirIcon" 2>/dev/null || true)"
+if [[ "$dir_icon_target" == /* ]]; then
+  ln -sfn "${dir_icon_target##*/}" "$APPDIR/.DirIcon"
+fi
 SH
