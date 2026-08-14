@@ -11,6 +11,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -173,8 +174,11 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
         if os.name == "nt"
         else {"start_new_session": True}
     )
+    # shutil.which honours PATHEXT, so this resolves npm.cmd on Windows. CreateProcess cannot
+    # run a .cmd directly, so a bare "npm" is a FileNotFoundError there.
+    npm = shutil.which("npm") or "npm"
     proc = subprocess.Popen(
-        ["npm", "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
+        [npm, "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
         cwd = FRONTEND,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,

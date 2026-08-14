@@ -22,6 +22,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _playwright_robust as robust  # noqa: E402
 
+# Unix-only, so a Windows interpreter cannot name it even to drive the POSIX branch.
+SIGKILL = getattr(signal, "SIGKILL", 9)
+
 HARNESSES = (
     "playwright_chat_autoscroll",
     "playwright_research_freeze",
@@ -50,6 +53,13 @@ def no_signals(monkeypatch):
     monkeypatch.setattr(robust, "_LIVE_SERVERS", [])
 
 
+@pytest.fixture
+def posix_branch(monkeypatch, no_signals):
+    """Drive the POSIX teardown from any host: os.killpg and signal.SIGKILL are Unix-only."""
+    monkeypatch.setattr(robust.os, "name", "posix")
+    monkeypatch.setattr(robust.signal, "SIGKILL", SIGKILL, raising = False)
+
+
 @pytest.mark.parametrize("osname", ["posix", "nt"])
 def test_start_vite_picks_the_platform_process_group(monkeypatch, no_signals, osname) -> None:
     captured: dict = {}
@@ -76,14 +86,13 @@ def test_start_vite_picks_the_platform_process_group(monkeypatch, no_signals, os
         assert "creationflags" not in captured["kw"]
 
 
-def test_posix_teardown_signals_the_group_and_escalates(monkeypatch, no_signals) -> None:
+def test_posix_teardown_signals_the_group_and_escalates(monkeypatch, posix_branch) -> None:
     sent = []
-    monkeypatch.setattr(robust.os, "name", "posix")
     monkeypatch.setattr(
         robust.os, "killpg", lambda pid, sig: sent.append((pid, sig)), raising = False
     )
     robust.stop_process(_FakeProc())
-    assert sent == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+    assert sent == [(4242, signal.SIGTERM), (4242, SIGKILL)]
 
 
 def test_windows_teardown_kills_the_tree_and_escalates(monkeypatch, no_signals) -> None:
@@ -97,19 +106,17 @@ def test_windows_teardown_kills_the_tree_and_escalates(monkeypatch, no_signals) 
     ]
 
 
-def test_teardown_never_raises_over_the_failure_that_called_it(monkeypatch, no_signals) -> None:
+def test_teardown_never_raises_over_the_failure_that_called_it(monkeypatch, posix_branch) -> None:
     """stop_process runs from a `finally`. A child that outlives SIGKILL must not replace the
     harness's real error with a TimeoutExpired."""
-    monkeypatch.setattr(robust.os, "name", "posix")
     monkeypatch.setattr(robust.os, "killpg", lambda pid, sig: None, raising = False)
     robust.stop_process(_FakeProc())
 
 
-def test_teardown_tolerates_a_process_that_already_vanished(monkeypatch, no_signals) -> None:
+def test_teardown_tolerates_a_process_that_already_vanished(monkeypatch, posix_branch) -> None:
     def gone(pid, sig):
         raise ProcessLookupError
 
-    monkeypatch.setattr(robust.os, "name", "posix")
     monkeypatch.setattr(robust.os, "killpg", gone, raising = False)
     robust.stop_process(_FakeProc())
 
