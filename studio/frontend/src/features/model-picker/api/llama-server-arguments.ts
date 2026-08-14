@@ -46,6 +46,11 @@ export function cachedAuthoritativeLlamaServerArguments(): LlamaServerArgumentsR
     : null;
 }
 
+export function invalidateLlamaServerArgumentsCatalog(): void {
+  cachedManagedPolicy = null;
+  cachedAuthoritativeCatalog = null;
+}
+
 export async function fetchLlamaServerArguments(): Promise<LlamaServerArgumentsResponse> {
   const response = await authFetch("/api/inference/llama-server/arguments");
   if (!response.ok) {

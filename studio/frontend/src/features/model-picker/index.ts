@@ -37,7 +37,10 @@ export type {
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
 export { llamaExtraArgsPayload } from "./model-config/llama-extra-args";
-export { fetchActiveLlamaServerArguments } from "./api/llama-server-arguments";
+export {
+  fetchActiveLlamaServerArguments,
+  invalidateLlamaServerArgumentsCatalog,
+} from "./api/llama-server-arguments";
 export {
   activeLlamaArgumentsHydrationMatches,
   currentEffectiveLlamaLoadIdentity,

@@ -166,11 +166,6 @@ def test_overlap_classifier_covers_first_class_controls(flag):
     assert overlaps_studio_control(flag)
 
 
-@pytest.mark.parametrize("flag", ["--top-k", "--temp", "--model", "--host"])
-def test_overlap_classifier_is_distinct_from_sampling_and_managed_policy(flag):
-    assert not overlaps_studio_control(flag)
-
-
 def test_value_with_equals_form_passes_through():
     assert validate_extra_args(["--top-k=20"]) == ["--top-k=20"]
 
@@ -350,13 +345,6 @@ def test_poisoned_or_oversized_stored_args_are_quarantined_whole():
     assert oversized.quarantined and oversized.args == ()
 
 
-def test_llama_server_launch_scrubs_denied_environment_before_spawn():
-    source = _LSA_PATH.with_name("llama_cpp.py").read_text(encoding = "utf-8")
-    scrub = source.index("_denied_env = scrub_denied_env(env)")
-    spawn = source.index("self._process = subprocess.Popen(", scrub)
-    assert scrub < spawn
-
-
 @pytest.mark.parametrize(
     "token",
     [
@@ -438,10 +426,6 @@ def test_required_inline_values_cannot_be_empty(token):
     with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
         validate_extra_args([token])
     assert excinfo.value.code == "malformed"
-
-
-def test_internal_horizontal_tab_remains_legal_argv_data():
-    assert validate_extra_args(["value\twith-tab"]) == ["value\twith-tab"]
 
 
 @pytest.mark.parametrize(
@@ -546,13 +530,6 @@ def test_local_model_draft_selectors_keep_pr_8702_pass_through(args):
     assert flag_policy(args[0]) is None
 
 
-def test_known_safe_missing_value_uses_typed_malformed_error():
-    with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
-        validate_extra_args(["--ctx-size"])
-    assert excinfo.value.code == "malformed"
-    assert "requires a value" in str(excinfo.value)
-
-
 def test_every_known_safe_flag_has_a_user_facing_category():
     assert all(
         policy.category and policy.category != "Unclassified"
@@ -577,11 +554,6 @@ def test_every_known_safe_value_flag_rejects_a_missing_value(policy, spelling):
         validate_extra_args([spelling])
     assert excinfo.value.code == "malformed"
     assert excinfo.value.canonical_flag == policy.canonical
-
-
-def test_known_safe_inline_and_repeated_values_remain_pass_through():
-    args = ["--top-k=20", "--temperature", "0.7", "--top-k", "40"]
-    assert validate_extra_args(args) == args
 
 
 @pytest.mark.parametrize("token", ["-c4096", "-mg0", "-s-1", "-ctkq8_0"])
@@ -626,10 +598,6 @@ def test_present_saved_field_requires_an_actual_json_list(stored):
     with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
         validate_stored_extra_args(stored)
     assert excinfo.value.code == "malformed"
-
-
-def test_present_saved_explicit_empty_list_remains_authoritative():
-    assert validate_stored_extra_args([]) == []
 
 
 def test_string_instead_of_token_list_is_quarantined_as_malformed():

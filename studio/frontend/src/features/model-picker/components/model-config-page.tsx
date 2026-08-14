@@ -1809,26 +1809,29 @@ export function ModelConfigPage({
         toast.error("Couldn't save these settings, loading with them anyway.");
       }
     };
-    if (effectivePersistenceOnly) {
-      onRun(effectiveLoadConfig, classifiedIsDiffusion, () => {
-        const saveFailed = persistSettings();
-        if (saveFailed) {
-          toast.error("Couldn't save settings for this model.");
-          return;
-        }
-        const nextRemember = remember && !defaultConfig;
-        setSavedRemember(nextRemember);
-        setRemember(nextRemember);
-        toast.success(
-          nextRemember
-            ? "Settings saved."
-            : remember
-              ? "Default settings kept."
-              : "Settings forgotten.",
-        );
-      });
-      return;
-    }
+    const runValidatedLoad = () => {
+      if (effectivePersistenceOnly) {
+        onRun(effectiveLoadConfig, classifiedIsDiffusion, () => {
+          const saveFailed = persistSettings();
+          if (saveFailed) {
+            toast.error("Couldn't save settings for this model.");
+            return;
+          }
+          const nextRemember = remember && !defaultConfig;
+          setSavedRemember(nextRemember);
+          setRemember(nextRemember);
+          toast.success(
+            nextRemember
+              ? "Settings saved."
+              : remember
+                ? "Default settings kept."
+                : "Settings forgotten.",
+          );
+        });
+        return;
+      }
+      onRun(effectiveLoadConfig, classifiedIsDiffusion, persistAfterValidation);
+    };
     // Same reason as the numeric commits above: the budget row flushes on unmount,
     // which for this click lands after onRun has staged the load, so that load (the
     // very one the control promises) would use the old fraction. A failed save must
@@ -1863,17 +1866,13 @@ export function ModelConfigPage({
         .finally(() => {
           setVramBudgetLocked(false);
           setBudgetSettling(false);
-          onRun(
-            effectiveLoadConfig,
-            classifiedIsDiffusion,
-            persistAfterValidation,
-          );
+          runValidatedLoad();
         });
       return;
     }
     // Nothing to wait for, so the control never actually closes for the user.
     setVramBudgetLocked(false);
-    onRun(effectiveLoadConfig, classifiedIsDiffusion, persistAfterValidation);
+    runValidatedLoad();
   };
 
   return (

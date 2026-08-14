@@ -2000,10 +2000,9 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
         "applyPerModelConfigToRuntime(pendingLoadConfig,"
     ), "a config staged on the selection must not replace it either"
     picker = " ".join(_read("features/chat/chat-page.tsx").split())
-    assert (
-        "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, }); "
-        "const hasAppliedConfig = applyModelLoadConfigToRuntime(" in picker
-    ), "the snapshot must be taken before the target's config is applied"
+    snapshot = picker.index("const previousConfig = currentRuntimePerModelConfig(")
+    applied = picker.index("applyModelLoadConfigToRuntime(", snapshot)
+    assert snapshot < applied, "the snapshot must be taken before the target's config is applied"
     rollback = runtime.split("const rollbackSpeculativeType", 1)[1]
     assert "nParallel: previousNParallel," in rollback
     # Baseline and reload payload keep the resolved count, or the rollback

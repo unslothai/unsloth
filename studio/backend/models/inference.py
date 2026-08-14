@@ -334,6 +334,14 @@ class ValidateModelRequest(BaseModel):
         None, description = "Frontend-visible signed native path grant"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server args the follow-up /load will send. Validated and "
+            "sized with the same resolver, because a context or cache override changes "
+            "the command this preflight approves."
+        ),
+    )
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )

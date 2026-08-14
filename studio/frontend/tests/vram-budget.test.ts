@@ -167,7 +167,7 @@ test("Run waits for a staged budget save before starting the load", () => {
   const flushAt = handler.indexOf("settleVramBudgetSave()");
   assert.ok(flushAt >= 0, "handleRun no longer flushes the staged budget");
   assert.ok(
-    flushAt < handler.indexOf("onRun(effectiveLoadConfig"),
+    flushAt < handler.indexOf("runValidatedLoad();"),
     "the flush must come before the load is staged",
   );
   // A failed save must not swallow the load.
@@ -326,7 +326,7 @@ test("Run waits out the budget save without starting two loads", () => {
   // second click would settle the same chain again and call onRun twice.
   assert.match(body, /if \(budgetSettling\) \{ return; \}/);
   assert.match(body, /setBudgetSettling\(true\);/);
-  assert.match(body, /setBudgetSettling\(false\); onRun\(/);
+  assert.match(body, /setBudgetSettling\(false\); runValidatedLoad\(\);/);
   const disabled = pageSource
     .slice(pageSource.indexOf("onClick={handleRun}") - 400)
     .replace(/\s+/g, " ");
@@ -406,10 +406,10 @@ test("the budget closes while Run settles it, instead of racing the load", () =>
   );
   assert.match(
     body,
-    /setVramBudgetLocked\(false\); setBudgetSettling\(false\); onRun\(/,
+    /setVramBudgetLocked\(false\); setBudgetSettling\(false\); runValidatedLoad\(\);/,
   );
   // Nothing staged means nothing to wait for, so the control never closes.
-  assert.match(body, /setVramBudgetLocked\(false\); onRun\(/);
+  assert.match(body, /setVramBudgetLocked\(false\); runValidatedLoad\(\);/);
   const row = vramBudgetRowSource().replace(/\s+/g, " ");
   assert.match(
     row,
