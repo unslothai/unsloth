@@ -82,7 +82,9 @@ def _read_local_audio_metadata(path: Path, filename: str) -> dict[str, Any]:
 
 
 def _read_audio_metadata(
-    model_name: str, filename: str, hf_token: Optional[str] = None
+    model_name: str,
+    filename: str,
+    hf_token: Optional[str] = None,
 ) -> dict[str, Any]:
     """Read one bounded metadata file from a local checkpoint or Hub repo."""
     normalized = str(model_name or "").strip()
@@ -108,7 +110,9 @@ def _read_audio_metadata(
         )
         return _read_local_audio_metadata(metadata_path.parent, metadata_path.name)
     except Exception as exc:
-        logger.debug("Could not read native audio metadata %s from %s: %s", filename, normalized, exc)
+        logger.debug(
+            "Could not read native audio metadata %s from %s: %s", filename, normalized, exc
+        )
         return {}
 
 

@@ -68,9 +68,7 @@ def test_local_minimax_modular_index_is_detected_without_config(tmp_path):
         ("multimodalart/higgs-audio-v3-tts-4b-transformers", HIGGS_TTS3_CODEC_REPO),
     ),
 )
-def test_native_audio_security_targets_include_companion_repositories(
-    repo, companion, monkeypatch
-):
+def test_native_audio_security_targets_include_companion_repositories(repo, companion, monkeypatch):
     monkeypatch.setattr(
         "core.inference.native_audio._read_audio_metadata", lambda *_args, **_kwargs: {}
     )
