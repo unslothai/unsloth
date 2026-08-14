@@ -1811,9 +1811,7 @@ def _rocm_windows_perf_counter_vram_by_adapter() -> Optional[list[tuple[str, flo
         return None
 
 
-def _rocm_windows_hip_device_luids(
-    device_count: int,
-) -> Optional[list[Optional[str]]]:
+def _rocm_windows_hip_device_luids(device_count: int) -> Optional[list[Optional[str]]]:
     """Return the Windows LUID for each visible HIP ordinal.
 
     ``hipDeviceProp_tR0600`` exposes the same 8-byte LUID embedded in Windows
@@ -1882,16 +1880,12 @@ def _rocm_windows_hip_device_luids(
 
 
 def _rocm_windows_luid_used_by_device(
-    adapters: list[tuple[str, float]],
-    device_luids: list[Optional[str]],
-    device_totals: list[float],
+    adapters: list[tuple[str, float]], device_luids: list[Optional[str]], device_totals: list[float]
 ) -> list[Optional[float]]:
     """Join counter usage to visible HIP devices by exact LUID, failing closed."""
     samples: dict[tuple[str, int], float] = {}
     for instance, used in adapters:
-        match = re.fullmatch(
-            r"(luid_0x[0-9a-f]{8}_0x[0-9a-f]{8})_phys_(\d+)", instance.lower()
-        )
+        match = re.fullmatch(r"(luid_0x[0-9a-f]{8}_0x[0-9a-f]{8})_phys_(\d+)", instance.lower())
         if match is None:
             continue
         key = (match.group(1), int(match.group(2)))
