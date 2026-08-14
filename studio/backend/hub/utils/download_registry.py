@@ -55,6 +55,11 @@ from typing import Callable, Iterator, Literal, NamedTuple, Optional, Sequence
 
 from loggers import get_logger
 
+# One floor, one name, shared. Written out by hand in each module it was needed
+# in at first, and the site that got missed was missed because "who enforces it"
+# was a question you answered by reading rather than by grepping.
+from utils.process_lifetime import is_signalable_pid
+
 from hub.utils import state_dir
 from hub.utils.state_dir import RepoType
 
@@ -269,6 +274,11 @@ def _kill_orphan(pid: int) -> bool:
     reason to hold up startup -- and answering False there matters: a survivor must keep its
     breadcrumb and must not have its live partial claimed as ours to delete.
     """
+    # Its caller floors the pid too. Repeated here because this one sends the
+    # signal, and a helper that kills should not depend on every future caller
+    # having checked first.
+    if not is_signalable_pid(pid):
+        return False
     try:
         os.kill(pid, signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL)
     except OSError:
@@ -382,11 +392,15 @@ def reap_orphan_workers() -> None:
         # actually keeps this honest and init cannot pass it, but the same was
         # true of the reaper's start-time check until a record naming pid 1
         # slipped through it, so the cheap bound goes in front of the clever one.
-        if not isinstance(pid, int) or isinstance(pid, bool) or pid < 2:
-            _safe_unlink(entry)
-            continue
+        signalable = is_signalable_pid(pid)
         try:
-            if not _process_alive(pid):
+            if not signalable:
+                # Nothing is signalled on this record's word, but its repo fields
+                # are still readable, and the settle below is what preserves the
+                # partial's resume marker. Unlinking straight from here would cost
+                # the user a restarted download to pay for a bug that is ours.
+                pass
+            elif not _process_alive(pid):
                 # Already gone, which is better proof than killing it ourselves. Its partial
                 # is ours to sweep even though this invocation reaped nothing.
                 reaped.append((data.get("repo_type") or "model", repo_id, data.get("hub_cache")))

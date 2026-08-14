@@ -59,13 +59,24 @@ _JobObjectExtendedLimitInformation = 9
 _LOWEST_SIGNALABLE_PID = 2
 
 
-def _signalable(pid: object) -> bool:
-    """Whether `pid` names a process this module may record or signal.
+def is_signalable_pid(pid: object) -> bool:
+    """Whether `pid` names a process that may be recorded or signalled.
 
     `bool` is excluded explicitly: it is an `int` subclass, so True would
     otherwise read as pid 1.
+
+    Public because the floor has to hold at every signalling boundary in Studio,
+    not just this module's. It was written out by hand in four places at first,
+    and the site that got missed was missed precisely because "who enforces the
+    floor" was a question you had to answer by reading rather than by grepping
+    for one name.
     """
     return isinstance(pid, int) and not isinstance(pid, bool) and pid >= _LOWEST_SIGNALABLE_PID
+
+
+# The internal spelling, kept so this module's own call sites and their tests
+# read the same as before.
+_signalable = is_signalable_pid
 
 
 _lock = threading.Lock()
@@ -571,7 +582,12 @@ def _group_has_members(pgid: object) -> bool:
     not been waited on is still a member, so a group whose every member is a
     zombie would read as alive and keep its record forever.
     """
-    if not isinstance(pgid, int) or _is_windows() or not hasattr(os, "killpg"):
+    # `killpg(1, 0)` is `kill(-1, 0)`, which always succeeds, so without the floor
+    # this answers True for group 1 unconditionally. That delivers no signal, but
+    # it pins the record as unresolved: a legacy entry pairing a real pid with a
+    # poisoned pgid would then be retried on every launch forever, which is the
+    # opposite of what the reaper's drop-on-poison path is for.
+    if not _signalable(pgid) or _is_windows() or not hasattr(os, "killpg"):
         return False
     try:
         os.killpg(pgid, 0)
@@ -1063,7 +1079,11 @@ def terminate_pid(pid: "Optional[int]", timeout: float = 5.0) -> None:
     For an owner that has to give up on a child before its own shutdown, and
     cannot leave it for a sweep that will not run while this process lives.
     """
-    if not pid:
+    # The public entry point, so the floor goes here rather than only in the
+    # POSIX helper below: `_windows_terminate_tree` is reached without passing
+    # through it, and a caller should not have to know which platform's path
+    # happens to carry the check.
+    if not _signalable(pid):
         return
     with _record_lock:
         identity = _tracked_pids.get(pid)
