@@ -2772,7 +2772,6 @@ export function ChatPage({
         const storedWebFetchToolsEnabled =
           threadScopedOverride("webFetchToolsEnabled") ??
           loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    
         // Same rule as the selection handler above: a self-hosted connection has
         // no hosted builtin, so keying the pills on those flags threw away the
         // user's saved preference every time this ran.

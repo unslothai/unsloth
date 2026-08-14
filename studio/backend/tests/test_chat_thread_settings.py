@@ -19,7 +19,12 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from routes.chat_history import ChatThreadSettings  # noqa: E402
+from routes.chat_history import (  # noqa: E402
+    ChatThread,
+    ChatThreadPatch,
+    ChatThreadSettings,
+    thread_from_row,
+)
 from storage import studio_db  # noqa: E402
 from utils.paths import studio_db_path  # noqa: E402
 
@@ -194,3 +199,88 @@ def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch)
     assert studio_db.get_chat_thread("thread-1")["settings"] is None
     studio_db.upsert_chat_thread(_thread(settings = SETTINGS))
     assert studio_db.get_chat_thread("thread-1")["settings"] == SETTINGS
+
+
+# A snapshot on disk outlives the build that wrote it. A newer Studio adding a
+# setting, widening an enum or raising a bound writes a blob this build has never
+# seen, and it reaches the response model rather than the request one, so refusing
+# it 500s the chat on open and takes the whole history export with it. The wire
+# contract stays strict; only the read is forgiving.
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        ({"toolsEnabled": True, "voiceModeEnabled": True}, {"toolsEnabled": True}),
+        ({"reasoningEffort": "ultra", "toolsEnabled": True}, {"toolsEnabled": True}),
+        ({"ragTopK": 999, "toolsEnabled": True}, {"toolsEnabled": True}),
+        # several at once, which is what a version gap actually looks like
+        (
+            {"ragTopK": 999, "reasoningEffort": "ultra", "futureThing": 1,
+             "toolsEnabled": True},
+            {"toolsEnabled": True},
+        ),
+        ({"ragSource": {"type": "web", "url": "x"}, "toolsEnabled": True},
+         {"toolsEnabled": True}),
+        # nothing salvageable, and non-objects
+        ({"quantumMode": True}, {}),
+        ("hello", None),
+        ([1, 2, 3], None),
+    ],
+)
+def test_a_snapshot_from_a_newer_build_still_reads(stored, expected):
+    thread = thread_from_row(
+        {"id": "t", "title": "T", "modelType": "base", "createdAt": 1,
+         "settings": stored},
+    )
+    if expected is None:
+        assert thread.settings is None
+    else:
+        assert thread.settings is not None
+        assert thread.settings.model_dump(exclude_none = True) == expected
+
+
+def test_the_wire_contract_stays_strict():
+    # Only rows off disk are forgiven. A client may not invent a setting on either
+    # the patch or the full-record POST, which shares the ChatThread model.
+    with pytest.raises(ValidationError):
+        ChatThreadPatch(settings = {"toolsEnabled": True, "voiceModeEnabled": True})
+    with pytest.raises(ValidationError):
+        ChatThreadPatch(settings = {"ragTopK": 999})
+    with pytest.raises(ValidationError):
+        ChatThread(
+            id = "t", title = "T", modelType = "base", createdAt = 1,
+            settings = {"toolsEnabled": True, "voiceModeEnabled": True},
+        )
+    with pytest.raises(ValidationError):
+        ChatThread(
+            id = "t", title = "T", modelType = "base", createdAt = 1,
+            settings = {"ragTopK": 999},
+        )
+
+
+def test_an_unreadable_key_does_not_disturb_the_stored_row(tmp_path, monkeypatch):
+    # the row keeps what it had, so upgrading again gets the setting back.
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.update_chat_thread("thread-1", {"settings": {"toolsEnabled": True}})
+    conn = sqlite3.connect(studio_db_path())
+    try:
+        conn.execute(
+            "UPDATE chat_threads SET settings_json = ? WHERE id = ?",
+            ('{"toolsEnabled": true, "voiceModeEnabled": true}', "thread-1"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    row = studio_db.get_chat_thread("thread-1")
+    assert thread_from_row(row).settings.toolsEnabled is True
+
+    studio_db.update_chat_thread("thread-1", {"title": "renamed"})
+    conn = sqlite3.connect(studio_db_path())
+    try:
+        raw = conn.execute(
+            "SELECT settings_json FROM chat_threads WHERE id = ?", ("thread-1",)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert "voiceModeEnabled" in raw

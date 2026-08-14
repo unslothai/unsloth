@@ -123,6 +123,42 @@ class ChatThread(BaseModel):
     settings: Optional[ChatThreadSettings] = None
 
 
+def thread_from_row(row: dict) -> ChatThread:
+    """Build a ChatThread from a DATABASE row, tolerating a snapshot it cannot read.
+
+    `settings` is the first strictly validated nested model Studio builds out of the
+    database rather than off the wire, and a stored snapshot outlives the build that
+    wrote it: a newer Studio adding a seventeenth setting, widening an enum or
+    raising a bound writes a blob this one rejects. Refusing it here 500s the chat on
+    open and takes the entire history export with it, since the export validates
+    every thread. `_json_loads` already shrugs off JSON that will not parse; JSON
+    that parses but postdates this build deserves the same treatment.
+
+    Only the read is forgiving. The wire contract stays strict in both directions, so
+    a client still cannot invent a setting, and the row itself is left untouched,
+    which means upgrading again restores whatever this build had to drop.
+    """
+    settings = row.get("settings")
+    if isinstance(settings, dict):
+        known = {k: v for k, v in settings.items() if k in ChatThreadSettings.model_fields}
+        # Drop exactly the fields pydantic names and retry: a version gap usually
+        # carries several at once, so removing one guess at a time gives up too early.
+        for _ in range(len(known) + 1):
+            try:
+                ChatThreadSettings.model_validate(known)
+                break
+            except ValidationError as exc:
+                bad = {str(e["loc"][0]) for e in exc.errors() if e.get("loc")}
+                if not bad or not bad & set(known):
+                    known = None
+                    break
+                known = {k: v for k, v in known.items() if k not in bad}
+        row = {**row, "settings": known}
+    elif settings is not None:
+        row = {**row, "settings": None}
+    return ChatThread(**row)
+
+
 class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
     # Apply only while the row still holds this title, so a rename beats a background rewrite.
@@ -393,7 +429,7 @@ def list_threads(
         project_id = project_id,
         include_archived = include_archived,
     )
-    return ChatThreadListResponse(threads = [ChatThread(**t) for t in threads])
+    return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
 
 
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
@@ -414,7 +450,7 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
-        return ChatThread(**upsert_chat_thread(payload.model_dump()))
+        return thread_from_row(upsert_chat_thread(payload.model_dump()))
     except ChatThreadDeletedError as exc:
         raise _deleted_thread_error(payload.id) from exc
     except sqlite3.IntegrityError as exc:
@@ -430,7 +466,7 @@ def get_thread(thread_id: str, current_subject: str = Depends(get_current_subjec
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatThread(**thread)
+    return thread_from_row(thread)
 
 
 @router.patch("/threads/{thread_id}", response_model = ChatThread)
@@ -466,7 +502,7 @@ def patch_thread(
         )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
-    return ChatThread(**thread)
+    return thread_from_row(thread)
 
 
 def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
@@ -1283,7 +1319,7 @@ def fork_thread(
     if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
         warning = "Sandbox starts fresh in fork; files from parent are not carried over."
     return ChatForkResponse(
-        thread = ChatThread(**forked),
+        thread = thread_from_row(forked),
         messages = [ChatMessage(**m) for m in messages],
         containerSnapshotWarning = warning,
     )
@@ -1310,6 +1346,6 @@ def export_history(current_subject: str = Depends(get_current_subject)):
         version = 1,
         threadCount = len(threads),
         projects = [ChatProject(**project) for project in projects],
-        threads = [ChatThread(**thread) for thread in threads],
+        threads = [thread_from_row(thread) for thread in threads],
         messages = [ChatMessage(**message) for message in messages],
     )

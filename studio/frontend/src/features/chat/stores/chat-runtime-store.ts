@@ -397,10 +397,14 @@ function saveSettingsPatch(patch: SettingsPatch): void {
 // Best-effort flush of any pending patch when the page is going away. keepalive
 // lets the PUT outlive the unload; without it the browser cancels the fetch and
 // the user's last slider drag is dropped.
-function flushSettingsOnPageHidden(): void {
+function flushSettingsOnPageHidden(terminal: boolean): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
-  // a captured edit lives only in the debounce, so send it before the tab goes.
-  flushThreadScopedSettingsWrite(true);
+  // A captured edit lives only in the debounce, so send it before the tab goes.
+  // Only on a terminal event, though: the beacon PATCHes the row directly and a
+  // thread whose row has not been created yet answers 404, where the normal path
+  // would have created it first. visibilitychange is not terminal (it fires on
+  // every tab switch), and the page is still there to await the ensure.
+  flushThreadScopedSettingsWrite(terminal);
   // An edit still waiting on hydration is a user edit like any other, and the
   // tab is going away, so send it rather than let the next session hydrate over it.
   drainPreHydrationPatch();
@@ -411,7 +415,7 @@ function flushSettingsOnPageHidden(): void {
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", flushSettingsOnPageHidden);
+  window.addEventListener("beforeunload", () => flushSettingsOnPageHidden(true));
   // beforeunload is not the end of a page's life on every platform: mobile
   // Safari and backgrounded Android tabs are routinely discarded without it, and
   // a page restored from the back/forward cache never unloaded at all. pagehide
@@ -420,9 +424,9 @@ if (typeof window !== "undefined") {
   // unload would have run. Safe to add rather than replace: the pending patch is
   // swapped out before the request, so a second call with nothing queued returns
   // immediately and the two never send the same edit twice.
-  window.addEventListener("pagehide", flushSettingsOnPageHidden);
+  window.addEventListener("pagehide", () => flushSettingsOnPageHidden(true));
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") flushSettingsOnPageHidden();
+    if (document.visibilityState === "hidden") flushSettingsOnPageHidden(false);
   });
 }
 
