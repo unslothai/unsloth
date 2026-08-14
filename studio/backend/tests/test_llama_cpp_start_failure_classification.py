@@ -1298,7 +1298,7 @@ class TestAnEncodedSecretIsStillRedacted:
             "A=1," * 25000,
             'TOKEN="' + "y" * 100000,
         ],
-        ids=["escaped-quotes", "long-value", "repeated-pairs", "unterminated-quote"],
+        ids = ["escaped-quotes", "long-value", "repeated-pairs", "unterminated-quote"],
     )
     def test_the_name_pass_stays_linear(self, blob):
         """No nested quantifier: a crafted line must not be able to stall it."""
@@ -1521,7 +1521,7 @@ class TestTheRedactionHolesCodexFound:
     @pytest.mark.parametrize(
         "blob",
         ['TOKEN="' + "y" * 100000, "a.b.c.d=" * 12000, "A=1," * 25000],
-        ids=["unterminated-quote", "dotted-pairs", "repeated-pairs"],
+        ids = ["unterminated-quote", "dotted-pairs", "repeated-pairs"],
     )
     def test_the_widened_pattern_stays_linear(self, blob):
         import time

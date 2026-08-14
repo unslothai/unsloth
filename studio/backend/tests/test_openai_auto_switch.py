@@ -986,9 +986,7 @@ def test_auto_switch_rereads_saved_arguments_after_the_lifecycle_gate(monkeypatc
 
     backend.is_loaded = False
     rec.calls.clear()
-    rec.before_reload_confirmed = lambda: saved.update(
-        llama_extra_args = ["--temperature", "0.2"]
-    )
+    rec.before_reload_confirmed = lambda: saved.update(llama_extra_args = ["--temperature", "0.2"])
     with pytest.raises(HTTPException) as excinfo:
         _run_hook("unsloth/B-GGUF")
     assert excinfo.value.status_code == 409

@@ -2421,7 +2421,10 @@ def _llama_args_field_present(request: Any) -> bool:
 
 
 def _llama_args_value_supplied(request: Any) -> bool:
-    return _llama_args_field_present(request) and getattr(request, "llama_extra_args", None) is not None
+    return (
+        _llama_args_field_present(request)
+        and getattr(request, "llama_extra_args", None) is not None
+    )
 
 
 def _reject_api_key_custom_arguments(request: Any, via_api_key: bool) -> None:

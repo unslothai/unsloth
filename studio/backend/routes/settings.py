@@ -1199,7 +1199,6 @@ def _serialized_override_write(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         from utils.openai_auto_switch_settings import model_override_mutation_lock
-
         with _override_write_lock, model_override_mutation_lock():
             return func(*args, **kwargs)
 

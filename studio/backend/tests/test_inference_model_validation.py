@@ -103,7 +103,9 @@ def test_api_key_field_presence_rejects_null_empty_and_nonempty():
             route._reject_api_key_custom_arguments(request, True)
         assert excinfo.value.status_code == 403
 
-    assert route._llama_args_value_supplied(LoadRequest(model_path = "owner/repo", llama_extra_args = []))
+    assert route._llama_args_value_supplied(
+        LoadRequest(model_path = "owner/repo", llama_extra_args = [])
+    )
 
 
 def test_ui_explicit_empty_clears_and_omitted_same_runtime_inherits(monkeypatch):
