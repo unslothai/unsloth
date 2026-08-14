@@ -90,18 +90,16 @@ class TestProbeParsing:
         and take the whole installer down rather than falling back to the on-disk
         classifier. Runs the real subprocess: a mock cannot show which decoder was used.
         """
-        emit = (
-            r"import sys; "
-            r"sys.stdout.buffer.write(b'noise \xff\xfe\n2.9.1+cu128||12.8\n')"
-        )
+        emit = r"import sys; sys.stdout.buffer.write(b'noise \xff\xfe\n2.9.1+cu128||12.8\n')"
         real_run = subprocess.run  # bound before the patch, or the stand-in calls itself
 
         def _emit(_cmd, **kwargs):
             return real_run([sys.executable, "-c", emit], **kwargs)
 
-        with patch.object(
-            stack_mod, "_windows_hidden_subprocess_kwargs", lambda: {}
-        ), patch.object(stack_mod.subprocess, "run", _emit):
+        with (
+            patch.object(stack_mod, "_windows_hidden_subprocess_kwargs", lambda: {}),
+            patch.object(stack_mod.subprocess, "run", _emit),
+        ):
             ran, importable, version, hip, cuda = stack_mod._probe_torch_runtime()
         assert (ran, importable) == (True, True)
         assert (version, hip, cuda) == ("2.9.1+cu128", "", "12.8")
