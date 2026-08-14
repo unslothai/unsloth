@@ -2367,6 +2367,7 @@ from core.inference.providers import (
     get_base_url,
     get_provider_info,
     hosted_only_tools,
+    LOCAL_STANDINS_FOR_HOSTED_TOOLS,
     provider_hosted_tools,
     provider_model_runs_local_tools,
     provider_runs_local_tools,
@@ -2817,7 +2818,21 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # local implementation of those names either, so reading such a request as
     # "local" would drop them just the same, only after also replacing the
     # provider's search with ours.
-    return all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled)
+    if not all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled):
+        return False
+    # run_tools_locally only decides the ambiguous names, the ones Studio can
+    # also run itself. A selection with no SELECTED local stand-in stays hosted
+    # whatever the flag says: honouring it would enter the loop, find an empty
+    # catalog, fall back to the same passthrough, and skip the confirmation
+    # rejection on the way.
+    if getattr(payload, "run_tools_locally", None) is True:
+        # Intersected with the selection, as hosted_only_tools does: code_execution
+        # maps to python/terminal, but naming it alone selects neither.
+        selected = {name for name in enabled if isinstance(name, str)}
+        return not any(
+            LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name, frozenset()) & selected for name in selected
+        )
+    return True
 
 
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
