@@ -69,9 +69,7 @@ def test_put_current_date_prompt_rejects_non_bool(client):
 
 class TestCurrentDatePromptLine:
     def test_line_states_the_iso_date_when_enabled(self, monkeypatch):
-        monkeypatch.setattr(
-            current_date_settings, "get_current_date_prompt_enabled", lambda: True
-        )
+        monkeypatch.setattr(current_date_settings, "get_current_date_prompt_enabled", lambda: True)
         assert (
             current_date_settings.current_date_prompt_line(date(2026, 8, 15))
             == "The current date is 2026-08-15."
@@ -87,9 +85,7 @@ class TestCurrentDatePromptLine:
         assert inference._apply_current_date_prompt(already) == already
 
     def test_line_is_empty_when_disabled(self, monkeypatch):
-        monkeypatch.setattr(
-            current_date_settings, "get_current_date_prompt_enabled", lambda: False
-        )
+        monkeypatch.setattr(current_date_settings, "get_current_date_prompt_enabled", lambda: False)
         assert current_date_settings.current_date_prompt_line(date(2026, 8, 15)) == ""
 
     def test_unreadable_settings_still_default_to_enabled(self, monkeypatch):
@@ -110,13 +106,11 @@ class TestExternalProviderMessages:
     @staticmethod
     def _prepend(messages):
         import routes.inference as inference
-
         return inference._prepend_current_date_to_messages(messages)
 
     @pytest.fixture(autouse = True)
     def _enabled(self, monkeypatch):
         import routes.inference as inference
-
         monkeypatch.setattr(
             inference, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
         )
@@ -177,7 +171,6 @@ class TestExternalProviderMessages:
 
     def test_only_self_hosted_provider_types_are_dated(self):
         from core.inference.providers import provider_is_self_hosted
-
         for provider_type in ("vllm", "ollama", "llama_cpp", "custom"):
             assert provider_is_self_hosted(provider_type), provider_type
         # Hosted APIs and Codex state the date in their own context already.
@@ -213,9 +206,7 @@ class TestResearchSystemPrompt:
             {"currentDate": "The current date is 2026-08-15.", "instructions": "Be terse."},
         )
         assert "<chat_instructions>\nBe terse.\n</chat_instructions>" in prompt
-        assert prompt.endswith(
-            "Non-overridable rules:\nThe current date is 2026-08-15.\n\nBASE"
-        )
+        assert prompt.endswith("Non-overridable rules:\nThe current date is 2026-08-15.\n\nBASE")
 
     def test_run_without_a_stamped_date_is_unchanged(self):
         # runs created before the field existed, and runs started with the setting off.
