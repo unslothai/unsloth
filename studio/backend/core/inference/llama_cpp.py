@@ -6063,7 +6063,8 @@ class LlamaCppBackend:
         same 4096 the cap falls back to without a KV estimate.
 
         Exemptions: no Metal budget (0 off Apple Silicon, so this is inert
-        there); ``auto_fit``, which omits -c so --fit sizes it; and
+        there); ``auto_fit``, which omits -c so --fit sizes it, and which the
+        caller passes only while --fit will actually run; and
         ``caller_owns_budget``, a manual mode with a fixed layer count where the
         user owns memory management. That last is read off the REQUEST, because
         the paravirtual CPU pin rewrites every placement to manual/0 first and
@@ -14848,7 +14849,12 @@ class LlamaCppBackend:
                     )
                 _metal_floor = self._metal_zero_ctx_floor(
                     effective_ctx,
-                    auto_fit,
+                    # Auto-layers earns its exemption by leaving the context to --fit,
+                    # so it only holds while --fit actually runs. Extras land after
+                    # Studio's own "--fit on" and win, and a "--fit off" there would
+                    # otherwise leave a command with no -c and no fitter, which is
+                    # llama.cpp's native context.
+                    auto_fit and fit_is_effectively_on(extra_args),
                     _caller_owns_budget,
                     self._context_length,
                     max_available_ctx,
