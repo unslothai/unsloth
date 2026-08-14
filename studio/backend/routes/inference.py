@@ -3385,14 +3385,21 @@ def _prepend_current_date_to_messages(messages: list[dict]) -> list[dict]:
     date_line = current_date_prompt_line()
     if not date_line:
         return messages
+    # Scanned across every system turn before anything is inserted: a request whose date sits on
+    # a later turn than the first would otherwise get a second, contradictory one.
+    if any(
+        msg.get("role") in ("system", "developer")
+        and isinstance(msg.get("content"), str)
+        and _states_a_date(msg["content"])
+        for msg in messages
+    ):
+        return messages
     copied = [dict(msg) for msg in messages]
     for msg in copied:
         if msg.get("role") not in ("system", "developer"):
             continue
         content = msg.get("content", "")
         if isinstance(content, str):
-            if _states_a_date(content):
-                return messages
             msg["content"] = date_line + "\n\n" + content.lstrip()
             return copied
     return [{"role": "system", "content": date_line}, *copied]
@@ -19575,8 +19582,29 @@ async def anthropic_count_tokens(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
-    # Mirrors /messages: a caller supplying its own tools is forwarded verbatim and gets no date.
-    if not openai_tools:
+    # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
+    # routing rather than "any tools": a Studio server-tool alias, or a template without
+    # passthrough support, falls through to plain generation there and does carry the date.
+    _count_studio_tools = _anthropic_requested_studio_tools(payload.tools)
+    _count_has_client_tool = any(
+        (t if isinstance(t, dict) else t.model_dump()).get("input_schema") is not None
+        or anthropic_schema_client_tool_kind(t) is not None
+        for t in payload.tools or []
+    )
+    _count_server_tools = (
+        _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
+        and llama_backend.supports_tools
+        and not _anthropic_request_has_image(payload)
+    )
+    _count_client_tools = (
+        not _count_server_tools
+        and any(
+            tool.get("function", {}).get("name") not in _count_studio_tools
+            for tool in anthropic_tools_to_openai(payload.tools or [])
+        )
+        and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
+    )
+    if not _count_client_tools:
         openai_messages = _prepend_current_date_to_messages(openai_messages)
 
     try:

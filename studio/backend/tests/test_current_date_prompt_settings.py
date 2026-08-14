@@ -169,6 +169,16 @@ class TestExternalProviderMessages:
         ]
         assert self._prepend(buried) is buried
 
+    def test_a_date_on_a_later_system_turn_still_suppresses(self):
+        # The first eligible turn is undated, so a scan that stopped there would date the prompt
+        # a second time.
+        messages = [
+            {"role": "system", "content": "Be terse."},
+            {"role": "developer", "content": "The current date is 2026-08-14."},
+            {"role": "user", "content": "hi"},
+        ]
+        assert self._prepend(messages) is messages
+
     def test_only_self_hosted_provider_types_are_dated(self):
         from core.inference.providers import provider_is_self_hosted
         for provider_type in ("vllm", "ollama", "llama_cpp", "custom"):
