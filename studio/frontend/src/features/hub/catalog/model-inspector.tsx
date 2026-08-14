@@ -52,6 +52,8 @@ import {
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
 import { DatasetDownloadSection } from "./dataset-download-section";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { studioPageForTask } from "../lib/unsloth-support";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
@@ -570,13 +572,20 @@ export const ModelInspector = memo(function ModelInspector({
           c.key === "vision" ||
           c.key === "audio",
       ));
+  // An image / video model runs on its own page, which onLoad already routes to;
+  // the chat gates below would leave it greyed out as if it were unusable.
+  const runsOnMediaPage =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined;
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
     !isDataset &&
-    (model.runtimeCapabilities?.canChat ?? true) &&
-    !isEmbeddingOnly &&
-    (model.isGguf || (!chatOnly && unslothSupported));
+    (runsOnMediaPage ||
+      ((model.runtimeCapabilities?.canChat ?? true) &&
+        !isEmbeddingOnly &&
+        (model.isGguf || (!chatOnly && unslothSupported))));
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
