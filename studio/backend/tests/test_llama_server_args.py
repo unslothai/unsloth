@@ -126,10 +126,7 @@ def test_the_attached_value_form_is_refused():
     with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
         validate_extra_args(["--parallel=8"])
     # An "=" inside a VALUE is untouched: it is the value's own syntax.
-    assert validate_extra_args(["--override-kv", "a=int:2"]) == [
-        "--override-kv",
-        "a=int:2",
-    ]
+    assert validate_extra_args(["--override-kv", "a=int:2"]) == ["--override-kv", "a=int:2"]
 
 
 def test_managed_long_flag_underscore_alias_is_rejected():
