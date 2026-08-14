@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useT } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { askHide, askResize, pillServerPort } from "@/lib/pill-native";
 import {
   fetchInferenceStatus,
@@ -25,7 +26,10 @@ import { streamCompletion } from "../pill/stream";
 
 type AskPhase = "input" | "loading" | "streaming" | "done" | "error";
 
-type Turn = { question: string; answer: string };
+// `complete` is set only when the stream reached its terminal frame. A failed
+// run can leave a partial answer behind, so the text alone cannot say whether
+// the turn is real history.
+type Turn = { question: string; answer: string; complete: boolean };
 
 function shortModelName(model: string): string {
   return model.split("/").pop() ?? model;
@@ -82,8 +86,11 @@ export function AskApp(): ReactElement {
       if (!isTauri) return;
       const { listen } = await import("@tauri-apps/api/event");
       const unlistenShow = await listen<string | null>("ask://show", (event) => {
-        // Every summon is a fresh conversation with fresh settings.
+        // Every summon is a fresh conversation with fresh settings. Drop the
+        // controller too: a run parked on an unabortable fetch would otherwise
+        // still look current and drive this freshly reset session.
         abortRef.current?.abort();
+        abortRef.current = null;
         setContext(event.payload ?? null);
         setTurns([]);
         setQuery("");
@@ -102,6 +109,7 @@ export function AskApp(): ReactElement {
       });
       const unlistenHide = await listen("ask://hide", () => {
         abortRef.current?.abort();
+        abortRef.current = null;
       });
       const unlistenPort = await listen<number>("server-port", (event) => {
         void import("@/lib/api-base").then(({ setApiBase }) =>
@@ -186,7 +194,7 @@ export function AskApp(): ReactElement {
     const abort = new AbortController();
     abortRef.current = abort;
     const history = turns;
-    setTurns([...history, { question, answer: "" }]);
+    setTurns([...history, { question, answer: "", complete: false }]);
     setQuery("");
     setErrorKey(null);
     setPhase("streaming");
@@ -221,9 +229,9 @@ export function AskApp(): ReactElement {
 
       const withContext = (text: string, first: boolean): string =>
         first && context ? `${text}\n\nText:\n"""\n${context}\n"""` : text;
-      // A turn whose run failed carries an empty answer; sending it would pass
-      // off a blank assistant message as real history.
-      const answered = history.filter((turn) => turn.answer);
+      // Only turns whose stream actually finished are real history; a failed
+      // one can carry a blank or truncated answer.
+      const answered = history.filter((turn) => turn.complete);
       const messages = answered.flatMap((turn, index) => [
         { role: "user" as const, content: withContext(turn.question, index === 0) },
         { role: "assistant" as const, content: turn.answer },
@@ -246,6 +254,12 @@ export function AskApp(): ReactElement {
         });
       }
       if (!sawToken) throw new PillRunError("failed");
+      setTurns((current) => {
+        const next = current.slice();
+        const last = next[next.length - 1];
+        if (last) next[next.length - 1] = { ...last, complete: true };
+        return next;
+      });
       setPhase("done");
     } catch (error) {
       // A run the user walked away from can land here after a newer one has
@@ -269,7 +283,12 @@ export function AskApp(): ReactElement {
   const lastAnswer = turns.length > 0 ? turns[turns.length - 1].answer : "";
 
   const copyAnswer = (): void => {
-    void navigator.clipboard.writeText(lastAnswer).then(() => setCopied(true));
+    // The panel is a custom-scheme page, where navigator.clipboard can be
+    // absent or refuse the write. copyToClipboard tries the native plugin the
+    // ask capability already grants, then falls back to the web writers.
+    void copyToClipboard(lastAnswer).then((ok) => {
+      if (ok) setCopied(true);
+    });
   };
 
   const clearThread = (): void => {
