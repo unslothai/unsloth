@@ -2450,5 +2450,6 @@ class TestTheEffectiveFitterState:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_mem_env = dict(_child_llama_env())" in src
         assert "fit_active = fit_is_effectively_on(" in src
         assert "[*cmd, *(_mem_extra_args or [])], _mem_env" in src

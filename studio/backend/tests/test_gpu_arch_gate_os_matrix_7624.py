@@ -2369,9 +2369,8 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
         _cmd, env = launches[0]
         assert "LLAMA_ARG_TENSOR_SPLIT" not in env
 
-    def test_an_ordinary_load_keeps_them(self, tmp_path, monkeypatch, probe_env):
-        """Only the gate's own branches clear these. An unrelated launch must
-        not lose an inherited setting the existing reconciliation allows."""
+    def test_an_ordinary_load_scrubs_them(self, tmp_path, monkeypatch, probe_env):
+        """The child boundary removes inherited llama-server arguments on every load."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
@@ -2386,7 +2385,7 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
         )
         assert launches
         _cmd, env = launches[0]
-        assert env.get("LLAMA_ARG_TENSOR_SPLIT") == "3,1"
+        assert "LLAMA_ARG_TENSOR_SPLIT" not in env
 
 
 class TestTheForcedCpuLaunchAppliesThePageLock:

@@ -12741,10 +12741,9 @@ class LlamaCppBackend:
                     # so _cache_type_from_env keeps it out of the emitted flags.
                     cache_type_kv = _env_main_cache_type_for_budget()
                     _cache_type_from_env = cache_type_kv is not None
-                # A user --split-mode in extras last-wins-overrides the toggle, and
-                # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child
-                # would run tensor unbudgeted otherwise). The duplicate-load matchers
-                # use the same helper so a healthy env-driven tensor server matches.
+                # A user --split-mode in extras last-wins-overrides the toggle.
+                # The helper also accepts explicit Studio-managed child env; ambient
+                # LLAMA_ARG_* values are scrubbed before both planning and spawn.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = _effective_tensor_parallel(extra_args, tensor_parallel)
                 # gpu_layers=0 leaves nothing to split, yet --split-mode tensor or
@@ -14344,20 +14343,19 @@ class LlamaCppBackend:
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)
 
-                # Audio input straight from the mmproj (clip.has_audio_encoder),
-                # independent of token names. A projector passed only via
-                # LLAMA_ARG_MMPROJ misses launch_mmproj_path, so probe that too,
-                # but never one the unpinnable guard just dropped.
+                # Audio input straight from the finalized mmproj
+                # (clip.has_audio_encoder), independent of token names. Inherited
+                # LLAMA_ARG_* values are scrubbed from the child and therefore
+                # must not affect this launch's advertised capabilities.
                 self._mmproj_has_audio = False
-                _audio_probe = launch_mmproj_path or (
-                    "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
-                )
-                if launch_mmproj_path or os.path.isfile(_audio_probe):
+                if launch_mmproj_path:
                     try:
                         from utils.models.gguf_metadata import (
                             read_mmproj_audio_capability,
                         )
-                        self._mmproj_has_audio = bool(read_mmproj_audio_capability(_audio_probe))
+                        self._mmproj_has_audio = bool(
+                            read_mmproj_audio_capability(launch_mmproj_path)
+                        )
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
@@ -14970,10 +14968,10 @@ class LlamaCppBackend:
                 # and reject the duplicate-load fast path, tearing down a healthy
                 # server to relaunch identical argv. Only the Vulkan probe stays
                 # gated, so the default path still spawns nothing.
-                # The same view of the environment the child will get: manual
-                # mode drops the placement vars below, so reading os.environ
-                # would pin for a CPU-MoE setting the child never sees.
-                _mem_env = dict(os.environ)
+                # The same scrubbed view of the environment the child will get.
+                # Ambient LLAMA_ARG_* values must not change host-residency or
+                # page-lock decisions when they are removed at spawn.
+                _mem_env = dict(_child_llama_env())
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(_mem_env)
                 # A custom --device has already suppressed gpu_ids above. Therefore a
@@ -17965,7 +17963,7 @@ class LlamaCppBackend:
         return files
 
     def _prompt_cache_off(self) -> bool:
-        # Caching off makes restores useless; last prompt-cache flag wins, env only when unset.
+        # Caching off makes restores useless; the last launched prompt-cache flag wins.
         last = None
         for arg in self._extra_args or ():
             flag = arg.strip().split("=", 1)[0]
@@ -17975,10 +17973,7 @@ class LlamaCppBackend:
             return last == "--no-cache-prompt"
         if self._prompt_cache_disabled:
             return True
-        if os.environ.get("LLAMA_ARG_NO_CACHE_PROMPT") is not None:
-            return True
-        env = (os.environ.get("LLAMA_ARG_CACHE_PROMPT") or "").strip().lower()
-        return env in _LLAMA_ARG_FALSE_VALUES
+        return False
 
     def save_slots_for_resume(
         self, should_abort: Optional[Callable[[], bool]] = None

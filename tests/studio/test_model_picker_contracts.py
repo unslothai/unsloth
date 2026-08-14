@@ -267,7 +267,7 @@ def test_deferred_gpu_pick_keeps_its_index_namespace():
     assert "config.selectedGpuIndexKind === undefined" in signature
     assert 'config.selectedGpuIndexKind ?? "physical"' not in signature
 
-    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "stateBeforeUnload.selectedGpuIndexKind," in runtime
 
     compare = _read("features/chat/shared-composer.tsx")
@@ -455,7 +455,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "loadId: activeLoadId," in page
     assert "activeLoadId: string | null;" in _read("features/chat/stores/chat-runtime-store.ts")
 
-    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
     # A failed swap already unloaded the pinned model: reload it from the same place, pin and all.
     assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
@@ -743,7 +743,7 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
-    assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in src
+    assert "classifiedIsDiffusion, persistAfterValidation" in " ".join(src.split())
     assert "savePerModelConfig(" in src
 
 
@@ -913,7 +913,7 @@ def test_compare_classifies_gguf_before_reconciling_gpu_ids():
     assert "prepareHfTokenForUse(" in compare
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert "isDiffusion?: boolean" in page
-    assert "onRun(effectiveLoadConfig, classifiedIsDiffusion)" in page
+    assert "classifiedIsDiffusion, persistAfterValidation" in " ".join(page.split())
 
 
 def test_model_config_prepares_hf_token_before_gguf_metadata_preflight():
@@ -1850,11 +1850,12 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     """The baseline is what a rollback re-sends and what preset capture reads, so a model
     that cannot have slots must not inherit the previous GGUF's count."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    compact = " ".join(src.split())
     assert (
-        "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
+        "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in compact
     ), "the slotless clear must key on is_gguf or an explicit null echo"
-    clear = src.index("status.is_gguf === false || status.requested_parallel_slots === null")
-    assert "loadedNParallel: null," in src[clear : clear + 200]
+    clear = compact.index("status.is_gguf === false || status.requested_parallel_slots === null")
+    assert "loadedNParallel: null," in compact[clear : clear + 200]
     # Never `!= null`: that also matches the absent field an older backend sends.
     assert "status.requested_parallel_slots !== null && {" not in src
 
@@ -1973,10 +1974,11 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     # The backend applies the same model's override by the same alias, which is why the
     # echo the adoption gate compares against carries the saved count at all.
     route = _read_backend("routes/inference.py")
-    overrides = route.split("Apply the saved launch config so an API swap loads as the picker", 1)[
-        1
-    ].split("load_kwargs = {", 1)[0]
-    assert 'f"{override_id}:{variant}" if variant else None,' in overrides
+    overrides = route.split("def _fresh_load_kwargs()", 1)[1].split(
+        "# First admission check", 1
+    )[0]
+    assert "override_id = override_id," in overrides
+    assert "file_variant = file_variant," in overrides
     assert "override_id," in overrides
 
 
@@ -2095,9 +2097,8 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     gguf_block = store.split("    if is_gguf:", 1)[1]
     assert 'kwargs["n_batch"] = override["n_batch"]' in gguf_block
     assert 'kwargs["n_ubatch"] = override["n_ubatch"]' in gguf_block
-    # A stored pass-through -b / -ub must not outrank the first-class field.
-    assert 'strip_batch = "n_batch" in kwargs,' in store
-    assert 'strip_ubatch = "n_ubatch" in kwargs,' in store
+    # Managed arguments are rejected at admission, so allowed custom args stay intact.
+    assert "Keep allowed custom arguments intact" in store
 
 
 def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
@@ -2256,7 +2257,7 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
         "{ syncModelOverride(" in src
     )
     # The local save is not behind the same gate.
-    assert "if (remember) { saveFailed = !savePerModelConfig(" in src
+    assert "const saveFailed = remember ? !savePerModelConfig(" in src
 
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
@@ -2298,10 +2299,6 @@ def test_evicted_local_configs_drop_their_server_overrides():
     assert "keepLaunchFlags?: boolean;" in api
     # remove=false with no fields: the route re-supplies stored flags and drops an empty row.
     assert "remove: config === null && !options?.keepLaunchFlags," in api
-    assert (
-        "...(config === null && !options?.keepLaunchFlags ? { llama_extra_args: [] } : {}),"
-        in api.replace("// biome-ignore lint/style/useNamingConvention: API schema ", "")
-    )
     route = _read_backend("routes/settings.py")
     assert 'requested_extra_args = stored.get("llama_extra_args")' in route, "the rule this mirrors"
 
@@ -2711,10 +2708,9 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
 
     # The precedence that makes the bare path the one that wins.
-    route = _read_backend("routes/inference.py")
-    assert 'f"{target_id}:{file_variant}" if file_variant else None,' in route
-    bare = route.index("\n                            target_id,\n")
-    labelled = route.index('f"{target_id}:{file_variant}"')
+    store = _read_backend("utils/openai_auto_switch_settings.py")
+    bare = store.index("\n        target_id,\n", store.index("candidates = ("))
+    labelled = store.index('f"{target_id}:{file_variant}"')
     assert bare < labelled, "the bare path must be read before the filename label"
 
 
@@ -2972,10 +2968,9 @@ def test_run_settings_page_keeps_its_identifying_controls():
     # The button, not the word: "Reset" also appears in this file's own comments, so a
     # raw source search passes with the control deleted and the Playwright reset gate
     # only finds out 25 minutes later.
-    assert re.search(
-        r"onClick=\{\(\) => setConfig\(\{ \.\.\.DEFAULT_PER_MODEL_CONFIG \}\)\}\s*>\s*Reset\s*</Button>",
-        page,
-    ), "the Reset button's JSX is gone or no longer named Reset"
+    compact = " ".join(page.split())
+    assert "setConfig({ ...DEFAULT_PER_MODEL_CONFIG," in compact
+    assert "> Reset </Button>" in compact
 
 
 def test_the_primary_action_keeps_its_four_labels():
@@ -3009,7 +3004,7 @@ def test_the_micro_batch_advisory_compares_against_the_emitted_batch():
     assert "Math.max(config.nBatch, batchFloor)" in page
     assert "config.nUbatch > effectiveBatch" in page
     # the rendered number too, or the text still names a batch nothing runs at
-    assert 'llama.cpp will run at{" "} {effectiveBatch}.' in page
+    assert "llama.cpp will run at {effectiveBatch}." in " ".join(page.split())
     # and the floor must be declared before the comparison that uses it
     assert page.index("const batchFloor =") < page.index("const effectiveBatch =")
 

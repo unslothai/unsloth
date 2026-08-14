@@ -281,19 +281,18 @@ def test_save_skipped_when_user_disabled_prompt_cache(monkeypatch, tmp_path):
     assert backend.save_slots_for_resume() is None
 
 
-def test_save_skipped_when_env_disables_prompt_cache(monkeypatch, tmp_path):
+def test_scrubbed_env_does_not_disable_prompt_cache(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path)
     monkeypatch.setenv("LLAMA_ARG_CACHE_PROMPT", "0")
+    monkeypatch.setenv("LLAMA_ARG_NO_CACHE_PROMPT", "1")
+    _fake_disk(monkeypatch)
     monkeypatch.setattr(
         llama_cpp.httpx,
         "post",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError),
+        lambda *a, **k: _Resp(200, {"n_saved": 1, "n_written": 1}),
         raising = False,
     )
-    assert backend.save_slots_for_resume() is None
-    monkeypatch.delenv("LLAMA_ARG_CACHE_PROMPT")
-    monkeypatch.setenv("LLAMA_ARG_NO_CACHE_PROMPT", "1")  # legacy negative form
-    assert backend.save_slots_for_resume() is None
+    assert backend.save_slots_for_resume() is not None
 
 
 def test_explicit_cache_prompt_flag_overrides_env(monkeypatch, tmp_path):

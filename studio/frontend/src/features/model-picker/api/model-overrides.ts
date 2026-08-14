@@ -5,12 +5,13 @@
 // browser localStorage, so an API auto-switch load (no browser in the loop) came up with none of
 // the user's settings. routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
-import { authFetch } from "@/features/auth/api";
+import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { llamaExtraArgsPayload } from "../model-config/llama-extra-args";
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  splitQuantSuffix,
 } from "../model-config/model-identity";
 import type { PerModelConfig } from "../model-config/per-model-config";
 
@@ -66,6 +67,17 @@ export function modelOverrideKey(
   return ggufVariant ? `${modelId}:${ggufVariant}` : modelId;
 }
 
+function normalizedOverrideLookupKey(value: string): string {
+  const qualified = splitQuantSuffix(value);
+  if (!qualified) {
+    return normalizeModelIdentity(value);
+  }
+  return modelOverrideKey(
+    normalizeModelIdentity(qualified[0]),
+    normalizeGgufVariantIdentity(qualified[1]),
+  );
+}
+
 export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
   const res = await authFetch(OVERRIDES_URL);
   if (!res.ok) {
@@ -90,11 +102,13 @@ export function findModelOverride(
     if (Object.hasOwn(overrides, candidate)) {
       return overrides[candidate] ?? null;
     }
-    const folded = candidate.toLowerCase();
+    const normalized = normalizedOverrideLookupKey(candidate);
     const matches = entries.filter(
-      ([key]) => key.toLowerCase() === folded,
+      ([key]) => normalizedOverrideLookupKey(key) === normalized,
     );
-    if (matches.length === 1) return matches[0][1] ?? null;
+    if (matches.length === 1) {
+      return matches[0][1] ?? null;
+    }
   }
   return null;
 }

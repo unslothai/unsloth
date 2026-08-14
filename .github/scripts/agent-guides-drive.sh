@@ -24,7 +24,7 @@
 #
 # Required env (exported by serve-unsloth-run.sh):
 #   UNSLOTH_BASE_URL UNSLOTH_API_KEY UNSLOTH_MODEL_ID
-#   UNSLOTH_LLAMA_LOG_DIR  AGENT_INVOKE_TIMEOUT  UNSLOTH_SEED
+#   UNSLOTH_LLAMA_LOG_DIR  AGENT_INVOKE_TIMEOUT
 set -uo pipefail
 
 MODE="${1:?usage: agent-guides-drive.sh <mode> <agent>}"
@@ -33,8 +33,8 @@ AGENT="${2:?usage: agent-guides-drive.sh <mode> <agent>}"
 : "${UNSLOTH_BASE_URL:?serve step did not export UNSLOTH_BASE_URL}"
 : "${UNSLOTH_API_KEY:?serve step did not export UNSLOTH_API_KEY}"
 : "${UNSLOTH_MODEL_ID:?serve step did not export UNSLOTH_MODEL_ID}"
-# Determinism (seed/temp) is applied at the server level by
-# serve-unsloth-run.sh --extra; agents inherit it through the API.
+# Deterministic decoding is applied by serve-unsloth-run.sh through the
+# first-class --temperature CLI option; agents inherit it through the API.
 TIMEOUT="${AGENT_INVOKE_TIMEOUT:-180}"
 # opencode is the slow outlier. Unlike the print-mode agents (claude -p, codex
 # exec) it runs a full turn AND a separate small_model call to name the session,

@@ -29,7 +29,11 @@ export function HubModelSettingsView({
   loadedContextLength?: number | null;
   onBack: () => void;
   /** Apply + load with these settings. */
-  onRun: (config: PerModelConfig) => void;
+  onRun: (
+    config: PerModelConfig,
+    isDiffusion?: boolean,
+    onValidated?: () => void,
+  ) => void;
   compact?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);

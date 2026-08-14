@@ -43,6 +43,9 @@ const { listPerModelConfigs, resolveInitialConfig, savePerModelConfig } =
 const { modelStorageKey, splitQuantSuffix } = await import(
   "../src/features/model-picker/model-config/model-identity.ts"
 );
+const { findModelOverride } = await import(
+  "../src/features/model-picker/api/model-overrides.ts"
+);
 
 function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
   return {
@@ -278,6 +281,30 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   assert.equal(
     resolveInitialConfig("/models/Foo.gguf", null).config.maxSeqLength,
     4096,
+  );
+});
+
+test("saved override fallback preserves platform path case rules", () => {
+  const upperQualified = { max_seq_length: 4096 };
+  const lowerBare = { max_seq_length: 8192 };
+  assert.equal(
+    findModelOverride(
+      {
+        "/models/Foo.gguf:Q4_K_M": upperQualified,
+        "/models/foo.gguf": lowerBare,
+      },
+      "/models/foo.gguf",
+      "q4_k_m",
+    ),
+    lowerBare,
+  );
+  assert.equal(
+    findModelOverride(
+      { "C:\\Models\\Foo.gguf:Q4_K_M": upperQualified },
+      "c:/models/foo.gguf",
+      "q4_k_m",
+    ),
+    upperQualified,
   );
 });
 

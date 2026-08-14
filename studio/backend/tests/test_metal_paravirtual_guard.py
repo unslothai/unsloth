@@ -636,10 +636,11 @@ def test_the_drop_precedes_everything_the_projector_feeds():
     gate_at = src.index("_pv_mmproj_unpinnable = bool(")
     assert gate_at < src.index('cmd.extend(["--mmproj", launch_mmproj_path])')
     assert gate_at < src.index("self._mmproj_vram_bytes(launch_mmproj_path)")
-    # The probe reads launch_mmproj_path, or the env projector only if the gate dropped
-    # nothing, so both the gate and that choice precede it.
-    assert gate_at < src.index("_audio_probe = launch_mmproj_path or (")
-    assert gate_at < src.index("read_mmproj_audio_capability(_audio_probe)")
+    # The probe reads only the projector that the launch resolved and kept.
+    assert gate_at < src.index("if launch_mmproj_path:")
+    assert gate_at < src.index(
+        "read_mmproj_audio_capability(launch_mmproj_path)"
+    )
     # ...and the session flag the frontend reads follows the same variable.
     assert "self._is_vision = effective_is_vision" in src
 
@@ -735,13 +736,12 @@ def test_a_drafter_that_cannot_be_pinned_is_dropped(monkeypatch):
     )
     assert warnings == []
     assert extras == tuning
-    # But an env drafter the extras DO keep alive still drops: their --spec-type is what
-    # stops the scrub.
+    # Ambient llama-server variables are scrubbed even when extras own the spec type.
     owned = ["--spec-type", "draft-simple"]
     drafter, _extras, warnings = _drafter_gate(
         paravirtual = True, caps = {}, drafter = None, extra_args = owned
     )
-    assert any("draft-layer flag" in w for w in warnings), warnings
+    assert drafter is None and warnings == []
 
 
 def test_the_drop_takes_a_user_owned_drafter_with_it():
@@ -815,9 +815,8 @@ def test_a_drafter_free_mode_that_names_its_own_drafter_still_drops_it():
     assert warnings
 
 
-def test_an_inherited_drafter_env_is_not_exempted_by_a_drafter_free_mode(monkeypatch):
-    """Same through the env the child reads directly: the drafter loads whatever
-    --spec-type says, so it cannot ride out the drop on the mode alone."""
+def test_an_inherited_drafter_env_is_scrubbed_for_a_drafter_free_mode(monkeypatch):
+    """Ambient draft paths never reach the child, regardless of the argv spec mode."""
     monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/models/env.gguf")
     drafter, _out, warnings = _drafter_gate(
         paravirtual = True,
@@ -826,7 +825,7 @@ def test_an_inherited_drafter_env_is_not_exempted_by_a_drafter_free_mode(monkeyp
         extra_args = ["--spec-type", "ngram-mod"],
     )
     assert drafter is None
-    assert warnings
+    assert warnings == []
 
 
 def test_a_real_mac_keeps_the_sibling_and_the_mode_alike():
@@ -1171,14 +1170,12 @@ def test_the_split_mode_override_outlives_the_pass_through_extras():
 
 
 def test_the_mtp_read_judges_the_env_the_child_will_actually_get():
-    """An inherited draft-mtp does launch MTP, but the launch scrubs it whenever Unsloth
-    owns the spec block, so reading os.environ would describe a server that will not run MTP.
-    The env counts only when the extras own --spec-type, the one case it reaches the child."""
+    """Implicit ambient state is scrubbed; an explicit managed mapping remains usable."""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-    # Managed block: scrubbed, so the env says nothing about this launch.
-    assert llama_cpp._child_spec_env([]) == {}
-    assert llama_cpp._extra_args_requests_mtp([], llama_cpp._child_spec_env([])) is False
-    # Extras own the spec type: their flags and the env accumulate and both launch.
+    child_env = llama_cpp._child_spec_env([])
+    assert not any(key.startswith("LLAMA_ARG_") for key in child_env)
+    assert llama_cpp._extra_args_requests_mtp([], child_env) is False
+    # Explicit Studio-managed values are added back after the ambient scrub.
     extras = ["--spec-type", "ngram-mod"]
     assert (
         llama_cpp._extra_args_requests_mtp(extras, llama_cpp._child_spec_env(extras, env)) is True
@@ -1252,7 +1249,7 @@ def test_the_startup_fallback_records_the_extras_it_actually_launched():
     src = _load_model_source()
     strip_at = src.index("_fb_stripped_extras = strip_shadowing_flags(")
     swap_at = src.index("extra_args = _fb_stripped_extras")
-    record_at = src.index("self._extra_args = (")
+    record_at = src.index("self._extra_args = list(extra_args)")
     assert strip_at < swap_at < record_at, "the swap must land before the launch is recorded"
     # The original survives as the requested state, which the comparators read.
     kept = src[src.index("_pv_suppressed_spec_extra_args = (", swap_at - 400) : swap_at]
@@ -1972,7 +1969,7 @@ def test_the_drop_records_the_requested_extras_before_rewriting_them():
     assert src.index("_pv_suppressed_spec_extra_args = list(extra_args)") < src.index(
         "                            strip_spec = True,"
     )
-    assert "self._requested_extra_args = (" in src
+    assert "self._requested_extra_args = list(_pv_requested)" in src
 
 
 def _restore_requested_spec_mode(*, requested_extras):

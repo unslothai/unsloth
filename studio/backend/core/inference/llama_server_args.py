@@ -1153,11 +1153,16 @@ def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_paral
 
 
 def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
-    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Unsloth
-    emits --split-mode only on its tensor branch, so a tensor env on the layer
-    path would run the child tensor-parallel unbudgeted; this flips the budget
-    to tensor. Only tensor is heavier, so other modes are ignored."""
-    raw = (os.environ if env is None else env).get("LLAMA_ARG_SPLIT_MODE")
+    """True when Studio-managed child env selects tensor split mode.
+
+    Ambient LLAMA_ARG_* values are scrubbed before launch, so the implicit view
+    must ignore them exactly as the subprocess does. Explicit mappings are
+    already Studio-owned and remain available to callers that manage one.
+    """
+    source = dict(os.environ if env is None else env)
+    if env is None:
+        scrub_llama_server_env(source)
+    raw = source.get("LLAMA_ARG_SPLIT_MODE")
     return bool(raw) and raw.strip().lower() == "tensor"
 
 
@@ -1166,10 +1171,10 @@ def _effective_tensor_parallel(
     tensor_parallel: bool,
     env: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """Tensor-parallel decision including the inherited LLAMA_ARG_SPLIT_MODE env.
+    """Tensor-parallel decision including Studio-managed child environment.
 
     resolve_tensor_parallel (extras + toggle), flipped on when extras set no split
-    mode but the child inherits a tensor split env. Shared by load_model (which
+    mode but managed child env selects tensor split. Shared by load_model (which
     budgets and launches it) and the tensor-fallback wrapper (so an env-only
     tensor crash still retries layer split)."""
     resolved = resolve_tensor_parallel(extra_args, tensor_parallel)
@@ -1190,7 +1195,7 @@ def _tensor_parallel_matches_loaded(
 ) -> bool:
     """Whether a duplicate load request matches a loaded server's tensor state.
 
-    Env-only tensor mode is a launch hint load_model may downgrade to layer split
+    Managed-env tensor mode is a launch hint load_model may downgrade to layer split
     (capacity/buffer), scrubbing the child env. So only let an inherited tensor env
     raise a match against a server that *actually* launched tensor; on a downgraded
     (layer) server the env is ignored, and an identical request would downgrade the

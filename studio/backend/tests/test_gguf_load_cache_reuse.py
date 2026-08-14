@@ -138,12 +138,17 @@ def _load_route_module(name: str, relative_path: str):
     return module
 
 
-def _run_route_load(route, request):
+def _run_route_load(route, request, *, args_origin = None):
     fastapi_request = SimpleNamespace(
         app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
     )
     return asyncio.run(
-        route._load_model_impl(request, fastapi_request, current_subject = "test-user")
+        route._load_model_impl(
+            request,
+            fastapi_request,
+            current_subject = "test-user",
+            **({"args_origin": args_origin} if args_origin is not None else {}),
+        )
     )
 
 
@@ -711,7 +716,9 @@ class TestLoadHubDownloadExclusion:
             ),
             patch.object(route, "_active_gguf_intent", return_value = object()),
         ):
-            result = _run_route_load(route, request)
+            result = _run_route_load(
+                route, request, args_origin = route.LlamaArgsOrigin.UI_REQUEST
+            )
 
         assert result is response
 

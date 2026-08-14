@@ -1218,7 +1218,11 @@ function GgufAdvancedSettings({
 interface ModelConfigPageProps {
   target: ModelPickTarget;
   onBack?: () => void;
-  onRun: (config: PerModelConfig, isDiffusion?: boolean) => void;
+  onRun: (
+    config: PerModelConfig,
+    isDiffusion?: boolean,
+    onValidated?: () => void,
+  ) => void;
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
   initialConfig?: PerModelConfig | null;
@@ -1255,8 +1259,6 @@ export function ModelConfigPage({
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
   );
-  const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const runtimeRevision = useChatRuntimeStore((s) => s.runtimeRevision);
   const isActiveModel = loadedConfig != null;
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
@@ -1765,62 +1767,68 @@ export function ModelConfigPage({
       effectiveRuntimeConfig,
     );
     const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
-    let saveFailed = false;
-    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    if (remember) {
-      saveFailed = !savePerModelConfig(
-        configId,
-        target.ggufVariant,
-        normalizedRuntimeConfig,
-        evicted,
-      );
-    } else {
-      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
-    }
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips Ollama, and a native-path lease is the same.
-    if (
-      !saveFailed &&
-      (target.apiLoadable ?? target.isGguf) &&
-      !nativePathToken
-    ) {
-      syncModelOverride(
-        configId,
-        target.ggufVariant,
-        remember ? normalizedRuntimeConfig : null,
-      );
-    }
-    // Saving can push the local map over budget and drop other models, whose server entries would
-    // keep applying with nothing able to forget them. Not a Forget: only the mirrored fields go.
-    for (const dropped of evicted) {
-      syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
-        keepLaunchFlags: true,
-      });
-    }
-    if (effectivePersistenceOnly) {
-      if (saveFailed) {
-        toast.error("Couldn't save settings for this model.");
-        return;
+    const persistSettings = (): boolean => {
+      const evicted: { modelId: string; ggufVariant: string | null }[] = [];
+      const saveFailed = remember
+        ? !savePerModelConfig(
+            configId,
+            target.ggufVariant,
+            normalizedRuntimeConfig,
+            evicted,
+          )
+        : !deletePerModelConfig(configId, target.ggufVariant);
+      // Mirror to the server so an API load gets these settings, not app defaults. Best-effort,
+      // and skipped when localStorage failed or the two would permanently disagree.
+      if (
+        !saveFailed &&
+        (target.apiLoadable ?? target.isGguf) &&
+        !nativePathToken
+      ) {
+        syncModelOverride(
+          configId,
+          target.ggufVariant,
+          remember ? normalizedRuntimeConfig : null,
+        );
       }
-      const nextRemember = remember && !defaultConfig;
-      setSavedRemember(nextRemember);
-      setRemember(nextRemember);
-      toast.success(
-        nextRemember
-          ? "Settings saved."
-          : remember
-            ? "Default settings kept."
-            : "Settings forgotten.",
-      );
-      return;
-    }
-    if (saveFailed) {
-      toast.error("Couldn't save these settings, loading with them anyway.");
-    }
+      // A storage-budget eviction is not Forget: remove only mirrored fields.
+      for (const dropped of evicted) {
+        syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+          keepLaunchFlags: true,
+        });
+      }
+      return saveFailed;
+    };
     const effectiveLoadConfig = target.isGguf
       ? effectiveRuntimeConfig
       : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
+    let persisted = false;
+    const persistAfterValidation = () => {
+      if (persisted) return;
+      persisted = true;
+      if (persistSettings()) {
+        toast.error("Couldn't save these settings, loading with them anyway.");
+      }
+    };
+    if (effectivePersistenceOnly) {
+      onRun(effectiveLoadConfig, classifiedIsDiffusion, () => {
+        const saveFailed = persistSettings();
+        if (saveFailed) {
+          toast.error("Couldn't save settings for this model.");
+          return;
+        }
+        const nextRemember = remember && !defaultConfig;
+        setSavedRemember(nextRemember);
+        setRemember(nextRemember);
+        toast.success(
+          nextRemember
+            ? "Settings saved."
+            : remember
+              ? "Default settings kept."
+              : "Settings forgotten.",
+        );
+      });
+      return;
+    }
     // Same reason as the numeric commits above: the budget row flushes on unmount,
     // which for this click lands after onRun has staged the load, so that load (the
     // very one the control promises) would use the old fraction. A failed save must
@@ -1855,13 +1863,17 @@ export function ModelConfigPage({
         .finally(() => {
           setVramBudgetLocked(false);
           setBudgetSettling(false);
-          onRun(effectiveLoadConfig, classifiedIsDiffusion);
+          onRun(
+            effectiveLoadConfig,
+            classifiedIsDiffusion,
+            persistAfterValidation,
+          );
         });
       return;
     }
     // Nothing to wait for, so the control never actually closes for the user.
     setVramBudgetLocked(false);
-    onRun(effectiveLoadConfig, classifiedIsDiffusion);
+    onRun(effectiveLoadConfig, classifiedIsDiffusion, persistAfterValidation);
   };
 
   return (

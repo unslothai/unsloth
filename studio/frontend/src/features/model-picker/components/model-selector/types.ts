@@ -52,6 +52,8 @@ export interface ModelSelectorChangeMeta {
   /** Staged metadata confirmed the separate DiffusionGemma runner. */
   isDiffusion?: boolean;
   config?: PerModelConfig;
+  /** Runs after backend validation succeeds and before the current model is torn down. */
+  onValidated?: () => void;
   forceReload?: boolean;
   /** model_path to send when the pick loads from elsewhere, e.g. a pinned snapshot dir. */
   loadId?: string | null;

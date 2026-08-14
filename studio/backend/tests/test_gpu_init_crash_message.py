@@ -931,7 +931,7 @@ def test_confirmed_projector_signal_retry_keeps_gpu_init_diagnosis(monkeypatch, 
 
 
 @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
-def test_env_projector_cpu_recovery_preserves_vision_state(monkeypatch, tmp_path, name):
+def test_scrubbed_env_projector_does_not_set_vision_state(monkeypatch, tmp_path, name):
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
@@ -943,11 +943,10 @@ def test_env_projector_cpu_recovery_preserves_vision_state(monkeypatch, tmp_path
     assert len(launches) == 3
     assert len(fallback_sources) == 1
     assert "--mmproj" not in fallback_sources[0]
-    assert backend._is_vision is True
+    assert backend._is_vision is False
 
 
-def test_env_projector_cpu_recovery_keeps_audio_input(monkeypatch, tmp_path):
-    """An audio projector handed over by env must not report as text-only."""
+def test_scrubbed_env_projector_does_not_set_audio_input(monkeypatch, tmp_path):
     projector = tmp_path / "env-mmproj.gguf"
     projector.write_bytes(b"projector")
     read = []
@@ -966,9 +965,9 @@ def test_env_projector_cpu_recovery_keeps_audio_input(monkeypatch, tmp_path):
     )
 
     assert loaded is True
-    assert read == [str(projector)]
-    assert backend._is_vision is True
-    assert backend._mmproj_has_audio is True
+    assert read == []
+    assert backend._is_vision is False
+    assert backend._mmproj_has_audio is False
 
 
 def test_inherited_split_mode_dropped_before_spawn_still_recovers(monkeypatch, tmp_path):
@@ -1396,7 +1395,9 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
         SimpleNamespace(from_identifier = lambda **_kwargs: config),
     )
     monkeypatch.setattr(route, "_hf_offline_if_unreachable_for", lambda *_args: nullcontext())
-    monkeypatch.setattr(route, "_resolve_inherited_extra_args", lambda *_args: None)
+    monkeypatch.setattr(
+        route, "_resolve_inherited_extra_args", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(route, "_prepare_load_placement", _prepare_load_placement)
     monkeypatch.setattr(route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent)
     monkeypatch.setattr(route, "_guard_chat_load_against_training", lambda *_args, **_kwargs: None)

@@ -579,11 +579,12 @@ function ModelSelectorContent({
             )}
             target={visibleConfigTarget}
             onBack={() => setConfigTarget(null)}
-            onRun={(config, isDiffusion) =>
+            onRun={(config, isDiffusion, onValidated) =>
               onSelect(visibleConfigTarget.id, {
                 ...visibleConfigTarget.meta,
                 config,
                 isDiffusion,
+                onValidated,
                 forceReload: true,
               })
             }

@@ -99,11 +99,16 @@ function hasDisallowedControlCharacter(value: string): boolean {
     return (
       char !== "\t" &&
       (codePoint < 32 ||
-        codePoint === 0x85 ||
+        (codePoint >= 0x7f && codePoint <= 0x9f) ||
+        (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
         codePoint === 0x2028 ||
         codePoint === 0x2029)
     );
   });
+}
+
+function hasMalformedArgToken(token: string): boolean {
+  return token === "" || token !== token.trim() || token === "-" || token === "--";
 }
 
 export function areLlamaExtraArgsWithinLimits(
@@ -111,7 +116,10 @@ export function areLlamaExtraArgsWithinLimits(
 ): boolean {
   return (
     tokens.length <= LLAMA_EXTRA_ARGS_MAX_TOKENS &&
-    tokens.every((token) => !hasDisallowedControlCharacter(token)) &&
+    tokens.every(
+      (token) =>
+        !(hasDisallowedControlCharacter(token) || hasMalformedArgToken(token)),
+    ) &&
     tokens.reduce((sum, token) => sum + utf8Bytes(token), 0) <=
       LLAMA_EXTRA_ARGS_MAX_TOTAL_BYTES
   );
@@ -316,7 +324,7 @@ function managedPolicyArgument(group: readonly string[]): LlamaServerArgument {
     aliases: [...group.slice(1)],
     value_hint: null,
     choices: [],
-    description: "Managed by Unsloth Studio.",
+    description: "Managed by Run Settings.",
     default_value: null,
     env_var: null,
     group: null,
@@ -509,6 +517,13 @@ export function diagnoseLlamaExtraArgs(
       kind: "syntax",
       severity: "error",
       message: parsed.error.message,
+    });
+  }
+  if (parsed.tokens.some(hasMalformedArgToken)) {
+    diagnostics.push({
+      kind: "syntax",
+      severity: "error",
+      message: "Arguments cannot contain empty or whitespace-padded tokens.",
     });
   }
   if (parsed.tokens.length > LLAMA_EXTRA_ARGS_MAX_TOKENS) {

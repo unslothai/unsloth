@@ -2428,6 +2428,9 @@ export function ChatPage({
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
   const [pendingHubAutoLoad, setPendingHubAutoLoad] =
     useState<PendingHubAutoLoad | null>(null);
+  // A second Run for the same in-flight download updates only the launch intent.
+  // Keeping it outside the download identity avoids restarting the effect.
+  const latestPendingHubSelectionRef = useRef<SelectedModelInput | null>(null);
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
@@ -2484,6 +2487,7 @@ export function ChatPage({
           hasGgufSource(selection) &&
           !selection.isDownloaded);
       if (wantManagerStage) {
+        latestPendingHubSelectionRef.current = selection;
         setPendingHubAutoLoad((current) =>
           current &&
           current.selection.id === selection.id &&
@@ -2502,6 +2506,7 @@ export function ChatPage({
         );
         return;
       }
+      latestPendingHubSelectionRef.current = null;
       setPendingHubAutoLoad(null);
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
@@ -2528,6 +2533,15 @@ export function ChatPage({
       ) {
         return;
       }
+      const latestSelection = latestPendingHubSelectionRef.current;
+      const selection =
+        latestSelection &&
+        latestSelection.id === pending.selection.id &&
+        (latestSelection.ggufVariant ?? null) ===
+          (pending.selection.ggufVariant ?? null)
+          ? latestSelection
+          : pending.selection;
+      latestPendingHubSelectionRef.current = null;
       setPendingHubAutoLoad(null);
       const store = useChatRuntimeStore.getState();
       if (
@@ -2539,13 +2553,14 @@ export function ChatPage({
       ) {
         return;
       }
-      void stageOrLoad({ ...pending.selection, isDownloaded: true });
+      void stageOrLoad({ ...selection, isDownloaded: true });
     },
     onError: (variant) => {
       if (
         pendingHubAutoLoad &&
         (pendingHubAutoLoad.selection.ggufVariant ?? null) === (variant ?? null)
       ) {
+        latestPendingHubSelectionRef.current = null;
         setPendingHubAutoLoad(null);
       }
     },
@@ -2554,6 +2569,7 @@ export function ChatPage({
         pendingHubAutoLoad &&
         (pendingHubAutoLoad.selection.ggufVariant ?? null) === (variant ?? null)
       ) {
+        latestPendingHubSelectionRef.current = null;
         setPendingHubAutoLoad(null);
       }
     },
@@ -2868,6 +2884,7 @@ export function ChatPage({
           isGguf: meta?.isGguf,
           isDiffusion: meta?.isDiffusion,
           config: meta?.config,
+          onValidated: meta?.onValidated,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
           forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
@@ -2884,7 +2901,11 @@ export function ChatPage({
     ],
   );
   const handleReloadActiveModel = useCallback(
-    (config: PerModelConfig) => {
+    (
+      config: PerModelConfig,
+      _isDiffusion?: boolean,
+      onValidated?: () => void,
+    ) => {
       const checkpoint = inferenceParams.checkpoint;
       if (!checkpoint) return;
       const runtime = useChatRuntimeStore.getState();
@@ -2915,6 +2936,7 @@ export function ChatPage({
         isDiffusion: activeModelIsDiffusion,
         isDownloaded: true,
         config,
+        onValidated,
         forceReload: true,
       });
     },

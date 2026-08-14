@@ -108,6 +108,8 @@ export type SelectedModelInput = {
   keepSpeculative?: boolean;
   config?: PerModelConfig;
   previousConfig?: PerModelConfig;
+  /** Commit staged UI state only after /validate accepts the effective load. */
+  onValidated?: () => void;
 };
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
@@ -1215,6 +1217,7 @@ export function useChatModelRuntime() {
               }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+            if (typeof selection !== "string") selection.onValidated?.();
             const loadNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "load-model"))
                   .nativePathLease
@@ -1767,7 +1770,7 @@ export function useChatModelRuntime() {
           description: ReturnType<typeof renderLoadDescription>,
         ) => ({
           description,
-          duration: Number.POSITIVE_INFINITY,
+          duration: Infinity,
           closeButton: true,
           cancel: {
             label: "Cancel",

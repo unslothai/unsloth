@@ -216,11 +216,11 @@ def test_already_in_target_state_reloads_on_tensor_parallel_change(loaded, reque
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
-def test_already_in_target_state_reloads_when_swa_full_env_changes(monkeypatch):
+def test_already_in_target_state_ignores_ambient_swa_full_env(monkeypatch):
     backend = _loaded_backend(False)
     backend._swa_full = False
     monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
-    assert _target_state(backend, False) is False
+    assert _target_state(backend, False) is True
 
 
 def test_already_in_target_state_reconciles_split_mode_extras():

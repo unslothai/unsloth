@@ -105,8 +105,7 @@ permissions:
 # install_llama_prebuilt.py needs it for the GitHub releases API (else 403s).
 
 env:
-  # Determinism precedent (studio-inference-smoke.yml): temp 0 + fixed seed.
-  UNSLOTH_SEED: '3407'
+  # Deterministic decoding through the CLI's first-class inference setting.
   # A single invoke must never hang the runner on a headless TTY prompt. With
   # prefill-shrinking flags (minimal system prompt + restricted tools) a turn on
   # a 4B model finishes in a couple of minutes on CPU; this also caps how long a
@@ -216,7 +215,7 @@ jobs:
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
-            --extra "--seed $UNSLOTH_SEED --temp 0" \
+            --extra "--temperature 0" \
             --health-timeout 900
 
       # ── (a) server/API preflight: prove the dialect works BEFORE the agent ─
@@ -424,7 +423,7 @@ jobs:
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
-            --extra "--seed $UNSLOTH_SEED --temp 0" \
+            --extra "--temperature 0" \
             --health-timeout 900
 
       - name: Preflight the agent's API dialect (class-a isolation)
@@ -604,7 +603,7 @@ jobs:
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
-            --extra "--seed $UNSLOTH_SEED --temp 0" \
+            --extra "--temperature 0" \
             --health-timeout 900
 
       - name: Preflight the agent's API dialect (class-a isolation)
@@ -770,7 +769,7 @@ jobs:
           bash .github/scripts/serve-unsloth-run.sh \
             --model "$GGUF_REPO" --gguf-variant "$GGUF_VARIANT" \
             --port "$STUDIO_PORT" --log-dir logs \
-            --extra "--seed $UNSLOTH_SEED --temp 0"
+            --extra "--temperature 0"
 
       # (a) server prompt-cache sanity on the OpenAI chat path. The helper runs
       # the 2-turn probe internally (turn 2 reuses turn 1's prefix) and asserts

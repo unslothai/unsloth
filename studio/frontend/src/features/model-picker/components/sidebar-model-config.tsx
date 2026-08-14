@@ -19,7 +19,11 @@ interface SidebarModelConfigProps {
   nativeContextLength: number | null;
   loadedContextLength: number | null;
   loadedConfig: PerModelConfig;
-  onReload: (config: PerModelConfig) => void;
+  onReload: (
+    config: PerModelConfig,
+    isDiffusion?: boolean,
+    onValidated?: () => void,
+  ) => void;
 }
 
 const TRAILING_SEPARATORS = /[\\/]+$/;

@@ -235,6 +235,9 @@ function resolveInitialConfig(_id: string, _variant: any) {
     kvCacheDtype: null, tensorParallel: false,
   } };
 }
+function llamaExtraArgsPayload(value: any) {
+  return value === undefined ? {} : { llama_extra_args: value };
+}
 function resolveLoadMaxSeqLength(args: any) { return args.maxSeqLength ?? 0; }
 function resolveFitMaxSeqLength(..._a: any[]) { return 0; }
 function resolveManualAutoCtxPin(..._a: any[]) { return null; }

@@ -1463,16 +1463,19 @@ export function ModelsPage() {
     },
     [activeCheckpoint, activeGgufVariant, hfToken, refreshResidentModelStatus],
   );
-  // Applying loads the model with exactly these settings, already persisted by ModelConfigPage.
+  // ModelConfigPage persists only after the shared load validation succeeds.
   const runSettingsTarget = useCallback(
-    (config: PerModelConfig) => {
+    (
+      config: PerModelConfig,
+      isDiffusion?: boolean,
+      onValidated?: () => void,
+    ) => {
       const target = settingsTarget;
       if (!target) return;
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
       applyPerModelConfigToRuntime(config);
-      setSettingsTarget(null);
       void selectModel({
         id: target.id,
         source: "local",
@@ -1481,9 +1484,14 @@ export function ModelsPage() {
         // A partial row opens settings too; claiming complete would skip download progress.
         isDownloaded: target.meta.isDownloaded,
         isLora: target.meta.isLora,
+        isDiffusion,
         keepSpeculative: true,
         forceReload: true,
         previousConfig,
+        onValidated: () => {
+          onValidated?.();
+          setSettingsTarget((current) => (current === target ? null : current));
+        },
       }).catch(() => undefined);
     },
     [selectModel, settingsTarget],

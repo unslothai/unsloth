@@ -947,7 +947,7 @@ class TestExtraArgsMtpDetection:
         assert "ifcache_type_kvisNone:" in compact
         assert "cache_type_kv=_env_main_cache_type_for_budget()" in compact
 
-    def test_env_split_mode_is_tensor(self):
+    def test_env_split_mode_is_tensor(self, monkeypatch):
         # The child inherits LLAMA_ARG_SPLIT_MODE, but Unsloth emits --split-mode
         # only on its tensor branch -> a tensor env must flip the budget so the
         # heavier per-device compute buffer is reserved (not layer overhead).
@@ -958,6 +958,9 @@ class TestExtraArgsMtpDetection:
         assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
         assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "row"}) is False
         assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "none"}) is False
+        monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+        assert _env_split_mode_is_tensor() is False
+        assert _effective_tensor_parallel(None, False) is False
 
     def test_effective_tensor_parallel_env_flip(self):
         # Shared by load_model and both duplicate-load matchers, so they agree.
