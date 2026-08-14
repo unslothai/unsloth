@@ -62,6 +62,7 @@ _SUPPORTED = [
 def _default_policy(monkeypatch):
     """Default deployment: the private-address opt-in is off."""
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
+
     # The lookup caches its answer per hostname and caps how many can be in
     # flight; a stale entry or a slot still held by an abandoned stub would
     # carry one test's stubbed resolver into the next.

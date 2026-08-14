@@ -700,7 +700,6 @@ def _transport_host(hostname: str) -> str:
         return hostname.lower()
     try:
         import idna
-
         return idna.encode(hostname.lower()).decode("ascii")
     except Exception:
         # httpx raises InvalidURL here, so the request cannot happen at all;
@@ -793,7 +792,9 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
         return False
     except ValueError:
         pass
-    return any(_metadata_address(address) for address in _resolve_host(hostname, port, scheme) or ())
+    return any(
+        _metadata_address(address) for address in _resolve_host(hostname, port, scheme) or ()
+    )
 
 
 def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
@@ -813,7 +814,6 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
             # to the same unbounded call keeps a slow-but-working resolver from
             # turning into a refusal here, where "no answer" fails closed.
             import socket
-
             try:
                 infos = socket.getaddrinfo(
                     _transport_host(hostname),
