@@ -17,7 +17,6 @@ export const de = {
     searchAriaLabel: "Suche: {noun}",
     modelSourceAriaLabel: "Modellquelle",
     hubSectionAriaLabel: "Hub-Bereich",
-    pickModelFile: "Modelldatei vom Datenträger auswählen",
     modelDropped: "Nicht mehr angeboten",
     modelDroppedByProvider: "{provider} · nicht mehr angeboten",
     modelDisabled: "Nicht aktiviert",
@@ -159,7 +158,32 @@ export const de = {
       about: "Info",
       data: "Daten",
       agents: "Agenten",
+      debugging: "Protokolle",
       voice: "Sprachfunktionen",
+    },
+    debugging: {
+      logSection: "Protokolldatei",
+      source: "Protokolldatei",
+      sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
+      path: "Speicherort",
+      pathCopy: "Pfad kopieren",
+      refreshSection: "Aktualisierung",
+      mode: "Modus",
+      modeLive: "Live",
+      modeInterval: "Alle 3 Sekunden",
+      modeManual: "Manuell",
+      refreshNow: "Jetzt aktualisieren",
+      privacyNote: "Zugangsdaten werden in dieser Ansicht maskiert. In der Datei auf dem Datenträger sind sie nicht maskiert.",
+      copyVisible: "Sichtbares Protokoll kopieren",
+      empty: "Es wurde noch nichts protokolliert.",
+      disabled: "Die Protokollierung in eine Datei ist deaktiviert (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Es wurde keine Protokolldatei gefunden.",
+      unreadable: "Die Protokolldatei konnte nicht gelesen werden.",
+      timeout: "Die Protokollanfrage hat das Zeitlimit uberschritten. Der Server ist moglicherweise nicht erreichbar.",
+      droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
+      morePending: "Weitere Zeilen werden noch gelesen; sie erscheinen bei der nachsten Aktualisierung.",
+      staleSession: "Die Protokollierung in Dateien ist deaktiviert, daher ist dies eine fruhere Sitzung und wird nicht aktualisiert.",
+      keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
       title: "Sprachfunktionen",
@@ -383,6 +407,14 @@ export const de = {
           "Gibt VRAM nach der angegebenen Anzahl von Sekunden ohne Aktivität frei. Bei 0 bleibt das Modell geladen; der Mindestwert ist 60.",
         idleSecondsAriaLabel:
           "Inaktivitätsdauer bis zum automatischen Entladen in Sekunden",
+        mediaIdleUnload:
+          "Automatisches Entladen bei Inaktivität für Bild und Video",
+        mediaIdleUnloadDescription:
+          "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Eine eigene Einstellung: Die Einstellung darüber gilt nur für das Chat-Modell. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
+        mediaIdleSecondsAriaLabel:
+          "Inaktivitätsdauer bis zum automatischen Entladen von Bild und Video in Sekunden",
+        mediaIdlePaused:
+          "Pausiert, solange „Modell im GPU-Speicher behalten“ oder „Nur über die API geladene Modelle entladen“ aktiv ist.",
         idleNeedsEnable: "Aktivieren Sie zuerst „Modell je Anfrage wechseln“.",
         idleActiveViaEnv:
           "Automatisches Entladen bei Inaktivität ist über die Umgebungsvariable UNSLOTH_MODEL_IDLE_TTL aktiv.",
@@ -436,6 +468,12 @@ export const de = {
         launchAtLogin: "Unsloth bei der Anmeldung starten",
         launchAtLoginDescription:
           "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+
+        closeToTray: "In den Infobereich schließen",
+        closeToTrayDescription:
+          "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
+        closeToTraySaveError:
+          "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
@@ -740,6 +778,39 @@ export const de = {
         free: "{value} frei",
         total: "{value} gesamt",
       },
+      llamaBackend: {
+        title: "GGUF-Inferenz-Engine",
+        label: "Compute-Backend",
+        description: "Das Backend, mit dem llama.cpp GGUF-Modelle ausführt.",
+        runningOn: "llama.cpp läuft derzeit mit {backend}.",
+        hint: "Installiert den llama.cpp-Build für dieses Backend und behält ihn über Updates hinweg bei. Nützlich, wenn die automatische Wahl abstürzt oder dein GPU-Treiber sie nicht unterstützt. Es werden nur Backends aufgeführt, für die es einen Build für diesen Rechner gibt; das Training bleibt unberührt.",
+        autoWith: "Automatisch ({backend})",
+        apply: "Anwenden",
+        applying: "Wird installiert ...",
+        applyHint: "Lädt den neuen Build herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
+        applyHintWithSize: "Lädt {size} herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
+        switchedTo: "llama.cpp läuft jetzt mit {backend}.",
+        switchFailed: "Das llama.cpp-Backend konnte nicht geändert werden.",
+        switchInterrupted: "Der Wechsel wurde vor dem Abschluss unterbrochen.",
+        envLocked: "Durch die Umgebungsvariable UNSLOTH_LLAMA_CPP_BACKEND auf {backend} festgelegt; sie überschreibt diese Einstellung.",
+        backends: {
+          auto: "Automatisch",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Es wurde keine von Unsloth verwaltete llama.cpp-Installation gefunden, daher gibt es kein Backend zum Wechseln.",
+          localLink: "llama.cpp ist ein selbst verknüpftes lokales Verzeichnis, das Unsloth nicht ersetzt.",
+          sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
+          unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
+        },
+        // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inferenz cuda rocm hip vulkan metal cpu gpu beschleuniger prebuilt wechseln engine",
+      },
       modelMemory: {
         title: "Modellspeicher",
         keepResident: "Modell im GPU-Speicher behalten",
@@ -960,12 +1031,14 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Importieren Sie einen JSONL-, NDJSON- oder CSV-Export in „Zuletzt verwendet“.",
+        "Einen Open-WebUI-, JSONL-, NDJSON- oder CSV-Export in Zuletzt importieren.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
       importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
       importedChatCount:
         "{count} Konversationen in „Zuletzt verwendet“ importiert.",
+      importingChats: "Chats werden importiert: bisher {count} ({percent}%)...",
+      importedChatCountPartial: "{count} Unterhaltungen in Zuletzt importiert; {failed} konnten nicht gespeichert werden.",
       importFailed: "Import fehlgeschlagen.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",

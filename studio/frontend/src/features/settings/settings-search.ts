@@ -146,6 +146,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
   ],
+  debugging: [
+    "settings.debugging.logSection",
+    "settings.debugging.source",
+    "settings.debugging.path",
+    "settings.debugging.refreshSection",
+    "settings.debugging.mode",
+    "settings.debugging.keywords",
+  ],
   about: [
     "settings.about.updates",
     "settings.about.releaseNotes",
@@ -159,9 +167,13 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
 };
 
-export function createSettingsSearchIndex(
-  desktop: boolean,
-): Record<SettingsTab, TranslationKey[]> {
+export function createSettingsSearchIndex({
+  desktop,
+  closeToTray,
+}: {
+  desktop: boolean;
+  closeToTray: boolean;
+}): Record<SettingsTab, TranslationKey[]> {
   if (!desktop) {
     return SETTINGS_SEARCH_INDEX;
   }
@@ -172,6 +184,7 @@ export function createSettingsSearchIndex(
       "settings.about.updates",
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
+      ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",

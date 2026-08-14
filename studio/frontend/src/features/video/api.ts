@@ -137,6 +137,8 @@ export interface VideoLoadRequest {
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
   // Pipeline denoiser partition. GGUF filenames already identify theirs.
   h3_task?: "fl2va" | "ref2va";
+  // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a checkpoint, so several cards resolve to the one with the most free VRAM.
+  gpu_ids?: number[];
   // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
   text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
 }
