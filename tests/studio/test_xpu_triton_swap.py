@@ -125,10 +125,11 @@ def _load_real_index_env_scrub():
     assert (
         "PIP_REQUIRE_HASHES" in ns["_PM_POLICY_RELAXED_ENV_VARS"]
     ), "extraction lost the policy vars"
-    return ns["_install_env_for_cmd"]
+    return ns
 
 
-_real_install_env_for_cmd = _load_real_index_env_scrub()
+_REAL_POLICY_NS = _load_real_index_env_scrub()
+_real_install_env_for_cmd = _REAL_POLICY_NS["_install_env_for_cmd"]
 
 
 def _load(
@@ -255,6 +256,10 @@ def _load(
         "IS_WINDOWS": False,
         "_PYTORCH_WHL_BASE": "https://download.pytorch.org/whl",
         "_install_env_for_cmd": _real_install_env_for_cmd,
+        # The swap declines an optional fetch under a policy pip cannot honour, so the
+        # slice calls these too. Real, from the same extraction, not restated here.
+        "_untranslatable_strict_policy": _REAL_POLICY_NS["_untranslatable_strict_policy"],
+        "_STRICT_PM_POLICY_ENV_VAR": _REAL_POLICY_NS["_STRICT_PM_POLICY_ENV_VAR"],
         "_explicit_xpu_torch_index_url": (
             (lambda: "https://download.pytorch.org/whl/xpu") if pinned else (lambda: None)
         ),
@@ -430,6 +435,25 @@ class TestTheInstalledWheelIsThePin:
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
+
+
+class TestAnUntranslatablePolicyDeclinesTheSwap:
+    """uv has no `pip download`, so this swap is pip or nothing.
+
+    Under a policy pip cannot be told about it is one more optional install that declines:
+    a failed fetch here already leaves generic triton in place and carries on, and taking
+    the whole install down over the swap would be a worse answer than the one it has.
+    """
+
+    def test_the_swap_is_skipped_not_fatal(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("UNSLOTH_STRICT_PM_POLICY", "1")
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
+        mod, log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
+        mod.__dict__["_ensure_xpu_triton"]()
+        assert "DOWNLOAD" not in log and "UNINSTALL" not in log, log
+        # The stub logs WARN for the "left in place" line, which is how the swap says it
+        # declined rather than silently doing nothing.
+        assert "WARN" in log, log
 
 
 class TestTheFetchIgnoresTheUsersIndexEnvironment:

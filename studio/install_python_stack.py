@@ -2656,6 +2656,21 @@ def _ensure_xpu_triton() -> None:
         return
 
     _safe_print(f"   replacing triton {generic} with {spec} (Intel XPU)")
+    # uv has no `pip download`, so this swap is pip or nothing. Under a policy pip cannot
+    # be told about, that makes it one more optional install that declines: a failed fetch
+    # here leaves generic triton in place and the install carries on, and taking the whole
+    # install down over the swap would be a worse answer than the one it already has.
+    _blockers = _untranslatable_strict_policy()
+    if _blockers:
+        _safe_print(
+            _red(
+                f"   {_STRICT_PM_POLICY_ENV_VAR}=1 and pip cannot honour "
+                + ", ".join(_blockers)
+                + f"; generic triton {generic} left in place -- it shadows torch XPU "
+                "triton, so torch.compile will not use the XPU"
+            )
+        )
+        return
     if not _ensure_venv_pip():
         _safe_print(
             _red(
@@ -4188,6 +4203,18 @@ def _file_exists(path: "Path") -> bool:
         return False
 
 
+def _toml_table_name(header: str) -> str:
+    """A `[table]` / `[[array.table]]` header as its dotted name, quotes removed.
+
+    `[tool."uv"]` is the same table as `[tool.uv]`, and uv reads it as one.
+    """
+    name = header.strip()
+    if not name.startswith("["):
+        return ""
+    name = name.strip("[]").strip()
+    return ".".join(part.strip().strip("\"'") for part in name.split("."))
+
+
 def _pyproject_uv_table_by_line(text: str) -> bool:
     """The 3.9/3.10 half of the test above: is there a [tool.uv] header in here?
 
@@ -4196,12 +4223,9 @@ def _pyproject_uv_table_by_line(text: str) -> bool:
     parent policy uv does apply.
     """
     for line in text.splitlines():
-        header = _toml_line_value(line)
-        if not header.startswith("["):
-            continue
-        # `[[tool.uv.index]]` is an array table and still uv's configuration, so the
-        # brackets come off before the name is compared.
-        name = header.strip("[]").strip()
+        # `[[tool.uv.index]]` is an array table and still uv's configuration, and
+        # `[tool."uv"]` is the same table as `[tool.uv]`, so the name is normalised first.
+        name = _toml_table_name(_toml_line_value(line))
         if name == "tool.uv" or name.startswith("tool.uv."):
             return True
     return False
@@ -4448,7 +4472,7 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
                 pending = ""
             stripped = _toml_line_value(line)
             if not pending and stripped.startswith("[") and "=" not in stripped:
-                section = stripped.strip("[]").strip().strip("\"'")
+                section = _toml_table_name(stripped)
                 continue
             key, sep, value = line.partition("=")
             if not sep:

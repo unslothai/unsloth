@@ -1667,6 +1667,10 @@ class TestUvConfigDiscoveryMatchesUv:
             ("[tool.uv.pip]", True),
             # An array table is still uv's configuration, and uv stops searching there.
             ("[[tool.uv.index]]", True),
+            # A quoted segment is the same table: uv reads [tool."uv"] as [tool.uv].
+            ('[tool."uv"]', True),
+            ("[tool.'uv'.pip]", True),
+            ('["tool".uv]', True),
             ("[tool.uvicorn]", False),
             ("[[tool.uvicorn.thing]]", False),
             ("# [tool.uv]", False),
