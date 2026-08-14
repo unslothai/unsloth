@@ -120,13 +120,13 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
     # --dec decodes exactly as --decode does.
     for number, line in enumerate(logical.splitlines(), start = 1):
         for b64 in re.finditer(r"\bbase64\b", line):
-            tail = line[b64.end():]
+            tail = line[b64.end() :]
             hit = re.search(r"(?<![\w-])-[a-z]*d[a-z]*\b", tail)
             assert not hit, f"{name}:{number} invokes a base64 decoder: {line.strip()}"
             for long_opt in re.finditer(r"(?<![\w-])--([a-z]+)\b", tail):
-                assert not "decode".startswith(long_opt.group(1)), (
-                    f"{name}:{number} invokes a base64 decoder: {line.strip()}"
-                )
+                assert not "decode".startswith(
+                    long_opt.group(1)
+                ), f"{name}:{number} invokes a base64 decoder: {line.strip()}"
     for number, line in enumerate(logical.splitlines(), start = 1):
         if "powershell" not in line and "pwsh" not in line:
             continue
