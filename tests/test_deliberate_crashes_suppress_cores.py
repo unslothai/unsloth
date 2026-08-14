@@ -294,7 +294,11 @@ def _snippets(tree):
     sequences = _sequence_env(tree, owner)
     out = []
 
-    def collect(node, env, depth = 0):
+    def collect(
+        node,
+        env,
+        depth = 0,
+    ):
         # A deeply nested literal is not a command vector, and recursing all the way
         # into one raised RecursionError out of a file the scan only wanted to skim.
         if depth > _MAX_COLLECT_DEPTH:
@@ -602,6 +606,8 @@ def _is_builtin_exec(func) -> bool:
         and isinstance(func.value, ast.Name)
         and func.value.id == "builtins"
     )
+
+
 _MAX_SNIPPET_DEPTH = 5
 
 
@@ -1118,7 +1124,7 @@ _FIXTURES = {
     ),
     "global_assigned_below_the_exec": (
         "import subprocess, sys\n"
-        "SCRIPT = \"def run():\\n    exec(INNER)\\n"
+        'SCRIPT = "def run():\\n    exec(INNER)\\n'
         "INNER = 'import os; os.abort()'\\nrun()\"\n"
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         True,  # the body runs after the module, so the later global is bound
@@ -1132,9 +1138,9 @@ _FIXTURES = {
     ),
     "helper_guarded_clear_before_a_nested_exec": (
         "import subprocess, sys\n"
-        'SCRIPT = "import ctypes, sys\\ndef clear():\\n    if sys.platform == \'linux\':\\n'
-        '        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\\nclear()\\n'
-        'exec(\'import os; os.abort()\')"\n'
+        "SCRIPT = \"import ctypes, sys\\ndef clear():\\n    if sys.platform == 'linux':\\n"
+        "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\\nclear()\\n"
+        "exec('import os; os.abort()')\"\n"
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         False,  # a guarded clear counts the same inside a helper as inline
     ),
@@ -1150,7 +1156,7 @@ _FIXTURES = {
     "inherited_dumpability_through_two_execs": (
         "import subprocess, sys\n"
         'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
-        "exec(\\\"exec('import os; os.abort()')\\\")\"\n"
+        'exec(\\"exec(\'import os; os.abort()\')\\")"\n'
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         False,  # one interpreter throughout, so the clear reaches both levels
     ),
