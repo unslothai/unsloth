@@ -420,13 +420,18 @@ def _enclosing_scopes(tree):
 
     def walk(scope, node):
         for child in ast.iter_child_nodes(node):
-            next_scope = (
-                child
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-                else scope
-            )
+            is_scope = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            next_scope = child if is_scope else scope
             owner[id(child)] = next_scope
             walk(next_scope, child)
+            if not is_scope:
+                continue
+            # Defaults and annotations run where the def sits, so they belong to the
+            # enclosing scope. A further scope nested inside one of them keeps its own.
+            for part in _definition_time(child):
+                for inner in ast.walk(part):
+                    if owner.get(id(inner)) is child:
+                        owner[id(inner)] = scope
 
     walk(tree, tree)
     return owner
@@ -450,7 +455,18 @@ _AFTER_EVERYTHING = (float("inf"), 0)
 
 
 _BRANCHING = (
-    ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match, ast.BoolOp
+    ast.If,
+    ast.IfExp,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.Try,
+    ast.Match,
+    ast.BoolOp,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
 )
 
 
@@ -461,6 +477,10 @@ def _child_paths(scope, certain):
         always = scope.finalbody  # a finally runs whatever the try did
     elif isinstance(scope, ast.BoolOp):
         always = scope.values[:1]  # only the first operand of a short circuit
+    elif isinstance(scope, (ast.If, ast.IfExp, ast.While)):
+        always = (scope.test,)  # the condition is evaluated before either branch
+    elif isinstance(scope, (ast.For, ast.AsyncFor)):
+        always = (scope.iter,)  # the iterable is evaluated before the first pass
     else:
         always = ()
     for child in ast.iter_child_nodes(scope):
@@ -470,7 +490,14 @@ def _child_paths(scope, certain):
 def _definition_time(node):
     """Parts of a def that run where it sits: defaults and decorators, not the body."""
     defaults = list(node.args.defaults) + [d for d in node.args.kw_defaults if d is not None]
-    return defaults + list(getattr(node, "decorator_list", ()))
+    # Annotations run here too, unless `from __future__ import annotations` is on.
+    annotations = [
+        argument.annotation
+        for argument in ast.walk(node.args)
+        if isinstance(argument, ast.arg) and argument.annotation is not None
+    ]
+    returns = [node.returns] if getattr(node, "returns", None) is not None else []
+    return defaults + annotations + returns + list(getattr(node, "decorator_list", ()))
 
 
 def _dumpable_writes(
@@ -483,6 +510,7 @@ def _dumpable_writes(
     With `functions`, a call to a local helper counts too, at the call's position, as
     whatever that helper leaves dumpability set to.
     """
+
     def written(node):
         value = _prctl_dumpable_value(node)
         if value is None and functions is not None:
@@ -548,7 +576,7 @@ def _suppressed(
 ) -> bool:
     """Whether this crash call is covered, directly or by a helper it calls first."""
     position = _position(node)
-    if _clears_dumpable_before(scope, position, inherited):
+    if _clears_dumpable_before(scope, position, inherited, functions):
         return True
     # Following one level of local helper covers `suppress_core()` then the fault,
     # which is the natural shape once more than one test needs this.
@@ -1223,16 +1251,51 @@ _FIXTURES = {
         True,  # a default runs where the def sits, so the restore beats the crash
     ),
     "crash_alias_as_a_lambda_parameter": (
-        "from os import abort\n"
-        "f = lambda abort: abort()\n"
-        "f(mock)\n",
+        "from os import abort\nf = lambda abort: abort()\nf(mock)\n",
         False,  # the parameter shadows the import inside the lambda
     ),
     "signal_name_passed_as_a_string": (
-        "import signal\n"
-        "def child():\n"
-        '    signal.raise_signal("SIGQUIT")\n',
+        "import signal\n" "def child():\n" '    signal.raise_signal("SIGQUIT")\n',
         False,  # a string is a TypeError, and delivers no signal
+    ),
+    "helper_restore_inside_an_inherited_payload": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        'exec(\\"import ctypes, os\\\\ndef restore():\\\\n    '
+        'ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\\\\nrestore()\\\\nos.abort()\\")"\n'
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # an inherited clear does not outrank a helper restore in the payload
+    ),
+    "restore_in_a_parameter_annotation": (
+        "import ctypes\n"
+        "class C:\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    def f(x: ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)):\n        pass\n"
+        "    ctypes.string_at(0)\n",
+        True,  # an annotation evaluates where the def sits, like a default
+    ),
+    "lambda_default_runs_in_the_enclosing_scope": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    f = lambda x = ctypes.string_at(0): None\n",
+        False,  # the default belongs to the caller, which cleared first
+    ),
+    "restore_in_an_if_condition": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        'exec(\\"import ctypes, os\\\\nif ctypes.CDLL(None).prctl(4, 1, 0, 0, 0):'
+        '\\\\n    pass\\\\nos.abort()\\")"\n'
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # the condition runs before either branch, so the restore is certain
+    ),
+    "restore_inside_a_generator_expression": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    gen = (ctypes.CDLL(None).prctl(4, 1, 0, 0, 0) for _ in range(1))\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a generator body does not run at construction
     ),
 }
 
