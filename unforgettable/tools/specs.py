@@ -130,8 +130,11 @@ MEMORY_COMPACT = {
         "name": "memory_compact",
         "description": (
             "Hygiene pass on durable memory: drop old empty proposed rows, "
-            "deprecate duplicate titles, fold long superseded chains. "
-            "Does not rewrite bodies. dry_run defaults true (preview)."
+            "deprecate duplicate claim/procedure/entity titles, fold long "
+            "superseded chains. Does not invent or merge bodies; title-dedupe "
+            "losers only get the existing [deprecated] suffix. Never "
+            "title-dedupes twin_note, episode, error_fix, or directive. "
+            "dry_run defaults true (preview)."
         ),
         "parameters": {
             "type": "object",

@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from unforgettable.store.compact import (
+    COMPACT_DEDUPE_KINDS,
     EMPTY_PROPOSED_AGE_DAYS,
     KEEP_SUPERSEDED_ANCESTORS,
     run_compact,
@@ -38,69 +39,129 @@ def _age_created_at(record_id: str, db_path, *, days: int) -> None:
         conn.close()
 
 
-def test_duplicate_claims_deprecate_loser(db_path):
-    world = insert_record(
-        kind="claim",
-        title="Friction",
-        body="surface friction is high on steel in the world",
+def test_compact_dedupe_kinds_are_locked():
+    assert COMPACT_DEDUPE_KINDS == frozenset({"claim", "procedure", "entity"})
+
+
+def _insert_pair(db_path, *, kind, title, winner_body, loser_body, loser_provenance="infer"):
+    winner = insert_record(
+        kind=kind,
+        title=title,
+        body=winner_body,
         provenance="world",
         db_path=db_path,
     )
-    infer = insert_record(
+    loser = insert_record(
+        kind=kind,
+        title=title,
+        body=loser_body,
+        provenance=loser_provenance,
+        db_path=db_path,
+    )
+    return winner, loser
+
+
+def _assert_deduped(db_path, winner, loser, report):
+    assert (loser["id"], winner["id"]) in report.deduped
+    loaded_loser = get_record(loser["id"], db_path=db_path)
+    loaded_winner = get_record(winner["id"], db_path=db_path)
+    assert loaded_loser["status"] == "deprecated"
+    assert f"duplicate of {winner['id']}" in loaded_loser["body"]
+    assert loaded_winner["status"] == "active"
+
+
+def _assert_both_active(db_path, first, second):
+    assert get_record(first["id"], db_path=db_path)["status"] == "active"
+    assert get_record(second["id"], db_path=db_path)["status"] == "active"
+
+
+def test_duplicate_claims_deprecate_loser(db_path):
+    world, infer = _insert_pair(
+        db_path,
         kind="claim",
         title="Friction",
-        body="surface friction is high on steel",
-        provenance="infer",
-        db_path=db_path,
+        winner_body="surface friction is high on steel in the world",
+        loser_body="surface friction is high on steel",
     )
     report = run_compact(db_path)
     assert report.dry_run is False
-    assert (infer["id"], world["id"]) in report.deduped
-    loser = get_record(infer["id"], db_path=db_path)
-    winner = get_record(world["id"], db_path=db_path)
-    assert loser["status"] == "deprecated"
-    assert f"duplicate of {world['id']}" in loser["body"]
-    assert winner["status"] == "active"
+    _assert_deduped(db_path, world, infer, report)
+
+
+def test_duplicate_procedures_deprecate_loser(db_path):
+    world, infer = _insert_pair(
+        db_path,
+        kind="procedure",
+        title="Bleed the line",
+        winner_body="close valve A then open B",
+        loser_body="maybe close a valve",
+    )
+    report = run_compact(db_path)
+    _assert_deduped(db_path, world, infer, report)
+
+
+def test_duplicate_entities_deprecate_loser(db_path):
+    world, infer = _insert_pair(
+        db_path,
+        kind="entity",
+        title="Pump X",
+        winner_body="Pump X is the north-loop booster",
+        loser_body="some pump named X",
+    )
+    report = run_compact(db_path)
+    _assert_deduped(db_path, world, infer, report)
 
 
 def test_same_title_twin_notes_stay_active(db_path):
-    first = insert_record(
+    first, second = _insert_pair(
+        db_path,
         kind="twin_note",
         title="World/sim disagreement",
-        body="sim said yes; world said no",
-        provenance="mixed",
-        db_path=db_path,
-    )
-    second = insert_record(
-        kind="twin_note",
-        title="World/sim disagreement",
-        body="another drifted episode",
-        provenance="mixed",
-        db_path=db_path,
+        winner_body="sim said yes; world said no",
+        loser_body="another drifted episode",
+        loser_provenance="mixed",
     )
     run_compact(db_path)
-    assert get_record(first["id"], db_path=db_path)["status"] == "active"
-    assert get_record(second["id"], db_path=db_path)["status"] == "active"
+    _assert_both_active(db_path, first, second)
 
 
 def test_same_title_error_fixes_stay_active(db_path):
-    first = insert_record(
+    first, second = _insert_pair(
+        db_path,
         kind="error_fix",
         title="Error then fix",
-        body="first failure then success",
-        provenance="mixed",
-        db_path=db_path,
-    )
-    second = insert_record(
-        kind="error_fix",
-        title="Error then fix",
-        body="another failure then success",
-        provenance="mixed",
-        db_path=db_path,
+        winner_body="first failure then success",
+        loser_body="another failure then success",
+        loser_provenance="mixed",
     )
     run_compact(db_path)
-    assert get_record(first["id"], db_path=db_path)["status"] == "active"
-    assert get_record(second["id"], db_path=db_path)["status"] == "active"
+    _assert_both_active(db_path, first, second)
+
+
+def test_same_title_episodes_stay_active(db_path):
+    first, second = _insert_pair(
+        db_path,
+        kind="episode",
+        title="Episode abcdef12",
+        winner_body="ran the pump checklist",
+        loser_body="ran it again later",
+        loser_provenance="mixed",
+    )
+    run_compact(db_path)
+    _assert_both_active(db_path, first, second)
+
+
+def test_same_title_directives_stay_active(db_path):
+    first, second = _insert_pair(
+        db_path,
+        kind="directive",
+        title="Always cite ids",
+        winner_body="Ground answers in returned memory ids.",
+        loser_body="Cite ids when recalling facts.",
+        loser_provenance="human",
+    )
+    run_compact(db_path)
+    _assert_both_active(db_path, first, second)
 
 
 def test_old_empty_proposed_is_rejected(db_path):
