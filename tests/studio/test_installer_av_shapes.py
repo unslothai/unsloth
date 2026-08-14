@@ -118,7 +118,7 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
     # Lowercased text also folds macOS's -D in. A combined cluster (-di) counts.
     for number, line in enumerate(logical.splitlines(), start = 1):
         for b64 in re.finditer(r"\bbase64\b", line):
-            hit = re.search(r"(?<![\w-])-(d\w*|-decode)\b", line[b64.end():])
+            hit = re.search(r"(?<![\w-])-(d\w*|-decode)\b", line[b64.end() :])
             assert not hit, f"{name}:{number} invokes a base64 decoder: {line.strip()}"
     for number, line in enumerate(logical.splitlines(), start = 1):
         if "powershell" not in line and "pwsh" not in line:
