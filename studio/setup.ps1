@@ -1080,6 +1080,51 @@ function Invoke-BoundedPythonProbe {
     }
 }
 
+# Invoke-BoundedPythonProbe for a probe too big for one -c line: the program rides in on
+# stdin ("python -") and its inputs in environment variables, so nothing is interpolated
+# into a command line and nothing needs encoding -- an encoded payload is a construct
+# tests/studio/test_installer_av_shapes.py exists to keep out of this file, and nothing
+# is written to disk and executed either. Same bounding and stream handling as the
+# -c helper above.
+function Invoke-BoundedPythonStdinProbe {
+    param([string]$PythonExe, [string]$Code, [hashtable]$ProbeEnv, [int]$TimeoutSec = 30)
+    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+    if (-not $PythonExe -or -not $Code) { return $result }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $PythonExe
+        $psi.Arguments = "-"
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        if ($ProbeEnv) {
+            foreach ($_envKey in $ProbeEnv.Keys) { $psi.EnvironmentVariables["$_envKey"] = "$($ProbeEnv[$_envKey])" }
+        }
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        # python - drains stdin to EOF before running a line, and the readers above are
+        # already draining stdout/stderr, so this write cannot deadlock.
+        try { $proc.StandardInput.Write($Code) } finally { $proc.StandardInput.Close() }
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch {}
+            # Synthesised, not read back: waiting on the reader tasks of a wedged child would
+            # reintroduce the hang this helper exists to bound.
+            $result.Error = "python did not answer within $TimeoutSec seconds"
+            return $result
+        }
+        $result.Output = $outTask.GetAwaiter().GetResult()
+        $result.Error = $errTask.GetAwaiter().GetResult()
+        $result.Ok = ($proc.ExitCode -eq 0)
+        return $result
+    } catch {
+        $result.Error = $_.Exception.Message
+        return $result
+    }
+}
+
 # True when $PythonExe's torch can actually drive an Intel GPU. Quiet on purpose: the three
 # callers read a False differently. Only an XPU build can answer True, so a CPU build never
 # vetoes a migration.
@@ -4727,11 +4772,16 @@ function Fast-Download {
 # Skip all Python dependency work if versions match (fast update path).
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
+$LatestVer = ""
+# True only when the version-check gate ran: the post-update probe must stay off in
+# installer-driven/local runs, but it must not depend on the PyPI fetch succeeding --
+# a missing package is missing on any index.
+$_verifyUpdate = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
+    $_verifyUpdate = $true
     $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
-    $LatestVer = ""
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
@@ -5441,6 +5491,190 @@ if ($stackExit -ne 0) {
     Write-StudioLine "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-StudioLine "   Re-run the installer or check the error above for details." -ForegroundColor Red
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
+}
+
+# a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
+# resolves from the mirror while $LatestVer came from pypi.org, so version
+# comparisons are muted when a custom index is active. The missing-package check
+# below still runs: a pass that leaves nothing installed is broken on any index.
+$_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$env:UV_INDEX_URL$env:UV_EXTRA_INDEX_URL$env:UV_FIND_LINKS$env:UV_DEFAULT_INDEX$env:UV_INDEX"
+if ($_verifyUpdate) {
+    # __MISSING__ only when the metadata positively reports no such package: a probe
+    # that merely crashed must not read as "not installed" and fail setup. Names are
+    # PEP 503-normalized on both sides, matching importlib.metadata's own lookup, and
+    # PYTHONPATH and working-directory entries are dropped from sys.path so same-name
+    # metadata outside the managed environment cannot satisfy the probe (python -c
+    # leaves the inherited cwd on sys.path; the shell probe's -I covers both) --
+    # except the interpreter's own site-packages, which stays even when the caller
+    # launched from inside it or named it on PYTHONPATH. Metadata only counts when
+    # its recorded top-level modules exist on disk: a leftover dist-info with the
+    # payload deleted still reports a version. The initializer is matched by stem and
+    # suffix rather than by its joined name: a bare filename literal inside an
+    # installer reads as an invoked helper to the guard in
+    # tests/test_installer_interactive_prompts.py, which resolves it against the
+    # script's own directory and lands on the real package initializer.
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _files = (_d.files if _d is not None else None) or []; _ftops = [_f for _f in _files if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'] or [_f for _f in _files if len(_f.parts) == 1 and str(_f).endswith('.py')]; _broken = (not any(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else (bool(_ftops) and not any(_d.locate_file(_f).exists() for _f in _ftops)); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
+    $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
+    $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
+    if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {
+        # newer than announced is fine (a release can land mid-update); PEP 440
+        # ordering so an installed pre/post/dev build never passes as the release
+        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
+        if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
+            $_updateOk = ($Matches[1] -eq "ge")
+        } else {
+            $_postNum = ($PostVer -replace '[^0-9.].*$', '').TrimEnd('.')
+            $_latestNum = ($LatestVer -replace '[^0-9.].*$', '').TrimEnd('.')
+            if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+') {
+                try { $_updateOk = [version]$_postNum -ge [version]$_latestNum } catch {}
+            }
+        }
+        if (-not $_updateOk -and $pypiJson -and $pypiJson.releases) {
+            # the announced release cannot install on this interpreter (Requires-Python
+            # bump): accept only the newest release this interpreter CAN install, so a
+            # no-op pass below that bar still fails loudly. Reuses the PyPI response
+            # already fetched above (flattened to version/yanked/requires_python lines --
+            # no second request that could fail under Python's own proxy/TLS setup).
+            # The probe program rides in on stdin and its inputs in environment
+            # variables: no command-line interpolation (a profile name like O'Neil
+            # would end a generated string literal early) and no encoding, which is a
+            # shape tests/studio/test_installer_av_shapes.py keeps out of this file.
+            # The whole probe is best-effort: a full or unwritable temp dir (or an
+            # exhausted GetTempFileName pool) must fall through to the warning
+            # outcome below, not abort setup under ErrorActionPreference Stop.
+            $_relPath = $null
+            try {
+                $_relPath = [System.IO.Path]::GetTempFileName()
+                $_relLines = foreach ($_rel in $pypiJson.releases.PSObject.Properties) {
+                    foreach ($_relFile in $_rel.Value) {
+                        "$($_rel.Name)`t$(if ($_relFile.yanked) { 1 } else { 0 })`t$($_relFile.requires_python)`t$($_relFile.packagetype)`t$($_relFile.filename)"
+                    }
+                }
+                Set-Content -LiteralPath $_relPath -Value ($_relLines -join "`n") -Encoding UTF8
+                $_bestCode = @'
+import os, sys
+import site
+_keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else []))
+_pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p)
+_pp.add(os.getcwd())
+sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]
+try:
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version, InvalidVersion
+    post = Version(os.environ['STUDIO_VERIFY_POST'])
+    latest = Version(os.environ['STUDIO_VERIFY_LATEST'])
+    with open(os.environ['STUDIO_VERIFY_TABLE'], encoding='utf-8-sig') as fh:
+        lines = fh.read().splitlines()
+except Exception:
+    sys.exit(1)
+try:
+    from packaging.tags import sys_tags
+    from packaging.utils import parse_wheel_filename
+    supported = set(str(t) for t in sys_tags())
+except Exception:
+    supported = None
+cur = Version('.'.join(map(str, sys.version_info[:3])))
+best = None
+for line in lines:
+    parts = line.split('\t')
+    if len(parts) != 5 or parts[1] == '1':
+        continue
+    try:
+        v = Version(parts[0])
+    except InvalidVersion:
+        continue
+    if v.is_prerelease:
+        continue
+    rp = parts[2]
+    try:
+        if rp and cur not in SpecifierSet(rp):
+            continue
+    except Exception:
+        pass
+    pt = parts[3]
+    if pt == 'bdist_wheel' and supported is not None:
+        try:
+            if not any(str(t) in supported for t in parse_wheel_filename(parts[4])[3]):
+                continue
+        except Exception:
+            pass
+    elif pt and pt != 'sdist' and pt != 'bdist_wheel':
+        continue
+    if best is None or v > best:
+        best = v
+print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= best else 'stale'))
+'@
+                $_bestProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_bestCode -ProbeEnv @{
+                    STUDIO_VERIFY_POST = $PostVer; STUDIO_VERIFY_LATEST = $LatestVer; STUDIO_VERIFY_TABLE = $_relPath }
+                if ($_bestProbe.Ok -and $_bestProbe.Output -match '(?m)^VERIFYVER=ok\s*$') {
+                    substep "$_PkgName $PostVer kept: no $LatestVer artifact installs on this environment"
+                    $_updateOk = $true
+                }
+            } catch {
+                # Temp-table write failed: leave $_updateOk false and let the
+                # older-but-successful outcome below stay a warning, not a failure.
+            } finally {
+                if ($_relPath) {
+                    Remove-Item -LiteralPath $_relPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+    if ($_updateOk) {
+        substep "$_PkgName $PostVer confirmed"
+    } elseif ($PostVer -eq "__MISSING__") {
+        # the one unambiguous failure: a "successful" pass with no package left
+        # behind (no-op pass, stale dist-info) -- the case this check exists for.
+        # The pass already wrote its success manifest (step 15, before this check)
+        # and verify_install accepts a null recorded version, so the marker must
+        # not survive: its presence means "install completed".
+        $_manifestState = ""
+        try {
+            $_manifestState = (& python -c "
+import json, sys, time
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    print('MANIFEST=gone')
+    sys.exit(0)
+ok = False
+for _ in range(3):
+    if install_manifest.remove_manifest():
+        ok = True
+        break
+    time.sleep(0.2)
+if not ok:
+    # deletion blocked (AV lock, read-only): write is a different access right
+    # than delete on Windows, and a schema-busted manifest also reads incomplete
+    try:
+        install_manifest.manifest_path().write_text(json.dumps({'schema': -1}), encoding='utf-8')
+        ok = True
+    except Exception:
+        pass
+print('MANIFEST=' + ('gone' if ok else 'stuck'))
+" "$PSScriptRoot" 2>$null | Out-String).Trim()
+        } catch {}
+        if ($_manifestState -notmatch 'MANIFEST=gone') {
+            substep "[WARN] stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "Yellow"
+        }
+        $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
+        Write-StudioLine "[FAILED] update ran but $_PkgName is not installed$_expected" -ForegroundColor Red
+        Exit-SetupFailure "update ran but $_PkgName is not installed$_expected"
+    } elseif (-not $PostVer) {
+        $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
+        substep "[WARN] could not verify $_PkgName version after update$_expected" "Yellow"
+    } elseif (-not $LatestVer) {
+        substep "$_PkgName $PostVer present (PyPI unreachable; compare skipped)"
+    } elseif ($_customIndex) {
+        substep "$_PkgName $PostVer present (custom package index; PyPI compare skipped)"
+    } else {
+        # older-but-successful is a resolver outcome (constraints, config-file
+        # mirrors, wheels for this platform), not an install failure: pypi.org's
+        # announced latest is not authoritative for what this environment can
+        # run -- surface it, don't brick the update
+        substep "[WARN] update left $_PkgName at $PostVer ($LatestVer announced on PyPI)" "Yellow"
+    }
 }
 
 } else {
