@@ -613,7 +613,9 @@ class TestStrictPmPolicyOptOut:
                 )
             assert env["UV_NO_CONFIG"] == "1", f"strict={strict}"
             assert env["PIP_CONFIG_FILE"] == os.devnull, f"strict={strict}"
-            assert "UV_CONFIG_FILE" not in env, f"strict={strict}"
+            # Strict mode may point it at the generated policy file, which carries no
+            # index. Theirs is what must not survive.
+            assert env.get("UV_CONFIG_FILE") != "/etc/uv/uv.toml", f"strict={strict}"
 
     def test_the_pip_fallback_inherits_the_uv_policy_translated(self):
         """pip_install() falls back to pip whenever uv fails, INCLUDING when uv failed
@@ -756,6 +758,31 @@ class TestStrictPmPolicyOptOut:
         projected = Path(env["UV_CONFIG_FILE"]).read_text(encoding = "utf-8")
         assert 'only-binary = ["some-other-package"]' in projected
         assert "no-build = true" not in projected
+
+    def test_the_uv_command_carries_the_build_policy_as_a_flag(self):
+        """uv's own UV_NO_BUILD does not reach the `uv pip` interface (0.10.7 builds the
+        sdist anyway), so without the flag the primary uv attempt builds exactly what
+        strict mode has already told the pip fallback to refuse."""
+        with mock.patch.dict(
+            os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_NO_BUILD": "1"}, clear = True
+        ):
+            assert "--no-build" in ips._build_uv_cmd(("numpy",))
+
+    def test_the_uv_command_keeps_the_flag_package_scoped(self):
+        with mock.patch.dict(
+            os.environ,
+            {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_NO_BUILD_PACKAGE": "some-other-package"},
+            clear = True,
+        ):
+            cmd = ips._build_uv_cmd(("numpy",))
+        assert "--no-build" not in cmd
+        assert cmd[-2:] == ["--no-build-package", "some-other-package"]
+
+    def test_the_default_uv_command_is_unchanged(self):
+        """Everything here is opt-in: without the switch the command is byte-identical."""
+        with mock.patch.dict(os.environ, {"UV_NO_BUILD": "1"}, clear = True):
+            cmd = ips._build_uv_cmd(("numpy",))
+        assert not any(arg.startswith("--no-build") for arg in cmd)
 
     def test_an_empty_package_list_translates_to_nothing(self, tmp_path, monkeypatch):
         (tmp_path / "uv.toml").write_text("no-build-package = []\n", encoding = "utf-8")
@@ -987,6 +1014,44 @@ class TestUvConfigDiscoveryMatchesUv:
         )
         assert self._keys() == ["uv.toml: require-hashes"]
 
+    def test_a_pyproject_with_a_uv_table_ends_the_parent_walk(self, tmp_path, monkeypatch):
+        """uv reads the nearest project configuration, so a [tool.uv] table takes an
+        ancestor uv.toml out of force. Measured on uv 0.10.7 with `no-build = true` in
+        the parent: adding an unrelated [tool.uv] key to the child makes the sdist
+        install succeed that the parent policy had refused."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        nested = tmp_path / "project"
+        nested.mkdir()
+        (nested / "pyproject.toml").write_text(
+            "[project]\nname = 'x'\n\n[tool.uv]\nlink-mode = 'copy'\n", encoding = "utf-8"
+        )
+        monkeypatch.chdir(nested)
+        assert self._keys() == []
+
+    def test_a_pyproject_without_a_uv_table_does_not_end_the_walk(self, tmp_path, monkeypatch):
+        """The other half of the same measurement: without [tool.uv] the child is not a
+        uv configuration at all, the parent's policy stays in force (the same install is
+        refused), and stopping here would drop a policy uv is enforcing."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        nested = tmp_path / "project"
+        nested.mkdir()
+        (nested / "pyproject.toml").write_text(
+            "[project]\nname = 'x'\n", encoding = "utf-8"
+        )
+        monkeypatch.chdir(nested)
+        assert self._keys() == ["uv.toml: no-build"]
+
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "XDG is the Unix system-config path")
+    def test_only_the_first_system_config_is_read(self, tmp_path, monkeypatch):
+        """"only the first-discovered file will be used". Unioning them lets a
+        lower-priority file uv ignores fail an install under the switch."""
+        first, second = tmp_path / "a", tmp_path / "b"
+        for directory, policy in ((first, "require-hashes = true"), (second, "no-build = true")):
+            (directory / "uv").mkdir(parents = True)
+            (directory / "uv" / "uv.toml").write_text(policy + "\n", encoding = "utf-8")
+        monkeypatch.setenv("XDG_CONFIG_DIRS", f"{first}{os.pathsep}{second}")
+        assert self._keys() == ["uv.toml: require-hashes"]
+
     def test_a_uv_toml_ends_the_parent_walk(self, tmp_path, monkeypatch):
         """uv reads the nearest configuration file, not the union of the tree."""
         (tmp_path / "uv.toml").write_text("require-hashes = true\n", encoding = "utf-8")
@@ -1043,6 +1108,21 @@ class TestUvConfigDiscoveryMatchesUv:
         )
         assert ips._scan_uv_policy_config_by_line([path]) == [
             ("pyproject.toml", "no-build", "true")
+        ]
+
+    def test_the_line_scanner_drops_a_trailing_toml_comment(self, tmp_path):
+        """`no-build = false # builds allowed` is a policy switched OFF. With the comment
+        left attached the value is not one of the disabled spellings, so it reads as a
+        policy in force and the switch turns it into a global binary-only install."""
+        path = tmp_path / "uv.toml"
+        path.write_text("no-build = false # builds allowed\n", encoding = "utf-8")
+        assert ips._scan_uv_policy_config_by_line([path]) == []
+
+    def test_the_line_scanner_keeps_a_hash_inside_a_string(self, tmp_path):
+        path = tmp_path / "uv.toml"
+        path.write_text('exclude-newer = "2026-01-01#T00:00:00Z"\n', encoding = "utf-8")
+        assert ips._scan_uv_policy_config_by_line([path]) == [
+            ("uv.toml", "exclude-newer", '"2026-01-01#T00:00:00Z"')
         ]
 
     def test_the_line_scanner_skips_a_uv_toml_subtable_that_is_not_pip(self, tmp_path):

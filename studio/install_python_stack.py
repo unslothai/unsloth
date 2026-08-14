@@ -3960,6 +3960,7 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     # Colab and similar).
     cmd.extend(["--python", sys.executable])
     cmd.extend(_translate_pip_args_for_uv(args))
+    cmd.extend(_uv_policy_cli_args())
     # Torch is pre-installed, so don't add --torch-backend by default (solver dead-ends on
     # CPU-only machines); callers can set UV_TORCH_BACKEND. Never add it to a pinned-index
     # command: uv's torch backend redirects torch to its own per-backend index, defeating the pin.
@@ -4148,6 +4149,46 @@ def _uv_policy_config() -> "list[tuple[str, str, object]]":
     return _UV_POLICY_CONFIG
 
 
+def _file_exists(path: "Path") -> bool:
+    """is_file() that answers False rather than raising on an unreadable path."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _pyproject_speaks_for_uv(path: "Path") -> bool:
+    """True when a pyproject.toml carries a [tool.uv] table, which ends uv's walk.
+
+    Text rather than a parse: this runs once per directory on the way up, the answer only
+    decides whether to keep walking, and a pyproject too broken to parse is one uv would
+    stop at anyway.
+    """
+    try:
+        return "[tool.uv" in path.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return False
+
+
+def _toml_line_value(raw: str) -> str:
+    """A `key = value` line's value with any trailing TOML comment removed.
+
+    `no-build = false # builds allowed` is a policy switched OFF, and reading the comment
+    as part of the value makes it read as one in force. Quotes are tracked so a `#` inside
+    a string stays where the operator put it.
+    """
+    in_quote = ""
+    for index, char in enumerate(raw):
+        if in_quote:
+            if char == in_quote:
+                in_quote = ""
+        elif char in "\"'":
+            in_quote = char
+        elif char == "#":
+            return raw[:index].strip()
+    return raw.strip()
+
+
 def _uv_config_candidates() -> "list[Path]":
     """Where uv would look, in uv's own order.
 
@@ -4165,19 +4206,24 @@ def _uv_config_candidates() -> "list[Path]":
         _here = None
     if _here is not None:
         for directory in (_here, *_here.parents):
+            # uv reads the NEAREST configuration, not the union of the tree, and
             # "uv.toml files take precedence over pyproject.toml files, so if both are
-            # present in a directory, configuration will be read from uv.toml". Reading
-            # the losing pyproject too would let a [tool.uv] table uv ignores become a
-            # policy strict mode enforces, so the directory's uv.toml ends the walk.
+            # present in a directory, configuration will be read from uv.toml".
+            #
+            # A pyproject ends the walk only when it actually carries a [tool.uv] table.
+            # Measured against uv 0.10.7 with `no-build = true` in a parent uv.toml: a
+            # child pyproject WITHOUT [tool.uv] leaves that policy in force (the sdist
+            # install is refused), and adding an unrelated [tool.uv] key to the child
+            # takes it out of force (the install succeeds). Stopping at either file would
+            # therefore drop a policy uv is enforcing.
             _uv_toml = directory / "uv.toml"
-            try:
-                _wins = _uv_toml.is_file()
-            except OSError:
-                _wins = False
-            if _wins:
+            if _file_exists(_uv_toml):
                 candidates.append(_uv_toml)
                 break
-            candidates.append(directory / "pyproject.toml")
+            _pyproject = directory / "pyproject.toml"
+            candidates.append(_pyproject)
+            if _pyproject_speaks_for_uv(_pyproject):
+                break
     if IS_WINDOWS:
         for _var in ("APPDATA", "PROGRAMDATA"):
             _dir = os.environ.get(_var, "").strip()
@@ -4197,13 +4243,21 @@ def _uv_config_candidates() -> "list[Path]":
             candidates.append(_user_config / "uv" / "uv.toml")
         # "If multiple system-level configuration files are found, e.g. at both
         # /etc/uv/uv.toml and $XDG_CONFIG_DIRS/uv/uv.toml, only the first-discovered file
-        # will be used, with XDG taking priority", so the XDG directories go first. A
-        # managed fleet is exactly where the policy lives outside /etc.
-        for _dir in os.environ.get("XDG_CONFIG_DIRS", "").split(os.pathsep):
-            _dir = _dir.strip()
-            if _dir:
-                candidates.append(Path(_dir) / "uv" / "uv.toml")
-        candidates.append(Path("/etc/uv/uv.toml"))
+        # will be used, with XDG taking priority", so the XDG directories go first and the
+        # first one that exists is the only system file read. A managed fleet is exactly
+        # where the policy lives outside /etc.
+        _system = [
+            Path(_dir.strip()) / "uv" / "uv.toml"
+            for _dir in os.environ.get("XDG_CONFIG_DIRS", "").split(os.pathsep)
+            if _dir.strip()
+        ]
+        _system.append(Path("/etc/uv/uv.toml"))
+        for _path in _system:
+            if _file_exists(_path):
+                candidates.append(_path)
+                break
+        else:
+            candidates.append(_system[-1])
     return candidates
 
 
@@ -4260,7 +4314,7 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             continue
         section = ""
         for line in text.splitlines():
-            stripped = line.strip()
+            stripped = _toml_line_value(line)
             if stripped.startswith("["):
                 section = stripped.strip("[]").strip().strip("\"'")
                 continue
@@ -4277,7 +4331,7 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             if not sep:
                 continue
             key = key.strip()
-            value = value.strip()
+            value = _toml_line_value(value)
             if key not in _PM_POLICY_CONFIG_KEYS:
                 continue
             if key in _PM_POLICY_SCOPED_CONFIG_KEYS:
@@ -4359,20 +4413,21 @@ def _report_pm_policy_relaxation() -> None:
     )
 
 
-def _uv_policy_settings_from_files() -> "dict[str, object]":
-    """The build and integrity policy uv's own CONFIG FILES set.
+def _uv_policy_settings() -> "dict[str, object]":
+    """The build and integrity policy uv is under, from its environment and its files.
 
-    Separate from the environment because the two are carried differently: a pinned
-    command inherits the environment already, and it is the file half that --no-config
-    takes away and _uv_policy_config_projection() has to hand back.
-
-    Scope is carried rather than flattened. `no-build-package = ["foo"]` is a policy about
-    foo, and widening it to every package fails installs the operator never restricted.
+    Reading the FILES matters because a uv.toml is where #8530's policy lived, and uv
+    honours both. Scope is carried rather than flattened: `no-build-package = ["foo"]` is
+    a policy about foo, and widening it to every package fails installs the operator never
+    restricted.
     """
-    no_build_all = False
-    packages: "list[str]" = []
-    require_hashes = False
-    exclude_newer = ""
+    no_build_all = _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
+    # uv documents UV_NO_BUILD_PACKAGE as a space-delimited list.
+    packages: "list[str]" = _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
+    require_hashes = _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES"))
+    exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
+    if not _pm_policy_value_is_on(exclude_newer):
+        exclude_newer = ""
     for _name, key, value in _uv_policy_config():
         if key == "require-hashes":
             require_hashes = True
@@ -4391,29 +4446,6 @@ def _uv_policy_settings_from_files() -> "dict[str, object]":
         "no_build_packages": [] if no_build_all else sorted(dict.fromkeys(packages)),
         "require_hashes": require_hashes,
         "exclude_newer": exclude_newer,
-    }
-
-
-def _uv_policy_settings() -> "dict[str, object]":
-    """The same policy, from uv's environment as well as its files, for pip's translation.
-
-    Reading the FILES matters because a uv.toml is where #8530's policy lived, and uv
-    honours both.
-    """
-    settings = _uv_policy_settings_from_files()
-    packages = list(settings["no_build_packages"])
-    # uv documents UV_NO_BUILD_PACKAGE as a space-delimited list.
-    packages += _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
-    no_build_all = settings["no_build_all"] or _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
-    exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
-    if not _pm_policy_value_is_on(exclude_newer):
-        exclude_newer = ""
-    return {
-        "no_build_all": no_build_all,
-        "no_build_packages": [] if no_build_all else sorted(dict.fromkeys(packages)),
-        "require_hashes": settings["require_hashes"]
-        or _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES")),
-        "exclude_newer": settings["exclude_newer"] or exclude_newer,
     }
 
 
@@ -4462,15 +4494,19 @@ def _uv_policy_config_projection() -> "Path | None":
     takes those settings from the [pip] table: measured against uv 0.10.7,
     `UV_NO_BUILD=1 uv pip install <sdist-only>` installs happily while the same policy in
     a --config-file refuses with "Wheels are required ... because building from source is
-    disabled". UV_REQUIRE_HASHES and UV_EXCLUDE_NEWER do apply and are inherited anyway.
+    disabled". That is also why the ENVIRONMENT half is projected here rather than left to
+    uv: the operator set a build policy, strict mode already translates it for the pip
+    fallback, and the primary uv attempt building what the fallback would refuse is the
+    bypass this switch exists to close. UV_REQUIRE_HASHES and UV_EXCLUDE_NEWER do apply on
+    their own; projecting them alongside costs a line and keeps one source of truth.
 
-    Only what a FILE set is projected, and only the four keys uv's pip table takes, so a
-    key uv would reject can never reach the command and fail an install over a report.
+    Only the four keys uv's pip table takes are written, so a key uv would reject can
+    never reach the command and fail an install over a policy report.
     """
     global _UV_POLICY_PROJECTION
     if _UV_POLICY_PROJECTION is not None:
         return _UV_POLICY_PROJECTION
-    settings = _uv_policy_settings_from_files()
+    settings = _uv_policy_settings()
     lines: "list[str]" = []
     if settings["no_build_all"]:
         lines.append("no-build = true")
@@ -4480,10 +4516,15 @@ def _uv_policy_config_projection() -> "Path | None":
             + ", ".join(f'"{name}"' for name in settings["no_build_packages"])
             + "]"
         )
-    if settings["require_hashes"]:
+    # The integrity half only when a FILE set it. uv does honour UV_REQUIRE_HASHES and
+    # UV_EXCLUDE_NEWER, which a pinned command inherits, so projecting the environment
+    # copy would only repeat a setting that already applies.
+    _file_keys = {key: value for _name, key, value in _uv_policy_config()}
+    if "require-hashes" in _file_keys:
         lines.append("require-hashes = true")
-    if settings["exclude_newer"]:
-        lines.append(f'exclude-newer = "{settings["exclude_newer"]}"')
+    if "exclude-newer" in _file_keys:
+        _cutoff = str(_file_keys["exclude-newer"]).strip().strip("\"'")
+        lines.append(f'exclude-newer = "{_cutoff}"')
     if not lines:
         return None
     try:
@@ -4504,6 +4545,29 @@ def _uv_policy_config_projection() -> "Path | None":
         return None
     _UV_POLICY_PROJECTION = path
     return path
+
+
+def _uv_policy_cli_args() -> "list[str]":
+    """Strict mode's build policy as flags on the `uv pip install` commands we build.
+
+    uv's own UV_NO_BUILD / UV_NO_BUILD_PACKAGE do not reach this interface (measured on
+    uv 0.10.7: UV_NO_BUILD=1 still builds an sdist), so without this the primary uv
+    attempt builds what strict mode has already told the pip fallback to refuse.
+
+    The flag rather than the generated policy file for the same reason a NON-pinned
+    command keeps reading the operator's own configuration: --config-file replaces
+    discovery, and replacing it there would take their mirror with it. Only added under
+    the switch, so the default install is byte-identical.
+    """
+    if not _strict_pm_policy():
+        return []
+    settings = _uv_policy_settings()
+    if settings["no_build_all"]:
+        return ["--no-build"]
+    args: "list[str]" = []
+    for name in settings["no_build_packages"]:
+        args += ["--no-build-package", name]
+    return args
 
 
 def _untranslatable_strict_policy() -> "list[str]":
