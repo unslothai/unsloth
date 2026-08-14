@@ -448,7 +448,11 @@ def _dumpable_writes(scope, certain = True):
         yield from _dumpable_writes(child, certain and not isinstance(child, _BRANCHING))
 
 
-def _clears_dumpable_before(scope, position, inherited = False) -> bool:
+def _clears_dumpable_before(
+    scope,
+    position,
+    inherited = False,
+) -> bool:
     """A prctl(4, 0, ...) on this scope's own path that runs before `position`.
 
     Order matters. Suppression placed after the fault does nothing, so accepting it
@@ -465,7 +469,12 @@ def _clears_dumpable_before(scope, position, inherited = False) -> bool:
     return inherited
 
 
-def _suppressed(node, scope, functions, inherited = False) -> bool:
+def _suppressed(
+    node,
+    scope,
+    functions,
+    inherited = False,
+) -> bool:
     """Whether this crash call is covered, directly or by a helper it calls first."""
     position = _position(node)
     if _clears_dumpable_before(scope, position, inherited):
@@ -597,7 +606,11 @@ def _snippets_of_call(node):
                     yield element.value
 
 
-def _snippet_state(snippet: str, depth: int = 0, inherited: bool = False):
+def _snippet_state(
+    snippet: str,
+    depth: int = 0,
+    inherited: bool = False,
+):
     """`(crashes, violates)` for a child script.
 
     The snippet is Python, so parse it and reuse the same call detector rather than
@@ -612,12 +625,9 @@ def _snippet_state(snippet: str, depth: int = 0, inherited: bool = False):
             tree = ast.parse(snippet)
     except (SyntaxError, ValueError):
         crashes = any(marker in snippet for marker in _CRASH_MARKERS) or (
-            any(m in snippet for m in _SIGNAL_DIRECTED)
-            and _FATAL_SIGNAL_RE.search(snippet)
+            any(m in snippet for m in _SIGNAL_DIRECTED) and _FATAL_SIGNAL_RE.search(snippet)
         )
-        suppressed = (
-            inherited or "prctl(4, 0" in snippet or "PR_SET_DUMPABLE, 0" in snippet
-        )
+        suppressed = inherited or "prctl(4, 0" in snippet or "PR_SET_DUMPABLE, 0" in snippet
         return crashes, crashes and not suppressed
     crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree, inherited))
     if depth < _MAX_SNIPPET_DEPTH:
@@ -927,9 +937,7 @@ _FIXTURES = {
     ),
     # Six more, each one a way the fixes above were themselves wrong.
     "class_attribute_shadowing_a_crash_alias": (
-        "from os import abort\n"
-        "class C:\n    abort = lambda: None\n"
-        "abort()\n",
+        "from os import abort\nclass C:\n    abort = lambda: None\nabort()\n",
         True,  # that binds C.abort; the module name still crashes
     ),
     "restore_inside_a_branch_that_may_not_run": (
