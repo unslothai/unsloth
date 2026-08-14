@@ -1,0 +1,11 @@
+---
+description: Follow the canonical repository editing guidelines
+alwaysApply: true
+---
+
+Read and follow `AGENTS.md` before modifying this repository. `AGENTS.md` is the
+canonical source for repository editing policy; do not duplicate or override it
+in this rule.
+
+Before starting work, report that `AGENTS.md` was read. Before finishing, inspect
+the final diff and report that no unrelated changes remain.
