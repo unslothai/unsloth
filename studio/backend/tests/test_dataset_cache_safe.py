@@ -101,21 +101,20 @@ def test_pre_1_x_hub_retries_by_updating_symlink_capability_cache(monkeypatch):
 
 
 def test_pre_1_9_hub_stops_re_probing_unknown_cache_dirs(monkeypatch, tmp_path):
-    # Hub added HF_HUB_DISABLE_SYMLINKS in 1.9; before that a dir missing from
-    # the capability cache is probed again, which can lose the same race twice.
-    from huggingface_hub import constants
+    # Hub added HF_HUB_DISABLE_SYMLINKS in 1.9; before that, are_symlinks_supported
+    # probes any dir missing from this mapping, which can lose the same race twice.
+    # Assert the mapping itself, since which Hub reads it varies by version.
     from huggingface_hub import file_download
 
-    monkeypatch.delattr(constants, "HF_HUB_DISABLE_SYMLINKS", raising = False)
     monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})
     monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
 
     cache_safe._disable_hf_symlinks_for_process()
 
-    unknown = tmp_path / "never-probed"
-    unknown.mkdir()
-    assert file_download.are_symlinks_supported(str(unknown)) is False
-    assert list(unknown.iterdir()) == []
+    unknown = str(tmp_path / "never-probed")
+    capability = file_download._are_symlinks_supported_in_dir
+    assert unknown in capability
+    assert capability[unknown] is False
 
 
 def test_symlink_disable_survives_an_unimportable_hub(monkeypatch):
