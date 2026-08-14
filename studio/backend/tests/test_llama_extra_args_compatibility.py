@@ -71,10 +71,23 @@ def test_dropping_takes_the_flags_value_with_it():
 
 
 def test_an_attached_value_form_is_dropped_whole():
-    kept, dropped = _lsa.drop_managed_flags(["--log-file=/x", "--top-k=20"])
+    # The denied one for its name, the other because llama-server refuses the
+    # attached spelling itself. Both self-contained, so neither takes a following
+    # token with it.
+    kept, dropped = _lsa.drop_managed_flags(["--log-file=/x", "--top-k=20", "--numa", "distribute"])
 
-    assert kept == ["--top-k=20"]
-    assert dropped == ["--log-file"]
+    assert kept == ["--numa", "distribute"]
+    assert dropped == ["--log-file", "--top-k"]
+
+
+def test_an_attached_value_in_the_middle_does_not_take_the_rest_with_it():
+    # The trimming loop sheds the TAIL, so a stored "--top-k=20" left for it would
+    # cost every flag written after it. Dropped in the walk instead, beside the
+    # denied names.
+    kept, _dropped = _lsa.drop_managed_flags(
+        ["--top-k=20", "--numa", "distribute", "--grammar", "root ::= [0-9]"]
+    )
+    assert kept == ["--numa", "distribute", "--grammar", "root ::= [0-9]"]
 
 
 def test_nothing_to_drop_returns_the_list_unchanged():
@@ -287,6 +300,8 @@ def test_a_poisoned_flag_with_an_attached_value_drops_alone():
     kept, dropped = _lsa.drop_managed_flags(["--grammar\x1b=root", "--top-k", "20"])
 
     assert kept == ["--top-k", "20"]
+    # The control character is judged first: its name is never echoed into a log,
+    # and the attached-value rule would have named it.
     assert dropped == ["<flag>"]
 
 
@@ -297,10 +312,13 @@ def test_a_bare_value_with_no_flag_is_refused():
     for bad in (
         ["/private/models/other.gguf"],
         ["--top-k", "20", "/models/other.gguf"],
-        ["--top-k=20", "stray"],
     ):
         with pytest.raises(ValueError, match = "bare value"):
             _lsa.validate_extra_args(bad)
+    # The attached spelling is refused before anything can be said about what
+    # follows it, since llama-server never reads it as a flag at all.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        _lsa.validate_extra_args(["--top-k=20", "stray"])
 
 
 def test_a_value_that_belongs_to_a_flag_is_still_fine():
@@ -320,16 +338,16 @@ def test_the_underscore_spelling_keeps_its_detached_value():
         ["--ctx_size", "4096"],
         ["--n_gpu_layers", "5"],
         ["--rope_scaling", "yarn"],
-        ["--ctx_size=4096"],
         ["--top-k", "20", "--ctx_size", "4096"],
     ):
         assert _lsa.validate_extra_args(good) == good
     # The value is still consumed exactly once: a second bare token has no owner.
     with pytest.raises(ValueError, match = "bare value"):
         _lsa.validate_extra_args(["--ctx_size", "4096", "stray"])
-    # And an "=" form is genuinely attached, so what follows it is bare too.
-    with pytest.raises(ValueError, match = "bare value"):
-        _lsa.validate_extra_args(["--ctx_size=4096", "stray"])
+    # The underscore spelling folds, the attached one does not exist for llama.cpp
+    # whichever way it is spelled.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        _lsa.validate_extra_args(["--ctx_size=4096"])
 
 
 def test_a_batch_below_the_floor_is_refused_before_the_launch():
@@ -392,18 +410,21 @@ def test_a_two_value_flag_is_kept_whole():
             _lsa.validate_extra_args(bad)
 
 
-def test_an_attached_value_is_one_of_the_two():
-    # llama.cpp b10360 refuses "--flag=value" outright ("error: invalid argument"),
-    # and a build that did take it would still be one layer short here, so the
-    # attached form counts as START rather than as the whole option.
+def test_the_attached_form_of_a_two_value_flag_is_refused_like_any_other():
+    # It used to be read as START owing an END, which was a guess about a spelling
+    # llama.cpp does not have: the whole token is looked up in its option map, so
+    # "--control-vector-layer-range=1" is an argument it has never heard of.
+    for bad in (
+        ["--control-vector-layer-range=1"],
+        ["--control-vector-layer-range=1", "10"],
+        ["--control-vector-layer-range=1", "--numa", "distribute"],
+    ):
+        with pytest.raises(ValueError, match = "two separate arguments"):
+            _lsa.validate_extra_args(bad)
+    # Detached, it is the one option here whose arity is known for certain.
+    assert _lsa.validate_extra_args(["--control-vector-layer-range", "1", "10"])
     with pytest.raises(ValueError, match = "takes two values"):
-        _lsa.validate_extra_args(["--control-vector-layer-range=1"])
-    with pytest.raises(ValueError, match = "takes two values"):
-        _lsa.validate_extra_args(["--control-vector-layer-range=1", "--numa", "distribute"])
-    assert _lsa.validate_extra_args(["--control-vector-layer-range=1", "10"])
-    # An ordinary flag's attached value is still the whole of it.
-    assert _lsa.validate_extra_args(["--top-k=20"])
-    assert _lsa.validate_extra_args(["--top-k=20", "--numa", "distribute"])
+        _lsa.validate_extra_args(["--control-vector-layer-range", "1"])
 
 
 def test_trimming_sheds_a_two_value_flag_whole():

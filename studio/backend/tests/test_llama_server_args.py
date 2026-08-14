@@ -110,8 +110,26 @@ def test_empty_list_returns_empty_list():
     assert validate_extra_args([]) == []
 
 
-def test_value_with_equals_form_passes_through():
-    assert validate_extra_args(["--top-k=20"]) == ["--top-k=20"]
+def test_the_attached_value_form_is_refused():
+    # llama.cpp looks the whole token up in its option map and folds only the
+    # underscore spelling, so "--top-k=20" is an argument it has never heard of.
+    # Measured on b10342 and b10360: "error: invalid argument: --top-k=20", and the
+    # same for --ctx-size=4096 and --flash-attn=on. Accepting it here meant the
+    # switch tore down the resident model and the child then refused to start.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        validate_extra_args(["--top-k=20"])
+    # The detached spelling is what it takes, and the underscore one still folds.
+    assert validate_extra_args(["--top-k", "20"]) == ["--top-k", "20"]
+    assert validate_extra_args(["--ctx_size", "4096"]) == ["--ctx_size", "4096"]
+    # A managed name is still named as managed: that message says which control
+    # owns it, which is the more useful of the two.
+    with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
+        validate_extra_args(["--parallel=8"])
+    # An "=" inside a VALUE is untouched: it is the value's own syntax.
+    assert validate_extra_args(["--override-kv", "a=int:2"]) == [
+        "--override-kv",
+        "a=int:2",
+    ]
 
 
 def test_managed_long_flag_underscore_alias_is_rejected():
@@ -683,13 +701,20 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["--split-mode", "none"],
         ["--split-mode", "layer"],
         ["-sm", "tensor"],
-        ["--split-mode=row"],
-        ["-sm=tensor"],
     ],
 )
 def test_split_mode_passes_through(args):
     # Not denylisted -- a user keeps row/none/layer via extras.
     assert validate_extra_args(args) == args
+
+
+@pytest.mark.parametrize("args", [["--split-mode=row"], ["-sm=tensor"]])
+def test_the_attached_split_mode_spelling_is_refused(args):
+    # The parsers below still read the attached form, since they also run over
+    # Unsloth's own emitted flags; the boundary is where the user's spelling of it
+    # is turned back, while the message can still reach them.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        validate_extra_args(args)
 
 
 def test_split_mode_is_not_managed():

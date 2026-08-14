@@ -289,6 +289,21 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             pending_values -= 1
             if pending_two_value > 0:
                 pending_two_value -= 1
+        elif "=" in token:
+            # llama.cpp looks the WHOLE token up in its option map, folding only the
+            # underscore spelling, so "--top-k=20" is not "--top-k" with a value: it
+            # is an argument it has never heard of. Measured on b10342 and b10360,
+            # where --top-k=20, --ctx-size=4096 and --flash-attn=on each exit with
+            # "error: invalid argument". Accepting the GNU spelling here meant the
+            # switch tore down the resident model and the child then refused to
+            # start, so it is refused while it is still a 400 with somewhere to go.
+            # Splitting it here would be a guess: for a switch the value is not one,
+            # and this module cannot know an ordinary flag's arity.
+            value = token.partition("=")[2]
+            raise ValueError(
+                f"llama-server does not read an attached value: write '{flag}' and "
+                f"'{value[:32]}' as two separate arguments, not '{token[:64]}'"
+            )
         else:
             # Its own value when attached, otherwise the tokens that follow.
             attached = _value_is_attached(token, flag)
@@ -400,6 +415,15 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
                 if owner is not None:
                     dropped.append(owner)
                     kept.pop()
+            continue
+        if flag is not None and "=" in token:
+            # An attached value llama-server refuses outright, whatever the flag. Dropped
+            # here with the denied names rather than left to the trimming loop below:
+            # that loop sheds the TAIL, so one legacy "--top-k=20" in the middle would
+            # cost every flag written after it. Nothing to skip, the value is in the
+            # token. After the control-character check, so a poisoned name is still
+            # logged as a placeholder rather than echoed.
+            dropped.append(flag)
             continue
         if (
             flag is not None

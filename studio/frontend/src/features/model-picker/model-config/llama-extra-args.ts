@@ -257,11 +257,13 @@ export function sanitizeStoredExtraArgs(
   while (bounded.length > 0 && overBounds()) {
     bounded.pop();
     const last = bounded[bounded.length - 1];
-    if (
-      last !== undefined &&
-      extraArgFlagName(last) === last.trim() &&
-      !last.includes("=")
-    ) {
+    const lastFlag = last === undefined ? null : extraArgFlagName(last);
+    // Any flag whose value has just gone, not only one spelled exactly as it
+    // normalizes: extraArgFlagName folds llama.cpp's underscores, so comparing the
+    // normalized name against the raw token left "--grammar_file" standing after its
+    // value was trimmed. The backend cannot infer an ordinary flag's arity, so the
+    // orphan reaches llama-server and the load fails after the teardown.
+    if (last !== undefined && lastFlag !== null && !valueIsAttached(last, lastFlag)) {
       bounded.pop();
     }
     // Re-applied after every cut, exactly as the backend re-validates after its own:
@@ -358,6 +360,16 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
       // A new flag arrived while the option still owed a value: the whole option
       // goes, along with the value it did get.
       out.length = ownerAt;
+    }
+    if (token.includes("=")) {
+      // llama.cpp looks the whole token up in its option map, so "--top-k=20" is an
+      // argument it has never heard of and validate_extra_args refuses it. A stored
+      // list holding one would 400 the load this hydration exists to enable; the
+      // value is inside the token, so nothing follows it out.
+      pending = 0;
+      twoValuePending = 0;
+      ownerAt = -1;
+      continue;
     }
     const attached = valueIsAttached(token, flag);
     if (TWO_VALUE_FLAGS.has(flag)) {
@@ -949,6 +961,16 @@ export function diagnoseExtraArgs(
       continue;
     }
     seen.add(flag);
+
+    if (token.includes("=") && !catalog?.managed.has(flag)) {
+      // Measured on b10342 and b10360: "--top-k=20", "--ctx-size=4096" and
+      // "--flash-attn=on" each exit with "error: invalid argument". A managed flag
+      // is left to the message below, which names the control that owns it.
+      out.push({
+        level: "error",
+        message: `llama-server does not read "${flag}=value". Write ${flag} and its value as two arguments.`,
+      });
+    }
 
     if (catalog?.managed.has(flag)) {
       const control = CONTROL_OWNED_FLAGS[flag];

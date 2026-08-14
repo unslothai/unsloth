@@ -886,8 +886,13 @@ test("a catalogued flag left without its value is refused", () => {
   // A switch on its own owes nothing (this fixture's help lists it as a switch
   // without describing it, hence the unrelated unknown-flag warning).
   assert.ok(!levels("--verbose").includes("error"));
-  // Attached forms carry their own value.
-  assert.deepEqual(diagnoseExtraArgs("--numa=distribute", CATALOG), []);
+  // The attached spelling is refused instead: llama.cpp looks the whole token up in
+  // its option map, so "--numa=distribute" is an argument it has never heard of
+  // (measured on b10342 and b10360, "error: invalid argument").
+  assert.deepEqual(
+    diagnoseExtraArgs("--numa=distribute", CATALOG).map((d) => d.message),
+    ['llama-server does not read "--numa=value". Write --numa and its value as two arguments.'],
+  );
 });
 
 test("an unverified flag keeps the benefit of the doubt at the end", () => {
@@ -928,17 +933,22 @@ test("a two-value flag left short is refused whatever the catalogue says", () =>
     diagnoseExtraArgs("--control-vector-layer-range 1 10", unverified),
     [],
   );
-  // An attached value is one of the two, not the whole option. llama.cpp b10360
-  // refuses "--flag=value" outright anyway, but a build that took it would still
-  // be one layer short here.
-  assert.equal(
-    levels("--control-vector-layer-range=1", unverified)[0],
-    "error",
-  );
-  assert.deepEqual(
-    diagnoseExtraArgs("--control-vector-layer-range=1 10", unverified),
-    [],
-  );
+  // The attached spelling is refused as such, rather than read as one of the two:
+  // llama.cpp has no such spelling to be half of.
+  // The attached spelling is refused as such, rather than read as one of the two:
+  // llama.cpp has no such spelling for this to be half of, whether an END follows
+  // it or not.
+  for (const text of [
+    "--control-vector-layer-range=1",
+    "--control-vector-layer-range=1 10",
+  ]) {
+    assert.ok(
+      diagnoseExtraArgs(text, unverified).some(
+        (d) => d.level === "error" && d.message.includes("does not read"),
+      ),
+      text,
+    );
+  }
 });
 
 test("Manual GPU memory reports the offload flags it removes", () => {
@@ -1138,13 +1148,16 @@ test("the sanitizer drops what the validator refuses on shape", () => {
     ),
     ["--top-k", "20"],
   );
-  // Whole, either spelling survives.
+  // The attached spelling goes whether it is whole or not: the backend refuses it
+  // outright, so hydrating one into an explicit request would 400 the load. Only
+  // that token, the way drop_managed_flags sheds it, so the rest still loads.
   assert.deepEqual(
-    sanitizeStoredExtraArgs(
-      ["--control-vector-layer-range=1", "10"],
-      managed,
-    ),
-    ["--control-vector-layer-range=1", "10"],
+    sanitizeStoredExtraArgs(["--control-vector-layer-range=1", "10"], managed),
+    [],
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--top-k=20", "--numa", "distribute"], managed),
+    ["--numa", "distribute"],
   );
   // A value the backend's own parser refuses takes its flag with it, and only it:
   // the server sheds its whole tail instead, which costs whatever followed.
@@ -1196,4 +1209,62 @@ test("a scaled sidecar may take its scale as a second token", () => {
   ]) {
     assert.deepEqual(sanitizeStoredExtraArgs(list, managed), list);
   }
+});
+
+test("a trimmed value never leaves its flag behind, whatever the spelling", () => {
+  // The bounds are shed from the tail, and the flag whose value has just gone must
+  // go with it: an orphan is a flag llama-server then rejects for want of a value,
+  // after the switch has already unloaded the resident model. The check used to
+  // compare the NORMALIZED name against the raw token, so llama.cpp's underscore
+  // spelling never matched and "--grammar_file" was left standing.
+  const managed = new Set<string>();
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--numa", "distribute", "--grammar_file", "x".repeat(40000)], managed),
+    ["--numa", "distribute"],
+  );
+  // The hyphenated one behaved already, and still does.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--numa", "distribute", "--grammar-file", "x".repeat(40000)], managed),
+    ["--numa", "distribute"],
+  );
+  // A bare value at the tail takes nothing with it: it belongs to no flag, and the
+  // token before it is a value of its own.
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--numa", "distribute", "x".repeat(40000)], managed),
+    ["--numa", "distribute"],
+  );
+});
+
+test("the attached spelling is refused wherever it is judged", () => {
+  // llama.cpp looks the whole token up in its option map and folds only underscores,
+  // so "--top-k=20" is an argument it has never heard of: measured on b10342 and
+  // b10360 as "error: invalid argument: --top-k=20". Accepting it left Load enabled
+  // for a switch that unloads the running model and then fails to start the next.
+  const managed = new Set<string>();
+  // Not --ctx-size: a control owns it, and that message names the control instead.
+  for (const text of ["--top-k=20", "--rope-scaling=yarn", "--flash-attn=on"]) {
+    assert.ok(
+      diagnoseExtraArgs(text, CATALOG).some(
+        (d) => d.level === "error" && d.message.includes("does not read"),
+      ),
+      text,
+    );
+  }
+  // A managed flag keeps the message that names the control owning it.
+  assert.ok(
+    diagnoseExtraArgs("--parallel=8", CATALOG).every(
+      (d) => !d.message.includes("does not read"),
+    ),
+  );
+  // And an "=" inside a VALUE is the value's own syntax, not an attached one. This
+  // fixture's help does not list --override-kv, hence the unrelated warning.
+  assert.ok(
+    diagnoseExtraArgs("--override-kv a=int:2", CATALOG).every(
+      (d) => d.level !== "error",
+    ),
+  );
+  assert.deepEqual(
+    sanitizeStoredExtraArgs(["--override-kv", "a=int:2"], managed),
+    ["--override-kv", "a=int:2"],
+  );
 });
