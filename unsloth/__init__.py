@@ -16,6 +16,15 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Before anything below can pull torch: on ROCm, torch hides its AOTriton flash and
+# mem-efficient SDPA kernels behind an environment variable it reads once at import. With the
+# gate shut, SDPA falls to MATH and attention memory grows with the SQUARE of the context, so
+# finetuning OOMs at a fraction of the sequence length the card can actually hold. Stdlib only,
+# and inert on every non-ROCm build. See unsloth/_rocm_attention.py.
+from ._rocm_attention import enable_rocm_aotriton_attention as _enable_rocm_aotriton_attention
+
+_enable_rocm_aotriton_attention()
+
 # Transformers 4.x imports TensorFlow / Flax merely because they are installed
 # (`processing_utils` -> `image_transforms`), breaking Unsloth, which uses neither.
 # It reads these variables once at its own import, so this has to land first. An
