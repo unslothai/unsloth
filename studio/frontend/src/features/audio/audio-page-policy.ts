@@ -26,6 +26,13 @@ const TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
 ]);
 const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+const NATIVE_TTS_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
 
 export function isTtsAudioType(
   audioType?: string | null,
@@ -37,6 +44,13 @@ export function isTtsAudioType(
         ? GGUF_TTS_AUDIO_TYPES.has(audioType)
         : TTS_AUDIO_TYPES.has(audioType)),
   );
+}
+
+export function trainedTtsCheckpointIsLoadable(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  return !audioType || !NATIVE_TTS_AUDIO_TYPES.has(audioType) || exportType === "merged";
 }
 
 type SttDownloadedStatus = {

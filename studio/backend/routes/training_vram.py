@@ -277,7 +277,11 @@ def can_load_chat_during_training(
 
         # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
         if not requested_gpu_ids and not is_gguf:
-            _selected, meta = auto_select_gpu_ids(model_name, **est_kwargs)
+            _selected, meta = auto_select_gpu_ids(
+                model_name,
+                required_override_gb = required_override_gb,
+                **est_kwargs,
+            )
             mode = meta.get("selection_mode")
             required_gb = meta.get("required_gb")
             usable_gb = meta.get("usable_gb")

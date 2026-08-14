@@ -3270,6 +3270,17 @@ _CASCADE_INDEX = {
 }
 
 
+def test_modular_manifest_is_parsed_before_fixed_denoiser_fallback(tmp_path):
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text(json.dumps(_CASCADE_INDEX))
+    decoder = snapshot / "decoder"
+    decoder.mkdir()
+    (decoder / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
 def test_a_denoiser_missing_half_its_shards_is_not_a_present_denoiser(tmp_path):
     """Shard 1 of 2 alone is not a present denoiser, and the last shard completes it."""
     snapshot = _pipeline_snapshot(

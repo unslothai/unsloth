@@ -6833,6 +6833,7 @@ class _LoadPlacement(NamedTuple):
     resolved_gpu_ids: Optional[List[int]]
     gpu_ids_are_vulkan_ordinals: bool
     diffusion_kind: Optional[bool]
+    native_required_gb: Optional[float] = None
 
 
 def _resolve_parallel_slots(request, fastapi_request: Optional[Request]) -> int:
@@ -6875,9 +6876,15 @@ async def _preflight_native_audio_placement(
                 "Load a merged checkpoint instead."
             ),
         )
+    if audio_type in ("higgs_tts2", "higgs_tts3") and sys.version_info < (3, 10):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
+        )
 
-    def _resolve() -> Optional[List[int]]:
+    def _resolve() -> tuple[Optional[List[int]], Optional[float]]:
         import utils.hardware as hardware
+        from core.inference.native_audio import native_audio_security_targets
 
         device = hardware.get_device()
         if audio_type == "minimax_music3":
@@ -6892,26 +6899,56 @@ async def _preflight_native_audio_placement(
                 raise ValueError(
                     "Native audio GPU selection is only supported on CUDA and Intel XPU."
                 )
-            return None
+            return None, None
+
+        targets = list(
+            dict.fromkeys(
+                native_audio_security_targets(
+                    config.identifier,
+                    audio_type,
+                    request.hf_token,
+                )
+            )
+        )
+        required_gb = None
+        if len(targets) > 1:
+            required_gb = 0.0
+            for target in targets:
+                target_required_gb, _metadata = hardware.estimate_required_model_memory_gb(
+                    target,
+                    hf_token = request.hf_token,
+                    training_type = None,
+                    load_in_4bit = False,
+                    max_seq_length = request.max_seq_length,
+                )
+                if target_required_gb is None:
+                    raise ValueError(
+                        f"Could not estimate GPU memory for native audio component '{target}'."
+                    )
+                required_gb += target_required_gb
         resolved, _metadata = hardware.prepare_gpu_selection(
             placement.requested_gpu_ids,
             model_name = config.identifier,
             hf_token = request.hf_token,
             load_in_4bit = False,
             max_seq_length = request.max_seq_length,
+            required_override_gb = required_gb,
         )
         if resolved and len(resolved) > 1:
             raise ValueError(
                 "Native audio models currently require one GPU. Select a single GPU; "
                 "multi-GPU sharding is not supported yet."
             )
-        return resolved
+        return resolved, required_gb
 
     try:
-        resolved = await asyncio.to_thread(_resolve)
+        resolved, required_gb = await asyncio.to_thread(_resolve)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    return placement._replace(resolved_gpu_ids = resolved)
+    return placement._replace(
+        resolved_gpu_ids = resolved,
+        native_required_gb = required_gb,
+    )
 
 
 def _inherited_batch_flags_stripped(request) -> bool:
@@ -7172,8 +7209,9 @@ def _guard_chat_load_against_training(
             except Exception as e:
                 logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
 
-    required_override_gb = (
-        _estimate_gguf_required_gb(
+    required_override_gb = placement.native_required_gb
+    if is_gguf:
+        required_override_gb = _estimate_gguf_required_gb(
             config,
             hf_token = request.hf_token,
             max_seq_length = request.max_seq_length,
@@ -7190,9 +7228,6 @@ def _guard_chat_load_against_training(
             # a confirmed diffusion runner ignores the batch flags, so no reserve for it
             is_diffusion = diffusion_kind is True,
         )
-        if is_gguf
-        else None
-    )
     # A confirmed-diffusion positive split puts only ngl/n_layers of the weights on the GPU (a
     # split the loader would drop was nulled above). Unknown classification keeps the full
     # estimate: its header was unreadable, so the layer count is too.

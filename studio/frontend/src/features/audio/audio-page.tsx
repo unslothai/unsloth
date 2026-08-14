@@ -106,6 +106,7 @@ import {
   resolveSttResidency,
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
+  trainedTtsCheckpointIsLoadable,
   sttDownloadedArtifacts,
   sttSelectionReady,
 } from "./audio-page-policy";
@@ -1842,6 +1843,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             // have none, so offering them only produces that error.
             .filter((lora) => !isMac || lora.export_type === "gguf")
             .filter((lora) => isTtsAudioType(lora.audio_type))
+            .filter((lora) =>
+              trainedTtsCheckpointIsLoadable(lora.audio_type, lora.export_type),
+            )
             .map((lora) => ({
               id: lora.adapter_path,
               name: audioModelLabel(lora.adapter_path),

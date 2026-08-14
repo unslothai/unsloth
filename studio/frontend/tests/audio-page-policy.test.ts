@@ -20,6 +20,7 @@ import {
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
   sttSelectionReady,
+  trainedTtsCheckpointIsLoadable,
 } from "../src/features/audio/audio-page-policy.ts";
 
 const audioPageSource = readFileSync(
@@ -156,6 +157,20 @@ test("Speak requires a supported TTS runtime, not any audio model", () => {
     assert.equal(isTtsAudioType(codec, true), true);
   for (const codec of ["whisper", "audio_vlm", "", null])
     assert.equal(isTtsAudioType(codec), false);
+});
+
+test("native audio training rows expose merged checkpoints but not adapters", () => {
+  for (const audioType of [
+    "higgs_tts2",
+    "moss_tts_local",
+    "moss_tts_nano",
+    "higgs_tts3",
+    "minimax_music3",
+  ]) {
+    assert.equal(trainedTtsCheckpointIsLoadable(audioType, "lora"), false);
+    assert.equal(trainedTtsCheckpointIsLoadable(audioType, "merged"), true);
+  }
+  assert.equal(trainedTtsCheckpointIsLoadable("snac", "lora"), true);
 });
 
 test("hidden MiniMax instructions are not sent to speech models", () => {
