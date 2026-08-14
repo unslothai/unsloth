@@ -426,6 +426,10 @@ function specFallbackMessage({
   switch (reason) {
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "mtp_partial_offload":
+      // Not the default copy: this build does support MTP, so telling the user to
+      // update llama.cpp would name the wrong cause and the wrong remedy.
+      return "This model does not fit entirely in VRAM, and MTP's extra state pushes more layers to the CPU than it wins back, so Auto turned it off for this load. Choose MTP in Settings to force it.";
     case "drafter_no_vram":
       // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod
       // in the drafter's place where the build has it, so only the drafter is off.

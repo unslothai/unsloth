@@ -4549,7 +4549,10 @@ class LlamaCppBackend:
         if (
             (
                 self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
-                or self._spec_fallback_reason == "runtime_error"
+                # Auto's Hybrid Mamba partial-offload stand-down engaged nothing, so the
+                # types above cannot see it -- yet the depth is what priced the rollback
+                # copies that made the placement partial, so a change can re-enable MTP.
+                or self._spec_fallback_reason in ("runtime_error", "mtp_partial_offload")
             )
             and intent.spec_draft_n_max is not None
             and intent.spec_draft_n_max != (compared_draft_n_max or 0)
@@ -15359,6 +15362,12 @@ class LlamaCppBackend:
                         and self._full_attention_interval is not None
                         and not launch_mtp_draft_path
                         and not _extra_args_set_spec_type(extra_args)
+                        # No GPU, nothing to partially offload TO. `--fit on` is also
+                        # what a CPU-only box and a Metal Mac emit (use_fit starts True
+                        # and only the planner lowers it), and there the rollback copies
+                        # cost no VRAM at all -- same reason the helper treats -ngl 0 as
+                        # CPU-only rather than partial. Those keep the CPU MTP policy.
+                        and _detected_gpus
                         and self._partially_offloads_layers(
                             [*cmd, *(extra_args or [])],
                             _spec_placement_env,
@@ -17550,6 +17559,14 @@ class LlamaCppBackend:
             flags.extend(["--spec-type", "none"])
             self._speculative_type = "none"
             self._spec_fallback_reason = "mtp_partial_offload"
+            # Record the depth this decision was made at (user override only, as
+            # everywhere else). The rollback copies priced into the fit are
+            # base_recurrent * spec_draft_n_max, so a changed depth can move the
+            # placement and must reload -- and without a recorded value the
+            # comparison in _runtime_matches_intent would see 0 forever and reload
+            # on every Apply instead of once.
+            if spec_draft_n_max is not None:
+                self._spec_draft_n_max = int(spec_draft_n_max)
             return flags
 
         # effective_mode == "auto": the promotion path. No vision gate on any drafter

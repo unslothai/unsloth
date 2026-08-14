@@ -361,11 +361,11 @@ def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
 # ── Auto drops a drafter the VRAM cannot hold ─────────────────────────
 
 
-def _hybrid_mtp_backend(tmp_path: Path, *, partial_offload: bool):
+def _hybrid_mtp_backend(tmp_path: Path, *, partial_offload: bool, memory = None):
     backend, gguf = _backend(
         tmp_path,
         vulkan = False,
-        memory = [(0, 12 * 1024, 12 * 1024)],
+        memory = [(0, 12 * 1024, 12 * 1024)] if memory is None else memory,
     )
 
     def read_metadata(_path):
@@ -485,6 +485,49 @@ def test_auto_keeps_embedded_hybrid_mtp_without_manual_partial_layers(tmp_path, 
     assert cmd[cmd.index("--gpu-layers") + 1] == str(gpu_layers)
     assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
     assert backend.spec_fallback_reason is None
+
+
+def test_auto_keeps_embedded_hybrid_mtp_without_a_gpu(tmp_path):
+    # No GPU is probed, so nothing selects a placement and `--fit on` stays --
+    # the same command a CPU-only box and a Metal Mac emit. There is nothing to
+    # partially offload to there, and the rollback copies cost no VRAM, so the
+    # CPU MTP policy stands.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert "draft-mtp" in cmd[cmd.index("--spec-type") + 1]
+    assert backend.spec_fallback_reason is None
+
+
+def test_partial_offload_stand_down_records_the_draft_depth_it_decided_at(tmp_path):
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        spec_draft_n_max = 3,
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
+    # Nothing drafts, so the flag is not emitted -- but the depth priced the
+    # rollback copies that made this placement partial, so it is recorded for the
+    # reload comparison (test_llama_cpp_mtp_detection.py owns that half).
+    assert "--spec-draft-n-max" not in cmd
+    assert backend.spec_draft_n_max == 3
 
 
 def test_auto_disables_embedded_hybrid_mtp_for_final_partial_layer_override(tmp_path):

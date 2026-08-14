@@ -1316,6 +1316,27 @@ def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
     assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
 
 
+@pytest.mark.parametrize(
+    ("decided_at", "requested", "expected_match"),
+    [(2, 1, False), (2, 2, True), (None, 1, False), (1, 1, True)],
+)
+def test_partial_offload_stand_down_follows_the_draft_depth(
+    decided_at, requested, expected_match
+):
+    # Auto's Hybrid Mamba stand-down engages nothing, so _speculative_type is
+    # "none" and the draft-mode arms cannot see it -- but the depth is what priced
+    # the rollback copies that made the placement partial, so a change must rerun
+    # the fit. The recorded value is what keeps that at one reload: an unrecorded
+    # depth compares against 0 forever and reloads on every Apply.
+    backend = _mtp_backend(
+        _requested_spec_mode = "auto",
+        _speculative_type = "none",
+        _spec_draft_n_max = decided_at,
+        _spec_fallback_reason = "mtp_partial_offload",
+    )
+    assert _draft_n_max_matches(backend, requested) is expected_match
+
+
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
     # ngram-mod backend; spec_draft_n_max is MTP-only and must not force
     # a reload against a non-MTP active spec.
