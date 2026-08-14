@@ -385,15 +385,24 @@ class StudioHost:
         *,
         max_tokens: int = EXTRACT_MAX_TOKENS,
     ) -> str:
+        # Pin both token fields: Studio prefers max_completion_tokens when set.
+        # Strip leftover tool surfaces; tools_force_disabled beats CLI --enable-tools.
+        from state.tool_policy import tools_force_disabled
+
         payload = self.payload.model_copy(deep = True)
         payload.model = self.inner_model or "default"
         payload.stream = False
         payload.enable_tools = False
+        payload.mcp_enabled = False
+        payload.tools = None
+        payload.tool_choice = "none"
         payload.max_tokens = max_tokens
+        payload.max_completion_tokens = max_tokens
         payload.messages = _as_chat_messages(messages)
         token = _INNER.set(True)
         try:
-            resp = await self.inner(payload, self.request, self.current_subject)
+            with tools_force_disabled():
+                resp = await self.inner(payload, self.request, self.current_subject)
         finally:
             _INNER.reset(token)
         return _choice_text(_response_payload(resp))

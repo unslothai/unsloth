@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -198,6 +199,9 @@ def test_studio_host_complete_is_one_shot_no_tools():
     )
     if spec is None or spec.loader is None:
         pytest.skip("StudioHost import is heavy")
+    backend = str(path.parents[1])
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
     try:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -211,7 +215,11 @@ def test_studio_host_complete_is_one_shot_no_tools():
             self.model = "unforgettable"
             self.stream = True
             self.enable_tools = True
-            self.max_tokens = None
+            self.mcp_enabled = True
+            self.tools = [{"type": "function", "function": {"name": "terminal"}}]
+            self.tool_choice = "auto"
+            self.max_tokens = 64
+            self.max_completion_tokens = 8192
             self.messages = []
             self.session_id = "world"
             self.thread_id = None
@@ -221,7 +229,11 @@ def test_studio_host_complete_is_one_shot_no_tools():
             clone.model = self.model
             clone.stream = self.stream
             clone.enable_tools = self.enable_tools
+            clone.mcp_enabled = self.mcp_enabled
+            clone.tools = list(self.tools) if self.tools is not None else None
+            clone.tool_choice = self.tool_choice
             clone.max_tokens = self.max_tokens
+            clone.max_completion_tokens = self.max_completion_tokens
             clone.messages = list(self.messages)
             clone.session_id = self.session_id
             clone.thread_id = self.thread_id
@@ -232,13 +244,24 @@ def test_studio_host_complete_is_one_shot_no_tools():
     async def inner(payload, request, subject):
         seen["stream"] = payload.stream
         seen["enable_tools"] = payload.enable_tools
+        seen["mcp_enabled"] = payload.mcp_enabled
+        seen["tools"] = payload.tools
+        seen["tool_choice"] = payload.tool_choice
         seen["model"] = payload.model
         seen["max_tokens"] = payload.max_tokens
+        seen["max_completion_tokens"] = payload.max_completion_tokens
         seen["inner"] = mod.in_inner_generate()
+        try:
+            from state.tool_policy import get_tool_policy
+
+            seen["tool_policy"] = get_tool_policy()
+        except Exception:
+            seen["tool_policy"] = None
         return {"choices": [{"message": {"content": "[]"}}]}
 
+    source = _Payload()
     host = mod.StudioHost(
-        _Payload(),
+        source,
         request=None,
         current_subject="u",
         inner=inner,
@@ -248,7 +271,14 @@ def test_studio_host_complete_is_one_shot_no_tools():
     assert text == "[]"
     assert seen["stream"] is False
     assert seen["enable_tools"] is False
+    assert seen["mcp_enabled"] is False
+    assert seen["tools"] is None
+    assert seen["tool_choice"] == "none"
     assert seen["model"] == "qwen-inner"
     assert seen["max_tokens"] == EXTRACT_MAX_TOKENS
+    assert seen["max_completion_tokens"] == EXTRACT_MAX_TOKENS
     assert seen["inner"] is True
+    assert seen["tool_policy"] is False
     assert mod.in_inner_generate() is False
+    assert source.max_completion_tokens == 8192
+    assert source.mcp_enabled is True
