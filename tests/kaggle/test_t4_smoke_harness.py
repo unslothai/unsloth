@@ -1947,6 +1947,114 @@ def test_an_unreadable_report_file_is_a_failure_rather_than_a_silence(tmp_path, 
     assert len(reports) == 1 and reports[0]["passed"] is False
 
 
+def _drive_verify_cell(
+    tmp_path,
+    monkeypatch,
+    *,
+    import_raises = None,
+    on_module = "transformers",
+    pip_check = "",
+):
+    """Execute the generated verify cell against a stubbed environment.
+
+    The cell is what stands between a leg that cannot run and a launcher that
+    extracts no report for it, and no report is `partial` or `infra`, both of
+    which exit 0. So it is executed rather than pattern matched, like the run
+    cell above.
+
+    torch is stubbed to one healthy card because the GPU probe in the middle of
+    the cell re-raises on anything it dislikes.
+    """
+    import contextlib
+    import importlib
+    import io
+    import types
+
+    payload = _payload_notebooks(_build(tmp_path, "control"))["t4_control.ipynb"]
+    source = _cell(payload, 2)
+
+    cuda = types.SimpleNamespace(
+        device_count = lambda: 1,
+        is_available = lambda: True,
+        get_device_name = lambda _index: "Tesla T4",
+    )
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(cuda = cuda))
+
+    def fake_import(name, *args, **kwargs):
+        if import_raises is not None and name == on_module:
+            raise import_raises
+        return types.ModuleType(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: types.SimpleNamespace(
+            # Nonzero whenever pip has anything to say, which on the Kaggle
+            # image it usually does: the exit code belongs to the whole
+            # environment and only some of the lines belong to this leg.
+            returncode = 1 if pip_check else 0,
+            stdout = pip_check,
+            stderr = "",
+        ),
+    )
+
+    buffer = io.StringIO()
+    raised: BaseException | None = None
+    with contextlib.redirect_stdout(buffer):
+        try:
+            exec(compile(source, "verify_cell", "exec"), {"__name__": "__main__"})  # noqa: S102
+        except BaseException as exc:  # noqa: BLE001
+            raised = exc
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(exist_ok = True)
+    (evidence / "kernel.log").write_text(buffer.getvalue(), encoding = "utf-8")
+    from launch import extract_reports
+
+    return raised, buffer.getvalue(), extract_reports(evidence)
+
+
+def test_a_dependency_that_exits_the_process_on_import_still_leaves_a_verdict(
+    tmp_path, monkeypatch
+):
+    """`sys.exit()` inside an imported package is not an Exception.
+
+    SystemExit derives from BaseException expressly "so that it is not
+    accidentally caught by code that catches Exception", and an accelerator or
+    version guard that calls sys.exit() at import time is how a payload meets
+    one. Uncaught, it aborted this cell before the report below was written,
+    the run cell was never reached, and a leg that reports nothing is `partial`
+    or `infra` at the launcher -- both green. transformers is not a
+    hypothetical carrier either: it defines OptionalDependencyNotAvailable as a
+    BaseException subclass and raises it at module scope, and its own lazy
+    loader re-raises only Exception.
+    """
+    raised, stdout, reports = _drive_verify_cell(
+        tmp_path, monkeypatch, import_raises = SystemExit("no supported accelerator")
+    )
+    assert "KAGGLE_T4_CI_PAYLOAD MISSING" in stdout
+    assert len(reports) == 1, stdout
+    assert reports[0]["passed"] is False
+    assert any("transformers: SystemExit" in f for f in reports[0]["failures"])
+    # And it still stops the payload rather than running on half a stack.
+    assert isinstance(raised, SystemExit)
+
+
+def test_an_interrupted_probe_is_not_reported_as_a_missing_dependency(tmp_path, monkeypatch):
+    """The one BaseException that is not the package's fault.
+
+    KeyboardInterrupt is the runner cancelling the job, and recording it as a
+    broken dependency would make a cancelled run indistinguishable from a
+    regression while stopping the interpreter from exiting.
+    """
+    raised, _stdout, reports = _drive_verify_cell(
+        tmp_path, monkeypatch, import_raises = KeyboardInterrupt()
+    )
+    assert isinstance(raised, KeyboardInterrupt)
+    assert reports == []
+
+
 def test_the_sources_are_materialised_before_the_first_install(tmp_path):
     """The control leg installs from a pin file carried inside the notebook.
 

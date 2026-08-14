@@ -270,7 +270,16 @@ missing = []
 for mod in {json.dumps(list(leg.imports))}:
     try:
         importlib.import_module(mod)
-    except Exception as exc:
+    # BaseException, for the reason the GPU probe below gives: an import that
+    # ends in `sys.exit()` raises SystemExit, which is NOT an Exception, and a
+    # package refusing an accelerator or a version at import time is exactly
+    # how that happens. Uncaught it aborts this cell before the report below
+    # is written, the run cell never runs, and a leg that reported nothing is
+    # `partial` or `infra` at the launcher -- both green. KeyboardInterrupt is
+    # re-raised: that is the runner cancelling the job, not a bad dependency.
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt):
+            raise
         missing.append(f"{{mod}}: {{type(exc).__name__}}: {{exc}}")
 if missing:
     print("{PAYLOAD_SENTINEL} MISSING " + json.dumps(missing), flush=True)
@@ -328,6 +337,7 @@ except BaseException as exc:
         "failures": ["the payload could not use its GPU -- " + detail],
     }}), flush=True)
     raise
+
 """
 
     argv = list(leg.args) + _shared_args_for(leg, tuple(extra_args))
