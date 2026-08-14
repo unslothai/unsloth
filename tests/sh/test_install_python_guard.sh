@@ -343,6 +343,25 @@ assert_eq "a path to a supported interpreter is accepted" \
 assert_eq "a path that cannot be run is left to the steps that resolve it" \
     "accepted" "$(run_python_gate "$_FAKE_DIR/does-not-exist")"
 rm -rf "$_FAKE_DIR"
+# A bare name on PATH is as common a spelling as a version or a path, and uv venv
+# --python accepts it, so it reached the same 3.11-only plugins under a third name.
+_BARE_DIR=$(mktemp -d)
+printf '#!/bin/sh\necho "3.9"\n' > "$_BARE_DIR/python3.9"
+printf '#!/bin/sh\necho "3.12"\n' > "$_BARE_DIR/python3.12"
+chmod +x "$_BARE_DIR/python3.9" "$_BARE_DIR/python3.12"
+assert_eq "a bare interpreter name on PATH is rejected when unsupported" \
+    "rejected" "$(PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.9 >/dev/null 2>&1 && echo accepted || echo rejected)"
+assert_eq "a bare interpreter name on PATH is accepted when supported" \
+    "accepted" "$(PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.12 >/dev/null 2>&1 && echo accepted || echo rejected)"
+assert_eq "a bare name that is not on PATH is left to the steps that resolve it" \
+    "accepted" "$(run_python_gate python3.9-does-not-exist)"
+# A three-field answer from a wrapper on PATH is still a version, not an abort: the
+# probe asks for two fields, but nothing stops a shim printing "3.9.1".
+printf '#!/bin/sh\necho "3.9.1"\n' > "$_BARE_DIR/python3.9-verbose"
+chmod +x "$_BARE_DIR/python3.9-verbose"
+assert_eq "a three-field probe answer is judged, not aborted on" \
+    "rejected" "$(PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.9-verbose 2>&1 | grep -q 'Illegal number' && echo aborted || (PATH="$_BARE_DIR:$PATH" sh "$_GATE" python3.9-verbose >/dev/null 2>&1 && echo accepted || echo rejected))"
+rm -rf "$_BARE_DIR"
 assert_eq "a uv download name passes through" \
     "accepted" "$(run_python_gate cpython-3.12-linux-aarch64-none)"
 assert_eq "a prerelease string passes through instead of aborting dash" \
