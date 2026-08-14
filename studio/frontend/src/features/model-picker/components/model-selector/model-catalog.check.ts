@@ -293,23 +293,36 @@ assert.deepEqual(
   curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG),
 );
 
-// A gguf-only host is offered only what it can load. Every video and image group that still
-// appears must have a GGUF artifact behind it.
+// A gguf-only host loses exactly the artifacts the backend refuses there, and keeps the rest.
+// Non-GGUF is NOT the test: the diffusion pipelines are device-neutral and run on MPS, and the
+// audio STT rows run through the whisper.cpp sidecar whatever format the catalog labels them.
+for (const [label, catalog, refused] of [
+  ["video", VIDEO_CATALOG, ["MiniMaxAI/MiniMax-H3"]],
+  ["image", IMAGE_CATALOG, []],
+  ["audio", AUDIO_CATALOG, []],
+] as const) {
+  const all = catalogToModelOptions(catalog).map((o) => o.id);
+  const offered = catalogToModelOptions(catalog, "gguf-only").map((o) => o.id);
+  assert.deepEqual(
+    all.filter((id) => !offered.includes(id)),
+    [...refused],
+    `${label}: a gguf-only host lost a row it can load`,
+  );
+}
+// Every group keeps at least one row on a gguf-only host: a Mac must never open a picker with a
+// whole model family missing (H3 keeps its GGUF sibling).
 for (const [label, catalog] of [
   ["video", VIDEO_CATALOG],
   ["image", IMAGE_CATALOG],
+  ["audio", AUDIO_CATALOG],
 ] as const) {
-  const offered = catalogToModelOptions(catalog, "gguf-only");
-  assert.ok(
-    offered.every((option) => option.isGguf),
-    `${label}: a gguf-only host was offered a row it cannot load`,
-  );
-  // Groups with no GGUF artifact drop out entirely, and that is the intended result rather than
-  // something to "repair" by re-adding an unusable row.
-  const ggufGroups = catalog.filter((group) =>
-    group.artifacts.some((artifact) => artifact.format === "gguf"),
-  ).length;
-  assert.equal(offered.length, ggufGroups, `${label}: one GGUF row per group that has one`);
+  const offered = new Set(catalogToModelOptions(catalog, "gguf-only").map((o) => o.id));
+  for (const group of catalog) {
+    assert.ok(
+      group.artifacts.some((artifact) => offered.has(artifact.repoId)),
+      `${label}: "${group.displayName}" vanished on a gguf-only host`,
+    );
+  }
 }
 // An undiscovered host keeps today's rows, so the picker does not blink on first open.
 assert.deepEqual(

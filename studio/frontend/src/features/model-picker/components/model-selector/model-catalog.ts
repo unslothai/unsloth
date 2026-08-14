@@ -804,7 +804,7 @@ export function catalogToModelOptions(
       // A host that can only run the native engine is not offered the pipeline rows it would be
       // refused at load. This is the one place the `models` prop is built, so filtering here
       // covers the trigger name and the picker's seed ids together.
-      if (!curatedArtifactIsOfferable(artifact.format, host)) continue;
+      if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
       options.push({
         id: artifact.repoId,
         name: curatedDisplayNameFor(artifact.repoId, catalog, host) ?? group.displayName,

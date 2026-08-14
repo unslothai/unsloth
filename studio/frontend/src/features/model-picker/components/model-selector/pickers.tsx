@@ -3039,7 +3039,7 @@ export function HubModelPicker({
       // them, and hiding what is already on disk reads as Studio having lost the model.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
-      return hit ? curatedArtifactIsOfferable(hit.artifact.format, hostClass) : true;
+      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
     },
     [catalog, downloadedSet, hostClass],
   );

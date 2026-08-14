@@ -64,19 +64,36 @@ test("an unrecognised backend is treated as new hardware, not as a CPU", () => {
   );
 });
 
-test("only a gguf-only host drops the non-GGUF rows", () => {
-  assert.equal(curatedArtifactIsOfferable("bf16", "gguf-only"), false);
-  assert.equal(curatedArtifactIsOfferable("fp8", "gguf-only"), false);
-  assert.equal(curatedArtifactIsOfferable("bnb-4bit", "gguf-only"), false);
-  assert.equal(curatedArtifactIsOfferable("gguf", "gguf-only"), true);
+test("a gguf-only host drops the one pipeline the backend refuses, and nothing else", () => {
+  assert.equal(
+    curatedArtifactIsOfferable("MiniMaxAI/MiniMax-H3", "gguf-only"),
+    false,
+  );
   for (const host of ["unknown", "accelerated"] as const) {
-    for (const format of ["bf16", "fp8", "bnb-4bit", "gguf"] as const) {
-      assert.equal(
-        curatedArtifactIsOfferable(format, host),
-        true,
-        `${host}/${format}`,
-      );
-    }
+    assert.equal(
+      curatedArtifactIsOfferable("MiniMaxAI/MiniMax-H3", host),
+      true,
+      host,
+    );
+  }
+});
+
+test("a gguf-only host keeps every non-GGUF row the backend can still load", () => {
+  // Each of these is a load Studio supports on Apple Silicon or CPU today: the diffusion
+  // pipelines are device-neutral (video_capability() certifies Apple Silicon, and
+  // diffusion_device.py picks MPS bfloat16 for exactly these), and the STT rows run through
+  // the whisper.cpp sidecar, whose format label in the catalog is informational only.
+  for (const id of [
+    "unsloth/whisper-large-v3-turbo",
+    "unsloth/whisper-tiny",
+    "unsloth/csm-1b",
+    "stabilityai/sdxl-turbo",
+    "Tongyi-MAI/Z-Image-Turbo",
+    "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+    "Lightricks/LTX-2",
+    "unsloth/MiniMax-H3-GGUF",
+  ]) {
+    assert.equal(curatedArtifactIsOfferable(id, "gguf-only"), true, id);
   }
 });
 

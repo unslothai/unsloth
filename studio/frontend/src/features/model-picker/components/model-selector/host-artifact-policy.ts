@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ArtifactFormat } from "./model-catalog.ts";
-
 /**
  * What the host can actually run, as opposed to what fits on it.
  *
@@ -42,19 +40,32 @@ export function classifyHost({
   return "unknown";
 }
 
+/** The H3 group, whose two rows differ by roughly 10x in throughput. */
+const H3_PIPELINE_ID = "minimaxai/minimax-h3";
+
+/**
+ * The curated artifacts a host without an accelerator is refused at load, by repo id.
+ *
+ * Keyed on the id, NOT on `format !== "gguf"`. Everything else in the catalogs loads here: the
+ * diffusion pipelines resolve their device through the shared target and run on MPS (Z-Image is
+ * tuned for MPS bfloat16 by name), video_capability() certifies Apple Silicon, and the STT rows
+ * run through the whisper.cpp sidecar whatever format the catalog labels them. Only MiniMax-H3's
+ * Modular Diffusers workflow is genuinely unplaceable: enable_auto_cpu_offload needs
+ * mem_get_info, torch.mps has none, and video.py raises before the download.
+ */
+const UNPLACEABLE_WITHOUT_ACCELERATOR = new Set([H3_PIPELINE_ID]);
+
 /** Whether a curated artifact is worth offering on this host.
  *
  * Only browse rows are filtered. A model already on disk keeps its row wherever it came from. */
 export function curatedArtifactIsOfferable(
-  format: ArtifactFormat,
+  repoId: string,
   host: HostClass,
 ): boolean {
   if (host !== "gguf-only") return true;
-  return format === "gguf";
+  return !UNPLACEABLE_WITHOUT_ACCELERATOR.has(repoId.trim().toLowerCase());
 }
 
-/** The H3 group, whose two rows differ by roughly 10x in throughput. */
-const H3_PIPELINE_ID = "minimaxai/minimax-h3";
 const H3_GGUF_ID = "unsloth/minimax-h3-gguf";
 
 /**
