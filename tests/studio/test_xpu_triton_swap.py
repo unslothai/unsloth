@@ -46,7 +46,17 @@ def _load_real_index_env_scrub():
     from pathlib import Path as _Path
 
     src = STACK.read_text(encoding = "utf-8")
-    ns: dict = {"os": _os, "sys": _sys, "tempfile": _tempfile, "Path": _Path}
+    # The projection registers its temp dir with the module's own exit hook.
+    _sys.path.insert(0, str(REPO / "studio"))
+    from backend.utils.uv_path_safety import register_tmpdir_for_cleanup as _register
+
+    ns: dict = {
+        "os": _os,
+        "sys": _sys,
+        "tempfile": _tempfile,
+        "Path": _Path,
+        "_register_tmpdir": _register,
+    }
     for anchor, end, keep in (
         ("IS_WINDOWS = ", "\n", 0),
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),

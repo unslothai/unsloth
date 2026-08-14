@@ -28,6 +28,15 @@ def _cleanup_uv_safe_path_tmpdirs() -> None:
         shutil.rmtree(_UV_SAFE_PATH_TMPDIRS.pop(), ignore_errors = True)
 
 
+def register_tmpdir_for_cleanup(path: object) -> None:
+    """Have an installer temp directory removed by the exit hook above.
+
+    For the other short-lived files handed to uv by path: they outlive the call that
+    creates them and must not outlive the process.
+    """
+    _UV_SAFE_PATH_TMPDIRS.append(str(path))
+
+
 def uv_safe_path(path: object) -> str:
     s = str(path)
     if " " not in s:

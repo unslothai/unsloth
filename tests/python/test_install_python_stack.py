@@ -712,6 +712,20 @@ class TestStrictPmPolicyOptOut:
             )["UV_CONFIG_FILE"]
         assert first == second
 
+    def test_the_projection_does_not_outlive_the_process(self, tmp_path, monkeypatch):
+        """It is a temp file handed to uv by path, so it goes where the other ones go:
+        the exit hook uv_path_safety already registers."""
+        from backend.utils import uv_path_safety as uvps
+
+        path = Path(
+            self._pinned_env(
+                tmp_path, monkeypatch, "no-build = true\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+            )["UV_CONFIG_FILE"]
+        )
+        assert str(path.parent) in uvps._UV_SAFE_PATH_TMPDIRS
+        uvps._cleanup_uv_safe_path_tmpdirs()
+        assert not path.exists()
+
     def test_the_default_mode_carries_no_file_policy_into_a_pinned_command(
         self, tmp_path, monkeypatch
     ):
