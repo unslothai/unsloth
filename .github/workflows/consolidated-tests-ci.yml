@@ -291,7 +291,11 @@ jobs:
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
-          python -m pytest --collect-only -q "$RUNNER_TEMP/unsloth-zoo/tests/"
+          # Collect from the zoo checkout, not from here: this repo ships a real
+          # tests/ package, so a zoo test doing "from tests.foo import bar" binds
+          # "tests" to OUR package and dies with ModuleNotFoundError. The later
+          # full zoo runs already set working-directory for the same reason.
+          (cd "$RUNNER_TEMP/unsloth-zoo" && python -m pytest --collect-only -q tests/)
 
       - name: import_fixes drift detectors (18 tests, HARD GATE)
         # One drift detector per fix_* / patch_* function in

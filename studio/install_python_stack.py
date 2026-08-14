@@ -63,6 +63,23 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     or IS_MAC_INTEL
 )
 
+
+def _is_windows_arm64() -> bool:
+    """Windows on ARM, machine arch rather than process arch: platform.machine() reports
+    AMD64 under an emulated x64 Python, and PROCESSOR_ARCHITEW6432 is ARM64 in exactly
+    that case. Mirrors Get-HostMachineArch in install.ps1 / setup.ps1."""
+    if not IS_WINDOWS:
+        return False
+    return any(
+        (value or "").strip().lower() in {"arm64", "aarch64"}
+        for value in (
+            os.environ.get("PROCESSOR_ARCHITEW6432"),
+            os.environ.get("PROCESSOR_ARCHITECTURE"),
+            platform.machine(),
+        )
+    )
+
+
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Detected ROCm (major, minor) -> best PyTorch wheel tag on
 # download.pytorch.org. Checked newest-first (>=).
@@ -964,11 +981,52 @@ def _detect_windows_gfx_arch() -> str | None:
                 return _pick
             if _names and not _pick:
                 # No arch means CPU-only torch; name the adapter instead of failing silently.
-                _safe_print(
-                    f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
-                    f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
-                    f"(e.g. gfx1200) to install AMD wheels."
-                )
+                # RDNA 1 / Polaris is not an unknown card: naming an override there
+                # sends the user after a fix that does not exist (#8529, #8458).
+                _unsupported = _unsupported_gfx_arch_from_gpu_name(_names[_sel])
+                if _unsupported:
+                    # The CPU-only half is false under an explicit index pin, which is
+                    # honoured for any arch, so a pinned run says what it is doing instead.
+                    _pinned = bool(
+                        (os.environ.get("UNSLOTH_TORCH_INDEX_URL") or "").strip()
+                        or (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
+                    )
+                    _tail = (
+                        "so the torch index you pinned is used as given."
+                        if _pinned
+                        else (
+                            "so torch will be CPU-only. No HIP SDK install and "
+                            "no UNSLOTH_ROCM_GFX_ARCH value changes that on this GPU."
+                        )
+                    )
+                    _safe_print(
+                        f"   [WARN] '{_names[_sel]}' is {_unsupported}, which Unsloth's ROCm "
+                        f"PyTorch wheels do not cover, {_tail}"
+                    )
+                    # Torch ends here, llama.cpp does not: Vulkan drives these cards
+                    # (#8458 ran an RX 580 through it). PowerShell syntax because this
+                    # branch is Windows-only: a pasted VAR=value parses there as a
+                    # command name and sets nothing. Not on ARM64: setup.ps1 THROWS on
+                    # that variable there, so this would abort the next update.
+                    if _is_windows_arm64():
+                        _safe_print(
+                            "   [INFO] GGUF chat would need Vulkan on this GPU, and no "
+                            "Windows ARM64 Vulkan bundle is published: build llama.cpp "
+                            "from source, or run this on x64."
+                        )
+                    else:
+                        _safe_print(
+                            "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
+                            '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                            "It selects the llama.cpp bundle at install time, so setting it "
+                            "afterwards has no effect until you install or update again."
+                        )
+                else:
+                    _safe_print(
+                        f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
+                        f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
+                        f"(e.g. gfx1200) to install AMD wheels."
+                    )
     except Exception:
         pass
     return None
@@ -1007,6 +1065,41 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
     if not name:
         return None
     for _pat, _arch in _WIN_GPU_NAME_ARCH_TABLE:
+        if re.search(_pat, name, re.IGNORECASE):
+            return _arch
+    return None
+
+
+# GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover: RDNA 1
+# and Polaris 10/20/30 (unslothai#8529, #8458). Deliberately SEPARATE from
+# _WIN_GPU_NAME_ARCH_TABLE: nothing here may ever route to a wheel index. AMD's TheRock
+# ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never gfx803.
+# Every (?!0) guard stops "RX 570" swallowing "RX 5700", so each row is correct on its
+# own regardless of order. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids
+# for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12
+# (RX 460/550/560, a different die) is left out.
+_UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
+    (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
+    (
+        r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700",
+        "gfx1010",
+    ),  # RDNA 1 (Navi 10)
+    (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),  # RDNA 1 (Navi 14)
+    (
+        r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100",
+        "gfx803",
+    ),  # Polaris 10/20/30
+]
+
+
+def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
+    """Name the gfx arch of a GPU whose generation Unsloth has no ROCm wheels for.
+
+    Messaging only. Callers must not feed the result into index selection.
+    """
+    if not name:
+        return None
+    for _pat, _arch in _UNSUPPORTED_GPU_NAME_ARCH_TABLE:
         if re.search(_pat, name, re.IGNORECASE):
             return _arch
     return None
