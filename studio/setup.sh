@@ -1798,9 +1798,10 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # positively reports no such package or its payload is gone: a leftover dist-info
 # with the payload deleted still reports a version, so the verdict comes from the
 # recorded files themselves -- everything the RECORD places under the install must
-# exist on disk, data included: the wheel ships runtime payload that is not .py
-# (unsloth_cli/pi_subagent.ts, studio/frontend/dist), and start.py fails outright
-# without it. Existence via locate_file, not find_spec: an emptied package
+# exist on disk, and not as an empty file where RECORD says bytes, data included:
+# the wheel ships runtime payload that is not .py (unsloth_cli/pi_subagent.ts,
+# studio/frontend/dist), and start.py fails outright without it. Existence via
+# locate_file, not find_spec: an emptied package
 # directory still answers find_spec as a namespace package, a same-name copy
 # reachable through a .pth hook answers for a deleted managed payload, and neither
 # sees a nested file a partial quarantine took while every initializer survived.
@@ -1825,13 +1826,21 @@ d = next((x for x in importlib.metadata.distributions(path=_paths) if _norm(x.me
 if d is None:
     print('POSTVER=__MISSING__')
     sys.exit(0)
-rec = [PurePosixPath(r[0]) for r in csv.reader((d.read_text('RECORD') or '').splitlines()) if r and r[0]]
-payload = [f for f in rec if not f.is_absolute() and f.parts[0] != '..'
+rows = [r for r in csv.reader((d.read_text('RECORD') or '').splitlines()) if r and r[0]]
+payload = [(f, sz) for f, sz in ((PurePosixPath(r[0]), (r[2] if len(r) > 2 else '').strip()) for r in rows)
+    if not f.is_absolute() and f.parts[0] != '..'
     and not f.parts[0].endswith('.dist-info')
     and '__pycache__' not in f.parts and f.suffix not in ('.pyc', '.pyo')]
+def intact(f, sz):
+    # present AND not empty where RECORD says bytes -- the unambiguous truncation
+    # signature. An exact size compare would also flag a hand-patched file, and
+    # editing an installed module in place is a real support workaround here, so
+    # only the zero-byte case reads as damage.
+    p = d.locate_file(f)
+    return p.exists() and not (sz.isdigit() and int(sz) > 0 and p.stat().st_size == 0)
 tops = (d.read_text('top_level.txt') or '').split()
 if payload:
-    broken = not all(d.locate_file(f).exists() for f in payload)
+    broken = not all(intact(f, sz) for f, sz in payload)
 elif tops:
     broken = not all(importlib.util.find_spec(t) for t in tops if t)
 else:
@@ -1984,15 +1993,21 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         fi
         # A quarantined payload leaves dist-info reporting current while the canonical
         # import is gone; the metadata compare above cannot see that, so the fast path
-        # stands only after the payload probe answers. Substring match on the sentinel:
-        # a crashed or silent probe says nothing about the venv and leaves the fast
-        # path alone.
+        # stands only after the payload probe answers. The probe's version must also
+        # match the one that took the fast path: INSTALLED_VER above came from the
+        # default sys.path lookup, which an executable .pth can satisfy with a current
+        # external copy while the managed install sits stale -- the probe answers for
+        # the managed one only. A crashed or silent probe says nothing about the venv
+        # and leaves the fast path alone.
         if [ "$_SKIP_PYTHON_DEPS" = true ]; then
-            case "$({ "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" 2>/dev/null || true; })" in
-                *"POSTVER=__MISSING__"*)
-                    substep "$_PKG_NAME metadata is current but its modules are missing -- forcing dependency pass to repair..."
-                    _SKIP_PYTHON_DEPS=false ;;
-            esac
+            _FAST_VER=$({ "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" 2>/dev/null || true; } | sed -n 's/^POSTVER=//p' | tail -n 1)
+            if [ "$_FAST_VER" = "__MISSING__" ]; then
+                substep "$_PKG_NAME metadata is current but its modules are missing -- forcing dependency pass to repair..."
+                _SKIP_PYTHON_DEPS=false
+            elif [ -n "$_FAST_VER" ] && [ "$_FAST_VER" != "$LATEST_VER" ]; then
+                substep "managed $_PKG_NAME is at $_FAST_VER, not $LATEST_VER -- forcing dependency pass to update..."
+                _SKIP_PYTHON_DEPS=false
+            fi
         fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."

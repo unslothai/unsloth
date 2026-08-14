@@ -4776,7 +4776,10 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # positively reports no such package or its payload is gone: a leftover dist-info
 # with the payload deleted still reports a version, so the verdict comes from the
 # recorded files themselves -- everything the RECORD places under the install must
-# exist on disk, data included: the wheel ships runtime payload that is not .py
+# exist on disk, and not as an empty file where RECORD says bytes: that is the
+# unambiguous truncation signature, while an exact size compare would also flag a
+# hand-patched module, and editing an installed file in place is a real support
+# workaround here. Data included: the wheel ships runtime payload that is not .py
 # (unsloth_cli/pi_subagent.ts, studio/frontend/dist), and start.py fails outright
 # without it. Existence via locate_file, not find_spec: an emptied package
 # directory still answers find_spec as a namespace package, a same-name copy
@@ -4795,7 +4798,7 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # PYTHONPATH and working-directory entries dropped from sys.path first (python -c
 # leaves the inherited cwd on sys.path; the shell probe's -I covers both). Names
 # are PEP 503-normalized on both sides, matching importlib.metadata's own lookup.
-$_pkgProbeCode = "import csv, os, site, sys, sysconfig; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _paths = [_lp for _lp in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if _lp]; _d = next((d for d in m.distributions(path=_paths) if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _rec = [PurePosixPath(_r[0]) for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _pay = [_f for _f in _rec if not _f.is_absolute() and _f.parts[0] != '..' and not _f.parts[0].endswith('.dist-info') and '__pycache__' not in _f.parts and _f.suffix not in ('.pyc', '.pyo')]; _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _broken = (not all(_d.locate_file(_f).exists() for _f in _pay)) if _pay else ((not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else False); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
+$_pkgProbeCode = "import csv, os, site, sys, sysconfig; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _paths = [_lp for _lp in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if _lp]; _d = next((d for d in m.distributions(path=_paths) if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _rows = [_r for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _pay = [(_f, _sz) for _f, _sz in ((PurePosixPath(_r[0]), (_r[2] if len(_r) > 2 else '').strip()) for _r in _rows) if not _f.is_absolute() and _f.parts[0] != '..' and not _f.parts[0].endswith('.dist-info') and '__pycache__' not in _f.parts and _f.suffix not in ('.pyc', '.pyo')]; _intact = lambda _f, _sz: (lambda _p: _p.exists() and not (_sz.isdigit() and int(_sz) > 0 and _p.stat().st_size == 0))(_d.locate_file(_f)); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _broken = (not all(_intact(_f, _sz) for _f, _sz in _pay)) if _pay else ((not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else False); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
 $SkipPythonDeps = $false
 $LatestVer = ""
 # True only when the version-check gate ran: the post-update probe must stay off in
@@ -4929,12 +4932,20 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         }
         # A quarantined payload leaves dist-info reporting current while the canonical
         # import is gone; the metadata compare above cannot see that, so the fast path
-        # stands only after the payload probe answers. A crashed or silent probe says
-        # nothing about the venv and leaves the fast path alone.
+        # stands only after the payload probe answers. The probe's version must also
+        # match the one that took the fast path: $InstalledVer above came from the
+        # default sys.path lookup, which an executable .pth can satisfy with a current
+        # external copy while the managed install sits stale -- the probe answers for
+        # the managed one only. A crashed or silent probe says nothing about the venv
+        # and leaves the fast path alone.
         if ($SkipPythonDeps) {
             $_fastProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_pkgProbeCode
-            if ($_fastProbe.Ok -and $_fastProbe.Output -match '(?m)^POSTVER=__MISSING__\s*$') {
+            $_fastVer = if ($_fastProbe.Ok -and $_fastProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
+            if ($_fastVer -eq "__MISSING__") {
                 substep "$_PkgName metadata is current but its modules are missing -- forcing dependency pass to repair..." "Cyan"
+                $SkipPythonDeps = $false
+            } elseif ($_fastVer -and $_fastVer -ne $LatestVer) {
+                substep "managed $_PkgName is at $_fastVer, not $LatestVer -- forcing dependency pass to update..." "Cyan"
                 $SkipPythonDeps = $false
             }
         }
