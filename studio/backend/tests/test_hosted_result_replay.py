@@ -956,3 +956,55 @@ def test_a_long_hosted_argument_says_it_was_cut(executed):
     replayed = _replayed(transport)
     assert "truncated" in replayed, "the label was cut with no notice"
     assert "Created" in replayed
+
+
+def test_a_stalled_turn_keeps_its_thought_signature(executed):
+    """Gemini 3 will not take its own turn back without the signature.
+
+    The transport stows a text part's ``thoughtSignature`` on the delta as
+    ``extra_content``, and the outbound translator pins it back onto the last
+    text part from ``assistant.extra_content`` and nowhere else. The main replay
+    carries it; the stall reprompt returns to the provider from above that, so
+    it has to carry it too or the retry is rejected instead of answered.
+    """
+    signature = "SIGNATURE-abc123"
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "tool_name": "web_search",
+                        "result": "Title: Unsloth\nURL: https://unsloth.ai",
+                    }
+                ),
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "content": "Let me check that.",
+                                    "extra_content": {"google": {"thought_signature": signature}},
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("stop"),
+            ],
+            [_text("done"), _finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    reprompted = transport.requests[1]["messages"]
+    stalled = [
+        m
+        for m in reprompted
+        if m["role"] == "assistant" and "https://unsloth.ai" in str(m.get("content"))
+    ]
+    assert stalled, "the hosted result never reached the reprompt"
+    assert stalled[0].get("extra_content") == {"google": {"thought_signature": signature}}

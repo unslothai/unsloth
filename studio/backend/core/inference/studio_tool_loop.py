@@ -983,16 +983,24 @@ async def stream_with_studio_tools(
                     # on this path, so without this the reprompted request is
                     # told to continue from a search or execution whose output
                     # it can no longer see.
+                    stalled_message: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": (
+                            f"{visible_answer}\n\n{stalled_hosted}"
+                            if visible_answer
+                            else stalled_hosted
+                        ),
+                    }
+                    if turn.reasoning_extra:
+                        # Carried for the same reason the replay below carries
+                        # it: Gemini 3 stows the text part's thoughtSignature
+                        # here, its translator pins the signature back on from
+                        # this field alone, and a turn replayed without it is
+                        # rejected rather than answered.
+                        stalled_message["extra_content"] = turn.reasoning_extra
                     append_assistant_turn(
                         conversation,
-                        {
-                            "role": "assistant",
-                            "content": (
-                                f"{visible_answer}\n\n{stalled_hosted}"
-                                if visible_answer
-                                else stalled_hosted
-                            ),
-                        },
+                        stalled_message,
                         # A resumed partial is the same turn as what the model
                         # just added, so this merges into it. Appending would
                         # split one sentence across two assistant messages and
