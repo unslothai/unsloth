@@ -301,7 +301,11 @@ class _Turn:
                     # Two distinct calls reported at the same index. Merging them
                     # concatenates their argument JSON into one unparseable blob
                     # and loses an intent, so key the second on its own id.
-                    key = (index, call_id)
+                    # A fragment that names the call this index opened first goes
+                    # back to it: an id beats the latest-index mapping, which only
+                    # exists to place the fragments that carry no id.
+                    first_id = self.by_index.get(index, {}).get("id")
+                    key = index if first_id == call_id else (index, call_id)
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
