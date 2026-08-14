@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import time
+import tokenize
 import unicodedata
 from pathlib import Path
 
@@ -4272,29 +4273,86 @@ def test_a_copy_written_above_its_import_is_still_the_module():
 
 
 def test_a_walrus_in_a_scope_of_its_own_does_not_cancel_the_alias():
-    # A lambda body binds its own local, and a generator expression binds the
-    # containing scope only when it is iterated - so neither changes the outer
-    # `b`, and cancelling the alias there dropped a real
-    # `b.exec(marshal.loads(BLOB))` to the non-blocking MEDIUM.
+    # A lambda body binds its own local, and a comprehension only binds the
+    # containing scope once its element expression runs - a generator nobody
+    # consumes never runs it, and an eager comprehension over an empty or fully
+    # filtered iterable does not either. So none of these changes the outer `b`,
+    # and cancelling the alias there dropped a real `b.exec(marshal.loads(BLOB))`
+    # to the non-blocking MEDIUM.
     for nested in (
         "f = lambda: (b := model)",
         "g = ((b := y) for y in items)",
         "n = sum((b := y) for y in items)",
+        "xs = [(b := safe) for _ in []]",
+        "xs = [(b := safe) for y in items if False]",
+        "xs = {(b := safe) for y in items}",
+        "xs = [f((b := safe)) for y in items]",
     ):
         assert _high(
             f"import builtins as b\n{_OBFUSCATION}{nested}\n{_ALIAS_CALL}"
-        ), f"a walrus in a scope of its own must not cancel the alias: {nested}"
+        ), f"a walrus that may not run must not cancel the alias: {nested}"
 
-    # A comprehension runs where it is written and PEP 572 puts its walrus in
-    # the containing scope, so that one still cancels - as does a lambda
-    # DEFAULT, which is evaluated in the enclosing scope too.
+    # A walrus that is evaluated where it is written still cancels, or
+    # `model.eval()` past one is the false positive this pass exists to remove.
+    # A lambda DEFAULT is one: it is evaluated in the enclosing scope.
     for cancels in (
-        "xs = [(b := y) for y in items]",
-        "xs = {(b := y) for y in items}",
-        "xs = [f((b := y)) for y in items]",
+        "spare = (b := model)",
+        "if (b := model):\n    pass",
         "f = lambda x = (b := model): x",
     ):
         assert (
             _high(f"import builtins as b\n{_OBFUSCATION}{cancels}\n{_ALIAS_CALL}", "pkg/_infer.py")
             == []
         ), f"a walrus that really rebinds must still cancel the alias: {cancels}"
+
+
+def test_a_line_continuation_inside_a_literal_still_names_the_module():
+    # The compiler drops a backslash-newline before it uses a literal's value,
+    # so `__import__('b\<newline>uiltins')` loads the real module while the word
+    # never appears on any one line. The prefilter that admits a file to the
+    # alias pass knew every other escape but not this one, so the alias was
+    # never derived and the payload kept the non-blocking MEDIUM.
+    split = "b = __import__('b\\\nuiltins')\n"
+    assert eval(split.split("=", 1)[1].strip().replace("__import__", "str")) == "builtins"
+    assert _high(f"{_OBFUSCATION}{split}{_ALIAS_CALL}"), "a split literal still names the module"
+
+    # Padding the literal with continuations does not push it past the decode
+    # cap either: they contribute nothing to the value, so what the cap has to
+    # measure is the value they leave behind.
+    padded = "b = __import__('b" + "\\\n" * 400 + "uiltins')\n"
+    assert _high(f"{_OBFUSCATION}{padded}{_ALIAS_CALL}"), "continuation padding is not a cap bypass"
+
+    # A literal that names something else is still something else.
+    assert (
+        _high(f"{_OBFUSCATION}b = __import__('nu\\\nmpy')\nb.eval()\n", "pkg/_infer.py") == []
+    ), "a split literal naming another module must stay clean"
+
+
+def test_every_legal_identifier_continuation_is_glued_back_on():
+    # Below 3.12 `tokenize` splits identifiers on `\w`, so a legal continuation
+    # character that is not alphanumeric arrives as its own ERRORTOKEN and the
+    # name the interpreter resolves is never assembled. Reading only the
+    # combining marks left `import builtins as b<U+203F>` and its
+    # `b<U+203F>.exec(...)` two different names, which demoted the call to the
+    # non-blocking MEDIUM on those runtimes. Tested on the function itself, so
+    # the assertion holds whatever tokenizer the runtime ships.
+    def _tok(kind, string, start, end):
+        return tokenize.TokenInfo(kind, string, start, end, "")
+
+    name = _tok(tokenize.NAME, "b", (1, 0), (1, 1))
+    for cont in ("‿", "́", "·"):  # connector, mark, Other_ID_Continue
+        assert ("b" + cont).isidentifier(), cont
+        glued = _tok(tokenize.ERRORTOKEN, cont, (1, 1), (1, 2))
+        assert sp._continues_name([name], glued), f"{cont!r} continues the name before it"
+
+    # Adjacency and legality both still decide it: a continuation behind
+    # whitespace starts nothing, and a character that cannot be part of an
+    # identifier is not glued on.
+    assert not sp._continues_name([name], _tok(tokenize.ERRORTOKEN, "‿", (1, 2), (1, 3)))
+    assert not sp._continues_name([name], _tok(tokenize.ERRORTOKEN, "$", (1, 1), (1, 2)))
+    assert not sp._continues_name([], _tok(tokenize.ERRORTOKEN, "‿", (1, 1), (1, 2)))
+
+    # And the whole file reads as one name end to end.
+    assert _high(
+        f"import builtins as b‿\n{_OBFUSCATION}b‿.exec(marshal.loads(BLOB))\n"
+    ), "an identifier with a connector still binds the alias its call reaches"

@@ -210,9 +210,13 @@ _MAX_LITERAL_DECODE = 512
 # An escape sequence that resolves to a character: `'buil\x74ins'` names the
 # `builtins` module without spelling it, so a file that carries one has to be
 # read even though the plain word never appears in it.
+# A line continuation is an escape too: the compiler drops the backslash and the
+# newline before it uses the value, so `'b\<newline>uiltins'` names the module
+# without the word appearing on any one line of the source.
 _RE_STRING_ESCAPE = re.compile(
-    r"\\(?:x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{)"
+    r"\\(?:x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{|\r?\n)"
 )
+_RE_LINE_CONT = re.compile(r"\\\r?\n")
 
 # `__import__('built' 'ins')` names the module without the word ever appearing,
 # because the compiler joins adjacent literals and folds `+` between two of
@@ -368,18 +372,26 @@ def _mentions_name(text: str, names) -> bool:
 
 
 def _continues_name(stmt: list, tok) -> bool:
-    """Whether `tok` is a combining mark that belongs to the name before it.
+    """Whether `tok` continues the identifier before it.
 
-    It has to be adjacent: a mark separated by whitespace starts nothing and
-    ends nothing, and gluing it on would invent an identifier the source does
-    not spell.
+    Below 3.12 `tokenize` splits on `\\w`, which drops every legal continuation
+    character that is not alphanumeric: a combining mark, a connector like
+    U+203F, and the `Other_ID_Continue` characters. The test is the one the
+    compiler applies - glued to a letter, does this spell an identifier - so it
+    follows the language rather than a list of categories. Reading only the
+    marks left `import builtins as b‿` and its `b‿.exec(...)` two
+    different names to every pass below.
+
+    It has to be adjacent: a continuation separated by whitespace starts nothing
+    and ends nothing, and gluing it on would invent an identifier the source
+    does not spell.
     """
     return bool(
         stmt
         and stmt[-1].type == tokenize.NAME
         and tok.start == stmt[-1].end
         and tok.string
-        and all(unicodedata.category(c) in _MARK_CATEGORIES for c in tok.string)
+        and ("a" + tok.string).isidentifier()
     )
 
 
@@ -572,7 +584,14 @@ def _string_body(literal: str) -> "str | None":
             body = body[len(quote) : -len(quote)]
             if fstring and ("{" in body or "}" in body):
                 return None  # a replacement field, or the `{{` that escapes one
-            if "\\" not in body or "r" in prefix or len(body) > _MAX_LITERAL_DECODE:
+            if "\\" not in body or "r" in prefix:
+                return body
+            if len(body) > _MAX_LITERAL_DECODE and (
+                len(_RE_LINE_CONT.sub("", body)) > _MAX_LITERAL_DECODE
+            ):
+                # A line continuation contributes nothing to the value, so it is
+                # padding: what the cap has to measure is what the literal can
+                # still spell once they are gone.
                 return body
             # `literal_eval` refuses a JoinedStr however plain it is, so the `f`
             # comes off before the escapes are decoded.
@@ -1730,11 +1749,12 @@ def _nested_walrus(stmt: list) -> set:
 
     - a lambda body: `f = lambda: (b := model)` binds the lambda's own local,
       so the outer name is still the module below it.
-    - a generator expression: PEP 572 puts the target in the containing scope,
-      but only when the generator is iterated - `g = (b := x for x in xs)`
-      that nobody consumes rebinds nothing. A list, set or dict comprehension
-      runs where it is written, so its walrus is an ordinary rebinding and is
-      NOT included here.
+    - a comprehension of any kind: PEP 572 puts the target in the containing
+      scope, but only once the element expression actually runs. A generator
+      nobody consumes never runs it at all, and an eager comprehension over an
+      empty or fully filtered iterable does not either - `[(b := safe) for _ in
+      []]` leaves `b` the module. This is the rule the rest of the pass already
+      follows for a binding that may not run (`False and (b := model)`).
     """
     bodies: list = []
     for j, tok in enumerate(stmt):
@@ -1743,8 +1763,8 @@ def _nested_walrus(stmt: list) -> set:
             if colon > 0:
                 bodies.append((colon, _lambda_body_end(stmt, colon)))
     stack: list = []
-    # The bracket each `for` is written directly inside. A `(` holding one is a
-    # generator expression; a parenthesized `for` statement does not exist.
+    # The brackets a `for` is written directly inside: the comprehensions and
+    # generator expressions of the statement.
     comprehensions: set = set()
     walruses: list = []
     for j, tok in enumerate(stmt):
@@ -1763,11 +1783,8 @@ def _nested_walrus(stmt: list) -> set:
         if any(start < j <= end for start, end in bodies):
             out.add(j)
             continue
-        for opener in reversed(opened):
-            if opener in comprehensions:
-                if stmt[opener].string == "(":
-                    out.add(j)
-                break
+        if any(opener in comprehensions for opener in opened):
+            out.add(j)
     return out
 
 
