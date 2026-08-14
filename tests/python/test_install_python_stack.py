@@ -551,6 +551,13 @@ class TestStrictPmPolicyOptOut:
     fail on a wheel-less or unhashed requirement, which is #8530 again, by choice.
     """
 
+    @pytest.fixture(autouse = True)
+    def _no_ambient_uv_config(self, tmp_path, monkeypatch):
+        """The uv config scan is memoized and walks the cwd's parents, so these cases run
+        off the checkout and from an unscanned state."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+
     HOSTILE = dict(
         TestHardenedPipConfigRelaxation.HOSTILE,
         UV_REQUIRE_HASHES = "1",
@@ -624,6 +631,26 @@ class TestStrictPmPolicyOptOut:
         # their setting, and an env of None IS that environment.
         assert env is None
 
+    def test_a_uv_config_policy_reaches_the_pip_fallback(self, tmp_path, monkeypatch):
+        """#8530's no-build lived in uv.toml. uv refuses the wheel-less extras, pip_install
+        falls back to pip, and pip reads neither that file nor any UV_* variable, so a
+        translation that looked only at the environment let the fallback build them."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+        assert env is not None and env["PIP_ONLY_BINARY"] == ":all:"
+
+    def test_a_uv_config_no_binary_is_never_translated(self, tmp_path, monkeypatch):
+        """no-binary FORCES a source build, so carrying it over would be the opposite of
+        preserving the policy."""
+        (tmp_path / "uv.toml").write_text("no-binary = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            assert ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"]) is None
+
     def test_no_uv_policy_means_no_translation(self):
         with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
             assert ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"]) is None
@@ -665,6 +692,11 @@ class TestPmPolicyRelaxationIsReported:
             mock.patch.object(ips.subprocess, "run", return_value = result),
         ):
             return ips._hardened_pm_policy_sources()
+
+    @pytest.fixture(autouse = True)
+    def _rescan_uv_config(self, monkeypatch):
+        """The scan is memoized for the run, so each case has to start from unscanned."""
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
 
     @pytest.fixture(autouse = True)
     def _off_the_repo_cwd(self, tmp_path, monkeypatch):

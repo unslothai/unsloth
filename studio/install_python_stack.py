@@ -4105,6 +4105,17 @@ def _pm_policy_value_is_on(value: "object") -> bool:
     return text not in _PM_POLICY_DISABLED_VALUES
 
 
+_UV_POLICY_CONFIG: "list[tuple[str, str]] | None" = None
+
+
+def _uv_policy_config() -> "list[tuple[str, str]]":
+    """The (file, key) policy uv's own config files carry, scanned once per run."""
+    global _UV_POLICY_CONFIG
+    if _UV_POLICY_CONFIG is None:
+        _UV_POLICY_CONFIG = _scan_uv_policy_config()
+    return _UV_POLICY_CONFIG
+
+
 def _uv_config_candidates() -> "list[Path]":
     """Where uv would look, in uv's own order.
 
@@ -4134,12 +4145,21 @@ def _uv_config_candidates() -> "list[Path]":
                 candidates.append(Path(_dir) / "uv" / "uv.toml")
     else:
         _xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-        candidates.append((Path(_xdg) if _xdg else Path.home() / ".config") / "uv" / "uv.toml")
+        _user_config = Path(_xdg) if _xdg else None
+        if _user_config is None:
+            try:
+                _user_config = Path.home() / ".config"
+            except (RuntimeError, KeyError):
+                # No HOME and no passwd entry, which is an arbitrary-UID container. An
+                # optional config file we cannot locate must not abort an install.
+                _user_config = None
+        if _user_config is not None:
+            candidates.append(_user_config / "uv" / "uv.toml")
         candidates.append(Path("/etc/uv/uv.toml"))
     return candidates
 
 
-def _uv_policy_config_sources() -> "list[str]":
+def _scan_uv_policy_config() -> "list[tuple[str, str]]":
     """Policy keys set in uv's config files, which pip knows nothing about.
 
     #8530 is the reason this exists rather than being left to the pip half: that user's
@@ -4150,9 +4170,9 @@ def _uv_policy_config_sources() -> "list[str]":
     try:
         import tomllib
     except ImportError:  # 3.10 has no tomllib, and uv config is not worth a dependency
-        return _uv_policy_config_sources_by_scan(candidates)
+        return _scan_uv_policy_config_by_line(candidates)
 
-    found: "list[str]" = []
+    found: "list[tuple[str, str]]" = []
     for path in dict.fromkeys(candidates):
         try:
             with path.open("rb") as handle:
@@ -4172,18 +4192,18 @@ def _uv_policy_config_sources() -> "list[str]":
         for key in _PM_POLICY_CONFIG_KEYS:
             for table in (document, _pip_table):
                 if isinstance(table, dict) and _pm_policy_value_is_on(table.get(key)):
-                    found.append(f"uv config {path.name}: {key}")
+                    found.append((path.name, key))
                     break
     return found
 
 
-def _uv_policy_config_sources_by_scan(candidates: "list[Path]") -> "list[str]":
+def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str, str]]":
     """The 3.10 fallback: look for `key = value` without parsing TOML properly.
 
     Only ever feeds a printed line, so a false positive costs a sentence and a false
     negative costs the sentence not being printed.
     """
-    found: "list[str]" = []
+    found: "list[tuple[str, str]]" = []
     for path in dict.fromkeys(candidates):
         try:
             text = path.read_text(encoding = "utf-8", errors = "replace")
@@ -4197,7 +4217,7 @@ def _uv_policy_config_sources_by_scan(candidates: "list[Path]") -> "list[str]":
                 continue
             key = key.strip()
             if key in _PM_POLICY_CONFIG_KEYS and _pm_policy_value_is_on(value):
-                found.append(f"uv config {path.name}: {key}")
+                found.append((path.name, key))
     return found
 
 
@@ -4212,7 +4232,7 @@ def _hardened_pm_policy_sources() -> "list[str]":
         for name in _PM_POLICY_REPORTED_ENV_VARS
         if _pm_policy_value_is_on(os.environ.get(name))
     ]
-    found += _uv_policy_config_sources()
+    found += [f"uv config {name}: {key}" for name, key in _uv_policy_config()]
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
@@ -4276,20 +4296,29 @@ def _uv_policy_as_pip_policy() -> "dict[str, str]":
     the operator's policy, and pip reads none of the UV_* variables. Without this the
     fallback performs exactly the source or unhashed install uv had just refused.
 
-    Only the blanket controls translate. UV_NO_BUILD_PACKAGE is left alone rather than
-    guessed at: pip's list syntax is not uv's, and a wrong translation is worse than none.
-    An explicit PIP_* setting is the operator's own and is never overwritten.
+    The policy is read from uv's config FILES as well as its environment, because a
+    uv.toml is where #8530's lived and uv honours both; a translation that read only the
+    environment would let the fallback build exactly what the file had just stopped.
+
+    Only restrict-direction controls translate. UV_NO_BUILD_PACKAGE is left alone rather
+    than guessed at (pip's list syntax is not uv's, and a wrong translation is worse than
+    none), and the no-binary family is never translated: those FORCE a source build, so
+    carrying them across would be the opposite of preserving the policy. An explicit PIP_*
+    setting is the operator's own and is never overwritten.
     """
     if not _strict_pm_policy():
         return {}
+    _keys = {key for _name, key in _uv_policy_config()}
+    _no_build = _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD")) or bool(
+        _keys & {"no-build", "no-build-package", "only-binary"}
+    )
+    _require_hashes = (
+        _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES")) or "require-hashes" in _keys
+    )
     translated: "dict[str, str]" = {}
-    if _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD")) and not os.environ.get(
-        "PIP_ONLY_BINARY"
-    ):
+    if _no_build and not os.environ.get("PIP_ONLY_BINARY"):
         translated["PIP_ONLY_BINARY"] = ":all:"
-    if _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES")) and not os.environ.get(
-        "PIP_REQUIRE_HASHES"
-    ):
+    if _require_hashes and not os.environ.get("PIP_REQUIRE_HASHES"):
         translated["PIP_REQUIRE_HASHES"] = "1"
     return translated
 
