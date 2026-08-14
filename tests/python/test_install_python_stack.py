@@ -720,6 +720,13 @@ class TestStrictPmPolicyOptOut:
         projected = Path(env["UV_CONFIG_FILE"]).read_text(encoding = "utf-8")
         assert 'exclude-newer-package = { "docopt" = "2020-01-01T00:00:00Z" }' in projected
 
+    def test_a_per_package_cutoff_projects_from_the_line_scanner_too(self, tmp_path):
+        """3.9 and 3.10 have no tomllib, so that scan hands back the raw TOML. Serialising
+        only dicts left those two projecting no cutoff at all."""
+        raw = '{ docopt = "2020-01-01T00:00:00Z" }'
+        assert ips._toml_inline_table(raw) == raw
+        assert ips._toml_inline_table("not a table") == ""
+
     def test_a_per_package_cutoff_also_stops_the_pip_fallback(self, tmp_path, monkeypatch):
         """pip has no equivalent for this one either, so falling back would install what
         the cutoff excluded."""
@@ -942,6 +949,22 @@ class TestPipConfigPolicySurvivesThePin:
                 ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
         assert env["PIP_ONLY_BINARY"] == "numpy"
+
+    def test_a_command_section_can_switch_the_global_one_off(self):
+        """`[install] require-hashes = false` under a `[global] require-hashes = true` is
+        how pip is told the install is exempt. Dropping the false one re-applies the
+        global policy and fails a torch repair the operator had exempted."""
+        env = self._pinned_env(
+            "global.require-hashes='true'\ninstall.require-hashes='false'\n",
+            {"UNSLOTH_STRICT_PM_POLICY": "1"},
+        )
+        assert "PIP_REQUIRE_HASHES" not in env
+
+    def test_a_none_reset_in_pip_conf_is_not_a_policy(self):
+        env = self._pinned_env(
+            "global.only-binary=':none:'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+        )
+        assert "PIP_ONLY_BINARY" not in env
 
     def test_the_default_mode_still_drops_it(self):
         """Without the switch this is the #8530 relaxation, and it stays: the pinned
@@ -1295,6 +1318,39 @@ class TestUvConfigDiscoveryMatchesUv:
         (elsewhere / "uv.toml").write_text("[pip]\nno-build = true\n", encoding = "utf-8")
         monkeypatch.setenv("UV_WORKING_DIR", str(elsewhere))
         assert self._keys() == ["uv.toml: no-build"]
+
+    def test_discovery_starts_at_uv_project(self, tmp_path, monkeypatch):
+        """uv documents --project with [env: UV_PROJECT], and on 0.12.1 a uv.toml under it
+        refuses an sdist while the cwd has no config at all."""
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "uv.toml").write_text("[pip]\nno-build = true\n", encoding = "utf-8")
+        monkeypatch.setenv("UV_PROJECT", str(project))
+        assert self._keys() == ["uv.toml: no-build"]
+
+    def test_a_malformed_pyproject_does_not_end_the_walk(self, tmp_path, monkeypatch):
+        """uv warns and keeps walking: measured on 0.12.1, a parent no-build still refuses
+        the sdist with an unparseable child pyproject in between."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        nested = tmp_path / "project"
+        nested.mkdir()
+        (nested / "pyproject.toml").write_text("this is not toml [[[\n", encoding = "utf-8")
+        monkeypatch.chdir(nested)
+        assert self._keys() == ["uv.toml: no-build"]
+
+    def test_a_dotted_key_is_the_table_it_names(self, tmp_path):
+        """`pip.no-build = true` is TOML's dotted spelling of `[pip] no-build`, and uv
+        reads it that way."""
+        path = tmp_path / "uv.toml"
+        path.write_text("pip.no-build = true\n", encoding = "utf-8")
+        assert [key for _n, key, _v in ips._scan_uv_policy_config_by_line([path])] == [
+            "no-build"
+        ]
+
+    def test_a_dotted_key_under_another_tool_is_not_ours(self, tmp_path):
+        path = tmp_path / "pyproject.toml"
+        path.write_text("[tool.other]\npip.no-build = true\n", encoding = "utf-8")
+        assert ips._scan_uv_policy_config_by_line([path]) == []
 
     def test_a_commented_uv_table_does_not_end_the_walk(self, tmp_path, monkeypatch):
         """A `# [tool.uv]` in a comment is not a table, and uv keeps reading the parent

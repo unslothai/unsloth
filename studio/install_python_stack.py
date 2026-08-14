@@ -4197,8 +4197,10 @@ def _pyproject_speaks_for_uv(path: "Path") -> bool:
     try:
         document = tomllib.loads(text)
     except Exception:
-        # Too broken for uv to read either, and uv stops at the file it cannot parse.
-        return True
+        # uv warns and keeps walking: measured on 0.12.1, a parent no-build still refuses
+        # the sdist with an unparseable child pyproject in between. Stopping here would
+        # drop that policy.
+        return False
     return isinstance(document.get("tool"), dict) and "uv" in document["tool"]
 
 
@@ -4257,11 +4259,14 @@ def _uv_config_candidates() -> "list[Path]":
     if _pm_policy_value_is_on(os.environ.get("UV_NO_CONFIG")):
         return []
     candidates: "list[Path]" = []
-    # uv changes to --directory / UV_WORKING_DIR before it runs, and discovers from there
-    # (checked on uv 0.12.1: a uv.toml under it applies while the original cwd has none).
-    _working_dir = os.environ.get("UV_WORKING_DIR", "").strip()
+    # uv discovers from --project / UV_PROJECT if it has one, else from --directory /
+    # UV_WORKING_DIR, which it changes to before running. Both checked on uv 0.12.1: a
+    # uv.toml under either applies while the original cwd has none.
+    _root = os.environ.get("UV_PROJECT", "").strip() or os.environ.get(
+        "UV_WORKING_DIR", ""
+    ).strip()
     try:
-        _here = Path(_working_dir) if _working_dir else Path.cwd()
+        _here = Path(_root) if _root else Path.cwd()
     except OSError:  # a deleted cwd is not worth failing an install over
         _here = None
     if _here is not None:
@@ -4412,19 +4417,27 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             if not pending and stripped.startswith("[") and "=" not in stripped:
                 section = stripped.strip("[]").strip().strip("\"'")
                 continue
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip().strip("\"'")
+            # `pip.no-build = true` is TOML's dotted spelling of `[pip] no-build`, and uv
+            # reads it that way. The prefix names the table for THIS line only, so it
+            # cannot leak into the next one the way a header does.
+            line_section = section
+            if "." in key:
+                prefix, _dot, key = key.rpartition(".")
+                prefix = prefix.strip().strip("\"'")
+                line_section = f"{section}.{prefix}" if section else prefix
             # In a pyproject only [tool.uv] and its subtables speak for uv. In a uv.toml
             # the whole file does, but its policy keys live at the top level or in [pip];
             # anything else there (an [[index]] entry, say) is a different setting.
             if path.name == "pyproject.toml":
-                in_scope = section == "tool.uv" or section.startswith("tool.uv.")
+                in_scope = line_section == "tool.uv" or line_section.startswith("tool.uv.")
             else:
-                in_scope = section in ("", "pip")
+                in_scope = line_section in ("", "pip")
             if not in_scope:
                 continue
-            key, sep, value = line.partition("=")
-            if not sep:
-                continue
-            key = key.strip()
             value = _toml_line_value(value)
             if key not in _PM_POLICY_CONFIG_KEYS or key in decided:
                 continue
@@ -4488,9 +4501,10 @@ def _pip_config_policy(refresh: bool = False) -> "dict[str, tuple[str, str]]":
             for key in _PM_POLICY_CONFIG_KEYS:
                 if not name.endswith(f".{key}") or (section, key) in policy:
                     continue
-                # `require-hashes = false` is a policy switched off, not one to carry.
-                if _pm_policy_value_is_on(value):
-                    policy[(section, key)] = (name, value.strip().strip("\"'"))
+                # A switched-off value is kept, not dropped: `[install] require-hashes =
+                # false` under a `[global] require-hashes = true` is how pip is told the
+                # install is exempt, and forgetting it re-applies the global one.
+                policy[(section, key)] = (name, value.strip().strip("\"'"))
                 break
     _PIP_CONFIG_POLICY = policy
     _PIP_CONFIG_REACHED_PIP = reached
@@ -4526,11 +4540,17 @@ def _pip_config_as_pip_env(cmd: "list[str]") -> "dict[str, str]":
         for (config_section, key), (_name, value) in policy.items():
             if config_section == section:
                 resolved[key] = value
+    # Only what is still switched ON once the command's own section has had its say.
+    resolved = {key: value for key, value in resolved.items() if _pm_policy_value_is_on(value)}
     translated: "dict[str, str]" = {}
     if "require-hashes" in resolved and not os.environ.get("PIP_REQUIRE_HASHES"):
         translated["PIP_REQUIRE_HASHES"] = "1"
     if "only-binary" in resolved and not os.environ.get("PIP_ONLY_BINARY"):
-        translated["PIP_ONLY_BINARY"] = resolved["only-binary"]
+        _everything, _packages = _pm_policy_scope(_pm_policy_config_names(resolved["only-binary"]))
+        if _everything:
+            translated["PIP_ONLY_BINARY"] = ":all:"
+        elif _packages:
+            translated["PIP_ONLY_BINARY"] = ",".join(_packages)
     return translated
 
 
@@ -4546,7 +4566,11 @@ def _hardened_pm_policy_sources() -> "list[str]":
         if _pm_policy_value_is_on(os.environ.get(name))
     ]
     found += [f"uv config {name}: {key}" for name, key, _value in _uv_policy_config()]
-    found += [f"pip config {name}" for name, _value in _pip_config_policy().values()]
+    found += [
+        f"pip config {name}"
+        for name, value in _pip_config_policy().values()
+        if _pm_policy_value_is_on(value)
+    ]
     return found
 
 
@@ -4591,7 +4615,11 @@ def _report_pm_policy_relaxation_once_pip_exists() -> None:
     if _strict_pm_policy() or _PIP_CONFIG_REACHED_PIP:
         return
     _note_pm_policy_sources(
-        [f"pip config {name}" for name, _value in _pip_config_policy(refresh = True).values()]
+        [
+            f"pip config {name}"
+            for name, value in _pip_config_policy(refresh = True).values()
+            if _pm_policy_value_is_on(value)
+        ]
     )
 
 
@@ -4751,6 +4779,14 @@ def _toml_inline_table(value: "object") -> str:
     is; anything else is skipped rather than guessed at, because a value uv cannot parse
     would fail every pinned command instead of restricting one package.
     """
+    if isinstance(value, str):
+        # The 3.9/3.10 scanner hands back the raw TOML. Pass an inline table through as
+        # written rather than reparsing it, and refuse anything else: a value uv cannot
+        # parse would fail every pinned command instead of restricting one package.
+        text = value.strip()
+        if text.startswith("{") and text.endswith("}") and "\n" not in text:
+            return text
+        return ""
     if not isinstance(value, dict):
         return ""
     pairs = [
