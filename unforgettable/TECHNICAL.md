@@ -1,8 +1,8 @@
 # Unforgettable — technical reference
 
-This note is for a human or AI developer extending the package. Companion user doc: [`README.md`](README.md). Design history: [`plans/MemoryWheels.md`](plans/MemoryWheels.md) and [`plans/MemoryPhases.md`](plans/MemoryPhases.md). Phase locks that the tree implements: [`plans/MemPhase1.md`](plans/MemPhase1.md) through [`plans/MemPhase5.md`](plans/MemPhase5.md).
+This note is for a human or AI developer extending the package. Companion user doc: [`README.md`](README.md). Design history: [`plans/MemoryWheels.md`](plans/MemoryWheels.md) and [`plans/MemoryPhases.md`](plans/MemoryPhases.md). Phase locks that the tree implements: [`plans/MemPhase1.md`](plans/MemPhase1.md) through [`plans/MemPhase5.md`](plans/MemPhase5.md). What's next: [`Roadmap.md`](Roadmap.md).
 
-The tree is the source of truth. Plans stay as the charter; this file describes what is actually shipped.
+The tree is the source of truth. Plans stay as the charter; this file describes what is actually shipped. The roadmap is current status plus deferred work — `plans/MemoryPhases.md` still reads as if Phase 2 is next.
 
 ---
 
@@ -100,7 +100,7 @@ Tool writes are further coerced before `admit()` (`tools/handlers.py`):
 
 ### 1.6 What later phases parked
 
-Phase 6 / research only: online distill, live serving-weight updates, attention-map match, productized parametric unlearn, auto twin calibration. Do not block the chariot on those.
+Phase 6 / research only: online distill, live serving-weight updates, attention-map match, productized parametric unlearn, auto twin calibration. Do not block the chariot on those. Ranked leftover product work (live LoRA attach, scheduled compact, DPO, UI, …) is in [`Roadmap.md`](Roadmap.md).
 
 ---
 
@@ -281,7 +281,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 
 ### 3.10 `plans/` (not imported)
 
-`MemoryWheels.md`, `MemoryPhases.md`, `MemPhase1.md`–`MemPhase5.md`. Charter and PR history. Runtime code must not depend on them.
+`MemoryWheels.md`, `MemoryPhases.md`, `MemPhase1.md`–`MemPhase5.md`. Charter and PR history. Runtime code must not depend on them. Current cadence and deferred work: [`Roadmap.md`](Roadmap.md) (package root, also not imported).
 
 ---
 
