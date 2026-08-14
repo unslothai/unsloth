@@ -77,6 +77,28 @@ def test_fallback_orders_every_pep440_stage():
         assert key(lo) < key(hi), f"{lo} must sort below {hi}"
 
 
+def test_every_pep440_separator_reaches_the_suffix_number():
+    key = _load()
+    # PEP 440 allows . - _ between a stage and its number, all the same release. Reading
+    # only a dot dropped the number, tying post-1 and post-2 back to post0.
+    for sep in (".", "-", "_", ""):
+        one, two = f"1.0.post{sep}1", f"1.0.post{sep}2"
+        assert key(one) != key(two), f"post{sep}1 and post{sep}2 must not tie"
+        assert max([one, two], key = key) == two
+        assert key(one) == key("1.0.post1")
+        assert key(f"1.0a{sep}2") == key("1.0a2")
+        assert key(f"1.0.dev{sep}2") == key("1.0.dev2")
+
+
+def test_epoch_outranks_a_higher_release():
+    key = _load()
+    # PEP 440: an epoch beats the release segment outright, so 1!0.1 is newer than 2.0.
+    assert key("1!0.1") > key("2.0")
+    assert key("2!0.1") > key("1!9.9")
+    assert key("1!1.0") == key("1!1.0.0")
+    assert max(["2.0", "1!0.1"], key = key) == "1!0.1"
+
+
 def test_equivalent_stage_spellings_agree():
     key = _load()
     assert key("1.0alpha1") == key("1.0a1")
