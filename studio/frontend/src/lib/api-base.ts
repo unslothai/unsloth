@@ -25,12 +25,30 @@ const tauriDevProxy = isTauri && import.meta.env?.DEV
 let resolveApiBaseReady: (() => void) | null = null
 let apiBaseReadyPromise = Promise.resolve()
 
+// A backend that never starts would otherwise leave this pending forever, and
+// every caller awaiting it parked behind a spinner with no error to show. Fail
+// it instead, wording the reason so classifyFetchError reads it as backend-down.
+const API_BASE_READY_TIMEOUT_MS = 60_000
+
 if (isTauri && !tauriDevProxy) {
   // never connects; real port arrives via server-port
   apiBase = 'http://127.0.0.1:0'
-  apiBaseReadyPromise = new Promise((resolve) => {
-    resolveApiBaseReady = resolve
+  apiBaseReadyPromise = new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("The backend isn't running yet.")),
+      API_BASE_READY_TIMEOUT_MS,
+    )
+    // Browsers ignore this; under node it keeps the timer from holding the
+    // process open for a full minute after the tests finish.
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+    resolveApiBaseReady = () => {
+      clearTimeout(timer)
+      resolve()
+    }
   })
+  // An unhandled rejection before the first awaiter would surface as a console
+  // error; the awaiters below still see it.
+  apiBaseReadyPromise.catch(() => undefined)
 }
 
 const initialApiBase = apiBase
