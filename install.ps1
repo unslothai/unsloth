@@ -3671,6 +3671,8 @@ exit 0
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
     $NvidiaGpuName = $null
+    $NvidiaSmArch = $null
+    $NvidiaDriverVersion = $null
     try {
         $nvSmiCmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvSmiCmd -and (Test-NvidiaSmiHasGpu $nvSmiCmd.Source)) {
@@ -3690,15 +3692,30 @@ exit 0
         }
     }
     # nvidia-smi was already resolved above and never asked which card it found, so the
-    # banner said "NVIDIA GPU detected" on every NVIDIA host alike. Honour the same visible
-    # -device index the AMD probes do.
+    # banner said "NVIDIA GPU detected" on every NVIDIA host alike. compute_cap is the
+    # counterpart of the gfx arch shown for AMD, and the driver version the counterpart of
+    # the HIP SDK line; one query returns all three. Honour the same visible-device index
+    # the AMD probes do.
     if ($HasNvidiaSmi -and $NvidiaSmiExe) {
         try {
-            $nvNameOut = & $NvidiaSmiExe --query-gpu=name --format=csv,noheader 2>$null | Out-String
-            $nvNames = @($nvNameOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-            if ($nvNames.Count -gt 0) {
+            $nvOut = & $NvidiaSmiExe --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>$null | Out-String
+            $nvRows = @($nvOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($nvRows.Count -gt 0) {
                 $nvIdx = if ($env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
-                $NvidiaGpuName = if ($nvIdx -lt $nvNames.Count) { $nvNames[$nvIdx] } else { $nvNames[0] }
+                $nvRow = if ($nvIdx -lt $nvRows.Count) { $nvRows[$nvIdx] } else { $nvRows[0] }
+                # Split from the right: nvidia-smi does not quote, so a comma in a device
+                # name would otherwise shift every field.
+                $nvParts = $nvRow -split ','
+                if ($nvParts.Count -ge 3) {
+                    $NvidiaDriverVersion = $nvParts[-1].Trim()
+                    $nvComputeCap        = $nvParts[-2].Trim()
+                    $NvidiaGpuName       = ($nvParts[0..($nvParts.Count - 3)] -join ',').Trim()
+                    if ($nvComputeCap -match '^(\d+)\.(\d+)$') {
+                        $NvidiaSmArch = "sm_" + (([int]$Matches[1] * 10) + [int]$Matches[2])
+                    }
+                } else {
+                    $NvidiaGpuName = $nvRow
+                }
             }
         } catch {}
     }
@@ -4298,11 +4315,18 @@ exit 0
         elseif ($ROCmGfxArch)               { "AMD ROCm ($ROCmGfxArch)" }
         else                                { $ROCmGpuLabel }
 
-    $NvidiaGpuDisplay = if ($NvidiaGpuName) { $NvidiaGpuName } else { "NVIDIA GPU detected" }
+    # Same shape for every vendor: the device on the step line, its compute target in
+    # parentheses, the runtime below. Intel has no counterpart to gfx1200 / sm_89 that any
+    # probe here already resolves, so it gets the name alone rather than an invented one.
+    $NvidiaGpuDisplay =
+        if ($NvidiaGpuName -and $NvidiaSmArch) { "$NvidiaGpuName ($NvidiaSmArch)" }
+        elseif ($NvidiaGpuName)                { $NvidiaGpuName }
+        else                                   { "NVIDIA GPU detected" }
     $IntelGpuDisplay  = if ($IntelGpuLabel)  { $IntelGpuLabel }  else { "Intel GPU detected" }
 
     if ($HasNvidiaSmi) {
         step "gpu" $NvidiaGpuDisplay
+        if ($NvidiaDriverVersion) { substep "Driver: $NvidiaDriverVersion" }
     } elseif ($script:IsIntelXpu) {
         # Ranks above every AMD branch: only true when AMD gets no GPU wheel ($AmdHasGpuWheels
         # gates the scan above), so those branches would all end on CPU.

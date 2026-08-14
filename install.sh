@@ -4629,19 +4629,35 @@ tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 if _has_usable_nvidia_gpu; then
     # nvidia-smi is already known good here (_has_usable_nvidia_gpu ran it) and was never
-    # asked which card it found, so every NVIDIA host got the same line.
-    _nv_name=""
+    # asked which card it found. compute_cap is the counterpart of the gfx arch shown for
+    # AMD, the driver version the counterpart of the HIP SDK line; one query gets all three.
+    _nv_row=""
+    _nv_name=""; _nv_sm=""; _nv_driver=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _nv_idx=0
         case "${CUDA_VISIBLE_DEVICES:-}" in ''|*[!0-9,]*) ;; *) _nv_idx="${CUDA_VISIBLE_DEVICES%%,*}" ;; esac
-        _nv_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | awk -v idx="$_nv_idx" \
-            'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
+        _nv_row=$(nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null | awk -v idx="$_nv_idx" \
+            'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
     fi
-    if [ -n "$_nv_name" ]; then
+    if [ -n "$_nv_row" ]; then
+        # Split from the right: nvidia-smi does not quote, so a comma in a device name would
+        # otherwise shift every field.
+        _nv_driver=$(printf '%s' "$_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
+        _nv_cc=$(printf '%s' "$_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$(NF-1)); print $(NF-1) }')
+        _nv_name=$(printf '%s' "$_nv_row" | awk -F, 'NF>=3 { out=$1; for(i=2;i<=NF-2;i++) out=out","$i; gsub(/^[[:space:]]+|[[:space:]]+$/,"",out); print out }')
+        [ -n "$_nv_name" ] || _nv_name=$(printf '%s' "$_nv_row" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        case "$_nv_cc" in
+            [0-9]*.[0-9]*) _nv_sm="sm_$(printf '%s' "$_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
+        esac
+    fi
+    if [ -n "$_nv_name" ] && [ -n "$_nv_sm" ]; then
+        step "gpu" "$_nv_name ($_nv_sm)"
+    elif [ -n "$_nv_name" ]; then
         step "gpu" "$_nv_name"
     else
         step "gpu" "NVIDIA GPU detected"
     fi
+    [ -n "$_nv_driver" ] && substep "Driver: $_nv_driver"
 elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
     _ensure_rocm_probe_env
