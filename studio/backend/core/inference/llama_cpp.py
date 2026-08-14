@@ -16930,8 +16930,17 @@ class LlamaCppBackend:
 
     @staticmethod
     def _leading_process_group(pid):
-        """The pid's own process group, when it leads one. None otherwise."""
-        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+        """The pid's own process group, when it leads one. None otherwise.
+
+        `not pid` rejects 0 and None but not 1, and `getpgid(1) == 1`, so init
+        reads as a group leader here and the caller below would then broadcast
+        SIGKILL to every process the user owns. The pid comes from a live Popen
+        today so it cannot be 1, but the floor is a line and the consequence of
+        losing that property later is not recoverable.
+        """
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid < 2:
+            return None
+        if os.name != "posix" or not hasattr(os, "getpgid"):
             return None
         try:
             pgid = os.getpgid(pid)
@@ -16942,7 +16951,9 @@ class LlamaCppBackend:
     @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
-        if pgid is None or not hasattr(os, "killpg"):
+        if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid < 2:
+            return  # killpg(1) is kill(-1); killpg(0) is our own group
+        if not hasattr(os, "killpg"):
             return
         try:
             os.killpg(pgid, signal.SIGKILL)

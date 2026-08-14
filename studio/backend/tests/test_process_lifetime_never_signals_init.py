@@ -158,6 +158,42 @@ def test_poisoned_record_is_dropped_not_retried(tmp_path, monkeypatch, recorded_
     ), "a poisoned record must be unlinked, or every launch retries it forever"
 
 
+# --- the same shape elsewhere: the llama-server group killer ---------------
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
+@pytest.mark.parametrize("pid", [None, 0, 1, -1, True])
+def test_leading_process_group_never_returns_init(monkeypatch, pid):
+    """`getpgid(1) == 1`, so without a floor init reads as a group leader and the
+    killer below broadcasts SIGKILL with no SIGTERM grace at all."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(os, "getpgid", lambda p: p)
+    assert LlamaCppBackend._leading_process_group(pid) is None
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
+@pytest.mark.parametrize("pgid", [None, 0, 1, -1, True])
+def test_kill_process_group_sends_nothing_for_init(monkeypatch, pgid):
+    from core.inference import llama_cpp as lc
+
+    sent: "list[tuple[int, int]]" = []
+    monkeypatch.setattr(lc.os, "killpg", lambda g, s: sent.append((g, s)))
+    lc.LlamaCppBackend._kill_process_group(pgid)
+    assert sent == []
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
+def test_kill_process_group_still_kills_a_real_group(monkeypatch):
+    """The floor must not disarm the cleanup it guards."""
+    from core.inference import llama_cpp as lc
+
+    sent: "list[tuple[int, int]]" = []
+    monkeypatch.setattr(lc.os, "killpg", lambda g, s: sent.append((g, s)))
+    lc.LlamaCppBackend._kill_process_group(424242)
+    assert [g for g, _s in sent] == [424242]
+
+
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_valid_record_still_reaps(tmp_path, monkeypatch, recorded_signals):
     """The guard must not disarm the feature it protects: a real child is still
