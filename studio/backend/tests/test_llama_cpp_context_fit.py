@@ -994,3 +994,16 @@ class TestPartialOffloadIsReportable:
         assert _extra_args_set_any_flag(["--gpu-layers=20"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
         assert not _extra_args_set_any_flag(["--threads", "8"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
         assert not _extra_args_set_any_flag(None, _GPU_OFFLOAD_OVERRIDE_FLAGS)
+
+    def test_a_cpu_device_is_deliberate_placement_too(self):
+        # --device cpu overrides the layer count outright, so llama.cpp reports
+        # 0/M for a placement the user asked for. Recommending a smaller
+        # quantization there would be advice against their own choice, the same
+        # as for an -ngl, so the provenance has to cover this route as well.
+        from core.inference.llama_cpp import _device_selection_is_cpu
+
+        assert _device_selection_is_cpu(["--device", "cpu"])
+        assert _device_selection_is_cpu(["-dev", "none"])
+        assert _device_selection_is_cpu(None, {"LLAMA_ARG_DEVICE": "cpu"})
+        assert not _device_selection_is_cpu(["--device", "CUDA0"])
+        assert not _device_selection_is_cpu(None)

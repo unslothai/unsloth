@@ -16135,12 +16135,15 @@ class LlamaCppBackend:
                 self._gpu_offload_layers = parse_gpu_offload_counts(self._stdout_lines)
                 # Auto mode respects an inherited -ngl rather than stripping it (see
                 # _GPU_OFFLOAD_OVERRIDE_FLAGS), so the split can be the user's own
-                # choice even though the first-class mode still reads "auto". Set
-                # beside the counts, from the same extras this load launched with, so
-                # the two cannot disagree about which load they describe.
+                # choice even though the first-class mode still reads "auto". A
+                # --device naming no GPU is the same thing by a different route: it
+                # overrides the layer count outright, so llama.cpp reports 0/M for a
+                # placement that was asked for. Set beside the counts, from the same
+                # extras and env this load launched with, so the two cannot disagree
+                # about which load they describe.
                 self._offload_overridden = _extra_args_set_any_flag(
                     extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
-                )
+                ) or _device_selection_is_cpu(extra_args, env)
                 if (
                     self._gpu_offload_layers is not None
                     and 0 < self._gpu_offload_layers[0] < self._gpu_offload_layers[1]
