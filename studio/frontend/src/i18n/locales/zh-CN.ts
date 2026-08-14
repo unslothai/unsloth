@@ -16,7 +16,6 @@ export const zhCN = {
     searchAriaLabel: "搜索{noun}",
     modelSourceAriaLabel: "模型来源",
     hubSectionAriaLabel: "Hub 分区",
-    pickModelFile: "从磁盘选择模型文件",
     modelDropped: "已不再提供",
     modelDroppedByProvider: "{provider} · 已不再提供",
     modelDisabled: "未启用",
@@ -355,6 +354,12 @@ export const zhCN = {
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         idleSecondsAriaLabel: "空闲自动卸载秒数",
+        mediaIdleUnload: "图像和视频的空闲自动卸载",
+        mediaIdleUnloadDescription:
+          "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。这是独立的设置：上面那项仅适用于聊天模型。设为 0 则保持加载，最小值为 60 秒。",
+        mediaIdleSecondsAriaLabel: "图像和视频空闲自动卸载秒数",
+        mediaIdlePaused:
+          "当“将模型保留在显存中”或“仅卸载由 API 加载的模型”开启时暂停。",
         idleNeedsEnable: "请先开启“按请求切换模型”。",
         idleActiveViaEnv: "已通过 UNSLOTH_MODEL_IDLE_TTL 启用。",
         loadError: "加载模型自动切换设置失败。",
@@ -403,6 +408,11 @@ export const zhCN = {
         launchAtLogin: "登录时运行 Unsloth",
         launchAtLoginDescription:
           "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
+
+        closeToTray: "关闭到系统托盘",
+        closeToTrayDescription:
+          "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
+        closeToTraySaveError: "无法更新关闭到系统托盘设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
@@ -935,11 +945,13 @@ export const zhCN = {
       exportPerChatSuffix: "（每个对话）",
       importChats: "导入对话",
       importChatsDescription:
-        "从 JSONL、NDJSON 或 CSV 导出文件将对话导入到最近对话。",
+        "将 Open WebUI、JSONL、NDJSON 或 CSV 导出文件导入到最近对话。",
       importChatsAction: "导入",
       importNoConversations: "文件中未找到对话。",
       importedOneChat: "已导入 1 个对话到最近对话。",
       importedChatCount: "已导入 {count} 个对话到最近对话。",
+      importingChats: "正在导入对话：已完成 {count} 个（{percent}%）...",
+      importedChatCountPartial: "已将 {count} 个对话导入到最近对话；{failed} 个未能保存。",
       importFailed: "导入失败。",
       clearHistory: "清除聊天记录",
       clearHistoryDescription: "从此设备删除本地聊天记录。",

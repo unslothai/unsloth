@@ -162,9 +162,11 @@ export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   isThreadIncognito,
+  listStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
@@ -209,9 +211,17 @@ export {
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
   exportFineTuneJsonl,
-  importConversationsFromFile,
   type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
+export {
+  fileImportSource,
+  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  type ImportProgress,
+  type ImportResult,
+  type ImportSource,
+} from "./utils/chat-import";
 export {
   archiveAllChatItems,
   archiveChatItem,

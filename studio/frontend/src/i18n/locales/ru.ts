@@ -17,7 +17,6 @@ export const ru = {
     searchAriaLabel: "Поиск: {noun}",
     modelSourceAriaLabel: "Источник модели",
     hubSectionAriaLabel: "Раздел Hub",
-    pickModelFile: "Выбрать файл модели на диске",
     modelDropped: "Больше не предлагается",
     modelDroppedByProvider: "{provider} · больше не предлагается",
     modelDisabled: "Не включена",
@@ -373,6 +372,13 @@ export const ru = {
         idleUnloadDescription:
           "Освобождать VRAM после указанного числа секунд простоя. 0 оставляет модель загруженной; минимальное значение: 60.",
         idleSecondsAriaLabel: "Число секунд до автовыгрузки при простое",
+        mediaIdleUnload: "Автовыгрузка при простое для изображений и видео",
+        mediaIdleUnloadDescription:
+          "Освобождать VRAM, выгружая модели изображений и видео после указанного числа секунд простоя. Это отдельная настройка: та, что выше, относится только к модели чата. 0 оставляет их загруженными; минимальное значение: 60.",
+        mediaIdleSecondsAriaLabel:
+          "Число секунд до автовыгрузки при простое для изображений и видео",
+        mediaIdlePaused:
+          "Приостановлено, пока включено «Держать модель в памяти GPU» или «Выгружать только модели, загруженные через API».",
         idleNeedsEnable: "Сначала включите «Переключать модель по запросу».",
         idleActiveViaEnv: "Активно через UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Не удалось загрузить настройки автопереключения модели.",
@@ -421,6 +427,12 @@ export const ru = {
         launchAtLogin: "Запускать Unsloth при входе в систему",
         launchAtLoginDescription:
           "Запускает Unsloth в фоновом режиме при входе в систему. Приложение остаётся в строке меню или системном трее, пока вы его не откроете.",
+
+        closeToTray: "Закрывать в системный трей",
+        closeToTrayDescription:
+          "Оставлять Unsloth и его сервер работающими в фоне при закрытии главного окна.",
+        closeToTraySaveError:
+          "Не удалось обновить настройку закрытия в системный трей.",
         loadError: "Не удалось загрузить настройку автозапуска.",
         saveError: "Не удалось обновить настройку автозапуска.",
       },
@@ -969,11 +981,13 @@ export const ru = {
       exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
-        "Импортировать файл экспорта в формате JSONL, NDJSON или CSV в раздел «Недавние».",
+        "Импортируйте экспорт Open WebUI, JSONL, NDJSON или CSV в Недавние.",
       importChatsAction: "Импорт",
       importNoConversations: "В файле не найдено диалогов.",
       importedOneChat: "Импортирован 1 диалог в «Недавние».",
       importedChatCount: "Импортировано диалогов в «Недавние»: {count}.",
+      importingChats: "Импорт чатов: пока {count} ({percent}%)...",
+      importedChatCountPartial: "Импортировано {count} бесед в Недавние; {failed} не удалось сохранить.",
       importFailed: "Импорт не удался.",
       clearHistory: "Очистить историю чатов",
       clearHistoryDescription: "Удалить историю чатов с этого устройства.",

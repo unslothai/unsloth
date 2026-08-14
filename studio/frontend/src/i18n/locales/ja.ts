@@ -18,7 +18,6 @@ export const ja = {
     searchAriaLabel: "{noun}を検索",
     modelSourceAriaLabel: "モデルのソース",
     hubSectionAriaLabel: "Hub セクション",
-    pickModelFile: "ディスクからモデルファイルを選択",
     modelDropped: "提供終了",
     modelDroppedByProvider: "{provider} · 提供終了",
     modelDisabled: "無効",
@@ -364,6 +363,13 @@ export const ja = {
         idleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         idleSecondsAriaLabel: "アイドル時の自動アンロードまでの秒数",
+        mediaIdleUnload: "画像と動画のアイドル時の自動アンロード",
+        mediaIdleUnloadDescription:
+          "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。これは独立した設定です。上の設定はチャットモデルのみが対象です。0 にすると読み込んだままになります。最小値は 60 秒です。",
+        mediaIdleSecondsAriaLabel:
+          "画像と動画のアイドル時の自動アンロードまでの秒数",
+        mediaIdlePaused:
+          "「モデルを GPU メモリに保持」または「API が読み込んだモデルのみアンロード」がオンの間は一時停止します。",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
@@ -409,6 +415,11 @@ export const ja = {
         launchAtLogin: "ログイン時に Unsloth を起動",
         launchAtLoginDescription:
           "ログイン時に Unsloth をバックグラウンドで起動します。開くまでメニューバーまたはシステムトレイに常駐します。",
+
+        closeToTray: "システムトレイに格納して閉じる",
+        closeToTrayDescription:
+          "メインウィンドウを閉じても、Unsloth とサーバーをバックグラウンドで実行し続けます。",
+        closeToTraySaveError: "システムトレイに格納する設定を更新できませんでした。",
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
@@ -945,11 +956,13 @@ export const ja = {
       exportCombinedSuffix: "(一括)",
       exportPerChatSuffix: "(チャットごと)",
       importChats: "チャットをインポート",
-      importChatsDescription: "JSONL、NDJSON、または CSV のエクスポートファイルを履歴にインポートします。",
+      importChatsDescription: "Open WebUI、JSONL、NDJSON、または CSV のエクスポートファイルを履歴にインポートします。",
       importChatsAction: "インポート",
       importNoConversations: "ファイル内に会話が見つかりませんでした。",
       importedOneChat: "1 件の会話を履歴にインポートしました。",
       importedChatCount: "{count} 件の会話を履歴にインポートしました。",
+      importingChats: "チャットをインポート中: 現在 {count} 件（{percent}%）...",
+      importedChatCountPartial: "{count} 件の会話を最近のチャットにインポートしました。{failed} 件は保存できませんでした。",
       importFailed: "インポートに失敗しました。",
       clearHistory: "チャット履歴を消去",
       clearHistoryDescription: "このデバイスからチャット履歴を削除します。",

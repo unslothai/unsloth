@@ -16,7 +16,6 @@ export const ko = {
     searchAriaLabel: "{noun} 검색",
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
-    pickModelFile: "디스크에서 모델 파일 선택",
     modelDropped: "더 이상 제공되지 않음",
     modelDroppedByProvider: "{provider} · 더 이상 제공되지 않음",
     modelDisabled: "사용 안 함",
@@ -367,6 +366,13 @@ export const ko = {
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         idleSecondsAriaLabel: "유휴 시 자동 해제까지의 시간(초)",
+        mediaIdleUnload: "이미지와 동영상의 유휴 시 자동 해제",
+        mediaIdleUnloadDescription:
+          "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 별도의 설정입니다. 위 설정은 채팅 모델에만 적용됩니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
+        mediaIdleSecondsAriaLabel:
+          "이미지와 동영상의 유휴 시 자동 해제까지의 시간(초)",
+        mediaIdlePaused:
+          "‘모델을 GPU 메모리에 유지’ 또는 ‘API가 불러온 모델만 해제’가 켜져 있는 동안 일시 중지됩니다.",
         idleNeedsEnable: "먼저 ‘요청에 따라 모델 전환’을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
@@ -416,6 +422,11 @@ export const ko = {
         launchAtLogin: "로그인 시 Unsloth 실행",
         launchAtLoginDescription:
           "로그인하면 Unsloth를 백그라운드에서 시작합니다. 열기 전까지 메뉴 막대 또는 시스템 트레이에 남아 있습니다.",
+
+        closeToTray: "시스템 트레이로 닫기",
+        closeToTrayDescription:
+          "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
+        closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
@@ -958,11 +969,13 @@ export const ko = {
       exportPerChatSuffix: "(채팅별)",
       importChats: "채팅 가져오기",
       importChatsDescription:
-        "JSONL, NDJSON 또는 CSV 내보내기 파일을 최근 항목으로 가져옵니다.",
+        "Open WebUI, JSONL, NDJSON 또는 CSV 내보내기 파일을 최근 항목으로 가져옵니다.",
       importChatsAction: "가져오기",
       importNoConversations: "파일에서 대화를 찾을 수 없습니다.",
       importedOneChat: "1개의 대화를 최근 항목으로 가져왔습니다.",
       importedChatCount: "{count}개의 대화를 최근 항목으로 가져왔습니다.",
+      importingChats: "채팅 가져오는 중: 현재 {count}개({percent}%)...",
+      importedChatCountPartial: "{count}개의 대화를 최근 항목으로 가져왔습니다. {failed}개는 저장하지 못했습니다.",
       importFailed: "가져오기에 실패했습니다.",
       clearHistory: "채팅 기록 지우기",
       clearHistoryDescription: "이 기기에서 채팅 기록을 삭제합니다.",

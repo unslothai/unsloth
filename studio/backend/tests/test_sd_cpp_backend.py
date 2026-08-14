@@ -1194,6 +1194,58 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
+def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_a: "CUDA0\tRTX 4070 Ti\nCUDA1\tRTX 5060 Ti\nCPU\tAMD Ryzen 9\n",
+    )
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) == "CUDA1"
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 0) == "CUDA0"
+    # An index this build does not enumerate keeps sd.cpp's own device choice.
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 3) is None
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", None) is None
+    assert bk.sd_cpp_device_name_for_ordinal(None, 1) is None
+
+    # ggml names its HIP backend ROCm on newer builds, and it takes the same physical index.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "ROCm1\tRadeon RX 7900\n")
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) == "ROCm1"
+
+    # Vulkan ordinals are another namespace, so they never match: pinning one would name a card the user did not choose.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "Vulkan1\tRTX 5060 Ti\n")
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) is None
+
+    # An unreadable probe is "cannot tell", so nothing is pinned.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) is None
+
+
+def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch):
+    # Rebuilt per binary: a deferred accelerator install replaces the build after the offload
+    # policy is computed, and the ggml names come from whichever one runs.
+    seen: list = []
+
+    def _probe(binary, *_args):
+        seen.append(binary)
+        return "CUDA0\tA\nCUDA1\tB\n" if binary == "/new/sd-cli" else "CPU\tRyzen\n"
+
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", _probe)
+    base = ["--offload-to-cpu"]
+    # The pre-upgrade CPU-only build enumerates no CUDA device, so nothing is pinned.
+    assert bk._offload_with_device_pin_impl(base, "/old/sd-cli", 1) == base
+    # The build that actually runs does, and the same call now pins it.
+    assert bk._offload_with_device_pin_impl(base, "/new/sd-cli", 1) == [
+        "--offload-to-cpu",
+        "--backend",
+        "diffusion=CUDA1,te=CUDA1,vae=CUDA1",
+    ]
+    assert seen == ["/old/sd-cli", "/new/sd-cli"]
+    # No selection never spawns the probe at all.
+    seen.clear()
+    assert bk._offload_with_device_pin_impl(base, "/new/sd-cli", None) == base
+    assert seen == []
+
+
 def test_unload_clears_state_and_signals_cancel():
     cancel = threading.Event()
     b = _loaded_backend()
@@ -2202,3 +2254,143 @@ def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(m
     assert out["images"]
     seen.append(b2.cancel_generate())
     assert seen == [False]
+
+
+def _pinned_state(
+    b,
+    *,
+    policy_flags = (),
+    device = "cuda",
+):
+    """A resident native load whose argv carries the --backend device pin on top of `policy_flags`,
+    exactly as _run_load builds it once a card has been selected."""
+    from core.inference.sd_cpp_args import device_backend_flags
+
+    s = b._state
+    return bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = device,
+        files = s.files,
+        vae_format = s.vae_format,
+        sampling_method = s.sampling_method,
+        flow_shift = s.flow_shift,
+        mode = s.mode,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        offload_flags = (
+            *policy_flags,
+            *device_backend_flags("CUDA1", list(policy_flags)),
+        ),
+    )
+
+
+def test_a_card_pick_is_not_reported_as_an_offload():
+    # `fast` asks for no offload, so its flag list is empty and status() and the saved recipe
+    # read "nothing was offloaded" off that. The pin lands in the same tuple, which made picking
+    # a GPU look like turning CPU offload on.
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ())
+    assert b._state.offload_flags, "the fixture must actually carry the pin"
+    status = b.status()
+    assert status["cpu_offload"] is False
+    assert status["offload_policy"] == "none"
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["offload_policy"] == "none"
+
+
+def test_a_real_offload_still_reports_itself_when_a_card_is_pinned():
+    # The other half of the same rule: stripping the pin must not swallow a policy that IS active.
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ("--offload-to-cpu", "--diffusion-fa"))
+    assert b.status()["cpu_offload"] is True
+    assert b.status()["offload_policy"] == "active"
+
+
+def test_the_cpu_backend_restart_drops_the_device_pin(monkeypatch):
+    # sd.cpp CONCATENATES repeated --backend values (declared with concat = ',') and a per-module
+    # entry outranks the bare `cpu` default, so restarting with the pin still in argv leaves the
+    # denoiser on the card that just aborted: the recovery is a no-op, the same GGML_ABORT.
+    started: dict = {}
+
+    class _FakeServer:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def start(self, files, **kwargs):
+            started.update(kwargs)
+
+        def stop(self):
+            pass
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ("--offload-to-cpu", "--clip-on-cpu"))
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server"))
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/bin/sd-server")
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+
+    server = b._restart_server_on_cpu_backend(
+        b._state,
+        "ggml_metal_op_encode_impl: unsupported op 'MUL_MAT' -> ggml_abort",
+        threading.Event(),
+    )
+    assert server is not None
+    argv = [*started["offload"], *started["extra_args"]]
+    # One --backend value survives, and it is the CPU one.
+    backends = [argv[i + 1] for i, flag in enumerate(argv) if flag == "--backend"]
+    assert backends == ["cpu"]
+    # The policy the load committed to is untouched.
+    assert "--offload-to-cpu" in argv and "--clip-on-cpu" in argv
+
+
+def test_the_native_engine_resolves_a_bare_gpu_selection_itself(monkeypatch):
+    # The routes hand over the ranked winner, but a direct caller (MCP client, plugin) passes
+    # gpu_ids alone. diffusers and video re-rank in that case; native used to drop the pick.
+    import core.inference.sd_cpp_backend as backend_module
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        backend_module,
+        "resolve_diffusion_device_target",
+        lambda **kw: types.SimpleNamespace(device = "cuda"),
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "resolve_selected_cuda_ordinal",
+        lambda ids: (seen.update(ids = list(ids)), 1)[1],
+    )
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_start_load_thread", lambda *a, **k: None, raising = False)
+    captured: dict = {}
+
+    def _fake_thread(
+        target = None,
+        kwargs = None,
+        **_,
+    ):
+        captured.update(kwargs or {})
+        return types.SimpleNamespace(start = lambda: None, join = lambda *a, **k: None)
+
+    monkeypatch.setattr(backend_module.threading, "Thread", _fake_thread)
+    b.begin_load(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        gpu_ids = [3],
+    )
+    assert seen["ids"] == [3]
+    assert captured["gpu_ordinal"] == 1
+
+
+def test_an_unresolvable_device_pin_says_so_and_still_loads(tmp_path, capsys):
+    # Refusing here would turn an unhonoured selection into an unloadable model on any build
+    # predating --list-devices, including a user's own SD_CLI_PATH copy (sd.cpp treats an unknown
+    # argument as fatal). It runs on the build's own device, as every native load does today, and
+    # says so rather than dropping the pick in silence.
+    binary = tmp_path / "sd-cli-old"
+    binary.write_text("#!/usr/bin/env bash\nexit 1\n")
+    binary.chmod(0o755)
+    assert bk.sd_cpp_device_name_for_ordinal(str(binary), 1) is None
+    assert "device_pin_unresolved" in capsys.readouterr().out
+    # No selection is not an unresolved one, so it says nothing.
+    assert bk.sd_cpp_device_name_for_ordinal(str(binary), None) is None
+    assert "device_pin_unresolved" not in capsys.readouterr().out
