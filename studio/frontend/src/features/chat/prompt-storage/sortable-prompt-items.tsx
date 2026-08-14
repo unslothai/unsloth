@@ -34,16 +34,54 @@ export function AutoTextarea({
 }): ReactElement {
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  // Layout effect, not a plain effect: resizing after paint shows a one-frame
-  // flash of the wrong height while typing.
-  useLayoutEffect(() => {
+  const measure = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
     const next = Math.min(el.scrollHeight, maxHeight);
     el.style.height = `${next}px`;
     el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
-  }, [value, maxHeight]);
+  }, [maxHeight]);
+
+  // Layout effect, not a plain effect: resizing after paint shows a one-frame
+  // flash of the wrong height while typing.
+  useLayoutEffect(measure, [value, measure]);
+
+  // The same text wraps to a different number of lines when the column width
+  // changes -- a window resize, a rotation, or crossing the dialog's responsive
+  // breakpoints -- and none of those touch `value`. Without remeasuring, the
+  // box keeps its old height and, because overflowY may be "hidden", the newly
+  // wrapped lines are clipped until the next keystroke.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    // A window resize covers the common cases (resizing the window, rotating a
+    // device, crossing the dialog's breakpoints) and fires independently of the
+    // rendering loop.
+    window.addEventListener("resize", measure);
+
+    // The observer additionally catches the column changing width without the
+    // window doing so, e.g. the rail stacking above the detail pane.
+    let observer: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      let lastWidth = el.clientWidth;
+      observer = new ResizeObserver(() => {
+        // Width only: the observer also fires for the height we just set, which
+        // would otherwise loop.
+        const width = el.clientWidth;
+        if (width === lastWidth) return;
+        lastWidth = width;
+        measure();
+      });
+      observer.observe(el);
+    }
+
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, [measure]);
 
   return (
     <textarea
@@ -234,20 +272,34 @@ export function SortablePromptItems({
     };
     raf = requestAnimationFrame(tick);
 
+    const onUp = () => setDraggingUid(null);
+
     const onMove = (e: PointerEvent) => {
+      // Releasing the button outside the window delivers neither pointerup nor
+      // pointercancel here, because the grip deliberately does not capture the
+      // pointer. The first move back over the page reports no buttons held, so
+      // treat that as the release we missed -- otherwise the drag stays live and
+      // keeps autoscrolling and reordering long after the user let go.
+      if (e.buttons === 0) {
+        onUp();
+        return;
+      }
       pointerYRef.current = e.clientY;
       evaluate();
     };
-    const onUp = () => setDraggingUid(null);
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
+    // Covers the release happening entirely outside the page, where no further
+    // move arrives to trigger the buttons check above.
+    window.addEventListener("blur", onUp);
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("blur", onUp);
     };
   }, [draggingUid, applyOrder]);
 
