@@ -43,7 +43,11 @@ class _Backend:
 
 
 class _Response:
-    def __init__(self, status_code: int = 200, text: str = "{}"):
+    def __init__(
+        self,
+        status_code: int = 200,
+        text: str = "{}",
+    ):
         self.status_code = status_code
         self.text = text
 
