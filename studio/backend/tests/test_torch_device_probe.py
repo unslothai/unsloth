@@ -16,6 +16,23 @@ import pytest
 from utils import process_lifetime, torch_device_probe
 
 
+# A child that dies of SIGSEGV is still handed to the host's core_pattern handler
+# (apport on Ubuntu), which reads the whole core before the child is reaped: a
+# multi-MB write and roughly 4x the wall time per fault, on every run of this suite.
+# Marking the child non-dumpable first keeps the SIGSEGV the test needs and writes
+# no core. RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores
+# it; PR_SET_DUMPABLE is the only thing that suppresses the dump. prctl is
+# Linux-only, so the call is guarded and simply does nothing elsewhere.
+_SUPPRESS_CORE = (
+    "import ctypes\n"
+    "try:\n"
+    "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
+    "except Exception:\n"
+    "    pass\n"
+)
+_CRASHING_SCRIPT = _SUPPRESS_CORE + "ctypes.string_at(0)\n"
+
+
 @pytest.fixture(autouse = True)
 def _fresh_probe(monkeypatch):
     monkeypatch.setenv(torch_device_probe.DISABLE_ENV_VAR, "0")
@@ -86,7 +103,7 @@ def test_probe_script_initializes_blas_and_synchronizes():
 
 
 def test_child_that_crashes_marks_the_device_unusable(monkeypatch):
-    _run_script(monkeypatch, "import ctypes; ctypes.string_at(0)")
+    _run_script(monkeypatch, _CRASHING_SCRIPT)
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
