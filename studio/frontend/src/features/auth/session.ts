@@ -13,6 +13,13 @@ export { AUTH_SESSION_CLEARED_EVENT, AUTH_SESSION_STORED_EVENT } from "./session
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
+/**
+ * The cross-document counterpart to `authSessionEpoch`, which is per-document memory and so
+ * says nothing to another tab. Written when a session begins and removed when it ends, never
+ * on a token refresh, so a `storage` listener can tell an account switch from an hourly
+ * rotation. An opaque value: it identifies a session boundary, not the account.
+ */
+export const AUTH_SESSION_MARK_KEY = "unsloth_auth_session_mark";
 
 
 let authSessionEpoch = 0;
@@ -61,6 +68,10 @@ export function storeAuthTokens(
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
   if (sessionStarted) {
     authSessionEpoch += 1;
+    localStorage.setItem(
+      AUTH_SESSION_MARK_KEY,
+      `${Date.now()}.${Math.random()}`,
+    );
     window.dispatchEvent(new Event(AUTH_SESSION_STORED_EVENT));
   }
 }
@@ -71,6 +82,7 @@ export function clearAuthTokens(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY);
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
+  localStorage.removeItem(AUTH_SESSION_MARK_KEY);
   window.dispatchEvent(new Event(AUTH_SESSION_CLEARED_EVENT));
 }
 

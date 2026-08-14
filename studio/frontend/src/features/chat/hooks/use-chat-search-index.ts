@@ -3,7 +3,7 @@
 
 import {
   AUTH_SESSION_CLEARED_EVENT,
-  AUTH_TOKEN_KEY,
+  AUTH_SESSION_MARK_KEY,
   getAuthSessionEpoch,
 } from "@/features/auth";
 import { useEffect, useRef, useState } from "react";
@@ -284,12 +284,13 @@ const SEARCH_SESSION_CHANGED_EVENT = "unsloth-chat-search-session-changed";
 // cache would otherwise open onto rows that no longer exist and navigate to a dead thread.
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
-    // A sign-out and sign-in performed in another tab reaches this one as a token write
+    // A sign-out and sign-in performed in another tab reaches this one as a storage write
     // alone: the session epoch lives in this document's memory, and its events are
     // same-document too, so nothing here would otherwise notice the account changed. The
-    // token is shared, so the next rebuild already speaks for the new account, and only
-    // the rows built for the previous one have to go.
-    if (event.key === AUTH_TOKEN_KEY) {
+    // mark moves on a session boundary and not on an hourly token refresh, which must not
+    // cost a warm cache. The token is shared, so the next rebuild already speaks for the
+    // new account, and only the rows built for the previous one have to go.
+    if (event.key === AUTH_SESSION_MARK_KEY) {
       writeCachedIndex(null);
       // Shared by every account on the origin, so it cannot answer for the new one.
       forgetChatSearchHasRows();

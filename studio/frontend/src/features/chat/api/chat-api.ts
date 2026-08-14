@@ -1053,8 +1053,10 @@ export async function syncChatMessages(
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
-  // Same streaming path as saveChatMessage, in its batched form.
-  notifyChatHistoryUpdated({ coalesce: true });
+  // Pruning is how a message is deleted, which no other tab should go on matching for the
+  // length of some unrelated generation. Without it this is the streaming autosave in its
+  // batched form, and it coalesces like the single-message one.
+  notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
   return data.messages;
 }
 

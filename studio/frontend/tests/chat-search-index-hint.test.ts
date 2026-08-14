@@ -49,6 +49,7 @@ const { rememberChatSearchHasRows } = await import(
 );
 const {
   AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_MARK_KEY,
   AUTH_TOKEN_KEY,
   setAuthSessionEpochForTest,
 } = await import("./helpers/store-stubs/chat-search-auth.ts");
@@ -187,7 +188,7 @@ test("another tab's account switch drops this tab's rows and hint", () => {
   assert.equal(chatSearchIndexHasRows(), true);
 
   // The epoch lives in this document's memory and its events are same-document, so a sign-in
-  // performed elsewhere arrives as a token write and nothing else. The epoch still matches,
+  // performed elsewhere arrives as a storage write and nothing else. The epoch still matches,
   // which is exactly why the cache would otherwise answer for the previous account.
   let rebuilds = 0;
   const onHistory = () => {
@@ -204,7 +205,7 @@ test("another tab's account switch drops this tab's rows and hint", () => {
   win.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistory);
   win.addEventListener("unsloth-chat-search-session-changed", onSession);
   try {
-    fireStorage(AUTH_TOKEN_KEY);
+    fireStorage(AUTH_SESSION_MARK_KEY);
     assert.equal(
       chatSearchIndexHasRows(),
       null,
@@ -218,6 +219,32 @@ test("another tab's account switch drops this tab's rows and hint", () => {
     );
   } finally {
     win.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistory);
+    win.removeEventListener("unsloth-chat-search-session-changed", onSession);
+  }
+});
+
+test("a token refresh in another tab costs nothing", () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  writeCachedIndex([row]);
+
+  // refreshSession rewrites the token hourly without the session changing. Reading that as
+  // an account switch would throw away a warm cache, and empty an open dialog, for nothing.
+  let sessionChanges = 0;
+  const onSession = () => {
+    sessionChanges += 1;
+  };
+  const win = globalThis.window as Window;
+  win.addEventListener("unsloth-chat-search-session-changed", onSession);
+  try {
+    fireStorage(AUTH_TOKEN_KEY);
+    assert.equal(
+      chatSearchIndexHasRows(),
+      true,
+      "the cache survives a rotation",
+    );
+    assert.equal(sessionChanges, 0);
+  } finally {
     win.removeEventListener("unsloth-chat-search-session-changed", onSession);
   }
 });

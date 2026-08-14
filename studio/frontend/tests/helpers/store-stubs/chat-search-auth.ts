@@ -3,6 +3,9 @@
 
 // Mirrors features/auth/session-events, which the real module re-exports.
 export const AUTH_SESSION_CLEARED_EVENT = "unsloth:auth-session-cleared";
+export const AUTH_SESSION_MARK_KEY = "unsloth_auth_session_mark";
+// Not imported by the module under test: a test asserts that a refresh rewriting this key
+// alone is ignored.
 export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 
 /** The auth session epoch, driveable so a test can simulate a sign-out inside one page load. */
