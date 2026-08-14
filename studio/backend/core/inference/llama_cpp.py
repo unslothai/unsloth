@@ -3723,6 +3723,7 @@ class LlamaCppBackend:
         self._kv_value_length_swa: Optional[int] = None
         self._ssm_inner_size: Optional[int] = None
         self._ssm_state_size: Optional[int] = None
+        self._ssm_group_count: Optional[int] = None
         self._ssm_conv_kernel: Optional[int] = None
         self._kda_head_dim: Optional[int] = None
         # Last N layers reuse earlier layers' KV and don't allocate their own
@@ -7366,9 +7367,9 @@ class LlamaCppBackend:
         is the whole reservation at short contexts and the bisection in
         _fit_context_to_vram cannot shrink it away.
 
-        Sizes follow llama_hparams::n_embd_r/n_embd_s. Kimi KDA only: Mamba
-        needs ssm.group_count, which is not parsed, so those models keep the
-        previous behaviour rather than get a wrong number.
+        Sizes follow llama_hparams::n_embd_r/n_embd_s. This helper covers the
+        per-layer KDA layout; Hybrid Mamba uses its architecture-level interval
+        and group count in _mamba_recurrent_state_bytes.
         """
         if not self._n_kv_heads_by_layer or not self._n_layers or not self._kda_head_dim:
             return 0
@@ -7380,6 +7381,62 @@ class LlamaCppBackend:
         n_embd_r = 3 * max(0, d_conv - 1) * n_head * head_dim
         n_embd_s = head_dim * head_dim * n_head
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
+
+    def _mamba_recurrent_state_bytes(
+        self,
+        n_parallel: int = 1,
+        n_rs_seq: int = 0,
+    ) -> int:
+        """VRAM for Hybrid Mamba conv/SSM state, including rollback copies.
+
+        llama.cpp allocates one f32 recurrent state per parallel sequence. MTP
+        additionally keeps ``--spec-draft-n-max`` rollback states per sequence
+        while verifying draft tokens, so its allocation is ``1 + n_rs_seq``
+        times the base state.
+        """
+        n_layers_raw = getattr(self, "_n_layers", None)
+        d_inner_raw = getattr(self, "_ssm_inner_size", None)
+        d_state_raw = getattr(self, "_ssm_state_size", None)
+        n_group_raw = getattr(self, "_ssm_group_count", None)
+        d_conv_raw = getattr(self, "_ssm_conv_kernel", None)
+        fai_raw = getattr(self, "_full_attention_interval", None)
+        if not all(
+            value is not None
+            for value in (
+                n_layers_raw,
+                d_inner_raw,
+                d_state_raw,
+                n_group_raw,
+                d_conv_raw,
+                fai_raw,
+            )
+        ):
+            return 0
+        # Embedded MTP blocks are included in GGUF block_count (n_layer_all),
+        # but llama.cpp excludes them from the target context's n_layer. Their
+        # KV is priced separately by _mtp_draft_kv_bytes.
+        n_layers = max(
+            0,
+            int(n_layers_raw or 0) - int(getattr(self, "_nextn_predict_layers", None) or 0),
+        )
+        fai = int(fai_raw or 0)
+        n_attn = -(-n_layers // fai) if fai > 0 else n_layers
+        n_recurrent = max(0, n_layers - n_attn)
+        if n_recurrent == 0:
+            return 0
+        d_inner = int(d_inner_raw or 0)
+        d_state = int(d_state_raw or 0)
+        n_group = int(n_group_raw or 0)
+        d_conv = int(d_conv_raw or 0)
+        n_embd_r = max(0, d_conv - 1) * (d_inner + 2 * n_group * d_state)
+        n_embd_s = d_state * d_inner
+        return int(
+            n_recurrent
+            * (n_embd_r + n_embd_s)
+            * 4
+            * max(1, n_parallel)
+            * max(1, 1 + n_rs_seq)
+        )
 
     def _legacy_head_dim(self) -> int:
         """Head-dim fallback for GGUFs without explicit key/value dims. Reached
@@ -7447,7 +7504,10 @@ class LlamaCppBackend:
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
 
-        n_layers = self._n_layers  # type: ignore[assignment]
+        # GGUF block_count includes embedded MTP blocks. llama.cpp excludes
+        # those blocks from the target context and allocates their KV in the
+        # draft context, which _mtp_draft_kv_bytes prices separately.
+        n_layers = max(1, self._n_layers - (self._nextn_predict_layers or 0))
         # Gemma 3n / Gemma 4 reuse earlier KV in the last ``shared_kv_layers``
         # blocks (no cache). Floor at 1 so a bad GGUF can't zero out KV.
         shared = self._shared_kv_layers or 0
@@ -7500,11 +7560,15 @@ class LlamaCppBackend:
         if self._ssm_inner_size is not None and self._full_attention_interval is not None:
             fai = self._full_attention_interval
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
+            recurrent = self._mamba_recurrent_state_bytes(n_parallel)
             if key_len is not None and val_len is not None:
                 v_width = n_kv * val_len if flash_attn else self._max_kv_value_width(val_len)
-                return int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
+                return (
+                    int(n_attn * total_cells * (n_kv * key_len * bpe_k + v_width * bpe_v))
+                    + recurrent
+                )
             head_dim = self._legacy_head_dim()
-            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k)
+            return int(n_attn * total_cells * n_kv * 2 * head_dim * bpe_k) + recurrent
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
         # from the resolver; if absent, falls through to the legacy 1/4-global
@@ -7606,6 +7670,9 @@ class LlamaCppBackend:
                 "_sliding_window",
                 "_sliding_window_pattern",
                 "_ssm_inner_size",
+                "_ssm_state_size",
+                "_ssm_group_count",
+                "_ssm_conv_kernel",
                 "_full_attention_interval",
                 "_key_length_mla",
                 "_n_kv_heads_by_layer",
@@ -7704,8 +7771,9 @@ class LlamaCppBackend:
         flash_attn: bool = True,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
-        drafter weights + (MTP + MLA only) a duplicated target KV context. The
-        verify buffer rides in the ctx-fit headroom (no tuned constant). None when
+        drafter weights + target verification state. MLA duplicates the target
+        KV context, while Hybrid Mamba adds recurrent rollback copies. The other
+        verify buffers ride in the ctx-fit headroom (no tuned constant). None when
         the draft KV can't be sized (caller keeps the flat fallback).
         ``draft_weights_bytes`` is the drafter file size (0 for embedded).
         ``mtp_keeps_target_ctx`` is True for MTP draft modes (which keep the
@@ -7745,14 +7813,22 @@ class LlamaCppBackend:
                 n_ubatch = n_ubatch,
                 flash_attn = flash_attn,
             )
+        # Hybrid Mamba targets keep one recurrent state in the normal target
+        # context, counted by _estimate_kv_cache_bytes. MTP verification adds one
+        # rollback copy for every drafted token. This is the dominant hidden cost
+        # on Qwen3.5/3.8 at multiple parallel slots.
+        target_recurrent_copies = 0
+        if mtp_keeps_target_ctx and not drafter_path and spec_draft_n_max > 0:
+            base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
+            target_recurrent_copies = base_recurrent * spec_draft_n_max
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
             # MLA target copy so a large config can't launch over budget (the small
             # unsized draft KV rides in the cushion). Nothing known -> None, so the
             # caller keeps the flat fallback.
-            total = weights + target_ctx_copy
+            total = weights + target_ctx_copy + target_recurrent_copies
             return total if total > 0 else None
-        return draft_kv + weights + target_ctx_copy
+        return draft_kv + weights + target_ctx_copy + target_recurrent_copies
 
     _DEFAULT_N_UBATCH = _DEFAULT_LLAMA_N_UBATCH
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
@@ -8516,6 +8592,7 @@ class LlamaCppBackend:
         self._kv_value_length_swa = None
         self._ssm_inner_size = None
         self._ssm_state_size = None
+        self._ssm_group_count = None
         self._ssm_conv_kernel = None
         self._kda_head_dim = None
         self._shared_kv_layers = None
@@ -8628,6 +8705,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.shared_kv_layers": "shared_kv_layers",
                                         f"{arch}.ssm.inner_size": "ssm_inner_size",
                                         f"{arch}.ssm.state_size": "ssm_state_size",
+                                        f"{arch}.ssm.group_count": "ssm_group_count",
                                         f"{arch}.ssm.conv_kernel": "ssm_conv_kernel",
                                         f"{arch}.kda.head_dim": "kda_head_dim",
                                         f"{arch}.nextn_predict_layers": "nextn_predict_layers",
@@ -15241,6 +15319,15 @@ class LlamaCppBackend:
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
                     drafter_no_vram = _spec_dropped_no_vram,
+                    embedded_mtp_partial_offload = bool(
+                        use_fit
+                        and _spec_canon == "auto"
+                        and self._nextn_predict_layers
+                        and self._ssm_inner_size is not None
+                        and self._full_attention_interval is not None
+                        and not launch_mtp_draft_path
+                        and not _extra_args_set_spec_type(extra_args)
+                    ),
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -17040,6 +17127,7 @@ class LlamaCppBackend:
         dflash_draft_path: Optional[str] = None,
         dflash_fit_sized: bool = True,
         drafter_no_vram: bool = False,
+        embedded_mtp_partial_offload: bool = False,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -17411,6 +17499,22 @@ class LlamaCppBackend:
                     "Engaging anyway (user override)."
                 )
             _emit_mtp(chain_ngram = chain_ngram)
+            return flags
+
+        # Embedded Hybrid Mamba MTP shares the target model's device placement.
+        # Under partial offload its draft layer and the target rollback states push
+        # more target layers to CPU, which is slower than ordinary decoding. Auto
+        # therefore preserves llama-server parity by disabling speculation. Forced
+        # MTP remains available as the explicit user override.
+        if embedded_mtp_partial_offload:
+            logger.info(
+                "Auto: embedded MTP is disabled because the Hybrid Mamba target "
+                "requires partial CPU offload; ordinary decoding is faster at this "
+                "placement. Choose MTP explicitly to force it."
+            )
+            flags.extend(["--spec-type", "none"])
+            self._speculative_type = "none"
+            self._spec_fallback_reason = "mtp_partial_offload"
             return flags
 
         # effective_mode == "auto": the promotion path. No vision gate on any drafter
@@ -17807,6 +17911,7 @@ class LlamaCppBackend:
             self._kv_value_length_swa = None
             self._ssm_inner_size = None
             self._ssm_state_size = None
+            self._ssm_group_count = None
             self._ssm_conv_kernel = None
             self._kda_head_dim = None
             self._shared_kv_layers = None

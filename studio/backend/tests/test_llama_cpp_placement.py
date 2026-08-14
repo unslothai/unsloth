@@ -361,6 +361,92 @@ def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
 # ── Auto drops a drafter the VRAM cannot hold ─────────────────────────
 
 
+def _hybrid_mtp_backend(tmp_path: Path, *, partial_offload: bool):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 12 * 1024, 12 * 1024)],
+    )
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._n_layers = 65
+        backend._n_kv_heads = 4
+        backend._n_heads = 24
+        backend._embedding_length = 5120
+        backend._kv_key_length = 256
+        backend._kv_value_length = 256
+        backend._full_attention_interval = 4
+        backend._ssm_inner_size = 6144
+        backend._ssm_state_size = 128
+        backend._ssm_group_count = 16
+        backend._ssm_conv_kernel = 4
+
+    backend._read_gguf_metadata = read_metadata
+    placement = (None, True) if partial_offload else ([0], False)
+    backend._select_gpus = lambda *args, **kwargs: placement
+    backend._select_gpus_split_aware = lambda *args, **kwargs: placement
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf
+
+
+def test_auto_disables_embedded_hybrid_mtp_under_partial_offload(tmp_path):
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert "draft-mtp" not in cmd
+    assert "ngram-mod" not in cmd
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
+
+
+def test_forced_embedded_hybrid_mtp_survives_partial_offload(tmp_path):
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "mtp",
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_keeps_embedded_hybrid_mtp_when_fully_offloaded(tmp_path):
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
 def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):
     """One 24 GB card, a 16 GB target and a drafter of the caller's size.
 

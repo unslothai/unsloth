@@ -355,6 +355,53 @@ class TestOverheadTotal:
         pred = b._estimate_mtp_overhead_bytes(ctx) / MIB
         assert pred == pytest.approx(measured_draft_kv_mib, abs = 2)
 
+    @pytest.mark.parametrize(
+        "ctx,target_kv_mib,draft_kv_mib",
+        [
+            (4096, 256, 16),
+            (16384, 1024, 64),
+            (65536, 4096, 256),
+            (131072, 8192, 512),
+        ],
+    )
+    def test_hybrid_mtp_matches_target_and_draft_context_across_lengths(
+        self,
+        ctx,
+        target_kv_mib,
+        draft_kv_mib,
+    ):
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        target = b._estimate_kv_cache_bytes(ctx, "f16", n_parallel = 4)
+        draft_kv = b._mtp_draft_kv_bytes(ctx, n_parallel = 4)
+
+        assert base / MIB == pytest.approx(598.5)
+        assert target == base + target_kv_mib * MIB
+        assert draft_kv == draft_kv_mib * MIB
+        assert b._estimate_mtp_overhead_bytes(
+            ctx,
+            spec_draft_n_max = 2,
+            n_parallel = 4,
+        ) == draft_kv + 2 * base
+
+    def test_separate_drafter_does_not_add_embedded_target_rollback_state(self, monkeypatch):
+        b = _make_backend(n_layers = 65)
+        b._ssm_state_size = 128
+        b._ssm_group_count = 16
+        b._ssm_conv_kernel = 4
+        stub = _StubDrafter(kv_per_token = 2000)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+
+        assert b._estimate_mtp_overhead_bytes(
+            4096,
+            drafter_path = "/m/d.gguf",
+            spec_draft_n_max = 2,
+            n_parallel = 4,
+        ) == stub._estimate_kv_cache_bytes(4096, n_parallel = 4)
+
 
 # ---------------------------------------------------------------------------
 # _fit_context_to_vram: MTP reserve lowers the chosen context
