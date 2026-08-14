@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import struct
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -837,3 +838,92 @@ def test_the_probe_resolves_normally_when_the_cache_moved_under_it(monkeypatch, 
     verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
     assert verdict is not None and "Video page" in verdict
     assert requests == [("owner/model", "model-Q4_K_M.gguf")]
+
+
+def test_the_launch_opens_the_carried_file_instead_of_resolving_it(monkeypatch, tmp_path):
+    """Phase 2 opens the carried file; with nothing carried it resolves and verifies again."""
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "m-Q4_K_M.gguf", _gguf_bytes(arch = "llama"))
+
+    def _load(verified) -> list[str]:
+        order: list[str] = []
+        backend = LlamaCppBackend()
+        # A route ask no load came for is still handed over for this key.
+        monkeypatch.setattr(LlamaCppBackend, "_route_verdict_handoff", None)
+        _repo_load(monkeypatch, backend, order)
+        monkeypatch.setattr(
+            backend, "_download_gguf", lambda **_k: order.append("download") or str(cached)
+        )
+        monkeypatch.setattr(
+            diffusion_compat, "_read_gguf_header", lambda *_a, **_k: _gguf_bytes(arch = "llama")
+        )
+
+        def _stop(**_kwargs):
+            raise RuntimeError("stop here")
+
+        # The first companion fetch past the download decision, so the load stops there.
+        monkeypatch.setattr(backend, "_download_mtp", _stop)
+        with pytest.raises(RuntimeError, match = "stop here"):
+            backend.load_model(_intent(verified_gguf = verified))
+        return order
+
+    assert _load(("owner/model", "Q4_K_M", str(cached))) == ["kill"]
+    assert _load(None) == ["kill", "download"]
+
+
+def _launchable_backend(monkeypatch) -> LlamaCppBackend:
+    """A backend whose launch succeeds without a real llama-server."""
+
+    class _Process:
+        pid = 123
+        stdout = ()
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout = None):
+            return None
+
+        def kill(self):
+            return None
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    backend._llama_server_env_for_binary = lambda _binary: {}
+    backend._wait_for_health = lambda timeout: True
+    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+    )
+    monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", lambda cmd, **_kw: _Process())
+    return backend
+
+
+def test_the_snapshot_kept_for_a_respawn_carries_no_verified_file(monkeypatch, tmp_path):
+    """_respawn_if_dead replays this snapshot arbitrarily later, so it holds no path this
+    request happened to verify: recovery resolves and verifies the file again."""
+    gguf = tmp_path / "m-Q4_K_M.gguf"
+    gguf.write_bytes(_gguf_bytes(arch = "llama"))
+    intent = GgufLoadIntent(
+        model_identifier = "owner/model",
+        gguf_path = str(gguf),
+        hf_variant = "Q4_K_M",
+        verified_gguf = ("owner/model", "Q4_K_M", str(gguf)),
+    )
+
+    backend = _launchable_backend(monkeypatch)
+    assert backend.load_model(intent) is True
+    # Only the hint is dropped; everything else the replay needs survives.
+    assert backend.last_load_intent == replace(intent, verified_gguf = None)

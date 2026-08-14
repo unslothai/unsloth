@@ -16080,8 +16080,11 @@ class LlamaCppBackend:
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
-                # watch this load for a mid-generation crash.
-                self._last_load_intent = intent
+                # watch this load for a mid-generation crash. The verified-cache hint is
+                # dropped here: it belongs to the request that resolved it, and a respawn
+                # replays this snapshot arbitrarily later, so recovery re-resolves the file
+                # instead of trusting a path the cache no longer has to back.
+                self._last_load_intent = replace(intent, verified_gguf = None)
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
