@@ -8,3 +8,7 @@ export type {
 } from "./api";
 export { prepareHfTokenForUse } from "./confirm-token";
 export { HfTokenWarningDialog } from "./hf-token-warning-dialog";
+export {
+  type RepositoryAccessStatus,
+  validateRepositoryAccess,
+} from "./repository-access";

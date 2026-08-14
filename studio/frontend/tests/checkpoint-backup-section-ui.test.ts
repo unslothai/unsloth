@@ -11,7 +11,9 @@ const source = readFileSync(
 );
 
 const row = (label: string) => {
-  const start = source.indexOf(`<BackupSettingRow\n              label="${label}"`);
+  const start = source.indexOf(
+    `<BackupSettingRow\n              label="${label}"`,
+  );
   assert.notEqual(start, -1, `${label} uses BackupSettingRow`);
   return source.slice(start, source.indexOf("</BackupSettingRow>", start));
 };
@@ -22,7 +24,10 @@ test("backup settings use one responsive, contained control grid", () => {
     /grid-cols-1 items-center gap-x-6 gap-y-2 md:grid-cols-\[minmax\(0,1fr\)_12rem\]/,
   );
   assert.match(source, /className="col-span-full text-xs font-medium/g);
-  assert.match(source, /className="flex w-full min-w-0 justify-self-end justify-end"/);
+  assert.match(
+    source,
+    /className="flex w-full min-w-0 justify-self-end justify-end"/,
+  );
   assert.match(source, /box-border w-full min-w-0 max-w-full/);
   assert.doesNotMatch(source, /(?:absolute|translate-x|margin-left|ml-)\b/);
 });
@@ -36,7 +41,11 @@ test("repository, interval, and retention controls share their label rows", () =
   );
   assert.match(source, /hidden md:block/);
   assert.match(source, /Example: username\/my-training-backups/);
-  assert.match(source, /Test access/);
+  assert.doesNotMatch(source, /Test access/);
+  assert.match(source, /className="box-border w-full min-w-0 max-w-full pr-9"/);
+  assert.match(source, /LoaderCircle/);
+  assert.match(source, /CircleCheck/);
+  assert.match(source, /CircleAlert/);
 });
 
 test("final-upload switches use the shared right-aligned control column", () => {
@@ -63,8 +72,12 @@ test("hints remain adjacent to labels", () => {
 test("disabled cadence uses aligned guidance instead of loose status text", () => {
   assert.match(source, /disabled=\{store\.saveSteps <= 0\}/);
   assert.match(source, /aria-disabled=\{store\.saveSteps <= 0\}/);
-  assert.match(source, /Periodic backups are off because Save Steps is 0\./);
+  assert.match(
+    source,
+    /Periodic uploads are unavailable because Save Steps is 0\./,
+  );
   assert.match(source, /Configure Save Steps/);
+  assert.match(source, /text-primary underline-offset-4 hover:underline/);
   assert.doesNotMatch(source, />\s*Disabled\s*</);
   assert.doesNotMatch(source, /value=\{store\.saveSteps\}/);
 });
