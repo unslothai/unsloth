@@ -58,20 +58,18 @@ export function DebuggingTab() {
   const [realpath, setRealpath] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
-  // Reported by the reader, and until now read by nobody: a burst larger than
-  // one response continues on the next poll, which in manual mode never comes
-  // unless the user knows to ask for it.
+  // A burst larger than one response continues on the next poll, which in
+  // manual mode never comes unless the user knows to ask for it.
   const [morePending, setMorePending] = useState(false);
   // File logging is off and an older session's log is still on disk, so the
-  // pane shows real content that will never grow. Without saying so, a stale
-  // log is indistinguishable from a live one.
+  // pane shows real content that will never grow. Unsaid, a stale log is
+  // indistinguishable from a live one.
   const [staleSession, setStaleSession] = useState(false);
   const { copied, copy } = useCopyFeedback();
 
   // In a ref as well as state: the poll loop must not restart per line arrived.
   const cursorRef = useRef<string | null>(null);
-  // Counts source changes, so an in-flight request can tell its view was
-  // replaced.
+  // Counts source changes, so an in-flight request can tell its view moved.
   const selectionRef = useRef(0);
   // The selection in flight, not a bare flag: a poll for the newly picked source
   // must not be swallowed by a slow read of the one the user just left, or the
@@ -122,17 +120,17 @@ export function DebuggingTab() {
     async (error: unknown, signal?: AbortSignal) => {
       if (isAbort(error)) return;
       if (isRequestTimeout(error)) {
-        // Not the raw message: the backstop is an internal number and the user
-        // needs the consequence, not the duration.
+        // Not the raw message: the backstop duration is an internal number, and
+        // the user needs the consequence.
         setNotice(t("settings.debugging.timeout"));
         return;
       }
       if (isLogSourceGone(error)) {
         // The id we hold is no longer enumerated (file removed, or pushed out of
-        // the per-family window). The backend sends 404 precisely so the picker
-        // rebuilds; without this the loop re-polls a dead id forever.
-        // Reselecting the server's default terminates: it comes from the same
-        // walk, and "nothing at all" is a 200 with a status, not another 404.
+        // the per-family window). The backend sends 404 so the picker rebuilds;
+        // without this the loop re-polls a dead id forever. Reselecting the
+        // server's default terminates: it comes from the same walk, and
+        // "nothing at all" is a 200 with a status, not another 404.
         cursorRef.current = null;
         await refreshSources({ signal, reselect: true });
         return;
@@ -144,8 +142,7 @@ export function DebuggingTab() {
 
   // The llama runner writes a NEW file per load attempt, so a list fetched at
   // mount goes stale exactly when it matters: fail a load with the tab open and
-  // that failure's log is not offered. It is three directory listings, hence the
-  // slower cadence than the tail poll.
+  // that failure's log is not offered.
   const rescanSourcesIfStale = useCallback(
     async (signal?: AbortSignal) => {
       if (Date.now() - lastSourceScanRef.current < SOURCE_RESCAN_MS) return;
@@ -162,7 +159,7 @@ export function DebuggingTab() {
       inFlightRef.current = selection;
       // Without the timeout a request that never settles pins inFlightRef
       // forever: every poll returns at the guard above and the pane freezes with
-      // no error, since the catch never runs. A dropped tunnel is enough.
+      // no error, since the catch never runs. A dropped tunnel does it.
       try {
         const page = await withRequestTimeout(
           (requestSignal) =>
@@ -220,9 +217,9 @@ export function DebuggingTab() {
     setBuffer(EMPTY_BUFFER);
     setRealpath(null);
     // Every notice below describes the file being left, so all of them go with
-    // it. Clearing only `dropped` let a failed first read on the new source
-    // keep claiming the OLD one's state, and in manual mode nothing retries to
-    // correct it: the pane would sit there calling a live log a frozen session.
+    // it. Clearing only `dropped` let a failed first read on the new source keep
+    // claiming the OLD one's state, and in manual mode nothing retries: the pane
+    // sat there calling a live log a frozen session.
     setDropped(false);
     setMorePending(false);
     setStaleSession(false);
