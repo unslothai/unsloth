@@ -308,9 +308,14 @@ export function DownloadedList({
   // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
   const movePinned = usePinnedModelsStore((s) => s.movePinned);
+  const beginPinnedDrag = usePinnedModelsStore((s) => s.beginPinnedDrag);
+  const endPinnedDrag = usePinnedModelsStore((s) => s.endPinnedDrag);
   // Ref, not state: dragenter can fire before a dragstart re-render commits.
   const dragPinKeyRef = useRef<string | null>(null);
-  const [dragPinKey, setDragPinKey] = useState<string | null>(null);
+  // Dimming keys off the dragged CELL, not off its pin key: one repo cached in
+  // two formats yields two rows sharing a single pin key, and dimming both
+  // would report the untouched twin as the thing being dragged.
+  const [dragRowKey, setDragRowKey] = useState<string | null>(null);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
     const merged: InventoryItem[] = [
@@ -486,17 +491,25 @@ export function DownloadedList({
             }}
           >
             {pinnedItems.map((item) => {
-              const itemPinKey = item.row.repoId
-                ? pinKey(item.row.repoId)
-                : null;
+              const rowKey = `${item.variant}-${item.row.id}`;
+              // movePinned can only move a key that is in the pinned list, and
+              // pins also exist as `repoId::quant` (written by the GGUF quant
+              // menus). Deriving the key without checking membership would let
+              // a row advertise a drag that every movePinned call silently
+              // found nothing to do. pinnedCount selects this slice on the same
+              // predicate today, so the check holds the two in lockstep rather
+              // than trusting them to stay identical.
+              const itemPinKey =
+                item.row.repoId && pinnedSet.has(pinKey(item.row.repoId))
+                  ? pinKey(item.row.repoId)
+                  : null;
               return (
                 <div
-                  key={`${item.variant}-${item.row.id}`}
+                  key={rowKey}
                   className="min-w-0"
                   style={{
                     height: cellHeightPx,
-                    opacity:
-                      dragPinKey && dragPinKey === itemPinKey ? 0.4 : undefined,
+                    opacity: dragRowKey === rowKey ? 0.4 : undefined,
                   }}
                   draggable={itemPinKey != null}
                   onDragStart={(event) => {
@@ -505,11 +518,18 @@ export function DownloadedList({
                     // Firefox will not start a drag without data.
                     event.dataTransfer.setData("text/plain", itemPinKey);
                     dragPinKeyRef.current = itemPinKey;
-                    setDragPinKey(itemPinKey);
+                    setDragRowKey(rowKey);
+                    // Reordering happens live on dragenter; this snapshot is
+                    // what a cancelled drag rolls back to.
+                    beginPinnedDrag();
                   }}
                   onDragEnd={() => {
                     dragPinKeyRef.current = null;
-                    setDragPinKey(null);
+                    setDragRowKey(null);
+                    // Escape, or a release outside any cell, reaches dragend
+                    // without a drop. A drop already committed and cleared the
+                    // session, so this call is then a no-op.
+                    endPinnedDrag(false);
                   }}
                   onDragOver={(event) => {
                     if (dragPinKeyRef.current) event.preventDefault();
@@ -523,7 +543,8 @@ export function DownloadedList({
                   onDrop={(event) => {
                     event.preventDefault();
                     dragPinKeyRef.current = null;
-                    setDragPinKey(null);
+                    setDragRowKey(null);
+                    endPinnedDrag(true);
                   }}
                 >
                   {renderInventoryRow(item)}
