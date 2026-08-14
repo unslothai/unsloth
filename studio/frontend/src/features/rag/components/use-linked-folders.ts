@@ -14,6 +14,7 @@ import {
   deleteLinkedFolder,
   getFolderSyncJob,
   listLinkedFolders,
+  noteProjectWork,
   rebuildLinkedFolder,
   streamFolderSyncJobEvents,
   syncLinkedFolder,
@@ -63,6 +64,20 @@ export function useLinkedFolders(
   const trackJob = useCallback(
     (initial: FolderSyncJob) => {
       if (controllers.current.has(initial.id)) return;
+      // A sync only reports at start and completion, and the rows it creates
+      // appear as it goes, so the project composer has nothing to gate on for
+      // the length of the job. Count it as work on this project instead.
+      const workProjectId = scopeType === "project" ? (scopeId ?? null) : null;
+      let workCounted = false;
+      const endWork = () => {
+        if (!workProjectId || !workCounted) return;
+        workCounted = false;
+        noteProjectWork(workProjectId, -1);
+      };
+      if (workProjectId) {
+        workCounted = true;
+        noteProjectWork(workProjectId, 1);
+      }
       setJobs((current) => ({ ...current, [initial.linkedFolderId]: initial }));
       setFolders((current) =>
         current.map((folder) =>
@@ -73,11 +88,15 @@ export function useLinkedFolders(
       );
       const controller = new AbortController();
       controllers.current.set(initial.id, controller);
+      // Every path out of a tracked job ends in one of these two, so the count
+      // cannot be left standing by an unmount, a scope change or an unlink.
+      controller.signal.addEventListener("abort", endWork);
 
       const releaseController = () => {
         if (controllers.current.get(initial.id) === controller) {
           controllers.current.delete(initial.id);
         }
+        endWork();
       };
       const apply = (job: FolderSyncJob) => {
         if (controller.signal.aborted) return;
@@ -142,7 +161,7 @@ export function useLinkedFolders(
         }
       })();
     },
-    [notifySourcesChanged],
+    [notifySourcesChanged, scopeType, scopeId],
   );
 
   const refresh = useCallback(

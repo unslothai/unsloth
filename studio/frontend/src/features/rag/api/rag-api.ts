@@ -232,6 +232,37 @@ export function invalidateProjectSources(projectId: string): void {
   );
 }
 
+/**
+ * Work in flight against a project's sources, by project. A project's sources
+ * are changed from the Sources tab as well as the composer, and the instance
+ * that is not doing it holds no row for the work until it lands: an upload for
+ * the length of its POST, a folder sync for the length of the job. Without this
+ * the composer reports nothing indexing, stops polling, and lets a send go out
+ * that the sources it is waiting on cannot reach.
+ */
+const projectWorkInFlight = new Map<string, number>();
+
+export const PROJECT_WORK_CHANGED_EVENT = "unsloth-project-work-changed";
+
+export function noteProjectWork(projectId: string, delta: number): void {
+  const next = (projectWorkInFlight.get(projectId) ?? 0) + delta;
+  if (next > 0) {
+    projectWorkInFlight.set(projectId, next);
+  } else {
+    projectWorkInFlight.delete(projectId);
+  }
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent(PROJECT_WORK_CHANGED_EVENT, { detail: { projectId } }),
+  );
+}
+
+export function projectWorkCount(projectId: string): number {
+  return projectWorkInFlight.get(projectId) ?? 0;
+}
+
 export async function listLinkedFolders(
   scope?: LinkedFolderScope,
 ): Promise<LinkedFolder[]> {

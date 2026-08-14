@@ -156,12 +156,12 @@ test("no project scope is opened where RAG cannot run", () => {
   );
 });
 
-// A project's sources are uploaded from the Sources panel as well as the
-// composer, and the panel invalidates before the POST as well as after. The
-// composer holds no row for a file the panel is still uploading, so re-listing
-// alone left it reporting nothing indexing for the length of the upload, and a
-// send could go out that the file could not reach.
-test("an upload in the other instance counts as indexing", () => {
+// A project's sources change from the Sources panel as well as the composer:
+// an upload the panel invalidates before as well as after, and a folder sync
+// that only reports at start and completion. The composer holds no row for
+// either while it runs, so re-listing alone left it reporting nothing indexing,
+// and a send could go out that those sources could not reach.
+test("work in the other instance counts as indexing", () => {
   const inFlight = new Map<string, number>();
   const note = (projectId: string, delta: number) => {
     const next = (inFlight.get(projectId) ?? 0) + delta;
@@ -199,9 +199,22 @@ test("the composer reads indexing from the hooks, not the listed rows", () => {
     ),
     "utf8",
   );
-  assert.match(hook, /noteProjectUpload\(uploadingProjectId, 1\)/);
-  assert.match(hook, /noteProjectUpload\(uploadingProjectId, -1\)/);
-  assert.match(hook, /uploadsElsewhere > 0 \|\|/);
+  assert.match(hook, /noteProjectWork\(uploadingProjectId, 1\)/);
+  assert.match(hook, /noteProjectWork\(uploadingProjectId, -1\)/);
+  assert.match(hook, /workElsewhere > 0 \|\|/);
+  // A folder sync reports at start and completion only, so the rows it
+  // creates land with nothing gating the composer in between.
+  const folders = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-linked-folders.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(folders, /noteProjectWork\(workProjectId, 1\)/);
+  assert.match(folders, /noteProjectWork\(workProjectId, -1\)/);
+  // Abort is the path an unmount, a scope change and an unlink all take.
+  assert.match(folders, /addEventListener\("abort", endWork\)/);
   const bar = readFileSync(
     new URL(
       "../src/features/rag/components/thread-documents-bar.tsx",
