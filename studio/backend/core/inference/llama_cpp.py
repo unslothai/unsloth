@@ -5641,6 +5641,40 @@ class LlamaCppBackend:
             return not fit_active
         return requested > n_layers
 
+    def _partially_offloads_layers(
+        self,
+        args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether the effective main-model layer policy is partial GPU offload.
+
+        A concrete layer count owns placement even when ``--fit on`` is present.
+        Otherwise ``-1`` (or an omitted count) is partial only while the fitter may
+        lower it. Zero is CPU-only rather than partial offload, and keeps CPU MTP.
+        """
+        n_layers = self.n_layers
+        if not n_layers:
+            return False
+        try:
+            requested = parse_gpu_layers_override(args)
+        except ValueError:
+            return False
+        source_env = os.environ if env is None else env
+        if requested is None:
+            raw = source_env.get("LLAMA_ARG_N_GPU_LAYERS")
+            if raw is not None and raw.strip():
+                try:
+                    requested = int(raw)
+                except ValueError:
+                    requested = None
+        if requested == 0:
+            return False
+        if requested is not None and requested > 0:
+            # llama.cpp needs a count above block_count to include the output
+            # layer, matching _offloads_every_layer.
+            return requested <= n_layers
+        return fit_is_effectively_on(args, source_env)
+
     @staticmethod
     def _torch_is_rocm(torch) -> bool:
         """Whether this torch is a ROCm build. AMD SDK wheels leave
@@ -15299,6 +15333,9 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
+                _spec_placement_env = dict(os.environ)
+                if gpu_memory_mode == "manual":
+                    self._clear_manual_placement_env(_spec_placement_env)
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -15316,13 +15353,16 @@ class LlamaCppBackend:
                     dflash_fit_sized = not use_fit,
                     drafter_no_vram = _spec_dropped_no_vram,
                     embedded_mtp_partial_offload = bool(
-                        use_fit
-                        and _spec_canon == "auto"
+                        _spec_canon == "auto"
                         and self._nextn_predict_layers
                         and self._ssm_inner_size is not None
                         and self._full_attention_interval is not None
                         and not launch_mtp_draft_path
                         and not _extra_args_set_spec_type(extra_args)
+                        and self._partially_offloads_layers(
+                            [*cmd, *(extra_args or [])],
+                            _spec_placement_env,
+                        )
                     ),
                     draft_device = _draft_device,
                 )
@@ -17498,10 +17538,10 @@ class LlamaCppBackend:
             return flags
 
         # Embedded Hybrid Mamba MTP shares the target model's device placement.
-        # Under partial offload its draft layer and the target rollback states push
-        # more target layers to CPU, which is slower than ordinary decoding. Auto
-        # therefore preserves llama-server parity by disabling speculation. Forced
-        # MTP remains available as the explicit user override.
+        # Under an automatic fit, its rollback states push more target layers to CPU;
+        # at a fixed partial layer count, the draft and rollback work still regresses
+        # decode. Auto therefore preserves ordinary llama-server performance by
+        # disabling speculation. Forced MTP remains available as the explicit override.
         if embedded_mtp_partial_offload:
             logger.info(
                 "Auto: embedded MTP is disabled because the Hybrid Mamba target "

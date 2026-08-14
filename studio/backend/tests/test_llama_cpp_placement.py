@@ -447,6 +447,66 @@ def test_auto_keeps_embedded_hybrid_mtp_when_fully_offloaded(tmp_path):
     assert backend.spec_fallback_reason is None
 
 
+def test_auto_disables_embedded_hybrid_mtp_with_manual_partial_layers(tmp_path):
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        gpu_memory_mode = "manual",
+        gpu_layers = 42,
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--gpu-layers") + 1] == "42"
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
+
+
+@pytest.mark.parametrize("gpu_layers", [0, 66])
+def test_auto_keeps_embedded_hybrid_mtp_without_manual_partial_layers(
+    tmp_path, gpu_layers
+):
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        gpu_memory_mode = "manual",
+        gpu_layers = gpu_layers,
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--gpu-layers") + 1] == str(gpu_layers)
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_disables_embedded_hybrid_mtp_for_final_partial_layer_override(tmp_path):
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        extra_args = ["--gpu-layers", "42"],
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[-2:] == ["--gpu-layers", "42"]
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
+
+
 def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):
     """One 24 GB card, a 16 GB target and a drafter of the caller's size.
 
