@@ -835,6 +835,7 @@ def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
 
 def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkeypatch):
     """A suppressed call must not weld inlined reasoning onto a resumed partial."""
+
     def fake_execute_tool(name, arguments, **_kwargs):
         raise AssertionError(f"unexpected tool execution: {name} {arguments}")
 
