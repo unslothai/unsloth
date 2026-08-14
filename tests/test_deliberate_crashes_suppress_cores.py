@@ -223,15 +223,12 @@ def test_the_scan_finds_the_files_it_is_meant_to_guard():
 
 def test_every_deliberate_crash_suppresses_its_core():
     offenders = [
-        p.relative_to(REPO_ROOT)
-        for p in _iter_test_files()
-        if _classify(p) == (True, False)
+        p.relative_to(REPO_ROOT) for p in _iter_test_files() if _classify(p) == (True, False)
     ]
     assert not offenders, (
         "These files crash a process on purpose without suppressing the core dump:\n\n"
         + "".join(f"    {p}\n" for p in offenders)
         + "\nA fatal signal is piped to the host core_pattern handler (apport on "
         "Ubuntu), which reads the WHOLE core before the child is reaped: about 4x the "
-        "wall time and a multi-MB write per fault, every run.\n\n"
-        + _FIX
+        "wall time and a multi-MB write per fault, every run.\n\n" + _FIX
     )
