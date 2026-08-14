@@ -704,6 +704,50 @@ class TestStrictPmPolicyOptOut:
         ), f"the operator's mirror must not travel with the policy: {settings}"
         assert env["UV_NO_CONFIG"] == "1", "discovery stays off whichever variable wins"
 
+    def test_a_per_package_cutoff_reaches_the_pinned_command(self, tmp_path, monkeypatch):
+        """uv's exclude-newer-package is the same control per package, and a pinned
+        command reads no config file, so it travels in the projection like the rest."""
+        env = self._pinned_env(
+            tmp_path,
+            monkeypatch,
+            '[pip]\nexclude-newer-package = { docopt = "2020-01-01T00:00:00Z" }\n',
+            {"UNSLOTH_STRICT_PM_POLICY": "1"},
+        )
+        projected = Path(env["UV_CONFIG_FILE"]).read_text(encoding = "utf-8")
+        assert 'exclude-newer-package = { "docopt" = "2020-01-01T00:00:00Z" }' in projected
+
+    def test_a_per_package_cutoff_also_stops_the_pip_fallback(self, tmp_path, monkeypatch):
+        """pip has no equivalent for this one either, so falling back would install what
+        the cutoff excluded."""
+        (tmp_path / "uv.toml").write_text(
+            '[pip]\nexclude-newer-package = { docopt = "2020-01-01T00:00:00Z" }\n',
+            encoding = "utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            assert ips._untranslatable_strict_policy() == ["exclude-newer-package"]
+
+    def test_an_unwritable_projection_fails_the_install(self, tmp_path, monkeypatch):
+        """Carrying on under --no-config would run the pinned command with no policy at
+        all, which is the bypass the switch was set to refuse."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        monkeypatch.setattr(ips, "_UV_POLICY_PROJECTION", None)
+
+        def no_temp_dir(*args, **kwargs):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(ips.tempfile, "mkdtemp", no_temp_dir)
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True),
+            pytest.raises(SystemExit),
+        ):
+            ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+
     def test_the_projection_is_written_once(self, tmp_path, monkeypatch):
         """Every torch repair builds an env, and a file per command would litter."""
         first = self._pinned_env(
@@ -777,7 +821,9 @@ class TestStrictPmPolicyOptOut:
         ):
             cmd = ips._build_uv_cmd(("numpy",))
         assert "--no-build" not in cmd
-        assert cmd[-2:] == ["--no-build-package", "some-other-package"]
+        # --only-binary is what uv's pip interface takes: --no-build-package exits 2
+        # there ("unexpected argument", uv 0.12.1), which would fail every install.
+        assert cmd[-2:] == ["--only-binary", "some-other-package"]
 
     def test_the_default_uv_command_is_unchanged(self):
         """Everything here is opt-in: without the switch the command is byte-identical."""
@@ -1176,6 +1222,69 @@ class TestUvConfigDiscoveryMatchesUv:
             (directory / "uv" / "uv.toml").write_text(policy + "\n", encoding = "utf-8")
         monkeypatch.setenv("XDG_CONFIG_DIRS", f"{first}{os.pathsep}{second}")
         assert self._keys() == ["uv.toml: require-hashes"]
+
+    def test_discovery_starts_at_uv_working_dir(self, tmp_path, monkeypatch):
+        """uv changes to --directory / UV_WORKING_DIR before it runs and discovers from
+        there. Measured on uv 0.12.1: a uv.toml under it refuses an sdist while the
+        original cwd has no config at all."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "uv.toml").write_text("[pip]\nno-build = true\n", encoding = "utf-8")
+        monkeypatch.setenv("UV_WORKING_DIR", str(elsewhere))
+        assert self._keys() == ["uv.toml: no-build"]
+
+    def test_a_commented_uv_table_does_not_end_the_walk(self, tmp_path, monkeypatch):
+        """A `# [tool.uv]` in a comment is not a table, and uv keeps reading the parent
+        (checked on 0.12.1), so stopping here would drop the parent's policy."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        nested = tmp_path / "project"
+        nested.mkdir()
+        (nested / "pyproject.toml").write_text(
+            "[project]\nname = 'x'\n# [tool.uv] is documented over at ...\n",
+            encoding = "utf-8",
+        )
+        monkeypatch.chdir(nested)
+        assert self._keys() == ["uv.toml: no-build"]
+
+    def test_the_pip_table_beats_the_root_of_the_same_file(self, tmp_path):
+        """`uv pip install` reads the [pip] table, so a root `no-build = false` under a
+        `[pip] no-build = true` leaves source builds disabled (measured on 0.12.1)."""
+        (tmp_path / "uv.toml").write_text(
+            "no-build = false\n\n[pip]\nno-build = true\n", encoding = "utf-8"
+        )
+        assert self._keys() == ["uv.toml: no-build"]
+
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "XDG is the Unix system-config path")
+    def test_the_xdg_default_system_directory_is_searched(self, monkeypatch):
+        """/etc/xdg is XDG's own default for an unset XDG_CONFIG_DIRS, and uv reads
+        /etc/xdg/uv/uv.toml there, so a fleet policy at the standard path counts."""
+        monkeypatch.delenv("XDG_CONFIG_DIRS", raising = False)
+        # Only the first system file that EXISTS is read, so the default has to be
+        # present for the candidate to survive the filter.
+        monkeypatch.setattr(ips, "_file_exists", lambda p: str(p) == "/etc/xdg/uv/uv.toml")
+        assert Path("/etc/xdg/uv/uv.toml") in ips._uv_config_candidates()
+
+    def test_a_none_reset_clears_an_earlier_all(self, tmp_path):
+        """`:none:` clears what came before it: uv 0.12.1 installs an sdist-only package
+        under `only-binary = [":all:", ":none:"]`, so reading any `:all:` as final turns
+        the operator's own reset into a global build ban."""
+        (tmp_path / "uv.toml").write_text(
+            '[pip]\nonly-binary = [":all:", ":none:"]\n', encoding = "utf-8"
+        )
+        assert self._keys() == []
+
+    def test_a_multiline_list_is_read_by_the_line_scanner(self, tmp_path):
+        """The 3.9/3.10 fallback saw `only-binary = [` and read no packages, so a policy
+        written the way TOML formatters write it became no policy under the switch."""
+        path = tmp_path / "uv.toml"
+        path.write_text(
+            '[pip]\nonly-binary = [\n  "foo",\n  "bar",\n]\nrequire-hashes = true\n',
+            encoding = "utf-8",
+        )
+        assert [key for _n, key, _v in ips._scan_uv_policy_config_by_line([path])] == [
+            "only-binary",
+            "require-hashes",
+        ]
 
     def test_uv_no_config_means_there_is_no_config(self, tmp_path, monkeypatch):
         """"--no-config: Avoid discovering configuration files". A policy uv is not

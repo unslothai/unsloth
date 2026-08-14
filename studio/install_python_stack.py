@@ -4080,10 +4080,11 @@ _PM_POLICY_CONFIG_KEYS = (
     "no-build",
     "no-build-package",
     "exclude-newer",
+    "exclude-newer-package",
 )
 
 # The subset that names packages rather than switching a policy on globally.
-_PM_POLICY_SCOPED_CONFIG_KEYS = ("only-binary", "no-build-package")
+_PM_POLICY_SCOPED_CONFIG_KEYS = ("only-binary", "no-build-package", "exclude-newer-package")
 
 # Every policy this module overrides somewhere, which is what the report has to name.
 # Wider than _PM_POLICY_RELAXED_ENV_VARS because the package-scoped --no-binary in
@@ -4110,7 +4111,7 @@ def _pm_policy_value_is_on(value: "object") -> bool:
         return False
     if value is True:
         return True
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, (list, tuple, set, dict)):
         # `no-build-package = []` is a policy that covers no package at all, and reading
         # it as one in force turns an empty list into a global build ban.
         return bool(value)
@@ -4158,16 +4159,28 @@ def _file_exists(path: "Path") -> bool:
 
 
 def _pyproject_speaks_for_uv(path: "Path") -> bool:
-    """True when a pyproject.toml carries a [tool.uv] table, which ends uv's walk.
+    """True when a pyproject.toml carries a [tool.uv] TABLE, which ends uv's walk.
 
-    Text rather than a parse: this runs once per directory on the way up, the answer only
-    decides whether to keep walking, and a pyproject too broken to parse is one uv would
-    stop at anyway.
+    Parsed, not grepped: a `# [tool.uv]` in a comment does not stop uv reading the parent
+    (checked on uv 0.12.1), and stopping there would drop the policy that parent sets. The
+    3.9/3.10 fallback settles for a header scan with the comments cut off.
     """
     try:
-        return "[tool.uv" in path.read_text(encoding = "utf-8", errors = "replace")
+        text = path.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
         return False
+    try:
+        import tomllib
+    except ImportError:
+        return any(
+            _toml_line_value(line).startswith("[tool.uv") for line in text.splitlines()
+        )
+    try:
+        document = tomllib.loads(text)
+    except Exception:
+        # Too broken for uv to read either, and uv stops at the file it cannot parse.
+        return True
+    return isinstance(document.get("tool"), dict) and "uv" in document["tool"]
 
 
 def _toml_line_value(raw: str) -> str:
@@ -4189,6 +4202,26 @@ def _toml_line_value(raw: str) -> str:
     return raw.strip()
 
 
+def _pm_policy_scope(names: "list[str]") -> "tuple[bool, list[str]]":
+    """A format-control list read the way pip and uv read it: in order, with resets.
+
+    `:all:` covers every package and `:none:` clears whatever came before it, so
+    `only-binary = [":all:", ":none:"]` is no policy at all. Measured on uv 0.12.1: that
+    list installs an sdist-only package. Testing for `:all:` anywhere in the list instead
+    turns the operator's own reset into a global build ban.
+    """
+    everything = False
+    packages: "list[str]" = []
+    for name in names:
+        if name == ":all:":
+            everything, packages = True, []
+        elif name == ":none:":
+            everything, packages = False, []
+        else:
+            packages.append(name)
+    return everything, packages
+
+
 def _uv_config_candidates() -> "list[Path]":
     """Where uv would look, in uv's own order.
 
@@ -4205,8 +4238,11 @@ def _uv_config_candidates() -> "list[Path]":
     if _pm_policy_value_is_on(os.environ.get("UV_NO_CONFIG")):
         return []
     candidates: "list[Path]" = []
+    # uv changes to --directory / UV_WORKING_DIR before it runs, and discovers from there
+    # (checked on uv 0.12.1: a uv.toml under it applies while the original cwd has none).
+    _working_dir = os.environ.get("UV_WORKING_DIR", "").strip()
     try:
-        _here = Path.cwd()
+        _here = Path(_working_dir) if _working_dir else Path.cwd()
     except OSError:  # a deleted cwd is not worth failing an install over
         _here = None
     if _here is not None:
@@ -4251,9 +4287,12 @@ def _uv_config_candidates() -> "list[Path]":
         # will be used, with XDG taking priority", so the XDG directories go first and the
         # first one that exists is the only system file read. A managed fleet is exactly
         # where the policy lives outside /etc.
+        # /etc/xdg is XDG's own default for an unset XDG_CONFIG_DIRS, and uv discovers
+        # /etc/xdg/uv/uv.toml there, so a fleet policy at the standard location counts.
+        _config_dirs = os.environ.get("XDG_CONFIG_DIRS", "").strip() or "/etc/xdg"
         _system = [
             Path(_dir.strip()) / "uv" / "uv.toml"
-            for _dir in os.environ.get("XDG_CONFIG_DIRS", "").split(os.pathsep)
+            for _dir in _config_dirs.split(os.pathsep)
             if _dir.strip()
         ]
         _system.append(Path("/etc/uv/uv.toml"))
@@ -4300,16 +4339,25 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
         for key in _PM_POLICY_CONFIG_KEYS:
             if key in decided:
                 continue
-            for table in (document, _pip_table):
+            # [pip] first: `uv pip install` reads the pip table, so a root
+            # `no-build = false` under a `[pip] no-build = true` is not the answer
+            # (measured on uv 0.12.1: source builds stay disabled).
+            for table in (_pip_table, document):
                 if not isinstance(table, dict) or key not in table:
                     continue
+                _value = table.get(key)
+                _live = (
+                    any(_pm_policy_scope(_pm_policy_config_names(_value)))
+                    if key in _PM_POLICY_SCOPED_CONFIG_KEYS and not isinstance(_value, dict)
+                    else _pm_policy_value_is_on(_value)
+                )
                 # The FIRST file to set a key settles it, however it set it: uv reads the
                 # higher-precedence value and ignores the rest, so a project
                 # `no-build = false` above a user `no-build = true` means no policy, not a
                 # policy to enforce.
                 decided.add(key)
-                if _pm_policy_value_is_on(table.get(key)):
-                    found.append((path.name, key, table.get(key)))
+                if _live:
+                    found.append((path.name, key, _value))
                 break
     return found
 
@@ -4330,9 +4378,19 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             continue
         section = ""
         here: "set[str]" = set()
-        for line in text.splitlines():
+        pending = ""
+        for raw in text.splitlines():
+            # A list can span lines, and reading only the first leaves `only-binary = [`,
+            # which parses as no packages and so as no policy at all. Glue the rest on
+            # until the brackets balance.
+            line = pending + _toml_line_value(raw) if pending else raw
+            if pending or line.count("[") > line.count("]"):
+                if "=" in line and line.count("[") > line.count("]"):
+                    pending = _toml_line_value(line)
+                    continue
+                pending = ""
             stripped = _toml_line_value(line)
-            if stripped.startswith("["):
+            if not pending and stripped.startswith("[") and "=" not in stripped:
                 section = stripped.strip("[]").strip().strip("\"'")
                 continue
             # In a pyproject only [tool.uv] and its subtables speak for uv. In a uv.toml
@@ -4356,8 +4414,8 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             here.add(key)
             if key in _PM_POLICY_SCOPED_CONFIG_KEYS:
                 # `only-binary = []` reads as a non-empty string here, so the list is what
-                # decides: no names, no policy.
-                if not _pm_policy_config_names(value):
+                # decides: no names and no reset left standing, no policy.
+                if not any(_pm_policy_scope(_pm_policy_config_names(value))):
                     continue
             elif not _pm_policy_value_is_on(value):
                 continue
@@ -4504,31 +4562,36 @@ def _uv_policy_settings() -> "dict[str, object]":
     a policy about foo, and widening it to every package fails installs the operator never
     restricted.
     """
-    no_build_all = _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
     # uv documents UV_NO_BUILD_PACKAGE as a space-delimited list.
-    packages: "list[str]" = _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
+    no_build_all, packages = _pm_policy_scope(
+        _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
+    )
+    no_build_all = no_build_all or _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
     require_hashes = _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES"))
     exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
     if not _pm_policy_value_is_on(exclude_newer):
         exclude_newer = ""
+    scoped_cutoff = False
     for _name, key, value in _uv_policy_config():
         if key == "require-hashes":
             require_hashes = True
         elif key == "exclude-newer":
             exclude_newer = exclude_newer or str(value).strip().strip("\"'")
+        elif key == "exclude-newer-package":
+            # Per package rather than global, and pip has no equivalent for either.
+            scoped_cutoff = True
         elif key == "no-build":
             no_build_all = True
         else:  # only-binary / no-build-package, both package-scoped lists
-            names = _pm_policy_config_names(value)
-            if ":all:" in names:
-                no_build_all = True
-            else:
-                packages += names
+            everything, names = _pm_policy_scope(_pm_policy_config_names(value))
+            no_build_all = no_build_all or everything
+            packages += names
     return {
         "no_build_all": no_build_all,
         "no_build_packages": [] if no_build_all else sorted(dict.fromkeys(packages)),
         "require_hashes": require_hashes,
         "exclude_newer": exclude_newer,
+        "scoped_cutoff": scoped_cutoff,
     }
 
 
@@ -4608,6 +4671,10 @@ def _uv_policy_config_projection() -> "Path | None":
     if "exclude-newer" in _file_keys:
         _cutoff = str(_file_keys["exclude-newer"]).strip().strip("\"'")
         lines.append(f'exclude-newer = "{_cutoff}"')
+    if "exclude-newer-package" in _file_keys:
+        _per_package = _toml_inline_table(_file_keys["exclude-newer-package"])
+        if _per_package:
+            lines.append(f"exclude-newer-package = {_per_package}")
     if not lines:
         return None
     try:
@@ -4621,13 +4688,36 @@ def _uv_policy_config_projection() -> "Path | None":
             "[pip]\n" + "\n".join(lines) + "\n",
             encoding = "utf-8",
         )
-    except OSError:
-        # No writable temp directory. The command still runs under --no-config, which is
-        # the pre-strict behaviour, and _report_pm_policy_relaxation has already named the
-        # policy: a repair that cannot start is worse than one that relaxes a policy.
-        return None
+    except OSError as error:
+        # No writable temp directory. Carrying on under --no-config would run the pinned
+        # command with no policy at all, which is the bypass the switch exists to refuse,
+        # so this fails instead.
+        _step(
+            "error",
+            f"{_STRICT_PM_POLICY_ENV_VAR}=1 cannot be honoured: your package-manager "
+            f"policy could not be written where the pinned install can read it ({error})",
+            _red,
+        )
+        sys.exit(1)
     _UV_POLICY_PROJECTION = path
     return path
+
+
+def _toml_inline_table(value: "object") -> str:
+    """A per-package mapping back as TOML, for the projection to hand to uv.
+
+    Only str keys and values, which is what `exclude-newer-package = { pkg = "date" }`
+    is; anything else is skipped rather than guessed at, because a value uv cannot parse
+    would fail every pinned command instead of restricting one package.
+    """
+    if not isinstance(value, dict):
+        return ""
+    pairs = [
+        f'"{name}" = "{when}"'
+        for name, when in value.items()
+        if isinstance(name, str) and isinstance(when, str) and '"' not in name + when
+    ]
+    return "{ " + ", ".join(pairs) + " }" if pairs else ""
 
 
 def _uv_policy_cli_args() -> "list[str]":
@@ -4649,7 +4739,10 @@ def _uv_policy_cli_args() -> "list[str]":
         return ["--no-build"]
     args: "list[str]" = []
     for name in settings["no_build_packages"]:
-        args += ["--no-build-package", name]
+        # --only-binary, not --no-build-package: uv's pip interface does not take the
+        # latter (uv 0.12.1 exits 2, "unexpected argument"), and the former is how that
+        # interface spells the same per-package restriction.
+        args += ["--only-binary", name]
     return args
 
 
@@ -4682,7 +4775,11 @@ def _untranslatable_strict_policy() -> "list[str]":
     """
     if not _strict_pm_policy():
         return []
-    return ["exclude-newer"] if _uv_policy_settings()["exclude_newer"] else []
+    settings = _uv_policy_settings()
+    blockers = ["exclude-newer"] if settings["exclude_newer"] else []
+    if settings["scoped_cutoff"]:
+        blockers.append("exclude-newer-package")
+    return blockers
 
 
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
