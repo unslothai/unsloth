@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 import uuid
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -58,14 +58,25 @@ def catalog_entry(created: int | None = None) -> dict:
     }
 
 
+_MESSAGE_EXTRA_KEYS = ("name", "tool_call_id", "tool_calls")
+
+
 def _messages_as_dicts(messages) -> list[dict]:
     out = []
     for message in messages:
-        role = getattr(message, "role", None) or message.get("role")
-        content = getattr(message, "content", None)
-        if content is None and isinstance(message, dict):
-            content = message.get("content")
-        out.append({"role": role, "content": content})
+        if isinstance(message, dict):
+            item = dict(message)
+            out.append(item)
+            continue
+        item = {
+            "role": getattr(message, "role", None),
+            "content": getattr(message, "content", None),
+        }
+        for key in _MESSAGE_EXTRA_KEYS:
+            value = getattr(message, key, None)
+            if value is not None:
+                item[key] = value
+        out.append(item)
     return out
 
 
@@ -422,14 +433,18 @@ class StudioHost:
                 on_chunk,
                 _as_sse_bytes("data: " + json.dumps(start_event, separators = (",", ":"))),
             )
-        work = asyncio.create_task(asyncio.to_thread(
-            execute_tool,
-            name,
-            arguments or {},
-            session_id = session_id,
-            timeout = effective,
-            cancel_event = self.cancel_event,
-        ))
+        ctx = copy_context()
+
+        def _run_action():
+            return execute_tool(
+                name,
+                arguments or {},
+                session_id = session_id,
+                timeout = effective,
+                cancel_event = self.cancel_event,
+            )
+
+        work = asyncio.create_task(asyncio.to_thread(ctx.run, _run_action))
         try:
             while True:
                 done, _ = await asyncio.wait({work}, timeout = TOOL_HEARTBEAT_INTERVAL_S)

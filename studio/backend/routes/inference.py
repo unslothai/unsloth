@@ -3311,6 +3311,17 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    # Memory/rims tools are episode-bound. Offering them on ordinary Studio chat
+    # writes to ~/.unforgettable/memory.db (no bind) or surprises the user.
+    try:
+        from core.unforgettable_host import in_inner_generate
+        from unforgettable.tools.specs import CONTACT_TOOL_NAMES, MEMORY_TOOL_NAMES
+
+        if not in_inner_generate():
+            skip = MEMORY_TOOL_NAMES | CONTACT_TOOL_NAMES
+            tools = [t for t in tools if t["function"]["name"] not in skip]
+    except Exception:
+        pass
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
