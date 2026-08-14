@@ -166,6 +166,18 @@ def test_the_powershell_probe_is_bounded():
     assert "-TimeoutSec" in after
 
 
+def test_the_powershell_probe_runs_the_studio_interpreter():
+    # install.ps1 runs setup.ps1 with SKIP_STUDIO_BASE=1 and never puts the venv on PATH,
+    # so bare `python` there is the system one: no torchcodec, a silent "absent", and the
+    # report never fires on the path every Windows install actually takes. The other
+    # bare-`python` probes live inside the base install, which that mode skips.
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    probe = text.index("$_torchcodecProbe = ")
+    after = text[probe : text.index('step "torchcodec"', probe)]
+    assert '-PythonExe "python"' not in after, "the probe reads whichever python is on PATH"
+    assert "$VenvDir" in after
+
+
 def test_the_shell_probe_carries_no_apostrophe():
     # It is passed as a single-quoted sh string, so one apostrophe anywhere in it
     # (including in a comment) closes the quote and breaks the script.

@@ -6133,7 +6133,13 @@ except Exception:
 else:
     print('ok')
 '@
-    $_torchcodecProbeResult = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_torchcodecProbe -TimeoutSec 60
+    # The venv interpreter by path, not bare `python`. install.ps1 runs this script with
+    # SKIP_STUDIO_BASE=1, which skips the base install that the other bare-`python` probes
+    # sit in, and nothing puts the venv on PATH: `python` here is the system one, which has
+    # no torchcodec and answers a silent "absent" for every install on that path.
+    $_torchcodecPy = Join-Path $VenvDir "Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $_torchcodecPy)) { $_torchcodecPy = "python" }
+    $_torchcodecProbeResult = Invoke-BoundedPythonProbe -PythonExe $_torchcodecPy -Code $_torchcodecProbe -TimeoutSec 60
     $torchcodecState = $_torchcodecProbeResult.Output.Trim()
 
     if ($torchcodecState -eq "ffmpeg") {
