@@ -33,6 +33,14 @@ class ProviderRegistryEntry(BaseModel):
     supports_tool_calling: bool = Field(
         False, description = "Whether this provider supports tool/function calling"
     )
+    supports_studio_tools: bool = Field(
+        False,
+        description = "Whether Studio runs its own tool loop (search/code/MCP/RAG) against this provider",
+    )
+    hidden: bool = Field(
+        False,
+        description = "Backend-only entry; the UI surfaces it via a custom preset, not the dropdown",
+    )
 
     auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
     base_url_editable: bool = True

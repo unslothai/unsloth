@@ -1,7 +1,7 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
 use log::{error, info, warn};
 use process_wrap::std::*;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -31,6 +31,8 @@ use crate::process::trim_line_endings;
 
 const FAILURE_CONTEXT_LINES: usize = 8;
 const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
+/// Clear labels are a small fixed set; this only bounds a pathological producer.
+const MAX_UNPAIRED_CLEARS: usize = 64;
 
 fn generic_failure_message(code: i32) -> String {
     format!(
@@ -39,10 +41,109 @@ fn generic_failure_message(code: i32) -> String {
     )
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
+/// product's verdict arrives as a parse error over the entire file before the installer's first
+/// line runs: no `[TAURI:ERROR]` marker, no phase log, just an unexplained stderr tail. Match the
+/// stable error id, never the localized message text.
+const AMSI_MALWARE_ERROR_ID: &str = "ScriptContainedMaliciousContent";
+const AMSI_ADMIN_BLOCK_ERROR_ID: &str = "ScriptHasAdminBlockedContent";
+
+/// The id only means a verdict when it is the VALUE of a `FullyQualifiedErrorId` field, which is
+/// how the parse error prints it. Otherwise a scanner log or a diagnostic that merely names the id
+/// would attach antivirus guidance to an unrelated failure. A record split across writes loses the
+/// guidance rather than inventing one, which is the safe direction.
+const POWERSHELL_ERROR_ID_FIELD: &str = "FullyQualifiedErrorId";
+
+/// "Nothing was changed" only holds for a block on install.ps1 itself, which AMSI rejects before
+/// its first statement. It also runs `unsloth studio setup`, whose child spawns studio/setup.ps1
+/// through the same pipes: a block there arrives with the venv, PyTorch and the packages already
+/// on disk. A `[TAURI:STEP]` marker is the dividing line, since a pre-start block produces none.
+/// Not "nothing was changed": a diagnostics attempt and its phase log are written before
+/// PowerShell is spawned, so the honest claim is that no installation step ran. And not "this is a
+/// false positive": classification proves only that the output carries an error id, and install.ps1
+/// can sit in a user-writable directory.
+const AMSI_MALWARE_GUIDANCE_PRE_START: &str = "Security software blocked the installer before it \
+     started, so no installation steps ran; only diagnostic logs may have been written. This is \
+     usually a false positive: reinstall from an official Unsloth package, and if an unmodified \
+     copy is still blocked, update your security product's definitions or report it to your \
+     vendor. Do not disable endpoint protection.";
+const AMSI_MALWARE_GUIDANCE_IN_PROGRESS: &str = "Security software blocked part of the installer, \
+     so setup did not finish and some components may already be installed. This is usually a \
+     false positive: reinstall from an official Unsloth package, and if an unmodified copy is \
+     still blocked, update your security product's definitions or report it to your vendor. Do \
+     not disable endpoint protection.";
+const AMSI_ADMIN_BLOCK_GUIDANCE_PRE_START: &str = "This machine's security policy blocked the \
+     installer before it started, so no installation steps ran. Ask whoever manages the device \
+     to allow it.";
+const AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS: &str = "This machine's security policy blocked part \
+     of the installer, so setup did not finish and some components may already be installed. Ask \
+     whoever manages the device to allow it.";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SecurityBlockKind {
+    Malware,
+    AdminPolicy,
+}
+
+impl SecurityBlockKind {
+    /// Resolved at message time, not observation time: the two streams are read by independent
+    /// threads, so a `[TAURI:STEP]` written before the block can be observed after it.
+    fn guidance(self, started: bool) -> &'static str {
+        match (self, started) {
+            (Self::Malware, false) => AMSI_MALWARE_GUIDANCE_PRE_START,
+            (Self::Malware, true) => AMSI_MALWARE_GUIDANCE_IN_PROGRESS,
+            (Self::AdminPolicy, false) => AMSI_ADMIN_BLOCK_GUIDANCE_PRE_START,
+            (Self::AdminPolicy, true) => AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS,
+        }
+    }
+}
+
+/// True when `id` is the value of the `FullyQualifiedErrorId` field rather than merely present on
+/// the line. PowerShell prints `+ FullyQualifiedErrorId : <id>[,<cmdlet>]`, so it follows the
+/// colon; prose naming both does not qualify.
+fn is_error_id_value(text: &str, id: &str) -> bool {
+    let mut rest = text;
+    while let Some(at) = rest.find(POWERSHELL_ERROR_ID_FIELD) {
+        let after = &rest[at + POWERSHELL_ERROR_ID_FIELD.len()..];
+        let after = after.trim_start();
+        if let Some(value) = after.strip_prefix(':') {
+            let value = value.trim_start();
+            if let Some(tail) = value.strip_prefix(id) {
+                // The id can carry a cmdlet suffix, but nothing else may extend the token.
+                if tail.is_empty() || tail.starts_with(',') || tail.starts_with(char::is_whitespace)
+                {
+                    return true;
+                }
+            }
+        }
+        rest = &rest[at + POWERSHELL_ERROR_ID_FIELD.len()..];
+    }
+    false
+}
+
+fn security_block_kind(text: &str) -> Option<SecurityBlockKind> {
+    if is_error_id_value(text, AMSI_MALWARE_ERROR_ID) {
+        return Some(SecurityBlockKind::Malware);
+    }
+    if is_error_id_value(text, AMSI_ADMIN_BLOCK_ERROR_ID) {
+        return Some(SecurityBlockKind::AdminPolicy);
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum InstallOutputStream {
     Stdout,
     Stderr,
+}
+
+impl InstallOutputStream {
+    fn other(self) -> Self {
+        match self {
+            Self::Stdout => Self::Stderr,
+            Self::Stderr => Self::Stdout,
+        }
+    }
 }
 
 struct InstallOutputLine {
@@ -55,13 +156,20 @@ struct InstallFailureContext {
     explicit_error: Option<String>,
     explicit_error_stream: Option<InstallOutputStream>,
     default_error: Option<String>,
+    security_block: Option<SecurityBlockKind>,
+    unpaired_clears: HashMap<(String, InstallOutputStream), usize>,
+    started: bool,
     output_tail: VecDeque<InstallOutputLine>,
 }
 
 impl InstallFailureContext {
     fn observe_stdout(&mut self, text: &str) -> bool {
-        if text.starts_with("[TAURI:ERROR_CLEAR] ") {
-            self.clear_failure(InstallOutputStream::Stdout);
+        if text.starts_with("[TAURI:STEP] ") {
+            self.started = true;
+        }
+        self.note_security_block(text);
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_CLEAR] ") {
+            self.clear_failure(InstallOutputStream::Stdout, message);
             return true;
         }
         if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
@@ -94,8 +202,9 @@ impl InstallFailureContext {
     }
 
     fn observe_stderr(&mut self, text: &str) -> bool {
-        if text.starts_with("[TAURI:ERROR_CLEAR] ") {
-            self.clear_failure(InstallOutputStream::Stderr);
+        self.note_security_block(text);
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_CLEAR] ") {
+            self.clear_failure(InstallOutputStream::Stderr, message);
             return true;
         }
         if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
@@ -130,7 +239,53 @@ impl InstallFailureContext {
         }
     }
 
-    fn clear_failure(&mut self, stream: InstallOutputStream) {
+    /// Both streams, before marker handling: PowerShell writes the parse error to stderr, but a
+    /// wrapper that folded the streams together would otherwise lose it.
+    fn note_security_block(&mut self, text: &str) {
+        if self.security_block.is_none() {
+            self.security_block = security_block_kind(text);
+        }
+    }
+
+    fn clear_failure(&mut self, stream: InstallOutputStream, message: &str) {
+        // Clear-TauriInstallError writes ONE logical clear to BOTH streams (install.ps1:198),
+        // read by independent threads, so a verdict can land between a clear and its own twin and
+        // treating the twin as a second clear would discard a real block.
+        //
+        // Pair by message, not against the previous clear alone: a reader can lag several clears
+        // behind, so "is this the message I just saw" answers no and throws the verdict away. Each
+        // logical clear emits exactly two markers, so the first sighting is the clear and the next
+        // pairs with it.
+        //
+        // Keyed by stream as well as message: the same label can be cleared twice for real (an
+        // install and then a repair both emit "install PyTorch recovered"), and a reader that got
+        // ahead would otherwise pair those two same-stream clears with each other. Only the
+        // opposite stream's copy can consume a pending marker.
+        let other = stream.other();
+        let twin = match self.unpaired_clears.get_mut(&(message.to_owned(), other)) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                true
+            }
+            _ => {
+                *self
+                    .unpaired_clears
+                    .entry((message.to_owned(), stream))
+                    .or_insert(0) += 1;
+                false
+            }
+        };
+        self.unpaired_clears.retain(|_, count| *count > 0);
+        // Producers clear with a small fixed set of labels, and an unbounded map fed by child
+        // output is a memory sink. Dropping the oldest entries only costs a twin match.
+        if self.unpaired_clears.len() > MAX_UNPAIRED_CLEARS {
+            self.unpaired_clears.clear();
+        }
+        if !twin {
+            // A run that cleared its own failure state was never blocked at parse time, so a
+            // verdict here is stale.
+            self.security_block = None;
+        }
         if self.explicit_error_stream == Some(stream) {
             self.explicit_error = None;
             self.explicit_error_stream = None;
@@ -172,9 +327,15 @@ impl InstallFailureContext {
             .as_deref()
             .or(self.default_error.as_deref())
             .or_else(|| self.output_tail.back().map(|line| line.text.as_str()));
-        match detail {
+        let base = match detail {
             Some(detail) => format!("Installation failed: {}", detail),
             None => generic_failure_message(code),
+        };
+        // Appended, not substituted: the raw id is what a diagnostics report and a vendor
+        // submission need, the guidance is what the user needs.
+        match self.security_block {
+            Some(kind) => format!("{} {}", base, kind.guidance(self.started)),
+            None => base,
         }
     }
 }
@@ -390,13 +551,10 @@ fn spawn_script(
     install.intentional_stop = false;
     install.needed_packages.clear();
 
-    // Scripts create ~/.unsloth/studio/ themselves, but need a writable cwd.
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let work_dir = home.join(".unsloth");
-    if !work_dir.exists() {
-        std::fs::create_dir_all(&work_dir)
-            .map_err(|e| format!("Failed to create {}: {}", work_dir.display(), e))?;
-    }
+    // Scripts create ~/.unsloth/studio/ themselves but need a writable cwd, and
+    // unlike the CLI children they always want ~/.unsloth. No Windows-directory
+    // rejection: install.ps1 detects a SYSTEM profile itself and explains it.
+    let work_dir = crate::process::install_working_dir(dirs::home_dir())?;
 
     #[cfg(unix)]
     let mut cmd = Command::new("bash");
@@ -1317,6 +1475,241 @@ mod tests {
         assert!(!is_elevation_request(2, &[]));
         assert!(is_elevation_request(2, &["cmake".to_string()]));
         assert!(!is_elevation_request(1, &["cmake".to_string()]));
+    }
+
+    /// The exact stderr an AMSI provider produced in #8523. The scan covers the whole script
+    /// block, so the parse error points at line 1 char 1 and no statement ever runs.
+    const AMSI_BLOCK_STDERR: [&str; 6] = [
+        r"At C:\Program Files\Unsloth\install.ps1:1 char:1",
+        "+ # Unsloth Studio Installer for Windows PowerShell",
+        "+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+        "This script contains malicious content and has been blocked by your antivirus software.",
+        "    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException",
+        "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent",
+    ];
+
+    #[test]
+    fn amsi_block_explains_itself_without_losing_the_error_id() {
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = context.message(1);
+        // The raw id survives: diagnostics and vendor submissions need it.
+        assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
+        assert!(message.starts_with("Installation failed: "), "{message}");
+        assert!(message.contains("blocked the installer before it started"), "{message}");
+        assert!(message.contains("only diagnostic logs may have been written"), "{message}");
+        // We cannot know a verdict is wrong, so the text must not assert it.
+        assert!(!message.contains("This is a false positive"), "{message}");
+    }
+
+    #[test]
+    fn a_block_after_the_install_started_does_not_claim_nothing_changed() {
+        // install.ps1 runs `unsloth studio setup` near the end, and that child spawns
+        // studio/setup.ps1 on the same inherited pipes. A block there lands after the venv and
+        // PyTorch are on disk, so the pre-start reassurance would be false.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] running unsloth studio setup...");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = context.message(1);
+        assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
+        assert!(message.contains("blocked part of the installer"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
+        assert!(message.contains("some components may already be installed"), "{message}");
+    }
+
+    #[test]
+    fn the_wording_follows_the_final_started_state_not_the_arrival_order() {
+        // stdout and stderr are read by independent threads, so the STEP a child wrote before
+        // the block can be observed after it. Deciding the wording when the token arrives would
+        // tell the user nothing was changed on a run that had already installed PyTorch.
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:STEP] running unsloth studio setup...");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
+    }
+
+    #[test]
+    fn the_twin_of_an_earlier_clear_does_not_erase_a_later_verdict() {
+        // Clear-TauriInstallError writes one clear to BOTH streams, and independent readers can
+        // interleave them around a block that happened afterwards. install.ps1 clears after each
+        // recovered step, so this is the ordinary shape of a setup.ps1 block late in a run.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        // the twin of the same clear, arriving late on the other stream
+        context.observe_stdout("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn two_real_clears_of_one_label_on_one_stream_are_not_twins() {
+        // The same label can be cleared twice for real: _install_torch_default_index emits its
+        // recovery during the install and again during the ROCm repair. Pairing by message alone
+        // treated the second as the twin of the first, so the block that landed between them was
+        // then erased by the genuinely later clear arriving on the other stream.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        // Both twins arrive late on the other stream and consume the two pending clears.
+        context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn a_twin_lagging_several_clears_behind_still_pairs() {
+        // install.ps1 clears after every recovered step, so a slower reader can be several clears
+        // behind when a block lands. Pairing only against the previous message would treat this
+        // delayed twin of A as a fresh recovery and drop the verdict.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] step A recovered");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] step B recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:ERROR_CLEAR] step A recovered");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] step B recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn a_genuinely_later_recovery_still_clears_the_verdict() {
+        // Distinct text means a real subsequent recovery, not a twin, and the guidance must go.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:ERROR_CLEAR] studio setup completed");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn the_id_has_to_be_the_field_value_not_just_on_the_line() {
+        // Prose that names both the field and the id is not an error record.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr(
+            "checking FullyQualifiedErrorId handling for ScriptContainedMaliciousContent",
+        );
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+        // A longer token that merely starts with the id is a different id.
+        assert!(!is_error_id_value(
+            "+ FullyQualifiedErrorId : ScriptContainedMaliciousContentX",
+            AMSI_MALWARE_ERROR_ID
+        ));
+        // The real record, with and without the cmdlet suffix.
+        assert!(is_error_id_value(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent",
+            AMSI_MALWARE_ERROR_ID
+        ));
+        assert!(is_error_id_value(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent,Microsoft.PowerShell",
+            AMSI_MALWARE_ERROR_ID
+        ));
+    }
+
+    #[test]
+    fn a_flood_of_distinct_clears_cannot_grow_the_pairing_map() {
+        let mut context = InstallFailureContext::default();
+        for i in 0..(MAX_UNPAIRED_CLEARS * 4) {
+            context.observe_stdout(&format!("[TAURI:ERROR_CLEAR] step {i} recovered"));
+        }
+        assert!(context.unpaired_clears.len() <= MAX_UNPAIRED_CLEARS, "{}", context.unpaired_clears.len());
+    }
+
+    #[test]
+    fn merely_naming_the_error_id_is_not_a_verdict() {
+        // The id is only a verdict as the value of a PowerShell error record's field. A scanner
+        // log or a test fixture that prints the bare string must not attach antivirus guidance
+        // to whatever fails next.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("scanning fixture ScriptContainedMaliciousContent");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn an_admin_policy_block_after_the_install_started_is_also_neutral() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptHasAdminBlockedContent");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
+    }
+
+    #[test]
+    fn amsi_block_is_recognised_on_stdout_and_when_the_id_carries_a_cmdlet_suffix() {
+        // A wrapper folding stderr into stdout, plus the Invoke-Expression form of the id.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent,\
+             Microsoft.PowerShell.Commands.InvokeExpressionCommand",
+        );
+        assert!(context
+            .message(1)
+            .contains("blocked the installer before it started"));
+    }
+
+    #[test]
+    fn admin_policy_block_gets_its_own_guidance() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptHasAdminBlockedContent");
+        let message = context.message(1);
+        assert!(message.contains("security policy blocked the installer"), "{message}");
+        assert!(!message.contains("report it to your vendor"), "{message}");
+    }
+
+    #[test]
+    fn an_ordinary_failure_gains_no_security_guidance() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn a_run_that_clears_its_failure_state_drops_a_stale_verdict() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptContainedMaliciousContent");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] retrying");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
     }
 
     #[test]

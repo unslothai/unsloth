@@ -151,9 +151,18 @@ async def get_public_key(current_subject: str = Depends(get_current_subject)):
 
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
-async def list_registry(current_subject: str = Depends(get_current_subject)):
-    """List all supported provider types with their default configurations."""
-    return list_available_providers()
+async def list_registry(
+    include_hidden: bool = False, current_subject: str = Depends(get_current_subject)
+):
+    """List all supported provider types with their default configurations.
+
+    ``include_hidden=true`` also returns the backend-only entries (the
+    self-hosted presets), which carry the studio-tools capability the composer
+    needs. It is opt-in so that a browser still running a pre-capability bundle,
+    which does not know to filter on ``hidden``, keeps seeing exactly the list
+    it saw before and cannot render them as duplicate dropdown options.
+    """
+    return list_available_providers(include_hidden = include_hidden)
 
 
 # ── Per-MTok pricing snapshot for client-side cost display ──────────

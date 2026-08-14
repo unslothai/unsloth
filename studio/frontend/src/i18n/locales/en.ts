@@ -13,7 +13,6 @@ export const en = {
     searchAriaLabel: "Search {noun}",
     modelSourceAriaLabel: "Model source",
     hubSectionAriaLabel: "Hub section",
-    pickModelFile: "Pick a model file from disk",
     modelDropped: "No longer offered",
     modelDroppedByProvider: "{provider} · no longer offered",
     modelDisabled: "Not enabled",
@@ -368,6 +367,12 @@ export const en = {
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
         idleSecondsAriaLabel: "Idle auto-unload seconds",
+        mediaIdleUnload: "Idle auto-unload for image and video",
+        mediaIdleUnloadDescription:
+          "Free VRAM by unloading the image and video models after this many idle seconds. Its own setting: the one above covers the chat model only. 0 keeps them loaded, minimum 60.",
+        mediaIdleSecondsAriaLabel: "Image and video idle auto-unload seconds",
+        mediaIdlePaused:
+          "Paused while Keep model in GPU memory or Only unload models loaded by the API is on.",
         idleNeedsEnable: "Turn on Switch model by request first.",
         idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
@@ -419,6 +424,11 @@ export const en = {
         launchAtLogin: "Run Unsloth at login",
         launchAtLoginDescription:
           "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+
+        closeToTray: "Close to system tray",
+        closeToTrayDescription:
+          "Keep Unsloth and its server running in the background when you close the main window.",
+        closeToTraySaveError: "Failed to update the close to system tray setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },

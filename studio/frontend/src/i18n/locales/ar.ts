@@ -17,7 +17,6 @@ export const ar = {
     searchAriaLabel: "البحث في {noun}",
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
-    pickModelFile: "اختيار ملف نموذج من القرص",
     modelDropped: "لم يعد متاحًا",
     modelDroppedByProvider: "{provider} · لم يعد متاحًا",
     modelDisabled: "غير مُفعَّل",
@@ -370,6 +369,13 @@ export const ar = {
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
         idleSecondsAriaLabel:
           "عدد الثواني قبل التفريغ التلقائي عند الخمول",
+        mediaIdleUnload: "التفريغ التلقائي عند الخمول للصور والفيديو",
+        mediaIdleUnloadDescription:
+          "حرّر ذاكرة VRAM بتفريغ نموذجَي الصور والفيديو بعد هذا العدد من ثواني الخمول. إنه إعداد مستقل: الإعداد أعلاه يخصّ نموذج المحادثة فقط. تُبقي القيمة 0 النموذجين محمَّلين، والحد الأدنى 60 ثانية.",
+        mediaIdleSecondsAriaLabel:
+          "عدد الثواني قبل التفريغ التلقائي عند الخمول للصور والفيديو",
+        mediaIdlePaused:
+          "متوقف مؤقتًا ما دام «إبقاء النموذج في ذاكرة كرت الرسوميات» أو «تفريغ النماذج التي حمّلتها واجهة API فقط» مفعّلًا.",
         idleNeedsEnable: "فعّل «تبديل النموذج حسب الطلب» أولًا.",
         idleActiveViaEnv:
           "التفريغ التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
@@ -419,6 +425,11 @@ export const ar = {
         launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
         launchAtLoginDescription:
           "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+
+        closeToTray: "الإغلاق إلى علبة النظام",
+        closeToTrayDescription:
+          "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
+        closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
