@@ -27,16 +27,35 @@ def _read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+TRIGGER_LABEL_CLASSES = frozenset({"min-w-0", "flex-1", "truncate", "font-heading", "text-ui-16"})
+
+
+def _class_literals(src: str) -> list[str]:
+    """Every double-quoted string in `src` that reads as a Tailwind class list.
+
+    Matching the `className="..."` attribute directly is not enough: a label that
+    takes a caller override is written `className={cn("...", override)}`, and the
+    class list then sits in a plain string argument. That is how this guard went
+    quiet, so it now reads the literals wherever they are written.
+    """
+    return [
+        literal
+        for literal in re.findall(r'"([^"\n]*)"', src)
+        if any(cls.startswith("leading-") or cls == "truncate" for cls in literal.split())
+    ]
+
+
 def test_model_selector_trigger_label_uses_leading_tight():
     src = _read(MODEL_SELECTOR)
-    pattern = re.compile(
-        r'<span\s+className="[^"]*\bmin-w-0\b[^"]*\bflex-1\b[^"]*\btruncate\b[^"]*\bfont-heading\b[^"]*\btext-ui-16[^"]*"',
-    )
-    matches = pattern.findall(src)
+    matches = [
+        literal for literal in _class_literals(src) if TRIGGER_LABEL_CLASSES <= set(literal.split())
+    ]
     assert matches, "could not find ModelSelectorTrigger model-name span"
     for cls in matches:
-        assert "leading-tight" in cls, f"expected leading-tight, got: {cls}"
-        assert "leading-none" not in cls, f"leading-none must not coexist with truncate here: {cls}"
+        assert "leading-tight" in cls.split(), f"expected leading-tight, got: {cls}"
+        assert (
+            "leading-none" not in cls.split()
+        ), f"leading-none must not coexist with truncate here: {cls}"
 
 
 def test_sidebar_account_block_uses_leading_tight():
