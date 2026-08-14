@@ -78,6 +78,7 @@ import {
   Edit03Icon,
   FolderAddIcon,
   FolderExportIcon,
+  FolderOpenIcon,
   Folder01Icon,
   FlimSlateIcon,
   Globe02Icon,
@@ -104,6 +105,7 @@ import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
+  TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -120,8 +122,10 @@ import {
   clearNewChatDraft,
   deleteChatProject,
   deleteChatItem,
+  listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
+  recordedSandboxSessionId,
   notifyChatHistoryUpdated,
   renameChatItem,
   renameChatProject,
@@ -138,6 +142,11 @@ import {
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
+import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import {
+  revealSandbox,
+  sandboxHasFiles,
+} from "@/components/assistant-ui/sandbox-reveal";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
@@ -325,6 +334,55 @@ function preloadSilently(request: Promise<unknown>): void {
 }
 
 // "New" pill for recent tabs. Same recipe as the brand "beta" badge.
+/**
+ * "Open chat folder" for a browser session, where the backend's file manager is
+ * not the user's. Radix's `disabled` takes the row's pointer events away and a
+ * tooltip is blocked while the menu owns the screen, so the row stays enabled,
+ * refuses the select itself, and drives a controlled tooltip off a
+ * pointer-events-none anchor (as the MCP rows do).
+ *
+ * The reason is carried twice: the tooltip hangs off an aria-hidden anchor and
+ * opens on hover, which a screen reader never reaches and a touch device does
+ * not have, so `title` describes the row itself and selecting it (tap or Enter)
+ * opens the hint rather than doing nothing.
+ */
+function OpenChatFolderUnavailableItem() {
+  const [hintOpen, setHintOpen] = useState(false);
+
+  return (
+    <DropdownMenuItem
+      aria-disabled={true}
+      title="Opening the folder needs the desktop app. In a browser, save a file from the card that created it."
+      className="relative opacity-50"
+      onSelect={(event) => {
+        event.preventDefault();
+        setHintOpen(true);
+      }}
+      onPointerEnter={() => setHintOpen(true)}
+      onPointerLeave={() => setHintOpen(false)}
+      onFocus={() => setHintOpen(true)}
+      onBlur={() => setHintOpen(false)}
+    >
+      <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+      <span>Open chat folder</span>
+      <Tooltip open={hintOpen}>
+        {/* Our wrapper, not the raw primitive: it registers the trigger element,
+            without which the tooltip counts itself blocked by the open menu. */}
+        <TooltipTrigger asChild={true}>
+          <span
+            aria-hidden={true}
+            className="pointer-events-none absolute inset-y-0 right-0 w-0"
+          />
+        </TooltipTrigger>
+        <TooltipContent side="right" className="max-w-[220px]">
+          Opening the folder needs the desktop app. In a browser, save a file
+          from the card that created it.
+        </TooltipContent>
+      </Tooltip>
+    </DropdownMenuItem>
+  );
+}
+
 function NavBadge({ label, className }: { label: string; className?: string }) {
   return (
     <span
@@ -717,25 +775,38 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // "More" flyout. Opens on click or hover; close is delayed so the pointer can cross the gap to the panel.
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Hover previews the flyout; a primary click pins that preview open. The trigger owns pointer
+  // clicks so Radix cannot interpret the already-hover-open menu as a request to close it.
+  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
+  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
+  const moreOpen = moreHoverOpen || morePinnedOpen;
   const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const openMore = useCallback(() => {
-    if (moreCloseTimer.current) {
-      clearTimeout(moreCloseTimer.current);
-      moreCloseTimer.current = null;
-    }
-    setMoreOpen(true);
+  const clearMoreCloseTimer = useCallback(() => {
+    if (!moreCloseTimer.current) return;
+    clearTimeout(moreCloseTimer.current);
+    moreCloseTimer.current = null;
   }, []);
-  const closeMoreSoon = useCallback(() => {
-    if (moreCloseTimer.current) clearTimeout(moreCloseTimer.current);
-    moreCloseTimer.current = setTimeout(() => setMoreOpen(false), 180);
+  const openMorePreview = useCallback(() => {
+    clearMoreCloseTimer();
+    setMoreHoverOpen(true);
+  }, [clearMoreCloseTimer]);
+  const closeMorePreviewSoon = useCallback(() => {
+    clearMoreCloseTimer();
+    moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
+  }, [clearMoreCloseTimer]);
+  const handleMoreOpenChange = useCallback((next: boolean) => {
+    if (next) {
+      setMorePinnedOpen(true);
+      return;
+    }
+    setMorePinnedOpen(false);
+    setMoreHoverOpen(false);
   }, []);
   useEffect(
     () => () => {
-      if (moreCloseTimer.current) clearTimeout(moreCloseTimer.current);
+      clearMoreCloseTimer();
     },
-    [],
+    [clearMoreCloseTimer],
   );
   const [runsOpen, setRunsOpen] = useState(true);
 
@@ -1587,6 +1658,12 @@ export function AppSidebar() {
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
+    // A compare row outside a project spans two sandboxes, and there is no
+    // honest single folder to offer for it.
+    const sandboxSessionId =
+      item.type === "single" || item.projectId
+        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
+        : undefined;
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
       item.type === "compare"
@@ -1795,6 +1872,77 @@ export function AppSidebar() {
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
               <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
             </DropdownMenuItem>
+            {sandboxSessionId ? (
+              isTauri ? (
+                <DropdownMenuItem
+                  title="Open the folder this chat's tool calls read and write"
+                  onSelect={() => {
+                    void (async () => {
+                      try {
+                        // A chat moved between projects keeps the sandbox it
+                        // wrote to, so its own history names the folder, not
+                        // current membership. Every pane is read, since a
+                        // compare row can hold one folder per pane.
+                        // One at a time, not Promise.all: this file's export
+                        // contract forbids a concurrent await here, and two
+                        // panes win nothing. A failed read stops the loop and
+                        // is reported below rather than being caught per pane,
+                        // which would read as "never ran a tool" and fall back
+                        // to current membership, the answer the recorded id
+                        // exists to override.
+                        const ids =
+                          threadIds.length > 0 ? threadIds : [item.id];
+                        const recorded: (string | undefined)[] = [];
+                        for (const threadId of ids) {
+                          recorded.push(
+                            recordedSandboxSessionId(
+                              await listStoredChatMessages(threadId),
+                            ),
+                          );
+                        }
+                        let distinct = [...new Set(recorded.filter(Boolean))];
+                        if (distinct.length === 0 && item.projectId) {
+                          // Chats stored before results carried a session
+                          // recorded nothing, so one that ran loose and has
+                          // since joined a project would be sent to the project
+                          // workspace. Its thread sandbox is the only other
+                          // candidate, and files there are this chat's. Only in
+                          // this direction: a chat moved OUT wrote under
+                          // project-<id>, and nothing retains which one.
+                          const held: string[] = [];
+                          for (const threadId of ids) {
+                            if (await sandboxHasFiles(threadId)) {
+                              held.push(threadId);
+                            }
+                          }
+                          distinct = [...new Set(held)];
+                        }
+                        if (distinct.length > 1) {
+                          toast.error("This chat wrote to more than one folder.", {
+                            description:
+                              "Its panes ran before it joined this project, so open the folder from a tool card instead.",
+                          });
+                          return;
+                        }
+                        await revealSandbox(distinct[0] ?? sandboxSessionId);
+                      } catch (error) {
+                        toast.error("Could not open the chat folder.", {
+                          description:
+                            error instanceof Error
+                              ? error.message
+                              : String(error),
+                        });
+                      }
+                    })();
+                  }}
+                >
+                  <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>Open chat folder</span>
+                </DropdownMenuItem>
+              ) : (
+                <OpenChatFolderUnavailableItem />
+              )
+            ) : null}
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
@@ -2196,12 +2344,12 @@ export function AppSidebar() {
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
                 <SidebarMenuItem
-                  onPointerEnter={openMore}
-                  onPointerLeave={closeMoreSoon}
+                  onPointerEnter={openMorePreview}
+                  onPointerLeave={closeMorePreviewSoon}
                 >
                   <DropdownMenu
                     open={moreOpen}
-                    onOpenChange={setMoreOpen}
+                    onOpenChange={handleMoreOpenChange}
                     modal={false}
                   >
                     {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
@@ -2213,6 +2361,19 @@ export function AppSidebar() {
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
+                            onPointerDownCapture={(event) => {
+                              if (event.button !== 0 || event.ctrlKey) return;
+                              event.preventDefault();
+                              event.stopPropagation();
+                              event.currentTarget.focus({ preventScroll: true });
+                              clearMoreCloseTimer();
+                              if (morePinnedOpen) {
+                                setMorePinnedOpen(false);
+                                setMoreHoverOpen(false);
+                              } else {
+                                setMorePinnedOpen(true);
+                              }
+                            }}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
@@ -2240,9 +2401,9 @@ export function AppSidebar() {
                       side="right"
                       align="start"
                       sideOffset={6}
-                      onPointerEnter={openMore}
-                      onPointerLeave={closeMoreSoon}
                       className="w-48 p-1"
+                      onPointerEnter={openMorePreview}
+                      onPointerLeave={closeMorePreviewSoon}
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];

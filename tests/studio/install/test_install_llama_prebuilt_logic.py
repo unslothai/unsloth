@@ -1958,6 +1958,293 @@ def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(
     assert existing_install_matches_plan(install_dir, host, plan) is True
 
 
+def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
+    """gfx_target/mapped_targets must be invisible to the fingerprint (#7624): the
+    same asset with the same sha256 is the same install whether or not the marker
+    names its built archs, and leaking them in would stale every existing ROCm install
+    the moment this shipped. Inverse of the cudart-pair test below."""
+    choice_kwargs = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "app-b9001-linux-x64-rocm-gfx110X.tar.gz",
+        url = "https://example.com/x.tar.gz",
+        source_label = "published",
+        install_kind = "linux-rocm",
+        runtime_line = "rocm7",
+        expected_sha256 = "a" * 64,
+    )
+    # The pre-PR marker shape: no arch fields at all.
+    old_choice = AssetChoice(**choice_kwargs)
+    # Verbatim from the published manifest for this asset.
+    new_choice = AssetChoice(
+        **choice_kwargs,
+        gfx_target = "gfx110X",
+        mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+        },
+    )
+    fingerprint_kwargs = dict(
+        llama_tag = "b9001", release_tag = "release-1", approved_checksums = checksums
+    )
+    old_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = old_choice, **fingerprint_kwargs
+    )
+    new_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
+        choice = new_choice, **fingerprint_kwargs
+    )
+    assert old_fingerprint and old_fingerprint == new_fingerprint, (
+        "recording gfx_target/mapped_targets changed the install fingerprint; "
+        "every existing install would refresh on upgrade"
+    )
+
+    # And end to end through the marker: a marker written with the arch fields
+    # still satisfies the reuse check computed from a choice without them, so an
+    # upgraded client does not decide the install on disk is stale.
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = new_choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+    )
+    marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+    assert marker["gfx_target"] == "gfx110X"
+    assert marker["install_fingerprint"] == old_fingerprint
+
+
+def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
+    """CPU/CUDA/Vulkan/macOS choices never populate the arch fields (#7624): only
+    published_rocm_choice_for_host sets them, so the marker records [] and the runtime
+    gate fails open on a non-ROCm bundle."""
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+        },
+    )
+    for kind, asset in (
+        ("linux-cpu", "app-b9001-linux-x64-cpu.tar.gz"),
+        ("linux-cuda12", "app-b9001-linux-x64-cuda12-portable.tar.gz"),
+        ("linux-vulkan", "app-b9001-linux-x64-vulkan.tar.gz"),
+        ("windows-cpu", "app-b9001-windows-x64-cpu.zip"),
+        ("macos-arm64", "llama-b9001-bin-macos-arm64.tar.gz"),
+    ):
+        install_dir = tmp_path / kind
+        install_dir.mkdir()
+        write_prebuilt_metadata(
+            install_dir,
+            requested_tag = "latest",
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            choice = AssetChoice(
+                repo = "unslothai/llama.cpp",
+                tag = "release-1",
+                name = asset,
+                url = "https://example.com/x",
+                source_label = "published",
+                install_kind = kind,
+                expected_sha256 = "a" * 64,
+            ),
+            approved_checksums = checksums,
+            prebuilt_fallback_used = False,
+        )
+        marker = json.loads((install_dir / "UNSLOTH_PREBUILT_INFO.json").read_text())
+        assert marker["mapped_targets"] == [], kind
+        assert marker["gfx_target"] is None, kind
+
+
+def _rocm_choice(**overrides):
+    """A published ROCm bundle choice, the shape published_rocm_choice_for_host
+    returns."""
+    fields = dict(
+        repo = "unslothai/llama.cpp",
+        tag = "b10360",
+        name = "app-b10360-linux-x64-rocm-gfx110X.tar.gz",
+        url = "https://example.invalid/app.tar.gz",
+        source_label = "published",
+        install_kind = "app",
+        bundle_profile = "rocm",
+        runtime_line = "rocm",
+        coverage_class = "gfx110X",
+        gfx_target = "gfx110X",
+        mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+    )
+    fields.update(overrides)
+    return AssetChoice(**fields)
+
+
+def _sync_arch_coverage(install_dir, choice):
+    """sync_marker_selection with only the built-arch coverage in play."""
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = choice,
+        backend_request = None,
+        persist_llama_backend = "auto",
+    )
+
+
+def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
+    """An install made before mapped_targets existed must gain it on reuse:
+    write_prebuilt_metadata only runs on a real install and the field sits outside the
+    fingerprint, so without the backfill the gate fails open indefinitely (#7624)."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"release_tag": "b10360", "llama_backend": "auto"}) + "\n",
+        encoding = "utf-8",
+    )
+
+    _sync_arch_coverage(install_dir, _rocm_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+    assert marker["gfx_target"] == "gfx110X"
+    assert marker["release_tag"] == "b10360"  # nothing else lost
+    assert marker["llama_backend"] == "auto"
+
+
+def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
+    """A manifest that corrects mapped_targets for an unchanged asset must reach the
+    marker. Stale coverage is worse than none: too narrow forces a supported GPU to
+    CPU, too wide leaves an unsupported one visible to crash."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "release_tag": "b10360",
+                "gfx_target": "gfx110X",
+                "mapped_targets": ["gfx1100"],
+            }
+        )
+        + "\n",
+        encoding = "utf-8",
+    )
+
+    _sync_arch_coverage(install_dir, _rocm_choice())
+
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+
+
+@pytest.mark.parametrize("targets", [None, [], ["", "   "]])
+def test_a_bundle_that_declares_no_arch_leaves_the_marker_alone(tmp_path: Path, targets):
+    """CUDA, Vulkan, CPU and source builds declare no targets. Absent means "this
+    bundle has none", not "clear what is there": reuse requires a fingerprint match,
+    so the asset is the one the marker already describes."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    original = {
+        "release_tag": "b10360",
+        "gfx_target": "gfx110X",
+        "mapped_targets": ["gfx1100", "gfx1101"],
+    }
+    marker_path.write_text(json.dumps(original) + "\n", encoding = "utf-8")
+
+    _sync_arch_coverage(install_dir, _rocm_choice(gfx_target = None, mapped_targets = targets))
+
+    # The arch fields specifically: the shared writer may still record other
+    # selection fields from this run, which is not what this test is about.
+    marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert marker["gfx_target"] == original["gfx_target"]
+    assert marker["mapped_targets"] == original["mapped_targets"]
+
+
+def test_arch_coverage_sync_survives_a_missing_or_broken_marker(tmp_path: Path):
+    """It runs after the install is already valid, so it must never raise:
+    an unexpected exit here no longer falls back to a source build."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    # No marker at all.
+    _sync_arch_coverage(install_dir, _rocm_choice())
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    assert not marker_path.exists()
+    # A marker that is not JSON, and one that is JSON but not an object.
+    for payload in ("{not json", "[1, 2]"):
+        marker_path.write_text(payload, encoding = "utf-8")
+        _sync_arch_coverage(install_dir, _rocm_choice())
+        assert marker_path.read_text(encoding = "utf-8") == payload
+
+
+def test_every_reuse_path_syncs_the_arch_coverage():
+    """The reuse paths skip write_prebuilt_metadata, so the coverage has to ride the
+    one writer they all share. Source-level because reaching them needs a full install
+    run: pinned on _record_reused_selection, which every reuse path calls."""
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    assert source.count("_record_reused_selection(") == 4  # definition + 3 reuse paths
+    patch = source[
+        source.index("def _marker_selection_patch") : source.index("def sync_marker_selection")
+    ]
+    assert 'patch["mapped_targets"] = targets' in patch
+
+
+def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
+    """A sync that touches other fields must not drop the arch ones (#7624).
+    sync_marker_selection reads the marker, applies a patch and writes the whole dict
+    back; a rebuild-from-known-keys implementation would strip mapped_targets on any
+    reused install, turning the gate off unnoticed."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps(
+            {
+                "release_tag": "release-1",
+                "llama_backend": "auto",
+                "force_cpu": False,
+                "gfx_target": "gfx110X",
+                "mapped_targets": ["gfx1100", "gfx1101"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    INSTALL_LLAMA_PREBUILT.sync_marker_selection(
+        install_dir,
+        choice = _rocm_choice(gfx_target = None, mapped_targets = None),
+        backend_request = "cpu",
+        persist_force_cpu = True,
+        persist_llama_backend = "auto",
+        ggml_tree = "tree-abc",
+        rocm_gfx = "gfx1101",
+    )
+
+    marker = json.loads(marker_path.read_text())
+    assert marker["gfx_target"] == "gfx110X"
+    assert marker["mapped_targets"] == ["gfx1100", "gfx1101"]
+    # The syncs did their own job too, so this is not passing on a no-op.
+    assert marker["force_cpu"] is True
+    assert marker["rocm_gfx"] == "gfx1101"
+    assert marker["ggml_tree"] == "tree-abc"
+
+
 def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: Path):
     """A pre-#5322 CUDA install must go stale once the choice gains a runtime archive (#5106 fingerprint half)."""
     install_dir = tmp_path / "llama.cpp"

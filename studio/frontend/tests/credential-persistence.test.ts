@@ -150,6 +150,30 @@ test("superseded provider backfills are not launched", async () => {
 });
 
 
+test("provider backfills are finished, not merely started, when the batch resolves", async () => {
+  // The credential bootstrap gate releases app content on this promise, so a batch that is
+  // only started leaves the writes racing an immediate close. Timer-backed tasks are the
+  // only way to tell "awaited" from "fired and forgotten": a task that counts synchronously
+  // is already done by the time the helper returns either way.
+  const finished: string[] = [];
+  const delayed = (name: string, ms: number) => () =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        finished.push(name);
+        resolve(null);
+      }, ms);
+    });
+
+  // The rejection in the middle must not sink the two around it, which is why the batch
+  // settles rather than rejecting on the first failure.
+  await settleTasksIfCurrent(
+    [delayed("first", 20), () => Promise.reject(new Error("backfill failed")), delayed("last", 40)],
+    () => true,
+  );
+  assert.deepEqual(finished, ["first", "last"]);
+});
+
+
 test("authoritative provider cleanup removes only orphaned legacy keys", async () => {
   const { store } = installLocalStorageFake();
   store.set(

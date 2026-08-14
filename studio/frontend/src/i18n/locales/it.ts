@@ -122,7 +122,32 @@ export const it = {
       data: "Dati",
       apiKeys: "API",
       agents: "Agenti",
+      debugging: "Log",
       about: "Informazioni",
+    },
+    debugging: {
+      logSection: "File di log",
+      source: "File di log",
+      sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
+      path: "Posizione",
+      pathCopy: "Copia il percorso",
+      refreshSection: "Aggiornamento",
+      mode: "Modalità",
+      modeLive: "In tempo reale",
+      modeInterval: "Ogni 3 secondi",
+      modeManual: "Manuale",
+      refreshNow: "Aggiorna ora",
+      privacyNote: "In questa vista le credenziali sono mascherate. Nel file su disco non lo sono.",
+      copyVisible: "Copia il log visibile",
+      empty: "Non è stato ancora registrato nulla.",
+      disabled: "La registrazione su file è disattivata (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Nessun file di log trovato.",
+      unreadable: "Non è stato possibile leggere il file di log.",
+      timeout: "La richiesta del log e scaduta. Il server potrebbe non essere raggiungibile.",
+      droppedNotice: "Alcune righe sono state saltate: il log è stato scritto più velocemente di quanto potesse essere letto.",
+      morePending: "Altre righe sono ancora in lettura; arriveranno al prossimo aggiornamento.",
+      staleSession: "La registrazione su file e disattivata, quindi questa e una sessione precedente e non verra aggiornata.",
+      keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
       title: "Voce",
@@ -348,6 +373,14 @@ export const it = {
           "Libera la VRAM dopo il numero indicato di secondi di inattività. 0 mantiene il modello in memoria; il minimo è 60.",
         idleSecondsAriaLabel:
           "Secondi di inattività prima dello scaricamento automatico",
+        mediaIdleUnload:
+          "Scaricamento automatico dalla memoria per inattività di immagini e video",
+        mediaIdleUnloadDescription:
+          "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. È un'impostazione a sé: quella qui sopra riguarda solo il modello di chat. 0 li mantiene in memoria; il minimo è 60.",
+        mediaIdleSecondsAriaLabel:
+          "Secondi di inattività prima dello scaricamento automatico di immagini e video",
+        mediaIdlePaused:
+          "In pausa finché «Mantieni il modello nella memoria della GPU» o «Scarica solo i modelli caricati dall'API» è attivo.",
         idleNeedsEnable:
           "Attiva prima «Cambia modello in base alla richiesta».",
         idleActiveViaEnv: "Attivo tramite UNSLOTH_MODEL_IDLE_TTL.",
@@ -406,6 +439,12 @@ export const it = {
         launchAtLogin: "Avvia Unsloth all'accesso",
         launchAtLoginDescription:
           "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
+
+        closeToTray: "Chiudi nell'area di notifica",
+        closeToTrayDescription:
+          "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
+        closeToTraySaveError:
+          "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
         loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
@@ -956,11 +995,13 @@ export const it = {
       exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
-        "Importa nei Recenti un'esportazione JSONL, NDJSON o CSV.",
+        "Importa un export Open WebUI, JSONL, NDJSON o CSV in Recenti.",
       importChatsAction: "Importa",
       importNoConversations: "Nessuna conversazione trovata nel file.",
       importedOneChat: "1 conversazione importata nei Recenti.",
       importedChatCount: "{count} conversazioni importate nei Recenti.",
+      importingChats: "Importazione chat: {count} finora ({percent}%)...",
+      importedChatCountPartial: "Importate {count} conversazioni in Recenti; {failed} non sono state salvate.",
       importFailed: "Importazione non riuscita.",
       clearHistory: "Cancella la cronologia delle chat",
       clearHistoryDescription:
@@ -1232,7 +1273,6 @@ export const it = {
     searchAriaLabel: "Cerca {noun}",
     modelSourceAriaLabel: "Origine del modello",
     hubSectionAriaLabel: "Sezione Hub",
-    pickModelFile: "Scegli un file del modello dal disco",
     modelDropped: "Non più offerto",
     modelDroppedByProvider: "{provider} · non più offerto",
     modelDisabled: "Non attivato",

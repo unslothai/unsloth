@@ -69,11 +69,17 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
 # Check environments
-keynames = "\n" + "\n".join(os.environ.keys())
-IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
-IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
-KAGGLE_TMP = "/tmp"
-del keynames
+# A KAGGLE_* variable is not a Kaggle kernel - the Kaggle CLI reads
+# KAGGLE_USERNAME / KAGGLE_KEY from the environment on ordinary machines, and
+# redirecting their tokenizer cache to /tmp because of it was wrong.
+from .disk_utils import (
+    KAGGLE_TMP,
+    is_colab_environment,
+    is_kaggle_environment,
+)
+
+IS_COLAB_ENVIRONMENT = is_colab_environment()
+IS_KAGGLE_ENVIRONMENT = is_kaggle_environment()
 
 
 def try_fix_tokenizer(tokenizer, prepend = True):
