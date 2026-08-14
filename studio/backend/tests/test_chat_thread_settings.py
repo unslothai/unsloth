@@ -401,13 +401,9 @@ def test_an_older_write_cannot_overtake_a_newer_one(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
-    studio_db.write_chat_thread_settings(
-        "thread-1", replace = {"toolsEnabled": True}, seq = 200
-    )
+    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 200)
     # the straggler, carrying what the user had moved away from
-    studio_db.write_chat_thread_settings(
-        "thread-1", replace = {"toolsEnabled": False}, seq = 100
-    )
+    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": False}, seq = 100)
 
     got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
     assert got.toolsEnabled is True
@@ -418,12 +414,8 @@ def test_the_same_seq_is_not_applied_twice(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
-    studio_db.write_chat_thread_settings(
-        "thread-1", replace = {"toolsEnabled": True}, seq = 500
-    )
-    studio_db.write_chat_thread_settings(
-        "thread-1", replace = {"toolsEnabled": False}, seq = 500
-    )
+    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 500)
+    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": False}, seq = 500)
 
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is True
 
@@ -433,9 +425,7 @@ def test_a_write_without_a_seq_still_applies(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
 
-    studio_db.write_chat_thread_settings(
-        "thread-1", replace = {"toolsEnabled": True}, seq = 900
-    )
+    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 900)
     studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": False})
 
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is False
@@ -467,7 +457,5 @@ def test_the_seq_column_is_added_to_an_existing_database(tmp_path, monkeypatch):
         conn.close()
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
-    studio_db.write_chat_thread_settings(
-        "thread-1", replace = {"toolsEnabled": True}, seq = 1
-    )
+    studio_db.write_chat_thread_settings("thread-1", replace = {"toolsEnabled": True}, seq = 1)
     assert thread_from_row(studio_db.get_chat_thread("thread-1")).settings.toolsEnabled is True
