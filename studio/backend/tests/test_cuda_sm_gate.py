@@ -50,7 +50,11 @@ class TestInstalledLlamaCudaSms:
         assert LlamaCppBackend._installed_llama_cuda_sms(str(tmp_path / "llama-server")) is None
 
 
-def _fake_smi(monkeypatch, stdout, returncode = 0):
+def _fake_smi(
+    monkeypatch,
+    stdout,
+    returncode = 0,
+):
     def _run(cmd, **_kwargs):
         assert cmd[0] == "nvidia-smi"
         return types.SimpleNamespace(returncode = returncode, stdout = stdout)
