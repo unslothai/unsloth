@@ -1945,6 +1945,12 @@ _CTX_FIT_VRAM_FRACTION = 0.97
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
+# How far amd-smi's total VRAM may sit from HIP's before the two are reporting
+# different memory scopes rather than one pool (an APU carve-out against the GTT
+# pool, a partition against the whole card). Same 10% margin
+# utils/hardware/hardware.py::_rocm_system_wide_vram_by_index gates its overlay on.
+_AMD_SMI_TOTAL_TOLERANCE = 0.10
+
 # Flat MTP reserve, used only when GGUF dims are too sparse for the byte-accurate
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
@@ -6007,15 +6013,380 @@ class LlamaCppBackend:
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
+    def _rocm_arch_gate_keep(
+        binary: Optional[str], torch_mod, for_llama_server: bool
+    ) -> Callable[[int], bool]:
+        """Predicate over PHYSICAL ids: False for a device the installed ROCm
+        prebuilt has no kernels for.
+
+        llama-server placement only, so the free-memory rank cannot pick a GPU that
+        binary cannot run (#7624: an iGPU reporting shared RAM outranks the dGPU and
+        the child dies with "device kernel image is invalid"). Keeps every device off
+        that path, off ROCm, on unknown coverage, and for a device with no reported
+        arch. Shared by both branches of ``_get_gpu_memory`` so the amd-smi and torch
+        paths cannot gate differently.
+        """
+        if not for_llama_server or not LlamaCppBackend._torch_is_rocm(torch_mod):
+            return lambda _idx: True
+        supported_archs = LlamaCppBackend._installed_llama_gfx_archs(binary)
+        if supported_archs is None:
+            return lambda _idx: True
+        arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+
+        def _keep(idx: int) -> bool:
+            _base = arch_by_id.get(idx, "")
+            if _base and _base not in supported_archs:
+                logger.warning(
+                    f"Skipping GPU {idx} ({_base}): installed llama.cpp "
+                    f"prebuilt only covers {sorted(supported_archs)}"
+                )
+                return False
+            return True
+
+        return _keep
+
+    @staticmethod
+    def _rocm_hip_is_reachable() -> bool:
+        """Whether HIP can actually open a device on this ROCm host.
+
+        amd-smi reads the driver over sysfs and libdrm, HIP needs ``/dev/kfd`` and a
+        matching HSA runtime, so the two disagree on a container given only
+        ``/dev/dri`` and on a torch built against another ROCm: amd-smi lists the
+        card and ``hipGetDeviceCount`` returns 0. The llama-server child is a HIP
+        process too, so answering there places a model on a device nothing can open.
+
+        ``is_available()`` is that ``hipGetDeviceCount``, not ``_lazy_init``, so it
+        creates no primary context; ``_rocm_unified_memory_gpu_ids`` already calls it
+        further down the same probe. False when torch is missing or unreadable.
+        """
+        try:
+            import torch
+            return bool(hasattr(torch, "cuda") and torch.cuda.is_available())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _rocm_hip_device_count() -> int:
+        """How many devices HIP can open here, or 0 when torch cannot say.
+
+        ``hipGetDeviceCount``, the same call ``_rocm_hip_is_reachable`` asks for a
+        yes/no, so it costs no primary context either. This is the size of the
+        inventory the llama-server child will see; amd-smi reads sysfs and answers
+        for the whole host regardless, so the two disagree wherever something
+        outside the visibility variables filters the device set (a device-cgroup
+        container given one ``/dev/dri/renderD*`` node, ``GPU_DEVICE_ORDINAL``, a
+        card amd-smi could not size).
+        """
+        try:
+            import torch
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return 0
+            return int(torch.cuda.device_count())
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _gpu_device_ordinal_active() -> bool:
+        """Whether ``GPU_DEVICE_ORDINAL`` is filtering this process's devices.
+
+        ROCm's fourth visibility variable, and the one nothing here reads:
+        ``_active_gpu_visibility_mask`` knows the HIP, ROCR and CUDA names only, so
+        ``_resolve_visible_physical_ids`` answers None ("no mask") under it. AMD
+        documents it at the ROCclr layer as "devices indices exposed to OpenCL and
+        HIP applications", while clr itself reads it only on the non-HIP branch
+        (``rocclr/device/rocm/rocdevice.cpp`` picks HIP_VISIBLE_DEVICES /
+        CUDA_VISIBLE_DEVICES when ``amd::IS_HIP``), so the two disagree on whether
+        HIP honours it. Treat it as a mask either way: being wrong here costs the
+        host nothing but this branch's context saving, and being wrong the other way
+        offers a hidden card for placement. ``utils/hardware/hardware.py::
+        _rocm_visibility_mask_active`` gates the system-wide VRAM overlay on the same
+        four names. Whitespace is not a filter, matching that helper."""
+        return bool(os.environ.get("GPU_DEVICE_ORDINAL", "").strip())
+
+    @staticmethod
+    def _rocm_visibility_masks_are_stacked() -> bool:
+        """Whether a ROCr mask AND a HIP-layer mask are both filtering this process.
+
+        The two sit at different layers and therefore COMPOSE: ROCR_VISIBLE_DEVICES
+        filters and renumbers the agent list inside the ROCr runtime
+        (``ROCR-Runtime/core/inc/amd_filter_device.h::RvdFilter``), and clr's
+        ``Device::init`` then indexes ``HIP_VISIBLE_DEVICES`` (or its
+        ``CUDA_VISIBLE_DEVICES`` twin) into ``gpu_agents_``, the vector
+        ``hsa_iterate_agents`` just returned -- so the HIP ordinals count positions in
+        what ROCr left, not physical devices. ``ROCR_VISIBLE_DEVICES=1,2`` with
+        ``HIP_VISIBLE_DEVICES=0`` opens physical GPU 1.
+
+        ``_active_gpu_visibility_mask`` returns the single highest-precedence value,
+        which is the right answer for one layer and cannot express two: it reads
+        ``[0]`` for that example, and on a host whose cards have the same total the
+        inventory and total-memory cross-checks agree with it. Callers that would map
+        those ids onto amd-smi's host-wide device list must decline instead. Composing
+        the masks here is not an option: the physical->ROCr mapping is exactly what
+        ROCr renumbered away, and guessing it wrong offers a hidden card.
+
+        HIP and CUDA together are ONE layer, not two -- clr reads whichever is set
+        first and never both -- so they do not stack. Windows has no ROCr layer at
+        all, so a stray ROCR variable filters nothing there, matching
+        ``_active_gpu_visibility_mask`` and ``_emit_child_gpu_visibility``. Set is
+        set: an empty ROCr mask hides every agent rather than nothing."""
+        if sys.platform == "win32":
+            return False
+        if os.environ.get("ROCR_VISIBLE_DEVICES") is None:
+            return False
+        return (
+            os.environ.get("HIP_VISIBLE_DEVICES") is not None
+            or os.environ.get("CUDA_VISIBLE_DEVICES") is not None
+        )
+
+    @staticmethod
+    def _rocm_total_memory_mib_by_physical_id() -> dict[int, int]:
+        """Total memory HIP reports per PHYSICAL device id, honoring the active ROCm
+        mask, for cross-checking amd-smi's totals.
+
+        Read through ``get_device_properties`` like ``_rocm_arch_by_physical_id``, so
+        it costs no primary context (``mem_get_info`` is the call that does).
+        Devices torch cannot describe are omitted and callers fail open on them;
+        empty off ROCm and on any error."""
+        totals: dict[int, int] = {}
+        try:
+            import torch
+
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return totals
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return totals
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            for ordinal in range(torch.cuda.device_count()):
+                try:
+                    total_bytes = int(
+                        getattr(torch.cuda.get_device_properties(ordinal), "total_memory", 0) or 0
+                    )
+                except Exception:
+                    continue
+                if total_bytes <= 0:
+                    continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                totals[pid] = total_bytes // (1024 * 1024)
+        except Exception:
+            return totals
+        return totals
+
+    @staticmethod
+    def _amd_smi_hip_id_map(
+        enumerated: list[int], mask: Optional[list[int]]
+    ) -> Optional[dict[int, int]]:
+        """{amd-smi gpu id: HIP id} for every enumerated device, else None.
+
+        amd-smi numbers its devices in discovery order and HIP numbers them by KFD
+        node id, so the two agree on most hosts and not on all of them (MI350X in
+        SPX/NPS1 among others). Every id this probe returns is fed back as a HIP
+        ordinal -- matched against the visibility mask, then written into the child's
+        HIP_VISIBLE_DEVICES -- so an untranslated amd-smi id pins the wrong card.
+
+        None means "not provable", and the branch then defers to torch, which
+        enumerates in HIP's space by construction.
+        """
+        if len(enumerated) == 1 and mask in (None, [0]):
+            # One card on the host, so HIP can only be looking at that card and its
+            # id can only be 0. Keeps the single-GPU ROCm desktop, which is most of
+            # them, on amd-smi even where the CLI predates the mapping below.
+            return {enumerated[0]: 0}
+        from utils.hardware.amd import get_hip_id_by_gpu_index
+
+        mapping = get_hip_id_by_gpu_index()
+        if mapping is None or not all(_g in mapping for _g in enumerated):
+            logger.debug(
+                "amd-smi VRAM probe deferring to torch: no amd-smi to HIP id mapping "
+                "for this host (amd-smi list -e needs ROCm 6.4.0+)"
+            )
+            return None
+        return mapping
+
+    @staticmethod
+    def _get_gpu_memory_amd_smi(
+        binary: Optional[str] = None, *, for_llama_server: bool = False
+    ) -> list[tuple[int, int, int]]:
+        """ROCm free/total VRAM per PHYSICAL (HIP) gpu id via amd-smi, else ``[]``.
+
+        Same index space and arch gate as the torch branch of ``_get_gpu_memory``,
+        read from a child process instead. Reading VRAM through
+        ``torch.cuda.mem_get_info`` creates a HIP primary context that the backend
+        never gives back (~700 MiB measured), and the GGUF models this sizes run in a
+        llama-server CHILD, so that VRAM is lost for the life of the process to
+        answer a question a subprocess can answer.
+
+        ``[]`` off ROCm and whenever amd-smi cannot answer, so the caller falls
+        through to torch exactly as before. A gate that drops every card answers
+        ``[]`` too, and torch then gates identically to the same empty list, so the
+        one context this still costs is on the arm already headed for the CPU.
+        A visible unified-memory APU answers ``[]`` as well: amd-smi sees only its
+        dedicated VRAM carve-out, not the GTT pool the torch branch measures. So does
+        anything it can only half answer: a subset is a non-empty list the caller
+        takes as the whole host, which would drop a device from the count tensor
+        parallelism is decided on.
+
+        The inventory has to be HIP's, since the child is a HIP process: the answer
+        is declined when the device set is filtered by something the mask cannot see
+        (``GPU_DEVICE_ORDINAL``, a device-cgroup container), when amd-smi and HIP
+        count different numbers of devices, and when they report totals far enough
+        apart to be describing different memory scopes.
+        """
+        try:
+            import torch
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return []
+        except Exception:
+            return []
+        if not LlamaCppBackend._rocm_hip_is_reachable():
+            # amd-smi would still list the hardware, but HIP cannot open it and
+            # neither can the llama-server child. Torch answers [] here, as it did
+            # before this branch existed, and the load goes to CPU.
+            logger.debug(
+                "amd-smi VRAM probe deferring to torch: this ROCm torch cannot open "
+                "a device, so amd-smi's inventory is not usable by llama-server"
+            )
+            return []
+        try:
+            from utils.hardware.amd import get_gpu_vram_report
+
+            if LlamaCppBackend._visibility_mask_is_unmappable():
+                # A mask IS set but names devices by UUID, so it cannot be applied
+                # here. amd-smi ignores the mask itself (it reads KFD directly), so
+                # answering would offer cards the parent deliberately hid. Torch sees
+                # only the masked set, so let it answer.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: the GPU visibility mask "
+                    "is not index based, so amd-smi's device list cannot be filtered"
+                )
+                return []
+            if LlamaCppBackend._gpu_device_ordinal_active():
+                # _resolve_visible_physical_ids does not read this one, so "no mask"
+                # below would be a lie wherever it does filter, and every hidden card
+                # would be offered for ranking.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: GPU_DEVICE_ORDINAL is "
+                    "set, so amd-smi's device list cannot be filtered"
+                )
+                return []
+            if LlamaCppBackend._rocm_visibility_masks_are_stacked():
+                # A ROCr mask under a HIP mask re-indexes it, and the resolved value
+                # is the HIP one alone -- ordinals into the set ROCr left, not the
+                # physical ids amd-smi answers for. Every later check agrees with the
+                # wrong ids on a host whose cards match, so this is the only place it
+                # can be caught.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: ROCR_VISIBLE_DEVICES is "
+                    "stacked under a HIP-layer mask, so the visible ids are positions "
+                    "in the ROCr-filtered set rather than physical devices"
+                )
+                return []
+            mask = LlamaCppBackend._resolve_visible_physical_ids()
+            if mask is not None and not mask:
+                return []  # every device hidden
+            vram, enumerated = get_gpu_vram_report()
+            if not enumerated:
+                return []
+            # amd-smi ids are not HIP ids; translate before anything compares them
+            # against the mask or hands them to the child.
+            hip_by_gpu = LlamaCppBackend._amd_smi_hip_id_map(enumerated, mask)
+            if hip_by_gpu is None:
+                return []
+            vram = {hip_by_gpu[_g]: _v for _g, _v in vram.items()}
+            # amd-smi enumerates every card regardless of the mask, so drop the ones
+            # this process cannot see. No mask means all of them.
+            visible = set(mask) if mask is not None else set(hip_by_gpu.values())
+            if not visible.issubset(vram):
+                # A device that is visible and unmeasured: all or nothing.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: no usable VRAM reading "
+                    f"for visible GPU(s) {sorted(visible - set(vram))}"
+                )
+                return []
+            hip_count = LlamaCppBackend._rocm_hip_device_count()
+            if len(visible) != hip_count:
+                # This inventory has to BE the child's. amd-smi answers for the whole
+                # host off sysfs, so anything filtering devices outside the
+                # visibility variables leaves it larger than HIP's: a device-cgroup
+                # container given one /dev/dri/renderD* node and no env var (see
+                # test_overlay_skips_device_cgroup_filtered_container) is the usual
+                # one. Smaller means amd-smi omitted a card HIP can open, which the
+                # single-GPU shortcut in _amd_smi_hip_id_map would otherwise read as
+                # a one-card host. Either way the numbers are not comparable.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: amd-smi reports "
+                    f"{len(visible)} visible GPU(s) and HIP opens {hip_count}"
+                )
+                return []
+            hip_totals = LlamaCppBackend._rocm_total_memory_mib_by_physical_id()
+            disagreeing = sorted(
+                _idx
+                for _idx in visible
+                if _idx in hip_totals
+                and abs(vram[_idx][1] - hip_totals[_idx])
+                > _AMD_SMI_TOTAL_TOLERANCE * hip_totals[_idx]
+            )
+            if disagreeing:
+                # Two memory scopes, not two readings of one pool. The case that
+                # matters is an APU _rocm_classify_unified_memory does not name (a
+                # gfx1103 Phoenix wheel with no is_integrated flag): amd-smi sees the
+                # BIOS carve-out and HIP the GTT pool, so accepting amd-smi's figure
+                # would cut context or push the model to CPU. A partitioned MI300
+                # reads the other way round. hardware.py::
+                # _rocm_system_wide_vram_by_index gates its own overlay on the same
+                # comparison. Devices torch cannot describe are absent from
+                # hip_totals and fail open, so an unreadable properties call cannot
+                # disable this branch wholesale.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: amd-smi and HIP report "
+                    f"different total memory for GPU(s) {disagreeing}"
+                )
+                return []
+            unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            if unified_ids:
+                # amd-smi reports only the dedicated VRAM carve-out on a
+                # unified-memory APU, while HIP reports the far larger GTT pool the
+                # models actually run in: on a 128GiB Strix Halo with an 8GiB BIOS
+                # carve-out amd-smi says 8GiB and torch says ~100GiB. Handing the
+                # GGUF fitter the slice would cut context or push the model to CPU.
+                # utils/hardware/hardware.py::_apply_unified_memory_correction
+                # adopts torch's total over amd-smi's for the System tab for the
+                # same reason. Defer the WHOLE host rather than mix two memory
+                # scopes: dropping only the APU would remove it from placement, and
+                # the two branches of _get_gpu_memory must not disagree.
+                logger.debug(
+                    "amd-smi VRAM probe deferring to torch: unified-memory APU(s) "
+                    f"{sorted(unified_ids)} report only their dedicated VRAM slice"
+                )
+                return []
+            arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
+            gpus: list[tuple[int, int, int]] = []
+            for idx in sorted(visible):
+                if not arch_keeps(idx):
+                    continue
+                free_mib, total_mib = vram[idx]
+                gpus.append((idx, free_mib, total_mib))
+            return gpus
+        except Exception as e:
+            logger.debug(f"amd-smi GPU probe failed: {e}")
+            return []
+
+    @staticmethod
     def _get_gpu_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 
         Order: ``nvidia-smi`` (NVIDIA, respects ``CUDA_VISIBLE_DEVICES``), then
+        ``amd-smi`` (ROCm, the same answer without a HIP context), then
         ``torch.cuda.mem_get_info``, a universal fallback that works on ROCm too
         (HIP reuses the ``torch.cuda.*`` namespace). The fallback covers #5106
-        (nvidia-smi returned [] on AMD) and NVIDIA hosts without nvidia-smi on PATH.
+        (nvidia-smi returned [] on AMD) and hosts with no smi tool on PATH; it is
+        last because it costs this process a permanent CUDA/HIP context, and kept
+        because callers read ``[]`` as "no GPU" and would silently drop to CPU.
 
         On a Vulkan build the ggml Vulkan probe is authoritative, so the indices are
         ggml's compact Vulkan ordinals (what ``--device Vulkan<i>`` selects). It
@@ -6085,6 +6456,13 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
 
+        # ── AMD ROCm via amd-smi ─────────────────────────────────────
+        rocm_gpus = LlamaCppBackend._get_gpu_memory_amd_smi(
+            binary, for_llama_server = for_llama_server
+        )
+        if rocm_gpus:
+            return rocm_gpus
+
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         try:
             import torch
@@ -6106,17 +6484,8 @@ class LlamaCppBackend:
             # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
-            # llama-server placement only: gate on the prebuilt's built-arch list so
-            # the free-memory rank cannot pick a GPU the binary has no kernels for
-            # (#7624: an iGPU reporting shared RAM outranks the dGPU and the child
-            # dies with "device kernel image is invalid"). Unknown coverage, or a
-            # device with no reported arch, keeps every device.
-            supported_archs = None
-            arch_by_id: dict[int, str] = {}
-            if for_llama_server and LlamaCppBackend._torch_is_rocm(torch):
-                supported_archs = LlamaCppBackend._installed_llama_gfx_archs(binary)
-                if supported_archs is not None:
-                    arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+            # Same #7624 arch gate the amd-smi branch applies, from the one helper.
+            arch_keeps = LlamaCppBackend._rocm_arch_gate_keep(binary, torch, for_llama_server)
             gpus = []
             # Windows ROCm's free reading is an over-report on discrete cards too,
             # not only on the shared pool handled below (#8403). It is capped
@@ -6131,14 +6500,8 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                if supported_archs is not None:
-                    _base = arch_by_id.get(idx, "")
-                    if _base and _base not in supported_archs:
-                        logger.warning(
-                            f"Skipping GPU {idx} ({_base}): installed llama.cpp "
-                            f"prebuilt only covers {sorted(supported_archs)}"
-                        )
-                        continue
+                if not arch_keeps(idx):
+                    continue
                 shared = idx in unified_ids
                 raw_mib = free_bytes // (1024 * 1024)
                 if shared:
