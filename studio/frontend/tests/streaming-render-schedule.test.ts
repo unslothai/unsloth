@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import remend from "remend";
-import { parseMarkdownIntoBlocks, Streamdown } from "streamdown";
+import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
@@ -232,10 +232,10 @@ test("an edit that drops retained blocks moves the render identity", () => {
   assert.equal(streaming.renderGeneration, 0);
 });
 
-test("only a real duplicate link label gives up the retained prefix", () => {
-  // Marked reads a definition inside a fenced example as code, so recording it
-  // would strand the reply in the full-document path for the rest of the stream.
-  const shown = `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
+test("a definition shown inside a fenced example still retains", () => {
+  // Marked reads that line as code, so treating it as a definition would stall
+  // retention for the rest of the reply.
+  const shown = `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(30)}end`;
   const shownCache = new IncrementalMarkdownCache();
   let render = shownCache.update("");
   for (let length = 1; length <= shown.length; length += 1) {
@@ -243,18 +243,37 @@ test("only a real duplicate link label gives up the retained prefix", () => {
   }
   assert.ok(render.markdown.length < shown.length / 3);
 
-  const repeated = `[x]: https://e.test\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
-  const repeatedCache = new IncrementalMarkdownCache();
-  let repeatedRender = repeatedCache.update("");
-  for (let length = 1; length <= repeated.length; length += 1) {
-    repeatedRender = repeatedCache.update(
-      processStreamingText(repeated.slice(0, length)),
+  // A real definition is never retained, whatever block it sits in, so Marked
+  // always lexes it together with a later twin and absorbs the duplicate.
+  for (const first of ["[x]: https://e.test", "> [x]: https://e.test"]) {
+    const repeated = `${first}\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
+    const cache = new IncrementalMarkdownCache();
+    let repeatedRender = cache.update("");
+    for (let length = 1; length <= repeated.length; length += 1) {
+      repeatedRender = cache.update(
+        processStreamingText(repeated.slice(0, length)),
+      );
+    }
+    assert.deepEqual(
+      repeatedRender.parseMarkdownIntoBlocks(repeatedRender.markdown),
+      parseMarkdownIntoBlocks(remend(processStreamingText(repeated))),
     );
   }
-  assert.deepEqual(
-    repeatedRender.parseMarkdownIntoBlocks(repeatedRender.markdown),
-    parseMarkdownIntoBlocks(remend(processStreamingText(repeated))),
-  );
+});
+
+test("an update with unchanged text repeats no work", () => {
+  // Tokens arrive faster than frames, so the coalescer hands the same text to
+  // several renders. Redoing the repair there is the whole reply again once the
+  // full-document path is in use.
+  const source = `A claim[^note]\n\n${"a paragraph of reply text\n\n".repeat(6000)}`;
+  const cache = new IncrementalMarkdownCache();
+  const first = cache.update(source);
+
+  const started = performance.now();
+  for (let repeat = 0; repeat < 200; repeat += 1) {
+    assert.equal(cache.update(source).markdown, first.markdown);
+  }
+  assert.ok(performance.now() - started < 100);
 });
 
 test("Streamdown re-renders only when the Markdown string changes", () => {

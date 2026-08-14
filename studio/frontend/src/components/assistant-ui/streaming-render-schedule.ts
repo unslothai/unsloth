@@ -18,7 +18,7 @@ const INLINE_CODE_ASTERISK_CONTEXT = "`a *b* c`\n\n";
 const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
-const LINK_DEFINITION_RE = /^ {0,3}\[([^\]\n^][^\]\n]{0,200})\]:/gm;
+const LINK_DEFINITION_RE = /\[[^\]\n]{1,200}\]:/;
 const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
@@ -28,6 +28,7 @@ type RepairParity = {
   boldCandidate: boolean;
   boldFence: boolean;
   bracketDepth: number;
+  linkDefinition: boolean;
   doubleUnderscore: boolean;
   emphasisDisplayMath: boolean;
   emphasisInlineCode: boolean;
@@ -53,6 +54,7 @@ const createRepairParity = (): RepairParity => ({
   boldCandidate: false,
   boldFence: false,
   bracketDepth: 0,
+  linkDefinition: false,
   doubleUnderscore: false,
   emphasisDisplayMath: false,
   emphasisInlineCode: false,
@@ -73,25 +75,16 @@ const createRepairParity = (): RepairParity => ({
   inlineMath: false,
 });
 
-// Marked keeps link reference definitions in one per-document map and emits no
-// token for a label it has already seen. Lexing only the tail cannot know about
-// an earlier definition, so a redefinition would show up as a literal line.
-// Read this off the block list rather than the raw text, so a definition shown
-// inside a fenced example is code to us for the same reason it is to Marked.
-function linkDefinitionLabels(blocks: string[]): string[] {
-  const labels: string[] = [];
-  for (const block of blocks) {
-    if (FENCED_CODE_BLOCK_RE.test(block)) {
-      continue;
-    }
-    LINK_DEFINITION_RE.lastIndex = 0;
-    let match = LINK_DEFINITION_RE.exec(block);
-    while (match) {
-      labels.push(match[1].toLowerCase().replace(/\s+/g, " ").trim());
-      match = LINK_DEFINITION_RE.exec(block);
-    }
+// Marked keeps link reference definitions in one document-wide map and emits
+// no token for a label it has already seen, so a definition that is retained
+// while its twin is still live would be lexed apart and shown as a literal
+// line. Keeping every definition in the live tail makes the two lexes agree.
+// Marked reads a fenced block as code, so those do not count; anything else
+// that merely looks like a definition costs retention, never correctness.
+function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
+  if (!FENCED_CODE_BLOCK_RE.test(text) && LINK_DEFINITION_RE.test(text)) {
+    parity.linkDefinition = true;
   }
-  return labels;
 }
 
 const isTripleBacktick = (text: string, index: number): boolean =>
@@ -474,6 +467,7 @@ function updateInlineMathParity(parity: RepairParity, text: string): void {
 }
 
 function updateRepairParity(parity: RepairParity, text: string): void {
+  updateLinkDefinitionParity(parity, text);
   updateEmphasisParity(parity, text);
   updateTripleAsteriskParity(parity, text);
   updateInlineCodeParity(parity, text);
@@ -485,6 +479,7 @@ function updateRepairParity(parity: RepairParity, text: string): void {
 const hasNeutralRepairParity = (parity: RepairParity): boolean =>
   ![
     parity.bracketDepth > 0,
+    parity.linkDefinition,
     parity.bold,
     parity.boldFence,
     parity.emphasisInlineCode,
@@ -639,7 +634,6 @@ export class IncrementalMarkdownCache {
   private context = createRetainedContext();
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
-  private committedLinkLabels = new Set<string>();
   private droppedRetainedBlocks = false;
   // Bumped only when the Markdown string alone cannot signal a changed render.
   renderGeneration = 0;
@@ -667,7 +661,6 @@ export class IncrementalMarkdownCache {
     this.source = markdown;
     this.tail = markdown;
     this.committedBlocks = [];
-    this.committedLinkLabels.clear();
     this.context = createRetainedContext();
   }
 
@@ -688,6 +681,16 @@ export class IncrementalMarkdownCache {
   }
 
   update(markdown: string): IncrementalMarkdownRender {
+    // Tokens arrive faster than frames, so the coalescer hands the same text to
+    // several renders. Nothing about the result can differ, and repeating the
+    // work would be the whole reply again once the document path is in use.
+    if (markdown === this.source && this.lastMarkdown !== null) {
+      return {
+        markdown: this.lastMarkdown,
+        parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
+      };
+    }
+
     if (this.fullDocumentMode && markdown.startsWith(this.source)) {
       this.source = markdown;
       return this.renderFullDocument(markdown);
@@ -708,17 +711,6 @@ export class IncrementalMarkdownCache {
     }
 
     const blocks = parseMarkdownIntoBlocks(repaired);
-
-    // A label the retained prefix already defined has to be lexed together with
-    // its redefinition, so give up the prefix rather than show a literal line.
-    if (
-      this.committedLinkLabels.size > 0 &&
-      linkDefinitionLabels(blocks).some((label) =>
-        this.committedLinkLabels.has(label),
-      )
-    ) {
-      return this.renderFullDocument(markdown);
-    }
 
     const candidateCount = Math.max(0, blocks.length - ROLLBACK_BLOCKS);
     if (candidateCount === 0) {
@@ -755,9 +747,6 @@ export class IncrementalMarkdownCache {
     }
 
     this.committedBlocks.push(...blocks.slice(0, commit.count));
-    for (const label of linkDefinitionLabels(blocks.slice(0, commit.count))) {
-      this.committedLinkLabels.add(label);
-    }
     this.context = nextContext;
     this.tail = nextTail;
 
