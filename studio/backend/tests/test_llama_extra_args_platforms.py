@@ -84,6 +84,54 @@ def _stable(cmd: list[str]) -> list[str]:
     return masked
 
 
+def _launch_with_slot_dir(tmp_path, monkeypatch, platform, slot_dir: Path):
+    """Capture the real launch command with llama.cpp slot persistence advertised."""
+    _apply_platform(monkeypatch, platform)
+    from utils.paths import storage_roots
+
+    monkeypatch.setattr(storage_roots, "llama_slot_cache_root", lambda: slot_dir)
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    backend.probe_server_capabilities = lambda _binary = None: {"supports_slot_save": True}
+    return backend, _launch(backend, gguf)["cmd"]
+
+
+def _without_flag_value(cmd: list[str], flag: str) -> list[str]:
+    index = cmd.index(flag)
+    return [*cmd[:index], *cmd[index + 2 :]]
+
+
+def test_windows_unicode_slot_path_only_drops_optional_persistence(tmp_path, monkeypatch):
+    """A/B: all launch arguments survive; only the broken optional pair is absent."""
+    windows = PLATFORMS[2]
+    ascii_dir = tmp_path / "Egor" / "llama-slots"
+    unicode_dir = tmp_path / "Егор" / "llama-slots"
+
+    _ascii_backend, ascii_cmd = _launch_with_slot_dir(
+        tmp_path, monkeypatch, windows, ascii_dir
+    )
+    unicode_backend, unicode_cmd = _launch_with_slot_dir(
+        tmp_path, monkeypatch, windows, unicode_dir
+    )
+
+    assert ascii_cmd[ascii_cmd.index("--slot-save-path") + 1] == str(ascii_dir)
+    assert _stable(unicode_cmd) == _without_flag_value(
+        _stable(ascii_cmd), "--slot-save-path"
+    )
+    assert unicode_backend._slot_save_dir is None
+    assert unicode_backend._slot_save_binary is None
+
+
+@pytest.mark.parametrize("platform", [PLATFORMS[0], PLATFORMS[1], PLATFORMS[3]])
+def test_unicode_slot_path_is_unchanged_off_native_windows(tmp_path, monkeypatch, platform):
+    slot_dir = tmp_path / "Егор" / "llama-slots"
+
+    _backend_instance, cmd = _launch_with_slot_dir(
+        tmp_path, monkeypatch, platform, slot_dir
+    )
+
+    assert cmd[cmd.index("--slot-save-path") + 1] == str(slot_dir)
+
+
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
 def test_an_empty_box_changes_nothing_anywhere(tmp_path, monkeypatch, platform, accelerator):
     # The acceptance bar, on every combination. None (inherit) and [] (explicitly

@@ -15034,9 +15034,22 @@ class LlamaCppBackend:
                         # Saved KV encodes chat content; keep it from other local users.
                         with contextlib.suppress(OSError):
                             os.chmod(slot_dir, 0o700)
-                        cmd.extend(["--slot-save-path", str(slot_dir)])
-                        self._slot_save_dir = str(slot_dir)
-                        self._slot_save_binary = (binary, Path(binary).stat().st_mtime_ns)
+                        slot_path = str(slot_dir)
+                        # llama.cpp's fs_is_directory() constructs a narrow
+                        # std::filesystem::path on Windows, so an existing UTF-8
+                        # path such as C:\Users\Егор is rejected as missing.
+                        # Slot persistence is optional; keep model loading available
+                        # until the managed runtime carries the upstream UTF-8 fix.
+                        if sys.platform == "win32" and not slot_path.isascii():
+                            logger.warning(
+                                "Disabling llama.cpp slot persistence because its "
+                                "Windows path contains non-ASCII characters: %s",
+                                slot_path,
+                            )
+                        else:
+                            cmd.extend(["--slot-save-path", slot_path])
+                            self._slot_save_dir = slot_path
+                            self._slot_save_binary = (binary, Path(binary).stat().st_mtime_ns)
                     except OSError:
                         self._slot_save_dir = None
                         self._slot_save_binary = None
