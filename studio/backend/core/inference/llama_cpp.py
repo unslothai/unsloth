@@ -7431,11 +7431,7 @@ class LlamaCppBackend:
         n_embd_r = max(0, d_conv - 1) * (d_inner + 2 * n_group * d_state)
         n_embd_s = d_state * d_inner
         return int(
-            n_recurrent
-            * (n_embd_r + n_embd_s)
-            * 4
-            * max(1, n_parallel)
-            * max(1, 1 + n_rs_seq)
+            n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel) * max(1, 1 + n_rs_seq)
         )
 
     def _legacy_head_dim(self) -> int:

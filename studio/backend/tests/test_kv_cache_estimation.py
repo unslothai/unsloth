@@ -977,9 +977,7 @@ class TestHybridMambaEstimation:
         assert b._mamba_recurrent_state_bytes(n_parallel = 4, n_rs_seq = 2) == 12 * per_slot
 
         kv_only = 16 * _runtime_kv_cells(4096, slots = 4) * 4 * (256 + 256) * 2
-        assert b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 4) == (
-            kv_only + 4 * per_slot
-        )
+        assert b._estimate_kv_cache_bytes(4096, "f16", n_parallel = 4) == (kv_only + 4 * per_slot)
 
 
 # E. Path 3: Sliding Window Estimation

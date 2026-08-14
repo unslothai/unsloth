@@ -365,10 +365,7 @@ class TestOverheadTotal:
         ],
     )
     def test_hybrid_mtp_matches_target_and_draft_context_across_lengths(
-        self,
-        ctx,
-        target_kv_mib,
-        draft_kv_mib,
+        self, ctx, target_kv_mib, draft_kv_mib
     ):
         b = _make_backend(n_layers = 65)
         b._ssm_state_size = 128
@@ -381,11 +378,14 @@ class TestOverheadTotal:
         assert base / MIB == pytest.approx(598.5)
         assert target == base + target_kv_mib * MIB
         assert draft_kv == draft_kv_mib * MIB
-        assert b._estimate_mtp_overhead_bytes(
-            ctx,
-            spec_draft_n_max = 2,
-            n_parallel = 4,
-        ) == draft_kv + 2 * base
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                ctx,
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
 
     def test_separate_drafter_does_not_add_embedded_target_rollback_state(self, monkeypatch):
         b = _make_backend(n_layers = 65)
