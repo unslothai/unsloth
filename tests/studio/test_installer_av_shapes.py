@@ -115,11 +115,18 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
     logical = re.sub(r"\\\r?\n", " ", logical)
     # The decoder ban scans the whole argument tail after `base64`, not just the
     # next token: `base64 -w 0 -d` and `--ignore-garbage --decode` still decode.
-    # Lowercased text also folds macOS's -D in. A combined cluster (-di) counts.
+    # Lowercased text also folds macOS's -D in. A short cluster counts wherever
+    # the d sits (-di, -id), and GNU accepts unambiguous long-option prefixes, so
+    # --dec decodes exactly as --decode does.
     for number, line in enumerate(logical.splitlines(), start = 1):
         for b64 in re.finditer(r"\bbase64\b", line):
-            hit = re.search(r"(?<![\w-])-(d\w*|-decode)\b", line[b64.end() :])
+            tail = line[b64.end():]
+            hit = re.search(r"(?<![\w-])-[a-z]*d[a-z]*\b", tail)
             assert not hit, f"{name}:{number} invokes a base64 decoder: {line.strip()}"
+            for long_opt in re.finditer(r"(?<![\w-])--([a-z]+)\b", tail):
+                assert not "decode".startswith(long_opt.group(1)), (
+                    f"{name}:{number} invokes a base64 decoder: {line.strip()}"
+                )
     for number, line in enumerate(logical.splitlines(), start = 1):
         if "powershell" not in line and "pwsh" not in line:
             continue

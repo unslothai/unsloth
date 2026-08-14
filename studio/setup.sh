@@ -2201,19 +2201,24 @@ except Exception:
     a, ra = split(sys.argv[1])
     b, rb = split(sys.argv[2])
     def rank(rest):
-        # class, stage, number: dev < a < b < c/rc < final < post -- a2 must not
-        # outrank rc1 on its number alone (mirrors _vkey's ordering)
+        # class, stage, number, then the compound tail: dev < a < b < c/rc <
+        # final < post, and a suffix AFTER the first stage still orders --
+        # 1.0rc1.dev1 sits below 1.0rc1, 1.0rc1.post1 above it
         s = rest.lstrip('-._')
-        m = re.search(r'\d+', s)
-        n = int(m.group(0)) if m else 0
-        t = re.match(r'(dev|post|alpha|beta|preview|pre|rc|a|b|c)', s)
-        t = t.group(1) if t else ''
-        if t == 'dev': return (-3, 0, n)
-        if t == 'post': return (1, 0, n)
-        if t in ('a', 'alpha'): return (-2, 0, n)
-        if t in ('b', 'beta'): return (-2, 1, n)
-        if t in ('c', 'rc', 'pre', 'preview'): return (-2, 2, n)
-        return (0, 0, n)
+        m = re.match(r'(dev|post|alpha|beta|preview|pre|rc|a|b|c)[-._]?(\d*)', s)
+        t = m.group(1) if m else ''
+        n = int(m.group(2) or 0) if m else 0
+        tail = s[m.end():] if m else s
+        tm = re.search(r'(dev|post)[-._]?(\d*)', tail)
+        trail = (0, 0)
+        if tm:
+            trail = ((-1 if tm.group(1) == 'dev' else 1), int(tm.group(2) or 0))
+        if t == 'dev': return (-3, 0, n) + trail
+        if t == 'post': return (1, 0, n) + trail
+        if t in ('a', 'alpha'): return (-2, 0, n) + trail
+        if t in ('b', 'beta'): return (-2, 1, n) + trail
+        if t in ('c', 'rc', 'pre', 'preview'): return (-2, 2, n) + trail
+        return (0, 0, n) + trail
     # equal numeric prefixes: pre/dev orders BELOW the final release and post
     # ABOVE it, on either side -- an announced 1.0.post1 is not satisfied by an
     # installed 1.0, and within a class the trailing number decides

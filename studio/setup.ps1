@@ -5756,25 +5756,38 @@ if ($_verifyUpdate) {
                         # trailing number decides
                         $_sufRank = {
                             param($_v)
-                            # class, stage, number: dev < a < b < c/rc < final < post --
-                            # a2 must not outrank rc1 on its number alone
+                            # class, stage, number, then the compound tail: dev < a < b <
+                            # c/rc < final < post, and a suffix AFTER the first stage
+                            # still orders (1.0rc1.dev1 < 1.0rc1 < 1.0rc1.post1)
                             $_rest = (($_v -replace '^[0-9.]+', '') -replace '^[-._]+', '').ToLower()
-                            $_n = 0
-                            if ($_rest -match '(\d+)') { $_n = [int]$Matches[1] }
-                            $_t = ''
-                            if ($_rest -match '^(dev|post|alpha|beta|preview|pre|rc|a|b|c)') { $_t = $Matches[1] }
-                            switch ($_t) {
-                                'dev'  { return @(-3, 0, $_n) }
-                                'post' { return @(1, 0, $_n) }
-                                { $_ -in @('a', 'alpha') } { return @(-2, 0, $_n) }
-                                { $_ -in @('b', 'beta') } { return @(-2, 1, $_n) }
-                                { $_ -in @('c', 'rc', 'pre', 'preview') } { return @(-2, 2, $_n) }
+                            $_t = ''; $_n = 0; $_tail = $_rest
+                            if ($_rest -match '^(dev|post|alpha|beta|preview|pre|rc|a|b|c)[-._]?(\d*)') {
+                                $_t = $Matches[1]
+                                if ($Matches[2]) { $_n = [int]$Matches[2] }
+                                $_tail = $_rest.Substring($Matches[0].Length)
                             }
-                            return @(0, 0, $_n)
+                            $_trail = 0; $_tn = 0
+                            if ($_tail -match '(dev|post)[-._]?(\d*)') {
+                                $_trail = if ($Matches[1] -eq 'dev') { -1 } else { 1 }
+                                if ($Matches[2]) { $_tn = [int]$Matches[2] }
+                            }
+                            switch ($_t) {
+                                'dev'  { return @(-3, 0, $_n, $_trail, $_tn) }
+                                'post' { return @(1, 0, $_n, $_trail, $_tn) }
+                                { $_ -in @('a', 'alpha') } { return @(-2, 0, $_n, $_trail, $_tn) }
+                                { $_ -in @('b', 'beta') } { return @(-2, 1, $_n, $_trail, $_tn) }
+                                { $_ -in @('c', 'rc', 'pre', 'preview') } { return @(-2, 2, $_n, $_trail, $_tn) }
+                            }
+                            return @(0, 0, $_n, $_trail, $_tn)
                         }
                         $_pr = & $_sufRank $PostVer
                         $_lr = & $_sufRank $LatestVer
-                        $_updateOk = ($_pr[0] -gt $_lr[0]) -or (($_pr[0] -eq $_lr[0]) -and (($_pr[1] -gt $_lr[1]) -or (($_pr[1] -eq $_lr[1]) -and ($_pr[2] -ge $_lr[2]))))
+                        $_updateOk = $false
+                        for ($_ri = 0; $_ri -lt 5; $_ri++) {
+                            if ($_pr[$_ri] -gt $_lr[$_ri]) { $_updateOk = $true; break }
+                            if ($_pr[$_ri] -lt $_lr[$_ri]) { break }
+                            if ($_ri -eq 4) { $_updateOk = $true }
+                        }
                     }
                 } catch {}
             }
