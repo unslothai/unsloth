@@ -22954,7 +22954,10 @@ async def generate_diffusion_image(
         raise HTTPException(status_code = 500, detail = _generate_failure_detail(msg))
     except Exception as exc:
         logger.error("diffusion.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+        # Classified like the RuntimeError branch above: this one caught an OOM as a bare
+        # Exception and answered with the fallback, so the same failure named its cause or
+        # not depending on which class torch happened to raise.
+        raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
 
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -23480,7 +23483,9 @@ async def openai_image_generations(
                 detail = openai_error_body(str(exc), status = 400, param = "size"),
             )
         logger.error("openai_images.generate_failed: %s", exc)
-        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+        raise HTTPException(
+            status_code = 500, detail = _generate_failure_detail(str(exc))
+        )
 
     created = int(time.time())
     want_b64 = body.response_format == "b64_json"

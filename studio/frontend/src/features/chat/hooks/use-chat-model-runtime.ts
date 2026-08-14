@@ -13,6 +13,7 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -1940,12 +1941,24 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
+            // The backend sends a real diagnostic here: a summary, the llama-server
+            // tail, and the path of the file it came from. It arrived intact and was
+            // shown as an 8s toast title, so the reader got a wall of prose and no way
+            // back to it. First line as the title, the rest as the description, and an
+            // action that opens the runner's own log.
+            const [summary, ...rest] = message.split("\n");
+            const detail = rest.join("\n").trim();
+            const logsAction = viewLogsAction("llama-server");
             if (loadToastDismissedRef.current) {
-              toast.error(message);
+              toast.error(summary, {
+                description: detail || undefined,
+                action: logsAction,
+              });
             } else {
-              toast.error(message, {
+              toast.error(summary, {
                 id: toastId,
-                description: undefined,
+                description: detail || undefined,
+                action: logsAction,
                 cancel: undefined,
                 classNames: undefined,
                 closeButton: true,

@@ -3025,6 +3025,10 @@ class DiffusionGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps for this run")
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    # The load twin below has carried this since it was written. Without it here, a generation
+    # whose POST is lost past the proxy's ~100s window (GenerateResponseLostError) leaves the
+    # client polling a response that can report "not running" but never why.
+    error: Optional[str] = Field(None, description = "Why the last generation failed, if it did")
 
 
 class DiffusionLoadProgressResponse(BaseModel):

@@ -575,7 +575,10 @@ def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
 
 
 def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
-    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure: the terminal state carries a generic message, never the raw exception.
+    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure. The terminal state
+    # names the CLASS of failure from fixed text and never echoes the raw exception, which can
+    # carry local paths and argv. Reporting only "Video generation failed." was the complaint
+    # this classification answers: the user was told a generation failed and nothing else.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -587,8 +590,41 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
     assert resp.status_code == 200
     progress = _wait_terminal(client)
     assert progress["phase"] == "failed"
-    assert progress["error"] == "Video generation failed."
+    assert progress["error"].startswith("Video generation failed.")
+    assert "ran out of memory" in progress["error"]
+    # The engine's own text stays server-side.
     assert "CUDA" not in progress["error"]
+    assert "40.00 GiB" not in progress["error"]
+
+
+def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch):
+    # Nothing recognised means nothing invented: the message must not grow a guess.
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _odd(**kwargs):
+        raise RuntimeError("something went sideways in /home/u/models/secret.safetensors")
+
+    monkeypatch.setattr(backend, "generate", _odd)
+    resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
+    assert resp.status_code == 200
+    progress = _wait_terminal(client)
+    assert progress["error"] == "Video generation failed."
+    assert "secret.safetensors" not in progress["error"]
+
+
+def test_generate_native_crash_points_at_the_log(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _crash(**kwargs):
+        raise RuntimeError("worker process exited with signal 6")
+
+    monkeypatch.setattr(backend, "generate", _crash)
+    resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
+    assert resp.status_code == 200
+    progress = _wait_terminal(client)
+    assert "Settings > Logs" in progress["error"]
 
 
 def test_generate_value_error_reports_reason(client, monkeypatch):

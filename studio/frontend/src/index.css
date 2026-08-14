@@ -2530,6 +2530,14 @@ html[data-chat-font] .aui-root {
 	min-width: 0;
 }
 
+/* A load failure carries a real diagnostic: a summary line, the runner's output, and the
+   path of the log it came from. Default `white-space: normal` collapsed every newline to
+   a space, so the structure the backend built was destroyed on the way to the reader. */
+[data-sonner-toast][data-styled='true'] [data-title],
+[data-sonner-toast][data-styled='true'] [data-description] {
+	white-space: pre-wrap;
+}
+
 [data-sonner-toast][data-styled='true']:has([data-button]) {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);

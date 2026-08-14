@@ -312,7 +312,7 @@ async def generate_video(
     100 seconds, so the response must not span the generation. The worker runs the
     generate + gallery-persist pipeline; the terminal outcome (completed with the
     saved record / failed with a client-safe error) arrives via generate-progress."""
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, video_failure_detail
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_NOT_LOADED_MSG,
@@ -361,7 +361,9 @@ async def generate_video(
         if msg in (VIDEO_NOT_LOADED_MSG, VIDEO_GENERATION_BUSY_MSG):
             raise HTTPException(status_code = 409, detail = msg)
         logger.error("video.generate_failed: %s", exc, exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Video generation failed.")
+        # Same classifier as the worker path, so a synchronous refusal and an async one
+        # give the caller the same reason rather than differing by which one caught it.
+        raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
 
     return VideoGenerateResponse()
 
