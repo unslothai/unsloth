@@ -27,10 +27,8 @@ def _read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
 
 
-# The classes that identify the trigger's model-name span. Matched as a set against every
-# string literal in the file rather than against a `className="..."` attribute: the span moved
-# to `className={cn("...", triggerLabelClassName)}` and the old attribute-shaped regex then
-# found nothing, so the guard passed vacuously while still reading as if it checked something.
+# Matched as a set against every string literal, not against a `className="..."` attribute:
+# the span moved to `className={cn("...", triggerLabelClassName)}`, which the old regex missed.
 TRIGGER_LABEL_CLASSES = {"min-w-0", "flex-1", "truncate", "font-heading", "text-ui-16"}
 
 
