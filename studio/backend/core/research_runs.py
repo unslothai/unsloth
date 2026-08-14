@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 
 from auth import storage as auth_storage
-from core.inference.message_content import content_to_text
+from core.inference.message_content import message_text_with_pastes
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
@@ -201,7 +201,7 @@ def _safe_error(exc: BaseException) -> str:
 
 
 def _extract_text(message: dict) -> str:
-    return content_to_text(message.get("content")).strip()
+    return message_text_with_pastes(message).strip()
 
 
 def _research_question_context(thread_id: str, user_message_id: str) -> tuple[str, str]:
@@ -1132,7 +1132,10 @@ class ResearchSupervisor:
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
-            name = "deep-research workflow",
+            # The name is load-bearing, not a label: the external-provider route
+            # scopes its saved-credential exception to exactly this workflow, so
+            # the two sides must not drift apart.
+            name = auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
         )
@@ -1155,7 +1158,10 @@ class ResearchSupervisor:
             "temperature": inference.get("temperature", 0.2),
         }
 
-        if inference.get("providerType") == "openai_codex":
+        # Route the hop to whichever saved connection the run was created with.
+        # The route's _sanitize_config already refused anything but an enabled
+        # saved connection of a studio-tools-capable provider type.
+        if inference.get("providerType"):
             payload.update(
                 {
                     "provider_id": inference["providerId"],

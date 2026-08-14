@@ -10,6 +10,7 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  splitQuantSuffix,
 } from "../model-config/model-identity";
 import type { PerModelConfig } from "../model-config/per-model-config";
 
@@ -65,6 +66,130 @@ export function modelOverrideKey(
   return ggufVariant ? `${modelId}:${ggufVariant}` : modelId;
 }
 
+/**
+ * The stored pass-through args for a model, under any key the backend would resolve.
+ *
+ * The overrides route folds identities before it reads a row: a repo id and a quant
+ * differing only in case resolve to the same entry, and it falls back from
+ * `repo:QUANT` to the bare repo. A literal lookup on the two keys this panel happens
+ * to use would show an empty box for a model that will launch with arguments, and
+ * the first edit would then replace a list nobody saw. Keys are tried most specific
+ * first, then folded, mirroring that order.
+ */
+/**
+ * A path that names one file whatever the casing, folded for comparison, or null
+ * when the path is case-sensitive.
+ *
+ * The rules are _fold_case_insensitive_path's, and they have to be, because the
+ * server applies an override this resolver has to find: a Windows drive path, a UNC
+ * share and a WSL drive mount all fold, the separator is interchangeable, and
+ * trailing separators are trimmed down to the root. A POSIX path is not folded, or
+ * "/models/Foo.gguf" would collect the arguments stored for "/models/foo.gguf".
+ */
+const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:[\\/]/;
+const WSL_DRIVE_PATH = /^\/mnt\/[a-zA-Z](\/|$)/;
+
+function foldCaseInsensitivePath(key: string): string | null {
+  const slashed = key.replace(/\\/g, "/");
+  let minimum: number;
+  if (WINDOWS_DRIVE_PATH.test(key)) {
+    minimum = 3;
+  } else if (slashed.startsWith("//")) {
+    minimum = 2;
+  } else if (WSL_DRIVE_PATH.test(slashed)) {
+    minimum = 6;
+  } else {
+    return null;
+  }
+  let trimmed = slashed;
+  while (trimmed.length > minimum && trimmed.endsWith("/")) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed.toLowerCase();
+}
+
+function foldOverrideKey(key: string): string {
+  // A path that folds does so whole, separators and casing together.
+  const path = foldCaseInsensitivePath(key);
+  if (path !== null) {
+    return path;
+  }
+  // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
+  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would
+  // fold it onto the real, different file "/models/foo:bar.gguf". This is the check
+  // the backend's split_quant_suffix makes.
+  const split = splitQuantSuffix(key);
+  const id = split ? split[0] : key;
+  const quant = split ? `:${split[1].toLowerCase()}` : "";
+  // A POSIX path keeps its case; only the quant folds, because the browser
+  // lowercases that before storing. A repo id folds whole.
+  return id.startsWith("/") ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
+}
+
+/**
+ * The stored arguments, with "the row carried an empty list" kept apart from "no
+ * row carried the field at all".
+ *
+ * The distinction is what the settings page's tombstone is for: clearing the box
+ * for one quant saves an explicit [], and that is what stops the server's lookup
+ * before it reaches a legacy bare-repository row that still holds arguments.
+ * Collapsing the two left the panel with llamaExtraArgs undefined, its next Load
+ * omitted the field, and /load carried the resident model's arguments over: the
+ * very ones that had just been cleared.
+ */
+export type ResolvedExtraArgs = {
+  tokens: string[];
+  explicit: boolean;
+};
+
+/** The field as one entry stores it, empty list and absent field kept apart. */
+function resolvedFrom(entry: ApiModelOverride): ResolvedExtraArgs {
+  const tokens = entry.llama_extra_args;
+  return { tokens: tokens ?? [], explicit: Array.isArray(tokens) };
+}
+
+export function resolveStoredExtraArgs(
+  overrides: ApiModelOverrides,
+  keys: readonly string[],
+): ResolvedExtraArgs {
+  // Whole ENTRIES, in the order the backend tries them, stopping at the first one
+  // that exists. The auto-switch loader breaks on the first non-empty override and
+  // reads its fields from there, so falling through to a bare repo id because the
+  // variant row happens to carry no arguments would launch the picker with flags an
+  // API load would not use.
+  // An entry with no fields is skipped rather than stopping the search, because
+  // that is what `if override: break` does on the server.
+  const present = (value: ApiModelOverride | undefined | null) =>
+    value && Object.keys(value).length > 0 ? value : null;
+  const folded = new Map<string, ApiModelOverride | null>();
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!present(value)) {
+      continue;
+    }
+    const foldedKey = foldOverrideKey(key);
+    // Ambiguous folds resolve to nothing, as resolve_model_override_key does:
+    // duplicate case variants left by an upgrade must not have one of them picked
+    // at enumeration order, which is another model's settings half the time.
+    folded.set(foldedKey, folded.has(foldedKey) ? null : value);
+  }
+  for (const key of keys) {
+    const exact = present(overrides[key]);
+    if (exact) {
+      return resolvedFrom(exact);
+    }
+    // Folding, by the same rule the backend resolves with: a POSIX path is
+    // case-sensitive, so lowercasing one whole would hand /models/foo.gguf the
+    // arguments stored for /models/Foo.gguf and then send them explicitly on Load.
+    // Windows, UNC and WSL paths do fold, and so does the quant suffix the browser
+    // lowercases before storing.
+    const match = folded.get(foldOverrideKey(key));
+    if (match) {
+      return resolvedFrom(match);
+    }
+  }
+  return { tokens: [], explicit: false };
+}
+
 export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
   const res = await authFetch(OVERRIDES_URL);
   if (!res.ok) {
@@ -74,6 +199,64 @@ export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
   }
   const body = (await res.json()) as { overrides?: ApiModelOverrides };
   return body.overrides ?? {};
+}
+
+/**
+ * The pass-through arguments the LOAD of this model would apply.
+ *
+ * Asked of the server rather than worked out here, because the resolution is
+ * Python's: casefold is not toLowerCase (Straße and STRASSE are one path to the
+ * loader and two to a browser), and an ambiguous fold deliberately matches nothing.
+ * A client mirroring those rules can only approximate them, and the approximation
+ * shows up as a cold load launching without arguments an API load applies.
+ *
+ * Falls back to resolving locally against the whole map when the backend predates
+ * the parameter, which is the same answer in every case but the exotic ones.
+ */
+export async function fetchLoadExtraArgs(
+  loadId: string,
+  aliasId: string,
+  ggufVariant?: string | null,
+  fallbackKeys: readonly string[] = [],
+): Promise<ResolvedExtraArgs> {
+  const query = new URLSearchParams({ model_id: loadId, alias_id: aliasId });
+  if (ggufVariant) {
+    query.set("gguf_variant", ggufVariant);
+  }
+  const res = await authFetch(`${OVERRIDES_URL}?${query.toString()}`);
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to load saved model settings"),
+    );
+  }
+  const body = (await res.json()) as {
+    overrides?: ApiModelOverrides;
+    resolved?: ApiModelOverride | null;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    resolved_key?: string | null;
+  };
+  if (body.resolved !== undefined) {
+    // An explicit empty list is a cleared box, not an absence, and the caller has
+    // to send it as one: omitting the field lets /load carry the resident model's
+    // arguments over, which is exactly what was cleared.
+    return resolvedFrom(body.resolved ?? {});
+  }
+  // A backend that predates the resolved field answers with the whole map, and the
+  // caller has to say which keys to look under. Derived here when it did not: the
+  // panel passes its own richer list (it knows the alias the settings page used),
+  // while the auto-load and compare callers have only these two identities, and
+  // defaulting to none made them read an empty map and launch without the stored
+  // arguments against an older server.
+  const derived =
+    fallbackKeys.length > 0
+      ? fallbackKeys
+      : [
+          modelOverrideKey(loadId, ggufVariant),
+          modelOverrideKey(aliasId, ggufVariant),
+          loadId,
+          aliasId,
+        ].filter((key, index, all) => all.indexOf(key) === index);
+  return resolveStoredExtraArgs(body.overrides ?? {}, derived);
 }
 
 /**
@@ -123,6 +306,13 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;
+  }
+  // The one field where absent does NOT mean "app default": the route preserves
+  // llama_extra_args it is not sent, which is what kept CLI-set flags alive while
+  // this panel had no control for them. So `undefined` (never read) stays omitted,
+  // and a cleared box has to say so with an explicit empty list.
+  if (config.llamaExtraArgs !== undefined) {
+    payload.llama_extra_args = config.llamaExtraArgs ?? [];
   }
   // Only "manual" is a real override; "auto" is the follow-the-global default.
   if (config.gpuMemoryMode === "manual") {
@@ -217,8 +407,9 @@ async function sendModelOverride(
       // Say which operation this is: an all-default save carries no fields, shape-identical
       // to a forget, and guessing wrong wipes flags the UI cannot show or restore.
       remove: config === null && !options?.keepLaunchFlags,
-      // Flags have no UI control, so the backend preserves them when omitted; a forget
-      // means all of it, so that path sends an explicit [].
+      // The backend preserves the flags when omitted, which is what a save that
+      // never opened the box relies on; a forget means all of it, so that path
+      // sends an explicit [].
       ...(config === null && !options?.keepLaunchFlags
         ? // biome-ignore lint/style/useNamingConvention: API schema
           { llama_extra_args: [] }
