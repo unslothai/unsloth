@@ -245,6 +245,9 @@ export function AskApp(): ReactElement {
       if (!sawToken) throw new PillRunError("failed");
       setPhase("done");
     } catch (error) {
+      // A run the user walked away from can land here after a newer one has
+      // already started; only the current run may still drive the shared phase.
+      if (abortRef.current !== abort) return;
       if (abort.signal.aborted) {
         setPhase("done");
       } else if (error instanceof PillRunError) {
