@@ -22,6 +22,7 @@ type RepairParity = {
   bold: boolean;
   boldCandidate: boolean;
   boldFence: boolean;
+  bracketDepth: number;
   doubleUnderscore: boolean;
   emphasisDisplayMath: boolean;
   emphasisInlineCode: boolean;
@@ -46,6 +47,7 @@ const createRepairParity = (): RepairParity => ({
   bold: false,
   boldCandidate: false,
   boldFence: false,
+  bracketDepth: 0,
   doubleUnderscore: false,
   emphasisDisplayMath: false,
   emphasisInlineCode: false,
@@ -288,6 +290,32 @@ function updateUnderscoreParity(
   return index;
 }
 
+// Remend finds the bold marker that orders its closers with a raw
+// indexOf("**") while counting pairs only outside fenced code, so a `**` in a
+// fence still has to seed the bold context without reaching the fence-aware
+// counter in updateAsteriskParity.
+function recordBoldMarker(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): void {
+  if (text[index] === "*" && text[index + 1] === "*") {
+    parity.boldCandidate = true;
+    parity.firstBoldOrSingleUnderscore ??= "bold";
+  }
+}
+
+// Remend completes a dangling link by appending to the end of the whole
+// document, so a retained block still holding an unmatched bracket would move
+// that completion out of the tail. Brackets in code do not count, as in remend.
+function updateBracketDepth(parity: RepairParity, character: string): void {
+  if (character === "[") {
+    parity.bracketDepth += 1;
+  } else if (character === "]" && parity.bracketDepth > 0) {
+    parity.bracketDepth -= 1;
+  }
+}
+
 function updateEmphasisParity(parity: RepairParity, text: string): void {
   for (let index = 0; index < text.length; index += 1) {
     index = updateEmphasisMathParity(parity, text, index);
@@ -296,12 +324,16 @@ function updateEmphasisParity(parity: RepairParity, text: string): void {
       index += 2;
       continue;
     }
+    recordBoldMarker(parity, text, index);
     if (parity.boldFence) {
       continue;
     }
     if (text[index] === "`" && (index === 0 || text[index - 1] !== "\\")) {
       parity.emphasisInlineCode = !parity.emphasisInlineCode;
       continue;
+    }
+    if (!parity.emphasisInlineCode) {
+      updateBracketDepth(parity, text[index]);
     }
     if (text[index] === "*") {
       index = updateAsteriskParity(parity, text, index);
@@ -355,8 +387,12 @@ function updateStrikethroughParity(parity: RepairParity, text: string): void {
   }
 }
 
+// Remend's own display-math scan stops one character early because it only ever
+// reads a whole document, where the last character cannot open a pair. Here the
+// scan runs per retained block, and every block boundary is interior to the
+// document, so the last character has to be counted.
 function updateDisplayMathParity(parity: RepairParity, text: string): void {
-  for (let index = 0; index < text.length - 1; index += 1) {
+  for (let index = 0; index < text.length; index += 1) {
     if (text[index] === "`" && !isTripleBacktick(text, index)) {
       parity.displayMathInlineCode = !parity.displayMathInlineCode;
       continue;
@@ -404,6 +440,7 @@ function updateRepairParity(parity: RepairParity, text: string): void {
 
 const hasNeutralRepairParity = (parity: RepairParity): boolean =>
   ![
+    parity.bracketDepth > 0,
     parity.bold,
     parity.boldFence,
     parity.doubleUnderscore,

@@ -74,6 +74,14 @@ const MARKDOWN_CASES = [
   `\`\`\`text\n$$\n\`\`\`\n\n${paragraphs(12)}$$\nx`,
   `takes 5~10 minutes\n\n${paragraphs(20)}`,
   `- >= 16 GB of RAM\n\n${paragraphs(20)}`,
+  // Remend completes a dangling link, or truncates at a dangling image, using
+  // the end of the whole document.
+  `Pick x in the interval [0, 1) for the ratio.\n\n${paragraphs(14)}done`,
+  `see ![alt text\n\n${paragraphs(12)}later y](`,
+  // A backtick that ends a retained block still closes inline code for remend.
+  `Escape a backtick as \\\`\n\n${paragraphs(10)}$$\nE=mc^2\n$$`,
+  // Remend orders its closers from a raw "**" search, fenced code included.
+  `\`\`\`c\nchar **argv;\n\`\`\`\n\n${paragraphs(12)}set _flag to **on`,
 ];
 
 const processStreamingText = (text: string): string =>
