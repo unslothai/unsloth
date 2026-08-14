@@ -194,16 +194,22 @@ def test_minimax_speech_api_default_is_thirty_seconds(monkeypatch):
         max_tokens = AUDIO_GENERATION_MAX_TOKENS,
     )
 
-    assert routes_module._tts_max_new_tokens(
-        payload,
-        audio_type = "minimax_music3",
-        speech_api_default_max_tokens = True,
-    ) == 750
-    assert routes_module._tts_max_new_tokens(
-        payload,
-        audio_type = "higgs_tts2",
-        speech_api_default_max_tokens = True,
-    ) == AUDIO_GENERATION_MAX_TOKENS
+    assert (
+        routes_module._tts_max_new_tokens(
+            payload,
+            audio_type = "minimax_music3",
+            speech_api_default_max_tokens = True,
+        )
+        == 750
+    )
+    assert (
+        routes_module._tts_max_new_tokens(
+            payload,
+            audio_type = "higgs_tts2",
+            speech_api_default_max_tokens = True,
+        )
+        == AUDIO_GENERATION_MAX_TOKENS
+    )
 
 
 def test_the_budget_leaves_room_for_the_prompt(monkeypatch):

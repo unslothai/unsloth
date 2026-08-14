@@ -88,9 +88,7 @@ def is_native_audio_model(model_name: str) -> bool:
     return _native_audio_type(model_name) is not None
 
 
-def native_audio_security_targets(
-    model_name: str, audio_type: Optional[str] = None
-) -> list[str]:
+def native_audio_security_targets(model_name: str, audio_type: Optional[str] = None) -> list[str]:
     """Repositories whose code or weights are loaded for this audio model."""
     targets = [model_name]
     resolved_type = audio_type or _native_audio_type(model_name)
@@ -266,11 +264,7 @@ class NativeAudioBackend:
         entry.update(model = self._move(model), processor = processor, sample_rate = 24000)
 
     def _load_moss_local(
-        self,
-        entry: dict[str, Any],
-        source: str,
-        hf_token: Optional[str],
-        trust_remote_code: bool,
+        self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
     ) -> None:
         from transformers import AutoModel, AutoProcessor
 
@@ -293,11 +287,7 @@ class NativeAudioBackend:
         entry.update(model = self._move(model), processor = processor, sample_rate = sample_rate)
 
     def _load_moss_nano(
-        self,
-        entry: dict[str, Any],
-        source: str,
-        hf_token: Optional[str],
-        trust_remote_code: bool,
+        self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
     ) -> None:
         from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
@@ -324,11 +314,7 @@ class NativeAudioBackend:
         )
 
     def _load_higgs_tts3(
-        self,
-        entry: dict[str, Any],
-        source: str,
-        hf_token: Optional[str],
-        trust_remote_code: bool,
+        self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
     ) -> None:
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
