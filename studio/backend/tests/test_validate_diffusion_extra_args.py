@@ -103,7 +103,13 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
     parsed and removed before validation sees it, and the switch is approved for a
     load that answers 400."""
 
-    def _validate(self, route, *, extra_args, manual = True):
+    def _validate(
+        self,
+        route,
+        *,
+        extra_args,
+        manual = True,
+    ):
         request = ValidateModelRequest(
             model_path = "someone/gguf",
             llama_extra_args = extra_args,
@@ -333,7 +339,15 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
     is below the slot count, so load_model reduces the slots to it before launching.
     A floor sized from the pre-clamp count refuses a command the launcher would run."""
 
-    def _clamped(self, route, *, is_embedding, extra_args, slots = 4, **kwargs):
+    def _clamped(
+        self,
+        route,
+        *,
+        is_embedding,
+        extra_args,
+        slots = 4,
+        **kwargs,
+    ):
         config = SimpleNamespace(identifier = "someone/embed-gguf", gguf_file = None)
         with patch.object(route, "_is_embedding_gguf", return_value = is_embedding):
             return route._embedding_clamped_slots(
