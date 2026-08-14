@@ -4888,6 +4888,8 @@ def _vkey(c):
         return (1, Version(v))
     except Exception:
         pass
+    # PEP 440 allows a leading v and surrounding whitespace: v2.0 == 2.0
+    v = v.strip().lstrip('vV')
     em = re.match(r'(\d+)!', v)
     _epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
@@ -4934,7 +4936,10 @@ def _vkey(c):
     # PEP 440 local ordering: dot-separated segments, a numeric segment above an
     # alphanumeric one, and more segments wins when the rest is equal. An absent
     # label is the empty list, which sorts below any label (1.0 < 1.0+cpu).
-    _lk = [(1, int(_s), '') if _s.isdigit() else (0, 0, _s) for _s in _local.split('.') if _s]
+    # - and _ are separators inside a label too: +abc-10 == +abc.10, so a raw
+    # string compare would put abc-10 below abc-2
+    _lk = [(1, int(_s), '') if _s.isdigit() else (0, 0, _s)
+           for _s in re.split(r'[-._]', _local) if _s]
     return (0, (nums, rank + _trail, _lk))
 if not cands:
     print('POSTVER=__MISSING__')
@@ -5766,11 +5771,14 @@ if ($_verifyUpdate) {
             $_updateOk = ($Matches[1] -eq "ge")
         } else {
             # the epoch orders above everything in the release: 1!0.1 > 2.0
+            # PEP 440 allows a leading v: v2.0 == 2.0
+            $_postTrim = $PostVer.Trim() -replace '^[vV]', ''
+            $_latestTrim = $LatestVer.Trim() -replace '^[vV]', ''
             $_postEpoch = 0; $_latestEpoch = 0
-            if ($PostVer -match '^(\d+)!') { $_postEpoch = [int]$Matches[1] }
-            if ($LatestVer -match '^(\d+)!') { $_latestEpoch = [int]$Matches[1] }
-            $_postBody = $PostVer -replace '^\d+!', ''
-            $_latestBody = $LatestVer -replace '^\d+!', ''
+            if ($_postTrim -match '^(\d+)!') { $_postEpoch = [int]$Matches[1] }
+            if ($_latestTrim -match '^(\d+)!') { $_latestEpoch = [int]$Matches[1] }
+            $_postBody = $_postTrim -replace '^\d+!', ''
+            $_latestBody = $_latestTrim -replace '^\d+!', ''
             $_postNum = ($_postBody -replace '[^0-9.].*$', '').TrimEnd('.')
             $_latestNum = ($_latestBody -replace '[^0-9.].*$', '').TrimEnd('.')
             # 1.0.0 == 1.0 per PEP 440: strip trailing zero segments, then re-pad to

@@ -1883,6 +1883,8 @@ def _vkey(c):
         return (1, Version(v))
     except Exception:
         pass
+    # PEP 440 allows a leading v and surrounding whitespace: v2.0 == 2.0
+    v = v.strip().lstrip('vV')
     em = re.match(r'(\d+)!', v)
     _epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
@@ -1929,7 +1931,10 @@ def _vkey(c):
     # PEP 440 local ordering: dot-separated segments, a numeric segment above an
     # alphanumeric one, and more segments wins when the rest is equal. An absent
     # label is the empty list, which sorts below any label (1.0 < 1.0+cpu).
-    _lk = [(1, int(_s), '') if _s.isdigit() else (0, 0, _s) for _s in _local.split('.') if _s]
+    # - and _ are separators inside a label too: +abc-10 == +abc.10, so a raw
+    # string compare would put abc-10 below abc-2
+    _lk = [(1, int(_s), '') if _s.isdigit() else (0, 0, _s)
+           for _s in re.split(r'[-._]', _local) if _s]
     return (0, (nums, rank + _trail, _lk))
 if not cands:
     print('POSTVER=__MISSING__')
@@ -2219,6 +2224,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
         elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && "$VENV_DIR/bin/python" -I -c "
 import re, sys
 def split(v):
+    v = v.strip().lstrip('vV')
     em = re.match(r'(\d+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
