@@ -336,7 +336,9 @@ def test_llama_pidfile_reaper_refuses_init(tmp_path, monkeypatch, recorded_signa
 
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text("1:963", encoding = "utf-8")
-    monkeypatch.setattr(lc.LlamaCppBackend, "_server_pidfile_path", classmethod(lambda cls: pidfile))
+    monkeypatch.setattr(
+        lc.LlamaCppBackend, "_server_pidfile_path", classmethod(lambda cls: pidfile)
+    )
     monkeypatch.setattr(lc.LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False))
     monkeypatch.setattr(lc.LlamaCppBackend, "_pid_start_identity", staticmethod(lambda pid: "963"))
     monkeypatch.setattr(lc.LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True))
