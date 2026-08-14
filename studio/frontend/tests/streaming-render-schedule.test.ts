@@ -95,6 +95,8 @@ const MARKDOWN_CASES = [
   `a \`\`\` b\n\nc \\\`\`\` d${SHORT_GAP}- >= 4 GB`,
   `[x]: https://e.test\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
+  // A label may contain an escaped bracket, and Marked registers it.
+  `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
   // underscore, one first seen inside inline code, and an underscore that
   // precedes the first bold marker.
