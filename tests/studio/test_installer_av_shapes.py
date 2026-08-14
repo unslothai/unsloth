@@ -103,11 +103,6 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
         "b64encode",
     ):
         assert banned not in text, f"{name} contains {banned}"
-    # Whitespace-aware: `base64  -d`, a tab, or a combined flag cluster (-di) still
-    # decode, so the decoder ban cannot be a fixed substring. Text is lowercased
-    # above, which also folds macOS's -D into this.
-    decoder = re.search(r"base64\s+-(d\w*|-decode)\b", text)
-    assert not decoder, f"{name} invokes a base64 decoder: {decoder.group(0)!r}"
     # PowerShell accepts unambiguous prefixes of -EncodedCommand (-e, -enc, ...) and
     # the backend's command screen in studio/backend/core/inference/tools.py treats
     # them as equivalent, so this guard must too. Only powershell/pwsh invocation
@@ -118,6 +113,13 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
     # obfuscation than that.
     logical = re.sub(r"`\r?\n", " ", text)
     logical = re.sub(r"\\\r?\n", " ", logical)
+    # The decoder ban scans the whole argument tail after `base64`, not just the
+    # next token: `base64 -w 0 -d` and `--ignore-garbage --decode` still decode.
+    # Lowercased text also folds macOS's -D in. A combined cluster (-di) counts.
+    for number, line in enumerate(logical.splitlines(), start = 1):
+        for b64 in re.finditer(r"\bbase64\b", line):
+            hit = re.search(r"(?<![\w-])-(d\w*|-decode)\b", line[b64.end():])
+            assert not hit, f"{name}:{number} invokes a base64 decoder: {line.strip()}"
     for number, line in enumerate(logical.splitlines(), start = 1):
         if "powershell" not in line and "pwsh" not in line:
             continue

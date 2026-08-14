@@ -1970,6 +1970,31 @@ if not rows and not damaged and tops:
     damaged = not all(importlib.util.find_spec(t) for t in tops if t)
 print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 "
+# Bounded like the PowerShell probe runner: the probe stats every recorded file,
+# and a stalled NFS/FUSE mount can wedge stat() in uninterruptible sleep -- a
+# synchronous substitution would hang the update forever. On timeout the child is
+# abandoned, not waited on (a D-state process ignores even KILL until the syscall
+# returns), and the empty answer flows into the already-supported inconclusive
+# outcome. The sentinel line is extracted here so a printing site hook cannot
+# pollute the caller's exact compares.
+_bounded_pkg_probe() {
+    _bpp_out=$(mktemp) || return 0
+    ( "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" > "$_bpp_out" 2>/dev/null || true ) > /dev/null 2>&1 &
+    _bpp_pid=$!
+    _bpp_i=0
+    while kill -0 "$_bpp_pid" 2>/dev/null; do
+        if [ "$_bpp_i" -ge 300 ]; then
+            kill "$_bpp_pid" 2>/dev/null || true
+            rm -f "$_bpp_out"
+            return 0
+        fi
+        sleep 0.1
+        _bpp_i=$((_bpp_i + 1))
+    done
+    wait "$_bpp_pid" 2>/dev/null || true
+    sed -n 's/^POSTVER=//p' "$_bpp_out" | tail -n 1
+    rm -f "$_bpp_out"
+}
 # Never inherited from the caller's environment: the post-update check below keys on
 # these, and the block that assigns them is skipped in installer-driven/local/Colab
 # runs (mirrors $LatestVer = "" in setup.ps1).
@@ -2123,7 +2148,7 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # the managed one only. A crashed or silent probe says nothing about the venv
         # and leaves the fast path alone.
         if [ "$_SKIP_PYTHON_DEPS" = true ]; then
-            _FAST_VER=$({ "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" 2>/dev/null || true; } | sed -n 's/^POSTVER=//p' | tail -n 1)
+            _FAST_VER=$(_bounded_pkg_probe)
             if [ "$_FAST_VER" = "__MISSING__" ]; then
                 substep "managed $_PKG_NAME is not installed -- forcing dependency pass to repair..."
                 _SKIP_PYTHON_DEPS=false
@@ -2152,11 +2177,10 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
     if [ "$_VERIFY_UPDATE" = true ]; then
         # See _PKG_PROBE_PY for what counts as missing: a probe that merely crashed
-        # must not read as "not installed" and fail setup. -I so an inherited
-        # PYTHONPATH cannot satisfy the probe with same-name metadata from outside
-        # the managed venv; sed extracts the sentinel line so a printing site hook
-        # cannot pollute the exact compares below.
-        POST_VER=$({ "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" 2>/dev/null || true; } | sed -n 's/^POSTVER=//p' | tail -n 1)
+        # or timed out must not read as "not installed" and fail setup. -I so an
+        # inherited PYTHONPATH cannot satisfy the probe with same-name metadata
+        # from outside the managed venv.
+        POST_VER=$(_bounded_pkg_probe)
         _UPDATE_OK=false
         if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
             _UPDATE_OK=true
