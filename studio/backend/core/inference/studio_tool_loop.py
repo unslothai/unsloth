@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
 from core.inference.sse_control_frames import sanitize_provider_sse_line
@@ -116,17 +117,45 @@ _USAGE_DETAIL_FIELDS = (
 
 _STEP_DONE = object()
 
-# Mirrors the local execution cap. Hosted code execution can return very large
-# stdout, and the local path already refuses to put more than this in front of
-# the model, so the replayed copy is held to the same limit rather than being
-# allowed to fill the next request's context.
-_HOSTED_RESULT_MAX_CHARS = 16000
 
+def _truncate_for_model(text: str, limit: int | None = None) -> str:
+    """Hold a hosted result to the same cap a local result gets.
 
-def _truncate_for_model(text: str, limit: int = _HOSTED_RESULT_MAX_CHARS) -> str:
+    Read off ``tools`` rather than copied, so an install that lowers
+    ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` to protect a smaller context gets the
+    lower cap here too: a hosted code execution can return very large stdout,
+    and one verbose call must not be able to fill the next request either way.
+    """
+    if limit is None:
+        limit = tools_module._MAX_OUTPUT_CHARS
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n... [truncated, {len(text) - limit} more characters]"
+
+
+# Keys the providers hang off a hosted tool's ``arguments`` for the frontend and
+# for native-history replay, never for the model. Gemini stows the whole
+# ``executableCode`` part plus an opaque ``thoughtSignature`` under ``google``,
+# and OpenAI stows the paired reasoning item, which on a zero-data-retention org
+# carries a multi-kilobyte ``encrypted_content``. Rendered as prose those fill
+# the header with base64 cut off mid-token and say nothing the model can read.
+_HOSTED_ARGUMENT_PLUMBING_KEYS = frozenset({"google", "_server_tool"})
+
+
+def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
+    """The part of a hosted tool's arguments worth showing the model."""
+    if not isinstance(arguments, dict):
+        return {}
+    return {
+        key: value
+        for key, value in arguments.items()
+        if key not in _HOSTED_ARGUMENT_PLUMBING_KEYS
+        and not key.startswith("openai_")
+        # A placeholder: OpenAI opens an image_generation_call with an empty
+        # prompt and only names it on the end event, so keeping the empty one
+        # would block the real prompt from merging in.
+        and value not in ("", None, {}, [])
+    }
 
 
 # Consecutive turns that asked for a tool but ran none before the loop gives up.
@@ -291,7 +320,7 @@ class _Turn:
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran during this turn, keyed by call id so a
     # repeated end event cannot record the same result twice.
-    hosted_results: dict[str, dict[str, str]] = field(default_factory = dict)
+    hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
 
     def note_hosted_tool_event(self, event: Any) -> None:
         """Record a provider-side tool call carried on ``_toolEvent``.
@@ -314,25 +343,26 @@ class _Turn:
         if not isinstance(call_id, str) or not call_id:
             return
         kind = event.get("type")
-
-        if kind == "tool_start":
-            name = event.get("tool_name")
-            entry = self.hosted_results.setdefault(call_id, {})
-            if isinstance(name, str) and name:
-                entry["name"] = name
-            arguments = event.get("arguments")
-            if isinstance(arguments, dict) and arguments:
-                # The operation itself: Gemini puts the executed language and
-                # code here, and a search puts its query.
-                entry["arguments"] = json.dumps(arguments, separators = (",", ":"))[:2000]
+        if kind not in ("tool_start", "tool_end"):
             return
 
-        if kind != "tool_end":
-            return
         entry = self.hosted_results.setdefault(call_id, {})
         name = event.get("tool_name")
         if isinstance(name, str) and name:
             entry["name"] = name
+        # The operation itself: Gemini puts the executed language and code here,
+        # and a search puts its query. Merged across both halves rather than
+        # taken from the start alone, because OpenAI opens an image generation
+        # before it knows the prompt and only names it on the end event.
+        arguments = _hosted_arguments_for_model(event.get("arguments"))
+        if arguments:
+            merged = dict(entry.get("arguments_obj") or {})
+            merged.update(arguments)
+            entry["arguments_obj"] = merged
+            entry["arguments"] = json.dumps(merged, separators = (",", ":"))[:2000]
+
+        if kind == "tool_start":
+            return
         result = event.get("result")
         if isinstance(result, str) and result.strip():
             if "__IMAGES__:" in result:
@@ -342,12 +372,12 @@ class _Turn:
                 entry["produced_image"] = True
             # Same normalisation local results get: __IMAGES__ and friends are
             # frontend sentinels carrying a full data URI, and replaying one
-            # sends megabytes of base64 the model cannot read anyway.
-            stripped = strip_result_for_model(result)
+            # sends megabytes of base64 the model cannot read anyway. With the
+            # tool's own name, as the local path passes it: only the sandbox
+            # tools emit the __FILES__ envelope, so a fetched page that happens
+            # to end in a well formed one keeps that line as the content it is.
+            stripped = strip_result_for_model(result, entry.get("name"))
             if stripped.strip():
-                # Capped like a local result. Hosted code execution can return
-                # very large stdout, and the local path already refuses to put
-                # more than this in front of the model.
                 entry["result"] = _truncate_for_model(stripped)
         if event.get("image_b64"):
             # image_generation reports an empty result and carries the picture
@@ -933,6 +963,11 @@ async def stream_with_studio_tools(
                                 else stalled_hosted
                             ),
                         },
+                        # A resumed partial is the same turn as what the model
+                        # just added, so this merges into it. Appending would
+                        # split one sentence across two assistant messages and
+                        # put a turn boundary in the middle of it.
+                        continue_final_message = run.continue_final_message,
                     )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
                 continue

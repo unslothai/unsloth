@@ -575,3 +575,272 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
     _run(transport)
     assert len(transport.requests) > 1, "the stall reprompt never happened"
     assert "https://unsloth.ai" in json.dumps(transport.requests[1]["messages"])
+
+
+def test_a_stalled_continuation_stays_one_assistant_turn(executed):
+    """The stalled turn's replay must merge into a resumed partial.
+
+    On a continuation the conversation ends with the assistant text being
+    resumed, and that partial plus what the model just added are one turn.
+    Appending instead leaves two assistant messages in a row, which puts a turn
+    boundary in the middle of one sentence and is rejected outright by a server
+    that enforces role alternation.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "tool_name": "web_search",
+                        "result": "Title: Unsloth\nURL: https://unsloth.ai",
+                    }
+                ),
+                _text(" Let me check that."),
+                _finish("stop"),
+            ],
+            [_text("done"), _finish("stop")],
+            [_DONE],
+        ]
+    )
+
+    async def _collect():
+        agen = stream_with_studio_tools(
+            transport,
+            run = ToolLoopRun(
+                messages = [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "The answer is"},
+                ],
+                session_id = "s1",
+                thread_id = "t1",
+                continue_final_message = True,
+            ),
+            policy = ToolLoopPolicy(
+                tools = [WEB],
+                max_calls = 25,
+                timeout = 300,
+                permission_mode = "off",
+                confirm_calls = False,
+                bypass_permissions = False,
+                rag_scope = None,
+            ),
+            cancel_event = threading.Event(),
+        )
+        async for _ in agen:
+            pass
+
+    asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
+
+    messages = transport.requests[1]["messages"]
+    roles = [m["role"] for m in messages]
+    assert not any(
+        roles[i] == "assistant" and roles[i + 1] == "assistant" for i in range(len(roles) - 1)
+    ), f"the resumed partial was split off its own turn: {roles}"
+    resumed = [m for m in messages if m["role"] == "assistant"]
+    assert len(resumed) == 1
+    assert resumed[0]["content"].startswith("The answer is Let me check that.")
+    assert "https://unsloth.ai" in resumed[0]["content"]
+
+
+# ── the label is the operation, not the transport's plumbing ─────────
+
+
+def test_gemini_code_execution_replays_the_code_not_its_thought_signature(executed):
+    """Gemini stows the native part on the same `arguments` the header renders.
+
+    ``arguments.google.native_part`` exists so a follow-up turn can replay
+    Gemini's required history shape, and it carries the whole ``executableCode``
+    part plus an opaque ``thoughtSignature``. Rendered as prose that is a
+    kilobyte of base64 cut off mid-token, and it pushed the header to the 2000
+    character cap on every hosted execution.
+    """
+    signature = "SIG" + ("X" * 3000)
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "code_execution",
+                        "tool_call_id": "code_a",
+                        "arguments": {
+                            "kind": "code_execution",
+                            "language": "python",
+                            "code": "print(1 + 1)",
+                            "_server_tool": True,
+                            "google": {
+                                "native_part": {
+                                    "parts": [
+                                        {
+                                            "executableCode": {
+                                                "id": "code_a",
+                                                "language": "PYTHON",
+                                                "code": "print(1 + 1)",
+                                            },
+                                            "thoughtSignature": signature,
+                                        }
+                                    ]
+                                }
+                            },
+                        },
+                    }
+                ),
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "code_a",
+                        "result": "2\n",
+                        "google": {"native_part": {"parts": [{"codeExecutionResult": {}}]}},
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "print(1 + 1)" in replayed
+    assert "2" in replayed
+    assert "XXXX" not in replayed, "the thought signature reached the model"
+    assert "native_part" not in replayed
+    assert "_server_tool" not in replayed
+
+
+def test_openai_image_generation_replays_the_prompt_it_actually_used(executed):
+    """The prompt is only on the end event; the start opens with an empty one.
+
+    OpenAI emits ``image_generation_call`` on output_item.added before it knows
+    the prompt, so reading arguments from the start alone replayed
+    ``"prompt": ""`` and the next turn could not tell what had been drawn. The
+    same arguments carry the paired reasoning item, whose ``encrypted_content``
+    is multi-kilobyte on a zero-data-retention org.
+    """
+    plumbing = {
+        "openai_image_generation_call_id": "ig_abc",
+        "openai_response_id": "resp_123",
+        "openai_reasoning_item": {
+            "type": "reasoning",
+            "id": "rs_1",
+            "summary": [],
+            "encrypted_content": "E" * 4000,
+        },
+    }
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "image_generation",
+                        "tool_call_id": "ig_abc",
+                        "arguments": {"kind": "image", "prompt": "", **plumbing},
+                    }
+                ),
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "ig_abc",
+                        "result": "",
+                        "arguments": {
+                            "kind": "image",
+                            "prompt": "A photorealistic ginger cat",
+                            **plumbing,
+                        },
+                        "image_b64": "B" * 5000,
+                        "image_mime": "image/png",
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "A photorealistic ginger cat" in replayed, "the prompt was dropped"
+    assert "produced an image" in replayed
+    assert "EEEE" not in replayed, "the encrypted reasoning reached the model"
+    assert "BBBB" not in replayed
+
+
+# ── the cap and the envelope are the local ones, not copies ──────────
+
+
+def test_the_hosted_cap_follows_the_configured_local_one(executed, monkeypatch):
+    """An install that lowers the local cap lowers the hosted one too.
+
+    ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` exists so a deployment on a smaller
+    context can shrink what a tool result is allowed to occupy. A hosted result
+    held to its own hard-coded 16k would still inject far more than the local
+    path allows on exactly those installs.
+    """
+    monkeypatch.setattr(loop_mod.tools_module, "_MAX_OUTPUT_CHARS", 500)
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "tool_name": "code_execution",
+                        "result": "D" * 4000,
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "truncated" in replayed
+    assert "D" * 600 not in replayed, "the configured cap was ignored"
+
+
+def test_a_hosted_page_keeps_a_files_line_of_its_own(executed):
+    """Only the sandbox tools emit the ``__FILES__`` envelope.
+
+    A fetched page ending in a well formed one is content, and the stripper is
+    told the tool's name so it leaves that line alone -- the same call the local
+    path makes. Stripping it silently drops the tail of the fetched document
+    before the follow-up turn ever sees it.
+    """
+    page = 'How the envelope looks\n__FILES__:[{"name": "plot.png", "size": 12}]'
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "web_fetch",
+                        "tool_call_id": "hosted-1",
+                        "arguments": {"url": "https://unsloth.ai/docs"},
+                    }
+                ),
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "result": page,
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "How the envelope looks" in replayed
+    assert "plot.png" in replayed, "the page's own __FILES__ line was stripped"
