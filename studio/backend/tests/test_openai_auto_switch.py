@@ -7601,9 +7601,7 @@ def test_clearing_the_box_for_a_quant_clears_the_legacy_fallback(override_store)
     cleared = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
     assert "llama_extra_args" not in cleared.overrides.get("unsloth/B-GGUF:Q4_K_M", {})
     assert "llama_extra_args" not in cleared.overrides.get("unsloth/B-GGUF", {})
-    _key, resolved = settings.resolve_override_for_load(
-        "unsloth/B-GGUF", variant = "Q4_K_M"
-    )
+    _key, resolved = settings.resolve_override_for_load("unsloth/B-GGUF", variant = "Q4_K_M")
     assert resolved.get("llama_extra_args") is None
 
 
