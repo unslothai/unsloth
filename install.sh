@@ -200,6 +200,48 @@ _redact_install_output() {
         "$@"
 }
 
+# Large downloads become markers the app consumes and does not display; forwarding uv's
+# own chatter would put dozens of lines in front of the user.
+: "${UNSLOTH_DL_MARKER_MIN_BYTES:=52428800}"
+
+# $1 is the child's output sink: a log file for the quiet path, empty to pass it along
+# stdout for the verbose one. Markers go to stderr to stay clear of the verbose path's
+# redactor -- sed block-buffers, so a marker queued behind it would arrive only once the
+# download it announces had finished.
+_uv_download_markers() {
+    # Minimal images ship without awk, which the uv version probe below also allows for.
+    # This pipe now carries every install command, so a missing awk must cost the markers
+    # and nothing else: without this the pipeline closes and the child dies of SIGPIPE.
+    if ! command -v awk >/dev/null 2>&1; then
+        if [ -n "$1" ]; then cat >> "$1"; else cat; fi
+        return
+    fi
+    awk -v logf="$1" -v minb="$2" -v tauri="${TAURI_MODE:-false}" -v err=/dev/stderr '
+        { if (logf == "") print; else print >> logf }
+        tauri != "true" { next }
+        # Field-relative so a leading status glyph cannot shift the match.
+        /(^| )Downloading [^ ]+ \([0-9.]+[KMG]iB\)$/ {
+            size = $NF
+            gsub(/[()]/, "", size)
+            n = size; sub(/[KMG]iB$/, "", n)
+            u = size; sub(/^[0-9.]+/, "", u)
+            mult = (u == "GiB") ? 1073741824 : (u == "MiB") ? 1048576 : 1024
+            if (n * mult >= minb) {
+                announced[$(NF - 1)] = 1
+                print "[TAURI:DL] " $(NF - 1) " " size > err
+                fflush(err)
+            }
+            next
+        }
+        # Only close what was opened: uv also reports completion for unannounced packages.
+        /(^| )Downloaded [^ ]+$/ && ($NF in announced) {
+            delete announced[$NF]
+            print "[TAURI:DL_DONE] " $NF > err
+            fflush(err)
+        }
+    '
+}
+
 run_install_cmd() {
     _label="$1"
     shift
@@ -225,7 +267,7 @@ run_install_cmd() {
                 _cmd_rc=$?
             fi
             printf '%s' "$_cmd_rc" > "$_rcf"
-        } | _redact_install_output
+        } | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
         _rc=${_rc:-1}
@@ -238,13 +280,25 @@ run_install_cmd() {
         return "$_rc"
     fi
     _log=$(mktemp)
+    _rcf=$(mktemp)
     tauri_stream_log stderr "OUTPUT_CLEAR" "$_label"
-    "$@" >"$_log" 2>&1 && {
+    # rc file because the marker filter is a pipe, and plain sh reports only its last stage.
+    {
+        if "$@" 2>&1; then
+            _cmd_rc=0
+        else
+            _cmd_rc=$?
+        fi
+        printf '%s' "$_cmd_rc" > "$_rcf"
+    } | _uv_download_markers "$_log" "$UNSLOTH_DL_MARKER_MIN_BYTES"
+    _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
+    rm -f "$_rcf"
+    _rc=${_rc:-1}
+    if [ "$_rc" -eq 0 ] 2>/dev/null; then
         rm -f "$_log"
         tauri_clear_install_error "$_label recovered"
         return 0
-    }
-    _rc=$?
+    fi
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
@@ -4898,7 +4952,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
+            "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -4913,7 +4967,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
+            "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -5147,7 +5201,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
+            "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -5166,7 +5220,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
+            --upgrade-package unsloth "unsloth>=2026.8.16" "unsloth-zoo>=2026.8.11"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -5195,7 +5249,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.10" "unsloth>=2026.8.15" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.11" "unsloth>=2026.8.16" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

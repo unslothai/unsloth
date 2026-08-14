@@ -70,7 +70,6 @@ import {
   NativeAttachmentTargetContext,
   NativeModelChip,
   NativeModelDropOverlay,
-  useChooseNativeModel,
   useNativeIntentStore,
   useNativeModelDrop,
   useNativePathLeasesSupported,
@@ -87,6 +86,7 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
+  BookOpen01Icon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
@@ -1076,6 +1076,16 @@ async function exportProjectChatItem(
   for (const id of ids) await exportProjectConversation(id, format);
 }
 
+async function saveProjectChatItemAsSource(
+  item: SidebarItem,
+  projectId: string,
+): Promise<void> {
+  const { saveChatItemAsProjectSource } = await import(
+    "./prompt-storage/prompt-storage-dialog"
+  );
+  await saveChatItemAsProjectSource(item, projectId);
+}
+
 function extractMessageText(content: MessageRecord["content"]): string {
   if (typeof content === "string") {
     return content;
@@ -1314,6 +1324,17 @@ function ProjectLanding({
       }
     },
     [],
+  );
+
+  const handleSaveAsSource = useCallback(
+    async (item: SidebarItem) => {
+      try {
+        await saveProjectChatItemAsSource(item, projectId);
+      } catch {
+        toast.error("Failed to save to project sources.");
+      }
+    },
+    [projectId],
   );
 
   useEffect(() => {
@@ -1694,6 +1715,16 @@ function ProjectLanding({
                               )}
                             </DropdownMenuSubContent>
                           </DropdownMenuSub>
+                          <DropdownMenuItem
+                            onSelect={() => void handleSaveAsSource(item)}
+                          >
+                            <HugeiconsIcon
+                              icon={BookOpen01Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Save to project sources</span>
+                          </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             onSelect={() => void handleArchive(item)}
@@ -1886,6 +1917,7 @@ export function ChatPage({
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
+  const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -2280,7 +2312,10 @@ export function ChatPage({
         ? (storedWebFetchToolsEnabled ?? false)
         : false,
     });
-  }, [externalProvidersForChat, inferenceParams.checkpoint]);
+    // Reruns once settings hydrate: this normalization reads the stored pills
+    // and clamps them to the model, and hydration refreshes what it reads, so
+    // it has to be the one applied last.
+  }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
@@ -2623,26 +2658,6 @@ export function ChatPage({
       ),
     [hasActiveModel, loadNativeModelIntent],
   );
-  const handleNativeModelPickerAutoLoad = useCallback(
-    (intent: NativeIntent) =>
-      loadNativeModelIntent(intent, "Loading chosen local GGUF model."),
-    [loadNativeModelIntent],
-  );
-  const canAutoLoadPickedNativeModel = useCallback(() => {
-    const store = useChatRuntimeStore.getState();
-    return (
-      view.mode === "single" &&
-      nativePathLeasesSupported &&
-      !loadingModel &&
-      !modelLoading &&
-      !store.modelLoading &&
-      !store.params.checkpoint
-    );
-  }, [loadingModel, modelLoading, nativePathLeasesSupported, view.mode]);
-  const chooseNativeModel = useChooseNativeModel({
-    shouldAutoLoad: canAutoLoadPickedNativeModel,
-    onAutoLoad: handleNativeModelPickerAutoLoad,
-  });
   // Dropped documents go to the thread bar, which owns the RAG upload and can
   // materialize a thread id for a chat that hasn't been sent to yet.
   const handleNativeAttachmentDrop = useCallback(
@@ -3398,7 +3413,6 @@ export function ChatPage({
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
-                onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"

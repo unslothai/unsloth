@@ -21,6 +21,26 @@ bounded buffer the client-tool passthrough uses: only a trailing partial-signal
 window or a suspected tool block is ever withheld, and a block that cannot
 become a declared call flushes verbatim. Nothing here invents a cap on how much
 model output may be held.
+
+Origins. This file is assembled out of four contributor PRs rather than written
+from scratch, and the squash merge of #8665 did not carry their authorship, so
+it is recorded here:
+
+* #8626 (khalidejaz) -- the registry capability and the hidden-entry exposure,
+  including the ``provider_runs_local_tools()`` name ``providers.py`` still
+  uses.
+* #8630 (mahiatlinux) -- most of the loop internals below: the user-turn append,
+  the tool-stream advance and drain, usage merging, the approval flush delay,
+  the budget-exhausted nudge, and the streamed tool-name rule that llama-server
+  forced. Also the browser testing against a control worktree that caught a
+  truncated turn discarding a healed call along with the text describing it.
+* #7805 (Etherll) -- the hosted-provider reach.
+* #7330 (Souravrajvi0) -- the original OpenAI-compatible framing.
+
+Two ideas from those PRs were deliberately not taken, which is worth knowing
+before anyone re-derives them: the per-connection opt-in from #8630 and the
+``studio_tool_execution`` column from #7805. #8665 shipped a static disclosure
+instead, while widening the capability from four self-hosted types to thirteen.
 """
 
 from __future__ import annotations
@@ -33,6 +53,7 @@ from dataclasses import dataclass, field
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate
 from core.inference.sse_control_frames import sanitize_provider_sse_line
@@ -47,6 +68,7 @@ from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
     mcp_display_parts,
+    strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
@@ -115,6 +137,67 @@ _USAGE_DETAIL_FIELDS = (
 )
 
 _STEP_DONE = object()
+
+
+def _truncate_for_model(
+    text: str,
+    limit: int | None = None,
+    *,
+    joiner: str = "\n",
+) -> str:
+    """Hold a hosted result to the same cap a local result gets.
+
+    Read off ``tools`` rather than copied, so an install that lowers
+    ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` gets the lower cap here too.
+    """
+    if limit is None:
+        limit = tools_module._MAX_OUTPUT_CHARS
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"
+
+
+# Cap on a call's label. Small next to the result cap: this is the query or the
+# code, not the output.
+_HOSTED_ARGUMENT_MAX_CHARS = 2000
+
+
+# Provider plumbing hung off ``arguments`` for the frontend and native-history
+# replay, never for the model: Gemini's ``executableCode`` part plus an opaque
+# ``thoughtSignature``, OpenAI's paired reasoning item with its multi-kilobyte
+# ``encrypted_content``. As prose they are base64 cut off mid-token.
+_HOSTED_ARGUMENT_PLUMBING_KEYS = frozenset({"google", "_server_tool"})
+
+
+def _carries_image_sentinel(result: str) -> bool:
+    """Whether a hosted result ends in the ``__IMAGES__`` envelope itself.
+
+    Validated rather than matched on sight, the way the local strippers
+    validate theirs: a fetched page that merely writes the marker is prose, and
+    reading it as a picture would report an image the turn never made.
+    """
+    _, sep, payload = result.rpartition("\n__IMAGES__:")
+    if not sep:
+        return False
+    try:
+        images = json.loads(payload)
+    except (ValueError, RecursionError):
+        return False
+    return (
+        isinstance(images, list) and bool(images) and all(isinstance(i, str) and i for i in images)
+    )
+
+
+def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
+    """The part of a hosted tool's arguments worth showing the model."""
+    if not isinstance(arguments, dict):
+        return {}
+    return {
+        key: value
+        for key, value in arguments.items()
+        if key not in _HOSTED_ARGUMENT_PLUMBING_KEYS and not key.startswith("openai_")
+    }
+
 
 # Consecutive turns that asked for a tool but ran none before the loop gives up.
 _MAX_FRUITLESS_TURNS = 2
@@ -276,6 +359,101 @@ class _Turn:
     text: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
+    # Results from tools the PROVIDER ran this turn, keyed by call id so a
+    # repeated end event cannot record the same result twice.
+    hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
+
+    def note_hosted_tool_event(self, event: Any) -> None:
+        """Record a provider-side tool call carried on ``_toolEvent``.
+
+        These reach the client as their own frames but are not part of the
+        assistant message this loop replays, so the follow-up request would lose
+        whatever the provider just produced. Studio's own events carry a
+        top-level ``type``, so ``_toolEvent`` is unambiguously the provider's.
+
+        Both halves matter: ``tool_end`` generally omits ``tool_name``, and for
+        Gemini code execution the code that ran is only in the ``tool_start``
+        arguments, so a result recorded alone is unlabelled.
+        """
+        if not isinstance(event, dict):
+            return
+        call_id = event.get("tool_call_id")
+        if not isinstance(call_id, str) or not call_id:
+            return
+        kind = event.get("type")
+        if kind not in ("tool_start", "tool_end"):
+            return
+
+        entry = self.hosted_results.setdefault(call_id, {})
+        name = event.get("tool_name")
+        if isinstance(name, str) and name:
+            entry["name"] = name
+        # The operation itself: Gemini's language and code, a search's query.
+        # Merged across both halves because OpenAI opens an image generation
+        # before it knows the prompt and only names it on the end event.
+        arguments = _hosted_arguments_for_model(event.get("arguments"))
+        if arguments:
+            merged = dict(entry.get("arguments_obj") or {})
+            merged.update(arguments)
+            entry["arguments_obj"] = merged
+            # Truncated with the same notice a result gets: Anthropic hands the
+            # model's whole tool input through, so a file the code wrote lives
+            # here and nowhere else, and a silent cut reads as the whole thing.
+            entry["arguments"] = _truncate_for_model(
+                json.dumps(merged, separators = (",", ":")),
+                _HOSTED_ARGUMENT_MAX_CHARS,
+                joiner = " ",
+            )
+
+        if kind == "tool_start":
+            return
+        result = event.get("result")
+        if isinstance(result, str):
+            # The call finished, even if it produced nothing: Gemini reports
+            # code that printed nothing as an empty string. Recorded apart from
+            # the result so that stays distinguishable from a stream that died
+            # after the start. A non-string is a malformed frame, not an outcome.
+            entry["ended"] = True
+        if isinstance(result, str) and result.strip():
+            if _carries_image_sentinel(result):
+                # A Gemini plot with no stdout is nothing BUT the sentinel, so
+                # stripping leaves an empty string and the entry looks empty.
+                entry["produced_image"] = True
+            # Same normalisation local results get: the frontend sentinels carry
+            # a full data URI, and replaying one sends megabytes of base64. The
+            # tool's name goes with it, as the local path passes it: only the
+            # sandbox tools emit __FILES__, so a fetched page ending in a well
+            # formed one keeps that line as the content it is.
+            stripped = strip_result_for_model(result, entry.get("name"))
+            if stripped.strip():
+                entry["result"] = _truncate_for_model(stripped)
+        if event.get("image_b64"):
+            # image_generation reports an empty result and carries the picture
+            # apart. Record that it happened rather than the bytes.
+            entry["produced_image"] = True
+
+    def hosted_replay_text(self) -> str:
+        """The provider-run calls of this turn, as prose for the next request."""
+        blocks: list[str] = []
+        for entry in self.hosted_results.values():
+            result = entry.get("result", "")
+            produced_image = entry.get("produced_image")
+            if not result and not produced_image and not entry.get("ended"):
+                # A start with no outcome says only that something began.
+                continue
+            name = entry.get("name") or "tool"
+            header = f"[{name} result]"
+            arguments = entry.get("arguments")
+            if arguments:
+                header = f"[{name} {arguments}]"
+            # A call that ended with nothing to show still has to appear, as the
+            # same "(no output)" local tools report, so the model can tell the
+            # code ran from it never having run at all.
+            body = result or ("(produced an image)" if produced_image else "(no output)")
+            if result and produced_image:
+                body = f"{result}\n(produced an image)"
+            blocks.append(f"{header}\n{body}")
+        return "\n\n".join(blocks)
 
     def merge_structured(self, raw_calls: list[Any]) -> None:
         for raw_call in raw_calls:
@@ -689,6 +867,7 @@ async def stream_with_studio_tools(
                 extra = delta.get("extra_content")
                 if isinstance(extra, dict):
                     turn.reasoning_extra = extra
+                turn.note_hosted_tool_event(payload.get("_toolEvent"))
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
 
@@ -827,6 +1006,33 @@ async def stream_with_studio_tools(
             ):
                 reprompts += 1
                 last_reprompt_text = visible_answer
+                stalled_hosted = turn.hosted_replay_text()
+                if stalled_hosted:
+                    # A hosted tool did run, the model just did not go on to ask
+                    # for a local one. The replay below never happens on this
+                    # path, so the reprompted request would be told to continue
+                    # from output it can no longer see.
+                    stalled_message: dict[str, Any] = {
+                        "role": "assistant",
+                        "content": (
+                            f"{visible_answer}\n\n{stalled_hosted}"
+                            if visible_answer
+                            else stalled_hosted
+                        ),
+                    }
+                    if turn.reasoning_extra:
+                        # Gemini 3 stows the text part's thoughtSignature here
+                        # and its translator pins it back on from this field
+                        # alone, so a turn replayed without it is rejected.
+                        stalled_message["extra_content"] = turn.reasoning_extra
+                    append_assistant_turn(
+                        conversation,
+                        stalled_message,
+                        # A resumed partial is the same turn as what the model
+                        # just added, so merge rather than append: appending
+                        # puts a turn boundary mid-sentence.
+                        continue_final_message = run.continue_final_message,
+                    )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
                 continue
             break
@@ -1082,6 +1288,19 @@ async def stream_with_studio_tools(
                 "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
             ),
         }
+        hosted_text = turn.hosted_replay_text()
+        if hosted_text:
+            # A tool the provider ran itself this turn. Its output went to the
+            # client as its own frame but is not otherwise part of this message,
+            # so the follow-up would answer from the local results alone.
+            # Replayed as text, not native items: the shape differs per provider
+            # (Gemini codeExecutionResult, an OpenAI image call), while every
+            # provider can read its own prior turn's prose.
+            assistant_message["content"] = (
+                f"{assistant_message['content']}\n\n{hosted_text}"
+                if assistant_message["content"]
+                else hosted_text
+            )
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:

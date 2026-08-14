@@ -17,7 +17,6 @@ export const ptBR = {
     searchAriaLabel: "Buscar {noun}",
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
-    pickModelFile: "Escolher um arquivo de modelo no disco",
     modelDropped: "Não é mais oferecido",
     modelDroppedByProvider: "{provider} · não é mais oferecido",
     modelDisabled: "Não ativado",
@@ -158,6 +157,31 @@ export const ptBR = {
       voice: "Voz",
       data: "Dados",
       agents: "Agentes",
+      debugging: "Registros",
+    },
+    debugging: {
+      logSection: "Arquivo de log",
+      source: "Arquivo de log",
+      sourceHint: "Os executores de modelos gravam os próprios logs, então uma falha ao carregar ou ao gerar costuma ser explicada ali, e não no log do servidor.",
+      path: "Local",
+      pathCopy: "Copiar caminho",
+      refreshSection: "Atualização",
+      mode: "Modo",
+      modeLive: "Ao vivo",
+      modeInterval: "A cada 3 segundos",
+      modeManual: "Manual",
+      refreshNow: "Atualizar agora",
+      privacyNote: "As credenciais são mascaradas nesta visualização. No arquivo em disco elas não são mascaradas.",
+      copyVisible: "Copiar log visível",
+      empty: "Nada foi registrado ainda.",
+      disabled: "O log em arquivo está desativado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Nenhum arquivo de log foi encontrado.",
+      unreadable: "Não foi possível ler o arquivo de log.",
+      timeout: "A solicitacao do registro expirou. O servidor pode estar inacessivel.",
+      droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
+      morePending: "Mais linhas ainda estao sendo lidas; elas chegam na proxima atualizacao.",
+      staleSession: "O registro em arquivo esta desativado, portanto esta e uma sessao anterior e nao sera atualizada.",
+      keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {
       title: "Voz",
@@ -375,6 +399,14 @@ export const ptBR = {
           "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
         idleSecondsAriaLabel:
           "Segundos até o descarregamento automático por inatividade",
+        mediaIdleUnload:
+          "Descarregamento automático por inatividade de imagem e vídeo",
+        mediaIdleUnloadDescription:
+          "Libera a VRAM descarregando os modelos de imagem e vídeo após esta quantidade de segundos de inatividade. É uma configuração própria: a de cima cobre apenas o modelo de chat. 0 os mantém carregados; o mínimo é 60.",
+        mediaIdleSecondsAriaLabel:
+          "Segundos até o descarregamento automático por inatividade de imagem e vídeo",
+        mediaIdlePaused:
+          "Pausado enquanto Manter o modelo na memória da GPU ou Descarregar apenas modelos carregados pela API estiver ativado.",
         idleNeedsEnable: "Primeiro, ative Trocar de modelo por requisição.",
         idleActiveViaEnv: "Ativo por meio de UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",
@@ -1312,6 +1344,12 @@ export const ptBR = {
         "Este dataset ainda não está no dispositivo. Ele será baixado automaticamente quando o treinamento começar.",
       noticeDatasetPartial:
         "O download incompleto do dataset será concluído antes da leitura.",
+      noticeTransformersUpgrade:
+        "Nenhuma versão instalada do transformers suporta esta arquitetura ainda. Ao iniciar a execução, será oferecida a instalação do transformers {version} antes.",
+      noticeSixteenBitOnly:
+        "Esta arquitetura treina em LoRA de 16 bits: 4 bits não está disponível, então a execução precisa de muito mais VRAM que QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Instalar essa versão em vez de manter o código do próprio modelo muda esta execução para LoRA de 16 bits, que precisa de muito mais VRAM que QLoRA.",
       advancedSettings: "Configurações avançadas",
       defaultAdvancedSettings: "Padrões",
       nonDefaultAdvancedSettings: "{count} fora do padrão",

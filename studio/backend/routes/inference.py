@@ -2206,6 +2206,8 @@ from models.inference import (
     ValidateModelRequest,
     ValidateModelResponse,
     TransformersUpgradeInfo,
+    TransformersUpgradeCheckRequest,
+    TransformersUpgradeCheckResponse,
     InstallLatestTransformersRequest,
     InstallLatestTransformersResponse,
     TextContentPart,
@@ -2367,6 +2369,7 @@ from core.inference.providers import (
     get_base_url,
     get_provider_info,
     hosted_only_tools,
+    LOCAL_STANDINS_FOR_HOSTED_TOOLS,
     provider_hosted_tools,
     provider_model_runs_local_tools,
     provider_runs_local_tools,
@@ -2817,7 +2820,21 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # local implementation of those names either, so reading such a request as
     # "local" would drop them just the same, only after also replacing the
     # provider's search with ours.
-    return all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled)
+    if not all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled):
+        return False
+    # run_tools_locally only decides the ambiguous names, the ones Studio can
+    # also run itself. A selection with no SELECTED local stand-in stays hosted
+    # whatever the flag says: honouring it would enter the loop, find an empty
+    # catalog, fall back to the same passthrough, and skip the confirmation
+    # rejection on the way.
+    if getattr(payload, "run_tools_locally", None) is True:
+        # Intersected with the selection, as hosted_only_tools does: code_execution
+        # maps to python/terminal, but naming it alone selects neither.
+        selected = {name for name in enabled if isinstance(name, str)}
+        return not any(
+            LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name, frozenset()) & selected for name in selected
+        )
+    return True
 
 
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
@@ -3559,6 +3576,14 @@ def _monitor_usage(
         sink = _monitor_perf_sink.get()
         if sink is not None:
             sink["timings"] = timings
+            outer_monitor_id = sink.get("monitor_id")
+            if outer_monitor_id:
+                _monitor_usage(
+                    outer_monitor_id,
+                    None,
+                    sink.get("context_length"),
+                    timings = timings,
+                )
     # isinstance, not truthiness: a non-dict usage would raise on .get() into the
     # streaming generator and abort the user's response.
     if isinstance(usage, dict) and usage:
@@ -3569,14 +3594,16 @@ def _monitor_usage(
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
         )
-    tok_per_sec = prompt_ms = decode_ms = None
+    tok_per_sec = prompt_tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):
         tok_per_sec = timings.get("predicted_per_second")
+        prompt_tok_per_sec = timings.get("prompt_per_second")
         prompt_ms = timings.get("prompt_ms")
         # The span the tile rates on: total tokens over total time, not a mean of per-request rates.
         decode_ms = timings.get("predicted_ms")
     if (
         tok_per_sec is not None
+        or prompt_tok_per_sec is not None
         or prompt_ms is not None
         or decode_ms is not None
         or stop_reason is not None
@@ -3584,10 +3611,27 @@ def _monitor_usage(
         api_monitor.set_perf(
             monitor_id,
             tok_per_sec = tok_per_sec,
+            prompt_tok_per_sec = prompt_tok_per_sec,
             prompt_ms = prompt_ms,
             decode_ms = decode_ms,
             stop_reason = stop_reason,
         )
+
+
+def _monitor_perf_callback(monitor_id: Optional[str], context_length):
+    """Build a timing sink only when a monitor row or wrapper sink can consume it."""
+    if not monitor_id and _monitor_perf_sink.get() is None:
+        return None
+
+    def _callback(timings: dict) -> None:
+        _monitor_usage(
+            monitor_id,
+            None,
+            context_length,
+            timings = timings,
+        )
+
+    return _callback
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
@@ -4786,18 +4830,31 @@ def _switch_model_for_payload(payload) -> str:
     return payload.model if "model" in payload.model_fields_set else _RELOAD_ONLY_MODEL
 
 
-def _target_is_vision(load_path: str) -> bool:
+def _target_is_vision(
+    load_path: str,
+    gguf_variant: Optional[str] = None,
+    need_image: bool = True,
+) -> bool:
     # A local GGUF's vision capability is its companion mmproj, a filesystem check
     # (no model load). Matches the loaded backend's is_vision, so rejecting a swap
-    # here can't differ from the post-load guard. Thread the ambient HF token so the
-    # probe keeps the capability-probe invariant (the resolver only yields local
-    # paths, where the token is unused, but the rule requires it regardless).
+    # here can't differ from the post-load guard, hence the quant. An audio request
+    # needs that projector too but not a vision tower, so it asks with need_image
+    # False. Thread the ambient HF token so the probe keeps the capability-probe
+    # invariant (the resolver only yields local paths, where the token is unused,
+    # but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
         # Deliberately unguarded: the resolver only yields local paths, so this returns
         # from the mmproj filesystem branch without touching the hub. A reachability
         # probe here would add seconds per request and prevent nothing.
-        return bool(is_vision_model(load_path, hf_token = os.environ.get("HF_TOKEN")))
+        return bool(
+            is_vision_model(
+                load_path,
+                hf_token = os.environ.get("HF_TOKEN"),
+                gguf_variant = gguf_variant,
+                require_image = need_image,
+            )
+        )
     except Exception as exc:
         # Detection failure: don't block the swap, let the load decide.
         logger.debug("auto-switch: vision probe failed for %s: %s", load_path, exc)
@@ -5432,6 +5489,7 @@ async def _maybe_auto_switch_model(
     current_subject: str,
     *,
     require_vision: bool = False,
+    require_image: bool = True,
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
@@ -5440,7 +5498,9 @@ async def _maybe_auto_switch_model(
     compat); a miss only reaches the network when auto-download is also on, and
     even then only for ``namespace/name`` ids. ``require_vision`` rejects a swap
     to a text-only target before it runs, so an image request can't evict the
-    resident vision model only to 400 afterwards.
+    resident vision model only to 400 afterwards; ``require_image`` is what makes
+    that rejection modality-aware, since an audio request needs the projector but
+    not a vision tower.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -5593,7 +5653,7 @@ async def _maybe_auto_switch_model(
         if (
             require_vision
             and resolved is not None
-            and not await asyncio.to_thread(_target_is_vision, target_id)
+            and not await asyncio.to_thread(_target_is_vision, target_id, variant, require_image)
         ):
             raise HTTPException(
                 status_code = 400,
@@ -9069,6 +9129,208 @@ async def validate_model(
         )
 
 
+def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> str:
+    """The config.json this load will actually read, by the remote-code scan's precedence.
+
+    ``routes/models.py::scan_model_remote_code`` picks its target as: a local identifier
+    stands for itself (resolved); else an exact ``model_snapshot_path`` pin wins; else
+    ``prefer_local_cache`` resolves the selected cache directory to a snapshot; else the
+    repository identifier. ``resolve_training_model_load_target`` agrees, returning
+    ``model_snapshot_path or model_name``, so this check reads the same directory: a
+    repo's current config.json says nothing about the pinned snapshot the run loads.
+
+    The identifier stays the response's ``model_name``, for display; every read, the
+    LoRA base resolve included, goes through this target, as the scan route does.
+
+    Falls back to the identifier on any resolution failure: this route never raises.
+    """
+    from utils.paths import is_local_path, normalize_path
+
+    model_name = request.model_name
+    try:
+        if is_local_path(model_name):
+            normalized = normalize_path(model_name)
+            try:
+                return str(Path(normalized).expanduser().resolve(strict = False))
+            except (OSError, RuntimeError, ValueError):
+                return normalized
+        snapshot_path = (request.model_snapshot_path or "").strip()
+        if snapshot_path:
+            from routes.models import _model_config_inspection_target
+            return _model_config_inspection_target(
+                (request.model_snapshot_repo_id or "").strip() or model_name,
+                True,
+                normalize_path(snapshot_path),
+            )
+        local_path = (request.model_local_path or "").strip()
+        if request.prefer_local_cache:
+            # No path is a legitimate cached selection (an inventory row can carry a null
+            # cachePath) and _resolve_model_snapshot then searches every cache root, as
+            # the scan route and /train/start both do. Taking the pin only when a path
+            # came along would judge those selections on the repo's current architecture
+            # while the worker loads the snapshot.
+            from core.training.training import _resolve_model_snapshot
+            return (
+                _resolve_model_snapshot(
+                    model_name, normalize_path(local_path) if local_path else None
+                )
+                or model_name
+            )
+    except Exception as exc:
+        logger.debug("Cache pin resolution failed for '%s': %s", model_name, exc)
+    return model_name
+
+
+def _install_breaks_exact_resume(run_id: str) -> bool:
+    """Would installing the offered release strand the checkpoint of ``run_id``?
+
+    The latest sidecar is a persistent overlay, and a 4-bit run with attested exact
+    resource provenance only resumes in the load mode it was attested with:
+    ``effective_training_load_in_4bit`` raises the moment the sidecar routes it. So an
+    install consented to on the way into a resume is not undoable.
+
+    Answers False for an unknown run: a resume that cannot find its own row is not one
+    this route should be suppressing an install for.
+    """
+    from core.training.provenance import exact_resume_requires_current_4bit
+    from core.training.resume import training_run_config
+    from storage.studio_db import get_run
+
+    try:
+        run = get_run(run_id)
+        if run is None:
+            return False
+        return exact_resume_requires_current_4bit(training_run_config(run))
+    except Exception as exc:
+        logger.debug("Exact-resume check failed for run '%s': %s", run_id, exc)
+        return False
+
+
+# studio_router only: a Studio preflight, kept off the OpenAI-compatible /v1 mount.
+@studio_router.post("/transformers-upgrade-check", response_model = TransformersUpgradeCheckResponse)
+async def check_transformers_upgrade_route(
+    request: TransformersUpgradeCheckRequest, current_subject: str = Depends(get_current_subject)
+):
+    """
+    Does loading this model need a newer transformers than any installed overlay?
+
+    /validate answers this for a chat load, but only as one field of a check that also
+    resolves a ModelConfig, picks a GPU placement and runs the coexistence guard, none of
+    which apply to a training start and several of which refuse while a run is active. So
+    training asks on its own here, before spawning a worker that would otherwise die at
+    model load with an unrecognized-architecture error the user cannot act on.
+
+    Answers the same way /validate does: check_upgrade_for_model across [adapter, base],
+    inside the same forced-offline window, on a worker thread. Also reports whether the
+    run would load 16-bit instead of bnb 4-bit, which is what the latest sidecar means
+    for training. Never raises: an unreadable model reports "no upgrade needed" and the
+    caller proceeds exactly as it did before.
+    """
+    from utils.transformers_version import latest_tier_active_for
+
+    model_name = request.model_name
+    # Inspect what the load will open, not what the identifier resolves to today.
+    load_target = await asyncio.to_thread(_upgrade_check_config_target, request)
+    targets = [load_target]
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+
+        # The worker activates transformers for the BASE model, so an adapter is judged
+        # by what it is an adapter for. Resolved from the load target rather than the
+        # identifier, as the worker and the scan route both do: a repo that repointed
+        # base_model_name_or_path since the pin was taken would otherwise have this
+        # route judging a base the run never loads.
+        base = await asyncio.to_thread(
+            _offline_guarded,
+            load_target,
+            get_base_model_from_lora_identifier,
+            load_target,
+            request.hf_token,
+        )
+        if base:
+            targets.append(base)
+    except Exception:
+        pass
+    targets = list(dict.fromkeys(targets))
+
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = None
+    try:
+        from utils.transformers_latest import check_upgrade_for_model
+        for target in targets:
+            upgrade = await asyncio.to_thread(
+                _offline_guarded,
+                target,
+                check_upgrade_for_model,
+                target,
+                request.hf_token,
+            )
+            if upgrade is not None:
+                transformers_upgrade = TransformersUpgradeInfo(**upgrade)
+                break
+    except Exception as exc:
+        logger.debug("Transformers upgrade check failed for '%s': %s", model_name, exc)
+
+    requires_trust_remote_code = False
+    try:
+        requires_trust_remote_code = await asyncio.to_thread(
+            _offline_guarded,
+            targets,
+            lambda: any(
+                _requires_trust_remote_code_for_model(target, request.hf_token)
+                for target in targets
+            ),
+        )
+    except Exception as exc:
+        logger.debug("Custom-code check failed for '%s': %s", model_name, exc)
+
+    latest_tier_active = False
+    try:
+        latest_tier_active = await asyncio.to_thread(
+            _offline_guarded,
+            # Every target, not just the load target: latest_tier_active_for resolves a
+            # remote adapter's base itself, so the base is fetched too.
+            tuple(targets),
+            latest_tier_active_for,
+            load_target,
+            request.hf_token,
+        )
+    except Exception as exc:
+        logger.debug("Latest-tier check failed for '%s': %s", model_name, exc)
+
+    # An offered install lands the model on the latest sidecar, which forces 16-bit (bnb
+    # 4-bit feeds quantized experts into unvalidated paths for brand-new architectures).
+    # A dev-only upgrade is never installed, so it changes nothing. Same rule /validate
+    # applies: a model with a custom-code fallback still loads 4-bit on the current
+    # transformers and the dialog offers that way out, so a merely offered upgrade
+    # cannot be claimed as 16-bit. Only an install-only upgrade, or a sidecar already
+    # routing the model, forces it.
+    install_only_upgrade = bool(
+        transformers_upgrade is not None
+        and transformers_upgrade.supported_in_pypi
+        and transformers_upgrade.pypi_version
+        and not requires_trust_remote_code
+    )
+    # Already on the sidecar: the install is not what would strand the checkpoint, and
+    # the resume is refused (or 16-bit) whatever this route answers.
+    install_breaks_exact_resume = False
+    if request.resume_run_id and not latest_tier_active:
+        install_breaks_exact_resume = await asyncio.to_thread(
+            _install_breaks_exact_resume, request.resume_run_id
+        )
+    return TransformersUpgradeCheckResponse(
+        model_name = model_name,
+        requires_transformers_upgrade = transformers_upgrade is not None,
+        transformers_upgrade = transformers_upgrade,
+        # Already booleans: False, or the preflight's own bool result. Re-wrapping the
+        # custom-code one in bool() reads as the raw-YAML pattern the GGUF consistency
+        # guard forbids, and it was never needed here.
+        requires_trust_remote_code = requires_trust_remote_code,
+        latest_tier_active = latest_tier_active,
+        forces_16bit = latest_tier_active or install_only_upgrade,
+        install_breaks_exact_resume = install_breaks_exact_resume,
+    )
+
+
 # studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.
 @studio_router.post(
     "/install-latest-transformers", response_model = InstallLatestTransformersResponse
@@ -12402,6 +12664,7 @@ async def openai_chat_completions(
     # Parse once and reuse below.
     _pre_parsed = None
     _needs_vision = False
+    _needs_image = False
     if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -12499,16 +12762,18 @@ async def openai_chat_completions(
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
         # Audio input rides the same companion-mmproj projector as vision, so a
-        # text-only target can't serve it either; guard both before the switch.
-        _needs_vision = (
-            bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
-        )
+        # text-only target can't serve it either; guard both before the switch. An
+        # audio-only request asks for the projector alone, since an audio model's
+        # projector carries no vision tower.
+        _needs_image = bool(_pre_parsed[2]) or _request_has_image(payload)
+        _needs_vision = _needs_image or bool(payload.audio_base64)
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
         require_vision = _needs_vision,
+        require_image = _needs_image,
     )
 
     llama_backend = get_llama_cpp_backend()
@@ -13008,6 +13273,12 @@ async def openai_chat_completions(
                 )
             )
 
+        _gguf_perf_callback = (
+            _monitor_perf_callback(monitor_id, llama_backend.context_length)
+            if not _wants_multiple_choices(payload)
+            else None
+        )
+
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
                 delta = delta.model_copy(update = {"content": ""})
@@ -13162,6 +13433,7 @@ async def openai_chat_completions(
                     confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
+                    perf_callback = _gguf_perf_callback,
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -13835,6 +14107,7 @@ async def openai_chat_completions(
                 preserve_thinking = payload.preserve_thinking,
                 continue_final_message = _continue_final_message(payload),
                 seed = _seed,
+                perf_callback = _gguf_perf_callback,
             )
 
         _gguf_sentinel = object()
@@ -14834,7 +15107,7 @@ async def openai_chat_completions(
                 _sf_finish = "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
                 yield _chat_final_chunk(completion_id, created, model_name, _sf_finish)
                 # Reuse the reason already sent to the client. Outside the stats block
-                # below: only MLX reports stats.
+                # below: a run whose token count is unknown reports no stats.
                 api_monitor.set_perf(monitor_id, stop_reason = _sf_finish)
                 if _stats:
                     usage_line = _openai_stream_usage_chunk(
@@ -14955,7 +15228,7 @@ async def openai_chat_completions(
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
             # Reuse the reason this response carries. Outside the stats block below:
-            # only MLX reports stats.
+            # a run whose token count is unknown reports no stats.
             _sf_json_finish = "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
             api_monitor.set_perf(monitor_id, stop_reason = _sf_json_finish)
             if _stats:
@@ -15311,7 +15584,7 @@ async def openai_chat_completions(
                 )
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Reuse the reason already sent to the client. Outside the stats block
-                # below: only MLX reports stats.
+                # below: a run whose token count is unknown reports no stats.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)
                 if _stats:
                     usage_line = _openai_stream_usage_chunk(
@@ -15498,8 +15771,8 @@ async def openai_chat_completions(
                     f"[tool_calls] {_calls_text}" if _calls_text else ""
                 )
             api_monitor.set_reply(monitor_id, _monitor_reply)
-            # Reuse the response's finish_reason. Outside the stats block: only
-            # MLX reports stats.
+            # Reuse the response's finish_reason. Outside the stats block: a run
+            # whose token count is unknown reports no stats.
             api_monitor.set_perf(monitor_id, stop_reason = _finish)
             _stats = stats_holder.get("stats")
             if _stats:
@@ -15689,6 +15962,58 @@ async def list_sandbox_files(
     # filesystem either one would hold the event loop for every other request.
     sandbox_dir, files = await run_in_threadpool(_resolve_and_list)
     return {"path": sandbox_dir, "files": files}
+
+
+@router.post("/sandbox/{session_id}/reveal")
+async def reveal_sandbox_dir(
+    session_id: str,
+    request: Request,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Open this chat's sandbox directory in the OS file manager.
+
+    The file manager is the backend host's, so this only means anything when the
+    backend runs on the user's own machine, which is the desktop app.
+    """
+    await _authenticate_header_or_query(request, token)
+
+    from starlette.concurrency import run_in_threadpool
+
+    def _resolve_existing() -> "str | None":
+        sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        if not os.path.isdir(sandbox_dir):
+            # One more resolve, as the listing does: the legacy move can rename
+            # the tree into place between resolving it and looking.
+            sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        return sandbox_dir if os.path.isdir(sandbox_dir) else None
+
+    # Resolving scans the sandbox root, so it stays off the event loop.
+    sandbox_dir = await run_in_threadpool(_resolve_existing)
+    if sandbox_dir is None:
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
+
+    from pathlib import Path
+
+    from utils.paths.path_utils import reveal_in_file_manager
+
+    try:
+        # expect_dir: a sandbox is always a directory, and a running tool can
+        # replace its own with a file, which would take the file branch and show
+        # the parent, here the root holding every other chat's sandbox.
+        await run_in_threadpool(reveal_in_file_manager, Path(sandbox_dir), expect_dir = True)
+    except FileNotFoundError:
+        # Two things raise this: the sandbox going between resolve and open, and
+        # Popen not finding the file manager at all. Only the first is "no
+        # folder"; the second reported that way hides a missing xdg-open.
+        if os.path.isdir(sandbox_dir):
+            logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+        raise HTTPException(status_code = 404, detail = "This chat has no folder yet")
+    except Exception:
+        logger.error(f"Failed to reveal sandbox {sandbox_dir}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+    return {"status": "ok", "path": sandbox_dir}
 
 
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
@@ -17090,9 +17415,11 @@ async def _responses_non_streaming(
 
     # Catches the engine timings the suppressed inner monitor would otherwise drop.
     inner_perf: dict = {}
-
+    if monitor_id:
+        inner_perf["monitor_id"] = monitor_id
+        inner_perf["context_length"] = _monitor_context_length()
     try:
-        _sink_token = _monitor_perf_sink.set(inner_perf)
+        _sink_token = _monitor_perf_sink.set(inner_perf if monitor_id else None)
         try:
             result = await openai_chat_completions(chat_req, request)
         finally:
@@ -19453,6 +19780,10 @@ async def anthropic_messages(
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
                 promote_reasoning_only = False,
+                perf_callback = _monitor_perf_callback(
+                    monitor_id,
+                    llama_backend.context_length,
+                ),
             )
 
         if payload.stream:
@@ -19493,6 +19824,10 @@ async def anthropic_messages(
             stop = stop,
             cancel_event = cancel_event,
             promote_reasoning_only = False,
+            perf_callback = _monitor_perf_callback(
+                monitor_id,
+                llama_backend.context_length,
+            ),
         )
 
     if payload.stream:

@@ -24,7 +24,10 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
+  isSandboxFileList,
+  isSandboxToolResult,
   type SandboxFile,
+  sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -999,45 +1002,6 @@ export interface McpImageToolResult {
 }
 
 /**
- * A python/terminal result carrying the chat's sandbox context alongside the
- * text the model actually saw.
- */
-/** ``files`` as the cards need it: absent, or entries with a usable name. */
-export function isSandboxFileList(val: unknown): boolean {
-  if (val === undefined || val === null) return true;
-  if (!Array.isArray(val)) return false;
-  return val.every(
-    (entry) =>
-      typeof entry === "object" &&
-      entry !== null &&
-      typeof (entry as { name?: unknown }).name === "string",
-  );
-}
-
-export function isSandboxToolResult(
-  val: unknown,
-): val is { text: string; sessionId: string } {
-  if (typeof val !== "object" || val === null) return false;
-  const v = val as {
-    text?: unknown;
-    sessionId?: unknown;
-    images?: unknown;
-    files?: unknown;
-  };
-  // images too: it is always in Studio's own wrapper, and a tool result that
-  // merely has text and sessionId is someone else's, whose other fields would
-  // be dropped on export.
-  return (
-    typeof v.text === "string" &&
-    typeof v.sessionId === "string" &&
-    Array.isArray(v.images) &&
-    // Persisted content can carry anything: the cards map over this and read
-    // name off each entry, so anything else takes the whole chat view down.
-    isSandboxFileList(v.files)
-  );
-}
-
-/**
  * The text the model actually saw, for a result that may be wrapped.
  *
  * Chat replay and every export path have to agree on this: exports feed
@@ -1823,7 +1787,7 @@ async function resolveSandboxSessionId(
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | undefined> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
-  return projectId ? `project-${projectId}` : threadId;
+  return sandboxSessionIdFor(threadId, projectId);
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
@@ -5101,6 +5065,11 @@ export function createOpenAIStreamAdapter(
                     // non-streaming client-tool passthrough retry, which this
                     // streaming server-side loop does not perform.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // This branch runs the tools here, so say so by name:
+                    // enabled_tools ["web_search"] is byte-identical to what an
+                    // older bundle sent meaning hosted search, so without this
+                    // flag Search silently stayed hosted.
+                    run_tools_locally: true,
                     ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
                     ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
                     ...(ragEnabled || projectRagEnabled
@@ -5730,9 +5699,18 @@ export function createOpenAIStreamAdapter(
                       } catch {
                         parsedResult = rawResult;
                       }
-                    } else if (createdFiles.length > 0) {
-                      // Files but no images: still structured, so the card can
-                      // offer downloads.
+                    } else if (
+                      createdFiles.length > 0 ||
+                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                    ) {
+                      // Structured with files, for the download card, and with
+                      // neither, because the session is the only record of WHERE
+                      // this call ran: _created_file_sentinels emits nothing
+                      // when a concurrent call shared the directory, so a run
+                      // that wrote files can arrive bare and a moved chat would
+                      // then name a folder from its current scope. Downstream is
+                      // unaffected: both toolResultModelText and the outbound
+                      // translator unwrap a sandbox wrapper to this same .text.
                       parsedResult = {
                         text: rawResult,
                         images: [],

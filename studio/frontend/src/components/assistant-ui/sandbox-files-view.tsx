@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Download01Icon, File02Icon } from "@hugeicons/core-free-icons";
+import {
+  Download01Icon,
+  File02Icon,
+  FolderOpenIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
 import { authFetch, getAuthToken } from "@/features/auth";
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 
 import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
+import { revealSandbox } from "./sandbox-reveal";
 
 function formatSize(size: number | null): string {
   if (size === null || size === undefined || Number.isNaN(size)) return "";
@@ -76,6 +81,47 @@ function SandboxFileRow({
 }
 
 /**
+ * The row's heading, doubling as the way into the folder itself on desktop.
+ * The backend opens the file manager, so in a browser it stays plain text and
+ * says why.
+ */
+function SandboxFolderLabel({
+  sessionId,
+  label,
+}: {
+  sessionId: string;
+  label: string;
+}) {
+  const open = useCallback(() => {
+    revealSandbox(sessionId).catch(() => {
+      toast.error("Could not open the chat folder.");
+    });
+  }, [sessionId]);
+
+  if (!isTauri) {
+    return (
+      <span
+        className="text-xs font-medium text-muted-foreground"
+        title="Opening the folder needs the desktop app. In a browser, save a file with the button below."
+      >
+        {label}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={open}
+      title="Open the folder these files were written to"
+      className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+    >
+      <HugeiconsIcon icon={FolderOpenIcon} className="size-3.5 shrink-0" />
+      {label}
+    </button>
+  );
+}
+
+/**
  * "Files created" row under a tool card. Without it the only trace of a written
  * file was the model mentioning it in prose.
  */
@@ -89,9 +135,10 @@ export function SandboxFiles({
   if (!sessionId || files.length === 0) return null;
   return (
     <div className="mt-2 border-t border-dashed pt-2">
-      <span className="text-xs font-medium text-muted-foreground">
-        {files.length === 1 ? "file created" : "files created"}
-      </span>
+      <SandboxFolderLabel
+        sessionId={sessionId}
+        label={files.length === 1 ? "file created" : "files created"}
+      />
       <div className="mt-1 flex flex-wrap gap-1.5">
         {files.map((file) => (
           <SandboxFileRow key={file.name} sessionId={sessionId} file={file} />
