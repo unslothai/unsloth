@@ -170,3 +170,38 @@ def test_compile_uncompile_round_trip_and_probe_refused(db_path, capsys):
     assert main(["compiled", "--db", str(db_path)]) == 0
     assert rec["title"] not in capsys.readouterr().out
     assert main(["compile", probe["id"], "--db", str(db_path)]) == 2
+
+
+def test_rollouts_contact_sim_and_db(db_path, capsys):
+    rec = insert_record(
+        kind="episode",
+        title="Episode abcdef12",
+        body="run the tests",
+        provenance="mixed",
+        source_episode_id="ep-1",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-1",
+        contact="world",
+        outcome="fail",
+        summary="exit code 1",
+        source_record_id=rec["id"],
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-1",
+        contact="sim",
+        outcome="pass",
+        summary="fixed in sim",
+        source_record_id=rec["id"],
+        db_path=db_path,
+    )
+    assert main(["rollouts", "--contact", "sim", "--db", str(db_path)]) == 0
+    out = capsys.readouterr().out
+    assert "sim" in out
+    assert "pass" in out
+    assert "fixed in sim" in out
+    assert "ep-1" in out
+    assert "exit code 1" not in out
+    assert "world" not in out

@@ -36,6 +36,8 @@ from unforgettable.store.compile import (
 )
 from unforgettable.store.db import default_db_path
 from unforgettable.store.records import (
+    ROLLOUT_CONTACTS,
+    ROLLOUT_OUTCOMES,
     get_record,
     list_admissions,
     list_records,
@@ -50,6 +52,7 @@ DEFAULT_SEARCH_STATUS = "active"
 DEFAULT_LIST_STATUS = "all"
 DB_ENV_NAME = "UNFORGETTABLE_DB"
 TABLE_ID_CHARS = 8
+CLI_ROLLOUT_SUMMARY_CHARS = 60
 CLI_ADMIT_REASON = "cli admit"
 CLI_REJECT_REASON = "cli reject"
 UNKNOWN_ID_EXIT = 2
@@ -282,6 +285,35 @@ def _cmd_uncompile(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _clip_rollout_summary(text: str) -> str:
+    line = (text or "").replace("\n", " ").strip()
+    if len(line) <= CLI_ROLLOUT_SUMMARY_CHARS:
+        return line
+    return line[: CLI_ROLLOUT_SUMMARY_CHARS - 3] + "..."
+
+
+def _cmd_rollouts(args: argparse.Namespace, db_path: Path) -> int:
+    rows = list_rollouts(
+        contact=args.contact,
+        outcome=args.outcome,
+        limit=args.limit,
+        db_path=db_path,
+    )
+    _print_aligned(
+        ("episode", "contact", "outcome", "summary"),
+        [
+            (
+                (row.get("episode_id") or "")[:TABLE_ID_CHARS],
+                row["contact"],
+                row["outcome"],
+                _clip_rollout_summary(row.get("summary") or ""),
+            )
+            for row in rows
+        ],
+    )
+    return 0
+
+
 def _cmd_probes(args: argparse.Namespace, db_path: Path) -> int:
     if not args.run:
         _print_probe_table(list_probes(db_path=db_path))
@@ -436,6 +468,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_flag(uncompile_p)
     uncompile_p.add_argument("id")
     uncompile_p.set_defaults(func=_cmd_uncompile)
+
+    rollouts_p = sub.add_parser(
+        "rollouts",
+        help="List graded world and sim rollouts.",
+    )
+    _add_db_flag(rollouts_p)
+    rollouts_p.add_argument(
+        "--contact",
+        choices=sorted(ROLLOUT_CONTACTS),
+        default=None,
+    )
+    rollouts_p.add_argument(
+        "--outcome",
+        choices=sorted(ROLLOUT_OUTCOMES),
+        default=None,
+    )
+    rollouts_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
+    rollouts_p.set_defaults(func=_cmd_rollouts)
 
     return parser
 

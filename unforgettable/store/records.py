@@ -396,13 +396,35 @@ def _get_rollout(rollout_id: str, db_path=None) -> Optional[dict[str, Any]]:
         conn.close()
 
 
-def list_rollouts(*, episode_id: str, db_path=None) -> list[dict[str, Any]]:
+def list_rollouts(
+    *,
+    episode_id: Optional[str] = None,
+    contact: Optional[str] = None,
+    outcome: Optional[str] = None,
+    limit: Optional[int] = None,
+    db_path=None,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    args: list[Any] = []
+    if episode_id is not None:
+        clauses.append("episode_id = ?")
+        args.append(episode_id)
+    if contact is not None:
+        clauses.append("contact = ?")
+        args.append(contact)
+    if outcome is not None:
+        clauses.append("outcome = ?")
+        args.append(outcome)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    # Episode inspect stays chronological; the library path wants newest first.
+    order = "ASC" if episode_id is not None else "DESC"
+    sql = f"SELECT * FROM rollouts {where} ORDER BY created_at {order}"
+    if limit is not None:
+        sql += " LIMIT ?"
+        args.append(limit)
     conn = get_connection(db_path)
     try:
-        rows = conn.execute(
-            "SELECT * FROM rollouts WHERE episode_id = ? ORDER BY created_at ASC",
-            (episode_id,),
-        ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()

@@ -47,6 +47,7 @@ from unforgettable.store.records import (
     insert_rollout,
     list_records,
 )
+from unforgettable.store.trajectories import format_trajectories, retrieve_trajectories
 from unforgettable.throne.policy import Action, decide, policy_from_request
 from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
 
@@ -146,8 +147,17 @@ def _inject_bundle(
     )
     retrieved = retrieve(query, policy=policy, db_path=db_path)
     retrieve_text = format_inject(retrieved, policy=policy)
+    trajectories = retrieve_trajectories(
+        query,
+        contact="world",
+        high_stakes=stakes == "high",
+        db_path=db_path,
+    )
+    traj_text = format_trajectories(trajectories)
     inject = "\n\n".join(
-        part for part in (_MEMORY_PREAMBLE, standing_text, retrieve_text) if part
+        part
+        for part in (_MEMORY_PREAMBLE, standing_text, retrieve_text, traj_text)
+        if part
     )
     use_ids = [] if skip_standing else [row["id"] for row in kept_rows]
     use_ids.extend(row["id"] for row in retrieved)
@@ -163,7 +173,7 @@ def _inject_bundle(
         contact="world",
         standing_chars=len(standing_text),
         retrieve_chars=len(retrieve_text),
-        trajectory_chars=0,
+        trajectory_chars=len(traj_text),
         total_chars=len(inject),
         compiled_ids=",".join(row["id"] for row in kept_rows),
         retrieved_ids=",".join(row["id"] for row in retrieved),
