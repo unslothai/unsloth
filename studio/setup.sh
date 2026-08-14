@@ -1885,20 +1885,28 @@ def _vkey(c):
         pass
     m = re.match(r'\d+(\.\d+)*', v)
     if not m:
-        return (0, ([], -9))
+        return (0, ([], (-9, 0)))
     nums = [int(n) for n in m.group(0).split('.')]
     # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
     while nums and nums[-1] == 0:
         nums.pop()
     rest = v[m.end():].lower()
-    if re.match(r'[-._]?dev', rest):
-        rank = -3
-    elif re.match(r'[-._]?(a|b|c|rc|alpha|beta|pre|preview)', rest):
-        rank = -2
-    elif re.match(r'[-._]?post', rest):
-        rank = 1
+    # Carry the stage AND its number, not just the class. An interrupted upgrade leaves
+    # .post1 and .post2 side by side; ranking both as "post" tied their keys, and max()
+    # keeps whichever enumerated first, so the verifier could confirm the stale one.
+    _dev = re.match(r'[-._]?dev\.?(\d*)', rest)
+    _pre = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c)\.?(\d*)', rest)
+    _post = re.match(r'[-._]?post\.?(\d*)', rest)
+    if _dev:
+        rank = (-3, int(_dev.group(1) or 0))
+    elif _pre:
+        # a == alpha < b == beta < c == rc == pre == preview, as PEP 440 normalizes them
+        _stage = {'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_pre.group(1), 2)
+        rank = (-2, _stage, int(_pre.group(2) or 0))
+    elif _post:
+        rank = (1, int(_post.group(1) or 0))
     else:
-        rank = 0
+        rank = (0, 0)
     return (0, (nums, rank))
 if not cands:
     print('POSTVER=__MISSING__')
