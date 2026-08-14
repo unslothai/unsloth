@@ -155,6 +155,23 @@ def _names_required_stub(nodes: list[ast.AST]) -> bool:
     )
 
 
+def _reads_a_named_stub(nodes: list[ast.AST], named: frozenset[str]) -> bool:
+    """Whether any node reads a module-level name that was bound to the required stub."""
+    return any(isinstance(node, ast.Name) and node.id in named for node in nodes)
+
+
+def _bound_names(statement: ast.AST) -> set[str]:
+    """Module-level names this statement assigns to."""
+    targets: list[ast.AST] = []
+    if isinstance(statement, ast.Assign):
+        targets = list(statement.targets)
+    elif isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
+        targets = [statement.target]
+    return {
+        node.id for target in targets for node in ast.walk(target) if isinstance(node, ast.Name)
+    }
+
+
 def _callee_name(node: ast.Call) -> str:
     func = node.func
     if isinstance(func, ast.Name):
@@ -219,21 +236,31 @@ def _stubs_before(tree: ast.Module, line: int | None) -> bool:
     that only run when something calls them. It counts when those name ``unsloth`` as a string
     and either call a stub helper or write ``sys.modules``.
 
-    The two halves are looked for across the whole prefix rather than within one statement,
-    because the names routinely sit in a module-level table that a later loop feeds to the
-    helper (``test_training_progress_callback.py``).
+    The name and the operation have to meet in ONE statement, or the guard goes green on a
+    file that stubs something else while ``unsloth`` merely appears above
+    (``sys.modules["fake"] = ...`` next to an unrelated ``"unsloth"`` string). The name is
+    allowed to arrive through a module-level table the statement reads, because that is how
+    the real files are written (``test_training_progress_callback.py`` keeps ``_STUBS`` above
+    the loop that feeds it to the helper), so a table naming ``unsloth`` marks the names it
+    binds and a later statement reading one of them counts as naming it.
 
     Order is the whole point: a stub registered afterwards lands after the real import has
     already been attempted and raised.
     """
     if line is None:
         return True
-    nodes: list[ast.AST] = []
+    named: frozenset[str] = frozenset()
     for statement in tree.body:
         if statement.lineno >= line:
             break
-        nodes.extend(_runtime_nodes(statement))
-    return _names_required_stub(nodes) and _installs_stub(nodes)
+        nodes = list(_runtime_nodes(statement))
+        names_it = _names_required_stub(nodes) or _reads_a_named_stub(nodes, named)
+        if not names_it:
+            continue
+        if _installs_stub(nodes):
+            return True
+        named |= _bound_names(statement)
+    return False
 
 
 def _is_offender(source: str, heavy: frozenset[str]) -> bool:
@@ -309,6 +336,12 @@ def test_the_guard_would_catch_an_unstubbed_module():
         # No helper at all, just the assignment the helper would have made.
         'import sys\nsys.modules["unsloth"] = object()\n'
         "from core.training import trainer as t\n",
+        # The shape of the real files: the table sits above the loop that feeds it to the
+        # helper, so the name reaches the call through ``_STUBS`` rather than in it.
+        'import sys\n_STUBS = {"unsloth": ()}\n'
+        "for _n, _a in _STUBS.items():\n"
+        "    _stub_if_missing(_n, _a)\n"
+        "from core.training import trainer as t\n",
     ):
         assert _stubs_before(
             _parse(stubbed), _first_heavy_import_line(_parse(stubbed), heavy)
@@ -353,6 +386,13 @@ def test_only_an_installed_stub_counts_as_stubbing():
         "from core.training import trainer as t\n",
         # Reading sys.modules is not writing it.
         'import sys\nassert "unsloth" not in sys.modules\n'
+        "from core.training import trainer as t\n",
+        # A stub of something ELSE, with the required name loose in the file rather than in
+        # the operation. Both halves are present, so a prefix-wide pairing reads this as
+        # stubbed while unsloth is not stubbed at all.
+        'import sys\n_HEAVY = "unsloth"\nsys.modules["fake_backend"] = object()\n'
+        "from core.training import trainer as t\n",
+        '_stub_if_missing("trl", ())\n_HEAVY = ("unsloth",)\n'
         "from core.training import trainer as t\n",
     ):
         assert not _stubs_before(_parse(source), 1), source
