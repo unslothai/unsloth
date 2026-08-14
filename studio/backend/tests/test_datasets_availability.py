@@ -643,8 +643,9 @@ class TestTheTierRemovesTrainingNotTheDevice:
         assert "is_inference_only_tier() and _is_arm64_windows()" in source[index - 400 : index]
 
     def test_the_frontend_gates_training_on_it(self):
-        source = (_BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx").read_text(
-            encoding = "utf-8")
+        source = (
+            _BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx"
+        ).read_text(encoding = "utf-8")
         assert "const trainingBlocked = chatOnlyMeasured || datasetsMissing;" in source
         assert "disabled: trainingBlocked," in source
 
@@ -652,5 +653,6 @@ class TestTheTierRemovesTrainingNotTheDevice:
         """A provisional or unauthenticated reply omits the field, and must not flip a
         measured false back to true and re-enable Train on a tier install."""
         source = (_BACKEND.parent / "frontend" / "src" / "config" / "env.ts").read_text(
-            encoding = "utf-8")
+            encoding = "utf-8"
+        )
         assert "data.datasets_available ?? previous.datasetsAvailable" in source
