@@ -221,13 +221,16 @@ export function AskApp(): ReactElement {
 
       const withContext = (text: string, first: boolean): string =>
         first && context ? `${text}\n\nText:\n"""\n${context}\n"""` : text;
-      const messages = history.flatMap((turn, index) => [
+      // A turn whose run failed carries an empty answer; sending it would pass
+      // off a blank assistant message as real history.
+      const answered = history.filter((turn) => turn.answer);
+      const messages = answered.flatMap((turn, index) => [
         { role: "user" as const, content: withContext(turn.question, index === 0) },
         { role: "assistant" as const, content: turn.answer },
       ]);
       messages.push({
         role: "user",
-        content: withContext(question, history.length === 0),
+        content: withContext(question, answered.length === 0),
       });
       let sawToken = false;
       for await (const delta of streamCompletion(
