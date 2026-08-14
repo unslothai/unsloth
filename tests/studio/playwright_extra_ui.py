@@ -44,6 +44,22 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
+# Declares a runner with no route to the Hub, for the voice-picker wheel step. Egress that is
+# blackholed rather than refused can leave the search hanging with no transport failure to observe,
+# so the fallback needs a way to be asserted as well as detected.
+HF_OFFLINE = os.environ.get("STUDIO_UI_HF_OFFLINE", "0") == "1"
+# Voice-picker wheel budget, both halves set by the frontend rather than picked round. The
+# searched rows are up to 15.3s away on a healthy runner: the query is debounced 300ms and the
+# Hugging Face search is then given 15s (HF_SEARCH_TIMEOUT_MS,
+# studio/frontend/src/features/hub/hooks/use-hub-model-search.ts). Waiting 15.5s for them clears
+# that, so a slow-but-working Hub is not red, and it also outlives the abort at 15.3s that a
+# blackholed runner's search ends in, so the transport failure that permits the fallback is
+# observed before the wait gives up. The 30s ceiling is that wait plus what is left to do after
+# it: a list swap landing mid-wheel costs one 2s wheel round, and an unreachable-Hub run has
+# already spent its first 15.5s searching when it clears the query and wheels the built-in list.
+# Only a failing run pays either; a passing run leaves on the first wheel, 1.5s end to end in CI.
+WHEEL_ROWS_TIMEOUT_MS = 15_500
+WHEEL_DEADLINE_S = 30.0
 
 _n = [0]
 _failed: list[str] = []
@@ -104,6 +120,47 @@ with sync_playwright() as p:
         reduced_motion = "reduce",
     )
     install_view_transition_killer(ctx)
+
+    # Evidence that this runner cannot reach the Hub, collected for the whole session because the
+    # frontend backs off for 30s after a failed Hub request (REMOTE_OFFLINE_TTL_MS in
+    # studio/frontend/src/features/hub/lib/network.ts) and may not retry inside a later step. Bound
+    # to the context, not the page, so a replacement page is covered too.
+    hf_unreachable: list[str] = []
+    # Set while the wheel step owns the picker, so an aborted Hub request can be attributed.
+    wheel_step_active = [False]
+
+    def _note_hf_unreachable(why: str) -> None:
+        if not hf_unreachable:
+            info(f"WARN Hugging Face unreachable from this runner: {why}")
+        hf_unreachable.append(why)
+
+    def _on_requestfailed(req) -> None:
+        try:
+            if "huggingface.co" not in req.url:
+                return
+            failure = req.failure or ""
+            # net::ERR_ABORTED is how a blackholed request ends, at the frontend's own 15s
+            # search timeout, and equally how a superseded query or an unmounting picker ends.
+            # It only says "unreachable" while the wheel step holds the picker open on a single
+            # query, where nothing else can be cancelling anything. Every other failure is a
+            # transport error and counts wherever it happens.
+            if "ERR_ABORTED" in failure and not wheel_step_active[0]:
+                return
+            _note_hf_unreachable(f"request failed: {failure}")
+        except Exception:
+            pass
+
+    def _on_response(resp) -> None:
+        # 429 and 5xx are the Hub refusing to serve this runner. Every other 4xx is a request the
+        # app itself built wrong, which is a real defect and must not excuse anything.
+        try:
+            if "huggingface.co" in resp.url and (resp.status == 429 or resp.status >= 500):
+                _note_hf_unreachable(f"HTTP {resp.status}")
+        except Exception:
+            pass
+
+    ctx.on("requestfailed", _on_requestfailed)
+    ctx.on("response", _on_response)
     page = ctx.new_page()
     # 60s default for the slow macos-14 runner (second Unsloth boot of the job).
     page.set_default_timeout(60_000)
@@ -548,16 +605,43 @@ with sync_playwright() as p:
                 page.get_by_test_id("dictation-engine-trigger").click()
                 page.get_by_test_id("dictation-engine-model").click()
                 page.get_by_test_id("stt-model-trigger").click()
-                page.get_by_test_id("stt-model-search").fill("whisper")
+                wheel_step_active[0] = True
                 results = page.get_by_test_id("stt-model-results")
                 # Wheel at the searched rows, not at whatever overflows first. The query is
                 # debounced 300ms and the list is then replaced by a one-line spinner for as
                 # long as the Hugging Face search takes, so the first paint that overflows is
-                # the pre-search default list: on macos-15 the hover + wheel lands after the
+                # the pre-search built-in list: on macos-15 the hover + wheel lands after the
                 # swap, on a container that is one spinner row tall and has nothing to scroll.
                 # Requiring rendered model rows (the loading and empty states are plain divs,
                 # every row is a button) pins the assertion to the state a user scrolls, and
                 # re-wheeling until the deadline absorbs a swap that lands mid-wheel.
+                #
+                # Rows alone are not enough, though: the built-in list is rows, and it overflows
+                # from the moment the popover opens, so a fast runner can satisfy that inside the
+                # 300ms debounce and never wheel a searched row at all. Snapshot the built-in
+                # rows first and require the list to have become something else, so the search is
+                # what is being scrolled. The built-in list is accepted only on proof that the
+                # Hub is unreachable (see below), which is also the only branch that clears the
+                # query and so the only one that waits on `rows_overflow`.
+                builtin_rows_js = """() => {
+                    const node = document.querySelector('[data-testid="stt-model-results"]');
+                    if (!node) return "";
+                    return Array.from(node.querySelectorAll('button'))
+                        .map((row) => row.innerText).join("\\u0000");
+                }"""
+                try:
+                    results.locator("button").first.wait_for(state = "attached", timeout = 10_000)
+                except Exception as builtin_err:
+                    info(f"WARN built-in model rows never rendered: {builtin_err!r}")
+                builtin_rows = robust_evaluate(page, builtin_rows_js)
+                page.get_by_test_id("stt-model-search").fill("whisper")
+                searched_rows_overflow = """(builtin) => {
+                    const node = document.querySelector('[data-testid="stt-model-results"]');
+                    if (!node || node.scrollHeight <= node.clientHeight) return false;
+                    const rows = Array.from(node.querySelectorAll('button'));
+                    if (rows.length === 0) return false;
+                    return rows.map((row) => row.innerText).join("\\u0000") !== builtin;
+                }"""
                 rows_overflow = """() => {
                     const node = document.querySelector('[data-testid="stt-model-results"]');
                     return !!node
@@ -568,7 +652,7 @@ with sync_playwright() as p:
                     const node = document.querySelector('[data-testid="stt-model-results"]');
                     return !!node && node.scrollTop > 0;
                 }"""
-                wheel_deadline = time.monotonic() + 30.0
+                wheel_deadline = time.monotonic() + WHEEL_DEADLINE_S
                 wheel_scrolled = False
                 cleared_search = False
                 while not wheel_scrolled:
@@ -576,18 +660,32 @@ with sync_playwright() as p:
                     if remaining_ms <= 0:
                         break
                     try:
-                        page.wait_for_function(
-                            rows_overflow,
-                            timeout = min(remaining_ms, 15_000),
-                        )
-                    except Exception:
                         if cleared_search:
+                            page.wait_for_function(
+                                rows_overflow,
+                                timeout = min(remaining_ms, WHEEL_ROWS_TIMEOUT_MS),
+                            )
+                        else:
+                            page.wait_for_function(
+                                searched_rows_overflow,
+                                arg = builtin_rows,
+                                timeout = min(remaining_ms, WHEEL_ROWS_TIMEOUT_MS),
+                            )
+                    except Exception:
+                        # Falling back to the built-in list means asserting the wheel against the
+                        # pre-search list this step was rewritten to stop accepting, so it takes
+                        # proof that the Hub is what is missing: a failed huggingface.co request
+                        # (or 429/5xx), or a runner that declares itself offline. Search rendering
+                        # that breaks with the Hub answering normally has no such proof and fails
+                        # here with the geometry, instead of passing on the built-in list.
+                        offline = bool(hf_unreachable) or HF_OFFLINE
+                        if cleared_search or not offline:
                             break  # never overflowed with rows; geometry is reported below
-                        # A runner that cannot reach Hugging Face has no rows to search for,
-                        # and wheel scrolling is not what that would be evidence of. Clear the
-                        # query: the built-in model list ships in the bundle and overflows the
-                        # 16rem container on every platform, so the wheel is still asserted.
-                        info("WARN no 'whisper' search rows; wheeling the built-in list instead")
+                        why = hf_unreachable[0] if hf_unreachable else "STUDIO_UI_HF_OFFLINE=1"
+                        info(
+                            f"WARN no 'whisper' search rows and the Hub is unreachable ({why}); "
+                            "wheeling the built-in list instead"
+                        )
                         cleared_search = True
                         page.get_by_test_id("stt-model-search").fill("")
                         continue
@@ -623,7 +721,11 @@ with sync_playwright() as p:
                         )
                     except Exception as geom_err:
                         geom = f"<unreadable: {geom_err!r}>"
-                    fail(f"Voice model picker did not wheel-scroll: {geom}")
+                    fail(
+                        f"Voice model picker did not wheel-scroll: {geom} "
+                        f"hub_unreachable={hf_unreachable[:1] or False} "
+                        f"cleared_search={cleared_search}"
+                    )
             except Exception as exc:
                 if page_crashed(page, exc) and MACOS_RUNNER:
                     runtime_warn(f"Voice model picker aborted (browser/page unstable): {exc!r}")
@@ -635,6 +737,8 @@ with sync_playwright() as p:
                     )
                 else:
                     fail(f"Voice model picker did not wheel-scroll: {exc!r}")
+            finally:
+                wheel_step_active[0] = False
         # When the crash closed the context/browser, recover_or_replace_page hands back the closed page;
         # skip the cosmetic teardown rather than re-raise TargetClosedError on it.
         if not page.is_closed():
