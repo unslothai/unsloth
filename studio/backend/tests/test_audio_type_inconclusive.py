@@ -11,14 +11,50 @@ mapping", which names a column-mapping problem rather than the read that failed.
 
 from __future__ import annotations
 
+import importlib
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS
-from core.training.trainer import UnslothTrainer
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the backend pytest job does not install.
+
+    Same helper, and the same reason, as in test_trainer_stdout_quiet.py:
+    core.training.trainer imports unsloth (and through it unsloth_zoo) and trl at module
+    scope, while the pytest matrix in studio-backend-ci.yml installs studio.txt plus torch
+    and transformers and stops there. Unstubbed, this module fails COLLECTION, which takes
+    the whole job down on every Python version rather than failing one test. Real installs
+    are left alone, so a developer box still exercises the genuine import. __spec__ = None
+    keeps the trainer's own _ensure_real_packages namespace-shadow guard a no-op on the stub.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+        pass
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS  # noqa: E402
+from core.training.trainer import UnslothTrainer  # noqa: E402
 
 _BACKEND = Path(__file__).resolve().parents[1]
 _load_and_format_dataset = UnslothTrainer.load_and_format_dataset
@@ -225,15 +261,21 @@ def test_a_transient_probe_failure_is_rechecked_after_the_tokenizer_loads(monkey
     monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", fake_probe)
     monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
 
-    class _Proc:
-        @classmethod
-        def from_pretrained(cls, *a, **kw):
-            return object()
+    # Patched on the classes, not on the transformers module: transformers is a _LazyModule,
+    # and the `from transformers import AutoProcessor` inside the loader resolves past a
+    # patched module attribute to the real class. Setting the attribute leaves the loader
+    # calling the genuine from_pretrained, which reaches the network and is refused by the
+    # conftest guard -- so the load failed for a reason this test never meant to arrange, and
+    # the assertions below were met through the except-branch instead of the recheck.
+    from transformers import AutoProcessor, AutoTokenizer
 
-    import transformers
+    loaded = object()
 
-    monkeypatch.setattr(transformers, "AutoProcessor", _Proc, raising = False)
-    monkeypatch.setattr(transformers, "AutoTokenizer", _Proc, raising = False)
+    def _fake_from_pretrained(cls, *a, **kw):
+        return loaded
+
+    monkeypatch.setattr(AutoProcessor, "from_pretrained", classmethod(_fake_from_pretrained))
+    monkeypatch.setattr(AutoTokenizer, "from_pretrained", classmethod(_fake_from_pretrained))
 
     trainer = UnslothTrainer()
     trainer.pre_detect_and_load_tokenizer("org/model", is_dataset_audio = True)

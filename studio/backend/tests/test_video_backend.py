@@ -1793,7 +1793,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     monkeypatch.setattr(
         video_mod,
         "apply_memory_plan",
-        lambda pipe, plan, device = None, logger = None: ("model", True),
+        lambda pipe, plan, device = None, placement_device = None, logger = None: ("model", True),
     )
 
     backend = VideoBackend()
@@ -6681,7 +6681,9 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
 
     monkeypatch.setattr(video_mod, "plan_diffusion_memory", _spy)
     monkeypatch.setattr(
-        video_mod, "apply_memory_plan", lambda pipe, plan, device = None, logger = None: ("model", True)
+        video_mod,
+        "apply_memory_plan",
+        lambda pipe, plan, device = None, placement_device = None, logger = None: ("model", True),
     )
 
     VideoBackend().load_pipeline(
