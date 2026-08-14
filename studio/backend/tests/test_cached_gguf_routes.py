@@ -5121,3 +5121,33 @@ def test_the_listing_probe_does_not_read_a_module_that_is_still_importing(monkey
     assert family_pipeline_available(z_image) is False
     partial.ZImagePipeline = object
     assert family_pipeline_available(z_image) is True
+
+
+def test_the_listing_probe_reads_a_vendor_or_prerelease_version(monkeypatch):
+    """A local or pre-release suffix names the release the build was cut from."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    installed = ["0.40.0+dfsg"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    # A vendor rebuild of the release that first shipped the class.
+    assert family_pipeline_available(h3) is True
+    assert family_pipeline_available(z_image) is True
+
+    for version in ("0.40.0rc1", "0.40.0.dev0", "0.40.1+local"):
+        installed[0] = version
+        assert family_pipeline_available(h3) is True, version
+
+    # An older rebuild is still too old.
+    installed[0] = "0.39.0+dfsg"
+    assert family_pipeline_available(h3) is False
+    assert family_pipeline_available(z_image) is True
+
+    # An unreadable version fails open, like a missing one.
+    installed[0] = "unknown"
+    assert family_pipeline_available(h3) is True
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"

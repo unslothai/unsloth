@@ -1203,6 +1203,22 @@ def _installed_diffusers_version() -> Optional[str]:
     return installed.strip() if isinstance(installed, str) and installed.strip() else None
 
 
+def _installed_at_least(installed: str, minimum: str) -> bool:
+    """Whether an INSTALLED version satisfies ``minimum``, judged on its release numbers.
+
+    Not ``_version_tuple``, which is for the clean constants in the table above: a vendor or
+    locally rebuilt diffusers carries a PEP 440 local suffix (``0.40.0+dfsg``) that stops the
+    numeric parse mid-version, so a build that HAS the class reads as older than the release it
+    was cut from. The release segment is the honest comparison for those, and it also keeps a
+    ``.dev0`` git install open, which a strict PEP 440 compare would sort below its own release.
+    An unreadable version answers OPEN, like a missing one."""
+    try:
+        from packaging.version import Version
+        return Version(Version(installed).base_version) >= Version(minimum)
+    except Exception:  # noqa: BLE001 -- an unparseable version must not hide a model
+        return True
+
+
 def family_probe_class(fam: Any) -> str:
     """The class whose presence in the installed diffusers actually proves ``fam`` is loadable.
 
@@ -1259,7 +1275,7 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     installed = _installed_diffusers_version()
     if installed is None:
         return True
-    return _version_tuple(installed) >= _version_tuple(minimum)
+    return _installed_at_least(installed, minimum)
 
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
