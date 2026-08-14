@@ -1334,6 +1334,12 @@ export const hi = {
         "यह डेटासेट अभी इस डिवाइस पर नहीं है। ट्रेनिंग इसे अपने आप डाउनलोड करेगी।",
       noticeDatasetPartial:
         "ट्रेनिंग डेटासेट पढ़ने से पहले उसका अधूरा डाउनलोड पूरा करेगी।",
+      noticeTransformersUpgrade:
+        "इंस्टॉल किया गया कोई भी transformers अभी इस आर्किटेक्चर को सपोर्ट नहीं करता। रन शुरू करने पर पहले transformers {version} इंस्टॉल करने का विकल्प मिलेगा।",
+      noticeSixteenBitOnly:
+        "यह आर्किटेक्चर 16-बिट LoRA में ट्रेन होता है: इसके लिए 4-बिट उपलब्ध नहीं है, इसलिए रन को QLoRA से कहीं अधिक VRAM चाहिए।",
+      noticeInstallSwitchesSixteenBit:
+        "मॉडल के अपने कोड को रखने के बजाय वह रिलीज़ इंस्टॉल करने पर यह रन 16-बिट LoRA में बदल जाता है, जिसे QLoRA से कहीं अधिक VRAM चाहिए।",
       advancedSettings: "उन्नत सेटिंग्स",
       defaultAdvancedSettings: "डिफ़ॉल्ट",
       nonDefaultAdvancedSettings: "{count} गैर-डिफ़ॉल्ट",

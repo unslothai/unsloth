@@ -1325,6 +1325,12 @@ export const ko = {
         "이 데이터셋은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
       noticeDatasetPartial:
         "데이터셋을 읽기 전에 완료되지 않은 다운로드를 마칩니다.",
+      noticeTransformersUpgrade:
+        "설치된 transformers 중 이 아키텍처를 지원하는 버전이 없습니다. 실행을 시작하면 먼저 transformers {version} 설치를 제안합니다.",
+      noticeSixteenBitOnly:
+        "이 아키텍처는 16비트 LoRA로 학습합니다. 4비트를 사용할 수 없어 QLoRA보다 훨씬 많은 VRAM이 필요합니다.",
+      noticeInstallSwitchesSixteenBit:
+        "모델 자체 코드를 유지하는 대신 해당 릴리스를 설치하면 이 실행은 16비트 LoRA로 전환되어 QLoRA보다 훨씬 많은 VRAM이 필요합니다.",
       advancedSettings: "고급 설정",
       defaultAdvancedSettings: "기본값",
       nonDefaultAdvancedSettings: "기본값이 아닌 설정 {count}개",
