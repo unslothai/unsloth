@@ -1833,6 +1833,8 @@ _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
 _shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
 _rewritten = frozenset(('package-lock.json',))
 d = None
+d_rec = False
+selfrec = False
 owners = {}
 rows = []
 for x in importlib.metadata.distributions(path=_paths):
@@ -1847,10 +1849,14 @@ for x in importlib.metadata.distributions(path=_paths):
         record = x.read_text('RECORD') or ''
     except Exception:
         record = ''
+    if mine and record:
+        d_rec = True
     for r in csv.reader(record.splitlines()):
         rel = r[0] if r else ''
         if not rel or rel.endswith('/'):
             continue
+        if mine and rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
+            selfrec = True
         if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
             continue
         f = PurePosixPath(rel.replace(chr(92), '/'))
@@ -1865,19 +1871,23 @@ for x in importlib.metadata.distributions(path=_paths):
 if d is None:
     print('POSTVER=__MISSING__')
     sys.exit(0)
-damaged = False
-for f, sz, key in rows:
-    try:
-        st = d.locate_file(f).stat()
-    except OSError:
-        damaged = True
-        break
-    if not stat.S_ISREG(st.st_mode):
-        damaged = True
-        break
-    if owners.get(key, 0) == 1 and sz.isdigit() and f.name not in _rewritten and st.st_size < int(sz):
-        damaged = True
-        break
+# a RECORD that does not list itself is a truncated RECORD: installers write the
+# self-entry last, so an interrupted write cuts it off, and the surviving prefix
+# would otherwise validate only the files it still names
+damaged = d_rec and not selfrec
+if not damaged:
+    for f, sz, key in rows:
+        try:
+            st = d.locate_file(f).stat()
+        except OSError:
+            damaged = True
+            break
+        if not stat.S_ISREG(st.st_mode):
+            damaged = True
+            break
+        if owners.get(key, 0) == 1 and sz.isdigit() and f.name not in _rewritten and st.st_size < int(sz):
+            damaged = True
+            break
 tops = (d.read_text('top_level.txt') or '').split()
 if not rows and not damaged and tops:
     damaged = not all(importlib.util.find_spec(t) for t in tops if t)
@@ -2075,15 +2085,19 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
             _UPDATE_OK=true
         elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && "$VENV_DIR/bin/python" -I -c "
 import re, sys
-def nums(v):
+def split(v):
     m = re.match(r'\d+(\.\d+)*', v)
     if not m: sys.exit(1)
-    return [int(x) for x in m.group(0).split('.')]
+    return [int(x) for x in m.group(0).split('.')], v[m.end():].lower()
 try:
     from packaging.version import Version
     ok = Version(sys.argv[1]) >= Version(sys.argv[2])
 except Exception:
-    ok = nums(sys.argv[1]) >= nums(sys.argv[2])
+    a, ra = split(sys.argv[1])
+    b, rb = split(sys.argv[2])
+    # equal numeric prefixes: a pre/dev suffix orders BELOW the final release
+    # (1.0rc1 < 1.0), while .post and +local order at-or-above it
+    ok = a > b or (a == b and not re.match(r'[-._]?(a|b|c|rc|alpha|beta|pre|preview|dev)', ra))
 sys.exit(0 if ok else 1)
 " "$POST_VER" "$LATEST_VER" 2>/dev/null; then
             # newer than announced is fine (a release can land mid-update); PEP 440
