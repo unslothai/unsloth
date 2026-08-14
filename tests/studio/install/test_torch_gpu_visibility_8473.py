@@ -1011,6 +1011,25 @@ def test_every_arch_unsloth_routes_gpu_wheels_to_is_in_the_posix_gate():
     )
 
 
+def test_windows_demotes_a_non_x86_host_too():
+    """The arch list answers "does this GPU have wheels", not "does this HOST get them".
+
+    setup.sh demotes on `uname -m` because PyTorch and AMD both publish per-arch ROCm wheels for
+    one platform each (linux x86_64, win_amd64), so a host outside that reads as wheeled, is
+    correctly given CPU torch, and would then be accused on every update of the documented
+    routing. Windows needs the same demotion for the same reason, scoped to the AMD term so an
+    ARM64 NVIDIA host keeps its CUDA wheels and is still reconciled.
+    """
+    text = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+    start = text.index("$AmdHasGpuWheels = [bool](")
+    end = text.index("\n)", start)
+    assign = text[start:end]
+    assert "Get-HostMachineArch" in assign and '-ne "arm64"' in assign, (
+        "$AmdHasGpuWheels no longer demotes an ARM64 host, so a Windows-on-ARM box whose arch is "
+        "in $_rocmWheelArches would be accused of a fault that is the documented routing."
+    )
+
+
 def test_the_posix_gate_covers_the_windows_list():
     """setup.sh's list is a superset of setup.ps1's, never a divergent one: the delta is
     Linux-only by construction (gfx906 / gfx942 / gfx950 have no Windows ROCm wheels)."""

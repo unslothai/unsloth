@@ -168,12 +168,16 @@ Check "a broken torch internal warns"     ((Test-Warns "ModuleNotFoundError: No 
 Check "a timeout still warns"             ((Test-Warns "python did not answer within 90 seconds").Count -gt 0)
 Check "an OSError still warns"            ((Test-Warns "OSError: [WinError 126] The specified module could not be found").Count -gt 0)
 
-# The reason is quoted from the FIRST non-empty line only. Interpolating the whole .Error put a
+# The reason is quoted from the LAST non-empty line only. Interpolating the whole .Error put a
 # raw multi-line traceback through `substep`, which pads only its first line -- and line two of a
-# CPython SyntaxError traceback is the entire 250-character probe source.
+# CPython SyntaxError traceback is the entire 250-character probe source. The last line is the one
+# worth keeping: CPython puts the exception type and message there, while the first line is the
+# fixed "Traceback (most recent call last):" banner that says nothing about what went wrong.
 $_multi = Test-Warns "Traceback (most recent call last):`n  File `"<string>`", line 1`n    import signal; signal.alarm(90); import torch`nOSError: [WinError 126]"
 Check "the warning is not a traceback"    ($_multi.Count -eq 2)
-Check "it quotes the first line only"     ($_multi[0] -match 'Traceback \(most recent call last\):$')
+Check "it quotes one line, the useful one" ($_multi[0] -match 'OSError: \[WinError 126\]$')
+Check "it does not quote the banner"      (-not ($_multi[0] -match 'Traceback \(most recent call last\):'))
+Check "it never leaks the probe source"   (-not ($_multi[0] -match 'signal\.alarm'))
 Check "and carries no probe source"       (-not ($_multi -match 'signal\.alarm'))
 Check "it says how to reproduce"          ($_multi[1] -match 'torch\.cuda\.is_available\(\)')
 # A non-zero exit with no stderr, or stdout that misses the line anchor, left a WARN ending in a

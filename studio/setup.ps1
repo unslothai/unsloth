@@ -2730,7 +2730,17 @@ $_rocmWheelArches = @(
 )
 # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
 # unmapped arches (Vega, RDNA1) too, and those install CPU torch.
-$AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+# The arch list answers "does this GPU have wheels", not "does this HOST get them". AMD publishes
+# win_amd64 only under repo.amd.com/rocm/whl/<family>, so an ARM64 host whose arch happens to be
+# listed reads as wheeled, correctly receives CPU torch, and would then be accused on every
+# `unsloth studio update` of a fault that is the documented routing. setup.sh demotes on the same
+# grounds via `uname -m`. Scoped to the AMD term exactly as setup.sh scopes it, so ARM64 NVIDIA
+# keeps its CUDA wheels and is still reconciled.
+$AmdHasGpuWheels = [bool](
+    $script:ROCmGfxArch -and
+    ($_rocmWheelArches -contains $script:ROCmGfxArch) -and
+    ((Get-HostMachineArch) -ne "arm64")
+)
 
 # Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after
 # install.ps1 reported a usable Arc GPU. Self-contained, because `studio update` runs setup.ps1
@@ -5642,9 +5652,15 @@ if ($_gpuCheckAnnounced -and -not $NoTorchMode -and ($_gpuCheckPinLeaf -ne "cpu"
             # only its first line, and the second line of a CPython SyntaxError traceback is the
             # whole 250-character probe source. It can also be empty -- a non-zero exit with no
             # stderr, or stdout that misses the line anchor -- leaving a WARN with nothing after
-            # the colon. The first line alone carries the reason without either failure.
+            # the colon. One line alone carries the reason without either failure.
+            # The LAST line, not the first: CPython puts the exception type and message there and
+            # the banner first, so taking the first reported "Traceback (most recent call last):"
+            # on every real failure and threw away the only useful part -- including
+            # "OSError: [WinError 126] The specified module could not be found.", which is the
+            # single most common way torch fails to import on Windows. Still one line, and still
+            # never the probe source: that is line two of a SyntaxError traceback, never the last.
             $_gpuCheckWhy = @("$($_gpuVisibility.Error)" -split "`r?`n" |
-                Where-Object { $_.Trim() -ne "" } | Select-Object -First 1)
+                Where-Object { $_.Trim() -ne "" } | Select-Object -Last 1)
             $_gpuCheckWhy = if ($_gpuCheckWhy.Count -gt 0) { ": $($_gpuCheckWhy[0].Trim())" } else { "" }
             substep "[WARN] could not check whether PyTorch sees this GPU$_gpuCheckWhy" "Yellow"
             substep "       $_gpuCheckPy -c `"import torch; print(torch.cuda.is_available())`"" "Yellow"
