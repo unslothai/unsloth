@@ -630,7 +630,13 @@ def _metadata_host(hostname: str) -> bool:
 #   * it is bounded and cached, so a dead resolver cannot stall each request.
 #     A client is built per request and the route validates the same URL again,
 #     so the cache is what keeps a request to one lookup.
-_DNS_TIMEOUT_SECONDS = 2.0
+# Short on purpose. This validator is sync and called from async handlers, so
+# the wait is the event loop's wait, and every millisecond of it is shared by
+# every concurrent request. A provider hostname that a resolver can answer at
+# all is answered well inside this; past it the answer is treated as unknown,
+# which the default path allows and the opt-in path re-asks for without a bound.
+# So a longer deadline buys accuracy for nobody and costs latency for everyone.
+_DNS_TIMEOUT_SECONDS = 0.5
 _DNS_CACHE_TTL_SECONDS = 300.0
 _DNS_CACHE_MAX_ENTRIES = 512
 # hostname -> (expiry, addresses). Only answers land here; a failure and a
