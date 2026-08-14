@@ -134,6 +134,21 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (pack_id) REFERENCES packs(id)
         );
         CREATE INDEX IF NOT EXISTS idx_pack_items_pack ON pack_items(pack_id);
+
+        CREATE TABLE IF NOT EXISTS adapters (
+            id TEXT NOT NULL PRIMARY KEY,
+            pack_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            backend TEXT NOT NULL,
+            base_model TEXT NOT NULL,
+            recipe TEXT NOT NULL,
+            path TEXT NOT NULL,
+            metrics TEXT,
+            created_at TEXT NOT NULL,
+            promoted_at TEXT,
+            FOREIGN KEY (pack_id) REFERENCES packs(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_adapters_status ON adapters(status);
         """
     )
     _add_missing_columns(conn)

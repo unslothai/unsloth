@@ -333,3 +333,80 @@ def test_pack_and_packs_help_include_db(capsys):
             assert PACK_FIRST_DRY_RUN_HELP in out
             assert "--dry-run" in out
 
+
+def _voted_procedures(db_path, n: int = 4) -> None:
+    for i in range(n):
+        rec = insert_record(
+            kind="procedure",
+            title=f"Playbook {i}",
+            body=f"steps {i}",
+            provenance="world",
+            db_path=db_path,
+        )
+        insert_retrieve_use(
+            episode_id=f"ep-{i}",
+            record_id=rec["id"],
+            contact="world",
+            db_path=db_path,
+        )
+        insert_rollout(
+            episode_id=f"ep-{i}",
+            contact="world",
+            outcome="pass",
+            summary="ok",
+            db_path=db_path,
+        )
+
+
+def test_train_fake_exits_0_and_adapters_lists_shadow(db_path, capsys):
+    _voted_procedures(db_path)
+    assert main(["pack", "--db", str(db_path)]) == 0
+    packed = json.loads(capsys.readouterr().out)
+    assert packed["n_train"] >= 4
+    assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
+    trained = json.loads(capsys.readouterr().out)
+    assert trained["backend"] == "fake"
+    assert trained["adapter_id"]
+    assert main(["adapters", "--db", str(db_path)]) == 0
+    listed = capsys.readouterr().out
+    assert trained["adapter_id"][:8] in listed
+    assert "shadow" in listed
+
+
+def test_train_unsloth_without_base_exits_2(db_path):
+    assert main(["train", "--backend", "unsloth", "--db", str(db_path)]) == 2
+    import sys
+
+    assert "torch" not in sys.modules
+
+
+def test_rollback_works(db_path, capsys):
+    _voted_procedures(db_path)
+    assert main(["pack", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
+    trained = json.loads(capsys.readouterr().out)
+    assert main(["promote", trained["adapter_id"], "--force", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert main(["rollback", "--db", str(db_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "discarded"
+    assert payload["id"] == trained["adapter_id"]
+    assert main(["rollback", "--db", str(db_path)]) == 0
+    empty = json.loads(capsys.readouterr().out)
+    assert empty == {"promoted": None}
+
+
+def test_train_adapters_rollback_promote_help_include_db(capsys):
+    for cmd in ("train", "adapters", "rollback", "promote"):
+        try:
+            main([cmd, "--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+        else:
+            raise AssertionError(f"{cmd} --help should exit")
+        out = capsys.readouterr().out
+        assert "--db" in out
+        if cmd == "promote":
+            assert "--force" in out
+

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Parametric sidecar (C). Pack construction only in this slice; do not train from here."""
+"""Parametric sidecar (C). Pack construction and shadow adapters."""
 
 from __future__ import annotations
 

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -45,7 +46,14 @@ from unforgettable.store.records import (
     list_rollouts,
     set_record_status,
 )
+from unforgettable.sidecar.adapters import (
+    ADAPTER_STATUSES,
+    list_adapters,
+    promote_adapter,
+    rollback_adapter,
+)
 from unforgettable.sidecar.pack import list_packs, pack_from_admitted_b
+from unforgettable.sidecar.train import FAKE_BASE_MODEL, FakeTrainBackend, train_pack
 from unforgettable.store.search import search_records
 
 DEFAULT_SEARCH_TOP = 20
@@ -55,6 +63,10 @@ DEFAULT_LIST_STATUS = "all"
 DB_ENV_NAME = "UNFORGETTABLE_DB"
 TABLE_ID_CHARS = 8
 CLI_ROLLOUT_SUMMARY_CHARS = 60
+CLI_ADAPTER_PATH_CHARS = 56
+TRAIN_RECIPES = ("sft", "distill", "preference")
+TRAIN_BACKENDS = ("fake", "unsloth")
+UNSLOTH_BASE_REQUIRED = "--base is required when --backend is unsloth"
 CLI_ADMIT_REASON = "cli admit"
 CLI_REJECT_REASON = "cli reject"
 UNKNOWN_ID_EXIT = 2
@@ -351,6 +363,93 @@ def _cmd_packs(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _default_train_backend() -> str:
+    return "unsloth" if importlib.util.find_spec("unsloth") else "fake"
+
+
+def _clip_adapter_path(path: str) -> str:
+    text = path or ""
+    if len(text) <= CLI_ADAPTER_PATH_CHARS:
+        return text
+    return "..." + text[-(CLI_ADAPTER_PATH_CHARS - 3) :]
+
+
+def _cmd_train(args: argparse.Namespace, db_path: Path) -> int:
+    backend_name = args.backend or _default_train_backend()
+    if backend_name == "unsloth":
+        if not (args.base or "").strip():
+            print(UNSLOTH_BASE_REQUIRED, file=sys.stderr)
+            return UNKNOWN_ID_EXIT
+        from unforgettable.sidecar.train import UnslothTrainBackend
+
+        backend = UnslothTrainBackend()
+        base_model = args.base
+    else:
+        backend = FakeTrainBackend()
+        base_model = args.base or FAKE_BASE_MODEL
+    if args.pack:
+        pack_id = args.pack
+    else:
+        packs = list_packs(limit=1, db_path=db_path)
+        if not packs:
+            print("no packs; run pack first", file=sys.stderr)
+            return UNKNOWN_ID_EXIT
+        pack_id = packs[0]["id"]
+    try:
+        result = train_pack(
+            pack_id,
+            backend=backend,
+            base_model=base_model,
+            recipe=args.recipe,
+            db_path=db_path,
+        )
+    except (ValueError, NotImplementedError) as exc:
+        print(str(exc), file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    _print_json(asdict(result))
+    return 0
+
+
+def _cmd_adapters(args: argparse.Namespace, db_path: Path) -> int:
+    rows = list_adapters(status=args.status, db_path=db_path)
+    _print_aligned(
+        ("id", "status", "recipe", "backend", "pack", "path"),
+        [
+            (
+                rec["id"][:TABLE_ID_CHARS],
+                rec["status"],
+                rec.get("recipe") or "",
+                rec.get("backend") or "",
+                (rec.get("pack_id") or "")[:TABLE_ID_CHARS],
+                _clip_adapter_path(rec.get("path") or ""),
+            )
+            for rec in rows
+        ],
+    )
+    return 0
+
+
+def _cmd_promote(args: argparse.Namespace, db_path: Path) -> int:
+    try:
+        row = promote_adapter(args.id, force=args.force, db_path=db_path)
+    except KeyError:
+        return _unknown_id(args.id)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    _print_json(row)
+    return 0
+
+
+def _cmd_rollback(_args: argparse.Namespace, db_path: Path) -> int:
+    row = rollback_adapter(db_path=db_path)
+    if row is None:
+        _print_json({"promoted": None})
+        return 0
+    _print_json(row)
+    return 0
+
+
 def _cmd_load(args: argparse.Namespace, db_path: Path) -> int:
     rows = list_inject_stats(limit=args.limit, db_path=db_path)
     _print_aligned(
@@ -579,6 +678,63 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_flag(packs_p)
     packs_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
     packs_p.set_defaults(func=_cmd_packs)
+
+    train_p = sub.add_parser(
+        "train",
+        help="Train a shadow adapter from a pack (fake backend in tests).",
+    )
+    _add_db_flag(train_p)
+    train_p.add_argument("--pack", default=None, help="Pack id (default: latest pack).")
+    train_p.add_argument(
+        "--backend",
+        choices=TRAIN_BACKENDS,
+        default=None,
+        help="Training backend (default: unsloth if importable, else fake).",
+    )
+    train_p.add_argument(
+        "--base",
+        default=None,
+        help="Base model id. Required for --backend unsloth; defaults to fake for fake.",
+    )
+    train_p.add_argument(
+        "--recipe",
+        choices=TRAIN_RECIPES,
+        default="sft",
+        help="Train recipe (default: sft).",
+    )
+    train_p.set_defaults(func=_cmd_train)
+
+    adapters_p = sub.add_parser(
+        "adapters",
+        help="List adapters as a compact table.",
+    )
+    _add_db_flag(adapters_p)
+    adapters_p.add_argument(
+        "--status",
+        choices=sorted(ADAPTER_STATUSES),
+        default=None,
+    )
+    adapters_p.set_defaults(func=_cmd_adapters)
+
+    promote_p = sub.add_parser(
+        "promote",
+        help="Promote a shadow adapter. Refuses without eval metrics unless --force.",
+    )
+    _add_db_flag(promote_p)
+    promote_p.add_argument("id")
+    promote_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip the eval gate (promote without adapter_lean metrics).",
+    )
+    promote_p.set_defaults(func=_cmd_promote)
+
+    rollback_p = sub.add_parser(
+        "rollback",
+        help="Discard the current promoted adapter. Does not delete files.",
+    )
+    _add_db_flag(rollback_p)
+    rollback_p.set_defaults(func=_cmd_rollback)
 
     return parser
 
