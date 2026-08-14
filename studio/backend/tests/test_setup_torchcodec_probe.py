@@ -102,8 +102,10 @@ def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
     # torchcodec is installed and importing it raises the same class an absent one
     # would. Reporting that as absent leaves a damaged install with no warning.
     assert _probe(_raising("ModuleNotFoundError('no numpy', name = 'numpy')")) == "broken"
-    # ...and the submodule form still belongs to torchcodec itself.
-    assert _probe(_raising("ModuleNotFoundError('gone', name = 'torchcodec.decoders')")) == "absent"
+    # A damaged wheel missing one of torchcodec's own submodules is the same story:
+    # the package is there. Only the top-level name is absent, which is the only
+    # name an actually-absent package can raise from `import torchcodec`.
+    assert _probe(_raising("ModuleNotFoundError('gone', name = 'torchcodec.decoders')")) == "broken"
 
 
 def test_the_state_is_read_as_a_line_not_as_all_of_stdout():

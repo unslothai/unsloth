@@ -6128,10 +6128,10 @@ if _alarm is not None:
 try:
     import torchcodec  # noqa: F401
 except ModuleNotFoundError as e:
-    # Only torchcodec itself missing is absent. A transitive module raises the
-    # same class, and that install is present but damaged.
-    _missing = (getattr(e, 'name', '') or '').split('.')[0]
-    print('TORCHCODEC=' + ('absent' if _missing == 'torchcodec' else 'broken'))
+    # Exactly torchcodec is absent. An absent package always names itself here, so
+    # anything else, a transitive module or one of its own submodules from a
+    # damaged wheel, is an install that is present and broken.
+    print('TORCHCODEC=' + ('absent' if getattr(e, 'name', '') == 'torchcodec' else 'broken'))
 except Exception:
     import traceback
     # torchcodec folds every native load failure into one message naming
