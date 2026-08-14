@@ -1,4 +1,4 @@
-Here's the updated code for `studio/frontend/tests/adopt-legacy-config-key.test.ts` and `.gitattributes` files:
+Here are the updated files:
 
 **.gitattributes**
 
@@ -44,7 +44,17 @@ describe('adoptLegacyConfigKey', () => {
     expect(adoptedConfig).toHaveProperty('entryBudget', 100);
     expect(adoptedConfig).toHaveProperty('byteBudget', 100);
   });
+
+  it('should handle non-default config key', () => {
+    const config = {
+      legacyConfig: {
+        configKey: 'non-default-key',
+      },
+    };
+    const adoptedConfig = adoptLegacyConfigKey(config);
+    expect(adoptedConfig).toHaveProperty('configKey', 'non-default-key');
+  });
 });
 ```
 
-I have added the Python LF normalization rule back to `.gitattributes` and modified it to keep the existing rule and add a new rule for TypeScript normalization. I have also restored the adoptLegacyConfigKey regression tests in `adopt-legacy-config-key.test.ts` to ensure proper test coverage.
+I have added a new test case to `adopt-legacy-config-key.test.ts` to cover the scenario where the model's configuration key is not set to the default value.
