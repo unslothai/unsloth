@@ -22,6 +22,10 @@ export interface ProviderRegistryEntry {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
+  /** Studio runs its own tool loop (search/code/MCP/RAG) against this provider. */
+  supports_studio_tools?: boolean;
+  /** Backend-only entry, surfaced through a custom preset rather than the dropdown. */
+  hidden?: boolean;
   /** remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only */
   model_list_mode?: "remote" | "curated";
 
@@ -131,7 +135,11 @@ export async function encryptProviderApiKey(
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  const response = await authFetch("/api/providers/registry");
+  // include_hidden asks for the backend-only entries (the self-hosted presets),
+  // which carry the studio-tools capability the composer gates on. An older
+  // backend ignores the parameter and returns the visible entries, so the
+  // capability simply reads as unknown and the pills stay closed.
+  const response = await authFetch("/api/providers/registry?include_hidden=true");
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
 

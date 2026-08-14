@@ -337,7 +337,7 @@ const PastedTextAttachmentUI: FC<{
       </span>
       <span className="flex min-w-0 flex-col">
         <span className="truncate font-medium text-xs">{name}</span>
-        <span className="truncate text-[11px] text-muted-foreground">
+        <span className="truncate text-ui-11 text-muted-foreground">
           {/* Hover swaps the size for the action. */}
           <span className={isComposer ? "group-hover:hidden" : undefined}>
             {bytes === undefined ? "Pasted text" : formatBytes(bytes)}
