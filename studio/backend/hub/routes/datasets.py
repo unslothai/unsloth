@@ -104,12 +104,7 @@ async def get_dataset_download_progress(
     )
 
 
-@router.post(
-    "/download",
-    response_model = DatasetDownloadStartResponse,
-    status_code = 202,
-    dependencies = [needs_datasets],
-)
+@router.post("/download", response_model = DatasetDownloadStartResponse, status_code = 202)
 async def download_dataset(
     body: DownloadDatasetRequest,
     hf_token: Optional[str] = Depends(get_hf_token),

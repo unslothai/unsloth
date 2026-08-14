@@ -275,6 +275,9 @@ _GATE=$(mktemp)
     # $2 is the --shortcuts-only flag: the gate only judges a run that will
     # actually select an interpreter.
     printf '_USER_PYTHON="$1"\n_SHORTCUTS_ONLY="${2:-false}"\n'
+    # The verdicts moved into _check_python_request so a path-style request reaches
+    # them too, so the function comes along with the block that calls it.
+    sed -n '/^_check_python_request()/,/^}/p' "$INSTALL_SH"
     awk '/^if \[ -n "\$_USER_PYTHON" \] && \[ "\$_SHORTCUTS_ONLY" != true \]; then$/{f=1} f{print} f && /^fi$/{exit}' "$INSTALL_SH"
 } > "$_GATE"
 grep -q '_req_minor' "$_GATE" || { echo "  FAIL: could not extract the python range gate"; FAIL=$((FAIL + 1)); }
@@ -310,6 +313,19 @@ assert_eq "3.14 warns but continues" \
 # Not versions at all, and not this gate's business.
 assert_eq "an explicit interpreter path passes through" \
     "accepted" "$(run_python_gate /usr/bin/python3.12)"
+# A path names an interpreter as surely as "3.9" does. Real executables, built here,
+# because the gate asks the interpreter rather than parsing its name.
+_FAKE_DIR=$(mktemp -d)
+printf '#!/bin/sh\necho "3.9"\n' > "$_FAKE_DIR/py39"
+printf '#!/bin/sh\necho "3.12"\n' > "$_FAKE_DIR/py312"
+chmod +x "$_FAKE_DIR/py39" "$_FAKE_DIR/py312"
+assert_eq "a path to an unsupported interpreter is rejected" \
+    "rejected" "$(run_python_gate "$_FAKE_DIR/py39")"
+assert_eq "a path to a supported interpreter is accepted" \
+    "accepted" "$(run_python_gate "$_FAKE_DIR/py312")"
+assert_eq "a path that cannot be run is left to the steps that resolve it" \
+    "accepted" "$(run_python_gate "$_FAKE_DIR/does-not-exist")"
+rm -rf "$_FAKE_DIR"
 assert_eq "a uv download name passes through" \
     "accepted" "$(run_python_gate cpython-3.12-linux-aarch64-none)"
 assert_eq "a prerelease string passes through instead of aborting dash" \

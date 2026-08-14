@@ -684,10 +684,21 @@ export function AppSidebar() {
   // rows on a measured verdict and let them spin until it lands.
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
   const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
+  // Training needs the datasets library as well as a device that can train. Read
+  // separately, because the reduced install tier removes only the first: an x64 host
+  // that opted into it keeps its GPU, safetensors inference, Video and Hub Run.
+  const datasetsAvailable = usePlatformStore((s) => s.datasetsAvailable);
+  const datasetsDetail = usePlatformStore((s) => s.datasetsUnavailableDetail);
+  const datasetsMissing = !datasetsAvailable && !capabilitiesUnknown;
+  const trainingBlocked = chatOnlyMeasured || datasetsMissing;
   // Explain a greyed-out Train (chat-only host) on hover. Export stays navigable so its page
   // can show a precise reason.
-  const trainDisabledHint: string | undefined = !chatOnlyMeasured
+  const trainDisabledHint: string | undefined = !trainingBlocked
     ? undefined
+    : datasetsMissing && !chatOnlyMeasured
+      ? datasetsDetail
+        ? `Training needs the datasets library. ${datasetsDetail}`
+        : "Training needs the datasets library, which this installation does not have."
     : chatOnlyReason === "mlx_unavailable"
       ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
         // backtrack leaves a stack that is present but unusable. Naming the package
@@ -714,7 +725,8 @@ export function AppSidebar() {
   // The one feature besides Train that this tier cannot serve at all. Keyed off the
   // reason rather than chat_only, so an Intel Mac or a GPU-less Linux box -- chat-only
   // for hardware reasons but with datasets installed -- keeps Data Recipes.
-  const datasetsUnavailable = chatOnlyMeasured && chatOnlyReason === "datasets_unavailable";
+  const datasetsUnavailable =
+    datasetsMissing || (chatOnlyMeasured && chatOnlyReason === "datasets_unavailable");
   // Same reason the Train hint takes its wording from the backend: this branch is
   // reachable off ARM64 Windows, and telling a Linux user to install x64 Python is
   // advice for a machine they are not sitting at.
@@ -1201,13 +1213,13 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnlyMeasured,
+      disabled: trainingBlocked,
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
-        if (chatOnlyMeasured) return;
+        if (trainingBlocked) return;
         navigate({ to: "/studio" });
         closeMobileIfOpen();
       },

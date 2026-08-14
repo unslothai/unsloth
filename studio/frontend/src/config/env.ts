@@ -31,6 +31,11 @@ interface PlatformState {
   // MLX gate does: it is all-or-nothing across mlx, mlx-lm and mlx-vlm, so without this
   // the greyed-out Train row can only repeat "run `unsloth studio update`".
   chatOnlyDetail: string | null;
+  // Whether this install has the datasets library, which is what Train and Data
+  // Recipes need. Separate from chatOnly: the reduced install tier keeps the GPU and
+  // every inference feature on x64 and loses only these. True until told otherwise.
+  datasetsAvailable: boolean;
+  datasetsUnavailableDetail: string | null;
   // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
   // whether the server was launched with --secure.
   cloudflareUrl: string | null;
@@ -68,6 +73,8 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
   chatOnlyDetail: null,
+  datasetsAvailable: true,
+  datasetsUnavailableDetail: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -155,6 +162,8 @@ export async function fetchDeviceType(options?: {
         device_type?: string;
         chat_only?: boolean;
         chat_only_reason?: string | null;
+        datasets_available?: boolean;
+        datasets_unavailable_detail?: string | null;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -189,6 +198,11 @@ export async function fetchDeviceType(options?: {
         chatOnly,
         chatOnlyReason,
         chatOnlyDetail,
+        // Omitted by a provisional or unauthenticated reply, which must not flip a
+        // measured false back to true and re-enable Train on a tier install.
+        datasetsAvailable: data.datasets_available ?? previous.datasetsAvailable,
+        datasetsUnavailableDetail:
+          data.datasets_unavailable_detail ?? previous.datasetsUnavailableDetail,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

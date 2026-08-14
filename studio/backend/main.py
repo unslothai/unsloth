@@ -184,6 +184,8 @@ from utils.native_tls import activate_native_tls
 
 # Cheap and import-safe without the library present: find_spec only, no datasets import.
 from utils.datasets_availability import (
+    _is_arm64_windows,
+    datasets_available,
     is_inference_only_tier,
     require_datasets_http,
     unavailable_detail as datasets_unavailable_detail,
@@ -1463,12 +1465,13 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
     # #8495). Not inside detect_hardware(): every training-capable branch there
     # returns early, and this is the one place the verdict is published.
     #
-    # The TIER, not merely a missing `datasets`. chat_only takes safetensors models,
-    # Video and the Hub's Run button away from the whole UI, which is the truth on a
-    # torch-less ARM64 install and a lie on a GPU box whose venv lost the library to
-    # a half-finished update. Those hosts keep their own hardware verdict here and
-    # meet the 503 gate at the endpoints that actually need datasets.
-    if is_inference_only_tier():
+    # The TIER, and on the interpreter it was built for. chat_only takes safetensors
+    # models, Video and the Hub's Run button away from the whole UI: true on a native
+    # ARM64 install, which is CPU-only and torch-limited anyway, and false on an x64
+    # GPU box that opted into UNSLOTH_NO_DATASETS and can still run all three. What the
+    # tier really removes is training and the data features, and `datasets_available`
+    # below carries that on its own, so those hosts keep their hardware verdict here.
+    if is_inference_only_tier() and _is_arm64_windows():
         return True, "datasets_unavailable", datasets_unavailable_detail()
     for _ in range(3):
         if not _hw_module.DETECTION_COMPLETE.is_set():
@@ -1737,6 +1740,12 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
+        # Training and the data features, separately from chat_only: an x64 host that
+        # opted into the reduced tier keeps its GPU and every inference feature, and
+        # only loses these. Answered from the interpreter, so it needs no hardware pass.
+        authed["datasets_available"] = datasets_available()
+        if not authed["datasets_available"]:
+            authed["datasets_unavailable_detail"] = datasets_unavailable_detail()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
