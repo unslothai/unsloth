@@ -116,8 +116,8 @@ ALLOWED_PINVOKES = {
     # case or an 8.3 name would let two installers each believe they hold the lock.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
-    # ANSI colour on legacy conhost only: under Windows Terminal the compile is skipped, see
-    # test_virtual_terminal_asks_the_host_before_compiling.
+    # ANSI colour on a real console. Skipped entirely when stdout is redirected, see
+    # test_virtual_terminal_answers_a_redirected_stream_without_compiling.
     "GetStdHandle",
     "GetConsoleMode",
     "SetConsoleMode",
@@ -153,13 +153,13 @@ def test_no_new_native_imports(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
-def test_virtual_terminal_asks_the_host_before_compiling(name: str) -> None:
-    """Add-Type runs the C# compiler, so the free answer has to be tried first.
+def test_virtual_terminal_answers_a_redirected_stream_without_compiling(name: str) -> None:
+    """Add-Type runs the C# compiler, so the answer we already know must come first.
 
-    All three conjuncts are required. WT_SESSION is INHERITED, so install.rs's console-less
-    spawn carries it while writing to a pipe: without the redirect check the Studio log panel
-    renders raw escape sequences. And the capability property reports what the HOST can render,
-    not whether this buffer has the mode set, so it cannot decide alone either.
+    Only the redirected case is decided early, and it is decided FALSE. A redirected stdout is
+    not a console, GetConsoleMode fails on a non-console handle, and the compiled path could
+    only have returned false too. Anything that claimed VT here would put raw escape sequences
+    in the Studio log panel, which is a pipe.
     """
     text = _text(name)
     start = text.index("function Enable-StudioVirtualTerminal")
@@ -167,17 +167,15 @@ def test_virtual_terminal_asks_the_host_before_compiling(name: str) -> None:
     call = re.compile(r"(?m)^[ \t]*Add-Type\b").search(text, start)
     assert call, f"{name} no longer compiles the console thunk; update this guard"
     compile_at = call.start()
-    fast_path = text.index("$env:WT_SESSION", start)
+    fast_path = text.index("if ($script:StudioStdoutRedirected) { return $false }", start)
     assert fast_path < compile_at, (
         f"{name} compiles C# for colour before asking the host: move the WT_SESSION check above "
         f"Add-Type, or every install spawns csc.exe again."
     )
-    guard = text[fast_path:compile_at]
-    for conjunct in ("-not $script:StudioStdoutRedirected", "$Host.UI.SupportsVirtualTerminal"):
-        assert conjunct in guard, (
-            f"{name} skips the compile without requiring `{conjunct}`, so it can claim VT on a "
-            f"stream that cannot render it"
-        )
+    assert "$true" not in text[fast_path:compile_at], (
+        f"{name} returns something other than $false before the compile. The early answer is "
+        f"only sound because a redirected stream can never render VT."
+    )
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)

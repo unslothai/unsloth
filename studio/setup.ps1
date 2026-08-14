@@ -1615,16 +1615,11 @@ $Rule = [string]::new([char]0x2500, 52)
 
 function Enable-StudioVirtualTerminal {
     if ($env:NO_COLOR) { return $false }
-    # Windows Terminal always renders VT and sets WT_SESSION, so there is nothing to turn on and
-    # the Add-Type below can be skipped: it compiles C#, which spawns csc.exe and drops source in
-    # %TEMP% on every run. Both conjuncts are load-bearing. WT_SESSION is INHERITED, so the app's
-    # console-less spawn carries it while writing to a pipe; without the redirect check the Studio
-    # log panel would get raw escapes. And the capability property alone is what the HOST can
-    # render, not proof this buffer has ENABLE_VIRTUAL_TERMINAL_PROCESSING.
-    try {
-        if ($env:WT_SESSION -and -not $script:StudioStdoutRedirected `
-            -and $Host.UI.SupportsVirtualTerminal) { return $true }
-    } catch {}
+    # A redirected stdout is not a console, GetConsoleMode fails on a non-console handle, and the
+    # block below can then only reach `return $false`. Answer that without the compiler: Add-Type
+    # runs csc.exe and drops source in %TEMP%. This is the path the CLI and the desktop app both
+    # take, where stdout is a pipe, so it is where the compile actually happened.
+    if ($script:StudioStdoutRedirected) { return $false }
     try {
         Add-Type -Namespace StudioVT -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);

@@ -623,15 +623,11 @@ def _console_less_probe(path: Path) -> str:
 
 
 @lru_cache(maxsize = None)
-def _run_console_less(
-    path: Path,
-    source: str | None = None,
-    env: dict[str, str] | None = None,
-) -> tuple[int, bytes, str]:
+def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes, str]:
     """Spawn the probe the way install.rs spawns the installer, and read bytes.
 
-    `source` and `env` are for the VT parity case, which runs this file's own function
-    beside the one it replaced under the same environment.
+    `source` is for the VT parity case, which runs this file's own function beside the one it
+    replaced. A str keeps the lru_cache above workable; a dict would not hash.
     """
     with tempfile.TemporaryDirectory() as workdir:
         # A file written here has no Zone.Identifier, so RemoteSigned admits it.
@@ -644,7 +640,6 @@ def _run_console_less(
             stderr = subprocess.PIPE,
             creationflags = CREATE_NO_WINDOW,
             timeout = 180,
-            env = env,
         )
     return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", errors = "replace")
 
@@ -743,10 +738,7 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
 # to reconstruct the function it replaced, so parity is measured against the real predecessor
 # rather than asserted about it.
 _VT_FAST_PATH = re.compile(
-    r"(?m)^[ \t]*try \{\n"
-    r"[ \t]*if \(\$env:WT_SESSION -and -not \$script:StudioStdoutRedirected `\n"
-    r"[ \t]*-and \$Host\.UI\.SupportsVirtualTerminal\) \{ return \$true \}\n"
-    r"[ \t]*\} catch \{\}\n"
+    r"(?m)^[ \t]*if \(\$script:StudioStdoutRedirected\) \{ return \$false \}\n"
 )
 
 
@@ -770,33 +762,23 @@ def _vt_verdict(err: str) -> str:
 @windows_only
 @powershell_51_only
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
-@pytest.mark.parametrize(
-    "wt_session", ["", "1a2b3c4d-0000-0000-0000-000000000000"], ids = ["no-WT_SESSION", "WT_SESSION"]
-)
-def test_vt_fast_path_decides_exactly_as_the_compile_did(path: Path, wt_session: str) -> None:
+def test_vt_fast_path_decides_exactly_as_the_compile_did(path: Path) -> None:
     """Skipping csc.exe must not change one byte the user sees.
 
-    WT_SESSION set is the case that matters: it is inherited, so install.rs's spawn carries it
-    into a pipe. The fast path has to decline there exactly as the SetConsoleMode call did,
-    or the Studio log panel fills with escape sequences.
+    This probe is the changed branch, not a bystander: install.rs spawns with a pipe, so
+    `$script:StudioStdoutRedirected` is true here and the early return is what runs. The
+    reconstructed predecessor reaches Add-Type instead, and has to land on the same verdict.
     """
-    env = dict(os.environ)
-    env.pop("NO_COLOR", None)
-    if wt_session:
-        env["WT_SESSION"] = wt_session
-    else:
-        env.pop("WT_SESSION", None)
-
-    new_code, new_raw, new_err = _run_console_less(path, env = env)
+    new_code, new_raw, new_err = _run_console_less(path)
     old_code, old_raw, old_err = _run_console_less(
-        path, source = _probe_without_the_vt_fast_path(path), env = env
+        path, source = _probe_without_the_vt_fast_path(path)
     )
     assert new_code == old_code == 0, (
         f"probe exit codes {new_code} (with the fast path) and {old_code} (without)"
         f"{_explain(path, new_code, new_raw, new_err)}"
     )
-    assert _vt_verdict(new_err) == _vt_verdict(old_err), (
-        f"WT_SESSION={wt_session!r}: the fast path returned "
+    assert _vt_verdict(new_err) == _vt_verdict(old_err) == "False", (
+        f"a redirected stream cannot render VT: the fast path returned "
         f"{_vt_verdict(new_err)} where the compile returned {_vt_verdict(old_err)}"
     )
     assert new_raw == old_raw, (
