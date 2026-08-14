@@ -4084,6 +4084,18 @@ def _stage_replacement(name: str):
     provenance and the reproducibility policy the other installs run under.
     """
     requirement, overrides, build_options = name, {}, []
+    offline_local = USE_UV and _uv_is_offline() and _is_local_source(name)
+    if offline_local:
+        # The checkout itself needs no network, but pip builds it in an isolated
+        # environment and fetches the build backend for that, which UV_OFFLINE does not
+        # reach. Measured: an isolated build of a local project with no index reachable
+        # fails at "installing build dependencies", and this repository pins its build
+        # requirements exactly, so they would be fetched unless already cached. Build
+        # against the interpreter's own backend instead and forbid the index outright,
+        # so no-network means no network. If the backend is not importable the build
+        # fails and the installation is left intact.
+        build_options = ["--no-build-isolation"]
+        overrides = {"PIP_NO_INDEX": "1"}
     if USE_UV and _uv_is_offline() and not _is_local_source(name):
         # A checkout on disk needs no network, so offline has nothing to say about it.
         _safe_print(

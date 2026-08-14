@@ -1346,6 +1346,32 @@ class TestDuplicateCoreMetadataRepair:
         assert calls and all(cmd[:3] != ["uv", "pip", "compile"] for cmd, _ in calls)
         assert calls[-1][0][-1] == str(tmp_path)
 
+    def test_offline_local_staging_never_reaches_the_index(self, tmp_path, monkeypatch):
+        """The checkout needs no network, but pip builds it in an isolated
+        environment and fetches the build backend for that, which UV_OFFLINE does not
+        reach. Measured: an isolated build of a local project with no index reachable
+        fails at installing build dependencies, and this repository pins its build
+        requirements exactly, so they would be fetched unless already cached."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        monkeypatch.setenv("UV_OFFLINE", "1")
+        calls = self._uv_plan(monkeypatch)
+        assert ips._stage_replacement(str(tmp_path)) is None
+        cmd, kwargs = calls[-1]
+        assert "--no-build-isolation" in cmd
+        assert kwargs["env"]["PIP_NO_INDEX"] == "1"
+
+    def test_online_local_staging_keeps_build_isolation(self, tmp_path, monkeypatch):
+        """Isolation is how the pinned build requirements are honoured, so it is only
+        given up when the alternative is breaking the no-network policy."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        calls = self._uv_plan(monkeypatch)
+        assert ips._stage_replacement(str(tmp_path)) is None
+        cmd, kwargs = calls[-1]
+        assert "--no-build-isolation" not in cmd
+        assert kwargs["env"] is None or kwargs["env"].get("PIP_NO_INDEX") != "1"
+
     def test_offline_still_refuses_a_git_reference(self, monkeypatch, capsys):
         """A git URL is a network fetch however direct the reference is."""
         self._uv_only(monkeypatch)
