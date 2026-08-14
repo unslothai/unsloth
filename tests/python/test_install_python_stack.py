@@ -1028,6 +1028,10 @@ class TestDuplicateCoreMetadataRepair:
             "UV_FIND_LINKS",
             "UV_EXCLUDE_NEWER",
             "UV_INDEX_STRATEGY",
+            "UV_NO_BINARY",
+            "UV_ONLY_BINARY",
+            "PIP_NO_BINARY",
+            "PIP_ONLY_BINARY",
         ):
             monkeypatch.delenv(var, raising = False)
 
@@ -1072,7 +1076,7 @@ class TestDuplicateCoreMetadataRepair:
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         self._uv_plan(monkeypatch)
-        requirement, overrides = ips._uv_staging_plan("unsloth_zoo")
+        requirement, overrides, _options = ips._uv_staging_plan("unsloth_zoo")
         assert requirement == "unsloth-zoo==2026.8.15"
         # The annotation names the index the package actually came from, which is the
         # one to reproduce -- not --index-url, which is only uv's default.
@@ -1175,15 +1179,100 @@ class TestDuplicateCoreMetadataRepair:
         assert env["PIP_EXTRA_INDEX_URL"] == ""
         assert env["PIP_FIND_LINKS"] == "/opt/wheels"
         assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple"
-        # pip.conf carries the same three settings, so it is dropped for this command.
-        assert env["PIP_CONFIG_FILE"] == os.devnull
+        # pip.conf carries the same three settings, so it is replaced by a copy of
+        # itself with only those removed.
+        assert env["PIP_CONFIG_FILE"].endswith("pip.conf")
+        assert env["PIP_CONFIG_FILE"] != os.devnull
 
     def test_no_find_links_survives_when_uv_emitted_none(self, monkeypatch):
         self._uv_only(monkeypatch)
         monkeypatch.setenv("PIP_FIND_LINKS", "/tmp/stale-wheels")
         self._uv_plan(monkeypatch, stdout = b"unsloth-zoo==1.0\n    # from https://m/s\n")
-        _requirement, overrides = ips._uv_staging_plan("unsloth-zoo")
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
         assert overrides["PIP_FIND_LINKS"] == ""
+
+    def test_pip_transport_settings_survive_the_source_replacement(self, tmp_path, monkeypatch):
+        """Dropping pip.conf wholesale would take proxy, cert, client-cert and
+        trusted-host with it, and those are how a private index is reached at all, so
+        uv would resolve and pip would then fail to fetch. The four source keys are
+        removed and everything else is written back."""
+        listing = (
+            b"global.cert='/etc/ssl/corp.pem'\n"
+            b"global.proxy='http://proxy.corp:8080'\n"
+            b"global.trusted-host='\\na.corp\\nb.corp'\n"
+            b"global.index-url='https://bogus/simple'\n"
+            b"global.extra-index-url='https://elsewhere/simple'\n"
+            b"global.find-links='/tmp/stale'\n"
+            b"global.no-index='true'\n"
+            b"install.no-binary='numpy'\n"
+            b":env:.config-file='/etc/pip.conf'\n"
+        )
+        monkeypatch.setattr(
+            ips.subprocess,
+            "run",
+            lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = listing),
+        )
+        written = Path(ips._pip_config_without_sources(str(tmp_path))).read_text()
+        assert "proxy = http://proxy.corp:8080" in written
+        assert "cert = /etc/ssl/corp.pem" in written
+        # A multi-value setting is spelled back as an indented continuation.
+        assert "trusted-host =\n    a.corp\n    b.corp" in written
+        assert "[install]" in written and "no-binary = numpy" in written
+        for dropped in ("index-url", "extra-index-url", "find-links", "no-index"):
+            assert dropped not in written, f"{dropped} must not survive"
+        # :env: entries come from the environment, which is overridden separately.
+        assert "config-file" not in written
+
+    def test_an_unreadable_pip_config_yields_an_empty_one(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            ips.subprocess,
+            "run",
+            lambda *a, **k: types.SimpleNamespace(returncode = 1, stdout = b""),
+        )
+        assert Path(ips._pip_config_without_sources(str(tmp_path))).read_text() == ""
+
+    def test_uv_artifact_policy_is_replayed_from_its_configuration(self, monkeypatch):
+        """A no-binary or only-binary rule would otherwise change the artifact type
+        during the repair: a wheel downloaded under a no-binary rule, or an sdist
+        built under an only-binary one."""
+        self._uv_only(monkeypatch)
+        self._uv_plan(
+            monkeypatch,
+            stdout = b"--only-binary :all:\nunsloth-zoo==1.0\n    # from https://m/s\n",
+        )
+        _requirement, _overrides, options = ips._uv_staging_plan("unsloth-zoo")
+        assert options == ["--only-binary", ":all:"]
+
+    def test_the_env_spelling_of_the_artifact_policy_is_translated(self, monkeypatch):
+        """Measured on uv 0.10.7: --emit-build-options surfaces the policy from
+        uv.toml but not the environment-variable spelling, so that half is
+        translated by hand."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_ONLY_BINARY", ":all:")
+        monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
+        self._uv_plan(monkeypatch)
+        _requirement, overrides, options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_ONLY_BINARY"] == ":all:"
+        assert options == []
+
+    def test_an_explicit_pip_artifact_policy_is_left_alone(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        monkeypatch.setenv("UV_ONLY_BINARY", ":all:")
+        monkeypatch.setenv("PIP_ONLY_BINARY", "numpy")
+        self._uv_plan(monkeypatch)
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides.get("PIP_ONLY_BINARY") is None
+
+    def test_the_staging_command_carries_the_build_options(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        calls = self._uv_plan(
+            monkeypatch,
+            stdout = b"--only-binary :all:\nunsloth-zoo==1.0\n    # from https://m/s\n",
+        )
+        assert ips._stage_replacement("unsloth-zoo") is None
+        cmd = calls[-1][0]
+        assert cmd[cmd.index("--only-binary") + 1] == ":all:"
 
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
         self._uv_only(monkeypatch)

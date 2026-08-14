@@ -11,6 +11,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 
 from __future__ import annotations
 
+import ast
 import functools
 import glob
 import importlib
@@ -4057,7 +4058,7 @@ def _stage_replacement(name: str):
     variables and upload cutoff have to be handed across explicitly to keep the
     provenance and the reproducibility policy the other installs run under.
     """
-    requirement, overrides = name, {}
+    requirement, overrides, build_options = name, {}, []
     if USE_UV:
         if _uv_is_offline():
             _safe_print(
@@ -4080,7 +4081,7 @@ def _stage_replacement(name: str):
                 file = sys.stderr,
             )
             return None
-        requirement, overrides = plan
+        requirement, overrides, build_options = plan
     cutoff_args = _uv_upload_cutoff_args()
     if cutoff_args is None:
         _safe_print(
@@ -4099,6 +4100,7 @@ def _stage_replacement(name: str):
         "wheel",
         "--no-deps",
         *cutoff_args,
+        *build_options,
         "--wheel-dir",
         staging,
         requirement,
@@ -4107,6 +4109,8 @@ def _stage_replacement(name: str):
     if overrides:
         env = dict(env if env is not None else os.environ)
         env.update(overrides)
+        # Written into the staging directory, so it is removed with it.
+        env["PIP_CONFIG_FILE"] = _pip_config_without_sources(staging)
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE,
@@ -4442,6 +4446,7 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
         "--emit-index-url",
         "--emit-find-links",
         "--emit-index-annotation",
+        "--emit-build-options",
         "-",
     ]
     try:
@@ -4458,7 +4463,9 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
         if VERBOSE and result.stderr:
             _safe_print(_redact_install_output(result.stderr))
         return None
-    requirement, index_url, find_links = "", "", []
+    requirement, index_url = "", ""
+    find_links: list[str] = []
+    build_options: list[str] = []
     canonical = _canonical_package_name(name)
     for raw in (result.stdout or b"").decode("utf-8", "replace").splitlines():
         line = raw.strip()
@@ -4466,6 +4473,12 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
             index_url = index_url or line.split(" ", 1)[1].strip()
         elif line.startswith("--find-links "):
             find_links.append(line.split(" ", 1)[1].strip())
+        elif line.startswith(("--no-binary ", "--only-binary ")):
+            # uv's artifact policy, which pip reads none of. Without it the repair can
+            # download a wheel under a no-binary rule or build an sdist under an
+            # only-binary one, changing the artifact type mid-repair.
+            option, _, value = line.partition(" ")
+            build_options.extend((option, value.strip()))
         elif line.startswith("# from "):
             # The annotation names the index this package actually came from, which is
             # the one to reproduce; --index-url is only the fallback when uv omits it.
@@ -4480,18 +4493,80 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
     # An inherited PIP_NO_INDEX would block the index uv picked, and an inherited
     # extra index or find-links directory could satisfy the same version from a source
     # uv never looked at, which is the provenance swap this whole path exists to stop.
-    # pip.conf can carry the same three settings, so it is dropped for this one command
-    # exactly as the pinned-index branch of _install_env_for_cmd already does. Empty
-    # rather than deleted: measured on pip 26.2, an empty value reads as unset.
+    # Empty rather than deleted: measured on pip 26.2, an empty value reads as unset.
     overrides = {
         "PIP_EXTRA_INDEX_URL": "",
         "PIP_NO_INDEX": "",
         "PIP_FIND_LINKS": " ".join(find_links),
-        "PIP_CONFIG_FILE": os.devnull,
     }
     if index_url:
         overrides["PIP_INDEX_URL"] = index_url
-    return requirement, overrides
+    # Measured on uv 0.10.7: --emit-build-options surfaces the policy from uv.toml but
+    # NOT the environment-variable spelling of it, so that half is translated by hand.
+    # Only where pip has no setting of its own, which it reads natively.
+    for uv_name, pip_name in (
+        ("UV_NO_BINARY", "PIP_NO_BINARY"),
+        ("UV_ONLY_BINARY", "PIP_ONLY_BINARY"),
+    ):
+        value = os.environ.get(uv_name, "").strip()
+        if value and not os.environ.get(pip_name):
+            overrides[pip_name] = value
+    return requirement, overrides, build_options
+
+
+_PIP_SOURCE_CONFIG_KEYS = ("index-url", "extra-index-url", "find-links", "no-index")
+
+
+def _pip_config_without_sources(directory: str) -> str:
+    """Write pip's own configuration back minus the candidate sources.
+
+    The environment overrides above cannot do this alone. Measured on pip 26.2: with
+    `extra-index-url` in pip.conf, an empty PIP_EXTRA_INDEX_URL does NOT suppress it,
+    and pip contacts that index just as it does with the variable unset. So the config
+    has to go for this one command, or uv's chosen index is only one candidate among
+    the user's.
+
+    Dropping it wholesale would take proxy, cert, client-cert and trusted-host with it,
+    and those are how a private index is reached in the first place, so uv would resolve
+    and pip would then fail to fetch. Everything except the four source keys is written
+    back instead. `pip config list` is asked rather than the files being located, so the
+    global, user and site files are already merged in pip's own order; `:env:` entries
+    are skipped because they come from the environment, which is handled above.
+    """
+    path = os.path.join(directory, "pip.conf")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except OSError:
+        result = None
+    sections: dict[str, list[tuple[str, str]]] = {}
+    if result is not None and result.returncode == 0:
+        for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+            name, separator, raw = line.partition("=")
+            if not separator or name.startswith(":env:"):
+                continue
+            section, _, option = name.strip().rpartition(".")
+            if not section or option in _PIP_SOURCE_CONFIG_KEYS:
+                continue
+            try:
+                value = ast.literal_eval(raw.strip())
+            except (ValueError, SyntaxError):
+                continue
+            # pip renders a multi-value setting as one newline separated string; an
+            # indented continuation is how it is spelled back into a config file.
+            sections.setdefault(section, []).append((option, str(value).replace("\n", "\n    ")))
+    with open(path, "w", encoding = "utf-8") as handle:
+        for section, options in sections.items():
+            handle.write(f"[{section}]\n")
+            for option, value in options:
+                handle.write(
+                    f"{option} ={value}\n" if value.startswith("\n") else f"{option} = {value}\n"
+                )
+    return path
 
 
 def _canonical_package_name(name: str) -> str:
