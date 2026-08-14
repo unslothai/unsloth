@@ -947,7 +947,12 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         response = await _scan_local_models_response(models_dir, custom_folders, sources)
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
-        return await asyncio.to_thread(classify, response)
+        classified = await asyncio.to_thread(classify, response)
+        # The worker hop is an await point of its own, so a deletion or a finished download
+        # can land after the check above. Send it to the retry path, not to the response.
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _LocalCacheChanged(response)
+        return classified
 
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[LocalModelListResponse] = None

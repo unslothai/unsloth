@@ -7207,3 +7207,48 @@ def test_local_inventory_classifies_a_superseded_result_off_the_event_loop(monke
     loop_ident, listed = asyncio.run(run())
     assert [row.task for row in listed.models] == ["task"]
     assert idents and loop_ident not in idents, "classification ran on the event loop thread"
+
+
+def test_local_inventory_retries_when_the_cache_changes_during_classification(monkeypatch):
+    """A deletion landing while classification runs must not be answered with the old rows."""
+    from hub.services.models import local_inventory
+
+    epoch = [0]
+    scans: list[int] = []
+
+    def _scan_response(tag: str):
+        row = SimpleNamespace(id = tag)
+        row.model_copy = lambda update, tag = tag: SimpleNamespace(id = tag, task = update["task"])
+        response = SimpleNamespace(models = [row])
+        response.model_copy = lambda update: SimpleNamespace(models = update["models"])
+        return response
+
+    async def scan(*_args):
+        scans.append(epoch[0])
+        return _scan_response(f"scan{len(scans)}")
+
+    def classify_row(row):
+        # The cache is invalidated while the first scan's rows are being classified.
+        if len(scans) == 1:
+            epoch[0] += 1
+        return "task"
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setitem(
+        sys.modules, "routes.models", SimpleNamespace(_local_model_task = classify_row)
+    )
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        return await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 15
+        )
+
+    listed = asyncio.run(run())
+    assert scans == [0, 1], scans
+    assert [row.id for row in listed.models] == ["scan2"]
