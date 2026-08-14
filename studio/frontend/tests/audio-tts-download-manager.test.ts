@@ -75,6 +75,13 @@ test("Hub TTS repos and native companion codecs use a cache-aware exact-file pla
   );
 });
 
+test("a cached Hub TTS model can still load when the metadata plan is offline", () => {
+  assert.match(
+    source,
+    /catch \(error\) \{[\s\S]*meta\.isDownloaded === true[\s\S]*loadTtsModelRef\.current\([\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*meta\.loadId,[\s\S]*meta\.audioType/,
+  );
+});
+
 test("managed completion loads the exact GGUF only when Audio is active and idle", () => {
   assert.match(
     source,

@@ -965,6 +965,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           );
         } catch (error) {
           if (generation !== stagedTtsGeneration.current) return;
+          if (meta.isDownloaded === true) {
+            void loadTtsModelRef.current(
+              repoId,
+              ggufFilename,
+              meta.loadId,
+              meta.audioType,
+            );
+            return;
+          }
           toast.error(
             error instanceof Error
               ? error.message
