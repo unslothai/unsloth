@@ -11,6 +11,26 @@ export type RefreshMode = "live" | "3s" | "manual";
 export const DEFAULT_REFRESH_MODE: RefreshMode = "3s";
 export const REFRESH_MODE_STORAGE_KEY = "unsloth_debug_log_refresh_mode";
 
+/** The request backstop fired. Distinct from an AbortError because the two
+ * arrive as the same rejection: the timer aborts the very controller an unmount
+ * or a source switch uses, and those are silent by design. Sharing the name
+ * made a hung tunnel silent too, so the pane stopped updating and said nothing,
+ * which is the failure this viewer exists to make visible.
+ *
+ * Here rather than beside the other error types because this module is imported
+ * by the node:test runner, which resolves no extensionless src import.
+ */
+export class DebugLogTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    this.name = "DebugLogTimeoutError";
+  }
+}
+
+export function isRequestTimeout(error: unknown): boolean {
+  return error instanceof DebugLogTimeoutError;
+}
+
 /** Generous next to a 1s poll: this is the "this request will never answer"
  * backstop, not a latency budget. A remote tunnel can legitimately be slow. */
 export const REQUEST_TIMEOUT_MS = 20_000;
@@ -72,9 +92,20 @@ export async function withRequestTimeout<T>(
   if (signal?.aborted) local.abort();
   const relay = () => local.abort();
   signal?.addEventListener("abort", relay);
-  const timer = setTimeout(() => local.abort(), timeoutMs);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    local.abort();
+  }, timeoutMs);
   try {
     return await task(local.signal);
+  } catch (error) {
+    // The caller's own abort wins the tie: an unmount or a source switch is
+    // silent by design, and it can race the timer on a request that was
+    // already doomed. Only a backstop with no caller abort behind it is a
+    // fault the user needs told about.
+    if (timedOut && !signal?.aborted) throw new DebugLogTimeoutError(timeoutMs);
+    throw error;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", relay);

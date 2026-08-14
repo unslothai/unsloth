@@ -179,6 +179,7 @@ export const es = {
       disabled: "El registro en archivo está desactivado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "No se encontró ningún archivo de registro.",
       unreadable: "No se pudo leer el archivo de registro.",
+      timeout: "La solicitud del registro agoto el tiempo de espera. Puede que el servidor no este accesible.",
       droppedNotice: "Se omitieron algunas líneas: el registro se escribió más rápido de lo que se podía leer.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

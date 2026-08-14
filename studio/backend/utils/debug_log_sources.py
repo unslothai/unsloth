@@ -257,3 +257,18 @@ def default_source_id() -> Optional[str]:
 
 def file_logging_disabled() -> bool:
     return os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1"
+
+
+def source_is_frozen(source_id: Optional[str]) -> bool:
+    """Whether nothing will ever be appended to this source again.
+
+    UNSLOTH_STUDIO_NO_FILE_LOG only skips _setup_server_disk_logging in run.py.
+    The llama and diffusion runners and the Tauri shell keep writing their own
+    files, so treating the setting as global told a user watching a live
+    llama-server log that it was an earlier session and would not update while
+    the failure they came for was still being appended to it.
+    """
+    if not file_logging_disabled():
+        return False
+    family = (source_id or "").partition(":")[0]
+    return family == "server"

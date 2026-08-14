@@ -192,3 +192,41 @@ def test_a_burst_larger_than_one_response_says_more_is_pending(client):
     second = client.get("/api/settings/debug/logs", params = {"cursor": first["cursor"]}).json()
     assert second["more_pending"] is False
     assert first["lines"] + second["lines"] == [f"line {index}" for index in range(burst)]
+
+
+def _seed_llama_log(body: str = "llama runner line\n") -> Path:
+    directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "llama-server"
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "llama-1786000000.log"
+    path.write_text(body, encoding = "utf-8")
+    return path
+
+
+def _source_id(client, family: str) -> str:
+    body = client.get("/api/settings/debug/logs/sources").json()
+    return next(s["id"] for s in body["sources"] if s["family"] == family)
+
+
+def test_a_runner_log_is_not_called_stale_when_only_the_server_tee_is_off(client, monkeypatch):
+    """UNSLOTH_STUDIO_NO_FILE_LOG only skips run.py's tee.
+
+    The llama and diffusion runners and the desktop shell keep writing, so
+    treating the setting as global told a user watching a live llama-server log
+    that it would not update while the failure was still being appended to it.
+    """
+    _seed_llama_log()
+    monkeypatch.setenv("UNSLOTH_STUDIO_NO_FILE_LOG", "1")
+    source_id = _source_id(client, "llama-server")
+    body = client.get("/api/settings/debug/logs", params = {"source": source_id}).json()
+    assert body["status"] == "ok"
+    assert body["lines"] == ["llama runner line"]
+    assert body["file_logging_disabled"] is False
+
+
+def test_the_server_log_is_still_called_stale(client, monkeypatch):
+    _seed_server_log()
+    _seed_llama_log()
+    monkeypatch.setenv("UNSLOTH_STUDIO_NO_FILE_LOG", "1")
+    source_id = _source_id(client, "server")
+    body = client.get("/api/settings/debug/logs", params = {"source": source_id}).json()
+    assert body["file_logging_disabled"] is True

@@ -180,6 +180,7 @@ export const fr = {
       disabled: "La journalisation dans un fichier est désactivée (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Aucun fichier journal n'a été trouvé.",
       unreadable: "Le fichier journal n'a pas pu être lu.",
+      timeout: "La demande du journal a expire. Le serveur est peut-etre injoignable.",
       droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

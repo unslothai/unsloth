@@ -178,6 +178,7 @@ export const ja = {
       disabled: "ファイルへのログ出力は無効です (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
       missing: "ログファイルが見つかりませんでした。",
       unreadable: "ログファイルを読み取れませんでした。",
+      timeout: "ログの取得がタイムアウトしました。サーバーに接続できない可能性があります。",
       droppedNotice: "一部の行がスキップされました。ログの書き込みが読み取りに追いつきませんでした。",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

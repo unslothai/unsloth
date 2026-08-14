@@ -26,6 +26,7 @@ import {
   isPageStale,
   nextDroppedState,
   parseRefreshMode,
+  isRequestTimeout,
   pollDelayMs,
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
@@ -120,6 +121,12 @@ export function DebuggingTab() {
   const onPollFailed = useCallback(
     async (error: unknown, signal?: AbortSignal) => {
       if (isAbort(error)) return;
+      if (isRequestTimeout(error)) {
+        // Not the raw message: the backstop is an internal number and the user
+        // needs the consequence, not the duration.
+        setNotice(t("settings.debugging.timeout"));
+        return;
+      }
       if (isLogSourceGone(error)) {
         // The id we hold is no longer enumerated (file removed, or pushed out of
         // the per-family window). The backend sends 404 precisely so the picker
@@ -132,7 +139,7 @@ export function DebuggingTab() {
       }
       setNotice((error as Error).message);
     },
-    [refreshSources],
+    [refreshSources, t],
   );
 
   // The llama runner writes a NEW file per load attempt, so a list fetched at

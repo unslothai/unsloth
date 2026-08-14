@@ -178,6 +178,7 @@ export const ru = {
       disabled: "Запись журнала в файл отключена (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Файл журнала не найден.",
       unreadable: "Не удалось прочитать файл журнала.",
+      timeout: "Истекло время ожидания запроса журнала. Возможно, сервер недоступен.",
       droppedNotice: "Часть строк пропущена: журнал записывался быстрее, чем его удавалось читать.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

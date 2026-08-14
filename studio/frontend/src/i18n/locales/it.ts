@@ -143,6 +143,7 @@ export const it = {
       disabled: "La registrazione su file è disattivata (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Nessun file di log trovato.",
       unreadable: "Non è stato possibile leggere il file di log.",
+      timeout: "La richiesta del log e scaduta. Il server potrebbe non essere raggiungibile.",
       droppedNotice: "Alcune righe sono state saltate: il log è stato scritto più velocemente di quanto potesse essere letto.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

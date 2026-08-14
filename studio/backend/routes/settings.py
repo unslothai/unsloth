@@ -2181,6 +2181,6 @@ def get_debug_log(
         dropped_bytes = result.dropped_bytes,
         truncated_head = result.truncated_head,
         more_pending = result.more_pending,
-        file_logging_disabled = debug_log_sources.file_logging_disabled(),
+        file_logging_disabled = debug_log_sources.source_is_frozen(source_id),
         size_bytes = result.size_bytes,
     )

@@ -176,6 +176,7 @@ export const ar = {
       disabled: "التسجيل في ملف مُعطَّل (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "لم يُعثر على أي ملف سجل.",
       unreadable: "تعذّرت قراءة ملف السجل.",
+      timeout: "انتهت مهلة طلب السجل. قد يتعذر الوصول إلى الخادم.",
       droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

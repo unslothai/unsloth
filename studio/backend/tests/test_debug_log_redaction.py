@@ -16,7 +16,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from utils.log_redaction import redact_log_text
+from utils.log_redaction import REDACTED, redact_log_text
 
 _SLACK_SHAPED = "xox" + "b-" + "1234567890" + "-ABCDEFGHIJKLMNOP"
 
@@ -264,3 +264,28 @@ def test_a_hyperlink_escape_does_not_swallow_the_line():
     would otherwise consume only the introducer and leave the payload behind."""
     out = redact_log_text("open \x1b]8;;https://example.com\x07docs\x1b]8;;\x07 for help")
     assert out == "open docs for help"
+
+
+def test_studio_s3_secret_key_spellings_are_masked():
+    """models/training.py:60 takes secret_access_key, alias secretAccessKey.
+
+    Neither reaches the bare "secret" alternative: its trailing \\b cannot fire
+    before "_access" or "Access", and an AWS secret key has no prefix of its own
+    for a shape rule to catch, so both spellings went out in the clear.
+    """
+    secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    for line in (
+        f"secret_access_key={secret}",
+        f'{{"secretAccessKey":"{secret}"}}',
+        f"secret-access-key: {secret}",
+        f"--secret-access-key {secret}",
+        f"aws_secret_access_key={secret}",
+    ):
+        masked = redact_log_text(line)
+        assert secret not in masked, line
+        assert REDACTED in masked, line
+
+
+def test_talking_about_the_s3_key_without_a_value_survives():
+    line = "secret_access_key is required when use_iam_role is false"
+    assert redact_log_text(line) == line

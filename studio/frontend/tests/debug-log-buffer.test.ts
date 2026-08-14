@@ -14,8 +14,10 @@ import {
   parseRefreshMode,
   pollDelayMs,
   trimBuffer,
+  isRequestTimeout,
   withRequestTimeout,
 } from "../src/features/settings/lib/debug-log-buffer.ts";
+import { isAbort } from "../src/features/settings/lib/debug-log-error.ts";
 
 test("three seconds is the default refresh mode", () => {
   assert.equal(DEFAULT_REFRESH_MODE, "3s");
@@ -133,9 +135,33 @@ test("a request that never answers is cut off by the backstop", async () => {
   const started = Date.now();
   await assert.rejects(
     () => withRequestTimeout(neverAnswers, 20),
-    (error: Error) => error.name === "AbortError",
+    (error: Error) => error.name === "DebugLogTimeoutError",
   );
   assert.ok(Date.now() - started < 2000);
+});
+
+test("a backstop rejection is not mistaken for a caller cancellation", async () => {
+  // The timer aborts the SAME controller an unmount uses, so both arrived as an
+  // AbortError and the poll loop swallowed them alike. A hung tunnel then left
+  // the pane stale with no notice at all, which is the failure this viewer is
+  // supposed to make visible.
+  await assert.rejects(
+    () => withRequestTimeout(neverAnswers, 20),
+    (error: Error) => isRequestTimeout(error) && !isAbort(error),
+  );
+});
+
+test("a caller abort stays silent even when the backstop races it", async () => {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 10);
+  await assert.rejects(
+    () => withRequestTimeout(neverAnswers, 10, controller.signal),
+    (error: Error) => isAbort(error) && !isRequestTimeout(error),
+  );
+});
+
+test("a request that answers in time is untouched by the backstop", async () => {
+  assert.equal(await withRequestTimeout(async () => "done", 1000), "done");
 });
 
 test("the source rescan cannot freeze the poll loop behind it", async () => {

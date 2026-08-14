@@ -45,6 +45,11 @@ _SECRET_KEYS = (
     "authorization|x-api-key|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
     "refresh[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|"
     "aws_secret_access_key|aws_session_token|wandb[-_]?token|hub[-_]?token|"
+    # Studio's own S3 field (models/training.py:60) and its camelCase request
+    # alias. Neither is reachable through the bare "secret" alternative: the
+    # trailing \b cannot fire before "_access" or "Access", and an AWS secret
+    # key has no prefix of its own for a shape rule to catch.
+    "secret[-_]?access[-_]?key|"
     "password|passwd|secret"
 )
 

@@ -174,6 +174,7 @@ export const en = {
       disabled: "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "No log file was found.",
       unreadable: "The log file could not be read.",
+      timeout: "The log request timed out. The server may be unreachable.",
       droppedNotice: "Some lines were skipped: the log was written faster than it could be read.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

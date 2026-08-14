@@ -179,6 +179,7 @@ export const hi = {
       disabled: "फ़ाइल में लॉगिंग बंद है (UNSLOTH_STUDIO_NO_FILE_LOG=1)।",
       missing: "कोई लॉग फ़ाइल नहीं मिली।",
       unreadable: "लॉग फ़ाइल पढ़ी नहीं जा सकी।",
+      timeout: "लॉग अनुरोध का समय समाप्त हो गया। सर्वर तक पहुंच नहीं हो पा रही है।",
       droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",

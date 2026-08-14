@@ -180,6 +180,7 @@ export const de = {
       disabled: "Die Protokollierung in eine Datei ist deaktiviert (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Es wurde keine Protokolldatei gefunden.",
       unreadable: "Die Protokolldatei konnte nicht gelesen werden.",
+      timeout: "Die Protokollanfrage hat das Zeitlimit uberschritten. Der Server ist moglicherweise nicht erreichbar.",
       droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
