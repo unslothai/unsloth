@@ -366,9 +366,7 @@ def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
 
 
 def normalize_model_override(
-    payload: dict[str, Any],
-    *,
-    keep_empty_extra_args: bool = False,
+    payload: dict[str, Any], *, keep_empty_extra_args: bool = False
 ) -> dict[str, Any]:
     """Validate one per-model launch config, dropping anything unusable.
 

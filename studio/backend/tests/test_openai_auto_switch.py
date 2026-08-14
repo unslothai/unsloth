@@ -7641,9 +7641,7 @@ def test_the_clear_holds_when_another_quant_has_a_row_of_its_own(override_store)
 def test_a_clear_with_no_fallback_behind_it_stores_nothing(override_store):
     # Nothing would answer for this model anyway, so the row goes as it always has:
     # the tombstone exists to stop a fallback, not to leave a row per cleared box.
-    settings.set_model_override(
-        "unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--numa", "distribute"]
-    )
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--numa", "distribute"])
     cleared = _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [], remove = False)
     assert "unsloth/B-GGUF:Q4_K_M" not in cleared.overrides
 

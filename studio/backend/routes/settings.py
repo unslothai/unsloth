@@ -1108,8 +1108,10 @@ def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
         _bare_model_id(model_id),
         _legacy_standalone_gguf_key(model_id),
     ):
-        if candidate and candidate != target_id and get_model_override(candidate).get(
-            "llama_extra_args"
+        if (
+            candidate
+            and candidate != target_id
+            and get_model_override(candidate).get("llama_extra_args")
         ):
             return True
     return False
