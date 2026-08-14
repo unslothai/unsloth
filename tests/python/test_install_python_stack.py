@@ -961,9 +961,7 @@ class TestPipConfigPolicySurvivesThePin:
         assert "PIP_REQUIRE_HASHES" not in env
 
     def test_a_none_reset_in_pip_conf_is_not_a_policy(self):
-        env = self._pinned_env(
-            "global.only-binary=':none:'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
-        )
+        env = self._pinned_env("global.only-binary=':none:'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"})
         assert "PIP_ONLY_BINARY" not in env
 
     def test_the_default_mode_still_drops_it(self):
@@ -1343,9 +1341,7 @@ class TestUvConfigDiscoveryMatchesUv:
         reads it that way."""
         path = tmp_path / "uv.toml"
         path.write_text("pip.no-build = true\n", encoding = "utf-8")
-        assert [key for _n, key, _v in ips._scan_uv_policy_config_by_line([path])] == [
-            "no-build"
-        ]
+        assert [key for _n, key, _v in ips._scan_uv_policy_config_by_line([path])] == ["no-build"]
 
     def test_a_dotted_key_under_another_tool_is_not_ours(self, tmp_path):
         path = tmp_path / "pyproject.toml"
