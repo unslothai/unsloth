@@ -139,7 +139,11 @@ export function mapBackendModelConfigToTrainingPatch(
       provider: "huggingface",
       repoId: typeof backup.repo_id === "string" ? backup.repo_id : null,
       private: backup.private !== false,
-      intervalSteps: toNumber(backup.interval_steps) ?? saveSteps ?? 100,
+      intervalCheckpoints:
+        toNumber(backup.interval_checkpoints) ??
+        (saveSteps && toNumber(backup.interval_steps)
+          ? toNumber(backup.interval_steps)! / saveSteps
+          : 1),
       strategy: "latest",
       keepRemote: toNumber(backup.keep_remote) ?? 1,
       uploadOnStop: backup.upload_on_stop !== false,
