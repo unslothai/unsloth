@@ -1868,6 +1868,10 @@ export function ModelConfigPage({
             maxBytes: managed?.maxBytes ?? 0,
             windowsCommandBudget: managed?.windowsCommandBudget ?? 0,
             defaultParallelSlots: managed?.defaultParallelSlots ?? 0,
+            // Carried from the managed-only read, which knows it: a build that
+            // serves one slot however many are asked for floors the batch at 2,
+            // and hydration must judge a stored list the same way the row does.
+            parallelSlotsClamped: managed?.parallelSlotsClamped ?? false,
             probeOk: false,
           },
           {
