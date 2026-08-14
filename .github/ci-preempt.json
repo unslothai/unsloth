@@ -45,7 +45,11 @@
     "orphaned kernel bills the account's weekly GPU quota to its own 45-minute",
     "ceiling with nobody left to read the result. It holds one ubuntu runner",
     "that spends almost all of its time asleep on a poll loop, so preempting it",
-    "frees close to nothing and costs quota that is not the pool's to spend."
+    "frees close to nothing and costs quota that is not the pool's to spend.",
+    "",
+    "kaggle-t4-studio-gpu-ci.yml is in 'never' for exactly the same reason, and",
+    "more so: its kernel ceiling is 70 minutes rather than 45, so an orphaned",
+    "one wastes correspondingly more of the account's weekly quota."
   ],
   "heavy": {
     "macos": [
@@ -81,6 +85,7 @@
     "ci-capacity.yml",
     "ossf.yml",
     "stale.yml",
-    "kaggle-t4-notebook-ci.yml"
+    "kaggle-t4-notebook-ci.yml",
+    "kaggle-t4-studio-gpu-ci.yml"
   ]
 }

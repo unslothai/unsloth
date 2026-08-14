@@ -16,7 +16,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Ref } from "react";
 import type { HubFailure } from "@/features/hub/lib/network";
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   inventoryRowMatches,
   scoreInventoryRow,
@@ -307,6 +307,15 @@ export function DownloadedList({
 }) {
   // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
+  const movePinned = usePinnedModelsStore((s) => s.movePinned);
+  const beginPinnedDrag = usePinnedModelsStore((s) => s.beginPinnedDrag);
+  const endPinnedDrag = usePinnedModelsStore((s) => s.endPinnedDrag);
+  // Ref, not state: dragenter can fire before a dragstart re-render commits.
+  const dragPinKeyRef = useRef<string | null>(null);
+  // Dimming keys off the dragged CELL, not off its pin key: one repo cached in
+  // two formats yields two rows sharing a single pin key, and dimming both
+  // would report the untouched twin as the thing being dragged.
+  const [dragRowKey, setDragRowKey] = useState<string | null>(null);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
     const merged: InventoryItem[] = [
@@ -481,15 +490,73 @@ export function DownloadedList({
               paddingBottom: rowHeightPx - cellHeightPx,
             }}
           >
-            {pinnedItems.map((item) => (
-              <div
-                key={`${item.variant}-${item.row.id}`}
-                className="min-w-0"
-                style={{ height: cellHeightPx }}
-              >
-                {renderInventoryRow(item)}
-              </div>
-            ))}
+            {pinnedItems.map((item) => {
+              const rowKey = `${item.variant}-${item.row.id}`;
+              // movePinned can only move a key that is in the pinned list, and
+              // pins also exist as `repoId::quant` (written by the GGUF quant
+              // menus). Deriving the key without checking membership would let
+              // a row advertise a drag that every movePinned call silently
+              // found nothing to do. pinnedCount selects this slice on the same
+              // predicate today, so the check holds the two in lockstep rather
+              // than trusting them to stay identical. Datasets are excluded
+              // outright: pin keys carry no repo type, so a dataset whose
+              // repoId also names a pinned model reaches this grid, and the row
+              // menu offers datasets no pin action, so a drag here must not
+              // reorder the user's model pins from the dataset list.
+              const itemPinKey =
+                !isDataset &&
+                item.row.repoId &&
+                pinnedSet.has(pinKey(item.row.repoId))
+                  ? pinKey(item.row.repoId)
+                  : null;
+              return (
+                <div
+                  key={rowKey}
+                  className="min-w-0"
+                  style={{
+                    height: cellHeightPx,
+                    opacity: dragRowKey === rowKey ? 0.4 : undefined,
+                  }}
+                  draggable={itemPinKey != null}
+                  onDragStart={(event) => {
+                    if (!itemPinKey) return;
+                    event.dataTransfer.effectAllowed = "move";
+                    // Firefox will not start a drag without data.
+                    event.dataTransfer.setData("text/plain", itemPinKey);
+                    dragPinKeyRef.current = itemPinKey;
+                    setDragRowKey(rowKey);
+                    // Reordering happens live on dragenter; this snapshot is
+                    // what a cancelled drag rolls back to.
+                    beginPinnedDrag();
+                  }}
+                  onDragEnd={() => {
+                    dragPinKeyRef.current = null;
+                    setDragRowKey(null);
+                    // Escape, or a release outside any cell, reaches dragend
+                    // without a drop. A drop already committed and cleared the
+                    // session, so this call is then a no-op.
+                    endPinnedDrag(false);
+                  }}
+                  onDragOver={(event) => {
+                    if (dragPinKeyRef.current) event.preventDefault();
+                  }}
+                  onDragEnter={() => {
+                    const dragKey = dragPinKeyRef.current;
+                    if (dragKey && itemPinKey && dragKey !== itemPinKey) {
+                      movePinned(dragKey, itemPinKey);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    dragPinKeyRef.current = null;
+                    setDragRowKey(null);
+                    endPinnedDrag(true);
+                  }}
+                >
+                  {renderInventoryRow(item)}
+                </div>
+              );
+            })}
           </div>
           {unpinnedItems.length > 0 && (
             <div className="px-1 pb-2 pt-2 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground">

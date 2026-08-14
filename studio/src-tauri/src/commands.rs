@@ -485,7 +485,7 @@ where
 }
 
 fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
-    open_existing_dir_with(dir, |path| crate::process::open_detached(path))
+    open_existing_dir_with(dir, |path| open::that_detached(path))
 }
 
 /// Open the Unsloth directory in the system file manager.

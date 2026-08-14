@@ -328,20 +328,16 @@ class TestConsumersShareTheProbe:
 
 
 class TestVersionlessBuildsStillClassify:
-    """An empty version field is not the same as no answer, at the repair paths.
-
-    _probe_torch_runtime draws that line deliberately: "" is a torch whose
-    __version__ is missing, which the pins repair, and None is a probe that told us
-    nothing, which must leave the venv alone. TestProbeParsing pins it at the probe.
-    These pin it where it decides something, since the per-path probes classified
-    from torch.version.cuda / .hip as well as the version string and a consumer
-    gating on the version alone would silently skip the repair.
+    """An empty version field is not no answer: "" is a torch whose __version__ is
+    missing, which the pins repair, and None is a probe that learned nothing and must
+    leave the venv alone. TestProbeParsing pins that at the probe; these pin it where
+    it decides something, since gating on the version alone would skip the repair.
     """
 
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_cuda_build(self, mock_pip):
-        out = _probe_result("||12.8")  # version "", hip "", cuda "12.8"
+        out = _probe_result("||12.8")  # no version, cuda "12.8"
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -354,7 +350,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_still_replaces_a_versionless_rocm_build(self, mock_pip):
-        out = _probe_result("|7.1.12345|")  # version "", hip set
+        out = _probe_result("|7.1.12345|")  # no version, hip set
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -367,8 +363,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_leaves_a_cpu_build_with_no_version_alone(self, mock_pip):
-        # Every field empty is a CPU build with an unreadable version, which the old
-        # probe reported as "cpu": nothing to repair under a CPU pin.
+        # Every field empty is a CPU build with an unreadable version: nothing to repair.
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -381,8 +376,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "NO_TORCH", False)
     @patch.object(stack_mod, "pip_install")
     def test_cpu_pin_leaves_the_venv_alone_when_the_probe_said_nothing(self, mock_pip):
-        # Exit 0 with no line of ours: we learned nothing, so we touch nothing. The
-        # other side of the ""/None distinction from the two cases above.
+        # Exit 0 with no line of ours: we learned nothing, so we touch nothing.
         with patch.object(
             stack_mod,
             "_explicit_cpu_torch_index_url",
@@ -399,8 +393,7 @@ class TestVersionlessBuildsStillClassify:
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     def test_xpu_pin_still_repairs_a_versionless_build(self, mock_pip):
-        # An unreadable version is not a supported +xpu build, and the pin is there to
-        # force the family, which is what the old "repair" verdict did.
+        # An unreadable version is not a supported +xpu build, and the pin forces the family.
         with patch.object(
             stack_mod,
             "_explicit_xpu_torch_index_url",
