@@ -1897,17 +1897,21 @@ def _vkey(c):
     _dev = re.match(r'[-._]?dev\.?(\d*)', rest)
     _pre = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c)\.?(\d*)', rest)
     _post = re.match(r'[-._]?post\.?(\d*)', rest)
+    _end = 0
     if _dev:
-        rank = (-3, int(_dev.group(1) or 0))
+        rank, _end = (-3, int(_dev.group(1) or 0)), _dev.end()
     elif _pre:
         # a == alpha < b == beta < c == rc == pre == preview, as PEP 440 normalizes them
         _stage = {'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_pre.group(1), 2)
-        rank = (-2, _stage, int(_pre.group(2) or 0))
+        rank, _end = (-2, _stage, int(_pre.group(2) or 0)), _pre.end()
     elif _post:
-        rank = (1, int(_post.group(1) or 0))
+        rank, _end = (1, int(_post.group(1) or 0)), _post.end()
     else:
         rank = (0, 0)
-    return (0, (nums, rank))
+    # the compound tail still orders: 1.0rc1.dev1 < 1.0rc1 < 1.0rc1.post1
+    _tm = re.search(r'(dev|post)[-._]?(\d*)', rest[_end:]) if _end else None
+    _trail = ((-1 if _tm.group(1) == 'dev' else 1), int(_tm.group(2) or 0)) if _tm else (0, 0)
+    return (0, (nums, rank + _trail))
 if not cands:
     print('POSTVER=__MISSING__')
     sys.exit(0)
