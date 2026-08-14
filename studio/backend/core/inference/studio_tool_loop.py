@@ -127,9 +127,7 @@ def _truncate_for_model(
     """Hold a hosted result to the same cap a local result gets.
 
     Read off ``tools`` rather than copied, so an install that lowers
-    ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` to protect a smaller context gets the
-    lower cap here too: a hosted code execution can return very large stdout,
-    and one verbose call must not be able to fill the next request either way.
+    ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` gets the lower cap here too.
     """
     if limit is None:
         limit = tools_module._MAX_OUTPUT_CHARS
@@ -138,17 +136,15 @@ def _truncate_for_model(
     return text[:limit] + f"{joiner}... [truncated, {len(text) - limit} more characters]"
 
 
-# What the label of a hosted call is allowed to cost. Small next to the result
-# cap: this is the query or the code, not the output.
+# Cap on a call's label. Small next to the result cap: this is the query or the
+# code, not the output.
 _HOSTED_ARGUMENT_MAX_CHARS = 2000
 
 
-# Keys the providers hang off a hosted tool's ``arguments`` for the frontend and
-# for native-history replay, never for the model. Gemini stows the whole
-# ``executableCode`` part plus an opaque ``thoughtSignature`` under ``google``,
-# and OpenAI stows the paired reasoning item, which on a zero-data-retention org
-# carries a multi-kilobyte ``encrypted_content``. Rendered as prose those fill
-# the header with base64 cut off mid-token and say nothing the model can read.
+# Provider plumbing hung off ``arguments`` for the frontend and native-history
+# replay, never for the model: Gemini's ``executableCode`` part plus an opaque
+# ``thoughtSignature``, OpenAI's paired reasoning item with its multi-kilobyte
+# ``encrypted_content``. As prose they are base64 cut off mid-token.
 _HOSTED_ARGUMENT_PLUMBING_KEYS = frozenset({"google", "_server_tool"})
 
 
@@ -161,9 +157,9 @@ def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
         for key, value in arguments.items()
         if key not in _HOSTED_ARGUMENT_PLUMBING_KEYS
         and not key.startswith("openai_")
-        # A placeholder: OpenAI opens an image_generation_call with an empty
-        # prompt and only names it on the end event, so keeping the empty one
-        # would block the real prompt from merging in.
+        # OpenAI opens an image_generation_call with an empty prompt and only
+        # names it on the end event, so an empty placeholder kept here would
+        # block the real prompt from merging in.
         and value not in ("", None, {}, [])
     }
 
@@ -328,7 +324,7 @@ class _Turn:
     text: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
-    # Results from tools the PROVIDER ran during this turn, keyed by call id so a
+    # Results from tools the PROVIDER ran this turn, keyed by call id so a
     # repeated end event cannot record the same result twice.
     hosted_results: dict[str, dict[str, Any]] = field(default_factory = dict)
 
@@ -336,16 +332,13 @@ class _Turn:
         """Record a provider-side tool call carried on ``_toolEvent``.
 
         These reach the client as their own frames but are not part of the
-        assistant message this loop replays, so when a hosted tool and a local
-        call land in the same turn the follow-up request loses whatever the
-        provider just produced. Studio's own events do not come through here:
-        the loop writes those as a top-level ``type``, so ``_toolEvent`` is
-        unambiguously the provider's side.
+        assistant message this loop replays, so the follow-up request would lose
+        whatever the provider just produced. Studio's own events carry a
+        top-level ``type``, so ``_toolEvent`` is unambiguously the provider's.
 
-        Both halves matter. The ``tool_end`` producers generally omit
-        ``tool_name``, and for Gemini code execution the code that ran is only
-        ever in the ``tool_start`` arguments, so a result recorded on its own
-        replays as an unlabelled value the model cannot interpret.
+        Both halves matter: ``tool_end`` generally omits ``tool_name``, and for
+        Gemini code execution the code that ran is only in the ``tool_start``
+        arguments, so a result recorded alone is unlabelled.
         """
         if not isinstance(event, dict):
             return
@@ -360,19 +353,17 @@ class _Turn:
         name = event.get("tool_name")
         if isinstance(name, str) and name:
             entry["name"] = name
-        # The operation itself: Gemini puts the executed language and code here,
-        # and a search puts its query. Merged across both halves rather than
-        # taken from the start alone, because OpenAI opens an image generation
+        # The operation itself: Gemini's language and code, a search's query.
+        # Merged across both halves because OpenAI opens an image generation
         # before it knows the prompt and only names it on the end event.
         arguments = _hosted_arguments_for_model(event.get("arguments"))
         if arguments:
             merged = dict(entry.get("arguments_obj") or {})
             merged.update(arguments)
             entry["arguments_obj"] = merged
-            # Truncated with the same notice a result gets. Anthropic hands the
+            # Truncated with the same notice a result gets: Anthropic hands the
             # model's whole tool input through, so a file the code wrote lives
-            # here and nowhere else, and cutting it silently leaves the model
-            # reading a line that stops mid-token as if that were all of it.
+            # here and nowhere else, and a silent cut reads as the whole thing.
             entry["arguments"] = _truncate_for_model(
                 json.dumps(merged, separators = (",", ":")),
                 _HOSTED_ARGUMENT_MAX_CHARS,
@@ -383,32 +374,27 @@ class _Turn:
             return
         result = event.get("result")
         if isinstance(result, str):
-            # The call finished and the provider said what it produced, even if
-            # that was nothing: Gemini reports code that printed nothing as an
-            # empty string. Recorded separately from the result itself, which
-            # otherwise cannot tell that apart from a stream that died after the
-            # start event. A non-string here is a malformed frame, not an empty
-            # outcome, so it stays unrecorded.
+            # The call finished, even if it produced nothing: Gemini reports
+            # code that printed nothing as an empty string. Recorded apart from
+            # the result so that stays distinguishable from a stream that died
+            # after the start. A non-string is a malformed frame, not an outcome.
             entry["ended"] = True
         if isinstance(result, str) and result.strip():
             if "__IMAGES__:" in result:
                 # A Gemini plot with no stdout is nothing BUT the sentinel, so
-                # stripping leaves an empty string. Note the picture here or the
-                # entry looks empty and the turn reports that nothing was made.
+                # stripping leaves an empty string and the entry looks empty.
                 entry["produced_image"] = True
-            # Same normalisation local results get: __IMAGES__ and friends are
-            # frontend sentinels carrying a full data URI, and replaying one
-            # sends megabytes of base64 the model cannot read anyway. With the
-            # tool's own name, as the local path passes it: only the sandbox
-            # tools emit the __FILES__ envelope, so a fetched page that happens
-            # to end in a well formed one keeps that line as the content it is.
+            # Same normalisation local results get: the frontend sentinels carry
+            # a full data URI, and replaying one sends megabytes of base64. The
+            # tool's name goes with it, as the local path passes it: only the
+            # sandbox tools emit __FILES__, so a fetched page ending in a well
+            # formed one keeps that line as the content it is.
             stripped = strip_result_for_model(result, entry.get("name"))
             if stripped.strip():
                 entry["result"] = _truncate_for_model(stripped)
         if event.get("image_b64"):
             # image_generation reports an empty result and carries the picture
-            # separately. Record that it happened rather than the bytes, so the
-            # follow-up turn knows the image exists without paying for it.
+            # apart. Record that it happened rather than the bytes.
             entry["produced_image"] = True
 
     def hosted_replay_text(self) -> str:
@@ -425,10 +411,9 @@ class _Turn:
             arguments = entry.get("arguments")
             if arguments:
                 header = f"[{name} {arguments}]"
-            # A call that ended with nothing to show still has to appear: the
-            # same "(no output)" the local tools and the other hosted paths
-            # report, so the model can tell the code ran from it having no
-            # record of it at all.
+            # A call that ended with nothing to show still has to appear, as the
+            # same "(no output)" local tools report, so the model can tell the
+            # code ran from it never having run at all.
             body = result or ("(produced an image)" if produced_image else "(no output)")
             if result and produced_image:
                 body = f"{result}\n(produced an image)"
@@ -978,11 +963,10 @@ async def stream_with_studio_tools(
                 last_reprompt_text = visible_answer
                 stalled_hosted = turn.hosted_replay_text()
                 if stalled_hosted:
-                    # A hosted tool did run this turn, the model just did not go
-                    # on to ask for a local one. The replay below never happens
-                    # on this path, so without this the reprompted request is
-                    # told to continue from a search or execution whose output
-                    # it can no longer see.
+                    # A hosted tool did run, the model just did not go on to ask
+                    # for a local one. The replay below never happens on this
+                    # path, so the reprompted request would be told to continue
+                    # from output it can no longer see.
                     stalled_message: dict[str, Any] = {
                         "role": "assistant",
                         "content": (
@@ -992,19 +976,16 @@ async def stream_with_studio_tools(
                         ),
                     }
                     if turn.reasoning_extra:
-                        # Carried for the same reason the replay below carries
-                        # it: Gemini 3 stows the text part's thoughtSignature
-                        # here, its translator pins the signature back on from
-                        # this field alone, and a turn replayed without it is
-                        # rejected rather than answered.
+                        # Gemini 3 stows the text part's thoughtSignature here
+                        # and its translator pins it back on from this field
+                        # alone, so a turn replayed without it is rejected.
                         stalled_message["extra_content"] = turn.reasoning_extra
                     append_assistant_turn(
                         conversation,
                         stalled_message,
                         # A resumed partial is the same turn as what the model
-                        # just added, so this merges into it. Appending would
-                        # split one sentence across two assistant messages and
-                        # put a turn boundary in the middle of it.
+                        # just added, so merge rather than append: appending
+                        # puts a turn boundary mid-sentence.
                         continue_final_message = run.continue_final_message,
                     )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
@@ -1264,13 +1245,12 @@ async def stream_with_studio_tools(
         }
         hosted_text = turn.hosted_replay_text()
         if hosted_text:
-            # A tool the provider ran itself in this same turn. Its output went
-            # to the client as its own frame but is not otherwise part of this
-            # message, so without this the follow-up request drops what the
-            # model just produced and it answers from the local results alone.
-            # Replayed as text rather than as native items: the shape differs
-            # per provider (Gemini codeExecutionResult, an OpenAI image call),
-            # while every provider can read its own prior turn's prose.
+            # A tool the provider ran itself this turn. Its output went to the
+            # client as its own frame but is not otherwise part of this message,
+            # so the follow-up would answer from the local results alone.
+            # Replayed as text, not native items: the shape differs per provider
+            # (Gemini codeExecutionResult, an OpenAI image call), while every
+            # provider can read its own prior turn's prose.
             assistant_message["content"] = (
                 f"{assistant_message['content']}\n\n{hosted_text}"
                 if assistant_message["content"]
