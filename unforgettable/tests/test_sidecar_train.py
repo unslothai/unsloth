@@ -60,6 +60,16 @@ def _voted_pack(db_path, n: int):
     return pack_from_admitted_b(db_path=db_path)
 
 
+def test_train_pack_unknown_pack_raises(db_path):
+    with pytest.raises(KeyError):
+        train_pack(
+            "missing-pack",
+            backend=FakeTrainBackend(),
+            base_model="fake",
+            db_path=db_path,
+        )
+
+
 def test_train_pack_refuses_below_min(db_path):
     report = _voted_pack(db_path, 3)
     assert report.n_train == 3

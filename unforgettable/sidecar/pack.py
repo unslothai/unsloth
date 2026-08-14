@@ -317,6 +317,19 @@ def pack_from_admitted_b(
     return report
 
 
+def get_pack(pack_id: str, *, db_path=None) -> Optional[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT * FROM packs WHERE id = ?", (pack_id,)).fetchone()
+        rec = _row_to_dict(row) if row else None
+    finally:
+        conn.close()
+    if rec is None:
+        return None
+    rec["include_sim"] = bool(rec.get("include_sim"))
+    return rec
+
+
 def list_packs(*, limit: Optional[int] = None, db_path=None) -> list[dict[str, Any]]:
     sql = "SELECT * FROM packs ORDER BY created_at DESC, id DESC"
     args: list[Any] = []

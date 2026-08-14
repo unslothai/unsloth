@@ -380,6 +380,37 @@ def test_train_unsloth_without_base_exits_2(db_path):
     assert "torch" not in sys.modules
 
 
+def test_promote_without_force_exits_2(db_path, capsys):
+    _voted_procedures(db_path)
+    assert main(["pack", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
+    trained = json.loads(capsys.readouterr().out)
+    assert main(["promote", trained["adapter_id"], "--db", str(db_path)]) == 2
+    err = capsys.readouterr().err
+    assert "no eval metrics" in err
+
+
+def test_train_unknown_pack_exits_2(db_path, capsys):
+    assert (
+        main(
+            [
+                "train",
+                "--backend",
+                "fake",
+                "--pack",
+                "missing-id",
+                "--db",
+                str(db_path),
+            ]
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "unknown id: missing-id" in err
+    assert "train items" not in err
+
+
 def test_rollback_works(db_path, capsys):
     _voted_procedures(db_path)
     assert main(["pack", "--db", str(db_path)]) == 0

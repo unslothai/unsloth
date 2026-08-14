@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import Any, Optional, Protocol
 
 from unforgettable.sidecar.adapters import STATUS_SHADOW, insert_adapter
-from unforgettable.sidecar.pack import PACK_MIN_TRAIN, ROLE_TRAIN, list_pack_items
+from unforgettable.sidecar.pack import (
+    PACK_MIN_TRAIN,
+    ROLE_TRAIN,
+    get_pack,
+    list_pack_items,
+)
 from unforgettable.store.db import default_db_path
 
 FAKE_BASE_MODEL = "fake"
@@ -174,6 +179,8 @@ def train_pack(
     db_path=None,
 ) -> TrainResult:
     items = list_pack_items(pack_id, db_path=db_path)
+    if not items and get_pack(pack_id, db_path=db_path) is None:
+        raise KeyError(pack_id)
     train_items = [item for item in items if item.get("role") == ROLE_TRAIN]
     if len(train_items) < PACK_MIN_TRAIN:
         raise ValueError(

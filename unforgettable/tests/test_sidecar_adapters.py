@@ -102,6 +102,14 @@ def test_second_force_promote_discards_the_first(db_path):
     assert previous["status"] == "discarded"
 
 
+def test_promote_shadow_without_metrics_refuses(db_path):
+    result = _train_shadow(db_path)
+    with pytest.raises(ValueError, match="no eval metrics"):
+        promote_adapter(result.adapter_id, db_path=db_path)
+    assert get_promoted_adapter(db_path=db_path) is None
+    assert get_adapter(result.adapter_id, db_path=db_path)["status"] == "shadow"
+
+
 def test_discarded_promote_without_force_raises(db_path):
     result = _train_shadow(db_path)
     promote_adapter(result.adapter_id, force=True, db_path=db_path)

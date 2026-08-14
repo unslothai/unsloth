@@ -403,6 +403,8 @@ def _cmd_train(args: argparse.Namespace, db_path: Path) -> int:
             recipe=args.recipe,
             db_path=db_path,
         )
+    except KeyError:
+        return _unknown_id(pack_id)
     except (ValueError, NotImplementedError) as exc:
         print(str(exc), file=sys.stderr)
         return UNKNOWN_ID_EXIT
