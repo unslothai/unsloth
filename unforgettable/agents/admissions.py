@@ -34,6 +34,8 @@ def admit(
     namespace_id: str = DEFAULT_NAMESPACE_ID,
     record_id: str | None = None,
     db_path=None,
+    bookkeeping: bool = False,
+    force_proposed_reason: str | None = None,
 ) -> AdmissionDecision:
     """Decide status before insert. Logs every decision."""
     ensure_default_namespace(db_path=db_path)
@@ -44,7 +46,11 @@ def admit(
         decision = AdmissionDecision("rejected", "namespace denies writes")
     elif mode == "propose":
         decision = AdmissionDecision("proposed", "namespace is propose-only")
-    elif kind == "claim" and provenance == "sim":
+    elif force_proposed_reason:
+        decision = AdmissionDecision("proposed", force_proposed_reason)
+    elif bookkeeping:
+        decision = AdmissionDecision("active", "bookkeeping write admitted")
+    elif kind in {"claim", "procedure"} and provenance == "sim":
         decision = AdmissionDecision("proposed", "sim-only claims are not auto-promoted")
     elif not explicit:
         decision = AdmissionDecision("proposed", "auto-extract is proposed until eyes confirm")

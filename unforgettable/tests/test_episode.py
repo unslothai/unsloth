@@ -17,12 +17,15 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from unforgettable.agents.extractor import TWIN_NOTE_TITLE
 from unforgettable.host import GenerateRequest, GenerateResult, ToolTrace
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run
-from unforgettable.store.records import get_record, insert_record
+from unforgettable.store.records import get_record, insert_record, list_records
 from unforgettable.store.search import search_records
 from unforgettable.throne.policy import Action
+
+COMPLETE_MAX_TOKENS = 800
 
 
 class FakeHost:
@@ -64,6 +67,9 @@ class FakeHost:
         if not self._results:
             raise AssertionError("unexpected extra generate")
         return self._results.pop(0)
+
+    async def complete(self, messages, *, max_tokens=COMPLETE_MAX_TOKENS) -> str:
+        return ""
 
 
 def _fail_world() -> GenerateResult:
@@ -119,6 +125,36 @@ def test_episode_fail_sim_retry_writes_error_fix(tmp_path: Path):
     assert "Run the tests" in " ".join(
         str(m.get("content")) for m in (outcome.state and host.last_messages or [])
     )
+
+
+def test_episode_sim_ok_world_retry_fail_writes_twin_note(tmp_path: Path):
+    host = FakeHost(
+        tmp_path,
+        [_fail_world(), _ok("fixed in sim", "sim"), _fail_world()],
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(messages=[{"role": "user", "content": "run the tests"}]),
+        )
+    )
+    assert host.calls[0] == "world"
+    assert host.calls[1].startswith("sim-")
+    assert host.calls[2] == "world"
+    assert Action.ENTER_SIM in outcome.actions
+    assert Action.RETRY_WORLD in outcome.actions
+    assert Action.ESCALATE in outcome.actions
+    notes = list_records(kinds=["twin_note"], db_path=host.db)
+    assert len(notes) == 1
+    note = notes[0]
+    assert note["kind"] == "twin_note"
+    assert note["status"] == "active"
+    assert note["provenance"] == "mixed"
+    assert note["title"] == TWIN_NOTE_TITLE
+    fixes = list_records(kinds=["error_fix"], db_path=host.db)
+    assert len(fixes) == 1
+    assert fixes[0]["status"] == "proposed"
+    assert fixes[0]["kind"] == "error_fix"
 
 
 def test_retrieve_injects_before_generate(tmp_path: Path):

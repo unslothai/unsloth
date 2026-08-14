@@ -56,3 +56,47 @@ def test_auto_extract_is_proposed(db_path):
         conn.close()
     assert rows
     assert rows[-1]["decision"] == "proposed"
+
+
+def test_bookkeeping_twin_note_is_active(db_path):
+    ensure_default_namespace(db_path=db_path)
+    decision = admit(
+        kind="twin_note",
+        provenance="mixed",
+        explicit=False,
+        bookkeeping=True,
+        db_path=db_path,
+    )
+    assert decision.status == "active"
+
+
+def test_bookkeeping_episode_is_active(db_path):
+    ensure_default_namespace(db_path=db_path)
+    decision = admit(
+        kind="episode",
+        provenance="mixed",
+        explicit=False,
+        bookkeeping=True,
+        db_path=db_path,
+    )
+    assert decision.status == "active"
+
+
+def test_force_proposed_beats_bookkeeping(db_path):
+    ensure_default_namespace(db_path=db_path)
+    decision = admit(
+        kind="twin_note",
+        provenance="mixed",
+        explicit=False,
+        bookkeeping=True,
+        force_proposed_reason="contradicts other",
+        db_path=db_path,
+    )
+    assert decision.status == "proposed"
+    assert decision.reason == "contradicts other"
+
+
+def test_sim_procedure_not_auto_promoted(db_path):
+    ensure_default_namespace(db_path=db_path)
+    decision = admit(kind="procedure", provenance="sim", explicit=True, db_path=db_path)
+    assert decision.status == "proposed"

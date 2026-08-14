@@ -21,10 +21,45 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from unforgettable.loop.context import EpisodeState
 
+TWIN_NOTE_TITLE = "World/sim disagreement"
+TWIN_NOTE_BODY_CAP = 800
+
 
 def llm_extract(_state: "EpisodeState") -> list[dict[str, Any]]:
     """Gap: model-proposed records from traces. Phase 1 returns nothing."""
     return []
+
+
+def from_drift(state: "EpisodeState") -> list[dict[str, Any]]:
+    """If sim succeeded and a later world retry failed, write one twin_note."""
+    saw_sim_success = False
+    sim_ok = None
+    world_fail = None
+    for event in state.trace_events:
+        if event.get("kind") == "success" and event.get("contact") == "sim":
+            saw_sim_success = True
+            sim_ok = event
+        elif saw_sim_success and event.get("kind") == "failure" and event.get("contact") == "world":
+            world_fail = event
+            break
+    if sim_ok is None or world_fail is None:
+        return []
+    body = (
+        f"Sim: {sim_ok.get('summary') or 'sim succeeded'}\n"
+        f"World retry: {world_fail.get('summary') or 'world failed'}"
+    )
+    if len(body) > TWIN_NOTE_BODY_CAP:
+        body = body[:TWIN_NOTE_BODY_CAP]
+    return [
+        {
+            "kind": "twin_note",
+            "title": TWIN_NOTE_TITLE,
+            "body": body,
+            "provenance": "mixed",
+            "explicit": False,
+            "bookkeeping": True,
+        }
+    ]
 
 
 def from_episode(state: "EpisodeState") -> list[dict[str, Any]]:

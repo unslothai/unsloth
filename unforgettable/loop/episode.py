@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from unforgettable.agents.admissions import admit
-from unforgettable.agents.extractor import from_episode, llm_extract
+from unforgettable.agents.extractor import from_drift, from_episode, llm_extract
 from unforgettable.agents.retriever import format_inject, retrieve
 from unforgettable.eyes.basic import inspect_tool_result
 from unforgettable.host import GenerateRequest, GenerateResult, Host
@@ -145,6 +145,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
 
 def _extract(state: EpisodeState, db_path: str) -> Optional[str]:
     drafts = list(from_episode(state))
+    drafts.extend(from_drift(state))
     drafts.extend(llm_extract(state))
     written_id = None
     for draft in drafts:
@@ -152,6 +153,7 @@ def _extract(state: EpisodeState, db_path: str) -> Optional[str]:
             kind=draft["kind"],
             provenance=draft["provenance"],
             explicit=bool(draft.get("explicit")),
+            bookkeeping=bool(draft.get("bookkeeping")),
             db_path=db_path,
         )
         rec = insert_record(
@@ -164,7 +166,9 @@ def _extract(state: EpisodeState, db_path: str) -> Optional[str]:
             contact_tag=draft["provenance"],
             db_path=db_path,
         )
-        written_id = rec["id"]
         if rec["kind"] == "error_fix" and rec["status"] in {"active", "proposed"}:
             state.keep_sim = True
+            written_id = rec["id"]
+        elif written_id is None:
+            written_id = rec["id"]
     return written_id
