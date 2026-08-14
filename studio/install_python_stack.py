@@ -4066,10 +4066,116 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # actually override something the operator set, rather than being the no-ops they are on
 # an unconfigured host. `pip config list` renders every file pip would load (including a
 # PIP_CONFIG_FILE override), which is why this asks pip instead of guessing paths.
-_PM_POLICY_CONFIG_KEYS = ("require-hashes", "only-binary", "no-binary", "no-build")
+_PM_POLICY_CONFIG_KEYS = (
+    "require-hashes",
+    "only-binary",
+    "no-binary",
+    "no-binary-package",
+    "no-build",
+    "no-build-package",
+    "exclude-newer",
+)
+
+# Every policy this module overrides somewhere, which is what the report has to name.
+# Wider than _PM_POLICY_RELAXED_ENV_VARS because the package-scoped --no-binary in
+# _sdist_only_build_args() overrides the build policy on the command line rather than
+# through the environment, and an operator who set it deserves to hear that too.
+_PM_POLICY_REPORTED_ENV_VARS = (
+    *_PM_POLICY_RELAXED_ENV_VARS,
+    "PIP_ONLY_BINARY",
+    "PIP_NO_BINARY",
+    "UV_NO_BUILD",
+    "UV_NO_BUILD_PACKAGE",
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+)
+
+# A policy key set to one of these is switched OFF, so reporting it would send an
+# operator looking for a hardened setting they do not have.
+_PM_POLICY_DISABLED_VALUES = ("", "0", "false", "no", "off", "none", ":none:")
 
 
-def _hardened_pm_policy_sources() -> list[str]:
+def _pm_policy_value_is_on(value: "object") -> bool:
+    """True when a config/env value reads as a policy actually in force."""
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    text = str(value).strip().strip("\"'").lower()
+    return text not in _PM_POLICY_DISABLED_VALUES
+
+
+def _uv_policy_config_sources() -> "list[str]":
+    """Policy keys set in uv's config files, which pip knows nothing about.
+
+    #8530 is the reason this exists rather than being left to the pip half: that user's
+    no-build lived in ~/.config/uv/uv.toml, so an environment-and-pip-only report would
+    have stayed silent on the exact case the relaxation was written for.
+    """
+    candidates: "list[Path]" = []
+    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+    else:
+        candidates.append(Path.cwd() / "uv.toml")
+        candidates.append(Path.cwd() / "pyproject.toml")
+        if IS_WINDOWS:
+            _appdata = os.environ.get("APPDATA", "")
+            if _appdata:
+                candidates.append(Path(_appdata) / "uv" / "uv.toml")
+        else:
+            _xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+            _home = Path(_xdg) if _xdg else Path.home() / ".config"
+            candidates.append(_home / "uv" / "uv.toml")
+    try:
+        import tomllib
+    except ImportError:  # 3.10 has no tomllib, and uv config is not worth a dependency
+        return _uv_policy_config_sources_by_scan(candidates)
+
+    found: "list[str]" = []
+    for path in dict.fromkeys(candidates):
+        try:
+            with path.open("rb") as handle:
+                document = tomllib.load(handle)
+        except Exception:
+            continue
+        # A pyproject.toml only speaks for uv under [tool.uv]; anywhere else in that file
+        # "no-binary" belongs to somebody else's tool.
+        if path.name == "pyproject.toml":
+            document = document.get("tool", {}).get("uv", {})
+        for key in _PM_POLICY_CONFIG_KEYS:
+            for table in (document, document.get("pip", {})):
+                if isinstance(table, dict) and _pm_policy_value_is_on(table.get(key)):
+                    found.append(f"uv config {path.name}: {key}")
+                    break
+    return found
+
+
+def _uv_policy_config_sources_by_scan(candidates: "list[Path]") -> "list[str]":
+    """The 3.10 fallback: look for `key = value` without parsing TOML properly.
+
+    Only ever feeds a printed line, so a false positive costs a sentence and a false
+    negative costs the sentence not being printed.
+    """
+    found: "list[str]" = []
+    for path in dict.fromkeys(candidates):
+        try:
+            text = path.read_text(encoding = "utf-8", errors = "replace")
+        except OSError:
+            continue
+        if path.name == "pyproject.toml" and "[tool.uv" not in text:
+            continue
+        for line in text.splitlines():
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            if key in _PM_POLICY_CONFIG_KEYS and _pm_policy_value_is_on(value):
+                found.append(f"uv config {path.name}: {key}")
+    return found
+
+
+def _hardened_pm_policy_sources() -> "list[str]":
     """Names of the operator policy settings the installer is about to override.
 
     Best effort and non-fatal: a wrong answer costs one printed line, so a missing pip,
@@ -4077,9 +4183,10 @@ def _hardened_pm_policy_sources() -> list[str]:
     """
     found = [
         name
-        for name in (*_PM_POLICY_RELAXED_ENV_VARS, "PIP_ONLY_BINARY", "UV_NO_BUILD")
-        if os.environ.get(name, "").strip() not in ("", "0", "false", "False")
+        for name in _PM_POLICY_REPORTED_ENV_VARS
+        if _pm_policy_value_is_on(os.environ.get(name))
     ]
+    found += _uv_policy_config_sources()
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
@@ -4094,13 +4201,18 @@ def _hardened_pm_policy_sources() -> list[str]:
     if result.returncode != 0 or not result.stdout:
         return found
     for line in result.stdout.splitlines():
-        key = line.split("=", 1)[0].strip()
+        key, _sep, value = line.partition("=")
+        key = key.strip()
         # `pip config list` renders the PIP_* env vars as a `:env:` section; they are
         # already named above, and naming them twice reads like two separate settings.
         if key.startswith(":env:"):
             continue
-        if any(key.endswith(f".{policy}") for policy in _PM_POLICY_CONFIG_KEYS):
-            found.append(f"pip config {key}")
+        if not any(key.endswith(f".{policy}") for policy in _PM_POLICY_CONFIG_KEYS):
+            continue
+        # `require-hashes = false` is a policy switched off, not a policy to report.
+        if not _pm_policy_value_is_on(value):
+            continue
+        found.append(f"pip config {key}")
     return found
 
 
@@ -4125,7 +4237,8 @@ def _report_pm_policy_relaxation() -> None:
         "Hardened package-manager policy detected (" + ", ".join(sorted(set(sources))) + "). "
         "Unsloth's own dependency installs relax hash-required mode and build the four "
         "wheel-less requirements from source, because no requirements file we ship is "
-        f"hash-locked. Set {_STRICT_PM_POLICY_ENV_VAR}=1 to enforce your policy instead.",
+        f"hash-locked. Set {_STRICT_PM_POLICY_ENV_VAR}=1 to enforce your policy for the "
+        "Python dependency install; the shell installers still pin their own torch index.",
         _cyan,
     )
 

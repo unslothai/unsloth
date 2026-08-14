@@ -624,6 +624,12 @@ class TestPmPolicyRelaxationIsReported:
         ):
             return ips._hardened_pm_policy_sources()
 
+    @pytest.fixture(autouse = True)
+    def _off_the_repo_cwd(self, tmp_path, monkeypatch):
+        """The repo root has a pyproject.toml, and uv config discovery walks the cwd, so
+        a test about that discovery must not read whatever checkout it runs from."""
+        monkeypatch.chdir(tmp_path)
+
     def test_quiet_on_an_unconfigured_host(self):
         assert self._sources({}) == []
 
@@ -650,6 +656,57 @@ class TestPmPolicyRelaxationIsReported:
             ),
         )
         assert found == ["pip config global.require-hashes", "pip config global.only-binary"]
+
+    def test_names_the_package_scoped_build_policy_too(self):
+        """_sdist_only_build_args() overrides a package-scoped no-build on the command
+        line, so an operator who set only that must still hear about it."""
+        assert self._sources({"UV_NO_BUILD_PACKAGE": "openai-whisper"}) == ["UV_NO_BUILD_PACKAGE"]
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "none", ":none:", " "])
+    def test_a_switched_off_policy_is_not_a_policy(self, value):
+        """Reporting only-binary=:none: would send someone looking for a hardened
+        setting they deliberately turned off."""
+        assert self._sources({"PIP_ONLY_BINARY": value, "UV_NO_BUILD": value}) == []
+
+    def test_a_pip_config_key_set_to_false_is_not_reported(self):
+        found = self._sources(
+            {}, pip_config = "global.require-hashes='false'\nglobal.only-binary=':none:'\n"
+        )
+        assert found == []
+
+    def test_reads_uv_config_files(self, tmp_path, monkeypatch):
+        """#8530's no-build lived in ~/.config/uv/uv.toml. pip knows nothing about that
+        file, so an environment-and-pip-only report would miss the canonical case."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert self._sources({}) == ["uv config uv.toml: no-build"]
+
+    def test_reads_the_uv_table_of_a_pyproject(self, tmp_path, monkeypatch):
+        (tmp_path / "pyproject.toml").write_text(
+            "[project]\nname = 'x'\n\n[tool.uv.pip]\nrequire-hashes = true\n",
+            encoding = "utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        assert self._sources({}) == ["uv config pyproject.toml: require-hashes"]
+
+    def test_a_pyproject_without_a_uv_table_is_not_ours(self, tmp_path, monkeypatch):
+        """A no-binary under somebody else's tool is somebody else's setting."""
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.someoneelse]\nno-binary = true\n", encoding = "utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        assert self._sources({}) == []
+
+    def test_an_explicit_uv_config_file_wins(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "corp-uv.toml"
+        cfg.write_text("[pip]\nno-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert self._sources({"UV_CONFIG_FILE": str(cfg)}) == ["uv config corp-uv.toml: no-build"]
+
+    def test_an_unreadable_uv_config_is_not_fatal(self, tmp_path, monkeypatch):
+        (tmp_path / "uv.toml").write_text("this is not = = toml [[[\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert self._sources({"PIP_REQUIRE_HASHES": "1"}) == ["PIP_REQUIRE_HASHES"]
 
     def test_a_broken_pip_is_not_fatal(self):
         """Best effort: the report is one printed line, never a failed install."""
