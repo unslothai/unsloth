@@ -5879,8 +5879,13 @@ class LlamaCppBackend:
         died in KV or compute allocation.
 
         So take whichever is smaller: the device ceiling, or what is actually
-        free right now. The ceiling still applies on a machine with plenty free,
-        which is the case the working-set number was chosen for.
+        available right now. The ceiling still applies on a machine with plenty
+        free, which is the case the working-set number was chosen for.
+
+        _APPLE_UNIFIED_MEMORY_FRACTION then earns a second job it did not have
+        over a static ceiling: available is a snapshot, and llama-server spends
+        seconds loading weights, so another app can take memory inside that
+        window. Budgeting all of it would re-create the failure this avoids.
         """
         from utils.hardware import is_apple_silicon
 
@@ -5906,9 +5911,12 @@ class LlamaCppBackend:
                 rec_bytes = int(vm.total)
             except Exception:
                 return 0
-        # available, not free: on macOS that counts the inactive and purgeable
-        # pages the kernel will hand back under pressure, so it is the number a
-        # new allocation can actually expect. Only ever lowers the budget.
+        # available, not free: psutil's macOS free subtracts speculative pages and
+        # leaves out the inactive queue, so it reads far below what a new allocation
+        # can get. available is inactive + free (psutil arch/osx/mem.c), which adds
+        # that reclaimable cache back. An estimate either way, since it counts dirty
+        # inactive pages that cost a compression to reclaim and ignores the
+        # compressor entirely. Only ever lowers the budget.
         try:
             available = int(getattr(vm, "available", 0) or 0) if vm is not None else 0
         except Exception:
