@@ -20,8 +20,12 @@ export interface OffloadCounts {
   total?: number | null;
   /** "manual" means the user picked the layer count in the load panel. */
   gpuMemoryMode?: string | null;
+  /** The requested count. -1 is Auto, which Manual mode also allows. */
+  gpuLayers?: number | null;
   /** The user's own `-ngl` in llama-server extras, which Auto mode respects. */
   offloadOverridden?: boolean | null;
+  /** Set when the backend already knows why the model is on the CPU. */
+  cpuFallbackReason?: string | null;
 }
 
 /** The snake_case load response, narrowed to the fields this file reads. */
@@ -29,10 +33,12 @@ export interface OffloadCountsSource {
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
   gpu_memory_mode?: string | null;
+  gpu_layers?: number | null;
   offload_overridden?: boolean | null;
+  cpu_fallback_reason?: string | null;
 }
 
-/** Pick the split out of a load response, so the four load paths cannot drift. */
+/** Pick the split out of a load response, so the load paths cannot drift. */
 export function offloadCountsFrom(
   response: OffloadCountsSource,
 ): OffloadCounts {
@@ -40,7 +46,9 @@ export function offloadCountsFrom(
     offloaded: response.offloaded_layers,
     total: response.offload_total_layers,
     gpuMemoryMode: response.gpu_memory_mode,
+    gpuLayers: response.gpu_layers,
     offloadOverridden: response.offload_overridden,
+    cpuFallbackReason: response.cpu_fallback_reason,
   };
 }
 
@@ -50,26 +58,53 @@ export interface OffloadWarning {
   description: string;
 }
 
-/** The warning a load's split deserves, or `null` when it deserves none.
+/** Why a loaded model is not fully on the GPU, or `null` when it is or nobody cares.
  *
- * `null` for a placement the user chose. Manual mode is the obvious one; the other
- * is an `-ngl` (or `--fit off`) they passed through llama-server extras, which Auto
- * mode deliberately respects rather than strips, so the reported mode alone cannot
- * tell a spill from a decision. In both cases "a smaller quantization would fit" is
- * advice against their own choice.
+ * A known reason wins over the counts. A recovered Vulkan startup crash leaves the
+ * model on the CPU with a `0/M` line behind it, and reading that as "nothing fit"
+ * would blame the model's size for a backend crash and recommend a quantization
+ * that changes nothing.
  *
- * `null` too when the counts are missing (an MLX or transformers load, or a
- * llama.cpp build whose log did not say) and when every layer made it onto the GPU,
- * which is the normal case and needs no notice.
+ * `null` for a placement the user chose. Manual mode with an explicit layer count is
+ * the obvious one, but Manual with GPU Layers left on Auto hands placement back to
+ * llama.cpp exactly like Auto mode does, so the mode alone is not the question: the
+ * requested count is. The other is an `-ngl` passed through llama-server extras,
+ * which Auto mode deliberately respects rather than strips. In both cases "a smaller
+ * quantization would fit" is advice against their own choice.
  *
- * Zero offloaded layers is a warning, not an exclusion. It is the worst version of
- * this problem and it has no other reporting: `cpu_fallback_reason` is only ever set
- * for the Vulkan startup-crash recovery, so an ordinary `--fit on` load that got
- * nothing onto the GPU announced plain success.
+ * `null` too when the counts are missing, which the backend also uses to say the
+ * split is not reportable: an MLX or transformers load, a llama.cpp build whose log
+ * did not say, or a host with no GPU at all, where llama.cpp still logs `0/N`.
+ * Every layer on the GPU is the normal case and needs no notice either.
+ *
+ * Zero offloaded layers is otherwise a warning, not an exclusion. It is the worst
+ * version of this problem and, absent a known reason, it had no reporting at all:
+ * an ordinary `--fit on` load that got nothing onto the GPU announced plain success.
  */
 export function offloadWarning(counts: OffloadCounts): OffloadWarning | null {
-  const { offloaded, total, gpuMemoryMode, offloadOverridden } = counts;
-  if (gpuMemoryMode === "manual" || offloadOverridden) return null;
+  const {
+    offloaded,
+    total,
+    gpuMemoryMode,
+    gpuLayers,
+    offloadOverridden,
+    cpuFallbackReason,
+  } = counts;
+  if (cpuFallbackReason === "vulkan_startup_crash") {
+    return {
+      titleSuffix: " on CPU",
+      description:
+        "The auto-selected Vulkan backend crashed during startup, so GPU " +
+        "acceleration is disabled for this model session.",
+    };
+  }
+  // An unrecognised reason is still a reason: say nothing rather than guess at it.
+  if (cpuFallbackReason) return null;
+  const manualPin =
+    gpuMemoryMode === "manual" &&
+    typeof gpuLayers === "number" &&
+    gpuLayers >= 0;
+  if (manualPin || offloadOverridden) return null;
   if (typeof offloaded !== "number" || typeof total !== "number") return null;
   if (total <= 0 || offloaded >= total) return null;
   if (offloaded <= 0) {

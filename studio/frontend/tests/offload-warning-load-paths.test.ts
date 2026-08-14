@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Four separate flows load a model, and each grew its own success toast. A
+// Five separate flows load a model, and each grew its own success toast. A
 // silent split announced as success in any one of them is the whole defect, so
 // the list is asserted rather than left to whoever touches a load path next.
 const LOAD_PATHS = [
@@ -14,6 +14,8 @@ const LOAD_PATHS = [
   "../src/features/chat/api/chat-adapter.ts",
   "../src/features/chat/shared-composer.tsx",
   "../src/features/recipe-studio/hooks/use-recipe-executions.ts",
+  // The Audio page loads a GGUF TTS variant, which fits like any other GGUF.
+  "../src/features/audio/audio-page.tsx",
 ];
 
 test("every user-facing load path consults the offload warning", () => {

@@ -46,6 +46,8 @@ import {
   listGgufVariants,
   listLoras,
   loadModel,
+  offloadCountsFrom,
+  offloadWarning,
   unloadModel,
 } from "@/features/chat";
 import {
@@ -737,9 +739,18 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         );
         if (!isCurrent()) return;
         if (res.is_audio && isTtsAudioType(res.audio_type)) {
-          toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
-            id: toastId,
-          });
+          // A TTS model is a GGUF like any other and can be split across the
+          // CPU by automatic fitting, so this cannot just claim success.
+          const offloadNotice = offloadWarning(offloadCountsFrom(res));
+          const showToast = offloadNotice ? toast.warning : toast.success;
+          showToast(
+            `Model loaded (${res.audio_type ?? "audio"})${offloadNotice?.titleSuffix ?? ""}`,
+            {
+              id: toastId,
+              description: offloadNotice?.description,
+              duration: offloadNotice ? 8000 : undefined,
+            },
+          );
         } else {
           toast.error(`${repoId} loaded but is not a supported TTS model.`, {
             id: toastId,

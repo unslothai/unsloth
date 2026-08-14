@@ -16132,17 +16132,33 @@ class LlamaCppBackend:
                 # Kept alongside the boolean so a partial offload can be reported.
                 # In auto mode the placement is llama.cpp's (--fit on), so its log is
                 # the only account of what actually happened.
-                self._gpu_offload_layers = parse_gpu_offload_counts(self._stdout_lines)
-                # Auto mode respects an inherited -ngl rather than stripping it (see
-                # _GPU_OFFLOAD_OVERRIDE_FLAGS), so the split can be the user's own
-                # choice even though the first-class mode still reads "auto". A
-                # --device naming no GPU is the same thing by a different route: it
-                # overrides the layer count outright, so llama.cpp reports 0/M for a
-                # placement that was asked for. Set beside the counts, from the same
-                # extras and env this load launched with, so the two cannot disagree
-                # about which load they describe.
+                #
+                # Gated on the same question the classifier asks, because llama.cpp
+                # logs "offloaded 0/N layers to GPU" on a plain CPU-only host too.
+                # Publishing that count would tell every user without a GPU that a
+                # smaller quantization would leave room on one they do not have.
+                if (
+                    _detected_gpus
+                    and not _arch_gate_forced_cpu
+                    and not _deliberate_cpu_only
+                    and (gpu_indices is not None or use_fit or gpu_memory_mode == "manual")
+                ):
+                    self._gpu_offload_layers = parse_gpu_offload_counts(self._stdout_lines)
+                else:
+                    self._gpu_offload_layers = None
+                # Auto mode respects an inherited -ngl rather than stripping it, so the
+                # split can be the user's own choice even though the first-class mode
+                # still reads "auto". A --device naming no GPU is the same thing by a
+                # different route: it overrides the layer count outright, so llama.cpp
+                # reports 0/M for a placement that was asked for.
+                #
+                # The layer flags only, not _GPU_OFFLOAD_OVERRIDE_FLAGS: that set also
+                # carries --fit, and --fit on is a request for llama.cpp to place the
+                # model, which is precisely the case worth reporting rather than
+                # suppressing. --fit off pins nothing by itself (it disables the fitter
+                # and leaves our own -ngl -1), so it cannot produce a split either.
                 self._offload_overridden = _extra_args_set_any_flag(
-                    extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
+                    extra_args, _GPU_LAYER_FLAGS
                 ) or _device_selection_is_cpu(extra_args, env)
                 if (
                     self._gpu_offload_layers is not None

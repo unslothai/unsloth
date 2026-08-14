@@ -15,6 +15,7 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import {
   type OffloadCounts,
+  offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
@@ -1291,12 +1292,7 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
-            offloadCounts = {
-              offloaded: loadResponse.offloaded_layers,
-              total: loadResponse.offload_total_layers,
-              gpuMemoryMode: loadResponse.gpu_memory_mode,
-              offloadOverridden: loadResponse.offload_overridden,
-            };
+            offloadCounts = offloadCountsFrom(loadResponse);
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.

@@ -47,10 +47,16 @@ test("a nonsense total cannot produce a warning", () => {
 });
 
 test("a split the user pinned themselves is not warned about", () => {
-  // Manual mode means the user chose that layer count. The model may well fit,
-  // so "pick a smaller quantization" would be advice against their own decision.
+  // Manual mode with an explicit layer count means the user chose that count.
+  // The model may well fit, so "pick a smaller quantization" would be advice
+  // against their own decision.
   assert.equal(
-    offloadWarning({ offloaded: 20, total: 60, gpuMemoryMode: "manual" }),
+    offloadWarning({
+      offloaded: 20,
+      total: 60,
+      gpuMemoryMode: "manual",
+      gpuLayers: 20,
+    }),
     null,
   );
   assert.notEqual(
@@ -90,13 +96,57 @@ test("every load path reads the response the same way", () => {
       // biome-ignore lint/style/useNamingConvention: api schema
       gpu_memory_mode: "auto",
       // biome-ignore lint/style/useNamingConvention: api schema
+      gpu_layers: -1,
+      // biome-ignore lint/style/useNamingConvention: api schema
       offload_overridden: false,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      cpu_fallback_reason: null,
     }),
     {
       offloaded: 38,
       total: 60,
       gpuMemoryMode: "auto",
+      gpuLayers: -1,
       offloadOverridden: false,
+      cpuFallbackReason: null,
     },
+  );
+});
+
+test("Manual mode with GPU Layers on Auto is still an automatic spill", () => {
+  // Manual + Auto layers hands placement back to llama.cpp exactly like Auto
+  // mode does, and the response still reads "manual", so the mode alone is not
+  // the question: the requested count is.
+  assert.notEqual(
+    offloadWarning({
+      offloaded: 20,
+      total: 60,
+      gpuMemoryMode: "manual",
+      gpuLayers: -1,
+    }),
+    null,
+  );
+  assert.notEqual(
+    offloadWarning({ offloaded: 0, total: 60, gpuMemoryMode: "manual" }),
+    null,
+  );
+});
+
+test("a known reason for the CPU wins over the counts", () => {
+  // A recovered Vulkan startup crash leaves a 0/M line behind it. Reading that
+  // as "nothing fit" would blame the model's size for a backend crash and
+  // recommend a quantization that changes nothing.
+  const warning = offloadWarning({
+    offloaded: 0,
+    total: 60,
+    cpuFallbackReason: "vulkan_startup_crash",
+  });
+  assert.equal(warning?.titleSuffix, " on CPU");
+  assert.match(warning?.description ?? "", /Vulkan backend crashed/);
+  assert.doesNotMatch(warning?.description ?? "", /smaller quantization/);
+  // An unrecognised reason is still a reason: say nothing rather than guess.
+  assert.equal(
+    offloadWarning({ offloaded: 0, total: 60, cpuFallbackReason: "something" }),
+    null,
   );
 });

@@ -995,6 +995,16 @@ class TestPartialOffloadIsReportable:
         assert not _extra_args_set_any_flag(["--threads", "8"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
         assert not _extra_args_set_any_flag(None, _GPU_OFFLOAD_OVERRIDE_FLAGS)
 
+    def test_a_fit_on_in_extras_is_not_a_pinned_split(self):
+        # --fit on asks llama.cpp to choose the placement, which is the case
+        # worth reporting rather than suppressing, so the provenance check reads
+        # the layer flags alone and not the wider set that also carries --fit.
+        from core.inference.llama_cpp import _GPU_LAYER_FLAGS, _extra_args_set_any_flag
+
+        assert not _extra_args_set_any_flag(["--fit", "on"], _GPU_LAYER_FLAGS)
+        assert not _extra_args_set_any_flag(["--fit", "off"], _GPU_LAYER_FLAGS)
+        assert _extra_args_set_any_flag(["-ngl", "20"], _GPU_LAYER_FLAGS)
+
     def test_a_cpu_device_is_deliberate_placement_too(self):
         # --device cpu overrides the layer count outright, so llama.cpp reports
         # 0/M for a placement the user asked for. Recommending a smaller
