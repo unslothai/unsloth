@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
 import time
 import weakref
@@ -381,8 +382,13 @@ def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -
     resident = str(status.get("repo_id") or "").strip().lower()
     if not resident:
         return False
-    wanted = {name.strip().lower(), pick.model_id.strip().lower(), pick.model_path.strip().lower()}
-    if resident not in wanted:
+    aliases = {name.strip().lower(), pick.model_id.strip().lower()}
+    # The path is compared without folding case: /models/Foo and /models/foo are different
+    # models on a case-sensitive filesystem, and folding them would serve one for the other.
+    same_path = os.path.normcase(str(status.get("repo_id") or "").strip()) == os.path.normcase(
+        pick.model_path.strip()
+    )
+    if resident not in aliases and not same_path:
         return False
     if pick.model_kind != "gguf":
         return True
@@ -508,19 +514,30 @@ def _normalized_pick(pick: MediaModelPick) -> MediaModelPick:
     return replace(pick, gguf_filename = sole, model_kind = "single_file")
 
 
-def _planner_for(owner: str, pick: MediaModelPick) -> Any:
-    """The engine whose download plan describes the load this pick will actually run."""
+def _planners_for(owner: str, pick: MediaModelPick) -> list:
+    """Every engine whose plan this pick could end up loading through.
+
+    Usually one. ``predict_engine`` treats an absent sd.cpp binary as available whenever its
+    installation is allowed, while ``select_and_activate_engine`` falls back to diffusers when
+    that install produces nothing runnable, and the two engines read different companion sets.
+    Both are verified in that case, so a fallback cannot load through an unchecked file list.
+    """
     if owner != DIFFUSION:
-        return _backend_for(owner)
+        return [_backend_for(owner)]
     from core.inference.diffusion import resolve_model_kind
     from core.inference.diffusion_engine_router import engine_for, predict_engine
     from core.inference.diffusion_families import detect_family_for_pick
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
 
     fam = detect_family_for_pick(pick.model_path, pick.gguf_filename, None)
     if fam is None:
-        return _backend_for(owner)
+        return [_backend_for(owner)]
     kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
-    return engine_for(predict_engine(fam, model_kind = kind))
+    predicted = predict_engine(fam, model_kind = kind)
+    names = [predicted]
+    if predicted == ENGINE_SD_CPP:
+        names.append(ENGINE_DIFFUSERS)
+    return [engine_for(name) for name in names]
 
 
 def _plan_gpu_ordinal() -> Optional[int]:
@@ -557,25 +574,33 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
     inline pull. Either way zero is not evidence of a complete cache, and treating it as such
     would allow exactly the download this exists to prevent, so the switch refuses instead.
     """
+    target = _normalized_pick(pick)
+    # A local full pipeline is complete by definition: from_pretrained reads it off disk, and
+    # the planner would ask the Hub about an absolute path and fail, which now reads as
+    # unverifiable and would refuse every on-device model.
+    if not target.gguf_filename and Path(target.model_path).expanduser().is_dir():
+        return 0
     try:
-        target = _normalized_pick(pick)
-        planner = _planner_for(owner, target)
-        plan = planner.download_plan(
-            target.model_path,
-            gguf_filename = target.gguf_filename,
-            model_kind = target.model_kind,
-            gpu_ordinal = _plan_gpu_ordinal(),
-        )
+        ordinal = _plan_gpu_ordinal()
+        plans = [
+            planner.download_plan(
+                target.model_path,
+                gguf_filename = target.gguf_filename,
+                model_kind = target.model_kind,
+                gpu_ordinal = ordinal,
+            )
+            or {}
+            for planner in _planners_for(owner, target)
+        ]
     except Exception as exc:  # noqa: BLE001 -- see the docstring
         logger.debug("media auto-switch: download plan for %s failed: %s", pick.model_id, exc)
         return None
-    plan = plan or {}
-    if plan.get("plan_failed"):
+    if any(plan.get("plan_failed") for plan in plans):
         return None
-    missing = max(0, int(plan.get("total_bytes") or 0))
+    missing = max((max(0, int(plan.get("total_bytes") or 0)) for plan in plans), default = 0)
     # An entry whose sibling sizes could not be read still names a file the load will fetch, and
     # both planners coerce an unknown size to zero, so entries decide and bytes only describe.
-    if not missing and (plan.get("entries") or []):
+    if not missing and any(plan.get("entries") for plan in plans):
         return _UNSIZED_MISSING
     return missing
 
@@ -723,7 +748,12 @@ async def maybe_auto_switch_media_model(
                 # Re-planned here because the drain can last 30 seconds, and a cache deletion
                 # during it sees a target that is neither loaded nor loading yet, so its guard
                 # allows the removal of files this already verified.
-                missing = await asyncio.to_thread(_missing_download_bytes, owner, pick)
+                missing = await _bounded(
+                    asyncio.to_thread(_missing_download_bytes, owner, pick),
+                    deadline,
+                    kind = kind,
+                    openai_errors = openai_errors,
+                )
                 if missing is None or missing:
                     raise _refuse(
                         _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind)

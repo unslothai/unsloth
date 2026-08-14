@@ -250,7 +250,7 @@ def backend(monkeypatch):
     fake = _FakeMediaBackend()
     monkeypatch.setattr(mas, "_backend_for", lambda owner: fake)
     # The real planner resolves the engine router and reaches the Hub; this suite is offline.
-    monkeypatch.setattr(mas, "_planner_for", lambda owner, pick: fake)
+    monkeypatch.setattr(mas, "_planners_for", lambda owner, pick: [fake])
     return fake
 
 
@@ -504,13 +504,21 @@ def test_a_pick_whose_companions_are_missing_is_refused_rather_than_downloaded(
 ):
     # The resolver only indexes downloaded checkpoints; a GGUF still loads its encoders and VAE
     # from a base repo the loader would fetch. Auto-switch promises it never downloads.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    # A cached GGUF, not a local pipeline: the latter is complete by definition and never planned.
+    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
+    catalog.append(
+        _info(
+            "city96/FLUX.1-dev-gguf",
+            repo,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
     backend.missing_bytes = 4_300_000_000
 
     with pytest.raises(HTTPException) as excinfo:
-        _switch("black-forest-labs/FLUX.1-dev")
+        _switch("city96/FLUX.1-dev-gguf")
 
     assert excinfo.value.status_code == 409
     assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
@@ -617,10 +625,17 @@ def test_a_replacement_load_is_not_reported_as_the_requested_model(
 def test_the_download_plan_asks_the_engine_that_will_load_the_pick(catalog, tmp_path, monkeypatch):
     # The resident engine can be native sd.cpp while the target loads through diffusers; its
     # planner refuses the pick, and that refusal would read as nothing missing.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
-    pick = mas.resolve_local_media_model("black-forest-labs/FLUX.1-dev", task = mas.IMAGE_TASK)
+    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
+    catalog.append(
+        _info(
+            "city96/FLUX.1-dev-gguf",
+            repo,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
+    pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
     asked: list = []
 
     class _Planner:
@@ -628,7 +643,7 @@ def test_the_download_plan_asks_the_engine_that_will_load_the_pick(catalog, tmp_
             asked.append(model_path)
             return {"total_bytes": 7}
 
-    monkeypatch.setattr(mas, "_planner_for", lambda owner, p: _Planner())
+    monkeypatch.setattr(mas, "_planners_for", lambda owner, p: [_Planner()])
 
     assert mas._missing_download_bytes(arb.DIFFUSION, pick) == 7
     assert asked == [pick.model_path]
@@ -665,15 +680,22 @@ def test_an_unverifiable_download_plan_refuses_rather_than_loading(
 ):
     # The video planner reports zero bytes when its own metadata call failed, because its normal
     # caller falls back to an inline pull. Zero there is "unknown", not "nothing to fetch".
-    clip = tmp_path / "wan"
-    clip.mkdir()
-    catalog.append(_info("unsloth/Wan2.2", clip, task = mas.VIDEO_TASK))
+    repo, _snapshot = _hf_cache_repo(tmp_path, "unsloth/Wan2.2-GGUF", files = ["wan-Q4_K_M.gguf"])
+    catalog.append(
+        _info(
+            "unsloth/Wan2.2-GGUF",
+            repo,
+            task = mas.VIDEO_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
     monkeypatch.setattr(
         backend, "download_plan", lambda model_path, **kw: {"total_bytes": 0, "plan_failed": True}
     )
 
     with pytest.raises(HTTPException) as excinfo:
-        _switch("unsloth/Wan2.2", owner = arb.VIDEO, openai_errors = False)
+        _switch("unsloth/Wan2.2-GGUF", owner = arb.VIDEO, openai_errors = False)
 
     assert excinfo.value.status_code == 409
     assert "Could not verify" in excinfo.value.detail
@@ -769,14 +791,21 @@ def test_the_exact_resident_shortcut_never_answers_for_a_gguf(
 def test_a_plan_with_unsized_entries_is_refused(catalog, enabled, tmp_path, backend, loads):
     # Both planners coerce an unknown sibling size to zero while keeping the entry, so bytes
     # alone would read a pending multi-GB fetch as nothing to do.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
-    monkeypatch_plan = {"total_bytes": 0, "entries": [{"repo_id": "x", "files": ["a"], "bytes": 0}]}
-    backend.download_plan = lambda model_path, **kw: monkeypatch_plan
+    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
+    catalog.append(
+        _info(
+            "city96/FLUX.1-dev-gguf",
+            repo,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
+    unsized = {"total_bytes": 0, "entries": [{"repo_id": "x", "files": ["a"], "bytes": 0}]}
+    backend.download_plan = lambda model_path, **kw: unsized
 
     with pytest.raises(HTTPException) as excinfo:
-        _switch("black-forest-labs/FLUX.1-dev")
+        _switch("city96/FLUX.1-dev-gguf")
 
     assert excinfo.value.status_code == 409
     assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
@@ -800,11 +829,80 @@ def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
             seen.append((kwargs.get("gguf_filename"), kwargs.get("model_kind")))
             return {"total_bytes": 0, "entries": []}
 
-    monkeypatch.setattr(mas, "_planner_for", lambda owner, p: _Planner())
+    monkeypatch.setattr(mas, "_planners_for", lambda owner, p: [_Planner()])
     monkeypatch.setattr(mas, "_plan_gpu_ordinal", lambda: None)
 
     assert mas._missing_download_bytes(arb.DIFFUSION, pick) == 0
     assert seen == [("model.safetensors", "single_file")]
+
+
+def test_a_local_pipeline_is_complete_without_asking_the_hub(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # The planner asks HfApi about an absolute path and fails, which now reads as unverifiable.
+    # A directory on disk is what from_pretrained loads, so it needs no plan at all.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    def _explode(model_path, **kwargs):
+        raise AssertionError("a local pipeline must not be planned against the Hub")
+
+    backend.download_plan = _explode
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+
+
+def test_paths_differing_only_in_case_are_different_models(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # Case-sensitive filesystems allow /models/Foo and /models/foo side by side; folding them
+    # would report one as already serving the other.
+    for name in ("Foo", "foo"):
+        directory = tmp_path / name
+        if not directory.exists():
+            directory.mkdir()
+        catalog.append(_info(f"org/{name}", directory, task = mas.IMAGE_TASK))
+    upper = mas.resolve_local_media_model("org/Foo", task = mas.IMAGE_TASK)
+    lower = mas.resolve_local_media_model("org/foo", task = mas.IMAGE_TASK)
+    if upper is None or lower is None or upper.model_path == lower.model_path:
+        pytest.skip("this filesystem folds case, so the two models cannot coexist")
+    backend.repo_id = lower.model_path
+
+    _switch("org/Foo")
+
+    assert [pick.model_path for _owner, pick in loads] == [upper.model_path]
+
+
+def test_a_native_prediction_also_verifies_the_diffusers_fallback(catalog, tmp_path, monkeypatch):
+    # predict_engine calls sd.cpp available whenever its install is allowed, while activation
+    # falls back to diffusers when that install produces nothing runnable.
+    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
+    catalog.append(
+        _info(
+            "city96/FLUX.1-dev-gguf",
+            repo,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
+    pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
+
+    class _Planner:
+        def __init__(self, missing):
+            self.missing = missing
+
+        def download_plan(self, model_path, **kwargs):
+            return {"total_bytes": self.missing, "entries": []}
+
+    # The predicted engine sees nothing missing; the fallback's companion set is incomplete.
+    monkeypatch.setattr(mas, "_planners_for", lambda owner, p: [_Planner(0), _Planner(9_000)])
+
+    assert mas._missing_download_bytes(arb.DIFFUSION, pick) == 9_000
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
