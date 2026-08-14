@@ -1020,6 +1020,9 @@ class VideoBackend:
         # the active one holds no cancel event yet, so without this fence it could win the lock after an eject and denoise a
         # whole new clip against a pipeline being freed. A count, so concurrent teardowns each own their own release.
         self._teardown_waiters = 0
+        # Wakes a generation that yielded the generation lock to a pending teardown. It shares
+        # _lock so checking the count and sleeping cannot miss a completed teardown.
+        self._teardown_drained = threading.Condition(self._lock)
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
@@ -1037,6 +1040,28 @@ class VideoBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         apply_diffusion_device_ordinal(target)
         return target
+
+    def _release_teardown_locked(self) -> None:
+        """Release one teardown reservation and wake generations when the last one leaves."""
+        self._teardown_waiters -= 1
+        if self._teardown_waiters == 0:
+            self._teardown_drained.notify_all()
+
+    @contextlib.contextmanager
+    def _generation_slot(self):
+        """Hold the generation lock, yielding to a teardown already queued for it."""
+        while True:
+            self._generate_lock.acquire()
+            with self._lock:
+                if not self._teardown_waiters:
+                    break
+            self._generate_lock.release()
+            with self._teardown_drained:
+                self._teardown_drained.wait_for(lambda: self._teardown_waiters == 0)
+        try:
+            yield
+        finally:
+            self._generate_lock.release()
 
     def _state_device_target(self, state: _VideoLoadState) -> DiffusionDeviceTarget:
         """The resident pipeline's target, pinned onto the calling thread. Every worker that
@@ -1921,7 +1946,7 @@ class VideoBackend:
                         ),
                     )
                 finally:
-                    self._teardown_waiters -= 1
+                    self._release_teardown_locked()
         if native_device == "cpu":
             # /video/load acquired the VIDEO GPU claim off the resolved device target, but no
             # accelerator binary was available and this runtime committed to the CPU build, so it
@@ -3221,7 +3246,7 @@ class VideoBackend:
                     self._teardown_state_locked()
                 finally:
                     # Released here, not at the end of the load: the old pipe is gone (or this load bailed), and a raising teardown must not leave the fence up for the life of the process.
-                    self._teardown_waiters -= 1
+                    self._release_teardown_locked()
 
         target = self._device_target(gpu_ordinal)
         device = target.device
@@ -4911,11 +4936,8 @@ class VideoBackend:
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
-        with self._generate_lock:
+        with self._generation_slot():
             with self._lock:
-                # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than denoise against a pipeline that is already being torn down.
-                if self._teardown_waiters:
-                    raise RuntimeError(VIDEO_CANCELLED_MSG)
                 state = self._state
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
@@ -5798,7 +5820,7 @@ class VideoBackend:
                     self._teardown_state_locked()
                 finally:
                     # Released in a finally: _teardown_state_locked ends in clear_gpu_cache(), which raises on a sticky CUDA fault, and an un-drained fence refuses every later generation.
-                    self._teardown_waiters -= 1
+                    self._release_teardown_locked()
         logger.info("video.unloaded")
         return self.status()
 

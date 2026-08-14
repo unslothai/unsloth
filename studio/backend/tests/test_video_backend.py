@@ -4604,6 +4604,7 @@ def test_each_video_load_gets_its_own_cancel_event(monkeypatch):
     backend = VideoBackend.__new__(VideoBackend)
     backend._lock = threading.RLock()
     backend._generate_lock = threading.RLock()
+    backend._teardown_drained = threading.Condition(backend._lock)
     backend._cancel_event = threading.Event()
     backend._load_token = 0
     backend._loading = None
@@ -4728,20 +4729,75 @@ def test_superseding_load_fences_a_generation_queued_behind_its_barrier(fake_run
     assert backend._teardown_waiters == 0  # the fence drained
 
 
-def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
-    # The fence's effect: with a teardown waiting on _generate_lock, a generation that wins the lock refuses instead of denoising.
+class _RecordingCondition(threading.Condition):
+    def __init__(self, lock, waiting: threading.Event):
+        super().__init__(lock)
+        self._waiting = waiting
+
+    def wait_for(self, predicate, timeout = None):
+        self._waiting.set()
+        return super().wait_for(predicate, timeout)
+
+
+def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path):
+    # A generation that wins the lock race must yield it to the queued teardown, not
+    # misreport a cancellation. Two reservations prove it does not resume early.
     backend = VideoBackend()
     _load_gguf(backend, tmp_path)
     assert backend.generate(prompt = "before", steps = 2)["mp4_bytes"] == b"MP4"
 
-    backend._teardown_waiters = 1
-    with pytest.raises(RuntimeError, match = "cancelled"):
-        backend.generate(prompt = "during", steps = 2)
-    # Still loaded: the refusal is about the pending teardown, not a missing model.
-    assert backend._state is not None
+    waiting = threading.Event()
+    backend._teardown_drained = _RecordingCondition(backend._lock, waiting)
+    with backend._lock:
+        backend._teardown_waiters = 2
 
-    backend._teardown_waiters = 0
-    assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
+    outcome: dict = {}
+    worker = threading.Thread(
+        target = lambda: outcome.setdefault("result", backend.generate(prompt = "during", steps = 2)),
+        daemon = True,
+    )
+    worker.start()
+    assert waiting.wait(5), "generation did not yield to the pending teardown"
+
+    with backend._lock:
+        backend._release_teardown_locked()
+    worker.join(0.1)
+    assert worker.is_alive(), "generation resumed before every teardown drained"
+
+    with backend._lock:
+        backend._release_teardown_locked()
+    worker.join(5)
+    assert not worker.is_alive(), "generation did not resume after the teardown drained"
+    assert outcome["result"]["mp4_bytes"] == b"MP4"
+
+
+def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+
+    waiting = threading.Event()
+    backend._teardown_drained = _RecordingCondition(backend._lock, waiting)
+    with backend._lock:
+        backend._teardown_waiters = 1
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "during", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    assert waiting.wait(5), "generation did not wait for unload"
+
+    with backend._lock:
+        backend._teardown_state_locked()
+        backend._release_teardown_locked()
+    worker.join(5)
+    assert not worker.is_alive(), "generation remained blocked after unload"
+    assert outcome["error"] == VIDEO_NOT_LOADED_MSG
 
 
 def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monkeypatch):

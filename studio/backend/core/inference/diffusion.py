@@ -18,6 +18,7 @@ bar. GPU-handoff policy lives in the arbiter the routes call, not here.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import functools
 import inspect
 import json
@@ -1100,6 +1101,9 @@ class DiffusionBackend:
         # one holds no cancel event yet, so without this fence it could win the lock after an eject and denoise anyway. A
         # count, not a flag, so concurrent teardowns each own their own release.
         self._teardown_waiters = 0
+        # Wakes a generation that yielded the generation lock to a pending teardown. It shares
+        # _lock so checking the count and sleeping cannot miss a completed teardown.
+        self._teardown_drained = threading.Condition(self._lock)
         # Written by the callback, read lock-free by generate_progress().
         self._gen: Optional[_GenState] = None
         # img2img/inpaint pipes built via from_pipe (shared modules, no extra VRAM); cleared on unload.
@@ -1121,6 +1125,38 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
+
+    def _release_teardown_locked(self) -> None:
+        """Release one teardown reservation and wake generations when the last one leaves.
+
+        Call only while holding ``_lock``. A count is necessary because an unload and a
+        superseding load can both be queued behind the active generation.
+        """
+        self._teardown_waiters -= 1
+        if self._teardown_waiters == 0:
+            self._teardown_drained.notify_all()
+
+    @contextmanager
+    def _generation_slot(self):
+        """Hold the generation lock, yielding to a teardown already queued for it.
+
+        Lock acquisition is not FIFO. If a generation wins the lock after a load or unload
+        has raised its fence, it must let that teardown run before reading ``_state``. Once
+        the final fence drops, the teardown still owns ``_generate_lock`` until its model
+        transition has settled, so the retried acquisition observes the new truthful state.
+        """
+        while True:
+            self._generate_lock.acquire()
+            with self._lock:
+                if not self._teardown_waiters:
+                    break
+            self._generate_lock.release()
+            with self._teardown_drained:
+                self._teardown_drained.wait_for(lambda: self._teardown_waiters == 0)
+        try:
+            yield
+        finally:
+            self._generate_lock.release()
 
     # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
     # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
@@ -3102,7 +3138,7 @@ class DiffusionBackend:
                     self._unload_locked()
                 finally:
                     # Released here, not at the end of the load: the old pipe is gone and the rest of the load holds _generate_lock.
-                    self._teardown_waiters -= 1
+                    self._release_teardown_locked()
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
@@ -5281,11 +5317,8 @@ class DiffusionBackend:
 
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
-        with self._generate_lock:
+        with self._generation_slot():
             with self._lock:
-                # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than start a denoise on a pipeline that is already being torn down.
-                if self._teardown_waiters:
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 state = self._state
                 if state is None:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
@@ -5815,7 +5848,7 @@ class DiffusionBackend:
                 finally:
                     # Released in a finally, exactly like begin_load: _unload_locked ends in clear_gpu_cache(), which raises on a
                     # sticky CUDA fault, and an un-drained fence would refuse every later generation for the life of the process.
-                    self._teardown_waiters -= 1
+                    self._release_teardown_locked()
         return self.status()
 
     def _unload_locked(self) -> None:
