@@ -185,7 +185,9 @@ def _old_windows_rocm_yes(ver, hip, cuda):
     return bool(hip or "rocm" in ver or "rocmsdk" in ver)
 
 
-@pytest.mark.parametrize("ver,hip,cuda", _TORCH_STATES, ids = [s[0] or "empty" for s in _TORCH_STATES])
+@pytest.mark.parametrize(
+    "ver,hip,cuda", _TORCH_STATES, ids = [s[0] or "empty" for s in _TORCH_STATES]
+)
 class TestClassificationIsAFaithfulTranslation:
     def test_cuda_marker_tag_release_and_runtime_family(self, ver, hip, cuda):
         env = {"re": re, "_version": ver, "_hip": hip, "_cuda": cuda}
@@ -209,8 +211,12 @@ class TestClassificationIsAFaithfulTranslation:
 
     def test_rocm_hip_marker(self, ver, hip, cuda):
         env = {
-            "re": re, "_version": ver, "_hip": hip, "_cuda": cuda,
-            "_ran": True, "_importable": True,
+            "re": re,
+            "_version": ver,
+            "_hip": hip,
+            "_cuda": cuda,
+            "_ran": True,
+            "_importable": True,
         }
         _run_assignments("_ensure_rocm_torch", {"_installed_torch_ver", "_hip_marker"}, env)
         assert env["_hip_marker"] == _old_rocm_marker(ver, hip, cuda)
