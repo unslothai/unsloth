@@ -16,6 +16,7 @@ import sys
 import threading
 import types
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -7200,16 +7201,27 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
 
 
 class _RecordingCondition(threading.Condition):
-    def __init__(self, lock, waiting: threading.Event):
+    def __init__(
+        self,
+        lock,
+        waiting: threading.Event,
+        waiting_again: Optional[threading.Event] = None,
+    ):
         super().__init__(lock)
         self._waiting = waiting
+        self._waiting_again = waiting_again
+        self._wait_count = 0
 
-    def wait_for(self, predicate, timeout = None):
-        self._waiting.set()
-        return super().wait_for(predicate, timeout)
+    def wait(self, timeout = None):
+        self._wait_count += 1
+        if self._wait_count == 1:
+            self._waiting.set()
+        elif self._waiting_again is not None:
+            self._waiting_again.set()
+        return super().wait(timeout)
 
 
-def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path):
+def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monkeypatch):
     # A generation that wins the lock race must yield it to the queued teardown, not
     # misreport a cancellation. Two reservations prove it does not resume early.
     (tmp_path / "model.gguf").write_bytes(b"weights")
@@ -7223,7 +7235,17 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path):
     assert backend.generate(prompt = "before", steps = 2)["images"]
 
     waiting = threading.Event()
-    backend._teardown_drained = _RecordingCondition(backend._lock, waiting)
+    waiting_again = threading.Event()
+    denoise_entered = threading.Event()
+    pipe_type = type(backend._state.pipe)
+    real_call = pipe_type.__call__
+
+    def record_denoise(self, *args, **kwargs):
+        denoise_entered.set()
+        return real_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_type, "__call__", record_denoise)
+    backend._teardown_drained = _RecordingCondition(backend._lock, waiting, waiting_again)
     with backend._lock:
         backend._teardown_waiters = 2
 
@@ -7237,13 +7259,17 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path):
 
     with backend._lock:
         backend._release_teardown_locked()
-    worker.join(0.1)
-    assert worker.is_alive(), "generation resumed before every teardown drained"
+        # Exercise the predicate against a spurious wake-up. It must go back to sleep
+        # while the second reservation is still live.
+        backend._teardown_drained.notify_all()
+    assert waiting_again.wait(5), "generation did not re-wait for the final teardown"
+    assert not denoise_entered.is_set(), "generation denoised before every teardown drained"
 
     with backend._lock:
         backend._release_teardown_locked()
     worker.join(5)
     assert not worker.is_alive(), "generation did not resume after the teardown drained"
+    assert denoise_entered.is_set()
     assert outcome["result"]["images"]
 
 

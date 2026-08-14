@@ -9,12 +9,14 @@ stack loads."""
 import builtins
 import contextlib
 import dataclasses
+import functools
 import sys
 import threading
 import time
 import types
 from dataclasses import replace
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -4715,31 +4717,28 @@ def test_unload_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_
     assert backend._teardown_waiters == 0  # the fence drained
 
 
-def test_superseding_load_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_path):
-    # The load path takes the same barrier before tearing the old model down, so it has the same hole.
-    backend = VideoBackend()
-    _load_gguf(backend, tmp_path)
-
-    queued = _run_teardown_race(backend, lambda: _load_gguf(backend, tmp_path))
-
-    assert (
-        "out" not in queued
-    ), "a generation queued behind the load barrier ran against a pipeline being torn down"
-    assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
-    assert backend._teardown_waiters == 0  # the fence drained
-
-
 class _RecordingCondition(threading.Condition):
-    def __init__(self, lock, waiting: threading.Event):
+    def __init__(
+        self,
+        lock,
+        waiting: threading.Event,
+        waiting_again: Optional[threading.Event] = None,
+    ):
         super().__init__(lock)
         self._waiting = waiting
+        self._waiting_again = waiting_again
+        self._wait_count = 0
 
-    def wait_for(self, predicate, timeout = None):
-        self._waiting.set()
-        return super().wait_for(predicate, timeout)
+    def wait(self, timeout = None):
+        self._wait_count += 1
+        if self._wait_count == 1:
+            self._waiting.set()
+        elif self._waiting_again is not None:
+            self._waiting_again.set()
+        return super().wait(timeout)
 
 
-def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path):
+def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monkeypatch):
     # A generation that wins the lock race must yield it to the queued teardown, not
     # misreport a cancellation. Two reservations prove it does not resume early.
     backend = VideoBackend()
@@ -4747,7 +4746,18 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path):
     assert backend.generate(prompt = "before", steps = 2)["mp4_bytes"] == b"MP4"
 
     waiting = threading.Event()
-    backend._teardown_drained = _RecordingCondition(backend._lock, waiting)
+    waiting_again = threading.Event()
+    denoise_entered = threading.Event()
+    pipe_type = type(backend._state.pipe)
+    real_call = pipe_type.__call__
+
+    @functools.wraps(real_call)
+    def record_denoise(self, *args, **kwargs):
+        denoise_entered.set()
+        return real_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_type, "__call__", record_denoise)
+    backend._teardown_drained = _RecordingCondition(backend._lock, waiting, waiting_again)
     with backend._lock:
         backend._teardown_waiters = 2
 
@@ -4761,14 +4771,93 @@ def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path):
 
     with backend._lock:
         backend._release_teardown_locked()
-    worker.join(0.1)
-    assert worker.is_alive(), "generation resumed before every teardown drained"
+        backend._teardown_drained.notify_all()
+    assert waiting_again.wait(5), "generation did not re-wait for the final teardown"
+    assert not denoise_entered.is_set(), "generation denoised before every teardown drained"
 
     with backend._lock:
         backend._release_teardown_locked()
     worker.join(5)
     assert not worker.is_alive(), "generation did not resume after the teardown drained"
+    assert denoise_entered.is_set()
     assert outcome["result"]["mp4_bytes"] == b"MP4"
+
+
+def test_background_generation_waits_for_replacement_and_completes(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    old_pipe = backend._state.pipe
+
+    replacement_build_started = threading.Event()
+    allow_replacement_commit = threading.Event()
+    real_from_single_file = _FakeTransformer.from_single_file
+
+    def blocking_from_single_file(cls, path, **kwargs):
+        replacement_build_started.set()
+        assert allow_replacement_commit.wait(5), "replacement load was not released"
+        return real_from_single_file(path, **kwargs)
+
+    monkeypatch.setattr(
+        _FakeTransformer, "from_single_file", classmethod(blocking_from_single_file)
+    )
+
+    generated_with: list[object] = []
+    real_call = _FakePipe.__call__
+
+    @functools.wraps(real_call)
+    def record_pipe(self, *args, **kwargs):
+        generated_with.append(self)
+        return real_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(_FakePipe, "__call__", record_pipe)
+    monkeypatch.setattr(
+        "core.inference.video_gallery.save",
+        lambda *_args, **_kwargs: {"id": "replacement-race"},
+    )
+
+    load_outcome: dict = {}
+
+    def replace_model():
+        try:
+            load_outcome["result"] = _load_gguf(backend, tmp_path)
+        except BaseException as exc:  # noqa: BLE001 - surface worker failures in the test thread
+            load_outcome["error"] = exc
+
+    # Hold the barrier until both contenders are queued. The replacement reserves teardown
+    # first; begin_generate can still validate the old committed state, and its worker must
+    # yield even if Python admits it to the generation lock before the loader.
+    backend._generate_lock.acquire()
+    loader = threading.Thread(target = replace_model, daemon = True)
+    loader.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._lock:
+            if backend._teardown_waiters == 1:
+                break
+        time.sleep(0.01)
+    else:
+        backend._generate_lock.release()
+        pytest.fail("replacement did not reserve teardown")
+
+    backend.begin_generate(prompt = "during replacement", steps = 2)
+    backend._generate_lock.release()
+
+    assert replacement_build_started.wait(5), load_outcome
+    assert backend.generate_progress()["active"] is True
+    allow_replacement_commit.set()
+    loader.join(5)
+    assert not loader.is_alive(), "replacement load did not finish"
+    assert "error" not in load_outcome, load_outcome
+
+    deadline = time.monotonic() + 5
+    while backend.generate_progress()["active"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    progress = backend.generate_progress()
+    assert progress["phase"] == "completed", progress
+    assert generated_with == [backend._state.pipe]
+    assert generated_with[0] is not old_pipe
 
 
 def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):

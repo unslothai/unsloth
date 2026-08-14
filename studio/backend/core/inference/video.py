@@ -31,6 +31,7 @@ family's official base repos, or a local path the user explicitly picked.
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import os
 import tempfile
@@ -1005,6 +1006,29 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
     return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
 
 
+@dataclass
+class _TeardownReservation:
+    active: bool = False
+
+
+def _drain_teardown_after_load(load):
+    """Keep a standard-load teardown reservation until the replacement settles."""
+
+    @functools.wraps(load)
+    def wrapped(self, *args, **kwargs):
+        reservation = _TeardownReservation()
+        kwargs["_teardown_reservation"] = reservation
+        try:
+            return load(self, *args, **kwargs)
+        finally:
+            with self._lock:
+                if reservation.active:
+                    reservation.active = False
+                    self._release_teardown_locked()
+
+    return wrapped
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -1043,6 +1067,7 @@ class VideoBackend:
 
     def _release_teardown_locked(self) -> None:
         """Release one teardown reservation and wake generations when the last one leaves."""
+        assert self._teardown_waiters > 0, "teardown reservation released without an owner"
         self._teardown_waiters -= 1
         if self._teardown_waiters == 0:
             self._teardown_drained.notify_all()
@@ -3164,6 +3189,7 @@ class VideoBackend:
 
     # ── the load itself ──────────────────────────────────────────────────────
 
+    @_drain_teardown_after_load
     def load_pipeline(
         self,
         repo_id: str,
@@ -3187,6 +3213,7 @@ class VideoBackend:
         _base_local_dir: Optional[str] = None,
         _te_prequant_skipped: tuple[str, ...] = (),
         _h3_auto_denoiser_planned: Optional[str] = None,
+        _teardown_reservation: Optional[_TeardownReservation] = None,
     ) -> dict[str, Any]:
         fam = self.validate_load_request(
             repo_id,
@@ -3235,18 +3262,16 @@ class VideoBackend:
                 self._active_generate_cancel.set()
             # Same fence unload() takes, raised BEFORE the barrier: a queued generation holds no cancel event, so the signal
             # above cannot reach it and it would slip through the moment the barrier released _generate_lock.
+            assert _teardown_reservation is not None
+            _teardown_reservation.active = True
             self._teardown_waiters += 1
         # Barrier: wait for the signalled generation to exit before teardown, or two models coexist in VRAM.
         with self._generate_lock:
             with self._lock:
-                try:
-                    # The barrier wait can outlive this load (superseded by a newer load/unload); recheck before touching shared state.
-                    if _load_token is not None and _load_token != self._load_token:
-                        raise RuntimeError("Video load was cancelled or superseded.")
-                    self._teardown_state_locked()
-                finally:
-                    # Released here, not at the end of the load: the old pipe is gone (or this load bailed), and a raising teardown must not leave the fence up for the life of the process.
-                    self._release_teardown_locked()
+                # The barrier wait can outlive this load (superseded by a newer load/unload); recheck before touching shared state.
+                if _load_token is not None and _load_token != self._load_token:
+                    raise RuntimeError("Video load was cancelled or superseded.")
+                self._teardown_state_locked()
 
         target = self._device_target(gpu_ordinal)
         device = target.device

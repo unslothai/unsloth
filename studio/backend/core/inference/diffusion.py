@@ -1132,6 +1132,7 @@ class DiffusionBackend:
         Call only while holding ``_lock``. A count is necessary because an unload and a
         superseding load can both be queued behind the active generation.
         """
+        assert self._teardown_waiters > 0, "teardown reservation released without an owner"
         self._teardown_waiters -= 1
         if self._teardown_waiters == 0:
             self._teardown_drained.notify_all()
