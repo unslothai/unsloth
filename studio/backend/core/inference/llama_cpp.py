@@ -2513,6 +2513,15 @@ def _child_spec_env(
     return os.environ if env is None else env
 
 
+# The speculative types llama.cpp gives the TARGET context recurrent-state rollback
+# snapshots for -- n_rs_seq = --spec-draft-n-max, per
+# common_params_speculative::need_n_rs_seq. Every draft-model type but draft-simple,
+# and both MTP spellings, since which one a build advertises varies.
+_TARGET_ROLLBACK_SPEC_TYPES = frozenset(
+    {"mtp", "draft-mtp", "draft-eagle3", "draft-dflash", "draft-dspark"}
+)
+
+
 def _accumulated_spec_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> set:
@@ -4928,6 +4937,7 @@ class LlamaCppBackend:
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
+                "spec_draft_n_max_default": None,
                 "supports_kv_unified": False,
                 # Fail OPEN, unlike every key above. These three are emitted on
                 # every launch today, so a failed probe must keep emitting them;
@@ -4973,6 +4983,7 @@ class LlamaCppBackend:
         supports_dflash = False
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
+        spec_draft_n_max_default: Optional[int] = None
         supports_kv_unified = False
         # See the fallback dict: these fail open.
         supports_no_context_shift = True
@@ -5155,6 +5166,16 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--spec-draft-n-max"
             elif _is_real("--draft-max"):
                 spec_draft_n_max_flag = "--draft-max"
+            # And the build's OWN default for it, off the same help line. Needed
+            # where the extras own --spec-type: Studio emits no depth then, so the
+            # child runs on this number and the Hybrid Mamba rollback reserve
+            # scales by it. None when the line carries no default.
+            if spec_draft_n_max_flag:
+                _n_max_default = re.search(
+                    r"default:\s*(\d+)", blocks.get(spec_draft_n_max_flag) or ""
+                )
+                if _n_max_default:
+                    spec_draft_n_max_default = int(_n_max_default.group(1))
 
             supports_kv_unified = _is_real("--kv-unified")
             # Only once the help actually parsed AND `--help` succeeded. Empty
@@ -5234,6 +5255,7 @@ class LlamaCppBackend:
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
+            "spec_draft_n_max_default": spec_draft_n_max_default,
             "supports_kv_unified": supports_kv_unified,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
@@ -13835,13 +13857,16 @@ class LlamaCppBackend:
                     # llama.cpp gives the target n_rs_seq for draft-mtp, draft-eagle3,
                     # draft-dflash and draft-dspark, so DSpark/DFlash pay it too and a
                     # separate drafter file pays it exactly like an embedded head.
-                    # draft-simple is the one engaged draft mode that does not.
+                    # draft-simple is the one engaged draft mode that does not, which
+                    # is why the pass-through arm reads the types rather than assuming
+                    # every extras-owned drafter qualifies.
                     _target_rollback = bool(
                         _auto_studio_mtp
                         or _user_mtp_via_extras
                         or (
                             _user_draft_via_extras
-                            and "draft-eagle3" in _accumulated_spec_types(extra_args, env = _spec_env)
+                            and _accumulated_spec_types(extra_args, env = _spec_env)
+                            & _TARGET_ROLLBACK_SPEC_TYPES
                         )
                     )
 
@@ -13849,6 +13874,24 @@ class LlamaCppBackend:
                     # the field, else the platform default (2 GPU / 3 CPU).
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
+                    if _mtp_eff_n_max is None and _extra_args_set_spec_type(extra_args):
+                        # The extras own the spec block, so _build_speculative_flags
+                        # returns without emitting a depth and the platform default
+                        # below never reaches the child. What does: the inherited env,
+                        # which survives exactly this case, then the build's own
+                        # default. The rollback reserve scales by this number, so
+                        # assuming Studio's 2 against a build defaulting higher
+                        # under-reserves.
+                        _env_n_max = _spec_env.get("LLAMA_ARG_SPEC_DRAFT_N_MAX")
+                        if _is_positive_int(_env_n_max):
+                            _mtp_eff_n_max = int(str(_env_n_max).strip())
+                        else:
+                            try:
+                                _mtp_eff_n_max = (_launch_caps(binary) or {}).get(
+                                    "spec_draft_n_max_default"
+                                )
+                            except Exception:
+                                _mtp_eff_n_max = None
                     if _mtp_eff_n_max is None:
                         # _detected_gpus (not gpus) so manual -- which empty
                         # gpus to bypass the planner -- keep the GPU draft depth the
@@ -14401,7 +14444,21 @@ class LlamaCppBackend:
                         # displaced does not run. The flat fraction below is gated on
                         # this; the byte-accurate callback was not, so the fit went on
                         # charging VRAM no drafter allocates.
-                        mtp_overhead_fn = None
+                        # One term survives: a Hybrid Mamba target keeps its own
+                        # recurrent rollback snapshots for verification, and those sit
+                        # in the TARGET context, so pinning the drafter to the CPU does
+                        # not move them. Charge those alone rather than nothing. Flat in
+                        # ctx, the state being per-slot rather than per-token.
+                        _cpu_draft_target_state = (
+                            self._mamba_recurrent_state_bytes(n_parallel) * _mtp_eff_n_max
+                            if _target_rollback and _mtp_eff_n_max > 0
+                            else 0
+                        )
+                        mtp_overhead_fn = (
+                            (lambda _ctx, _bytes = _cpu_draft_target_state: _bytes)
+                            if _cpu_draft_target_state > 0
+                            else None
+                        )
                         _mtp_kv_unsized = False
 
                     # Flat MTP reserve fraction: used only as the fallback when the
@@ -15365,9 +15422,18 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
+                # The same view of argv and env the child will get, built with the
+                # helpers the launch itself uses so the two cannot drift: manual mode
+                # drops the placement vars, and a gpu_ids pin drops the device flags
+                # from both. Classifying on the raw extras would read a stale
+                # --device none as CPU-only for a load that does offload.
                 _spec_placement_env = dict(os.environ)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(_spec_placement_env)
+                _spec_placement_extras = extra_args
+                if gpu_ids is not None:
+                    _spec_placement_extras = self._strip_device_extra_args(extra_args)
+                    self._clear_device_placement_env(_spec_placement_env)
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -15398,7 +15464,7 @@ class LlamaCppBackend:
                         # CPU-only rather than partial. Those keep the CPU MTP policy.
                         and _detected_gpus
                         and self._partially_offloads_layers(
-                            [*cmd, *(extra_args or [])],
+                            [*cmd, *(_spec_placement_extras or [])],
                             _spec_placement_env,
                         )
                     ),
@@ -17579,7 +17645,12 @@ class LlamaCppBackend:
         # at a fixed partial layer count, the draft and rollback work still regresses
         # decode. Auto therefore preserves ordinary llama-server performance by
         # disabling speculation. Forced MTP remains available as the explicit override.
-        if embedded_mtp_partial_offload:
+        # Only where MTP is the thing being stood down. On a build whose --spec-type
+        # has no MTP spelling the emit path below already loads without speculation
+        # and names the real cause (binary_no_mtp, with the update affordance), so
+        # claiming a placement policy would send the user to force a mode this build
+        # cannot run, and "none" is not a value every such build's enum carries.
+        if embedded_mtp_partial_offload and caps.get("mtp_token"):
             logger.info(
                 "Auto: embedded MTP is disabled because the Hybrid Mamba target "
                 "requires partial CPU offload; ordinary decoding is faster at this "

@@ -574,6 +574,200 @@ def test_auto_disables_embedded_hybrid_mtp_for_final_partial_layer_override(tmp_
     assert backend.spec_fallback_reason == "mtp_partial_offload"
 
 
+def test_auto_reports_the_binary_not_the_placement_when_the_build_lacks_mtp(tmp_path):
+    # Nothing to stand down: this build cannot run MTP at all, so the placement
+    # story would send the user to force a mode it does not have, and hide the
+    # update affordance the binary fallback carries.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": None,
+        "mtp_probe_inconclusive": False,
+        "supports_ngram_mod": False,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert "--spec-type" not in cmd
+    assert "--spec-default" in cmd
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+def test_auto_classifies_placement_on_the_device_flags_the_child_gets(tmp_path):
+    # An explicit gpu_ids pick owns placement, so the launch drops the stale
+    # --device none from the extras further down. Classifying before that strip
+    # would read CPU-only for a load that partially offloads.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        gpu_ids = [0],
+        extra_args = ["--device", "none"],
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    # The strip already ran: the child never sees the CPU device the classifier
+    # would otherwise have believed.
+    assert "--device" not in cmd
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
+
+
+def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
+    """A Hybrid Mamba target on one 24 GB card with the MTP-overhead math live.
+
+    The drafter's own KV is stubbed away so the only moving term is the target's
+    recurrent rollback state, which is what the reserve has to keep charging.
+    """
+    gb = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    sidecar = tmp_path / "dflash-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._get_gguf_size_bytes = lambda path: (0 if str(path) == str(sidecar) else 8 * gb)
+    backend._can_estimate_kv = lambda: True
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    backend._select_gpus_split_aware = lambda *args, **kwargs: ([0], False)
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._n_layers = 65
+        backend._n_kv_heads = 4
+        backend._n_heads = 24
+        backend._embedding_length = 5120
+        backend._kv_key_length = 256
+        backend._kv_value_length = 256
+        backend._full_attention_interval = 4
+        backend._ssm_inner_size = 6144
+        backend._ssm_state_size = 128
+        backend._ssm_group_count = 16
+        backend._ssm_conv_kernel = 4
+
+    backend._read_gguf_metadata = read_metadata
+    backend.probe_server_capabilities = lambda _binary = None: caps or {
+        "mtp_token": "draft-mtp",
+        "supports_dflash": True,
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        # Or the launch clamps the four slots to one and the per-slot state,
+        # which is what these tests measure, shrinks with them.
+        "supports_kv_unified": True,
+    }
+    return backend, gguf, sidecar
+
+
+def _recorded_mtp_reserve(backend, gguf, **load_kwargs):
+    """The bytes the fit was asked to hold back for speculation."""
+    charged = []
+    _fit = backend._fit_context_to_vram
+
+    def recording_fit(requested, *args, **kwargs):
+        fn = kwargs.get("mtp_overhead_fn")
+        charged.append(0 if fn is None else int(fn(requested) or 0))
+        return _fit(requested, *args, **kwargs)
+
+    backend._fit_context_to_vram = recording_fit
+    _launch(backend, gguf, **load_kwargs)
+    assert charged, "the fit never ran, so this proves nothing"
+    return charged
+
+
+def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
+    # -ngld 0 moves the drafter's weights and KV to host memory, but the rollback
+    # snapshots live in the TARGET context, so they stay on the GPU. Releasing the
+    # whole reserve here undercounts them and the fit can pick a placement that
+    # spills.
+    backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
+
+    charged = _recorded_mtp_reserve(
+        backend,
+        gguf,
+        dflash_draft_path = str(sidecar),
+        speculative_type = "dflash",
+        n_ctx = 8192,
+        n_parallel = 4,
+        extra_args = ["--spec-draft-ngl", "0"],
+    )
+
+    # After the launch: the GGUF dims land when the load reads the metadata.
+    expected = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
+    assert expected > 0
+    assert set(charged) == {expected}
+
+
+@pytest.mark.parametrize(
+    ("spec_type", "pays_rollback"),
+    [("draft-dflash", True), ("draft-eagle3", True), ("draft-simple", False)],
+)
+def test_a_pass_through_drafter_pays_the_rollback_its_type_calls_for(
+    tmp_path, spec_type, pays_rollback
+):
+    # need_n_rs_seq lists every draft-model type but draft-simple, so the extras
+    # path has to read the type rather than assume either answer.
+    backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
+
+    charged = _recorded_mtp_reserve(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 8192,
+        n_parallel = 4,
+        extra_args = [
+            "--spec-type",
+            spec_type,
+            "--model-draft",
+            str(sidecar),
+            "--spec-draft-n-max",
+            "2",
+        ],
+    )
+
+    rollback = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
+    assert rollback > 0
+    assert set(charged) == {rollback if pays_rollback else 0}
+
+
+def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(tmp_path):
+    # Studio emits no --spec-draft-n-max when the extras own the spec block, so
+    # the child runs at the build's own default. Budgeting Studio's 2 instead
+    # under-reserves the rollback copies, which scale directly with it.
+    backend, gguf, _sidecar = _hybrid_reserve_backend(
+        tmp_path,
+        caps = {
+            "mtp_token": "draft-mtp",
+            "supports_ngram_mod": True,
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+            "spec_draft_n_max_default": 16,
+            "supports_kv_unified": True,
+        },
+    )
+    charged = _recorded_mtp_reserve(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 8192,
+        n_parallel = 4,
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
+    assert base > 0
+    assert set(charged) == {16 * base}
+
+
 def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):
     """One 24 GB card, a 16 GB target and a drafter of the caller's size.
 

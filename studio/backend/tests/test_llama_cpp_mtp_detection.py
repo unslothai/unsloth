@@ -1116,6 +1116,10 @@ def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
     assert caps["ngram_mod_flavor"] == "new"
     assert caps["supports_ngram_mod"] is True
     assert caps["spec_draft_n_max_flag"] == "--spec-draft-n-max"
+    # The build's own depth, off the same line: a pass-through --spec-type makes
+    # the child run on this rather than on anything Studio emits, and the Hybrid
+    # Mamba rollback reserve scales by it.
+    assert caps["spec_draft_n_max_default"] == 16
 
 
 @_NEEDS_BASH
