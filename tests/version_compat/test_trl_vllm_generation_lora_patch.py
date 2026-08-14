@@ -464,6 +464,7 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
 # was inserted in 0.18.0). A caller that fills it positionally and an injector that
 # then adds it as a keyword is `TypeError: got multiple values for argument`.
 
+
 class VLLMSignatureEngine(FakeEngine):
     """`FakeEngine` with vLLM 0.27.1's real parameter lists on both entry points."""
 

@@ -3434,7 +3434,8 @@ def vllm_generation_init_patch():
                 missing adapter. Bind the real signature instead of counting arguments so a
                 future reshuffle cannot reintroduce that.
                 """
-                if kwargs.get("lora_request", None) is not None: return True
+                if kwargs.get("lora_request", None) is not None:
+                    return True
                 try:
                     positional = inspect.signature(bound).bind_partial(*args).arguments
                 except (TypeError, ValueError):
