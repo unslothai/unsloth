@@ -672,9 +672,18 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null 2>&1; then
             apt-get update -qq
+
+            alsa_package=libasound2
+            if apt-cache policy "$alsa_package" | grep -q 'Candidate: (none)'; then
+              alsa_package=libasound2t64
+            fi
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
               ca-certificates python3 xvfb xauth binutils libgl1 libegl1 libgbm1 \
-              libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+              libwayland-client0 libwayland-cursor0 libwayland-egl1 libwayland-server0 \
+              libx11-6 libx11-xcb1 libxcb1 libxcb-randr0 libxcb-render0 libxcb-shm0 \
+              libxext6 libxrandr2 libxi6 libxcursor1 libxfixes3 libxrender1 \
+              libxcomposite1 libxdamage1 libxinerama1 libxau6 libxdmcp6 libxshmfence1 \
+              "$alsa_package" libpulse0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
             if [[ "${{ matrix.install_gles }}" == "true" ]]; then
               DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libgles2
             fi
@@ -686,7 +695,10 @@ jobs:
           else
             dnf install -y -q ca-certificates python3 binutils xorg-x11-server-Xvfb xorg-x11-xauth \
               mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
-              libwayland-client libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
+              libwayland-client libwayland-cursor libwayland-egl libwayland-server \
+              libX11 libX11-xcb libxcb libXext libXrandr libXi libXcursor libXfixes \
+              libXrender libXcomposite libXdamage libXinerama libXau libXdmcp libxshmfence \
+              alsa-lib pulseaudio-libs libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
             if [[ "${{ matrix.install_gles }}" == "true" ]]; then
               dnf install -y -q mesa-libGLES
             fi
