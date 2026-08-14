@@ -2182,9 +2182,15 @@ function Test-VisibleDevicesPinned {
     return $false
 }
 
-# True when the FIRST mask that is set hides every device (empty, or a leading negative entry),
-# first-set-wins like
-# Resolve-VisibleGpuIndex and the runtime. Untyped: a [string] cast turns an unset $env: read from
+# True when the FIRST mask that is set hides every device (empty, or a leading negative entry).
+# First-set-wins is clr's chain itself, not a convenience: it reads
+# `(HIP_VISIBLE_DEVICES[0] != '\0') ? HIP_VISIBLE_DEVICES : CUDA_VISIBLE_DEVICES`, and a
+# present-but-empty variable is stored as " ", so an empty HIP still wins and still hides all.
+# Callers pass HIP before CUDA and pass nothing else. Do NOT model this on Resolve-VisibleGpuIndex,
+# which also reads ROCR: on Linux ROCR is a second layer that COMPOSES with clr's chain, which is
+# why setup.sh judges both, but Windows forces the PAL path and clr never reads ROCR there, so an
+# arm for it here would only let a benign ROCR=0 shadow a CUDA=-1 that does hide the card.
+# Untyped: a [string] cast turns an unset $env: read from
 # $null into "", which reads as hide-all and would mute every host. ([string[]] does NOT -- bound
 # positionally it leaves $null elements alone -- but the singular cast is the one a future edit
 # reaches for, and it is the one that breaks this.)
