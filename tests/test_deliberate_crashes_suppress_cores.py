@@ -170,7 +170,6 @@ def _prctl_dumpable_value(node):
     return value.value if cmd_ok and isinstance(value, ast.Constant) else None
 
 
-
 def _fold(node, env):
     """Constant-fold a string expression. Returns (value, consumed literal ids).
 
