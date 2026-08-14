@@ -656,6 +656,25 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
     )
 
 
+def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Remove the context group (``-c`` / ``--ctx-size``) from ``args``, keeping
+    every other shadow flag. Preserves a None/empty input so the
+    inherit-vs-explicit-empty distinction survives. Used where Studio has to own
+    the context because the user's value is unsafe rather than merely different:
+    the Metal zero-context floor, where a pass-through ``-c 0`` would last-wins
+    override the floor and pin the native length again."""
+    if not args:
+        return args
+    return strip_shadowing_flags(
+        args,
+        strip_context = True,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+
+
 def apply_model_memory_policy(
     extra_args: Optional[Iterable[str]],
     *,

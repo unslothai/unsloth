@@ -32,6 +32,7 @@ resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 strip_split_mode_only = _lsa.strip_split_mode_only
+strip_context_only = _lsa.strip_context_only
 extra_args_disable_mmproj = _lsa.extra_args_disable_mmproj
 validate_extra_args = _lsa.validate_extra_args
 
@@ -883,6 +884,36 @@ def test_strip_split_mode_only_preserves_none_and_empty():
     # None means "inherit"; [] means "explicit empty" -- both must round-trip.
     assert strip_split_mode_only(None) is None
     assert strip_split_mode_only([]) == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-c", "0", "--top-k", "20"],
+        ["--ctx-size", "0", "--top-k", "20"],
+        ["-c=0", "--top-k", "20"],
+        ["--ctx-size=0", "--top-k", "20"],
+    ],
+)
+def test_strip_context_only_drops_every_context_form(args):
+    # Every -c / --ctx-size form (long/short, space/=) goes; the rest survives.
+    assert strip_context_only(args) == ["--top-k", "20"]
+
+
+def test_strip_context_only_keeps_other_shadow_flags():
+    # Only the context group: the cache/spec/template/split flags are untouched.
+    assert strip_context_only(["-c", "0", "--split-mode", "row", "--cache-type-k", "q8_0"]) == [
+        "--split-mode",
+        "row",
+        "--cache-type-k",
+        "q8_0",
+    ]
+
+
+def test_strip_context_only_preserves_none_and_empty():
+    # None means "inherit"; [] means "explicit empty" -- both must round-trip.
+    assert strip_context_only(None) is None
+    assert strip_context_only([]) == []
 
 
 def test_strip_shadowing_flags_drops_tensor_split_with_split_mode():
