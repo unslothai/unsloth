@@ -131,6 +131,8 @@ export function useTauriBackend() {
   const [error, setError] = useState<string | null>(null);
   // Guard against double startServer calls
   const startingRef = useRef(false);
+  // Guard against double stopServer calls
+  const stoppingRef = useRef(false);
   // Guard against React Strict Mode double-mount
   const mountedRef = useRef(false);
   // Track the discovered port from server-port event
@@ -389,7 +391,20 @@ export function useTauriBackend() {
     await startManagedServer();
   }
 
+  // One stop at a time. The tray toggle branches on statusRef, which stays "running" until
+  // the invoke resolves, so a second tray Stop otherwise runs a second shutdown against the
+  // backend the first is still taking down. Mirrors the startingRef guard on the start path.
   async function stopServer() {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
+    try {
+      await runStopServer();
+    } finally {
+      stoppingRef.current = false;
+    }
+  }
+
+  async function runStopServer() {
     if (isExternalServer) {
       // We attached to a server we didn't spawn: can't kill it, just disconnect the UI.
       startingRef.current = false;

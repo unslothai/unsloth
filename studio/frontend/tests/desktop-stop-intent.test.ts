@@ -224,6 +224,37 @@ test("stopping records the intent before the shutdown it can outlive", async () 
   );
 });
 
+test("a second stop cannot run while the first is in flight", async () => {
+  const hook = await hookSource();
+
+  // The tray item is never disabled and the toggle branches on statusRef, which stays
+  // "running" for the whole invoke, so two Stop clicks reach stopServer concurrently.
+  const tray = hook.slice(hook.indexOf('register<void>("tray-toggle-server"'));
+  assert.match(
+    tray.slice(0, tray.indexOf("});")),
+    /statusRef\.current === "running"\)\s*\{\s*stopServer\(\);/,
+  );
+
+  const guard = hook.slice(
+    hook.indexOf("async function stopServer()"),
+    hook.indexOf("async function runStopServer()"),
+  );
+
+  // Two concurrent stops both mark the intent, and on an adopted backend the loser can
+  // fail against the port the winner is taking down. Its rollback then drops the marker
+  // the winner earned, so the next reload starts a server the user asked to stop.
+  assert.match(
+    guard,
+    /if \(stoppingRef\.current\) return;\s*stoppingRef\.current = true;/,
+    "a second stop still runs while the first is in flight",
+  );
+  assert.match(
+    guard,
+    /finally \{\s*stoppingRef\.current = false;\s*\}/,
+    "a failed stop strands the guard and no later stop can run",
+  );
+});
+
 test("every deliberate start drops the marker", async () => {
   const hook = await hookSource();
 
