@@ -3,16 +3,11 @@
 
 """``run_tools_locally`` resolves the one request shape names cannot.
 
-On a provider that ships hosted builtins of the same name, ``enable_tools: true``
-with ``enabled_tools: ["web_search"]`` is ambiguous by construction. It is what a
-bundle written before Studio ran tools for external providers sent to ask the
-PROVIDER to search, and it is also what the current composer sends when the user
-lights the Search pill, which the connections dialog says runs on this machine.
-The bytes are identical, so the backend guessed hosted to protect the older
-client, and the newer one silently got hosted search while being told otherwise.
-
-The flag lets the caller say. Absent, the hosted reading still wins, so nothing
-about an old client changes.
+On a provider shipping hosted builtins of the same name, ``enabled_tools:
+["web_search"]`` is byte-identical whether an older bundle means the PROVIDER's
+search or the current composer means the local Search pill. The backend guessed
+hosted, so the newer client silently got hosted search. The flag lets the caller
+say; absent, the hosted reading still wins and old clients are unaffected.
 """
 
 from __future__ import annotations
@@ -98,16 +93,12 @@ def test_a_local_only_name_never_needed_the_flag(provider_type):
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
-    """image_generation has no local implementation at all.
-
-    Even with the flag set, reading this as a local request would drop it, so
-    the flag must not be a blanket override of the hosted vocabulary.
-    """
+    """image_generation has no local implementation, so a local reading would
+    drop it: the flag must not blanket-override the hosted vocabulary."""
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _selects_only_provider_hosted_tools
 
-    # The premise: Studio has nothing to substitute, so a "local" reading of this
-    # request would silently drop the tool rather than run something else.
+    # The premise: Studio has nothing to substitute.
     assert "image_generation" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
     payload = _payload(enabled_tools = ["image_generation"])
@@ -118,11 +109,9 @@ def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
 def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_type):
     """The flag decides ambiguous names, it does not override the whole rule.
 
-    There is no local loop for image_generation to run in, so honouring the flag
-    here would enter the studio-tools path, find nothing to execute, fall back to
-    the same passthrough, and skip the confirmation rejection on the way, since
-    that guard keys on the request not having taken the loop. A caller asking for
-    confirmation would get none.
+    Honouring it for image_generation would enter the loop, find nothing to
+    execute, fall back to the same passthrough, and skip the confirmation
+    rejection on the way, since that guard keys on not having taken the loop.
     """
     from routes.inference import _selects_only_provider_hosted_tools
 
@@ -138,18 +127,16 @@ def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_ty
 def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(provider_type):
     """code_execution has a stand-in mapping, but this request selects neither half.
 
-    python/terminal run on this machine; code_execution runs in the provider's
-    own sandbox and Studio ships no tool by that name, so a request naming only
-    code_execution has nothing for the loop to execute. Reading the flag off the
-    mere existence of the mapping enters the loop, finds an empty catalog, falls
-    back to the same passthrough, and skips the confirmation rejection on the
-    way -- the caller asked to confirm and the provider ran the sandbox anyway.
+    Studio ships no code_execution, so the loop has nothing to execute. Reading
+    the flag off the mere existence of the mapping enters the loop, finds an
+    empty catalog, falls back to the same passthrough, and skips the
+    confirmation rejection on the way.
     """
     from core.inference.providers import LOCAL_STANDINS_FOR_HOSTED_TOOLS
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
 
-    # The premise, derived rather than asserted: a mapping exists, but nothing it
+    # The premise, derived rather than asserted: a mapping exists, nothing it
     # points at was selected, and Studio has no code_execution of its own.
     assert LOCAL_STANDINS_FOR_HOSTED_TOOLS["code_execution"] == frozenset({"python", "terminal"})
     assert "code_execution" not in {tool["function"]["name"] for tool in ALL_TOOLS}
@@ -159,19 +146,15 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
         run_tools_locally = True,
         confirm_tool_calls = True,
     )
-    # The local catalog this request would take into the loop: empty, so the loop
-    # cannot run and the flag has nothing to route to.
+    # The local catalog this request would take into the loop: empty.
     assert _drive(_select_request_tools(payload, tools_on = True, mcp_allowed = False)) == []
     assert _selects_only_provider_hosted_tools(payload, provider_type) is True
 
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_code_execution_beside_a_selected_stand_in_still_takes_the_loop(provider_type):
-    """The other half of the rule: name a stand-in and the loop is right again.
-
-    web_search is Studio's to run here, and code_execution rides along to the
-    provider, so this must not be swept up by the check above.
-    """
+    """The other half of the rule: web_search is Studio's to run and
+    code_execution rides along, so the check above must not sweep this up."""
     from routes.inference import _selects_only_provider_hosted_tools
 
     payload = _payload(
@@ -202,9 +185,8 @@ def test_mcp_still_wins_regardless_of_the_flag():
 
 
 def test_the_field_defaults_to_absent_not_false():
-    """Absent and False are the same decision here, but the wire must show the
-    difference, so a client can be read as "did not know about this" rather than
-    "asked for hosted"."""
+    """Same decision as False, but the wire must still distinguish "did not know
+    about this" from "asked for hosted"."""
     payload = _payload(enabled_tools = ["web_search"])
     dumped = payload.model_dump(exclude_unset = True)
     assert "run_tools_locally" not in dumped

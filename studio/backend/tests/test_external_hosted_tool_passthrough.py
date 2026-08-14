@@ -190,17 +190,16 @@ def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
 def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(monkeypatch):
     """`run_tools_locally` must not smuggle a hosted-only turn past the 400.
 
-    Studio has no `code_execution`, so this request's local catalog is empty
-    whatever the flag says: the loop cannot run it, and the route falls back to
-    the provider. The confirmation rejection keys on the request NOT having taken
-    the loop, so reading the flag as "local" here answers a confirm-me request
-    with an unconfirmed provider-side sandbox run.
+    Studio has no `code_execution`, so the local catalog is empty whatever the
+    flag says and the route falls back to the provider. The confirmation
+    rejection keys on the request NOT having taken the loop, so a "local"
+    reading here answers a confirm-me request with an unconfirmed sandbox run.
     """
     from fastapi import HTTPException
 
     inf = _install(monkeypatch, "openai")
-    # The client is constructed after the guard, so an untouched record is the
-    # evidence nothing was sent. Cleared here since it is class-level state.
+    # Class-level state; the client is built after the guard, so an untouched
+    # record is the evidence nothing was sent.
     FakeExternalClient.last = {}
     payload = _payload(
         enable_tools = True,

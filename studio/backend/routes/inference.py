@@ -2820,19 +2820,14 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # provider's search with ours.
     if not all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled):
         return False
-    # Every selected name is hosted vocabulary. run_tools_locally only decides
-    # the ambiguous ones -- the names Studio can also run itself, web_search
-    # being the case it exists for. A selection of nothing BUT names with no
-    # local stand-in stays hosted whatever the flag says: there is no local loop
-    # to route it to, so honouring the flag would only skip the confirmation
-    # guard on the way to the same passthrough.
+    # run_tools_locally only decides the ambiguous names, the ones Studio can
+    # also run itself. A selection with no SELECTED local stand-in stays hosted
+    # whatever the flag says: honouring it would enter the loop, find an empty
+    # catalog, fall back to the same passthrough, and skip the confirmation
+    # rejection on the way.
     if getattr(payload, "run_tools_locally", None) is True:
-        # Intersected with the selection, exactly as hosted_only_tools does: a
-        # stand-in only stands in when this request actually asked for it.
-        # code_execution maps to python/terminal, but naming code_execution alone
-        # selects neither, and Studio has no code_execution of its own, so the
-        # local catalog for such a request comes back empty and the turn falls
-        # back to the same passthrough with the confirmation guard skipped.
+        # Intersected with the selection, as hosted_only_tools does: code_execution
+        # maps to python/terminal, but naming it alone selects neither.
         selected = {name for name in enabled if isinstance(name, str)}
         return not any(
             LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name, frozenset()) & selected for name in selected
