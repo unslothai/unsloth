@@ -88,12 +88,20 @@ _PR_SET_DUMPABLE = 4
 
 # Raw-text prefilter, run before any parsing. The AST is a subset of the source, so a
 # file whose text holds none of these cannot match and parsing it is wasted work. This
-# is what keeps the check cheap: 32 of ~1050 files are actually parsed, 496ms rather
-# than 9s.
+# is what keeps the check cheap: 32 of ~1050 files are actually parsed. Measured at
+# ~1.5s for the whole suite against ~9s with every file parsed. The scope and alias
+# analysis added since is what accounts for the difference from the 496ms this once
+# cost; the prefilter itself still admits the same 32 files.
 # Deliberately looser than `_CRASH_MARKERS`: matching `string_at(0)` exactly meant
 # `string_at( 0)` was skipped before it was ever parsed. The prefilter only decides what
 # to parse, so it should over-match and let the AST checks be the precise ones.
 _PREFILTER = ("string_at(", "abort(", "_sigsegv(") + _SIGNAL_DIRECTED
+# An aliased import carries none of the call shapes above: `from os import abort as die`
+# then `die()` has no "abort(" anywhere, so the prefilter skipped the file and the alias
+# resolution that would have caught it never ran. The import spelling is the one piece of
+# text such a file must contain, so match on that too. Costs one more scan of files that
+# import these names and nothing else.
+_PREFILTER += ("import abort", "import string_at", "import raise_signal", "import kill")
 
 
 def _test_roots():
@@ -238,6 +246,25 @@ def _rebound_names(scope):
     return out
 
 
+def _sequence_env(tree, owner):
+    """Name to the elements of a list/tuple it is bound to.
+
+    Separate from `_string_env` because that one folds to a string and a command
+    vector does not fold. Flat by name rather than per scope: a false name collision
+    here can only add candidate strings to read, and reading one extra string is a
+    cheaper mistake than missing the script a child actually runs.
+    """
+    out = {}
+    for node in ast.walk(tree):
+        pair = _assigned_pair(node)
+        if pair is None:
+            continue
+        target, value = pair
+        if isinstance(value, (ast.List, ast.Tuple)):
+            out.setdefault(target.id, []).extend(value.elts)
+    return out
+
+
 def _snippets(tree):
     """Strings that actually reach a child interpreter.
 
@@ -248,6 +275,7 @@ def _snippets(tree):
     a deliberate crash, which would fail CI over a string nothing executes.
     """
     owner, module_env, scoped = _string_env(tree)
+    sequences = _sequence_env(tree, owner)
     out = []
 
     def collect(node, env):
@@ -267,6 +295,13 @@ def _snippets(tree):
         elif isinstance(node, ast.Name):
             if node.id in env:
                 out.append(env[node.id])
+            elif node.id in sequences:
+                # `CMD = [sys.executable, "-c", SCRIPT]` then `subprocess.run(CMD)`.
+                # A command vector built once and passed by name is ordinary
+                # subprocess usage, and folding only strings meant the child script
+                # inside it was never read.
+                for element in sequences[node.id]:
+                    collect(element, env)
         elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             for element in node.elts:
                 collect(element, env)
@@ -293,26 +328,34 @@ def _crash_aliases(tree):
     Needed so an aliased call is still recognised. A bare `abort()` is only fatal if it
     came from `os` or `ctypes`; Playwright's `route.abort()` keeps its receiver and is
     still correctly ignored.
+
+    Keyed by the name the call site uses and valued by the name the rules are written
+    against, because `from os import abort as die` binds `die` and a lookup of `die` in
+    `_CRASH_CALLS` finds nothing. Without the mapping an aliased import was invisible.
     """
-    out = set()
+    out = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom) or node.module is None:
             continue
         if node.module.split(".")[0] not in ("os", "ctypes", "signal", "faulthandler"):
             continue
         for alias in node.names:
-            if alias.name in _CRASH_CALLS:
-                out.add(alias.asname or alias.name)
-    return frozenset(out)
+            if alias.name in _CRASH_CALLS or alias.name in _DIRECTED_NAMES:
+                out[alias.asname or alias.name] = alias.name
+    return out
 
 
-def _is_crash_call(node, aliases = frozenset()) -> bool:
+def _is_crash_call(node, aliases = None) -> bool:
     """A call that deliberately takes a core-dumping signal, written as code."""
+    aliases = aliases or {}
     if not isinstance(node, ast.Call):
         return False
     name = _called_name(node)
     if name is None:
         return False
+    # `from os import abort as die` binds `die`; the rules are written against `abort`.
+    if isinstance(node.func, ast.Name) and name in aliases:
+        name = aliases[name]
     if name in _CRASH_CALLS:
         func = ast.unparse(node.func)
         rule = _CRASH_CALLS[name]
@@ -398,8 +441,27 @@ def _suppressed(node, scope, functions) -> bool:
     for called in _iter_executable(scope):
         if not isinstance(called, ast.Call) or _position(called) >= position:
             continue
-        target = functions.get(_called_name(called))
-        if target is not None and _clears_dumpable_before(target, _AFTER_EVERYTHING):
+        # Bare calls only. `obj.suppress_core()` shares its trailing name with a local
+        # `def suppress_core`, and crediting the local one there means an object method
+        # that may clear nothing at all is taken as proof the fault is covered.
+        if not isinstance(called.func, ast.Name):
+            continue
+        target = functions.get(called.func.id)
+        if target is None:
+            continue
+        # Calling an `async def` builds a coroutine and runs none of its body, so the
+        # prctl never happens. Only an awaited one has actually cleared dumpability.
+        if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(called, scope):
+            continue
+        if _clears_dumpable_before(target, _AFTER_EVERYTHING):
+            return True
+    return False
+
+
+def _is_awaited(call, scope) -> bool:
+    """Whether `call` is the operand of an `await`."""
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Await) and node.value is call:
             return True
     return False
 
@@ -414,7 +476,8 @@ def _live_aliases(aliases, scope, rebound):
         return aliases
     if id(scope) not in rebound:
         rebound[id(scope)] = _rebound_names(scope)
-    return aliases - rebound[id(scope)]
+    shadowed = rebound[id(scope)]
+    return {bound: original for bound, original in aliases.items() if bound not in shadowed}
 
 
 def _unsuppressed_crashes(tree):
@@ -642,6 +705,58 @@ _FIXTURES = {
         "    suppress_core()\n"
         "    ctypes.string_at(0)\n",
         False,  # factoring the suppression out is good practice, not a violation
+    ),
+    "command_vector_bound_to_a_name": (
+        "import subprocess, sys\n"
+        'CMD = [sys.executable, "-c", "import ctypes; ctypes.string_at(0)"]\n'
+        "subprocess.run(CMD)\n",
+        True,  # a command list built once and passed by name is ordinary subprocess use
+    ),
+    "crash_imported_under_an_alias": (
+        "from os import abort as die\n"
+        "def child():\n"
+        "    die()\n",
+        True,  # the bound name is `die`; the rules are written against `abort`
+    ),
+    "aliased_string_at": (
+        "from ctypes import string_at as boom\n"
+        "def child():\n"
+        "    boom(0)\n",
+        True,
+    ),
+    "method_sharing_a_helper_name_is_not_suppression": (
+        "import ctypes\n"
+        "def suppress_core():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "def child(obj):\n"
+        "    obj.suppress_core()\n"
+        "    ctypes.string_at(0)\n",
+        True,  # the object's method may clear nothing; only a bare local call counts
+    ),
+    "async_suppressor_must_be_awaited": (
+        "import ctypes\n"
+        "async def suppress_core():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "def child():\n"
+        "    suppress_core()\n"
+        "    ctypes.string_at(0)\n",
+        True,  # calling it only builds a coroutine, so the prctl never runs
+    ),
+    "awaited_async_suppressor_counts": (
+        "import ctypes\n"
+        "async def suppress_core():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "async def child():\n"
+        "    await suppress_core()\n"
+        "    ctypes.string_at(0)\n",
+        False,
+    ),
+    "rebound_alias_is_not_a_crash": (
+        "from os import abort\n"
+        "def child():\n"
+        "    abort = lambda: None\n"
+        "    abort()\n",
+        False,
     ),
     "sigkill_is_not_a_deliberate_crash": (
         "import os, signal\ndef stop(pid):\n    os.kill(pid, signal.SIGKILL)\n",
