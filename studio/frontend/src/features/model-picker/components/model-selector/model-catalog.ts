@@ -4,6 +4,11 @@
 // One canonical name per diffusion model, its published artifacts (GGUF quants, prequant FP8 / bnb-4bit repos, official BF16 pipelines), and a deterministic router picking the best artifact for the device.
 // Pure helpers, no React/DOM deps. See model-catalog.check.ts (`npm run catalog:check`).
 
+import {
+  type HostClass,
+  curatedArtifactIsOfferable,
+  h3PerfSuffix,
+} from "./host-artifact-policy.ts";
 import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
 
@@ -726,9 +731,16 @@ export function curatedCapabilitiesFor(
 export function curatedDisplayNameFor(
   repoId: string,
   catalog: CatalogGroup[],
+  host: HostClass = "unknown",
 ): string | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
+  // A row that earns a speed qualifier reads the same closed as open: this helper names the
+  // trigger and curatedRowLabelFor names the row, so a divergence would rename the model as the
+  // popover opens.
+  if (h3PerfSuffix(repoId, host)) {
+    return curatedRowLabelFor(repoId, catalog, host)?.name ?? hit.group.displayName;
+  }
   return hit.group.artifacts.length > 1
     ? `${hit.group.displayName} (${hit.artifact.label})`
     : hit.group.displayName;
@@ -751,17 +763,22 @@ const RESOLUTION_RE = /^\d{3,4}p$/i;
 export function curatedRowLabelFor(
   repoId: string,
   catalog: CatalogGroup[],
+  host: HostClass = "unknown",
 ): { name: string; tags: string[] } | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
+  // Only where the host can run both rows, so the qualifier compares things the user can pick
+  // between rather than advertising a speed they cannot have.
+  const perf = h3PerfSuffix(repoId, host);
+  const qualify = (name: string) => (perf ? `${name} (${perf})` : name);
   // GGUF reads like a text model's row: the repo name already ends in -GGUF, so show the repo
   // name and let it say so. A chip would only repeat the suffix.
   if (hit.artifact.format === "gguf") {
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
-    return { name: GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`, tags: [] };
+    return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
   }
   // A group with one artifact has nothing to distinguish, so it stays bare, exactly as before.
-  if (hit.group.artifacts.length <= 1) return { name: hit.group.displayName, tags: [] };
+  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   const tags = [format.replace(OFFICIAL_SUFFIX_RE, "").trim()].filter(Boolean);
   const kept: string[] = [];
@@ -773,17 +790,24 @@ export function curatedRowLabelFor(
     kept.length > 0
       ? `${hit.group.displayName} (${kept.join(LABEL_PART_SEPARATOR)})`
       : hit.group.displayName;
-  return { name, tags };
+  return { name: qualify(name), tags };
 }
 
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
-export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
+export function catalogToModelOptions(
+  catalog: CatalogGroup[],
+  host: HostClass = "unknown",
+): ModelOption[] {
   const options: ModelOption[] = [];
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
+      // A host that can only run the native engine is not offered the pipeline rows it would be
+      // refused at load. This is the one place the `models` prop is built, so filtering here
+      // covers the trigger name and the picker's seed ids together.
+      if (!curatedArtifactIsOfferable(artifact.format, host)) continue;
       options.push({
         id: artifact.repoId,
-        name: curatedDisplayNameFor(artifact.repoId, catalog) ?? group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog, host) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
