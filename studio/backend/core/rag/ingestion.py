@@ -109,14 +109,35 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     return True
 
 
-def _embed_all(texts: list[str], model_name: str | None):
-    """Embed texts in batches into a flat vector list."""
+def _embed_pass(texts: list[str], model_name: str | None):
+    """One batched pass. Returns ``(vectors, identity, changed)``, ``changed`` when the
+    embedder swapped part way and the vectors therefore span two spaces."""
     vectors: list = []
+    identity: str | None = None
+    changed = False
     for i in range(0, len(texts), _EMBED_BATCH):
         batch = texts[i : i + _EMBED_BATCH]
-        out = embeddings.encode(batch, model_name = model_name, normalize = True)
+        out, batch_identity = embeddings.encode_with_identity(
+            batch, model_name = model_name, normalize = True
+        )
+        changed = changed or (identity is not None and batch_identity != identity)
+        identity = batch_identity
         vectors.extend(out)
-    return vectors
+    return vectors, identity or embeddings.embedding_identity(model_name), changed
+
+
+def _embed_all(texts: list[str], model_name: str | None):
+    """Embed texts in batches. Returns ``(vectors, identity)`` of the embedder that
+    produced them. An ST encode failure swaps the process to llama-server, and a swap
+    between batches would leave one document holding vectors from two spaces, so the
+    document restarts under the backend that took over. That swap is one-way, so the
+    second pass is uniform."""
+    for _ in range(2):
+        vectors, identity, changed = _embed_pass(texts, model_name)
+        if not changed:
+            return vectors, identity
+        logger.warning("embedder changed mid-document; re-embedding under the new one")
+    return vectors, identity
 
 
 def _ocr_scanned_pages(
@@ -272,7 +293,10 @@ def _run(
             return
 
         _progress(conn, job_id, "embedding", 0.5)
-        vectors = _embed_all([c.text for c in chunks], model_name)
+        # An ST encode failure swaps the process to llama-server, so the embedder that
+        # produced these vectors is only known once they exist.
+        vectors, identity = _embed_all([c.text for c in chunks], model_name)
+        store.set_document_embedding_model(conn, document_id, identity)
 
         # Locate each chunk's highlight regions (non-PDFs/failures yield none).
         regions = None
@@ -347,6 +371,15 @@ def start_ingestion(
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
+        # Named before the transaction opens, because naming the embedder on a fresh
+        # process is slow work that touches no database: it searches for the
+        # llama-server binary, runs nvidia-smi under a ten second timeout, and on a
+        # host without it imports torch. Under BEGIN IMMEDIATE that is a RESERVED
+        # lock held for all of it, and connections wait only busy_timeout (5s) for
+        # one, so a concurrent ingest or job heartbeat fails with "database is
+        # locked" instead of queueing.
+        effective_model = model_name or config.effective_embedding_model()
+        effective_identity = embeddings.embedding_identity(effective_model)
         # Serialize admission with durable scope retirement across backend
         # processes. The job lease is committed in the same transaction as the
         # document, so cleanup never observes an unowned in-flight document.
@@ -356,7 +389,6 @@ def start_ingestion(
         ).fetchone():
             conn.rollback()
             raise RuntimeError("Owning scope is being deleted")
-        effective_model = model_name or config.effective_embedding_model()
         # (old_document_id, old_stored_path) replaced by this upload; deleted by
         # the worker only after the replacement completes, so a failed re-index
         # never destroys the still-searchable original.
@@ -374,8 +406,9 @@ def start_ingestion(
             stale_model = (
                 doc is not None
                 and doc.get("status") == "completed"
-                and doc.get("embedding_model") is not None
-                and doc.get("embedding_model") != effective_model
+                and not config.embedding_identity_matches(
+                    doc.get("embedding_model"), effective_identity
+                )
             )
             if empty_completed or stale_model:
                 # A prior ingest of identical bytes yielded zero chunks (e.g. a scanned
@@ -408,7 +441,7 @@ def start_ingestion(
             project_id = project_id,
             status = "pending",
             stored_path = stored_path,
-            embedding_model = effective_model,
+            embedding_model = effective_identity,
             linked_folder_id = linked_folder_id,
             linked_relative_path = linked_relative_path,
             commit = False,

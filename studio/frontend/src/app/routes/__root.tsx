@@ -91,6 +91,18 @@ function PersonalizationSyncMount() {
   return null;
 }
 
+// The chat settings are the installation's, and the Models page and the model
+// picker read them too, so hydration cannot wait for ChatPage to mount.
+function ChatSettingsHydrationMount() {
+  const hydratePersistedSettings = useChatRuntimeStore(
+    (state) => state.hydratePersistedSettings,
+  );
+  useEffect(() => {
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
+  return null;
+}
+
 
 function CredentialBootstrapGate({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -191,7 +203,7 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
-const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
+const HIDDEN_NAVBAR_ROUTES = ["/login", "/change-password"];
 
 // Fallback when no matched route declares a `staticData.title`.
 const DEFAULT_DOCUMENT_TITLE = "Unsloth";
@@ -244,8 +256,9 @@ function RootLayout() {
   const chatSearch = isChatRoute ? liveChatSearch : frozenChatSearch;
   const shouldMountChat = isChatRoute || chatMounted;
 
-  // Same persistent mount for /images so a long batch keeps generating off-tab (ImagesPage reads no URL search, so it needs
-  // only the mount latch). Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
+  // Same persistent mount for /images so a long batch keeps generating off-tab. Mounts lazily on first visit, then stays
+  // mounted, hidden+inert while off-route. `active` is a visibility flag only: it lags the matches by a render, so ImagesPage
+  // reads ?model= from its own match instead of trusting it.
   const isImagesRoute = pathname === "/images";
   const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
   if (isImagesRoute && !imagesMounted) {
@@ -354,6 +367,7 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
@@ -474,7 +488,7 @@ function RootLayout() {
 
   return (
     <AppProvider>
-      {!isAuthFlowRoute || pathname === "/onboarding" ? (
+      {!isAuthFlowRoute ? (
         <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
       ) : (
         content

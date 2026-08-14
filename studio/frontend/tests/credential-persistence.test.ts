@@ -150,6 +150,30 @@ test("superseded provider backfills are not launched", async () => {
 });
 
 
+test("provider backfills are finished, not merely started, when the batch resolves", async () => {
+  // The credential bootstrap gate releases app content on this promise, so a batch that is
+  // only started leaves the writes racing an immediate close. Timer-backed tasks are the
+  // only way to tell "awaited" from "fired and forgotten": a task that counts synchronously
+  // is already done by the time the helper returns either way.
+  const finished: string[] = [];
+  const delayed = (name: string, ms: number) => () =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        finished.push(name);
+        resolve(null);
+      }, ms);
+    });
+
+  // The rejection in the middle must not sink the two around it, which is why the batch
+  // settles rather than rejecting on the first failure.
+  await settleTasksIfCurrent(
+    [delayed("first", 20), () => Promise.reject(new Error("backfill failed")), delayed("last", 40)],
+    () => true,
+  );
+  assert.deepEqual(finished, ["first", "last"]);
+});
+
+
 test("authoritative provider cleanup removes only orphaned legacy keys", async () => {
   const { store } = installLocalStorageFake();
   store.set(
@@ -554,7 +578,7 @@ test("a delayed HF write response reconciles a newer cross-tab commit", async ()
 
 
 
-test("pending HF edits can be drained before onboarding navigation", async () => {
+test("pending HF edits can be drained before navigation", async () => {
   const { store } = installLocalStorageFake();
   store.set("unsloth_auth_token", "session-token");
   const originalFetch = globalThis.fetch;
@@ -631,16 +655,6 @@ test("a superseded successful HF write advances the rollback baseline", async ()
 });
 
 
-test("onboarding exits wait for the latest HF save", () => {
-  for (const relativePath of [
-    "../src/features/onboarding/components/wizard-footer.tsx",
-    "../src/features/onboarding/components/wizard-sidebar.tsx",
-    "../src/features/onboarding/components/wizard-layout.tsx",
-  ]) {
-    const source = readFileSync(new URL(relativePath, import.meta.url), "utf8");
-    assert.match(source, /await waitForHfTokenPersistence\(\)/);
-  }
-});
 
 
 test("new HF edits never write the token back to localStorage", () => {
@@ -704,7 +718,7 @@ test("credential gate follows authentication session transitions", () => {
 
   assert.match(rootSource, /AUTH_SESSION_CLEARED_EVENT, reconcile/);
   assert.match(rootSource, /AUTH_SESSION_STORED_EVENT, reconcile/);
-  assert.match(rootSource, /!isAuthFlowRoute \|\| pathname === "\/onboarding"/);
+  assert.match(rootSource, /\{!isAuthFlowRoute \? \(/);
   assert.match(sessionSource, /const sessionStarted = !localStorage\.getItem\(AUTH_TOKEN_KEY\)/);
   assert.match(sessionSource, /dispatchEvent\(new Event\(AUTH_SESSION_STORED_EVENT\)\)/);
   const bootstrapSource = readFileSync(

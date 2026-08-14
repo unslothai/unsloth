@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import deque
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import (
@@ -443,6 +444,94 @@ class TransformersUpgradeInfo(BaseModel):
     )
 
 
+class TransformersUpgradeCheckRequest(BaseModel):
+    """Ask whether loading a model needs a newer transformers than any installed overlay."""
+
+    model_name: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 1024,
+        description = "Model identifier, local path or checkpoint directory to check.",
+    )
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token, so gated repos resolve their config.json"
+    )
+    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by
+    # the same precedence: a cached model loads from its pinned snapshot, whose
+    # config.json can name a different architecture than the repo's current one.
+    prefer_local_cache: bool = Field(
+        False,
+        description = "Inspect the cached snapshot rather than the Hub repo, when one is pinned.",
+    )
+    model_local_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Cache directory the caller selected for this model, if any.",
+    )
+    model_snapshot_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Exact snapshot the load is pinned to; takes precedence over "
+        "model_local_path, as it does for the remote-code scan.",
+    )
+    model_snapshot_repo_id: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "Repository the pinned snapshot belongs to, when it differs from model_name.",
+    )
+    resume_run_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Run this check precedes a resume of. Lets the answer say whether "
+        "installing would strand that checkpoint's exact 4-bit resume.",
+    )
+
+
+class TransformersUpgradeCheckResponse(BaseModel):
+    """Upgrade + quantization preflight for a load that does not run /validate.
+
+    /validate answers this for a chat load as part of a much larger check (GGUF
+    placement, VRAM coexistence, security review). Training needs the same two answers
+    on their own, before starting a worker that would die at model load with an
+    unrecognized-architecture error.
+    """
+
+    model_name: str = Field(..., description = "The identifier that was checked")
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the architecture is unknown to every installed transformers "
+        "but a newer transformers ships it; the caller should raise the install consent "
+        "dialog before starting the load.",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the consent dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model can load on the CURRENT transformers through its own "
+        "repo code, so a declined (or unavailable) install still has a path forward.",
+    )
+    latest_tier_active: bool = Field(
+        False,
+        description = "Whether the latest-transformers sidecar already routes this model.",
+    )
+    forces_16bit: bool = Field(
+        False,
+        description = "Whether a run started now would load 16-bit rather than bnb 4-bit: true "
+        "when the latest sidecar already routes the model, and when an install-only upgrade "
+        "would put it there. Lets the UI state the real precision before the run starts.",
+    )
+    install_breaks_exact_resume: bool = Field(
+        False,
+        description = "Set only for a resume_run_id: installing the offered release would "
+        "activate the latest sidecar, which permanently refuses that checkpoint's attested "
+        "4-bit model load mode. The caller must not offer the install when the run can "
+        "start without it.",
+    )
+
+
 class ValidateModelResponse(BaseModel):
     """Result of model validation.
 
@@ -874,6 +963,9 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "re-enable it (show the update affordance); 'runtime_error' -> the "
             "current build could not run it; 'drafter_not_found' -> the model's "
             "separate MTP or DSpark drafter could not be resolved; "
+            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
+            "GPU but the drafter's reserve does not, and Auto keeps the context "
+            "rather than shrink it; select the drafter in Settings to force it. "
             "'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
@@ -1327,6 +1419,18 @@ class ChatCompletionRequest(BaseModel):
         ge = 1,
         description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
     )
+    run_tools_locally: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "asking the provider to run its own hosted builtins. Only meaningful "
+            "for providers that ship hosted tools of the same name (OpenAI, "
+            "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
+            "the same request means hosted search to a client written before "
+            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "behaviour, so an older client is unaffected."
+        ),
+    )
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
@@ -1485,57 +1589,100 @@ class ChatCompletionRequest(BaseModel):
         unconsumed tool_call; synth a random id only if none exists. A user
         turn breaks the lookup.
         """
+        # Both passes below were a backwards rescan per tool result, O(n^2) for one assistant
+        # with n calls. Each is now one forward pass with an index -- the same search, since
+        # the backward walk never left the current user-delimited segment.
+        messages = self.messages
+        # The first pass only feeds the second, so with every tool_call_id present there is
+        # nothing to do (the common case).
+        for msg in messages:
+            if msg.role == "tool" and not msg.tool_call_id:
+                break
+        else:
+            return self
+
         # Pre-mark explicit ids so a missing-id sibling can't steal a claimed one.
         consumed: set[tuple[int, int]] = set()
 
-        def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
-            for asst_idx in range(start_idx - 1, -1, -1):
-                prev = self.messages[asst_idx]
-                if prev.role == "user":
-                    break
-                if prev.role != "assistant" or not prev.tool_calls:
+        # Newest assistant call per explicit id in this segment; within one assistant the
+        # first index wins, matching the old first-match-nearest-assistant walk. Only
+        # ``str`` ids are indexed: ``tool_call_id`` is a ``str``, so nothing else matches.
+        latest_by_id: dict = {}
+        for asst_idx, msg in enumerate(messages):
+            role = msg.role
+            if role == "user":
+                latest_by_id.clear()
+            elif role == "assistant":
+                if not msg.tool_calls:
                     continue
-                for tc_idx, tc in enumerate(prev.tool_calls):
-                    if isinstance(tc, dict) and tc.get("id") == tool_call_id:
-                        consumed.add((asst_idx, tc_idx))
-                        return
-
-        for tool_idx, msg in enumerate(self.messages):
-            if msg.role == "tool" and msg.tool_call_id:
-                _mark_consumed(tool_idx, msg.tool_call_id)
-
-        for tool_idx, msg in enumerate(self.messages):
-            if msg.role != "tool" or msg.tool_call_id:
-                continue
-            picked: str | None = None
-            for asst_idx in range(tool_idx - 1, -1, -1):
-                prev = self.messages[asst_idx]
-                if prev.role != "assistant" or not prev.tool_calls:
-                    if prev.role == "user":
-                        break
-                    continue
-                name_match = None
-                fallback = None
-                for tc_idx, tc in enumerate(prev.tool_calls):
-                    if (asst_idx, tc_idx) in consumed:
-                        continue
+                here: set = set()
+                for tc_idx, tc in enumerate(msg.tool_calls):
                     if not isinstance(tc, dict):
                         continue
                     tc_id = tc.get("id")
-                    if not tc_id:
+                    if isinstance(tc_id, str) and tc_id not in here:
+                        here.add(tc_id)
+                        latest_by_id[tc_id] = (asst_idx, tc_idx)
+            elif role == "tool" and msg.tool_call_id:
+                claimed = latest_by_id.get(msg.tool_call_id)
+                if claimed is not None:
+                    consumed.add(claimed)
+
+        # Assistants in this segment with an unclaimed call, oldest first, so the nearest is
+        # on top. A drained assistant never refills, so popping it is permanent and the walk
+        # past it happens once overall, not once per tool result. Each frame keeps its calls
+        # in order plus the same indexes bucketed by function name; one consumed out of turn
+        # is dropped when it reaches a queue front.
+        stack: list = []
+        for asst_idx, msg in enumerate(messages):
+            role = msg.role
+            if role == "user":
+                stack.clear()
+                continue
+            if role == "assistant":
+                if not msg.tool_calls:
+                    continue
+                in_order: deque = deque()
+                by_name: dict = {}
+                for tc_idx, tc in enumerate(msg.tool_calls):
+                    if (asst_idx, tc_idx) in consumed or not isinstance(tc, dict):
+                        continue
+                    if not tc.get("id"):
                         continue
                     function = tc.get("function")
                     function_name = function.get("name") if isinstance(function, dict) else None
-                    if msg.name and function_name == msg.name:
-                        name_match = (tc_id, asst_idx, tc_idx)
-                        break
-                    if fallback is None:
-                        fallback = (tc_id, asst_idx, tc_idx)
-                chosen = name_match or fallback
-                if chosen is not None:
-                    picked, a, t = chosen
-                    consumed.add((a, t))
-                    break
+                    in_order.append(tc_idx)
+                    # ``name`` is a ``str``, so only a ``str`` function name can match it.
+                    if isinstance(function_name, str):
+                        by_name.setdefault(function_name, deque()).append(tc_idx)
+                if in_order:
+                    stack.append((asst_idx, msg.tool_calls, in_order, by_name))
+                continue
+            if role != "tool" or msg.tool_call_id:
+                continue
+            picked = None
+            while stack:
+                frame_idx, tool_calls, in_order, by_name = stack[-1]
+                while in_order and (frame_idx, in_order[0]) in consumed:
+                    in_order.popleft()
+                if not in_order:
+                    stack.pop()
+                    continue
+                # Name match anywhere in this assistant, else its first remaining call,
+                # exactly as the old in-order scan did.
+                chosen = None
+                if msg.name:
+                    named = by_name.get(msg.name)
+                    if named is not None:
+                        while named and (frame_idx, named[0]) in consumed:
+                            named.popleft()
+                        if named:
+                            chosen = named.popleft()
+                if chosen is None:
+                    chosen = in_order.popleft()
+                consumed.add((frame_idx, chosen))
+                picked = tool_calls[chosen].get("id")
+                break
             if picked is None:
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
@@ -1667,6 +1814,33 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
     )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Permission level the completion would send. Only 'full' changes "
+        "the prompt: it swaps the python/terminal descriptions for the unsandboxed pair and adds a "
+        "sentence to the tool nudge, so a count that omits it prices a prompt the completion will "
+        "not send.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
+        "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
+    )
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
+        """Mirrors ChatCompletionRequest: the prompt builders read only the
+        bypass flag, so 'full' has to reach them the same way here."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            self.permission_mode = "full"
+        return self
 
 
 class ToolConfirmRequest(BaseModel):
@@ -2574,6 +2748,13 @@ class DiffusionLoadRequest(BaseModel):
         "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
         "shifts the residual distribution).",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a diffusion checkpoint, so a selection of several cards resolves "
+        "to the one with the most free VRAM. Refused with a 400 when an index does not exist "
+        "here; ignored on XPU / MPS / CPU, which have no applicator for a physical index.",
+    )
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -3353,6 +3534,14 @@ class VideoLoadRequest(BaseModel):
         "and first/last-frame video, the default) or ref2va (omni-reference video). They are "
         "separate ~62 GB partitions, so a load serves one of them. Ignored for a GGUF pick, "
         "whose filename already names the partition; rejected if it contradicts that filename.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a video checkpoint, so a selection of several cards resolves to "
+        "the one with the most free VRAM. Refused with a 400 when an index does not exist here; "
+        "ignored on XPU / MPS / CPU, which have no applicator for a physical index. Mirrors the "
+        "image backend's field.",
     )
 
     @field_validator("attention_backend", mode = "before")

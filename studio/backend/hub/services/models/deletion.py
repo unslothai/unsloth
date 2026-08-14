@@ -820,6 +820,23 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
+        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer
+        # below. The first read ran before the reservation existed, so a load starting in
+        # between published its claim too late to be seen, and begin_delete misses it too:
+        # image and video loads download directly rather than through a registry claim.
+        try:
+            blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
+        except Exception as e:
+            logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
+            )
+        if blocks_detail:
+            raise HTTPException(
+                status_code = 400,
+                detail = blocks_detail,
+            )
         return await asyncio.to_thread(
             _delete_cached_model_blocking,
             repo_id,

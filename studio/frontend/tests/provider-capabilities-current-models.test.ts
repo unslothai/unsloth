@@ -12,8 +12,14 @@ const {
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
+
+  providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
+
+const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
+  "../src/features/chat/external-providers.ts"
+);
 
 // The picker's default_models list (backend core/inference/providers.py) grew a
 // Claude 5 / gpt-5.6 / gemini-3.6 generation. Every table here is prefix-based,
@@ -71,6 +77,38 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
   }
 });
 
+test("ChatGPT subscription models expose Studio-owned search and code tools", () => {
+
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
+    "gpt-5.4": { vision: true, studio_tools: true },
+    "gpt-5.6-sol": { vision: true, studio_tools: true },
+  });
+  for (const model of ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.6-sol"]) {
+    const caps = getExternalReasoningCapabilities("openai_codex", model);
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.reasoningStyle, "reasoning_effort", model);
+    assert.equal(getExternalMaxOutputTokens("openai_codex", model), 128000, model);
+    assert.equal(providerSupportsBuiltinWebSearch("openai_codex", model), true, model);
+    assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), true, model);
+  }
+});
+
+
+test("ChatGPT subscription vision gating follows the curated model", () => {
+
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
+    "gpt-5.6-sol": { vision: true, studio_tools: true },
+  });
+  assert.equal(
+    providerModelSupportsVision("openai_codex", "gpt-5.3-codex-spark"),
+    false,
+  );
+  assert.equal(providerModelSupportsVision("openai_codex", "gpt-5.6-sol"), true);
+});
+
+
 test("Gemini 3.x minors keep the thinkingLevel ladder", () => {
   // gemini-3.6-flash must not fall through to the 2.5 integer-budget branch.
   for (const model of ["gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"]) {
@@ -95,4 +133,38 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
     providerSupportsBuiltinCodeExecution("openai", "gpt-5.6-sol", "https://api.openai.com/v1"),
     true,
   );
+});
+
+test("generic Custom connections use only their explicit max-output override", () => {
+  // Model names that resemble known hosted families must not change Custom's cap.
+  assert.equal(getExternalMaxOutputTokens("custom", "gpt-5.6-sol"), 32768);
+  assert.equal(getExternalMaxOutputTokens("custom", "claude-opus-5"), 32768);
+
+  assert.equal(
+    getExternalMaxOutputTokens("custom", "any/provider-model", 131072),
+    131072,
+  );
+  assert.equal(getExternalMaxOutputTokens("custom", null, 65536), 65536);
+
+  // Invalid persisted values fail closed to the conservative default.
+  assert.equal(getExternalMaxOutputTokens("custom", "model", 63), 32768);
+  assert.equal(getExternalMaxOutputTokens("custom", "model", 65536.5), 32768);
+  assert.equal(
+    getExternalMaxOutputTokens("custom", "model", Number.MAX_SAFE_INTEGER + 1),
+    32768,
+  );
+
+  // The override is provider-owned, so values above Studio's context-length
+  // convention remain valid as long as they round-trip safely through JSON.
+  assert.equal(getExternalMaxOutputTokens("custom", "model", 1048577), 1048577);
+  assert.equal(
+    getExternalMaxOutputTokens("custom", "model", Number.MAX_SAFE_INTEGER),
+    Number.MAX_SAFE_INTEGER,
+  );
+});
+
+test("Custom overrides cannot alter documented caps for other providers", () => {
+  assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 64), 128000);
+  assert.equal(getExternalMaxOutputTokens("anthropic", "claude-opus-5", 64), 128000);
+  assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 32768);
 });

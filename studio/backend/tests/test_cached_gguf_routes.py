@@ -2793,6 +2793,44 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
         assert "Unload the model before deleting" in e.detail
 
 
+def test_delete_cached_rechecks_the_load_guard_after_reserving_the_scope(monkeypatch):
+    # The first guard runs before begin_delete reserves the repo, so a load starting in that gap
+    # publishes its claim too late to be seen, and begin_delete misses it too: video and image
+    # loads download directly rather than through a registry claim. Deleting anyway unlinks blobs
+    # under the running load, so the second read is what refuses it.
+    from fastapi import HTTPException
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(der, "get_active_diffusion_engine", _idle_diffusion_engine)
+
+    reads = {"n": 0}
+
+    def _backend():
+        def _loading_repo_ids():
+            reads["n"] += 1
+            # Idle for the pre-reservation read, loading by the time the scope is reserved.
+            return () if reads["n"] == 1 else ("unsloth/MiniMax-H3-GGUF",)
+
+        return SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = _loading_repo_ids,
+        )
+
+    monkeypatch.setattr(video_mod, "get_video_backend", _backend)
+
+    try:
+        asyncio.run(deletion.delete_cached_model_response("unsloth/MiniMax-H3-GGUF"))
+        assert False, "expected HTTPException refusing the delete admitted before the load claim"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Video model load is using this repo" in e.detail
+    assert reads["n"] >= 2, "the guard must be re-read after the delete scope is reserved"
+
+
 def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch):
     # status().loaded is still False while a background Images load downloads the repo, so loading_repo_ids() must refuse the delete.
     from fastapi import HTTPException
@@ -4382,3 +4420,528 @@ def test_a_standalone_h3_denoiser_gguf_is_recognised_by_its_filename():
     # The conditioner and unrelated GGUFs in the same folder must NOT be claimed as video.
     for name in ("qwen3vl-Q8_0.gguf", "minimax_h3_notes.txt", "llama-Q4_K_M.gguf"):
         assert models_route._arch_to_task(None, (name,)) is None, name
+
+
+# ── #8406 / #8407: GGUF folder classification must not depend on directory order ──
+
+
+def _arch_gguf(path: Path, architecture: str) -> Path:
+    """A minimal valid GGUF carrying just ``general.architecture``, as in
+    ``tests/test_llama_cpp_placement.py::_write_gguf``."""
+    import struct
+
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string(architecture)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    return path
+
+
+def _both_walk_orders(root: Path, monkeypatch, classify):
+    """*classify* under both possible ``_iter_gguf_paths`` orders.
+
+    The real walk is ``rglob``, raw directory order, which differs between filesystems and between
+    a folder and a fresh copy of it. Order is the input being varied, so it is forced."""
+    paths = sorted(root.rglob("*.gguf"))
+    answers = []
+    for order in (paths, list(reversed(paths))):
+        monkeypatch.setattr(
+            models_route, "_iter_gguf_paths", lambda _root, deadline = None, _o = order: iter(_o)
+        )
+        answers.append(classify())
+    return answers
+
+
+def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):
+    """#8406 / #8407. Community bundles ship the text encoder beside the denoiser
+    (``BlackStone-Yu/Z-Image-Turbo-GGUF`` puts a ``qwen3`` conditioner next to its ``lumina2``
+    DiT), so the repo held both answers and returned whichever the unordered walk yielded first.
+    Ordering alone would still hand it to whichever name sorts first, so the media task wins."""
+    repo_dir = tmp_path / "models--BlackStone-Yu--Z-Image-Turbo-GGUF"
+    _arch_gguf(repo_dir / "Qwen3-4B-UD-Q6_K_XL.gguf", "qwen3")
+    _arch_gguf(repo_dir / "z_image_turbo-Q6_K.gguf", "lumina2")
+    repo_info = SimpleNamespace(repo_id = "BlackStone-Yu/Z-Image-Turbo-GGUF", repo_path = str(repo_dir))
+
+    answers = _both_walk_orders(
+        repo_dir, monkeypatch, lambda: models_route._repo_gguf_task(repo_info)
+    )
+    assert answers == ["text-to-image", "text-to-image"], answers
+
+
+def test_a_mixed_local_gguf_folder_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):
+    """The local twin, and the half that made an image model unfindable: with the encoder answering
+    first the folder is tagged ``text-generation``, which drops it out of the Images picker
+    (``taskMatchesFilter``) and offers a diffusion DiT in the chat one."""
+    folder = tmp_path / "AI Models" / "flux-bundle"
+    _arch_gguf(folder / "t5xxl-Q8_0.gguf", "t5encoder")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+    model = SimpleNamespace(
+        path = str(folder),
+        id = str(folder),
+        model_id = None,
+        display_name = "flux-bundle",
+        model_format = "gguf",
+    )
+
+    answers = _both_walk_orders(folder, monkeypatch, lambda: models_route._local_model_task(model))
+    assert answers == ["text-to-image", "text-to-image"], answers
+
+
+def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, monkeypatch):
+    """The guard on the fix. Preferring the media answer must not invent one: a repo with no
+    diffusion GGUF stays ``text-generation`` in both orders, or chat models land in the Images
+    picker, the direction #8406 was filed about."""
+    repo_dir = tmp_path / "models--unsloth--DeepSeek-V4-Flash-0731-GGUF"
+    _arch_gguf(repo_dir / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL.gguf", "deepseek4")
+    _arch_gguf(repo_dir / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", "deepseek4")
+    repo_info = SimpleNamespace(
+        repo_id = "unsloth/DeepSeek-V4-Flash-0731-GGUF", repo_path = str(repo_dir)
+    )
+
+    answers = _both_walk_orders(
+        repo_dir, monkeypatch, lambda: models_route._repo_gguf_task(repo_info)
+    )
+    assert answers == ["text-generation", "text-generation"], answers
+
+
+# ── #8407: a moved image model keeps no name to detect its family from ──
+
+
+def _saved_pipeline(root: Path, class_name: str) -> Path:
+    root.mkdir(parents = True, exist_ok = True)
+    (root / "model_index.json").write_text(json.dumps({"_class_name": class_name}))
+    for component in ("transformer", "vae", "text_encoder"):
+        (root / component).mkdir(parents = True, exist_ok = True)
+        (root / component / "config.json").write_text("{}")
+        (root / component / "diffusion_pytorch_model.safetensors").write_bytes(b"w" * 2048)
+    return root
+
+
+def test_a_moved_image_pipeline_is_classified_from_its_saved_pipeline_class(tmp_path):
+    """#8407. The reporter moved the Models folder and image models were then not found, while chat
+    models still were. The asymmetry is structural: a GGUF is classified from
+    ``general.architecture`` read out of the file, but a diffusers pipeline was classified from
+    names, and an HF snapshot directory is named for a commit hash, so a model the listing had just
+    PROVEN to be a pipeline came back task=null. The index is evidence out of the checkpoint."""
+    snapshot = _saved_pipeline(
+        tmp_path / "N-AI-Models" / "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b", "FluxPipeline"
+    )
+    model = SimpleNamespace(
+        path = str(snapshot),
+        id = str(snapshot),
+        model_id = None,
+        display_name = snapshot.name,
+        model_format = None,
+    )
+    assert models_route._local_model_task(model) == "text-to-image"
+
+
+def test_a_moved_pipeline_that_names_no_known_family_is_still_not_tagged(tmp_path):
+    """The guard on the fix above. The Images load path 400s AFTER evicting chat when no family is
+    supported, so a checkpoint whose class matches nothing in the registry stays untagged."""
+    snapshot = _saved_pipeline(
+        tmp_path / "N-AI-Models" / "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", "SomeOtherPipeline"
+    )
+    model = SimpleNamespace(
+        path = str(snapshot),
+        id = str(snapshot),
+        model_id = None,
+        display_name = snapshot.name,
+        model_format = None,
+    )
+    assert models_route._local_model_task(model) is None
+
+
+def test_a_moved_image_pipeline_the_picker_shows_is_one_the_loader_accepts(tmp_path):
+    """The other half of #8407: the picker and the loader must read the SAME evidence.
+
+    The Images page sends the row's id as ``model_path`` and no ``family_override``
+    (``images-page.tsx`` handleLoad), so the loader gets nothing but the opaque path. Classifying
+    from ``model_index.json`` in the listing alone would turn a hidden model into a visible one
+    that ``validate_load_request`` -> ``detect_family_for_pick`` then refuses with a 400."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    cases = {
+        # A snapshot copied out of the HF cache: the leaf is a commit hash, nothing names a family.
+        "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b": "FluxPipeline",
+        # The same loss with a hand-chosen folder name.
+        "my-image-model": "QwenImagePipeline",
+        # A pipeline class the registry does not know stays hidden AND refused.
+        "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d": "SomeOtherPipeline",
+    }
+    for name, class_name in cases.items():
+        snapshot = _saved_pipeline(tmp_path / "N-AI-Models" / name, class_name)
+        model = SimpleNamespace(
+            path = str(snapshot),
+            id = str(snapshot),
+            model_id = None,
+            display_name = snapshot.name,
+            model_format = None,
+        )
+        task = models_route._local_model_task(model)
+        try:
+            backend.validate_load_request(model.id)
+            loader_accepts = True
+        except (ValueError, FileNotFoundError, RuntimeError):
+            loader_accepts = False
+        assert (
+            task == "text-to-image"
+        ) == loader_accepts, f"{name}: picker task={task} but loader accepts={loader_accepts}"
+    # A checkpoint whose NAME says it is a variant the matched family cannot run stays refused on
+    # both sides: the index adds models whose name said nothing, it never overrules a name that
+    # said no.
+    layered = _saved_pipeline(tmp_path / "N-AI-Models" / "qwen-image-layered", "QwenImagePipeline")
+    layered_model = SimpleNamespace(
+        path = str(layered),
+        id = str(layered),
+        model_id = None,
+        display_name = layered.name,
+        model_format = None,
+    )
+    assert models_route._local_model_task(layered_model) is None
+    with pytest.raises(ValueError):
+        backend.validate_load_request(layered_model.id)
+
+
+def test_family_needles_recover_the_repo_id_from_the_hf_cache_directory(tmp_path):
+    """#8407, the second half of the same loss. A folder still in cache layout carries its repo id
+    in the ``models--org--name`` directory, while every other needle equals the commit hash. The
+    decode is a strict read of a real ``models--*/snapshots/*`` path, so no arbitrary parent
+    directory token can match this way."""
+    snapshot = (
+        tmp_path
+        / "N-AI-Models"
+        / "models--black-forest-labs--FLUX.1-dev"
+        / "snapshots"
+        / "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b"
+    )
+    snapshot.mkdir(parents = True)
+    model = SimpleNamespace(
+        path = str(snapshot),
+        id = str(snapshot),
+        model_id = None,
+        display_name = snapshot.name,
+        model_format = None,
+    )
+    assert "black-forest-labs/FLUX.1-dev" in models_route._local_family_needles(model)
+
+    # A directory that merely sits under a folder named for a family must not gain a needle.
+    plain = tmp_path / "flux" / "my-checkpoint"
+    plain.mkdir(parents = True)
+    plain_model = SimpleNamespace(
+        path = str(plain),
+        id = str(plain),
+        model_id = None,
+        display_name = plain.name,
+        model_format = None,
+    )
+    assert set(models_route._local_family_needles(plain_model)) == {"my-checkpoint"}
+
+
+def test_only_the_first_shard_of_a_split_gguf_is_read_to_classify_a_repo(tmp_path, monkeypatch):
+    """llama.cpp writes the full KV block into shard 1 only, so shards 2..N are both the wrong
+    files to read an architecture from and the expensive ones: a 51-shard repo would cost 51 header
+    reads to answer one question."""
+    repo_dir = tmp_path / "models--unsloth--Big-GGUF"
+    _arch_gguf(repo_dir / "Big-Q4_K_M-00001-of-00003.gguf", "llama")
+    for index in ("00002", "00003"):
+        (repo_dir / f"Big-Q4_K_M-{index}-of-00003.gguf").write_bytes(b"not a gguf header")
+
+    read: list[str] = []
+    real = models_route._gguf_architecture
+    monkeypatch.setattr(
+        models_route,
+        "_gguf_architecture",
+        lambda path: (read.append(Path(path).name), real(path))[1],
+    )
+    # Trailing shards first, an order the filesystem is free to hand back: without the skip they
+    # are opened and read as unclassifiable before shard 1 is reached.
+    monkeypatch.setattr(
+        models_route,
+        "_iter_gguf_paths",
+        lambda _root, deadline = None: iter(sorted(repo_dir.rglob("*.gguf"), reverse = True)),
+    )
+    repo_info = SimpleNamespace(repo_id = "unsloth/Big-GGUF", repo_path = str(repo_dir))
+
+    assert models_route._repo_gguf_task(repo_info) == "text-generation"
+    assert read == ["Big-Q4_K_M-00001-of-00003.gguf"], read
+
+
+# ── The cost of deciding from all of a folder rather than from its first file ──
+
+
+def test_a_gguf_folder_walk_stops_on_its_budget_instead_of_holding_the_listing(tmp_path):
+    """Ordering the walk means it can no longer stop at the first GGUF, so a folder is read to the
+    end, and a scan folder is arbitrary: a network mount, or weights beside a huge unrelated
+    subtree whose every entry ``rglob`` counts (the hazard ``_dir_has_downloaded_model`` already
+    caps). This runs once per listed row, so the walk takes a deadline and gives up on it."""
+    folder = tmp_path / "bundle"
+    _arch_gguf(folder / "model-Q4_K_M.gguf", "qwen3")
+
+    assert models_route._gguf_folder_task(folder, ("someone/model",)) == "text-generation"
+    # A budget already spent buys nothing.
+    spent = models_route._gguf_folder_task(
+        folder, ("someone/model",), deadline = time.monotonic() - 1
+    )
+    assert spent is None
+
+
+def test_a_slow_walk_cannot_hand_back_the_encoder_this_function_exists_to_avoid(
+    tmp_path, monkeypatch
+):
+    """The header reads get their own budget, started after the walk. Sharing one would let a
+    folder that was merely slow to enumerate stop after the encoder and answer ``text-generation``,
+    the #8406 bug by another road."""
+    folder = tmp_path / "flux-bundle"
+    _arch_gguf(folder / "t5xxl-Q8_0.gguf", "t5encoder")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+    ordered = sorted(folder.rglob("*.gguf"))
+
+    def _slow_walk(_root, deadline = None):
+        # Spends the whole walk budget before yielding anything, like a cold network mount.
+        time.sleep(models_route._TASK_CLASSIFY_WALK_SECONDS + 0.05)
+        return iter(ordered)
+
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", _slow_walk)
+    assert models_route._gguf_folder_task(folder, ("someone/flux-bundle",)) == "text-to-image"
+
+
+def test_the_classify_order_is_the_same_wherever_the_folder_lives(tmp_path):
+    """Ordering exists so the answer stops depending on the filesystem, so the key is the path
+    RELATIVE to the folder in posix form. An absolute-path key carries the mount point, which is
+    what moving a Models folder changes (#8407), and the separator: ``\\`` sorts against ``-`` and
+    ``.`` differently than ``/``, so the same two files could order one way on Windows and the
+    other on Linux."""
+    key = models_route._task_classify_sort_key
+    assert key(Path("/srv/models/Repo"), Path("/srv/models/Repo/a/b.gguf")) == key(
+        Path("/mnt/elsewhere/Repo"), Path("/mnt/elsewhere/Repo/a/b.gguf")
+    )
+    # No separator of either kind survives into the leading component of the key.
+    assert key(Path("/srv/Repo"), Path("/srv/Repo/sub/z_image-Q4.gguf"))[0] == "sub/z_image-q4.gguf"
+
+    first = tmp_path / "here" / "bundle"
+    second = tmp_path / "somewhere" / "else" / "deeper" / "bundle"
+    for folder in (first, second):
+        _arch_gguf(folder / "Qwen3-4B-UD-Q6_K_XL.gguf", "qwen3")
+        _arch_gguf(folder / "z_image_turbo-Q6_K.gguf", "lumina2")
+    hints = ("BlackStone-Yu/Z-Image-Turbo-GGUF",)
+    assert models_route._gguf_folder_task(first, hints) == models_route._gguf_folder_task(
+        second, hints
+    )
+
+
+def test_a_buildable_denoiser_outranks_an_arch_the_backend_cannot_assemble(tmp_path):
+    """``_UNSUPPORTED_DIFFUSION_TASK`` hides a row from the chat picker AND from the Images and
+    Video ones, so a folder holding both a checkpoint this backend can build and one it cannot has
+    exactly one answer that leads anywhere. Deciding on which name sorts first hides a model that
+    works, the same mistake as deciding on directory order."""
+    folder = tmp_path / "mixed"
+    # "aura" sorts first and is not assemblable here; the FLUX denoiser beside it is.
+    _arch_gguf(folder / "aura-flow-Q4_0.gguf", "aura")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+    assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) == "text-to-image"
+
+    video = tmp_path / "mixed-video"
+    _arch_gguf(video / "a-hidream-Q4_0.gguf", "hidream")
+    _arch_gguf(video / "z-ltx-video-Q4_0.gguf", "ltxv")
+    assert models_route._gguf_folder_task(video, ("someone/ltx-GGUF",)) == "text-to-video"
+
+    # With nothing buildable in it the folder still reports the unsupported tag, rather than
+    # falling through to a text one and offering a denoiser in chat.
+    unbuildable = tmp_path / "unbuildable"
+    _arch_gguf(unbuildable / "sdxl-Q4_0.gguf", "sdxl")
+    _arch_gguf(unbuildable / "text-encoder-Q8_0.gguf", "t5encoder")
+    assert (
+        models_route._gguf_folder_task(unbuildable, ("someone/sdxl-GGUF",))
+        == models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+
+
+def test_a_pipeline_index_this_listing_cannot_read_leaves_the_model_untagged(tmp_path):
+    """The Images load path 400s AFTER evicting the chat model when no family is supported, so a
+    model is tagged only when detection SUCCEEDS. The caller wraps the whole block in
+    ``except Exception`` and answers ``text-to-image``, so both ways an index can refuse to parse
+    are answered here rather than upward: a nesting bomb (``RecursionError``, not a ``ValueError``,
+    so it escaped the original tuple) and a BOM, which PowerShell puts on hand-written JSON."""
+    from core.inference.diffusion_families import pipeline_class_from_index
+
+    def read(directory):
+        return pipeline_class_from_index(str(directory))
+
+    bomb = tmp_path / "bomb"
+    bomb.mkdir()
+    (bomb / "model_index.json").write_text('{"a":' * 100_000, encoding = "utf-8")
+    assert read(bomb) is None
+
+    bom = tmp_path / "bom"
+    bom.mkdir()
+    (bom / "model_index.json").write_bytes(
+        b"\xef\xbb\xbf" + json.dumps({"_class_name": "QwenImagePipeline"}).encode("utf-8")
+    )
+    assert read(bom) == "QwenImagePipeline"
+
+    # Plain and non-ASCII indexes still read the same, so this only widens what parses.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "model_index.json").write_text(
+        json.dumps({"_class_name": "FluxPipeline", "_name_or_path": "café"}),
+        encoding = "utf-8",
+    )
+    assert read(plain) == "FluxPipeline"
+
+
+def test_a_remote_code_pipeline_class_is_not_read_out_of_its_list_form(tmp_path):
+    """A community pipeline whose code ships in its own repo writes
+    ``["<module stem>", "<ClassName>"]`` here, which diffusers treats as remote code (it resolves
+    the class with ``getattr`` only ``if isinstance(cls_name, str)``). Studio declines models that
+    need ``trust_remote_code``, so tagging one would advertise a model the load path refuses, after
+    the chat model has been evicted."""
+    from core.inference.diffusion_families import pipeline_class_from_index
+
+    root = tmp_path / "9f3c1a2b"
+    root.mkdir()
+    (root / "model_index.json").write_text(
+        json.dumps({"_class_name": ["my_custom_flux", "FluxPipeline"]}), encoding = "utf-8"
+    )
+    assert pipeline_class_from_index(str(root)) is None
+
+    # The plain string form of the same class is still read, so this is a shape check, not a ban.
+    (root / "model_index.json").write_text(
+        json.dumps({"_class_name": "FluxPipeline"}), encoding = "utf-8"
+    )
+    assert pipeline_class_from_index(str(root)) == "FluxPipeline"
+
+
+def test_a_trailing_shard_check_that_cannot_read_the_pattern_keeps_every_file(monkeypatch):
+    """The skip is an optimisation, so losing it costs the optimisation and nothing else. This runs
+    inside ``_gguf_folder_task``'s blanket except, where a raise would come back as no
+    classification for every GGUF folder at once."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_model_config(name, *args, **kwargs):
+        if name == "utils.models.model_config":
+            raise ImportError("moved")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_model_config)
+    assert models_route._is_trailing_split_shard("Big-Q4_K_M-00002-of-00003.gguf") is False
+
+
+def test_a_pipelines_component_dirs_do_not_inherit_the_repo_id(tmp_path):
+    """The repo-id needle is for the row that LOST its name, and only that row. A pipeline's
+    component directories carry a ``config.json`` and weights, so a scan folder registers them as
+    rows of their own, and they sit UNDER ``models--org--name/snapshots/<sha>``, which
+    ``hf_cache_repo_id`` answers for as readily as the snapshot. Letting them inherit it makes each
+    detect the family, satisfy ``_local_is_diffusers`` and enter the Images picker as a checkpoint
+    that cannot load: three dead rows per cached pipeline."""
+    snapshot = tmp_path / "hub" / "models--black-forest-labs--FLUX.1-dev" / "snapshots" / ("a" * 40)
+    _saved_pipeline(snapshot, "FluxPipeline")
+
+    def _row(directory):
+        return SimpleNamespace(
+            path = str(directory),
+            id = str(directory),
+            model_id = None,
+            display_name = directory.name,
+            model_format = "diffusers",
+        )
+
+    # The snapshot root is the #8407 case: it must still recover the id and classify.
+    assert "black-forest-labs/FLUX.1-dev" in models_route._local_family_needles(_row(snapshot))
+    assert models_route._local_model_task(_row(snapshot)) == "text-to-image"
+
+    for component in ("transformer", "vae", "text_encoder"):
+        row = _row(snapshot / component)
+        assert "black-forest-labs/FLUX.1-dev" not in models_route._local_family_needles(row)
+        assert models_route._local_is_diffusers(row) is False
+        assert models_route._local_model_task(row) is None
+
+    # A trailing separator is the same row, not a different shape.
+    assert _hf_cache_snapshot_repo_id_ok(snapshot)
+
+
+def _hf_cache_snapshot_repo_id_ok(snapshot) -> bool:
+    decode = models_route._hf_cache_snapshot_repo_id
+    return (
+        decode(str(snapshot) + "/") == "black-forest-labs/FLUX.1-dev"
+        and decode(str(snapshot).replace("/", "\\")) == "black-forest-labs/FLUX.1-dev"
+        and decode(str(snapshot / "vae")) is None
+        and decode(None) is None
+        and decode("/plain/folder/model") is None
+    )
+
+
+def test_a_pipeline_index_outranks_a_family_keyword_in_an_ancestor_directory(tmp_path):
+    """A local pipeline whose path contains another family's keyword must still load as the family
+    its own ``model_index.json`` declares.
+
+    ``detect_family_for_pick`` used to try the path name first and consult the index only when that
+    answered nothing, so a keyword in ANY ancestor segment shadowed the index. The listing reads the
+    index, so the two named different families for one directory and the model was shown as one and
+    instantiated as another, the same listing-versus-loader split #8407 is about. Reported against a
+    ``QwenImagePipeline`` saved under a ``flux.1`` parent, the shape used here."""
+    from core.inference import diffusion_families as families
+
+    checkpoint = tmp_path / "flux.1" / "checkpoint"
+    checkpoint.mkdir(parents = True)
+    (checkpoint / "model_index.json").write_text(
+        json.dumps({"_class_name": "QwenImagePipeline", "_diffusers_version": "0.39.0"})
+    )
+    path = str(checkpoint)
+
+    from_index = families.detect_family_by_pipeline_index(path)
+    assert from_index is not None
+    # The listing classifies on the index, so the loader has to reach the same answer.
+    assert families.detect_family_for_pick(path) is from_index
+    # ... and specifically not the ancestor directory's family.
+    assert families.detect_family(path, None) is not from_index
+
+
+def test_reading_the_index_first_leaves_remote_picks_and_overrides_alone(tmp_path):
+    """The index only ever answers for a local directory that saved one, so a remote repo id, an
+    explicit override and the local-GGUF filename fallback all behave exactly as before."""
+    from core.inference import diffusion_families as families
+
+    for repo_id in ("black-forest-labs/FLUX.1-dev", "Qwen/Qwen-Image"):
+        assert families.detect_family_for_pick(repo_id) is families.detect_family(repo_id, None)
+
+    checkpoint = tmp_path / "flux.1" / "checkpoint"
+    checkpoint.mkdir(parents = True)
+    (checkpoint / "model_index.json").write_text(json.dumps({"_class_name": "QwenImagePipeline"}))
+    # An explicit override still wins over both the index and the path.
+    assert families.detect_family_for_pick(str(checkpoint), override = "flux.1") is (
+        families.detect_family(str(checkpoint), "flux.1")
+    )
+    # A bare directory with no index still resolves through the GGUF filename.
+    assert families.detect_family_for_pick(
+        str(tmp_path / "anon"), gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    ) is families.detect_family("x/flux1-dev-Q4_K_M.gguf", None)
+
+
+def test_a_saved_inpaint_pipeline_is_not_tagged_as_its_base_family():
+    """Reading the index must not expose a checkpoint the loader would then mis-instantiate.
+
+    The loader picks ``fam.pipeline_class`` (``diffusion.py:2946``), never the declared class, so
+    answering SDXL for a ``StableDiffusionXLInpaintPipeline`` would list it as text-to-image and
+    load it through the four-channel base pipeline. An inpaint checkpoint has its own UNet input
+    shape, so that fails after selection, the split this helper exists to close. A variant stays
+    untagged, as before the index was consulted at all."""
+    from core.inference import diffusion_families as families
+
+    # The base classes still answer, so the moved-pipeline fix (#8407) is intact.
+    for base in ("FluxPipeline", "QwenImagePipeline", "StableDiffusionXLPipeline"):
+        assert families.detect_family_by_pipeline_class(base) is not None, base
+
+    for variant in (
+        "StableDiffusionXLInpaintPipeline",
+        "StableDiffusionXLImg2ImgPipeline",
+        "FluxInpaintPipeline",
+        "FluxImg2ImgPipeline",
+    ):
+        assert families.detect_family_by_pipeline_class(variant) is None, variant

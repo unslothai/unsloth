@@ -884,6 +884,7 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
         "core.inference.llama_cpp.child_env_without_native_path_secret",
         lambda: {
             "LD_LIBRARY_PATH": "/already-there",
+            "DYLD_LIBRARY_PATH": "/already-inherited",
             "LLAMA_ARG_DEVICE": "MTL0",
             "LLAMA_ARG_OVERRIDE_TENSOR": ".*=MTL0",
         },
@@ -908,9 +909,13 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     assert captured["env"] is not None
     assert captured["env"]["GGML_METAL_DEVICES"] == "0"
     assert not any(name.startswith("LLAMA_ARG_") for name in captured["env"])
-    ld_dirs = captured["env"]["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert str(fake.parent) in ld_dirs
-    assert "/already-there" in ld_dirs
+    # macOS: the probe must go on DYLD_LIBRARY_PATH. dyld ignores
+    # LD_LIBRARY_PATH, so putting the dir there left the probe with no search
+    # path (#8566), and an inherited LD_LIBRARY_PATH is left as the user set it.
+    dyld_dirs = captured["env"]["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(fake.parent) in dyld_dirs
+    assert "/already-inherited" in dyld_dirs
+    assert captured["env"]["LD_LIBRARY_PATH"] == "/already-there"
 
 
 @_NEEDS_BASH

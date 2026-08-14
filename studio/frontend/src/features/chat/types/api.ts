@@ -353,6 +353,9 @@ export interface InferenceStatusResponse {
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it;
    * "drafter_not_found" -> its MTP, DSpark or DFlash sidecar was unavailable;
+   * "drafter_no_vram" -> an Auto-mode fit downgrade: the model pins on GPU but
+   * the drafter's reserve does not, and Auto keeps the context rather than
+   * shrink it (choose the drafter in Settings to force it);
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
    * (updating won't help; choose MTP in Settings to force it). Null otherwise.
@@ -402,6 +405,8 @@ export interface ApiMonitorEntry {
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
+  /** Final request-specific prompt rate from engine timings. */
+  prompt_tok_per_sec?: number | null;
   stop_reason?: string | null;
 }
 
@@ -559,6 +564,8 @@ export interface OpenAIChatCompletionsRequest {
     context_length?: number;
   };
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
