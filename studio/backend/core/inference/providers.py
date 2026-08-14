@@ -613,23 +613,18 @@ def _metadata_host(hostname: str) -> bool:
     return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
-# The metadata block above only reads the hostname text, so a name the caller
-# controls (metadata-alias.attacker.test IN A 169.254.169.254) dials the very
-# service that block exists to refuse. Names are therefore resolved on the
-# default path too -- but only far enough to answer "is this the metadata
-# service", never to reject private addresses, which stays the opt-in above.
-#
-# Three properties keep that resolution out of the way of the endpoints people
-# actually configure:
-#   * the shipped registry hosts and IP literals skip it entirely, so the common
-#     path (a real provider, or http://127.0.0.1:11434) touches no resolver;
-#   * a name that does not resolve is allowed, because a docker-compose or
-#     service-discovery name (http://my_ollama:11434) may only be resolvable in
-#     the client's network namespace, not in this one;
-#   * the lookup is bounded and its answer cached, so a slow or unreachable
-#     resolver cannot stall a request that validates the same URL every time.
-#     A client is built per request, not per token, and the route validates the
-#     same URL again, so the cache is what keeps that to one lookup.
+# The block above only reads the hostname text, so a caller-controlled name
+# (metadata-alias.attacker.test IN A 169.254.169.254) dials the very service it
+# exists to refuse. Names are resolved on the default path too, but only far
+# enough to answer "is this metadata"; refusing other private addresses stays
+# opt-in. Three things keep that lookup off the endpoints people configure:
+#   * registry hosts and IP literals skip it, so a real provider or
+#     http://127.0.0.1:11434 touches no resolver;
+#   * a name that does not resolve is allowed -- http://my_ollama:11434 may only
+#     resolve in the client's network namespace, not in this one;
+#   * it is bounded and cached, so a dead resolver cannot stall each request.
+#     A client is built per request and the route validates the same URL again,
+#     so the cache is what keeps a request to one lookup.
 _DNS_TIMEOUT_SECONDS = 2.0
 _DNS_CACHE_TTL_SECONDS = 300.0
 _DNS_CACHE_MAX_ENTRIES = 512
@@ -654,10 +649,9 @@ _REGISTRY_HOSTNAMES = frozenset(
 def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ...] | None:
     """Addresses for ``hostname``, or ``None`` when the resolver did not answer.
 
-    Both callers share this: the always-on metadata check, which treats "no
-    answer" as nothing to refuse, and the opt-in private-address check, which
-    treats it as a refusal. One lookup and one cache entry serve both, so
-    turning the opt-in on does not double the resolver traffic.
+    One lookup and one cache entry serve both callers, which read "no answer" in
+    opposite directions: the metadata check has nothing to refuse, the opt-in
+    private-address check refuses.
     """
     import socket
 
