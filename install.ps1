@@ -610,10 +610,10 @@ public static class UnslothStudioFinalPathV2
 
     function Enable-StudioVirtualTerminal {
         if ($env:NO_COLOR) { return $false }
-        # A redirected stdout is not a console, GetConsoleMode fails on a non-console handle, and
-        # the block below can then only reach `return $false`. Answer that without the compiler:
-        # Add-Type runs csc.exe and drops source in %TEMP%. This is the desktop app's own path,
-        # where install.rs spawns us with a pipe, so it is where the compile actually happened.
+        # A redirected stdout is not a console and GetConsoleMode fails on a non-console handle,
+        # so the block below could only return $false anyway. Answer without Add-Type, which runs
+        # csc.exe and drops source in %TEMP%. install.rs spawns us with a pipe, so this is the path
+        # the compile was on.
         if ($script:StudioStdoutRedirected) { return $false }
         try {
             if (-not ("StudioVT.Native" -as [type])) {

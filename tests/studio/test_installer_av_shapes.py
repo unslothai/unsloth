@@ -121,8 +121,8 @@ ALLOWED_PINVOKES = {
     "GetStdHandle",
     "GetConsoleMode",
     "SetConsoleMode",
-    # Per-item Explorer icon refresh; the global broadcast alone does not recover a stale .lnk,
-    # so ie4uinit.exe -show, which is that broadcast, is not a substitute. Standalone path only.
+    # Per-item Explorer icon refresh, standalone path only. ie4uinit.exe -show is the global
+    # broadcast, which alone does not recover a stale .lnk, so it is not a substitute.
     "SHChangeNotify",
     # PID -> image path for the venv-holder check. Win32_Process answers the same question,
     # but test_windows_installer_concurrency_guard.py bans it and $process.Path there: the
@@ -163,7 +163,7 @@ def test_virtual_terminal_answers_a_redirected_stream_without_compiling(name: st
     """
     text = _text(name)
     start = text.index("function Enable-StudioVirtualTerminal")
-    # The call, not the comment above it that explains why the call is skippable.
+    # The call, not the comment above it.
     call = re.compile(r"(?m)^[ \t]*Add-Type\b").search(text, start)
     assert call, f"{name} no longer compiles the console thunk; update this guard"
     compile_at = call.start()
