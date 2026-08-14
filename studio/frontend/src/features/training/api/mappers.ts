@@ -137,6 +137,19 @@ export function buildTrainingStartPayload(
     warmup_ratio: isEmbedding ? 0.03 : null,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
+    checkpoint_backup: config.checkpointBackup.enabled
+      ? {
+          enabled: true,
+          provider: config.checkpointBackup.provider,
+          repo_id: config.checkpointBackup.repoId,
+          private: config.checkpointBackup.private,
+          interval_steps: config.checkpointBackup.intervalSteps,
+          strategy: config.checkpointBackup.strategy,
+          keep_remote: config.checkpointBackup.keepRemote,
+          upload_on_stop: config.checkpointBackup.uploadOnStop,
+          upload_on_complete: config.checkpointBackup.uploadOnComplete,
+        }
+      : null,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     // max_grad_norm omitted on purpose: the backend now honors an explicit value,
