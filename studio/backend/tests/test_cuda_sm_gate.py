@@ -128,7 +128,12 @@ class TestCudaSmGateError:
         assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
 
 
-def _gated_backend(tmp_path, monkeypatch, *, supported_sms = ("75", "80", "86", "89")):
+def _gated_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    supported_sms = ("75", "80", "86", "89"),
+):
     """A load on the incident host: the installed bundle covers sm_75-sm_89 and the
     only GPU is an sm_90 H100, so the gate wants to refuse. Everything below the
     placement decision is faked -- Popen never runs and health answers True."""
@@ -226,9 +231,7 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
 
     def test_manual_zero_offload_still_launches_on_cpu(self, tmp_path, monkeypatch):
         backend, gguf = _gated_backend(tmp_path, monkeypatch)
-        launches, error = _drive_load(
-            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0
-        )
+        launches, error = _drive_load(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)
         assert error is None, f"the SM gate refused a CPU-only load: {error}"
         assert len(launches) == 1
         _cmd, env = launches[0]
