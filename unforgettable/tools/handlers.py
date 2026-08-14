@@ -20,6 +20,7 @@ from typing import Any, Optional
 from unforgettable.agents.admissions import admit
 from unforgettable.agents.retriever import DEFAULT_MAX_RECORDS, DEFAULT_RETRIEVE_KINDS
 from unforgettable.constants import DEFAULT_NAMESPACE_ID
+from unforgettable.eyes.gate import review_write
 from unforgettable.loop.runtime import current_db_path, current_episode_id, current_namespace
 from unforgettable.store.compact import CompactReport, run_compact
 from unforgettable.store.records import (
@@ -59,12 +60,20 @@ def _write(args: dict[str, Any], *, db_path) -> str:
     except KeyError as exc:
         return f"Error: missing field {exc}"
     namespace = str(args.get("namespace") or current_namespace() or DEFAULT_NAMESPACE_ID)
+    review_reason = review_write(
+        kind=kind,
+        title=title,
+        body=body,
+        provenance=provenance,
+        db_path=db_path,
+    )
     decision = admit(
         kind=kind,
         provenance=provenance,
         explicit=True,
         namespace_id=namespace,
         db_path=db_path,
+        force_proposed_reason=review_reason or None,
     )
     rec = insert_record(
         kind=kind,

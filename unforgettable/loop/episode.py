@@ -27,6 +27,7 @@ from unforgettable.agents.extractor import (
 )
 from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
 from unforgettable.eyes.basic import inspect_tool_result
+from unforgettable.eyes.gate import review_write
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
 from unforgettable.store.records import insert_record, insert_rollout
@@ -169,11 +170,19 @@ ROLLOUT_CONTACT_ORDER = ("world", "sim")
 
 
 def _write_draft(state: EpisodeState, draft: dict[str, Any], db_path: str) -> dict[str, Any]:
+    review_reason = review_write(
+        kind=draft["kind"],
+        title=draft["title"],
+        body=draft["body"],
+        provenance=draft["provenance"],
+        db_path=db_path,
+    )
     decision = admit(
         kind=draft["kind"],
         provenance=draft["provenance"],
         explicit=bool(draft.get("explicit")),
         bookkeeping=bool(draft.get("bookkeeping")),
+        force_proposed_reason=review_reason or None,
         db_path=db_path,
     )
     return insert_record(

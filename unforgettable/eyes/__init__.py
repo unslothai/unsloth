@@ -13,12 +13,17 @@
 # limitations under the License.
 
 from .basic import inspect_tool_result
-from .protocols import GateEyes, RecognizedFailure, SimEyes, WorldEyes
+from .gate import LogGateEyes, contradictions, review_write
+from .protocols import Contradiction, GateEyes, RecognizedFailure, SimEyes, WorldEyes
 
 __all__ = [
+    "Contradiction",
     "GateEyes",
+    "LogGateEyes",
     "RecognizedFailure",
     "SimEyes",
     "WorldEyes",
+    "contradictions",
     "inspect_tool_result",
+    "review_write",
 ]

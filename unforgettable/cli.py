@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from unforgettable.constants import KINDS, STATUSES
+from unforgettable.eyes.gate import contradictions
 from unforgettable.store.compact import run_compact
 from unforgettable.store.db import default_db_path
 from unforgettable.store.records import (
@@ -171,6 +172,21 @@ def _cmd_admissions(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _cmd_contradictions(_args: argparse.Namespace, db_path: Path) -> int:
+    rows = contradictions(db_path=db_path)
+    _print_json(
+        [
+            {
+                "title_key": item.title_key,
+                "record_ids": list(item.record_ids),
+                "reason": item.reason,
+            }
+            for item in rows
+        ]
+    )
+    return 0
+
+
 def _cmd_admit(args: argparse.Namespace, db_path: Path) -> int:
     try:
         rec = set_record_status(
@@ -262,6 +278,13 @@ def build_parser() -> argparse.ArgumentParser:
     adm_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
     adm_p.add_argument("--decision", default=None)
     adm_p.set_defaults(func=_cmd_admissions)
+
+    contra_p = sub.add_parser(
+        "contradictions",
+        help="List same-title active claims with distinct bodies.",
+    )
+    _add_db_flag(contra_p)
+    contra_p.set_defaults(func=_cmd_contradictions)
 
     admit_p = sub.add_parser("admit", help="Promote a record to active.")
     _add_db_flag(admit_p)

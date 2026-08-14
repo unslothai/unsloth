@@ -32,7 +32,20 @@ class SimEyes(Protocol):
     def grade(self, name: str, result: str) -> Optional[RecognizedFailure]: ...
 
 
+@dataclass(frozen=True)
+class Contradiction:
+    title_key: str
+    record_ids: tuple[str, ...]
+    reason: str
+
+
 class GateEyes(Protocol):
-    def note(self, message: str) -> None:
-        """Phase 1: log-only."""
+    def note(self, message: str) -> None: ...
+
+    def contradictions(self, db_path=None) -> list[Contradiction]: ...
+
+    def review_write(
+        self, *, kind: str, title: str, body: str, provenance: str, db_path=None
+    ) -> str:
+        """Return '' or a reason to force proposed."""
         ...
