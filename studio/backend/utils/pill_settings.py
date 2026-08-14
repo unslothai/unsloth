@@ -15,7 +15,6 @@ PILL_EXCLUDED_APPS_KEY = "pill_excluded_apps"
 def _get_setting(key: str, default: Any = None) -> Any:
     try:
         from storage.studio_db import get_app_setting
-
         return get_app_setting(key, default)
     except Exception:
         return default
@@ -34,27 +33,30 @@ def get_pill_settings() -> dict:
     }
 
 
+UNSET: Any = object()
+
+
 def update_pill_settings(
-    enabled: bool | None = None,
-    default_model: str | None = None,
-    default_gguf_variant: str | None = None,
-    auto_load: bool | None = None,
-    excluded_apps: list[str] | None = None,
+    enabled: Any = UNSET,
+    default_model: Any = UNSET,
+    default_gguf_variant: Any = UNSET,
+    auto_load: Any = UNSET,
+    excluded_apps: Any = UNSET,
 ) -> dict:
-    """Partial update: None leaves a field untouched."""
+    """Partial update: an omitted field is left untouched, None clears it."""
     from storage.studio_db import upsert_app_settings
 
     updates: dict[str, Any] = {}
-    if enabled is not None:
+    if enabled is not UNSET:
         updates[PILL_ENABLED_KEY] = enabled
-    if default_model is not None:
+    if default_model is not UNSET:
         updates[PILL_DEFAULT_MODEL_KEY] = default_model or None
-    if default_gguf_variant is not None:
+    if default_gguf_variant is not UNSET:
         updates[PILL_DEFAULT_GGUF_VARIANT_KEY] = default_gguf_variant or None
-    if auto_load is not None:
+    if auto_load is not UNSET:
         updates[PILL_AUTO_LOAD_KEY] = auto_load
-    if excluded_apps is not None:
-        updates[PILL_EXCLUDED_APPS_KEY] = [str(item) for item in excluded_apps]
+    if excluded_apps is not UNSET:
+        updates[PILL_EXCLUDED_APPS_KEY] = [str(item) for item in excluded_apps or []]
     if updates:
         upsert_app_settings(updates)
     return get_pill_settings()

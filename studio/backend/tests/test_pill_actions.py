@@ -45,3 +45,28 @@ def test_settings_defaults_and_partial_update(pill_home):
     assert settings["enabled"] is True
     assert settings["defaultModel"] == "some/model-GGUF"
     assert settings["excludedApps"] == ["com.apple.Passwords"]
+
+
+def test_explicit_null_clears_default_model(pill_home):
+    pill.put_settings(
+        pill.PillSettingsUpdate(defaultModel = "some/model-GGUF"),
+        current_subject = "test-user",
+    )
+
+    # The settings tab sends {"defaultModel": null} for its "Default" option.
+    settings = pill.put_settings(
+        pill.PillSettingsUpdate.model_validate_json('{"defaultModel": null}'),
+        current_subject = "test-user",
+    )
+    assert settings["defaultModel"] is None
+
+    # An omitted field still leaves the stored value alone.
+    pill.put_settings(
+        pill.PillSettingsUpdate(defaultModel = "other/model-GGUF"),
+        current_subject = "test-user",
+    )
+    settings = pill.put_settings(
+        pill.PillSettingsUpdate(enabled = True),
+        current_subject = "test-user",
+    )
+    assert settings["defaultModel"] == "other/model-GGUF"

@@ -25,15 +25,18 @@ def get_settings(current_subject: str = Depends(get_current_subject)):
     return get_pill_settings()
 
 
+_ARG_BY_FIELD = {
+    "enabled": "enabled",
+    "defaultModel": "default_model",
+    "defaultGgufVariant": "default_gguf_variant",
+    "autoLoad": "auto_load",
+    "excludedApps": "excluded_apps",
+}
+
+
 @router.put("/settings")
-def put_settings(
-    req: PillSettingsUpdate,
-    current_subject: str = Depends(get_current_subject),
-):
-    return update_pill_settings(
-        enabled = req.enabled,
-        default_model = req.defaultModel,
-        default_gguf_variant = req.defaultGgufVariant,
-        auto_load = req.autoLoad,
-        excluded_apps = req.excludedApps,
-    )
+def put_settings(req: PillSettingsUpdate, current_subject: str = Depends(get_current_subject)):
+    # An absent field and an explicit null both arrive as None, so pass on only
+    # what the client actually sent: clearing the default model is a null.
+    sent = req.model_dump(exclude_unset = True)
+    return update_pill_settings(**{_ARG_BY_FIELD[field]: value for field, value in sent.items()})
