@@ -10125,6 +10125,7 @@ async def _generate_tts_wav(
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
     _audio_cancel = threading.Event()
+    prompt_for_budget = text
 
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
@@ -10147,7 +10148,7 @@ async def _generate_tts_wav(
             min_p = payload.min_p,
             max_new_tokens = _tts_max_new_tokens(
                 payload,
-                text,
+                prompt_for_budget,
                 audio_type = audio_type,
                 speech_api_default_max_tokens = speech_api_default_max_tokens,
             ),
@@ -10173,7 +10174,7 @@ async def _generate_tts_wav(
             min_p = payload.min_p,
             max_new_tokens = _tts_max_new_tokens(
                 payload,
-                text,
+                prompt_for_budget,
                 audio_type = audio_type,
                 speech_api_default_max_tokens = speech_api_default_max_tokens,
             ),
@@ -10194,6 +10195,10 @@ async def _generate_tts_wav(
             status_code = 400,
             detail = "MiniMax Music 3 requires a music description in addition to lyrics.",
         )
+    if audio_type == "higgs_tts2":
+        scene = payload.audio_instructions or "Audio is recorded from a quiet room."
+        prompt_for_budget = f"{scene}\n{text}"
+        _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget)
 
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
     # generating, so `unsloth run --temperature` (and the other pins) and per-model

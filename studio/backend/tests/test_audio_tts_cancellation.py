@@ -114,6 +114,89 @@ def test_minimax_missing_description_is_a_client_error_before_generation(monkeyp
     assert generated == []
 
 
+def test_higgs_scene_instructions_are_included_in_context_guard(monkeypatch):
+    generated = []
+
+    class _Llama:
+        is_loaded = False
+        _is_audio = False
+
+    class _Backend:
+        active_model_name = "bosonai/higgs-tts-2-3b-base"
+        models = {active_model_name: {"is_audio": True, "audio_type": "higgs_tts2"}}
+
+        def generate_audio_response(self, **kwargs):
+            generated.append(kwargs)
+            return b"RIFFfake", 24000
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: 128)
+    payload = ChatCompletionRequest(
+        model = "bosonai/higgs-tts-2-3b-base",
+        messages = [{"role": "user", "content": "hello"}],
+        audio_instructions = "x" * 600,
+    )
+
+    with pytest.raises(inference_route.HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._generate_tts_wav(
+                "hello", payload, request = None, current_subject = "t"
+            )
+        )
+
+    assert excinfo.value.status_code == 400
+    assert generated == []
+
+
+def test_higgs_scene_instructions_reduce_the_generation_budget(monkeypatch):
+    generated = []
+
+    class _Llama:
+        is_loaded = False
+        _is_audio = False
+
+    class _Backend:
+        active_model_name = "bosonai/higgs-tts-2-3b-base"
+        models = {active_model_name: {"is_audio": True, "audio_type": "higgs_tts2"}}
+
+        def generate_audio_response(self, **kwargs):
+            generated.append(kwargs)
+            return b"RIFFfake", 24000
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: 512)
+    scene = "x" * 300
+    payload = ChatCompletionRequest(
+        model = "bosonai/higgs-tts-2-3b-base",
+        messages = [{"role": "user", "content": "hello"}],
+        audio_instructions = scene,
+        max_tokens = 1000,
+    )
+
+    asyncio.run(
+        inference_route._generate_tts_wav(
+            "hello", payload, request = None, current_subject = "t"
+        )
+    )
+
+    expected = (
+        512
+        - inference_route._prompt_token_estimate(f"{scene}\nhello")
+        - inference_route._TTS_PROMPT_FORMAT_RESERVE
+    )
+    assert generated[0]["max_new_tokens"] == expected
+
+
 def test_audio_response_stopped_while_queued_is_never_sent(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)

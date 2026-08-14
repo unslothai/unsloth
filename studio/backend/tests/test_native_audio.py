@@ -329,6 +329,43 @@ def test_higgs_tts3_neutralizes_prompt_markers_before_synthesis():
     assert seen["text"] == "Say < |audio|>, < |ref_audio|>, and <ordinary> exactly."
 
 
+def test_higgs_tts3_cancellation_interrupts_the_autoregressive_loop():
+    cancel = threading.Event()
+    seen = {"steps": 0, "removed": False}
+
+    class Handle:
+        def remove(self):
+            seen["removed"] = True
+
+    class InnerModel:
+        hook = None
+
+        def register_forward_pre_hook(self, hook):
+            self.hook = hook
+            return Handle()
+
+        def step(self):
+            self.hook(self, ())
+            seen["steps"] += 1
+            cancel.set()
+
+    class Model:
+        def __init__(self):
+            self.model = InnerModel()
+
+        def generate_speech(self, _text, _tokenizer, **_kwargs):
+            for _ in range(3):
+                self.model.step()
+            return torch.zeros(240)
+
+    backend = _backend("higgs_tts3", model = Model(), processor = object())
+
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate_audio_response("hello", cancel_event = cancel)
+
+    assert seen == {"steps": 1, "removed": True}
+
+
 def test_moss_local_uses_generation_messages_and_stereo_decode():
     seen = {}
     stereo = torch.zeros((2, 480))

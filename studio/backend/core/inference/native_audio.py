@@ -499,6 +499,7 @@ class NativeAudioBackend:
                 top_p,
                 top_k,
                 max_new_tokens,
+                cancel_event,
             )
         elif audio_type == "minimax_music3":
             audio, sample_rate = self._generate_minimax_music3(
@@ -625,18 +626,31 @@ class NativeAudioBackend:
             return output_path.read_bytes(), sample_rate
 
     @staticmethod
-    def _generate_higgs_tts3(entry, text, temperature, top_p, top_k, max_new_tokens):
+    def _generate_higgs_tts3(
+        entry, text, temperature, top_p, top_k, max_new_tokens, cancel_event
+    ):
         from core.inference.chat_template_helpers import neutralize_tts_prompt_text
 
         text = neutralize_tts_prompt_text(text, "higgs_tts3")
-        audio = entry["model"].generate_speech(
-            text,
-            entry["processor"],
-            max_new_tokens = int(max_new_tokens),
-            temperature = max(0.0, float(temperature)),
-            top_p = float(top_p),
-            top_k = int(top_k),
-        )
+        model = entry["model"]
+        cancel_hook = None
+        forward_model = getattr(model, "model", model)
+        if cancel_event is not None and hasattr(forward_model, "register_forward_pre_hook"):
+            cancel_hook = forward_model.register_forward_pre_hook(
+                lambda _module, _args: _raise_if_cancelled(cancel_event)
+            )
+        try:
+            audio = model.generate_speech(
+                text,
+                entry["processor"],
+                max_new_tokens = int(max_new_tokens),
+                temperature = max(0.0, float(temperature)),
+                top_p = float(top_p),
+                top_k = int(top_k),
+            )
+        finally:
+            if cancel_hook is not None:
+                cancel_hook.remove()
         return audio, entry["sample_rate"]
 
     def _generate_minimax_music3(
