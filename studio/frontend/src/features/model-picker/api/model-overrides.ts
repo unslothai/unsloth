@@ -5,8 +5,8 @@
 // browser localStorage, so an API auto-switch load (no browser in the loop) came up with none of
 // the user's settings. routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
-import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { authFetch } from "../../auth/api";
 import { llamaExtraArgsPayload } from "../model-config/llama-extra-args";
 import {
   normalizeGgufVariantIdentity,

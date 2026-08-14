@@ -1317,6 +1317,12 @@ export const en = {
         "This dataset is not on this device yet. Training will download it automatically.",
       noticeDatasetPartial:
         "Training will complete the partial dataset download before reading it.",
+      noticeTransformersUpgrade:
+        "No installed transformers supports this architecture yet. Starting the run offers to install transformers {version} first.",
+      noticeSixteenBitOnly:
+        "This architecture trains in 16-bit LoRA: 4-bit is not available for it, so the run needs far more VRAM than QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installing that release instead of keeping the model's own code switches this run to 16-bit LoRA, which needs far more VRAM than QLoRA.",
       advancedSettings: "Advanced settings",
       defaultAdvancedSettings: "Defaults",
       nonDefaultAdvancedSettings: "{count} non-default",

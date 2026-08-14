@@ -414,6 +414,8 @@ export interface ApiMonitorEntry {
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
+  /** Final request-specific prompt rate from engine timings. */
+  prompt_tok_per_sec?: number | null;
   stop_reason?: string | null;
 }
 
