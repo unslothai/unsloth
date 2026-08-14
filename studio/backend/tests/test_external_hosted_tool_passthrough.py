@@ -187,6 +187,46 @@ def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
     assert "code_execution" in (FakeExternalClient.last["passthrough"]["enabled_tools"] or [])
 
 
+def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(monkeypatch):
+    """`run_tools_locally` must not smuggle a hosted-only turn past the 400.
+
+    Studio has no `code_execution`, so the local catalog is empty whatever the
+    flag says and the route falls back to the provider. The confirmation
+    rejection keys on the request NOT having taken the loop, so a "local"
+    reading here answers a confirm-me request with an unconfirmed sandbox run.
+    """
+    from fastapi import HTTPException
+
+    inf = _install(monkeypatch, "openai")
+    # Class-level state; the client is built after the guard, so an untouched
+    # record is the evidence nothing was sent.
+    FakeExternalClient.last = {}
+    payload = _payload(
+        enable_tools = True,
+        enabled_tools = ["code_execution"],
+        run_tools_locally = True,
+        confirm_tool_calls = True,
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400
+    assert FakeExternalClient.last.get("passthrough") is None, "ran unconfirmed"
+
+
+def test_a_code_execution_with_run_tools_locally_still_reaches_the_provider(monkeypatch):
+    """And with no confirmation asked for, it proxies exactly as it always did."""
+    inf = _install(monkeypatch, "openai")
+    _run(
+        inf,
+        _payload(
+            enable_tools = True,
+            enabled_tools = ["code_execution"],
+            run_tools_locally = True,
+        ),
+    )
+    assert FakeExternalClient.last["passthrough"]["enabled_tools"] == ["code_execution"]
+
+
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
 def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, provider_type):
     """Shape 2, the PR's primary use case: a self-hosted server has no hosted
@@ -210,10 +250,14 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
 def test_a_local_only_selection_takes_the_loop_on_a_hosted_provider(monkeypatch, overrides):
     """Shape 3: one Studio-only name (or MCP) is unambiguous, so the feature
     works on hosted providers too."""
+    # ``_select_request_tools`` imports this from ``core.inference.tools`` inside the function
+    # body, so it is never an attribute of ``routes.inference``: patching the route set a dead
+    # name, and ``raising = False`` hid that while the real function ran instead. On this job
+    # it reads an empty settings DB and short-circuits before spawning anything, but nothing
+    # here held it to that. Default ``raising`` catches a future move.
     monkeypatch.setattr(
-        "routes.inference.get_enabled_mcp_tools",
+        "core.inference.tools.get_enabled_mcp_tools",
         lambda: _noop_mcp(),
-        raising = False,
     )
     inf = _install(monkeypatch, "openai")
     with pytest.raises(LoopEntered):
