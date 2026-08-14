@@ -57,10 +57,13 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
     rotate_convrot_activation,
 )
 
-# The repo the Diffusers H3 path already pulls its VAEs from, so this adds no new dependency.
-from .video_minimax_h3 import H3_COMPONENT_REPO
-
-H3_TE_QUANT_REPO = H3_COMPONENT_REPO
+# The repo the prequantized denoisers already come from, so this adds no new dependency. It is no
+# longer H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror and the conditioner did not, so the
+# two are now separate repos and aliasing them would send this file to the wrong one.
+H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
+# The community repack these quants were mirrored from, for an install whose cache predates the
+# move. Same reasoning as H3_LEGACY_COMPONENT_REPO.
+H3_LEGACY_TE_QUANT_REPO = "Comfy-Org/MiniMax-H3"
 
 # Hosted quantized conditioners, by ``text_encoder_quant`` scheme.
 #

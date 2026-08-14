@@ -2689,16 +2689,14 @@ def test_the_checkpoint_entry_is_labelled_when_its_file_is_staged(monkeypatch):
 
 
 def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
-    # The mirror carries the Qwen3-VL encoder quants alongside the denoisers, so one repo covers
-    # both halves of the runtime; the VAEs still come from the component repo.
+    # The mirror carries the Qwen3-VL encoder quants alongside the denoisers AND the VAEs, so a
+    # single repo covers the whole native runtime and the plan names no other owner.
     _plan_api(
         monkeypatch,
         {
             "unsloth/MiniMax-H3-GGUF": [
                 _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
                 _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
-            ],
-            "Comfy-Org/MiniMax-H3": [
                 _PlanSibling("vae/minimax_h3_video_vae_fp16.safetensors", 5),
                 _PlanSibling("vae/minimax_h3_audio_vae_fp32.safetensors", 1),
             ],
@@ -2713,11 +2711,12 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     )
 
     by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    # Every owner the plan names, not just the one we went looking for: staging a fresh install
+    # from anyone else is the regression this test exists to catch.
+    assert list(by_repo) == ["unsloth/MiniMax-H3-GGUF"]
     assert by_repo["unsloth/MiniMax-H3-GGUF"]["files"] == [
         "minimax_h3_fl2va-Q4_K_M.gguf",
         "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
-    ]
-    assert by_repo["Comfy-Org/MiniMax-H3"]["files"] == [
         "vae/minimax_h3_video_vae_fp16.safetensors",
         "vae/minimax_h3_audio_vae_fp32.safetensors",
     ]
@@ -2726,7 +2725,6 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     assert plan["required_bytes"] == 43
     assert plan["checkpoint_bytes"] == 19
     assert by_repo["unsloth/MiniMax-H3-GGUF"]["checkpoint"] is True
-    assert by_repo["Comfy-Org/MiniMax-H3"]["checkpoint"] is False
 
     _plan_cache(monkeypatch, lambda name: name == "minimax_h3_fl2va-Q4_K_M.gguf")
     warming = VideoBackend().download_plan(
@@ -2781,11 +2779,11 @@ def test_h3_native_uses_the_local_bundles_own_text_encoder(monkeypatch, tmp_path
     _plan_api(
         monkeypatch,
         {
+            # One repo now: the VAEs were mirrored in beside the denoisers, so the native pick
+            # no longer reaches a second, community-owned repo for them.
             "unsloth/MiniMax-H3-GGUF": [
                 _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
                 _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
-            ],
-            "Comfy-Org/MiniMax-H3": [
                 _PlanSibling("vae/minimax_h3_video_vae_fp16.safetensors", 5),
                 _PlanSibling("vae/minimax_h3_audio_vae_fp32.safetensors", 1),
             ],
@@ -2794,7 +2792,9 @@ def test_h3_native_uses_the_local_bundles_own_text_encoder(monkeypatch, tmp_path
     plan = VideoBackend._h3_native_download_plan(
         str(local), "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
     )
-    assert [entry["repo_id"] for entry in plan["entries"]] == ["Comfy-Org/MiniMax-H3"]
+    # The VAEs are the only staged entry, and they now come from our own mirror rather than the
+    # community repack the components used to be served from.
+    assert [entry["repo_id"] for entry in plan["entries"]] == ["unsloth/MiniMax-H3-GGUF"]
     assert plan["total_bytes"] == 6
 
 
@@ -3152,7 +3152,11 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
     # is not revoked by claiming the repos later.
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
-    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        H3_LEGACY_COMPONENT_REPO,
+    )
 
     class _Api:
         def __init__(self, **_kwargs):
@@ -3224,7 +3228,11 @@ def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
     import threading
     from types import SimpleNamespace
 
-    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        H3_LEGACY_COMPONENT_REPO,
+    )
 
     backend = VideoBackend()
     # Never started: the window under test is before the load thread is scheduled.
@@ -3250,7 +3258,11 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     import threading
     from types import SimpleNamespace
 
-    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        H3_LEGACY_COMPONENT_REPO,
+    )
 
     backend = VideoBackend()
     monkeypatch.setattr(
@@ -3860,7 +3872,11 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
     another mirror as here, the GGUF companion) out from under the running download."""
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
-    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        H3_LEGACY_COMPONENT_REPO,
+    )
 
     class _Api:
         def __init__(self, **_kwargs):
@@ -4198,7 +4214,11 @@ def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
     # mirror (Qwen encoder) and the component repo (both VAEs) and re-reads them every generation,
     # so deleting either On Device while H3 is loaded must be refused.
     from core.inference.video import _VideoLoadState
-    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        H3_LEGACY_COMPONENT_REPO,
+    )
 
     backend = VideoBackend()
     assert backend.loaded_repo_ids() == ()
@@ -4215,10 +4235,14 @@ def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
         engine = "sd_cpp",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
     )
+    # Both component ids: the components moved to our own mirror, but an install whose cache
+    # predates that move still reads them from the repack under the old id, and the delete guard
+    # has to cover whichever one this load is actually holding.
     assert backend.loaded_repo_ids() == (
         "leejet/MiniMax-H3-GGUF",
         H3_GGUF_REPO,
         H3_COMPONENT_REPO,
+        H3_LEGACY_COMPONENT_REPO,
     )
     # A diffusers load holds its weights in memory, and base_repo already names its repo.
     object.__setattr__(backend._state, "engine", "diffusers")
@@ -4840,6 +4864,49 @@ def test_h3_rejects_companion_checkpoints_as_the_transformer():
     ):
         with pytest.raises(ValueError):
             validate_h3_transformer_filename(bad)
+
+
+def test_every_h3_asset_comes_from_an_unsloth_repo():
+    """No H3 download may reach a community repack on a fresh install.
+
+    The narrower `test_the_h3_native_repo_matches_the_family_gguf_repo` above only pins the
+    transformer and text encoder. The VAEs and the quantized conditioner were served from
+    Comfy-Org/MiniMax-H3 for exactly that reason: nothing asserted over them, so the divergence
+    passed CI. Assert over EVERY repo the H3 paths name instead of a chosen few.
+
+    The legacy ids are deliberately exempt: they are never fetched from on a fresh install, only
+    reused when a pre-existing cache already holds those bytes.
+    """
+    from core.inference.video_minimax_h3 import (
+        H3_COMPONENT_REPO,
+        H3_GGUF_REPO,
+        h3_native_hub_files,
+    )
+    from core.inference.video_minimax_h3_te import H3_TE_QUANT_REPO
+
+    named = {H3_GGUF_REPO, H3_COMPONENT_REPO, H3_TE_QUANT_REPO}
+    named.update(repo for repo, _ in h3_native_hub_files("minimax_h3_fl2va_pruned-Q2_K.gguf"))
+    offenders = sorted(r for r in named if not r.startswith("unsloth/"))
+    assert not offenders, f"H3 would download from a repo we do not control: {offenders}"
+
+
+def test_the_h3_components_fall_back_to_a_cache_that_predates_the_move(monkeypatch):
+    """An install holding the old repack's bytes must not re-download them.
+
+    The HF cache is keyed by repo id, so repointing the constant alone re-fetches ~5.8 GB on
+    upgrade and fails outright offline. The bytes are identical either way.
+    """
+    from core.inference import video_minimax_h3 as h3
+    from core.inference import diffusion_families
+
+    monkeypatch.setattr(diffusion_families, "cache_holds_files", lambda repo, files: True)
+    assert h3.h3_component_source() == h3.H3_LEGACY_COMPONENT_REPO
+    files = dict(h3_files := h3.h3_native_hub_files("minimax_h3_fl2va_pruned-Q2_K.gguf"))
+    assert files[h3.H3_LEGACY_COMPONENT_REPO] in (h3.H3_VIDEO_VAE, h3.H3_AUDIO_VAE)
+    assert len(h3_files) == 4
+
+    monkeypatch.setattr(diffusion_families, "cache_holds_files", lambda repo, files: False)
+    assert h3.h3_component_source() == h3.H3_COMPONENT_REPO
 
 
 def test_the_h3_native_repo_matches_the_family_gguf_repo():

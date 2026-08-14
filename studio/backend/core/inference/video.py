@@ -1330,10 +1330,19 @@ class VideoBackend:
         # _loading. begin_load returns as soon as the thread is scheduled, and a delete arriving in
         # that gap sees only repo_id and base_repo, passes the guard, and starts removing a
         # companion repo this load needs. A later claim does not revoke a delete already admitted.
-        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO, is_h3_native
+        from .video_minimax_h3 import (
+            H3_COMPONENT_REPO,
+            H3_GGUF_REPO,
+            H3_LEGACY_COMPONENT_REPO,
+            is_h3_native,
+        )
 
         h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
-        claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
+        # Both ids: an install may hold the components under either the mirror or the repack it
+        # was mirrored from, and whichever one this load reads must be protected.
+        claimed_assets = (
+            (H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO) if h3_native else ()
+        )
 
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -1601,9 +1610,9 @@ class VideoBackend:
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
             H3_AUDIO_VAE,
-            H3_COMPONENT_REPO,
             H3_GGUF_REPO,
             H3_VIDEO_VAE,
+            h3_component_source,
             h3_download_error,
             h3_text_encoder_filename,
         )
@@ -1611,6 +1620,11 @@ class VideoBackend:
 
         filename = gguf_filename or ""
         qwen_filename = h3_text_encoder_filename(filename)
+        # Resolved once, here, because the claim below and the download further down must name the
+        # SAME repo: an install whose cache predates the move to the unsloth mirror reads the
+        # components from the old id, and a claim over the other one would leave the repo it
+        # actually reads deletable mid-load.
+        component_repo = h3_component_source()
 
         # Claimed before anything slow, the preflight included: it can spend minutes installing the
         # sd-cli prebuilt, and asset_repos is what stops the delete-cached guard admitting a delete
@@ -1622,7 +1636,10 @@ class VideoBackend:
         with self._lock:
             if self._load_token == token and self._loading is not None:
                 self._loading.base_repo = fam.base_repo
-                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
+                self._loading.asset_repos = (
+                    H3_GGUF_REPO,
+                    component_repo,
+                )
 
         # BEFORE the download, not after it. The H3-gated ensure, not the plain one: a build that
         # predates H3 runs fine and so clears the version() gate below, then aborts on the first
@@ -1696,8 +1713,8 @@ class VideoBackend:
         requests = (
             (repo_id, filename),
             (self._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
-            (H3_COMPONENT_REPO, H3_VIDEO_VAE),
-            (H3_COMPONENT_REPO, H3_AUDIO_VAE),
+            (component_repo, H3_VIDEO_VAE),
+            (component_repo, H3_AUDIO_VAE),
         )
         total = 0
         try:
@@ -2835,8 +2852,8 @@ class VideoBackend:
 
         from .video_minimax_h3 import (
             H3_AUDIO_VAE,
-            H3_COMPONENT_REPO,
             H3_VIDEO_VAE,
+            h3_component_source,
             h3_text_encoder_filename,
             validate_h3_transformer_filename,
         )
@@ -2844,11 +2861,14 @@ class VideoBackend:
 
         validate_h3_transformer_filename(gguf_filename)
         qwen_filename = h3_text_encoder_filename(gguf_filename)
+        # Same source the load will use, so the plan cannot promise a download from one repo and
+        # then fetch from the other.
+        component_repo = h3_component_source()
         wanted = (
             (repo_id, gguf_filename),
             (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
-            (H3_COMPONENT_REPO, H3_VIDEO_VAE),
-            (H3_COMPONENT_REPO, H3_AUDIO_VAE),
+            (component_repo, H3_VIDEO_VAE),
+            (component_repo, H3_AUDIO_VAE),
         )
         grouped: dict[str, dict[str, Any]] = {}
         missing_files: dict[str, set[str]] = {}
@@ -3133,9 +3153,13 @@ class VideoBackend:
             if state is None or state.engine != "sd_cpp":
                 return ()
             repo_id = state.repo_id
-        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+        from .video_minimax_h3 import (
+            H3_COMPONENT_REPO,
+            H3_GGUF_REPO,
+            H3_LEGACY_COMPONENT_REPO,
+        )
 
-        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO)
+        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)
 
     # ── the load itself ──────────────────────────────────────────────────────
 
