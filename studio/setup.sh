@@ -2341,6 +2341,21 @@ _setup_gpucheck_masked=false
 if [ "$_setup_amd_detected" = true ] && _setup_amd_mask_hides_all; then
     _setup_gpucheck_masked=true
 fi
+# The NVIDIA side of the same rule. CUDA discards everything to the right of an invalid index
+# exactly as clr does, so a LEADING negative hides every device: "If the invalid index is first in
+# the list (e.g. -1,0,1), no devices are visible" (CUDA Programming Guide, environment variables).
+# _setup_cvd_hides_nvidia already caught "" and exactly "-1" long before this block existed, and
+# its looseness beyond those two was harmless while nothing warned. It is not harmless now: "-1,0"
+# and "-2" leave torch with no device and would be reported as a fault the user deliberately
+# caused. Only a leading "-", matching the AMD arm: "0,-1" keeps device 0, so a blind torch there
+# is a real fault and must still be reported.
+if [ "$_setup_gpucheck_masked" = false ] && [ "$_setup_nvidia_usable" = true ] \
+    && [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ]; then
+    _setup_nv_mask="${CUDA_VISIBLE_DEVICES//[[:space:]]/}"
+    case "$_setup_nv_mask" in
+        "" | -*) _setup_gpucheck_masked=true ;;
+    esac
+fi
 # A GGUF-only install has no torch to reconcile and should not pay for an interpreter launch every
 # update. The POSIX half of setup.ps1's $NoTorchMode, over the two records install_manifest writes.
 _setup_gpucheck_no_torch=false

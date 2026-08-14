@@ -579,6 +579,39 @@ def test_a_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path, env):
     assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        # _setup_cvd_hides_nvidia already refuses these two before the block is reached; kept so
+        # the property is pinned here even if that helper is ever narrowed.
+        {"CUDA_VISIBLE_DEVICES": ""},
+        {"CUDA_VISIBLE_DEVICES": "-1"},
+        # These are the ones it lets through. CUDA discards everything to the right of an invalid
+        # index, so a leading negative leaves no visible device: "If the invalid index is first in
+        # the list (e.g. -1,0,1), no devices are visible" (CUDA Programming Guide, environment
+        # variables). Reporting them would blame the install for the user's own mask.
+        {"CUDA_VISIBLE_DEVICES": "-1,0"},
+        {"CUDA_VISIBLE_DEVICES": "-2"},
+        {"CUDA_VISIBLE_DEVICES": " -1,0 "},
+    ],
+)
+def test_a_hidden_nvidia_gpu_is_not_a_broken_one(block, tmp_path, env):
+    """Same rule as the AMD arm, on the NVIDIA side."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = False, nvidia = True, env = env)
+    assert "gpu check" not in result["stdout"]
+
+
+def test_an_nvidia_mask_that_selects_a_gpu_is_still_reconciled(block, tmp_path):
+    """The negative is not leading, so device 0 survives it. A torch that cannot see device 0
+    there is a real fault, and muting it would lose the report this block exists for."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block, venv, tmp_path, amd = False, nvidia = True, env = {"CUDA_VISIBLE_DEVICES": "0,-1"}
+    )
+    assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
+
+
 def test_a_bare_cuda_mask_hides_the_amd_card_too(block, tmp_path):
     """ROCm layers HIP/ROCR on CUDA_VISIBLE_DEVICES and falls back to it when neither is set."""
     venv = _make_venv(tmp_path, stdout = _answer("0"))
