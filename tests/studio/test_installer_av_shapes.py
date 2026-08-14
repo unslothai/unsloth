@@ -109,8 +109,13 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
     # the backend's command screen in studio/backend/core/inference/tools.py treats
     # them as equivalent, so this guard must too. Only powershell/pwsh invocation
     # lines are examined: -e is everyday shell vocabulary everywhere else, and a
-    # non-prefix like -Encoding stays legal.
-    for number, line in enumerate(text.splitlines(), start = 1):
+    # non-prefix like -Encoding stays legal. Explicit continuations (a trailing
+    # backtick or backslash) are joined first so a split invocation is still one
+    # logical line; a guard over first-party scripts does not chase deeper
+    # obfuscation than that.
+    logical = re.sub(r"`\r?\n", " ", text)
+    logical = re.sub(r"\\\r?\n", " ", logical)
+    for number, line in enumerate(logical.splitlines(), start = 1):
         if "powershell" not in line and "pwsh" not in line:
             continue
         for match in re.finditer(r"(?<![\w-])-(e[a-z]*)\b", line):
