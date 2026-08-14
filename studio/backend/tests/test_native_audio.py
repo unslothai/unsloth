@@ -123,6 +123,7 @@ def test_transformers5_moss_config_compat_is_scoped_and_restored(monkeypatch):
     assert calls[0][1] == {"trust_remote_code": True, "token": "secret"}
     assert PreTrainedConfig.__dict__["__init_subclass__"] is original
     with pytest.raises(TypeError, match = "sampling_rate"):
+
         class RestoredFailure(PreTrainedConfig):
             pass
 
@@ -141,7 +142,11 @@ def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch)
         def __init__(self, token = None):
             assert token == "secret"
 
-        def model_info(self, repo_id, files_metadata = False):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+        ):
             assert repo_id == "MiniMaxAI/MiniMax-Music3"
             assert files_metadata is True
             return SimpleNamespace(sha = "current", siblings = siblings)
@@ -183,7 +188,11 @@ def test_download_plan_stages_missing_codec_when_main_repo_is_cached(monkeypatch
         def __init__(self, token = None):
             assert token is None
 
-        def model_info(self, repo_id, files_metadata = False):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+        ):
             assert files_metadata is True
             return infos[repo_id]
 
@@ -218,7 +227,11 @@ def test_download_plan_uses_full_snapshot_for_generic_hub_tts(monkeypatch):
         def __init__(self, token = None):
             assert token is None
 
-        def model_info(self, repo_id, files_metadata = False):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+        ):
             assert repo_id == "acme/custom-tts"
             assert files_metadata is True
             return SimpleNamespace(sha = "current", siblings = siblings)

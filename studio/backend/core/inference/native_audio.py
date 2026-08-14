@@ -202,9 +202,7 @@ def native_audio_security_targets(
     return targets
 
 
-def _moss_transformers5_config_compat(
-    codec_source: str, token_kwargs: dict[str, Any]
-) -> None:
+def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str, Any]) -> None:
     """Import a MOSS codec config with the pre-Transformers-5 subclass contract.
 
     Transformers 5 turns every ``PreTrainedConfig`` subclass into a dataclass.
@@ -260,10 +258,7 @@ def _native_audio_file_size(sibling: Any) -> int:
 
 
 def _native_audio_file_is_cached(
-    repo_id: str,
-    filename: str,
-    revision: Optional[str],
-    expected_size: int,
+    repo_id: str, filename: str, revision: Optional[str], expected_size: int
 ) -> bool:
     """Require a complete current-revision hit in a cache the loaders reuse."""
     try:
@@ -323,9 +318,7 @@ def _native_audio_repo_files(
     return required
 
 
-def native_audio_download_plan(
-    model_name: str, hf_token: Optional[str] = None
-) -> dict[str, Any]:
+def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) -> dict[str, Any]:
     """Return uncached Hub files for an Audio-page TTS load.
 
     Native models add their companion codec repositories and MiniMax excludes

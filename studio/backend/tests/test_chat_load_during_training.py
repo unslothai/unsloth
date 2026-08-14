@@ -51,7 +51,14 @@ def _devices(*free_specs):
 
 
 class TestCanLoadAutoHF(_GpuCacheResetMixin, unittest.TestCase):
-    def _run(self, *, selection_mode, required, usable, required_override = None):
+    def _run(
+        self,
+        *,
+        selection_mode,
+        required,
+        usable,
+        required_override = None,
+    ):
         meta = {"selection_mode": selection_mode, "required_gb": required, "usable_gb": usable}
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
