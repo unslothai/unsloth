@@ -206,7 +206,15 @@ def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
     harness = tmp_path / "probe_harness.ps1"
     harness.write_text(_PWSH_HARNESS, encoding = "utf-8")
     out = subprocess.run(
-        ["pwsh", "-NoProfile", "-File", str(harness), str(_SETUP_PS1), sys.executable, str(tmp_path)],
+        [
+            "pwsh",
+            "-NoProfile",
+            "-File",
+            str(harness),
+            str(_SETUP_PS1),
+            sys.executable,
+            str(tmp_path),
+        ],
         capture_output = True,
         text = True,
     )
