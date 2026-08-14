@@ -4840,15 +4840,14 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # resolution there: a checkout's nested files have no recorded inventory to
 # compare against, importing is off the table by design, and a development tree
 # is the user's own to edit.
-# only for a RECORD-less install, best effort. Both probes now run under -I;
-# the in-code sys.path scrub is kept as a second layer.
+# only for a RECORD-less install, best effort. Both probes run under -I, which
+# already keeps PYTHONPATH and the working directory off sys.path; no in-code
+# scrub on top of it -- filtering sys.path by PYTHONPATH spelling would strip a
+# path a compat-style editable .pth legitimately re-adds when the user also
+# lists the checkout there.
 $_pkgProbeCode = @'
-import csv, importlib.metadata, importlib.util, json, os, re, site, stat, sys, sysconfig
+import csv, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
 from pathlib import PurePosixPath
-_keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else []))
-_pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p)
-_pp.add(os.getcwd())
-sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]
 _pkg = os.environ.get('STUDIO_VERIFY_PKG') or ''
 _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())

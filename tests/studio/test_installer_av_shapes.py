@@ -105,6 +105,18 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
         "base64 --decode",
     ):
         assert banned not in text, f"{name} contains {banned}"
+    # PowerShell accepts unambiguous prefixes of -EncodedCommand (-e, -enc, ...) and
+    # the backend's command screen in studio/backend/core/inference/tools.py treats
+    # them as equivalent, so this guard must too. Only powershell/pwsh invocation
+    # lines are examined: -e is everyday shell vocabulary everywhere else, and a
+    # non-prefix like -Encoding stays legal.
+    for number, line in enumerate(text.splitlines(), start = 1):
+        if "powershell" not in line and "pwsh" not in line:
+            continue
+        for match in re.finditer(r"(?<![\w-])-(e[a-z]*)\b", line):
+            assert not "encodedcommand".startswith(match.group(1)), (
+                f"{name}:{number} passes an -EncodedCommand prefix to PowerShell: {line.strip()}"
+            )
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
