@@ -1387,7 +1387,6 @@ app.include_router(
     data_recipe_router,
     prefix = "/api/data-recipe",
     tags = ["data-recipe"],
-    dependencies = [Depends(require_datasets_http)],
 )
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 try:
     from data_designer_unstructured_seed.chunking import (
@@ -32,6 +32,7 @@ except ImportError:
     resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
 from loggers import get_logger
+from utils.datasets_availability import require_datasets_http
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
 from utils.upload_limits import (
@@ -307,7 +308,7 @@ def _read_preview_rows_from_multi_files(
     )
 
 
-@router.post("/seed/inspect", response_model = SeedInspectResponse)
+@router.post("/seed/inspect", response_model = SeedInspectResponse, dependencies = [Depends(require_datasets_http)])
 def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     dataset_name = payload.dataset_name.strip()
     if not dataset_name or dataset_name.count("/") < 1:
@@ -617,7 +618,7 @@ async def remove_unstructured_block(block_id: str):
     return {"status": "ok", "deleted": True}
 
 
-@router.post("/seed/inspect-upload", response_model = SeedInspectResponse)
+@router.post("/seed/inspect-upload", response_model = SeedInspectResponse, dependencies = [Depends(require_datasets_http)])
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
     if payload.file_ids is not None:
         if len(payload.file_ids) == 0:

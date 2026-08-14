@@ -2698,7 +2698,6 @@ def _preflight_diffusion_resume(
 @router.post(
     "/diffusion/start",
     response_model = DiffusionTrainingStartResponse,
-    dependencies = [Depends(require_datasets_http)],
 )
 async def start_diffusion_training(
     body: DiffusionTrainingStartRequest,

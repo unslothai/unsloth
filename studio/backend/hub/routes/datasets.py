@@ -88,7 +88,7 @@ async def delete_cached_dataset(
     return await cache_inventory.delete_cached_dataset_response(repo_id, cache_path)
 
 
-@router.get("/download-progress", response_model = DownloadProgressResponse, dependencies = [needs_datasets])
+@router.get("/download-progress", response_model = DownloadProgressResponse)
 async def get_dataset_download_progress(
     repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),

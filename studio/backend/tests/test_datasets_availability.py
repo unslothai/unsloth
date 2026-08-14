@@ -202,10 +202,11 @@ class TestRoutesAreGated:
         assert "require_datasets_http" in source
         assert "needs_datasets = Depends(require_datasets_http)" in source
 
-    @pytest.mark.parametrize("route", ['"/start"', '"/diffusion/start"'])
+    @pytest.mark.parametrize("route", ['"/start"'])
     def test_training_start_routes_are_gated(self, route):
-        """Only the start endpoints: /status, /progress and /metrics must stay
-        reachable so a UI already polling them keeps working."""
+        """The LLM start endpoint, which loads a dataset. /diffusion/start trains from
+        a data_dir and is not gated; /status, /progress and /metrics stay reachable so
+        a UI already polling them keeps working."""
         source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
         index = source.index(route)
         decorator = source[index : index + 400]
@@ -359,9 +360,34 @@ class TestCompatibilityRoutersAreGated:
         index = source.index(f"app.include_router(\n    {name},")
         return source[index : source.index("\n)", index)]
 
-    @pytest.mark.parametrize("router", ["datasets_router", "data_recipe_router"])
+    @pytest.mark.parametrize("router", ["datasets_router"])
     def test_legacy_router_carries_the_dependency(self, router):
         assert "Depends(require_datasets_http)" in self._mount(router)
+
+    @pytest.mark.parametrize("path", ['"/seed/inspect"', '"/seed/inspect-upload"', '"/jobs"'])
+    def test_data_recipe_gates_the_routes_that_load_data(self, path):
+        """Per route since the blanket mount went: these three reach load_dataset or
+        pandas, while the seed-file deletes only unlink under the upload root."""
+        for module in ("seed", "jobs"):
+            source = (_BACKEND / "routes" / "data_recipe" / f"{module}.py").read_text(
+                encoding = "utf-8")
+            if path not in source:
+                continue
+            index = source.index(path)
+            assert "require_datasets_http" in source[index : index + 400], path
+            return
+        raise AssertionError(f"{path} not found in the data recipe routes")
+
+    @pytest.mark.parametrize("path", ['"/seed/unstructured-file/{block_id}/{file_id}"',
+                                      '"/seed/unstructured-block/{block_id}"'])
+    def test_data_recipe_cleanup_stays_open(self, path):
+        source = (_BACKEND / "routes" / "data_recipe" / "seed.py").read_text(encoding = "utf-8")
+        index = source.index(path)
+        # Decorator only: the handler may be sync or async, so end at whichever
+        # definition keyword comes first rather than assuming one of them.
+        ends = [source.find(marker, index) for marker in ("\ndef ", "\nasync def ")]
+        end = min(position for position in ends if position != -1)
+        assert "require_datasets_http" not in source[index:end]
 
     def test_import_example_reaches_the_gate(self):
         """_materialize_hf_dataset() runs `from datasets import load_dataset`, so an
@@ -533,3 +559,37 @@ class TestVerificationAsksTheTargetVenv:
         assert module._is_windows_arm64_python({}) is False
         assert "platform_tag" in (_BACKEND.parent / "install_manifest.py").read_text(
             encoding = "utf-8")
+
+
+class TestGatesLeaveWorkingFeaturesAlone:
+    """Each of these paths runs without the datasets library, so gating it removed a
+    feature from installs that merely lost the package, for nothing."""
+
+    def test_diffusion_training_is_not_gated(self):
+        """Image training reads a data_dir; no diffusion module imports datasets."""
+        source = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
+        index = source.index('"/diffusion/start"')
+        assert "require_datasets_http" not in source[index : index + 300]
+
+    def test_download_progress_is_not_gated(self):
+        """Snapshot accounting over the cache dir, so a tier install can still watch
+        the downloads it is allowed to start and cancel."""
+        source = (_BACKEND / "hub" / "routes" / "datasets.py").read_text(encoding = "utf-8")
+        index = source.index('"/download-progress"')
+        assert "needs_datasets" not in source[index : source.index("\n", index)]
+
+    def test_the_data_recipe_router_is_not_gated_wholesale(self):
+        """Its cleanup endpoints only unlink files under the upload root; a blanket
+        gate stopped users reclaiming that space."""
+        source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+        index = source.index("data_recipe_router,")
+        assert "require_datasets_http" not in source[index : index + 200]
+
+    def test_setup_forces_a_pass_when_the_tier_changes(self):
+        """verify_install() judges a venv against the tier it already has, so the fast
+        path skipped the pass that would carry out a requested transition."""
+        source = (_BACKEND.parents[1] / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+        index = source.index("requested install tier differs")
+        block = source[index - 1600 : index + 200]
+        assert "$_noDatasetsRequested" in block
+        assert "recorded_no_datasets" in block

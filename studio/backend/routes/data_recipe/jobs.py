@@ -34,6 +34,7 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.datasets_availability import require_datasets_http
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
 logger = get_logger(__name__)
@@ -391,7 +392,15 @@ def _normalize_run_name(value: Any) -> str | None:
     return trimmed[:120]
 
 
-@router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
+@router.post(
+    "/jobs",
+    response_class = JSONResponse,
+    response_model = JobCreateResponse,
+    # A generation run reaches pandas through the local-callable validators, and
+    # pandas is one of the distributions this tier drops. Status, cancel and events
+    # stay open so a job started earlier can still be watched and stopped.
+    dependencies = [Depends(require_datasets_http)],
+)
 def create_job(
     payload: RecipePayload,
     request: Request,

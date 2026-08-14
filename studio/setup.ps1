@@ -4598,6 +4598,32 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
+        # An explicit UNSLOTH_NO_DATASETS that disagrees with what this venv recorded is
+        # a transition request, and verify_install() judges the venv against the tier it
+        # already has -- so it says "ok" and the fast path skips the very pass that would
+        # carry the change out. Only when the variable was actually set: with nothing
+        # requested there is nothing to reconcile.
+        if ($_noDatasetsRequested) {
+            $_recordedTier = $null
+            try {
+                $_tierProbe = (& python -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(2)
+recorded = install_manifest.recorded_no_datasets()
+sys.exit(2 if recorded is None else (0 if recorded else 1))
+" "$PSScriptRoot" 2>$null)
+                if ($LASTEXITCODE -eq 0) { $_recordedTier = $true }
+                elseif ($LASTEXITCODE -eq 1) { $_recordedTier = $false }
+            } catch {}
+            if ($null -ne $_recordedTier -and $_recordedTier -ne $NoDatasetsMode) {
+                substep "requested install tier differs from the recorded one -- forcing dependency pass..." "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
