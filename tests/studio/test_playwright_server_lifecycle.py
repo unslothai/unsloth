@@ -158,6 +158,7 @@ def test_every_harness_picks_a_different_default_port() -> None:
 def test_an_empty_smoke_base_url_means_unset(harness, monkeypatch) -> None:
     """Exported-but-empty is common in shell wrappers. `in os.environ` would call it external
     and then drive "" as the base URL."""
+    pytest.importorskip("playwright")  # importing a harness pulls in playwright.sync_api
     import importlib
 
     monkeypatch.setenv("SMOKE_BASE_URL", "")
@@ -173,6 +174,7 @@ def test_an_empty_smoke_base_url_means_unset(harness, monkeypatch) -> None:
 def test_an_external_smoke_base_url_is_still_honoured(harness, monkeypatch) -> None:
     """The documented pre-existing invocation. A harness that started its own server anyway
     would fail on the busy-port check."""
+    pytest.importorskip("playwright")
     import importlib
 
     monkeypatch.setenv("SMOKE_BASE_URL", "http://127.0.0.1:9999")
