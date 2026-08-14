@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import {
   Select,
   SelectContent,
@@ -31,6 +31,9 @@ export function SystemPillTab(): ReactElement {
   const [settings, setSettings] = useState<PillSettings | null>(null);
   const [hotkey, setHotkey] = useState("");
   const [models, setModels] = useState<PillModelOption[]>([]);
+  // The model scan gates this whole load, so the settings GET it carries can
+  // land long after a toggle has already been saved. Let the edit win.
+  const editedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,7 +41,7 @@ export function SystemPillTab(): ReactElement {
       .then(([status, loaded, loadedModels]) => {
         if (cancelled) return;
         setHotkey(status.hotkey);
-        setSettings(loaded);
+        if (!editedRef.current) setSettings(loaded);
         setModels(loadedModels);
       })
       .catch(() => {
@@ -50,6 +53,7 @@ export function SystemPillTab(): ReactElement {
   }, []);
 
   const applySettings = async (update: Partial<PillSettings>) => {
+    editedRef.current = true;
     try {
       const next = await updatePillSettings(update);
       setSettings(next);
