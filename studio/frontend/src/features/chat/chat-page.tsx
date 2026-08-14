@@ -77,6 +77,7 @@ import {
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
+import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -2108,6 +2109,12 @@ export function ChatPage({
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
   );
+  const contextWindowKnown = hasKnownContextWindow({
+    ggufContextLength,
+    modelLoading,
+    isExternalModel,
+    residentCheckpoint,
+  });
   const {
     checkpoint: runtimeCheckpoint,
     isGguf: runtimeModelIsGguf,
@@ -3495,15 +3502,15 @@ export function ChatPage({
             ) : null}
           </div>
           <div className="pointer-events-auto ml-auto flex items-center gap-1">
-            {view.mode === "single" && contextUsage ? (
+            {view.mode === "single" && (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
-                used={contextUsage.totalTokens}
+                used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={ggufContextLength}
-                cached={contextUsage.cachedTokens}
-                cacheWrites={contextUsage.cacheWriteTokens}
-                promptTokens={contextUsage.promptTokens}
-                completionTokens={contextUsage.completionTokens}
+                cached={contextUsage?.cachedTokens}
+                cacheWrites={contextUsage?.cacheWriteTokens}
+                promptTokens={contextUsage?.promptTokens}
+                completionTokens={contextUsage?.completionTokens}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
