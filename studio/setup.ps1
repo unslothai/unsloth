@@ -3499,6 +3499,32 @@ function Add-PythonDirToProcessPath {
     } catch { }
 }
 
+# After winget installs an x64 Python on an ARM64 host, `python` on PATH can still be
+# the pre-existing native build: winget does not reorder PATH. Ask the py launchers and
+# winget's own install root for an x64 3.11-3.13 instead of failing on PATH order alone.
+function Find-X64SetupPython {
+    foreach ($launcher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
+        if ($launcher.Source -match $CondaSkipPattern) { continue }
+        foreach ($minor in @("3.13", "3.12", "3.11")) {
+            try {
+                $exe = (& $launcher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+            } catch { $exe = $null }
+            if ($exe -and (Test-Path -LiteralPath $exe) -and (Test-CompatibleSetupPythonArch $exe)) {
+                return $exe
+            }
+        }
+    }
+    foreach ($root in @($env:LOCALAPPDATA, $env:ProgramFiles)) {
+        if (-not $root) { continue }
+        foreach ($minor in @("313", "312", "311")) {
+            $exe = Join-Path $root "Programs\Python\Python$minor\python.exe"
+            if (-not (Test-Path -LiteralPath $exe)) { $exe = Join-Path $root "Python$minor\python.exe" }
+            if ((Test-Path -LiteralPath $exe) -and (Test-CompatibleSetupPythonArch $exe)) { return $exe }
+        }
+    }
+    return $null
+}
+
 # Reuse the install.ps1 / venv interpreter before any system probe.
 $ValidatedSetupPython = $null
 if ($ReusedSetupPython) {
@@ -3624,6 +3650,16 @@ if ($PythonOk) {
     # interpreter answers here: without this the run continues on the build that was
     # just rejected and dies later, deep in the dependency pass.
     if (-not (Test-CompatibleSetupPythonArch $_afterWinget.Source)) {
+        # PATH order, not a failed install: winget's x64 build registers with the py
+        # launcher but does not displace the native python already ahead of it.
+        $_x64Python = Find-X64SetupPython
+        if ($_x64Python) {
+            Add-PythonDirToProcessPath $_x64Python
+            substep "windows on arm: using x64 Python at $_x64Python"
+        }
+    }
+    $_pythonNow = (Get-Command python -ErrorAction SilentlyContinue)
+    if (-not $_pythonNow -or -not (Test-CompatibleSetupPythonArch $_pythonNow.Source)) {
         Write-StudioLine "[ERROR] Python on PATH is a native ARM64 build, which has no wheels for the stack." -ForegroundColor Red
         Write-StudioLine "        Install x64 Python 3.12 from https://python.org/downloads/windows/ (it runs emulated)." -ForegroundColor Yellow
         Exit-SetupFailure "No x64 Python 3.11-3.13 was found"

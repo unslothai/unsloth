@@ -729,10 +729,13 @@ export function AppSidebar() {
     datasetsMissing || (chatOnlyMeasured && chatOnlyReason === "datasets_unavailable");
   // Same reason the Train hint takes its wording from the backend: this branch is
   // reachable off ARM64 Windows, and telling a Linux user to install x64 Python is
-  // advice for a machine they are not sitting at.
+  // advice for a machine they are not sitting at. datasetsDetail first, because it is
+  // the one that is set on a host that merely lost the library: chatOnlyDetail is null
+  // there, and the fallback below is the ARM64 remedy.
+  const recipesDetail = datasetsDetail ?? chatOnlyDetail;
   const recipesDisabledHint: string | undefined = datasetsUnavailable
-    ? chatOnlyDetail
-      ? `Data Recipes needs the datasets library. ${chatOnlyDetail}`
+    ? recipesDetail
+      ? `Data Recipes needs the datasets library. ${recipesDetail}`
       : "Data Recipes needs the datasets and pandas libraries, which have no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable them."
     : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
@@ -750,7 +753,11 @@ export function AppSidebar() {
     // once, this row would stay disabled until a reload anyway.
     const recoverable =
       chatOnlyReason === "mlx_unavailable" || chatOnlyReason === "datasets_unavailable";
-    const selfHealSettled = !chatOnly || (!recoverable && !detectionDeferred);
+    // datasetsMissing is its own unsettled state: off ARM64 the host is not chat-only
+    // at all, so `!chatOnly` would settle it here and the rows would stay disabled
+    // until a reload even after the advised `pip install datasets` took effect.
+    const selfHealSettled =
+      !datasetsMissing && (!chatOnly || (!recoverable && !detectionDeferred));
     // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
     // wait at most once per page load, so a host that detects slower than that keeps the
     // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
@@ -779,7 +786,7 @@ export function AppSidebar() {
         });
     }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
     return () => window.clearInterval(id);
-  }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
+  }, [capabilitiesUnknown, chatOnly, chatOnlyReason, datasetsMissing, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 

@@ -536,7 +536,11 @@ def job_analysis(job_id: str):
     return analysis
 
 
-@router.get("/jobs/{job_id}/dataset")
+# Gated unlike the other job reads: paging the result goes through duckdb's
+# .fetchdf() and read_parquet_dataset, both pandas. The duckdb except arm there
+# does not catch ModuleNotFoundError, so without this it is a 422 naming pandas
+# rather than the tier's 503.
+@router.get("/jobs/{job_id}/dataset", dependencies = [Depends(require_datasets_http)])
 def job_dataset(
     job_id: str,
     limit: int = Query(default = 20, ge = 1, le = 500),

@@ -351,7 +351,8 @@ class TestCompatibilityRoutersAreGated:
     newest one. ``/api/datasets`` is the retained compatibility alias an older
     client still calls and it reaches the same formatting service; Data Recipes
     reads seeds through pandas and ``datasets.load_dataset``. Both were mounted
-    ungated, so both answered 500 where the tier promises 503."""
+    ungated, so both answered 500 where the tier promises 503 -- but per route,
+    because each mount also carries handlers that never touch the library."""
 
     @staticmethod
     def _mount(name: str) -> str:
@@ -361,11 +362,26 @@ class TestCompatibilityRoutersAreGated:
         index = source.index(f"app.include_router(\n    {name},")
         return source[index : source.index("\n)", index)]
 
-    @pytest.mark.parametrize("router", ["datasets_router"])
-    def test_legacy_router_carries_the_dependency(self, router):
-        assert "Depends(require_datasets_http)" in self._mount(router)
+    @pytest.mark.parametrize("router", ["datasets_router", "data_recipe_router"])
+    def test_neither_mount_is_gated_wholesale(self, router):
+        assert "Depends(require_datasets_http)" not in self._mount(router)
 
-    @pytest.mark.parametrize("path", ['"/seed/inspect"', '"/seed/inspect-upload"', '"/jobs"'])
+    def test_the_legacy_alias_gates_check_format(self):
+        """The one handler behind it that reaches `from datasets import`, matching
+        the hub router it aliases."""
+        source = (_BACKEND / "routes" / "datasets.py").read_text(encoding = "utf-8")
+        assert "require_datasets_http" in TestOnlyDatasetRoutesAreGated._decorator(
+            source, "/check-format")
+
+    @pytest.mark.parametrize("path", ['"/upload"', '"/local"', '"/download-progress"',
+                                      '"/ai-assist-mapping"'])
+    def test_the_legacy_alias_leaves_the_rest_open(self, path):
+        source = (_BACKEND / "routes" / "datasets.py").read_text(encoding = "utf-8")
+        decorator = TestOnlyDatasetRoutesAreGated._decorator(source, path.strip('"'))
+        assert "require_datasets_http" not in decorator, path
+
+    @pytest.mark.parametrize("path", ['"/seed/inspect"', '"/seed/inspect-upload"', '"/jobs"',
+                                      '"/jobs/{job_id}/dataset"'])
     def test_data_recipe_gates_the_routes_that_load_data(self, path):
         """Per route since the blanket mount went: these three reach load_dataset or
         pandas, while the seed-file deletes only unlink under the upload root."""
@@ -519,10 +535,7 @@ class TestOnlyDatasetRoutesAreGated:
         end = re.compile(r"\n(?:async )?def ").search(source, index)
         return source[index : end.start() if end else len(source)]
 
-    @pytest.mark.parametrize(
-        "path",
-        ["/upload", "/local", "/local-options", "/check-format", "/ai-assist-mapping"],
-    )
+    @pytest.mark.parametrize("path", ["/check-format"])
     def test_dataset_paths_keep_the_gate(self, path):
         assert "needs_datasets" in self._decorator(self._source(), path)
 
@@ -531,6 +544,13 @@ class TestOnlyDatasetRoutesAreGated:
         [
             "/cached",
             "/download",
+            # Uploads write a file, /local walks the filesystem, /local-options
+            # reimplements split inference without the library on purpose, and
+            # ai-assist-mapping reads samples the client already sent.
+            "/upload",
+            "/local",
+            "/local-options",
+            "/ai-assist-mapping",
             "/download/cancel",
             "/download-status",
             "/active-downloads",
@@ -610,6 +630,13 @@ class TestGatesLeaveWorkingFeaturesAlone:
         index = source.index('"/download-progress"')
         assert "needs_datasets" not in source[index : source.index("\n", index)]
 
+    def test_paging_a_finished_recipe_is_gated_not_500(self):
+        """duckdb .fetchdf() is pandas, and the except arm around it catches only
+        duckdb errors, so an ungated read surfaced a 422 naming pandas."""
+        source = (_BACKEND / "routes" / "data_recipe" / "jobs.py").read_text(encoding = "utf-8")
+        index = source.index('"/jobs/{job_id}/dataset"')
+        assert "require_datasets_http" in source[index : source.index("\ndef ", index)]
+
     def test_the_data_recipe_router_is_not_gated_wholesale(self):
         """Its cleanup endpoints only unlink files under the upload root; a blanket
         gate stopped users reclaiming that space."""
@@ -625,6 +652,56 @@ class TestGatesLeaveWorkingFeaturesAlone:
         block = source[index - 1600 : index + 200]
         assert "$_noDatasetsRequested" in block
         assert "recorded_no_datasets" in block
+
+
+class TestTheCapabilityIsPublishedAndActedOn:
+    """The tier is only useful if the client learns about it in every reply, can act
+    on it before a page renders, and can see it clear again without a reload."""
+
+    def test_health_publishes_it_outside_the_hardware_branch(self):
+        """It is answered from the interpreter, so a deferred or provisional hardware
+        reply still carries it -- the client treats those as settled and would keep
+        its default (available) for the session."""
+        source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+        published = source.index('authed["datasets_available"] = datasets_available()')
+        branch = source.index("    if snapshot is not None:", source.index("authed = {"))
+        assert published < branch
+
+    def test_the_route_guard_redirects_the_two_gated_pages(self):
+        """Disabling a sidebar row is not a guard: a bookmark or a reload still lands
+        on a page whose every call answers 503."""
+        source = (_BACKEND.parent / "frontend" / "src" / "app" / "routes" / "__root.tsx").read_text(
+            encoding = "utf-8")
+        assert '["/studio", "/data-recipes"]' in source
+        index = source.index("needsDatasets(location.pathname)")
+        assert "!unmeasured && !datasetsAvailable" in source[index - 120 : index]
+
+    def test_the_recovery_poll_treats_missing_datasets_as_unsettled(self):
+        """Off ARM64 the host is not chat-only, so `!chatOnly` alone settled it and the
+        rows stayed disabled until a reload after the 503's own advice was followed."""
+        source = (_BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx").read_text(
+            encoding = "utf-8")
+        index = source.index("const selfHealSettled =")
+        assert "!datasetsMissing &&" in source[index : index + 200]
+        # And in the dependency array, or the effect keeps a stale reading of it.
+        deps = source.index("}, [", index)
+        assert "datasetsMissing," in source[deps : source.index("]", deps)]
+
+    def test_the_recipes_hint_prefers_the_dataset_detail(self):
+        """chatOnlyDetail is null on a host that merely lost the library, and the
+        fallback text is the ARM64 remedy -- advice for a machine they are not at."""
+        source = (_BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx").read_text(
+            encoding = "utf-8")
+        assert "const recipesDetail = datasetsDetail ?? chatOnlyDetail;" in source
+
+    def test_winget_rechecks_for_an_x64_python_by_path(self):
+        """winget does not reorder PATH, so its x64 build can be installed while
+        `python` still resolves the native one that sent us here."""
+        source = (_BACKEND.parents[1] / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+        assert "function Find-X64SetupPython" in source
+        index = source.index("$_x64Python = Find-X64SetupPython")
+        assert "Add-PythonDirToProcessPath $_x64Python" in source[index : index + 300]
+        assert source.index("function Find-X64SetupPython") < index
 
 
 class TestTheTierRemovesTrainingNotTheDevice:

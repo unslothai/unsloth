@@ -28,8 +28,13 @@ from models.datasets import (
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
+from utils.datasets_availability import require_datasets_http
 
 router = APIRouter()
+
+# Gated per route, mirroring hub/routes/datasets.py: this alias reaches the same
+# services, so the same one endpoint needs the library and download-progress
+# (huggingface_hub only) stays open in the inference-only tier.
 
 
 @router.post("/upload", response_model = UploadDatasetResponse, deprecated = True)
@@ -69,7 +74,12 @@ async def get_dataset_download_progress(
     )
 
 
-@router.post("/check-format", response_model = CheckFormatResponse, deprecated = True)
+@router.post(
+    "/check-format",
+    response_model = CheckFormatResponse,
+    deprecated = True,
+    dependencies = [Depends(require_datasets_http)],
+)
 def check_format(
     request: CheckFormatRequest,
     hf_token: Optional[str] = Depends(get_hf_token),

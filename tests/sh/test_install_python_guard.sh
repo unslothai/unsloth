@@ -274,11 +274,14 @@ _GATE=$(mktemp)
 {
     # $2 is the --shortcuts-only flag: the gate only judges a run that will
     # actually select an interpreter.
-    printf '_USER_PYTHON="$1"\n_SHORTCUTS_ONLY="${2:-false}"\n'
+    # $3 is VENV_DIR: the gate is deferred until that is known, and skipped when
+    # the venv it names already exists.
+    printf '_USER_PYTHON="$1"\n_SHORTCUTS_ONLY="${2:-false}"\nVENV_DIR="${3:-/nonexistent}"\n'
     # The verdicts moved into _check_python_request so a path-style request reaches
-    # them too, so the function comes along with the block that calls it.
+    # them too, so the function comes along with the one that calls it.
     sed -n '/^_check_python_request()/,/^}/p' "$INSTALL_SH"
-    awk '/^if \[ -n "\$_USER_PYTHON" \] && \[ "\$_SHORTCUTS_ONLY" != true \]; then$/{f=1} f{print} f && /^fi$/{exit}' "$INSTALL_SH"
+    sed -n '/^_gate_python_request()/,/^}/p' "$INSTALL_SH"
+    printf '_gate_python_request\n'
 } > "$_GATE"
 grep -q '_req_minor' "$_GATE" || { echo "  FAIL: could not extract the python range gate"; FAIL=$((FAIL + 1)); }
 
@@ -295,6 +298,19 @@ assert_eq "3.9 is rejected before uv is asked for a venv" \
 # successful with the launcher left unwritten.
 assert_eq "--shortcuts-only does not judge the python request" \
     "accepted" "$(if sh "$_GATE" 3.9 true >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
+# An existing venv is never rebuilt, so the request is never read. Judging it would
+# fail a run that used to succeed: a stale UNSLOTH_PYTHON=3.9 on a box already
+# installed on 3.12 was a silent no-op before this gate and has to stay one.
+_VENV_FIXTURE=$(mktemp -d)
+mkdir -p "$_VENV_FIXTURE/bin"
+printf '#!/bin/sh\necho 3.12\n' > "$_VENV_FIXTURE/bin/python"
+chmod +x "$_VENV_FIXTURE/bin/python"
+assert_eq "an existing venv makes the request inert, as before the gate" \
+    "accepted" "$(if sh "$_GATE" 3.9 false "$_VENV_FIXTURE" >/dev/null 2>&1; then echo accepted; else echo rejected; fi)"
+rm -rf "$_VENV_FIXTURE"
+# ...but the deferral must not orphan the function: it has to be called for real.
+assert_eq "install.sh calls the gate at top level" "yes" \
+    "$(grep -qx '_gate_python_request' "$INSTALL_SH" && echo yes || echo no)"
 assert_eq "2.7 is rejected" \
     "rejected" "$(run_python_gate 2.7)"
 # 3.10 is rejected with everything below it: both bundled Data Designer plugins

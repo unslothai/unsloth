@@ -78,10 +78,14 @@ export function StudioPage(): ReactElement {
   const navigate = useNavigate();
   // Once the verdict lands and it really is chat-only, leave: the guard let this load on the
   // guess, so without this a chat-only host would sit on a Train page it cannot use.
+  // Same for a host that has the hardware but not the datasets library: every call this
+  // page makes answers 503 there, and the root guard could not act while the verdict was
+  // still out.
+  const datasetsAvailable = usePlatformStore((s) => s.datasetsAvailable);
   useEffect(() => {
-    if (capabilitiesUnknown || !chatOnly) return;
+    if (capabilitiesUnknown || (!chatOnly && datasetsAvailable)) return;
     void navigate({ to: "/chat", replace: true });
-  }, [capabilitiesUnknown, chatOnly, navigate]);
+  }, [capabilitiesUnknown, chatOnly, datasetsAvailable, navigate]);
   const hfToken = useHfTokenStore((s) => s.token);
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
   const ensureModelDefaultsLoaded = useTrainingConfigStore(

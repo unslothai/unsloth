@@ -187,7 +187,6 @@ from utils.datasets_availability import (
     _is_arm64_windows,
     datasets_available,
     is_inference_only_tier,
-    require_datasets_http,
     unavailable_detail as datasets_unavailable_detail,
 )
 
@@ -1374,16 +1373,17 @@ app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
-# Both gated for the same reason as /api/hub/datasets. /api/datasets is the retained
-# compatibility alias an older client still calls, and it reaches the same formatting
-# service and its lazy `from datasets import Dataset, load_dataset`; Data Recipes reads
-# seeds through pandas and `datasets.load_dataset`, and this tier ships neither. Without
-# the dependency each answers 500 plus a traceback where the tier promises a stated 503.
+# Both routers gate per route rather than here, for the same reason /api/hub/datasets
+# does: only the handlers that reach a lazy `from datasets import` or pandas need the
+# library, and shutting the whole prefix would take down the download and job-status
+# routes with them. /api/datasets is the retained compatibility alias an older client
+# still calls; Data Recipes reads seeds through pandas and `datasets.load_dataset`, and
+# this tier ships neither, so without the gate those answer 500 plus a traceback where
+# the tier promises a stated 503.
 app.include_router(
     datasets_router,
     prefix = "/api/datasets",
     tags = ["datasets"],
-    dependencies = [Depends(require_datasets_http)],
 )
 app.include_router(
     data_recipe_router,
@@ -1729,6 +1729,14 @@ async def health_check(request: Request):
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
     }
+    # Training and the data features, separately from chat_only: an x64 host that opted
+    # into the reduced tier keeps its GPU and every inference feature, and only loses
+    # these. Answered from the interpreter, so it is published beside a provisional or
+    # deferred hardware reply too: the client treats those as settled capabilities, and
+    # omitting it there leaves the default (available) in place for the session.
+    authed["datasets_available"] = datasets_available()
+    if not authed["datasets_available"]:
+        authed["datasets_unavailable_detail"] = datasets_unavailable_detail()
     if snapshot is not None:
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
@@ -1740,12 +1748,6 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
-        # Training and the data features, separately from chat_only: an x64 host that
-        # opted into the reduced tier keeps its GPU and every inference feature, and
-        # only loses these. Answered from the interpreter, so it needs no hardware pass.
-        authed["datasets_available"] = datasets_available()
-        if not authed["datasets_available"]:
-            authed["datasets_unavailable_detail"] = datasets_unavailable_detail()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.

@@ -480,7 +480,13 @@ _check_python_request() {
     fi
 }
 
-if [ -n "$_USER_PYTHON" ] && [ "$_SHORTCUTS_ONLY" != true ]; then
+# Deferred to just after VENV_DIR is known; see the call below.
+_gate_python_request() {
+    [ -n "$_USER_PYTHON" ] && [ "$_SHORTCUTS_ONLY" != true ] || return 0
+    # An existing venv is never rebuilt, so the request is not read and judging it
+    # would fail a run that used to succeed: UNSLOTH_PYTHON=3.9 exported years ago
+    # is inert on a box already installed on 3.12, and must stay inert.
+    [ ! -x "$VENV_DIR/bin/python" ] || return 0
     _req_major=""; _req_minor=""
     case "$_USER_PYTHON" in
         */*|*\\*)
@@ -506,7 +512,7 @@ if [ -n "$_USER_PYTHON" ] && [ "$_SHORTCUTS_ONLY" != true ]; then
             esac ;;
     esac
     _check_python_request
-fi
+}
 
 # ── Tauri structured output ──
 tauri_log() {
@@ -682,6 +688,10 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
+
+# Now that VENV_DIR is known: reject an unsupported --python/UNSLOTH_PYTHON, but
+# only when this run would actually use it. Still ahead of every install step.
+_gate_python_request
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
