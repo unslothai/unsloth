@@ -355,7 +355,20 @@ function handleStorageEvent(event: StorageEvent): void {
     event.key === null
       ? DEFAULT_LOCALE_PREFERENCE
       : normalizePreference(event.newValue);
-  void applyPreference(nextPreference);
+  // Adopted on failure, like hydration and for the same reason: this value is
+  // already the stored truth, written by the tab that made the choice, so a
+  // catalog that will not load here must not leave this tab holding the
+  // preference the user replaced. It would disagree with storage until the next
+  // reload, and the next personalization save would push that stale language
+  // back over the choice. Nothing is written back: storage is where this came
+  // from, and a catalog that failed is not recorded as a choice that worked.
+  void applyPreference(
+    nextPreference,
+    false,
+    loadLocaleMessages,
+    undefined,
+    true,
+  );
 }
 
 function handleLanguageChange(): void {

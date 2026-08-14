@@ -33,6 +33,13 @@ function fireWindowEvent(type: string): void {
   }
 }
 
+/** What another tab writing the shared preference delivers to this one. */
+function fireStorageEvent(key: string | null, newValue: string | null): void {
+  for (const listener of windowListeners.get("storage") ?? []) {
+    listener({ key, newValue, storageArea: null } as unknown as Event);
+  }
+}
+
 let documentLanguage = "";
 Object.assign(globalThis, {
   document: {
@@ -385,6 +392,46 @@ test("a synchronous loader throw leaves an in-flight request pending", async () 
   await slow;
 });
 
+test("a cross-tab language change is adopted even when its catalog fails", async () => {
+  await localeStore.setLocale("en", { loadMessages: () => undefined });
+  const unsubscribe = localeStore.subscribeLocale(() => undefined);
+  let failLoad!: (error: Error) => void;
+  // The real in-flight map, so the store's own listener deduplicates onto this
+  // load rather than reaching the network: the handler takes no loader.
+  const load = messagesModule.loadLocaleMessages(
+    "ru",
+    () =>
+      new Promise((_, reject) => {
+        failLoad = reject;
+      }),
+  );
+  load?.catch(() => undefined);
+
+  try {
+    // The other tab picked Russian: it wrote the shared value first, and this
+    // event is only the notification that it did.
+    store.set(localeStore.LOCALE_STORAGE_KEY, "ru");
+    fireStorageEvent(localeStore.LOCALE_STORAGE_KEY, "ru");
+    failLoad(new Error("chunk 404"));
+    await load?.catch(() => undefined);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // English is all this tab can render, but the preference is the one the
+    // user chose. Keeping the replaced one would leave this tab disagreeing
+    // with storage until a reload, and the next personalization save would
+    // upload that stale language over the other tab's choice.
+    assert.equal(localeStore.getLocalePreference(), "ru");
+    assert.equal(localeStore.getLocale(), "en");
+    assert.equal(localeStore.getPendingLocalePreference(), null);
+    assert.equal(localeStore.getLocaleCatalogFailed(), true);
+    // Storage is where this came from, and nothing about it worked here.
+    assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ru");
+  } finally {
+    unsubscribe();
+    messagesModule.forgetLocaleLoad("ru");
+  }
+});
+
 // The real component, with only its presentation imports faked, so these assert
 // against the value the shipped Select is actually given.
 const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
@@ -432,6 +479,26 @@ function canPick(value: string): boolean {
   return shownLanguage() !== value;
 }
 
+/** The first element of this type anywhere under the rendered tree. */
+function findStub(node: unknown, type: string): StubElement | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findStub(child, type);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (node === null || typeof node !== "object") return null;
+  const element = node as StubElement;
+  if (element.type === type) return element;
+  return findStub(element.props?.children, type);
+}
+
+/** The label the trigger shows, which is the placeholder when nothing is named. */
+function shownLabel(): unknown {
+  return findStub(LanguageSelect(), "SelectValue")?.props.placeholder;
+}
+
 test("the language menu shows the language in effect after a catalog failure", async () => {
   await localeStore.setLocale("en", { loadMessages: () => undefined });
 
@@ -445,9 +512,42 @@ test("the language menu shows the language in effect after a catalog failure", a
   assert.equal(localeStore.getLocale(), "en");
   // Naming the adopted-but-failed language here would make it the value the
   // Select already holds, and picking it again would then fire nothing, so a
-  // transient chunk failure would strand the user in English for good.
-  assert.equal(shownLanguage(), "en");
+  // transient chunk failure would strand the user in English for good. Naming
+  // English instead only moves that on to English, which is the one the user
+  // needs to pick to stop retrying German and keep the language they can read.
+  assert.equal(shownLanguage(), "");
   assert.ok(canPick("de"));
+  assert.ok(canPick("en"));
+  // Still the language in effect on the trigger, only as the placeholder.
+  assert.equal(shownLabel(), "English");
+});
+
+test("accepting the fallback after a catalog failure is a real choice", async () => {
+  await localeStore.setLocale("en", { loadMessages: () => undefined });
+  store.delete(localeStore.LOCALE_STORAGE_KEY);
+
+  assert.equal(
+    await localeStore.setLocale("de", {
+      loadMessages: () => Promise.reject(new Error("chunk 404")),
+      adoptOnFailure: true,
+    }),
+    "failed",
+  );
+  assert.equal(localeStore.getLocalePreference(), "de");
+
+  // What the user does when they would rather keep English than keep waiting
+  // for a chunk that will not load: pick English. If the menu were already
+  // holding "en" this would fire nothing, leaving German as the preference
+  // their profile keeps and every session keeps failing to load.
+  assert.ok(canPick("en"));
+  assert.equal(
+    await localeStore.setLocale("en", { loadMessages: () => undefined }),
+    "applied",
+  );
+  assert.equal(localeStore.getLocalePreference(), "en");
+  assert.equal(localeStore.getLocaleCatalogFailed(), false);
+  assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "en");
+  assert.equal(shownLanguage(), "en");
 });
 
 test("the language menu shows the preference once it is the one in effect", async () => {
@@ -508,9 +608,12 @@ test("auto detection stays retryable when its detected catalog fails", async () 
 
     // Naming auto here would make Auto-detect the value the Select already
     // holds, so re-picking it would fire nothing and the failed detection
-    // could never be retried.
-    assert.equal(shownLanguage(), "en");
+    // could never be retried; naming English would do the same to pinning
+    // English, which is the other thing a user does with a failed detection.
+    assert.equal(shownLanguage(), "");
+    assert.equal(shownLabel(), "English");
     assert.ok(canPick("auto"));
+    assert.ok(canPick("en"));
 
     // And the retry that buys, once the chunk is reachable again.
     assert.equal(
@@ -543,8 +646,10 @@ test("a refreshed auto whose new catalog fails is still retryable", async () => 
     assert.equal(result, "failed");
     assert.equal(localeStore.getLocalePreference(), "auto");
     assert.equal(localeStore.getLocale(), "en");
-    assert.equal(shownLanguage(), "en");
+    assert.equal(shownLanguage(), "");
+    assert.equal(shownLabel(), "English");
     assert.ok(canPick("auto"));
+    assert.ok(canPick("en"));
   } finally {
     navigatorState.language = "en-US";
     navigatorState.languages = ["en-US"];
