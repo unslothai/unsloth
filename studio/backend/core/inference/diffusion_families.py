@@ -1031,9 +1031,8 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageInpaintPipeline": "0.35.0",
     "FluxKontextPipeline": "0.35.0",
     "HiDreamImagePipeline": "0.34.0",
-    # WanPipeline arrived with Wan2.1 in 0.33.0; the shipped Wan2.2 family wants the newer
-    # weights that 0.35 supports, but the gate answers class presence, which is what the
-    # attribute probe answered before it.
+    # WanPipeline arrived with Wan2.1 in 0.33.0. The shipped Wan2.2 family wants weights only
+    # 0.35 carries, but this table answers class presence, like the attribute probe before it.
     "WanPipeline": "0.33.0",
     "Lumina2Pipeline": "0.33.0",
     "FluxPipeline": "0.30.0",
