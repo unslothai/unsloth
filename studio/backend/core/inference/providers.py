@@ -11,6 +11,8 @@ with Bearer token auth and SSE streaming.
 import ipaddress
 import os
 import re
+import threading
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -611,6 +613,91 @@ def _metadata_host(hostname: str) -> bool:
     return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
+# The metadata block above only reads the hostname text, so a name the caller
+# controls (metadata-alias.attacker.test IN A 169.254.169.254) dials the very
+# service that block exists to refuse. Names are therefore resolved on the
+# default path too -- but only far enough to answer "is this the metadata
+# service", never to reject private addresses, which stays the opt-in above.
+#
+# Three properties keep that resolution out of the way of the endpoints people
+# actually configure:
+#   * the shipped registry hosts and IP literals skip it entirely, so the common
+#     path (a real provider, or http://127.0.0.1:11434) touches no resolver;
+#   * a name that does not resolve is allowed, because a docker-compose or
+#     service-discovery name (http://my_ollama:11434) may only be resolvable in
+#     the client's network namespace, not in this one;
+#   * the lookup is bounded and its verdict cached, so a slow or unreachable
+#     resolver cannot stall a request that validates the same URL every time.
+_DNS_TIMEOUT_SECONDS = 2.0
+_DNS_CACHE_TTL_SECONDS = 300.0
+_DNS_CACHE_MAX_ENTRIES = 512
+_metadata_dns_cache: dict[str, tuple[float, bool]] = {}
+_metadata_dns_lock = threading.Lock()
+
+# Hostnames of the providers this build ships. They are hard-coded destinations,
+# not caller-controlled names, so learning their addresses buys nothing.
+_REGISTRY_HOSTNAMES = frozenset(
+    host
+    for host in (
+        urlsplit(info["base_url"]).hostname
+        for info in PROVIDER_REGISTRY.values()
+        if info.get("base_url")
+    )
+    if host
+)
+
+
+def _getaddrinfo_bounded(hostname: str, port: int) -> list[Any] | None:
+    """``getaddrinfo`` with a wall-clock bound. ``None`` means "no answer"."""
+    import socket
+
+    result: list[Any] = []
+
+    def _resolve() -> None:
+        try:
+            result.extend(socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM))
+        except (OSError, UnicodeError, ValueError):
+            pass
+
+    # Daemon thread, so a resolver that never answers cannot hold up shutdown;
+    # the validator abandons it after the timeout and treats the name as
+    # unresolvable (allowed), the same as any other lookup failure.
+    thread = threading.Thread(target = _resolve, daemon = True)
+    thread.start()
+    thread.join(_DNS_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        return None
+    return result or None
+
+
+def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
+    """True when ``hostname`` resolves to a cloud metadata address."""
+    hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
+    if not hostname or hostname in _REGISTRY_HOSTNAMES:
+        return False
+    try:
+        # Literals were already classified by _metadata_host; no lookup needed.
+        ipaddress.ip_address(_canonical_host(hostname))
+        return False
+    except ValueError:
+        pass
+
+    now = time.monotonic()
+    with _metadata_dns_lock:
+        cached = _metadata_dns_cache.get(hostname)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+    infos = _getaddrinfo_bounded(hostname, port or (443 if scheme == "https" else 80))
+    verdict = any(_metadata_host(str(info[4][0])) for info in infos or ())
+
+    with _metadata_dns_lock:
+        if len(_metadata_dns_cache) >= _DNS_CACHE_MAX_ENTRIES:
+            _metadata_dns_cache.clear()
+        _metadata_dns_cache[hostname] = (now + _DNS_CACHE_TTL_SECONDS, verdict)
+    return verdict
+
+
 def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
     """Raise when ``hostname`` is, or resolves to, a non-public address."""
     import socket
@@ -642,8 +729,9 @@ def validate_provider_base_url(base_url: str) -> str:
     that can never be a real provider endpoint are refused: a non-http(s) scheme,
     control characters, a missing host, and cloud metadata services. Plain http,
     loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
-    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. No
-    DNS lookup happens unless the private-address opt-in is set.
+    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
+    caller-supplied hostname is resolved far enough to apply the metadata block
+    to DNS aliases of it; rejecting other private addresses stays opt-in.
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -671,7 +759,7 @@ def validate_provider_base_url(base_url: str) -> str:
         raise ValueError("Provider base URL must contain a hostname.")
 
     hostname = hostname.rstrip(".")
-    if _metadata_host(hostname):
+    if _metadata_host(hostname) or _resolves_to_metadata(hostname, port, scheme):
         raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
 
     if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":

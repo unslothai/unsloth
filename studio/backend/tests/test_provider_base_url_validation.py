@@ -61,6 +61,11 @@ _SUPPORTED = [
 def _default_policy(monkeypatch):
     """Default deployment: the private-address opt-in is off."""
     monkeypatch.delenv(BLOCK_PRIVATE_ENV, raising = False)
+    # The metadata lookup caches its verdict per hostname; a stale entry would
+    # carry one test's stubbed resolver into the next.
+    _providers._metadata_dns_cache.clear()
+    yield
+    _providers._metadata_dns_cache.clear()
 
 
 @pytest.mark.parametrize("url", _SUPPORTED)
@@ -78,12 +83,70 @@ def test_trailing_slash_and_whitespace_are_normalized():
     assert validate_provider_base_url("  http://127.0.0.1:8080/v1/  ") == "http://127.0.0.1:8080/v1"
 
 
-def test_no_dns_lookup_on_the_default_path(monkeypatch):
+def test_no_dns_lookup_for_shipped_providers_or_ip_literals(monkeypatch):
+    """The common path stays resolver-free: shipped hosts and IP literals."""
     def _fail(*args, **kwargs):
-        raise AssertionError("validation must not resolve DNS by default")
+        raise AssertionError("validation must not resolve DNS for these")
 
     monkeypatch.setattr(socket, "getaddrinfo", _fail)
     assert validate_provider_base_url("https://api.openai.com/v1") == "https://api.openai.com/v1"
+    assert validate_provider_base_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
+    assert validate_provider_base_url("http://[fd00:ec2::255]/v1") == "http://[fd00:ec2::255]/v1"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://metadata-alias.attacker.test/latest/meta-data",
+        "https://metadata-alias.attacker.test/v1",
+        # Userinfo and a trailing dot do not hide the name that gets resolved.
+        "http://api.openai.com@metadata-alias.attacker.test/v1",
+        "http://metadata-alias.attacker.test./v1",
+    ],
+)
+def test_dns_alias_of_a_metadata_address_is_refused(url, monkeypatch):
+    """A caller-controlled name pointing at the metadata service is metadata."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 80))],
+    )
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url(url)
+
+
+def test_dns_alias_verdict_is_cached(monkeypatch):
+    """Repeat validation of the same host does not re-resolve it."""
+    calls = []
+
+    def _record(host, port, *args, **kwargs):
+        calls.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    for _ in range(3):
+        assert validate_provider_base_url("https://gw.example/v1") == "https://gw.example/v1"
+    assert len(calls) == 1
+
+
+def test_unresolvable_names_stay_allowed(monkeypatch):
+    """docker-compose / service-discovery names resolve in the client's netns."""
+    def _unresolvable(*args, **kwargs):
+        raise socket.gaierror("not resolvable here")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _unresolvable)
+    assert validate_provider_base_url("http://my_ollama:11434/v1") == "http://my_ollama:11434/v1"
+
+
+def test_a_slow_resolver_does_not_stall_validation(monkeypatch):
+    """A resolver that never answers is abandoned, and the URL is allowed."""
+    import time as _time
+
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _time.sleep(30))
+    started = _time.monotonic()
+    assert validate_provider_base_url("http://slow.example/v1") == "http://slow.example/v1"
+    assert _time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize(
