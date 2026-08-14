@@ -21,10 +21,10 @@ import re
 REDACTED = "<redacted>"
 
 # Terminal control sequences, stripped BEFORE anything is matched. A colorized
-# writer puts an escape between the key and its value (structlog's ConsoleRenderer
-# renders "\x1b[36mapi_key\x1b[0m=\x1b[35m<secret>\x1b[0m", and colors default on
-# even off-terminal); the "m" ending "\x1b[36m" is a word character, so every
-# anchored rule below stops matching and the credential goes out untouched.
+# writer puts an escape between the key and its value (ConsoleRenderer emits
+# "\x1b[36mapi_key\x1b[0m=\x1b[35m<secret>\x1b[0m", and colors default on even
+# off-terminal); the "m" ending "\x1b[36m" is a word character, so every anchored
+# rule below stops matching and the credential goes out untouched.
 #
 # Order matters: OSC (\x1b]) comes before the single-character Fe class, which
 # covers 0x5C-0x5F and would otherwise swallow the "]" and leave the payload.
@@ -45,10 +45,10 @@ _SECRET_KEYS = (
     "authorization|x-api-key|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
     "refresh[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|"
     "aws_secret_access_key|aws_session_token|wandb[-_]?token|hub[-_]?token|"
-    # Studio's own S3 field (models/training.py:60) and its camelCase request
-    # alias. Neither is reachable through the bare "secret" alternative: the
-    # trailing \b cannot fire before "_access" or "Access", and an AWS secret
-    # key has no prefix of its own for a shape rule to catch.
+    # Studio's own S3 field (models/training.py:60) and its camelCase alias.
+    # Neither is reachable through the bare "secret" alternative (the trailing \b
+    # cannot fire before "_access" or "Access"), and an AWS secret key has no
+    # prefix of its own for a shape rule to catch.
     "secret[-_]?access[-_]?key|"
     "password|passwd|secret"
 )
@@ -96,11 +96,9 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # key = value / "key": "value" / --api-key value
 #
 # The QUOTED branch wins whenever an opening quote is there, so a quoted
-# credential is consumed to its CLOSING quote instead of stopping at the first
-# space. Stopping at whitespace turned password="correct horse battery staple"
-# into password="<redacted> horse battery staple", which reads as masked while
-# leaking all but the first word. Passphrases with spaces are the realistic
-# shape, and a partially masked one invites pasting the line into a bug report.
+# credential is consumed to its CLOSING quote. Stopping at whitespace turned
+# password="correct horse battery staple" into password="<redacted> horse
+# battery staple", which reads as masked while leaking all but the first word.
 #
 # "[^\"'\\\n]|\\." rather than a lazy ".*?" so an escaped quote does not end the
 # value early; \n is excluded so an unterminated quote cannot run the mask past
@@ -125,10 +123,10 @@ _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
 # A scheme word only introduces a credential when an Authorization header put it
 # there. Bare "digest sha256:..." and "token hf_..." are ordinary log content,
 # and firing on the word alone blanked the digest a user came here to read.
-# The credential stops at a quote or a structural delimiter rather than at the
-# next space: \S+ swallowed the closing quote and every field behind it, so a
-# compact header dict came back as {"Authorization":"Bearer <redacted> with the
-# request id and status the user opened the pane to read gone with it.
+# The credential stops at a quote or a structural delimiter, not at the next
+# space: \S+ swallowed the closing quote and every field behind it, so a compact
+# header dict came back as {"Authorization":"Bearer <redacted> with the request
+# id and status gone with it.
 _CREDENTIAL = r"[^\s\"',}\]]+"
 _AUTH_HEADER_RE = re.compile(
     r"(?i)((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
@@ -139,8 +137,8 @@ _AUTH_HEADER_RE = re.compile(
 _SCHEME_RE = re.compile(r"(?i)\b(Bearer)(\s+)(" + _CREDENTIAL + r")")
 # MULTILINE: this also runs over exception text, where the header is not on the
 # last line. The optional quote matters: headers are usually logged as a dict,
-# and an anchored pair test on a value that opened with one never matched, so
-# the session cookie gating these very endpoints went out in the clear.
+# and the pair test never matched a value that opened with a quote, so the
+# session cookie gating these very endpoints went out in the clear.
 _COOKIE_RE = re.compile(
     r"(?i)\b(?P<key>(?:set-)?cookie)(?P<sep>[\"']?\s*[:=]\s*(?P<q>[\"'])?)(?P<val>\S.*)$",
     re.MULTILINE,
@@ -154,9 +152,9 @@ _NUMERIC_IS_STILL_SECRET = re.compile(r"(?i)pass(word|wd)?$|secret$")
 def _looks_like_credential(value: str) -> bool:
     """Token-shaped rather than an English word.
 
-    Guards the rules keyed on a weak name. "Bearer credentials were not
-    accepted" and "Cookie: disabled" are log content someone opened the viewer
-    to read, and blanking them hides the failure being diagnosed.
+    Guards the rules keyed on a weak name: "Bearer credentials were not
+    accepted" and "Cookie: disabled" are log content, and blanking them hides
+    the failure being diagnosed.
     """
     if len(value) < 8:
         return False
@@ -172,7 +170,6 @@ def _redact_kv(match: re.Match[str]) -> str:
     # Named groups: the quoted/unquoted branch adds a group, so positional
     # numbering is not stable.
     value = match.group("val")
-    # A numeric value is a count or an id, never a credential.
     if value.isdigit() and not _NUMERIC_IS_STILL_SECRET.search(match.group("key")):
         return match.group(0)
     # Quoting puts the scheme inside the value ('authorization': 'Basic abc').
@@ -193,8 +190,8 @@ def _redact_shaped(match: re.Match[str]) -> str:
 
 
 # A cookie header is name=value pairs. _COOKIE_RE takes the rest of the line, so
-# without this "Cookie: not sent because the origin is cross-site" is 20-odd
-# characters and the length shortcut reads it as a token, masking the diagnosis.
+# without this the length shortcut reads "Cookie: not sent because the origin is
+# cross-site" as a token and masks the diagnosis.
 _COOKIE_PAIR_RE = re.compile(r"^[A-Za-z0-9_.\-]+=\S")
 
 
