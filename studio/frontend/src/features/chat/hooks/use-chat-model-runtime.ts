@@ -1304,6 +1304,11 @@ export function useChatModelRuntime() {
             persistGpuMemoryModeOnLoad(loadResponse, loadGpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;
+            // The context this load actually has: the server's for a GGUF, the
+            // sequence length the load was invoked with otherwise.
+            const loadedContextCap = loadResponse.is_gguf
+              ? (loadResponse.context_length ?? undefined)
+              : effectiveMaxSeqLength;
             setParams(
               mergeBackendRecommendedInference({
                 current: currentParams,
@@ -1315,9 +1320,7 @@ export function useChatModelRuntime() {
               // but not a budget larger than the context it just loaded with.
               {
                 fromModelDefaults: true,
-                maxTokensCap: loadResponse.is_gguf
-                  ? (loadResponse.context_length ?? undefined)
-                  : undefined,
+                maxTokensCap: loadedContextCap,
               },
             );
             // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
@@ -1503,10 +1506,10 @@ export function useChatModelRuntime() {
                     };
                 // Same rule as the load response: defaults first, this model's
                 // remembered settings over them.
-                store.setParams(
-                  { ...store.params, ...p },
-                  { fromModelDefaults: true },
-                );
+                store.setParams({ ...store.params, ...p }, {
+                  fromModelDefaults: true,
+                  maxTokensCap: loadedContextCap,
+                });
               }
             }
             await refresh({ signal: abortCtrl.signal });

@@ -2885,7 +2885,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           maxTokensCap:
             candidate.kind === "gguf"
               ? (loadResp.context_length ?? undefined)
-              : undefined,
+              : effectiveMaxSeqLength,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio

@@ -2017,6 +2017,21 @@ function normalizeRememberedEntry(
   return normalized;
 }
 
+/** Keys the user moved while the settings request was in flight. The same fence
+ * that keeps the server's values off them, read the other way round. */
+function pickLocallyEditedParams(
+  params: InferenceParams,
+  versions: SettingsHydrationVersions,
+): PersistedInferenceParams {
+  const edited: PersistedInferenceParams = {};
+  for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
+    if (inferenceParamMutationVersions[key] !== versions.inferenceParams[key]) {
+      setInferenceParam(edited as InferenceParams, key, params[key]);
+    }
+  }
+  return edited;
+}
+
 /** A model that took over from another one while the settings request was in
  * flight. Its defaults lose to its own remembered entry, but they outrank the
  * global set, which belongs to whichever model was used last. Not narrowed to
@@ -2095,6 +2110,15 @@ function getHydratedSettingsState(
       const local = state.paramsByModel[modelId];
       if (local) {
         hydrated[modelId] = local;
+      }
+    }
+    // The edit is fenced out of params above, but the entry arriving for that
+    // model was written before it. Lay it over the entry too, or the next
+    // update that re-applies model defaults replays the stale one over it.
+    if (checkpoint) {
+      const edited = pickLocallyEditedParams(params, versions);
+      if (hasKeys(edited)) {
+        hydrated[checkpoint] = { ...hydrated[checkpoint], ...edited };
       }
     }
     nextState.paramsByModel = hydrated;

@@ -490,7 +490,7 @@ test("every site that re-applies model defaults asks for the replay", () => {
     [
       // The Qwen3 thinking-mode params applied after a load.
       "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      /setParams\(\s*\{ \.\.\.store\.params, \.\.\.p \},\s*\{ fromModelDefaults: true \},/,
+      /setParams\(\{ \.\.\.store\.params, \.\.\.p \}, \{\s*fromModelDefaults: true,/,
     ],
   ];
   for (const [path, pattern] of sites) {
@@ -499,22 +499,113 @@ test("every site that re-applies model defaults asks for the replay", () => {
   }
 });
 
-// A GGUF reloaded with a smaller context must not keep a budget remembered from
-// a larger one: the request would exceed what was actually loaded.
-test("the sites that know the loaded context pass it as the cap", () => {
-  const caps: [string, RegExp][] = [
-    [
-      "../src/features/chat/lib/apply-inference-status-to-store.ts",
-      /maxTokensCap: status\.is_gguf/,
-    ],
-    [
+// The user drags a slider while the settings GET is still out. The fence keeps
+// the server's value off the slider, but the entry that arrives for the model
+// is from before the drag, so the next update that re-applies model defaults
+// replays it and the drag is undone.
+test("an edit made before hydration is kept by the model's entry", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
+  });
+  settingsHttp.settings = {
+    inferenceParams: { temperature: 0.9 },
+    inferenceParamsByModel: {
+      [QWEN]: { temperature: 0.9, systemPrompt: "stale" },
+    },
+  };
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const editing = useChatRuntimeStore.getState();
+  editing.setParams({ ...editing.params, temperature: 0.33 });
+
+  settingsHttp.release?.();
+  await hydrating;
+
+  const hydrated = useChatRuntimeStore.getState();
+  assert.equal(hydrated.params.temperature, 0.33, "the fence held");
+  assert.equal(
+    hydrated.paramsByModel[QWEN]?.temperature,
+    0.33,
+    "and the entry took the edit rather than the value it was written before",
+  );
+  // Keys the user did not touch still come from the server.
+  assert.equal(hydrated.paramsByModel[QWEN]?.systemPrompt, "stale");
+
+  applyStatus(QWEN);
+  assert.equal(
+    useChatRuntimeStore.getState().params.temperature,
+    0.33,
+    "so a poll that re-applies defaults replays the edit, not the old value",
+  );
+});
+
+// A safetensors model reloaded at a smaller sequence length: the load sets the
+// budget to that context, then the memory replays a larger one over it and the
+// next request asks for more than the load can hold.
+test("a remembered budget is capped by a non-GGUF load", () => {
+  const runtime = readFileSync(
+    new URL(
       "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      /maxTokensCap: loadResponse\.is_gguf/,
-    ],
-    ["../src/features/chat/api/chat-adapter.ts", /maxTokensCap:/],
-  ];
-  for (const [path, pattern] of caps) {
-    const source = readFileSync(new URL(path, import.meta.url), "utf8");
-    assert.match(source, pattern, path);
-  }
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // One cap for both sites: the load response and the Qwen3 thinking defaults.
+  assert.match(
+    runtime,
+    /const loadedContextCap = loadResponse\.is_gguf\s*\?\s*\(loadResponse\.context_length \?\? undefined\)\s*:\s*effectiveMaxSeqLength;/,
+  );
+  assert.equal(
+    runtime.match(/maxTokensCap: loadedContextCap/g)?.length,
+    2,
+    "the thinking-defaults replay is capped too",
+  );
+
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /\? \(loadResp\.context_length \?\? undefined\)\s*: effectiveMaxSeqLength,/,
+  );
+
+  const status = readFileSync(
+    new URL(
+      "../src/features/chat/lib/apply-inference-status-to-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Reported for a safetensors load too, so the cap is not narrowed to GGUF.
+  assert.match(status, /maxTokensCap: status\.context_length \?\? undefined,/);
+});
+
+// The clamp itself, through the store: the memory holds a budget from a larger
+// context and the load reports a smaller one.
+test("the cap wins over the remembered budget", () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: { [LLAMA]: { maxTokens: 32768 } },
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
+  });
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, maxSeqLength: 8192, maxTokens: 8192 },
+    { fromModelDefaults: true, maxTokensCap: 8192 },
+  );
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+
+  // Without a cap the older, larger budget is what comes back.
+  const uncapped = useChatRuntimeStore.getState();
+  uncapped.setParams(
+    { ...uncapped.params, maxTokens: 8192 },
+    { fromModelDefaults: true },
+  );
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 32768);
 });
