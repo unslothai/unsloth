@@ -447,20 +447,21 @@ class TestADeadDriverIsNotAFlavourMismatch:
         assert mod.__dict__["_xpu_wheel_supported_on_disk"]() is supported
 
     def test_the_disk_check_and_the_probe_agree_on_the_bounds(self):
-        # Two copies of the range in different languages; a drifted floor installs an
+        # Two copies of the range in different places; a drifted floor installs an
         # environment that raises at import.
         src = STACK.read_text(encoding = "utf-8")
-        assert src.count("(2, 6) <= n < (2, 11)") == 1, "the probe's range moved"
+        assert src.count("(2, 6) <= _n < (2, 11)") == 1, "the probe's range moved"
         assert src.count("(2, 6) <= nums < (2, 11)") == 1, "the disk check's range moved"
 
     def test_a_timeout_on_a_supported_wheel_reinstalls_nothing(self):
         # Asserted on the source because _ensure_xpu_torch sits above the extracted slice: the
-        # early return must come BEFORE probe is set to None, or the repair runs anyway.
+        # early return must come BEFORE the repair reason is set, or the repair runs anyway.
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_xpu_torch() -> None:")
         body = src[start : src.index("def _installed_torch_version_label", start)]
         guard = body.index("_xpu_wheel_supported_on_disk()")
-        assert guard < body.index("probe = None"), "the guard runs after the repair is armed"
+        armed = body.index('_why = "torch could not be probed"')
+        assert guard < armed, "the guard runs after the repair is armed"
         assert "return" in body[guard : guard + 400], "the guard does not return"
 
 
@@ -540,16 +541,28 @@ class TestCpuRepairSeesAnXpuWheel:
         hip = "",
     ):
         src = STACK.read_text(encoding = "utf-8")
-        # The probe body is a concatenation of string literals inside the subprocess call.
         start = src.index("def _ensure_cpu_torch() -> None:")
         seg = src[start : src.index("\n\ndef ", start)]
-        line = next(l for l in seg.splitlines() if l.strip().startswith('"gpu = '))
-        expr = line.strip().removeprefix('"gpu = ').removesuffix('; "')
+        # Read the predicate from the module source, so an edit to it is what this test
+        # sees rather than a copy that can drift.
+        marker = "_is_gpu_build = ("
+        begin = seg.index(marker) + len(marker)
+        depth, end = 1, begin
+        for i in range(begin, len(seg)):
+            if seg[i] == "(":
+                depth += 1
+            elif seg[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        # Re-wrapped in parentheses: the predicate spans several indented lines.
+        expr = "(" + seg[begin:end] + ")"
         import re as _re
 
         return (
             "gpu"
-            if eval(expr, {"re": _re, "hip": hip, "cuda": cuda, "ver": ver.lower()})
+            if eval(expr, {"re": _re, "_hip": hip, "_cuda": cuda, "_ver": ver.lower()})
             else "cpu"
         )
 
@@ -612,12 +625,14 @@ class TestCpuPinSurvivesAWedgedImport:
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_cpu_torch() -> None:")
         body = src[start : src.index("\n\ndef ", start)]
-        exc = body.index("except (OSError, subprocess.TimeoutExpired):")
-        guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", exc)
-        # ...and the repair below must accept the probe-less path, or the fall-through
-        # dereferences None instead of reinstalling.
-        assert "probe = None" in body[guard : guard + 300]
-        assert "if probe is None or probe.returncode != 0:" in body
+        stalled = body.index("if not _ran:")
+        guard = body.index("_is_gpu_torch_label(_installed_torch_label_on_disk())", stalled)
+        # A merely slow CPU-only host returns; a GPU label on disk falls through...
+        assert "return" in body[guard : guard + 200]
+        # ...and the repair below must accept the probe-less path, or the one host that
+        # needs the pin enforced is the one host that never gets it.
+        repair = body.index("if not _ran or not _importable:")
+        assert repair > guard
 
     def test_the_disk_read_launches_no_interpreter(self):
         # An interpreter here would reintroduce the hang the disk read exists to avoid.
