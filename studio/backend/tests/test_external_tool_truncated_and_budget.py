@@ -433,9 +433,7 @@ def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeyp
         ],
         [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
     ]
-    lines = _run(
-        FakeTransport(turns), tools = [WEB, _tool("mcp__srv1__create_issue")], max_calls = 1
-    )
+    lines = _run(FakeTransport(turns), tools = [WEB, _tool("mcp__srv1__create_issue")], max_calls = 1)
 
     assert len(executed) == 1, "the budget must still be enforced"
     mcp_starts = [
