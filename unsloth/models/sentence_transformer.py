@@ -32,7 +32,7 @@ import torch
 from transformers.modeling_outputs import BaseModelOutput
 from collections import OrderedDict
 from transformers.models.distilbert import modeling_distilbert
-from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask_for_sdpa
+from unsloth.models._attn_mask_compat import _prepare_4d_attention_mask_for_sdpa
 import transformers
 from packaging.version import Version
 import re
@@ -45,6 +45,18 @@ import shutil
 
 
 _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
+
+
+def _normalize_save_method(save_method):
+    """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit".
+
+    unsloth_save_model (save.py) normalizes case and spaces before validating,
+    so the same spelling has to mean the same thing here, else a keyword call
+    that worked before starts raising.
+    """
+    if isinstance(save_method, str):
+        return save_method.lower().replace(" ", "_")
+    return save_method
 
 
 def _save_pretrained_torchao(
@@ -151,6 +163,7 @@ def _save_pretrained_gguf(
     max_shard_size = "5GB",
     temporary_location = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage = 0.85,
+    imatrix_file = None,
     **kwargs,
 ):
     """
@@ -186,32 +199,28 @@ def _save_pretrained_gguf(
     if tokenizer is None:
         tokenizer = self.tokenizer
 
-    # 4. Patch environment so Unsloth treats this embedding model correctly
-    @contextlib.contextmanager
-    def patch_unsloth_gguf_save():
-        # Prevent deletion of the directory self.save_pretrained just created
-        original_rmtree = shutil.rmtree
-        try:
-            yield
-        finally:
-            shutil.rmtree = original_rmtree
+    # 4. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
+    # No rmtree guard here: the merge cleanup that deletes save_directory is gated on
+    # push_to_hub, which is forced False below.
+    result = unsloth_save_pretrained_gguf(
+        inner_model,
+        save_directory = transformer_dir,
+        tokenizer = tokenizer,
+        quantization_method = quantization_method,
+        first_conversion = first_conversion,
+        push_to_hub = False,  # Force local first to move files
+        token = token,
+        max_shard_size = max_shard_size,
+        temporary_location = temporary_location,
+        maximum_memory_usage = maximum_memory_usage,
+        # transformer_dir is the ST's own 0_Transformer module (written in step 1, uploaded
+        # in step 7), not a throwaway: reclaiming it would hand back a folder that no longer
+        # loads as a SentenceTransformer, so a short disk fails loudly instead.
+        merge_is_disposable = False,
+        imatrix_file = imatrix_file,
+    )
 
-    # 5. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
-    with patch_unsloth_gguf_save():
-        result = unsloth_save_pretrained_gguf(
-            inner_model,
-            save_directory = transformer_dir,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # Force local first to move files
-            token = token,
-            max_shard_size = max_shard_size,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
-        )
-
-    # 6. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
+    # 5. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
     gguf_files = result.get("gguf_files", [])
 
     new_gguf_locations = []
@@ -241,7 +250,7 @@ def _save_pretrained_gguf(
 
     result["gguf_files"] = new_gguf_locations
 
-    # 7. Add branding
+    # 6. Add branding
     try:
         FastSentenceTransformer._add_unsloth_branding(save_directory)
 
@@ -256,7 +265,7 @@ def _save_pretrained_gguf(
     except:
         pass
 
-    # 8. Handle Push to Hub if requested
+    # 7. Handle Push to Hub if requested
     if push_to_hub:
         if token is None:
             token = get_token()
@@ -295,6 +304,7 @@ def _push_to_hub_gguf(
     create_pr = False,
     revision = None,
     tags = None,
+    imatrix_file = None,
     **kwargs,
 ):
     """
@@ -386,6 +396,7 @@ def _push_to_hub_gguf(
             max_shard_size = max_shard_size,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            imatrix_file = imatrix_file,
         )
 
         gguf_files = result.get("gguf_files", [])
@@ -1680,9 +1691,32 @@ class FastSentenceTransformer(FastModel):
             )
 
             # Add save methods
-            def _save_pretrained_merged(self, save_directory, **save_kwargs):
+            def _save_pretrained_merged(
+                self,
+                save_directory,
+                tokenizer = None,
+                save_method = "merged_16bit",
+                **save_kwargs,
+            ):
+                # `tokenizer` and `save_method` are positional to match
+                # FastLanguageModel.save_pretrained_merged(dir, tokenizer,
+                # save_method = ...), which is how the docs and notebooks call
+                # it. Keyword callers behave exactly as before.
+                save_method = _normalize_save_method(save_method)
+                if save_method not in ("merged_16bit", None):
+                    # Refused before anything is written: this path merges and
+                    # unloads unconditionally, so accepting "lora" would write
+                    # full weights for a request to write adapters.
+                    raise NotImplementedError(
+                        f"Unsloth: save_method = {save_method!r} is not "
+                        f"supported for this SentenceTransformer; only "
+                        f"'merged_16bit' is."
+                    )
                 self.save_pretrained(save_directory)
-                tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
+                if tokenizer is None:
+                    tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
+                else:
+                    save_kwargs.pop("tokenizer", None)
                 if hasattr(self[0], "auto_model"):
                     inner = self[0].auto_model
                     # Handle compiled model
@@ -1857,7 +1891,30 @@ class FastSentenceTransformer(FastModel):
         st_model = SentenceTransformer(modules = modules, device = st_device)
         st_model.no_modules = no_modules
 
-        def _save_pretrained_merged(self, save_directory, **kwargs):
+        def _save_pretrained_merged(
+            self,
+            save_directory,
+            tokenizer = None,
+            save_method = "merged_16bit",
+            **kwargs,
+        ):
+            # Positional to match FastLanguageModel.save_pretrained_merged;
+            # see the note on the other definition above. This path forwards to
+            # that merge, which understands every save_method.
+            save_method = _normalize_save_method(save_method)
+            if self.no_modules and save_method not in ("merged_16bit", None):
+                # The no_modules branch below merges and unloads unconditionally
+                # and drops save_method, so accepting "lora" here would return
+                # full weights for a request to write adapters. Refuse before
+                # writing, as the fast-encoder definition above does.
+                raise NotImplementedError(
+                    f"Unsloth: save_method = {save_method!r} is not supported "
+                    f"for this SentenceTransformer: no modules.json was found, "
+                    f"so Unsloth falls back to merge_and_unload, which can only "
+                    f"produce 'merged_16bit'."
+                )
+            if save_method is not None:
+                kwargs.setdefault("save_method", save_method)
             # check which adapter files exist before save_pretrained
             adapter_files = ["adapter_model.safetensors", "adapter_config.json"]
             existing_before = {
@@ -1875,7 +1932,10 @@ class FastSentenceTransformer(FastModel):
                     except:
                         pass
 
-            tokenizer = kwargs.pop("tokenizer", self.tokenizer)
+            if tokenizer is None:
+                tokenizer = kwargs.pop("tokenizer", self.tokenizer)
+            else:
+                kwargs.pop("tokenizer", None)
             if self.no_modules:
                 # fallback for non-sentence-transformers models
                 print("Unsloth: No modules detected. Using standard merge_and_unload for saving...")
@@ -2329,7 +2389,7 @@ def _patch_st_trainer_load_from_checkpoint():
         if not os.path.isfile(modules_json):
             raise RuntimeError("Unsloth: PEFT checkpoint is missing modules.json.")
         try:
-            with open(modules_json, "r") as f:
+            with open(modules_json, "r", encoding = "utf-8") as f:
                 module_configs = json.load(f)
         except Exception as e:
             raise RuntimeError("Unsloth: Cannot parse checkpoint modules.json.") from e

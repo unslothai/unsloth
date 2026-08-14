@@ -6,7 +6,8 @@ from unsloth.models.mapper import FLOAT_TO_INT_MAPPER, MAP_TO_UNSLOTH_16bit
 
 
 def _no_remote_mapper():
-    return {}, {}, {}
+    # int_to_float, float_to_int, map_to_16bit, fp8_block, fp8_row
+    return {}, {}, {}, {}, {}
 
 
 class TestGetModelName(unittest.TestCase):

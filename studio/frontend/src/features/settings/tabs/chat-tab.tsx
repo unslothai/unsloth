@@ -8,7 +8,8 @@ import {
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
 } from "@/features/chat";
-import { useT } from "@/i18n";
+import { useUserProfileStore } from "@/features/profile";
+import { type TranslationKey, useT } from "@/i18n";
 import {
   Bookmark02Icon,
   Download01Icon,
@@ -19,26 +20,23 @@ import {
   ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Columns2Icon, PlusIcon } from "lucide-react";
+import { Columns2Icon } from "lucide-react";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
-import {
-  SettingsGroupDivider,
-  SettingsSection,
-} from "../components/settings-section";
+import { SettingsSection } from "../components/settings-section";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
 const PLUS_MENU_ICON_CLASS = "size-[18px]";
 const PLUS_MENU_SETTINGS: {
   id: PlusMenuItemId;
-  label: string;
+  labelKey: TranslationKey;
   icon: ReactNode;
 }[] = [
   {
     id: "chatWithFiles",
-    label: "Chat with Files (RAG)",
+    labelKey: "settings.chat.menu.chatWithFiles",
     icon: (
       <HugeiconsIcon
         icon={FileDatabaseIcon}
@@ -49,7 +47,7 @@ const PLUS_MENU_SETTINGS: {
   },
   {
     id: "mcp",
-    label: "MCP",
+    labelKey: "settings.chat.menu.mcp",
     icon: (
       <HugeiconsIcon
         icon={McpServerIcon}
@@ -60,7 +58,7 @@ const PLUS_MENU_SETTINGS: {
   },
   {
     id: "savedPrompts",
-    label: "Saved prompts",
+    labelKey: "settings.chat.menu.savedPrompts",
     icon: (
       <HugeiconsIcon
         icon={Bookmark02Icon}
@@ -71,12 +69,12 @@ const PLUS_MENU_SETTINGS: {
   },
   {
     id: "compareChat",
-    label: "Compare chat",
+    labelKey: "settings.chat.menu.compareChat",
     icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
   },
   {
     id: "exportChat",
-    label: "Export chat",
+    labelKey: "settings.chat.menu.exportChat",
     icon: (
       <HugeiconsIcon
         icon={Download01Icon}
@@ -87,7 +85,7 @@ const PLUS_MENU_SETTINGS: {
   },
   {
     id: "canvas",
-    label: "Canvas",
+    labelKey: "settings.chat.artifacts.title",
     icon: (
       <HugeiconsIcon
         icon={PencilRulerIcon}
@@ -98,7 +96,7 @@ const PLUS_MENU_SETTINGS: {
   },
   {
     id: "projects",
-    label: "Projects",
+    labelKey: "shell.navigation.projects",
     icon: (
       <HugeiconsIcon
         icon={Folder01Icon}
@@ -109,7 +107,7 @@ const PLUS_MENU_SETTINGS: {
   },
   {
     id: "bypassPermissions",
-    label: "Tool permissions",
+    labelKey: "settings.general.permissions.bypassLabel",
     icon: (
       <HugeiconsIcon
         icon={ShieldBanIcon}
@@ -126,6 +124,10 @@ export function ChatTab() {
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
+  const setShowGreetingSloth = useUserProfileStore(
+    (s) => s.setShowGreetingSloth,
+  );
   const showCanvasMenuItem = useChatRuntimeStore(
     (state) => state.showCanvasMenuItem,
   );
@@ -171,6 +173,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const collapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.collapseThinkingByDefault,
+  );
+  const setCollapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.setCollapseThinkingByDefault,
+  );
 
   useEffect(() => {
     void hydratePersistedSettings();
@@ -187,16 +195,12 @@ export function ChatTab() {
         </p>
       </header>
 
-      <SettingsSection title="Select model settings">
+      <SettingsSection title={t("settings.chat.modelSelection.title")}>
         <SettingsRow
-          label="Expand quantizations"
-          description={
-            <span>
-              On: On Device GGUF models show their quantizations right away.
-              <br />
-              Off: click a model to view its quantizations.
-            </span>
-          }
+          label={t("settings.chat.modelSelection.expandQuantizations")}
+          description={t(
+            "settings.chat.modelSelection.expandQuantizationsDescription",
+          )}
         >
           <Switch
             checked={expandQuantizations}
@@ -204,14 +208,10 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label="Show all quantizations"
-          description={
-            <span>
-              On: list every On Device quantization, including not downloaded.
-              <br />
-              Off: show only downloaded quantizations.
-            </span>
-          }
+          label={t("settings.chat.modelSelection.showAllQuantizations")}
+          description={t(
+            "settings.chat.modelSelection.showAllQuantizationsDescription",
+          )}
         >
           <Switch
             checked={showAllQuantizations}
@@ -221,20 +221,11 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection
-        title="Chat menu"
-        description={
-          <>
-            Pin items to chat's{" "}
-            <PlusIcon
-              aria-label="+"
-              className="inline size-3.5 align-[-2px] stroke-[2px]"
-            />{" "}
-            side menu. Others move into “More”.
-          </>
-        }
+        title={t("settings.chat.menu.title")}
+        description={t("settings.chat.menu.description")}
       >
         {PLUS_MENU_SETTINGS.map((item) => (
-          <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+          <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
             {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
             <Switch
               checked={
@@ -248,7 +239,18 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
-        <SettingsGroupDivider />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.thinking.collapseByDefault")}
+          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+        >
+          <Switch
+            checked={collapseThinkingByDefault}
+            onCheckedChange={setCollapseThinkingByDefault}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.modelDisclaimer")}
           description={t("settings.chat.modelDisclaimerDescription")}
@@ -259,22 +261,29 @@ export function ChatTab() {
           />
         </SettingsRow>
         <SettingsRow
-          label="Show response model"
-          description="Show model metadata in assistant responses."
+          label={t("settings.chat.showResponseModel")}
+          description={t("settings.chat.showResponseModelDescription")}
         >
           <Switch
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.general.autoTitleNewChats")}
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.profile.greetingSloth")}
+          description={t("settings.profile.greetingSlothDescription")}
+        >
+          <Switch
+            id="profile-greeting-sloth"
+            checked={showGreetingSloth}
+            onCheckedChange={setShowGreetingSloth}
+          />
         </SettingsRow>
       </SettingsSection>
 

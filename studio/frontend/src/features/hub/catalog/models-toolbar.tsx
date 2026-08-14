@@ -15,12 +15,13 @@ import {
   AiChipIcon,
   CancelCircleIcon,
   Database02Icon,
+  Delete02Icon,
   FolderSearchIcon,
   Search01Icon,
   SlidersHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useMemo, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   clearRecentSearches,
   recordRecentSearch,
@@ -72,6 +73,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   fitOnDeviceOnly,
   onFitOnDeviceOnlyChange,
   onManageLocalFolders,
+  onFreeUpSpace,
   onOpenFineTune,
 }: {
   tab: ModelsTab;
@@ -91,6 +93,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
+  onFreeUpSpace: () => void;
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
   onOpenFineTune: () => void;
@@ -105,6 +108,31 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     searchFocused &&
     query.trim() === "" &&
     recentSearches.length > 0;
+
+  // Anchored to the toolbar bottom so wrapped filter rows stay clickable.
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const searchWrapRef = useRef<HTMLDivElement | null>(null);
+  const [recentPanelTop, setRecentPanelTop] = useState<number | undefined>();
+  useLayoutEffect(() => {
+    if (!showRecentSearches) {
+      return;
+    }
+    const measure = () => {
+      const toolbar = toolbarRef.current;
+      const wrap = searchWrapRef.current;
+      if (!(toolbar && wrap)) {
+        return;
+      }
+      setRecentPanelTop(
+        toolbar.getBoundingClientRect().bottom -
+          wrap.getBoundingClientRect().top,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(toolbarRef.current as HTMLDivElement);
+    return () => observer.disconnect();
+  }, [showRecentSearches]);
 
   const isDataset = resourceType === "datasets";
   const hasTrailing = Boolean(query) || (isDiscover && isLoading);
@@ -172,7 +200,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     "focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:border-border",
   );
   return (
-    <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-nowrap lg:items-center">
+    <div
+      ref={toolbarRef}
+      className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center"
+    >
       <div
         className={cn(
           "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[280px]",
@@ -218,7 +249,10 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </button>
       </div>
 
-      <div className="relative min-w-0 flex-1 lg:flex-[1_1_360px]">
+      <div
+        ref={searchWrapRef}
+        className="relative min-w-0 flex-1 lg:min-w-[220px] lg:flex-[1_1_220px]"
+      >
         <HugeiconsIcon
           icon={Search01Icon}
           strokeWidth={1.8}
@@ -286,6 +320,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         ) : null}
         {showRecentSearches && (
           <RecentSearches
+            top={recentPanelTop}
             searches={recentSearches}
             onSelect={(value) => {
               recordRecentSearch(value);
@@ -319,6 +354,32 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>
               Manage local model folders
+            </TooltipContent>
+          </Tooltip>
+        )}
+
+        {tab === "downloaded" && !isDataset && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                onClick={onFreeUpSpace}
+                data-testid="free-up-space-trigger"
+                className={cn(
+                  triggerBase,
+                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
+                )}
+              >
+                <HugeiconsIcon
+                  icon={Delete02Icon}
+                  strokeWidth={1.75}
+                  className="size-3.5"
+                />
+                Free up space
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>
+              Remove shared model assets no installed model needs
             </TooltipContent>
           </Tooltip>
         )}

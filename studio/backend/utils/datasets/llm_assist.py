@@ -52,14 +52,23 @@ def precache_helper_gguf():
     if os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in ("1", "true"):
         return
 
+    _bars_were_off = False
     repo = os.environ.get("UNSLOTH_HELPER_MODEL_REPO", DEFAULT_HELPER_MODEL_REPO)
     variant = os.environ.get("UNSLOTH_HELPER_MODEL_VARIANT", DEFAULT_HELPER_MODEL_VARIANT)
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils import (
+            are_progress_bars_disabled,
+            disable_progress_bars,
+            enable_progress_bars,
+        )
         from utils.hf_cache_settings import active_hf_hub_cache
 
+        # Remember whether bars were already off. Studio turns them off for the whole
+        # server, so enabling them unconditionally on the way out would undo that for
+        # every later in-process download.
+        _bars_were_off = bool(are_progress_bars_disabled())
         disable_progress_bars()
         logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
@@ -89,8 +98,9 @@ def precache_helper_gguf():
         logger.warning(f"Failed to pre-cache helper GGUF: {e}")
     finally:
         try:
-            enable_progress_bars()
-        except Exception as e:
+            if not _bars_were_off:
+                enable_progress_bars()
+        except Exception:
             pass
 
 
@@ -104,19 +114,18 @@ def _run_with_helper(prompt: str, max_tokens: int = 256) -> Optional[str]:
 
     backend = None
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
         backend = LlamaCppBackend()
         logger.info(f"Loading helper model: {repo} ({variant})")
 
-        ok = backend.load_model(
+        intent = GgufLoadIntent(
+            model_identifier = f"helper:{repo}:{variant}",
             hf_repo = repo,
             hf_variant = variant,
-            model_identifier = f"helper:{repo}:{variant}",
-            is_vision = False,
             n_ctx = 2048,
-            n_gpu_layers = -1,
         )
+        ok = backend.load_model(intent)
         if not ok:
             logger.warning("Helper model failed to start")
             return None
@@ -444,20 +453,19 @@ def _run_multi_pass_advisor(
 
     backend = None
     try:
-        from core.inference.llama_cpp import LlamaCppBackend
+        from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
         backend = LlamaCppBackend()
         logger.info(f"Loading advisor model: {repo} ({variant})")
         t0 = time.monotonic()
 
-        ok = backend.load_model(
+        intent = GgufLoadIntent(
+            model_identifier = f"advisor:{repo}:{variant}",
             hf_repo = repo,
             hf_variant = variant,
-            model_identifier = f"advisor:{repo}:{variant}",
-            is_vision = False,
             n_ctx = 2048,
-            n_gpu_layers = -1,
         )
+        ok = backend.load_model(intent)
         if not ok:
             logger.warning("Advisor model failed to start")
             return None

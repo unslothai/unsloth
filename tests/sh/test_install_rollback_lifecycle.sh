@@ -32,6 +32,7 @@ run_signal_case() {
     {
         printf '%s\n' 'set -e'
         printf '%s\n' 'substep() { :; }'
+        printf '%s\n' 'rollback_substep() { substep "$@"; }'
         printf '%s\n' 'C_WARN=""'
         printf "STUDIO_HOME='%s'\n" "$_case_dir"
         printf "VENV_DIR='%s/unsloth_studio'\n" "$_case_dir"
@@ -77,6 +78,7 @@ START_BOUNDARY_HARNESS="$START_BOUNDARY_DIR/harness.sh"
 {
     printf '%s\n' 'set -e'
     printf '%s\n' 'substep() { :; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
     printf '%s\n' 'C_WARN=""'
     printf "STUDIO_HOME='%s'\n" "$START_BOUNDARY_DIR"
     printf "VENV_DIR='%s/unsloth_studio'\n" "$START_BOUNDARY_DIR"
@@ -102,6 +104,7 @@ COMMIT_BOUNDARY_HARNESS="$COMMIT_BOUNDARY_DIR/harness.sh"
 {
     printf '%s\n' 'set -e'
     printf '%s\n' 'substep() { :; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
     printf '%s\n' 'C_WARN=""'
     printf "STUDIO_HOME='%s'\n" "$COMMIT_BOUNDARY_DIR"
     printf "VENV_DIR='%s/unsloth_studio'\n" "$COMMIT_BOUNDARY_DIR"
@@ -131,6 +134,7 @@ PRUNE_HARNESS="$PRUNE_DIR/harness.sh"
 {
     printf '%s\n' 'set -e'
     printf '%s\n' 'substep() { :; }'
+    printf '%s\n' 'rollback_substep() { substep "$@"; }'
     printf '%s\n' 'C_WARN=""'
     printf "STUDIO_HOME='%s'\n" "$PRUNE_DIR"
     printf "VENV_DIR='%s/unsloth_studio'\n" "$PRUNE_DIR"

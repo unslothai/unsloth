@@ -318,7 +318,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
 
           {destination === "hub" && (
             <div className="flex flex-col gap-4 px-0.5">
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-xs font-medium text-muted-foreground">
                         Username / Org

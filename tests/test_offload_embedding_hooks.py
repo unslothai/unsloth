@@ -11,7 +11,7 @@ VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
 
 
 def _load_installer():
-    src = open(VISION).read()
+    src = open(VISION, encoding = "utf-8").read()
     mod = ast.parse(src)
     for node in mod.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_install_offload_embedding_hooks":

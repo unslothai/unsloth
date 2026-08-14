@@ -43,7 +43,7 @@ export function PillTabs({
       aria-label={ariaLabel}
       className={cn(
         "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
-        compact ? "h-7" : "h-9",
+        compact ? "h-7" : "h-(--picker-control-h)",
         // Don't stretch to fill a flex-column parent (the popover) in fit mode,
         // and never compress so the last tab keeps its padding.
         fit && "w-fit max-w-full shrink-0 self-start",
@@ -86,7 +86,9 @@ export function PillTabs({
           className={cn(
             "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
             fit ? "min-w-0 shrink" : "min-w-0 flex-1",
-            compact ? "h-7 px-2.5 text-ui-11" : "h-9 px-3 text-ui-12p5",
+            compact
+              ? "h-7 px-2.5 text-ui-11"
+              : "h-(--picker-control-h) px-3 text-ui-12p5",
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",

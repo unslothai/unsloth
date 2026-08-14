@@ -15,7 +15,6 @@ export const POLL_DEGRADED_AFTER_MS = 30_000;
 export const POLL_DEGRADED_MESSAGE =
   "Couldn't update download status. The download may still be running.";
 export const TRANSPORT_STATUS_TIMEOUT_MS = 3_000;
-export const SPEED_EMA_WEIGHT = 0.7;
 export const MAX_PROGRESS_FRACTION = 0.99;
 export const CANCEL_WATCHDOG_MS = 20_000;
 export const IDLE_EVICT_GRACE_MS = 60_000;

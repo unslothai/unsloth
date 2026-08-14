@@ -46,7 +46,7 @@ WIRED_MODEL_FILES = [
 
 
 def _load_function():
-    tree = ast.parse(LLAMA_PY.read_text())
+    tree = ast.parse(LLAMA_PY.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == FUNC_NAME:
             return node
@@ -207,7 +207,7 @@ def test_model_families_stay_wired_to_shared_prepare_inputs():
         path = REPO_ROOT / "unsloth" / "models" / fname
         if not path.exists():
             continue
-        if "fix_prepare_inputs_for_generation(" not in path.read_text():
+        if "fix_prepare_inputs_for_generation(" not in path.read_text(encoding = "utf-8"):
             missing.append(fname)
     assert not missing, (
         "these model files no longer call fix_prepare_inputs_for_generation, "

@@ -29,7 +29,7 @@ RL_PY = Path(__file__).resolve().parents[2] / "unsloth" / "models" / "rl.py"
 
 
 def _extract_mixed_precision_code() -> str:
-    lines = RL_PY.read_text().split("\n")
+    lines = RL_PY.read_text(encoding = "utf-8").split("\n")
     try:
         start = next(i for i, l in enumerate(lines) if "mixed_precision = (" in l)
     except StopIteration:
@@ -191,3 +191,72 @@ def test_genuine_bf16_model_with_fp16_still_raises():
         bf16 = False,
     )
     assert raised == "TypeError"
+
+
+def test_explicit_bf16_exports_bf16_env():
+    # Issue #4891: bfloat16 model, user explicitly sets bf16=True. The env var
+    # must still be exported: downstream readers (unsloth_zoo/rl_replacements.py
+    # and unsloth/models/rl_replacements.py) default ACCELERATE_MIXED_PRECISION
+    # to 'fp16' when it is unset, which wraps a bfloat16 model in a float16
+    # autocast and crashes GRPO inside matmul_lora.
+    fp16, bf16, amp, raised = _decide(
+        torch.bfloat16,
+        bf16_supported = True,
+        force_float32 = False,
+        full_finetuning = False,
+        mixed_precision = "float32",
+        fp16 = False,
+        bf16 = True,
+    )
+    assert raised is None
+    assert (fp16, bf16) == (False, True)
+    assert amp == "bf16"
+
+
+def test_explicit_fp16_exports_fp16_env():
+    # float16 model with fp16 explicitly requested must export 'fp16'.
+    fp16, bf16, amp, raised = _decide(
+        torch.float16,
+        bf16_supported = False,
+        force_float32 = False,
+        full_finetuning = False,
+        mixed_precision = "float32",
+        fp16 = True,
+        bf16 = False,
+    )
+    assert raised is None
+    assert (fp16, bf16) == (True, False)
+    assert amp == "fp16"
+
+
+def test_force_float32_beats_explicit_bf16():
+    # force_float32 must keep precedence over the explicit-flag export.
+    fp16, bf16, amp, raised = _decide(
+        torch.float32,
+        bf16_supported = True,
+        force_float32 = True,
+        full_finetuning = False,
+        mixed_precision = "float32",
+        fp16 = False,
+        bf16 = True,
+    )
+    assert raised is None
+    assert (fp16, bf16) == (False, False)
+    assert amp == "no"
+
+
+def test_unsloth_mixed_precision_bfloat16_beats_explicit_bf16():
+    # UNSLOTH_MIXED_PRECISION='bfloat16' (pure bf16 full FT, no autocast) must
+    # keep precedence over the explicit-flag export.
+    fp16, bf16, amp, raised = _decide(
+        torch.bfloat16,
+        bf16_supported = True,
+        force_float32 = False,
+        full_finetuning = True,
+        mixed_precision = "bfloat16",
+        fp16 = False,
+        bf16 = True,
+    )
+    assert raised is None
+    assert (fp16, bf16) == (False, False)
+    assert amp == "no"

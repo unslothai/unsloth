@@ -36,7 +36,7 @@ _models_src = _backend_root / "routes" / "models.py"
 def _load_safe_is_dir():
     """Return the real ``_safe_is_dir`` from routes/models.py without
     importing the dependency-laden module."""
-    tree = ast.parse(_models_src.read_text())
+    tree = ast.parse(_models_src.read_text(encoding = "utf-8"))
     fn = next(
         node
         for node in tree.body

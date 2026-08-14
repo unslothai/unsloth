@@ -14,8 +14,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.account",
     "settings.general.password",
     "settings.general.huggingFaceToken",
-    "settings.general.gettingStarted",
-    "settings.general.startOnboarding",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.general.notifications.sectionTitle",
@@ -37,8 +35,16 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.description",
     "settings.profile.displayName",
     "settings.profile.nickname",
-    "settings.profile.avatarShape",
-    "settings.profile.greetingSloth",
+    // avatarShape lives inside the avatar edit popover, so it has no
+    // always-rendered label for search to scroll to.
+    // The stats heading and highlight tiles render for every profile; the
+    // insight and training cards are conditional, so they stay out.
+    "settings.profile.stats.title",
+    "settings.profile.stats.lifetimeTokens",
+    "settings.profile.stats.peakTokens",
+    "settings.profile.stats.longestChat",
+    "settings.profile.stats.currentStreak",
+    "settings.profile.stats.longestStreak",
   ],
   appearance: [
     "settings.appearance.theme.label",
@@ -57,6 +63,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
+    "settings.appearance.sidebarNav.title",
     "settings.appearance.sidebarMenu.title",
     "settings.appearance.sidebarMenu.darkModeToggle",
   ],
@@ -67,6 +74,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.liveMonitor.vram",
     "settings.resources.liveMonitor.disk",
     "settings.resources.gpu.title",
+    "settings.resources.modelMemory.title",
+    "settings.resources.modelMemory.keepResident",
+    "settings.resources.modelMemory.noRamReserve",
     "settings.resources.storage.title",
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.checkpointFolder",
@@ -82,6 +92,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   chat: [
     "settings.general.chatDefaults",
     "settings.general.autoTitleNewChats",
+    "settings.profile.greetingSloth",
+    "settings.chat.thinking.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
@@ -135,6 +147,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
   ],
+  debugging: [
+    "settings.debugging.logSection",
+    "settings.debugging.source",
+    "settings.debugging.path",
+    "settings.debugging.refreshSection",
+    "settings.debugging.mode",
+    "settings.debugging.keywords",
+  ],
   about: [
     "settings.about.updates",
     "settings.about.releaseNotes",
@@ -146,4 +166,49 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.about.dangerZone",
     "settings.about.shutDownStudio",
   ],
+};
+
+export function createSettingsSearchIndex({
+  desktop,
+  closeToTray,
+}: {
+  desktop: boolean;
+  closeToTray: boolean;
+}): Record<SettingsTab, TranslationKey[]> {
+  if (!desktop) {
+    return SETTINGS_SEARCH_INDEX;
+  }
+  return {
+    ...SETTINGS_SEARCH_INDEX,
+    general: [
+      ...SETTINGS_SEARCH_INDEX.general,
+      "settings.about.updates",
+      "settings.general.startup.sectionTitle",
+      "settings.general.startup.launchAtLogin",
+      ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
+    ],
+    about: SETTINGS_SEARCH_INDEX.about.filter(
+      (key) => key !== "settings.about.updates",
+    ),
+  };
+}
+
+/**
+ * Extra terms a row matches on, beyond its own label. The value is a
+ * translation key holding space-separated synonyms; it is never rendered.
+ * Search matched labels only, so "models folder" or "directory" found nothing.
+ */
+export const SETTINGS_SEARCH_KEYWORDS: Partial<
+  Record<TranslationKey, TranslationKey>
+> = {
+  "settings.resources.storage.modelsFolder":
+    "settings.resources.storage.modelsFolderKeywords",
+  // mlock, vram, ulimit and pin are in none of these labels, so search
+  // missed the rows the feature is named after.
+  "settings.resources.modelMemory.title":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.keepResident":
+    "settings.resources.modelMemory.modelMemoryKeywords",
+  "settings.resources.modelMemory.noRamReserve":
+    "settings.resources.modelMemory.modelMemoryKeywords",
 };

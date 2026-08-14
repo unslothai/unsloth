@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastVisionModel, UnslothVisionDataCollator
 from unsloth.chat_templates import get_chat_template
 from trl import SFTTrainer, SFTConfig
@@ -98,12 +111,11 @@ def load_and_compute_8bit_ppl(
 if __name__ == "__main__":
     mp.set_start_method("spawn", force = True)
 
-    if torch.cuda.is_bf16_supported():
-        compute_dtype = torch.bfloat16
-        attn_implementation = "flash_attention_2"
-    else:
-        compute_dtype = torch.float16
-        attn_implementation = "sdpa"
+    from unsloth import is_bfloat16_supported
+    from unsloth.models._utils import HAS_FLASH_ATTENTION
+
+    compute_dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
+    attn_implementation = "flash_attention_2" if HAS_FLASH_ATTENTION else "sdpa"
 
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = "unsloth/Phi-4",

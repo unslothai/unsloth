@@ -244,9 +244,8 @@ export function UpdateStudioInstructions({
             {t("settings.about.update.title")}
           </p>
         ) : null}
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          {t("settings.about.update.desktopManaged")}
-        </p>
+        {/* The check/update control and its explanation live in General, next
+            to the version rows, so there is exactly one place to update from. */}
         <UpdateDocsLinks />
       </div>
     );

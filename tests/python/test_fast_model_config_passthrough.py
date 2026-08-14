@@ -12,7 +12,7 @@ LLAMA_PATH = REPO_ROOT / "unsloth" / "models" / "llama.py"
 
 
 def _source(path):
-    return path.read_text()
+    return path.read_text(encoding = "utf-8")
 
 
 def _class_method(tree, class_name, method_name):

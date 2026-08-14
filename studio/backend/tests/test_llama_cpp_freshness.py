@@ -161,6 +161,26 @@ def test_read_install_marker_handles_invalid_json(tmp_path):
     assert fr.read_install_marker(str(bin_path)) is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    ["[]", '["cpu"]', '"cuda"', "123", "true", "null"],
+    ids = ["empty-list", "list", "string", "int", "bool", "null"],
+)
+def test_read_install_marker_rejects_non_object_json(tmp_path, payload):
+    """JSON that parses but is not an object must read as "no marker".
+
+    Every caller treats a non-None return as a mapping -- the update planner, the
+    backend picker and crash recovery all reach straight for ``.get`` -- so a marker
+    holding ``["cpu"]`` used to raise AttributeError out of a plain status read
+    instead of degrading to the source-build path a corrupt file deserves.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir(parents = True)
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(payload)
+    bin_path = _fake_binary(install_dir, layout = "root")
+    assert fr.read_install_marker(str(bin_path)) is None
+
+
 def test_read_install_marker_handles_none_path():
     assert fr.read_install_marker(None) is None
 
@@ -185,8 +205,70 @@ def test_latest_published_release_uses_disk_cache(monkeypatch):
 
 
 def test_latest_published_release_returns_none_on_network_failure(monkeypatch):
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    calls = []
+
+    def _failed_fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _failed_fetch)
     assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert calls == ["unslothai/llama.cpp"]
+
+
+def test_latest_published_release_retries_after_failure_ttl(monkeypatch):
+    wall_now = [1000.0]
+    monotonic_now = [100.0]
+    calls = []
+
+    monkeypatch.setattr(fr._flow.time, "time", lambda: wall_now[0])
+    monkeypatch.setattr(fr._flow.time, "monotonic", lambda: monotonic_now[0])
+
+    def _fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None if len(calls) == 1 else "b9999"
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _fetch)
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+
+    # A wall-clock rollback must not extend this in-process failure TTL.
+    wall_now[0] -= 500
+    monotonic_now[0] += fr._flow.RELEASE_FAILURE_CACHE_TTL_SECONDS + 1
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9999"
+    assert calls == ["unslothai/llama.cpp", "unslothai/llama.cpp"]
+
+
+def test_latest_published_release_force_refresh_bypasses_failure_ttl(monkeypatch):
+    calls = []
+
+    def _fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None if len(calls) == 1 else "b9999"
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _fetch)
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp", force_refresh = True) == "b9999"
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9999"
+    assert calls == ["unslothai/llama.cpp", "unslothai/llama.cpp"]
+
+
+def test_reset_caches_clears_release_failure_memo(monkeypatch):
+    calls = []
+
+    def _failed_fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _failed_fetch)
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+
+    fr.reset_caches()
+
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert calls == ["unslothai/llama.cpp", "unslothai/llama.cpp"]
 
 
 def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypatch, tmp_path):
@@ -196,8 +278,16 @@ def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypat
     cache_file = cache_dir / "unslothai__llama.cpp.json"
     yesterday = time.time() - 25 * 60 * 60  # > 24h
     cache_file.write_text(json.dumps({"fetched_at": yesterday, "latest_tag": "b9000"}))
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    calls = []
+
+    def _failed_fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _failed_fetch)
     assert fr.latest_published_release("unslothai/llama.cpp") == "b9000"
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9000"
+    assert calls == ["unslothai/llama.cpp"]
 
 
 # check_prebuilt_freshness end-to-end.

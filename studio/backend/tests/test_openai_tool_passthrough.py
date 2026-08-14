@@ -74,6 +74,7 @@ from routes.inference import (
     _SameTaskStreamingResponse,
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
     _set_or_prepend_system_message,
+    _strip_provider_synthetic_tool_history,
     openai_completions,
     openai_embeddings,
     openai_chat_completions,
@@ -517,6 +518,35 @@ class TestChatCompletionRequestToolFields:
         body = resp.json()
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
+
+    def test_confirm_tool_calls_allowed_for_codex_studio_tools(self, monkeypatch):
+        from routes import inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+
+        async def fake_proxy(*_args, **_kwargs):
+            return {"ok": True}
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", fake_proxy)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "search docs"}],
+                "provider_type": "openai_codex",
+                "external_model": "gpt-5.6-sol",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "permission_mode": "ask",
+                "stream": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
 
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
@@ -1191,6 +1221,41 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
         assert body["tool_choice"] == tc
 
+    def test_llama_incompatible_tool_constraints_are_omitted(self):
+        args = self._args()
+        schema = args["openai_tools"][0]["function"]["parameters"]
+        schema["properties"] = {
+            "declarationKey": {"type": "string", "pattern": r"\S"},
+            "exactKey": {"type": "string", "pattern": r"^[A-Z]+$"},
+            "nested": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string", "pattern": "token"},
+                        {"type": "string", "pattern": "^fixed$"},
+                    ],
+                    "default": {"pattern": "annotation data"},
+                },
+            },
+            "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "boundedScript": {"type": "string", "maxLength": 2000},
+        }
+
+        body = _build_passthrough_payload(**args)
+        forwarded = body["tools"][0]["function"]["parameters"]["properties"]
+
+        assert forwarded["declarationKey"] == {"type": "string"}
+        assert forwarded["exactKey"]["pattern"] == r"^[A-Z]+$"
+        nested = forwarded["nested"]["items"]
+        assert nested["anyOf"][0] == {"type": "string"}
+        assert nested["anyOf"][1]["pattern"] == "^fixed$"
+        assert nested["default"] == {"pattern": "annotation data"}
+        assert forwarded["largeScript"] == {"type": "string", "minLength": 1}
+        assert forwarded["boundedScript"]["maxLength"] == 2000
+        assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
+        assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
+        assert schema["properties"]["largeScript"]["maxLength"] == 65536
+
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
         args["stream"] = True
@@ -1611,7 +1676,7 @@ class TestOpenAICompatibilityHelpers:
     def test_openai_stream_error_sse_closes_with_done(self):
         error = {"error": {"message": "boom"}}
         assert _openai_stream_error_sse(error) == (
-            'data: {"error": {"message": "boom"}}\n\n' "data: [DONE]\n\n"
+            'data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n'
         )
 
     @pytest.mark.parametrize(
@@ -1828,6 +1893,160 @@ class TestDropEmptyAssistantSentinels:
         assert roles == ["user", "user"]
         for m in out:
             assert m.get("content"), m
+
+    def test_local_message_builders_preserve_assistant_reasoning(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "hello back",
+                    "reasoning_content": "Answer the greeting briefly.",
+                },
+                {"role": "user", "content": "why is quantum mechanics random?"},
+            ],
+        )
+
+        assert req.messages[1].reasoning_content == "Answer the greeting briefly."
+        passthrough = _openai_messages_for_passthrough(req)
+        gguf, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        _, standard_local, _ = _extract_content_parts(req.messages)
+        assert passthrough[1]["reasoning_content"] == "Answer the greeting briefly."
+        assert gguf[1]["reasoning_content"] == "Answer the greeting briefly."
+        assert standard_local[1]["reasoning_content"] == "Answer the greeting briefly."
+
+    def test_standard_local_builder_preserves_reasoning_only_assistant_turn(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "What is the answer?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "The answer is forty-two.",
+                },
+                {"role": "user", "content": "Explain why."},
+            ],
+        )
+
+        _, messages, _ = _extract_content_parts(req.messages)
+
+        assert messages == [
+            {"role": "user", "content": "What is the answer?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "The answer is forty-two.",
+            },
+            {"role": "user", "content": "Explain why."},
+        ]
+
+    def test_reasoning_only_assistant_turn_is_not_treated_as_a_stop_sentinel(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "The response stopped before its final answer.",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        )
+
+        passthrough = _openai_messages_for_passthrough(req)
+        gguf, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [message["role"] for message in passthrough] == ["user", "assistant", "user"]
+        assert [message["role"] for message in gguf] == ["user", "assistant", "user"]
+        assert passthrough[1]["content"] == ""
+        assert gguf[1]["content"] == ""
+
+    def test_reasoning_only_dict_gains_llama_cpp_content_key(self):
+        messages = _drop_empty_assistant_sentinels(
+            [{"role": "assistant", "reasoning_content": "A completed answer."}]
+        )
+        assert messages == [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "A completed answer.",
+            }
+        ]
+
+    def test_chained_synthetic_tool_fragments_collapse_into_visible_answer(self):
+        def _synthetic_call(call_id: str) -> dict:
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": '{"_server_tool": true}',
+                },
+            }
+
+        messages = [
+            {"role": "user", "content": "Find it."},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Searching first."}],
+                "reasoning_content": "first trace",
+                "tool_calls": [_synthetic_call("call-1")],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+            {
+                "role": "assistant",
+                "reasoning_content": "second trace",
+                "tool_calls": [_synthetic_call("call-2")],
+            },
+            {"role": "tool", "tool_call_id": "call-2", "content": "second result"},
+            {
+                "role": "assistant",
+                "content": "Here is the answer.",
+                "reasoning_content": "final trace",
+            },
+            {"role": "user", "content": "Thanks."},
+        ]
+
+        out = _strip_provider_synthetic_tool_history(messages)
+
+        assert [message["role"] for message in out] == ["user", "assistant", "user"]
+        assert out[1]["content"] == [
+            {"type": "text", "text": "Searching first."},
+            {"type": "text", "text": "Here is the answer."},
+        ]
+        assert out[1]["reasoning_content"] == "first trace\n\nsecond trace\n\nfinal trace"
+
+    def test_synthetic_reasoning_fragment_before_user_stays_valid(self):
+        messages = [
+            {"role": "user", "content": "Find it."},
+            {
+                "role": "assistant",
+                "reasoning_content": "I should search.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"_server_tool": true}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+            {"role": "user", "content": "Try another query."},
+        ]
+
+        out = _strip_provider_synthetic_tool_history(messages)
+
+        assert [message["role"] for message in out] == ["user", "assistant", "user"]
+        assert out[1] == {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "I should search.",
+        }
 
 
 class TestGgufVisionMessages:
@@ -2288,7 +2507,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -2477,7 +2696,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -2493,6 +2712,89 @@ class TestGgufVisionToolRouting:
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_gguf_gated_tool_start_gets_a_separate_prompt_flush(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_select_tools(*_args, **_kwargs):
+                return [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ]
+
+            stopped = threading.Event()
+
+            def _generate(**kwargs):
+                cancel_event = kwargs["cancel_event"]
+                yield {"type": "status", "text": "Waiting for approval: Python"}
+                yield {
+                    "type": "tool_start",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "arguments": {"code": "print(1)"},
+                    "awaiting_confirmation": True,
+                    "approval_id": "approval_0",
+                }
+                while not cancel_event.is_set():
+                    time.sleep(0.005)
+                stopped.set()
+
+            backend = SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                supports_tools = True,
+                supports_reasoning = True,
+                reasoning_always_on = True,
+                _is_audio = False,
+                model_identifier = "test-gguf",
+                context_length = 4096,
+                base_url = "http://llama.tool.test",
+                effective_parallel_slots = 1,
+                generate_chat_completion = lambda **_kwargs: "unused",
+                generate_chat_completion_with_tools = _generate,
+            )
+            monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+            monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+            monkeypatch.setattr(inf_mod, "TOOL_APPROVAL_FLUSH_DELAY_S", 0.01)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [{"role": "user", "content": "run python"}],
+                enable_tools = True,
+                stream = True,
+            )
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            iterator = response.body_iterator
+            try:
+                for _ in range(8):
+                    chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                    if '"tool_start"' in chunk:
+                        break
+                else:
+                    pytest.fail("gated tool_start was not emitted")
+
+                next_turn = [False]
+                asyncio.get_running_loop().call_soon(next_turn.__setitem__, 0, True)
+                flush = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                assert flush == ": keep-alive\n\n"
+                assert next_turn[0] is True
+            finally:
+                await iterator.aclose()
+
+            assert stopped.is_set()
 
         asyncio.run(_run())
 
@@ -3323,8 +3625,18 @@ class TestGgufVisionToolRouting:
 
         calls = {"count": 0}
 
-        def _generate(**_kwargs):
+        def _generate(**kwargs):
             calls["count"] += 1
+            callback = kwargs.get("perf_callback")
+            if callback is not None:
+                callback(
+                    {
+                        "prompt_ms": 100.0,
+                        "prompt_per_second": 30.0,
+                        "predicted_ms": 20.0,
+                        "predicted_per_second": 50.0,
+                    }
+                )
             text = f"reply {calls['count']}"
             yield text
             yield {
@@ -3369,6 +3681,49 @@ class TestGgufVisionToolRouting:
         assert entry["reply"] == "Choice 1:\nreply 1\n\nChoice 2:\nreply 2"
         assert entry["completion_tokens"] == 3
         assert monitor.active_count() == 0
+
+        assert entry["prompt_tok_per_sec"] is None
+        assert entry["tok_per_sec"] is None
+        assert entry["decode_ms"] is None
+
+    def test_disabled_monitor_does_not_install_gguf_perf_callback(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _generate(**kwargs):
+            captured.update(kwargs)
+            yield "reply"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3, enabled = False))
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        response = self._drive(
+            openai_chat_completions(
+                ChatCompletionRequest(
+                    model = "default",
+                    messages = [{"role": "user", "content": "hi"}],
+                ),
+                request = self._Request(),
+                current_subject = "test",
+            )
+        )
+
+        assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
+        assert captured["perf_callback"] is None
 
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         async def _run():
@@ -4580,6 +4935,9 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             class FailingAsyncClient:
                 async def __aenter__(self):
                     return self
@@ -4587,14 +4945,18 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def __aexit__(self, *_args):
                     return False
 
+                async def aclose(self):
+                    return None
+
                 async def post(self, *_args, **_kwargs):
                     raise httpx.ConnectError("llama down")
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FailingAsyncClient(),
             )
             monkeypatch.setattr(
@@ -4632,9 +4994,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4652,7 +5020,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4683,9 +5053,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False, "max_tokens": 0}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4703,7 +5079,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4741,6 +5119,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4845,12 +5224,18 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"input": ["alpha", "beta"], "model": "embed"}
 
+                async def is_disconnected(self):
+                    return False
+
             class FakeAsyncClient:
                 async def __aenter__(self):
                     return self
 
                 async def __aexit__(self, *_args):
                     return False
+
+                async def aclose(self):
+                    return None
 
                 async def post(self, *_args, **_kwargs):
                     assert monitor.active_count() == 1
@@ -4864,9 +5249,10 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeAsyncClient(),
             )
             monkeypatch.setattr(
@@ -5102,10 +5488,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 assert cancel_id in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
+                # The lease is announced before handover, so drain that marker first.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
                 pending = asyncio.create_task(iterator.__anext__())
                 for _ in range(100):
                     if "body" in body_holder:
@@ -5209,10 +5600,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
 
                 blocker.release()
-                first = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                # The lease is announced before handover, so the payload is the next chunk.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
+                first = await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                 assert "hello" in first
 
                 pending = asyncio.create_task(iterator.__anext__())
@@ -5388,7 +5784,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -6337,7 +6733,7 @@ class TestApiMonitorSafetensorsUsage:
                     }
                     yield "safe reply"
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6408,7 +6804,7 @@ class TestApiMonitorSafetensorsUsage:
                     cancel_event.set()
                     yield {"type": "content", "text": "ignored"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6469,11 +6865,22 @@ class TestApiMonitorSafetensorsUsage:
                 def generate_chat_completion_with_tools(self, **_kwargs):
                     yield {"type": "content", "text": "unused"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     nonlocal reset_called
                     reset_called = True
 
-            async def fake_to_thread(*_args, **_kwargs):
+            async def fake_to_thread(
+                func = None,
+                *_args,
+                **_kwargs,
+            ):
+                # Only the generation hop should cancel; resolution runs before the row opens.
+                if getattr(func, "__name__", "") == "resolve_local_gguf":
+                    return None
+                # Resolving what is already serving is pre-row work too, offloaded for the
+                # same reason: _loaded_satisfies reaches the singleton, whose build detects.
+                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
+                    return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6920,7 +7327,7 @@ class TestResponsesChatTemplateKwargs:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1

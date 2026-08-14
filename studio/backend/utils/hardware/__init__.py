@@ -3,6 +3,8 @@
 
 """Hardware detection and GPU utilities."""
 
+from typing import Optional
+
 from . import hardware as _hardware
 from .hardware import (
     DeviceType,
@@ -17,8 +19,12 @@ from .hardware import (
     get_gpu_summary,
     get_package_versions,
     get_gpu_utilization,
+    cpu_frequency_mhz,
     get_visible_gpu_utilization,
+    rocm_windows_free_is_untrusted,
+    trusted_mem_get_info,
     get_backend_visible_gpu_info,
+    get_vulkan_inference_gpu_info,
     get_physical_gpu_count,
     get_visible_gpu_count,
     get_parent_visible_gpu_ids,
@@ -45,9 +51,29 @@ from .vram_estimation import (
 )
 
 
+def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
+    """Detect once, from any thread; delegate so the live function always runs.
+
+    Wrapper rather than re-export, like export_capability() below: a re-export is an unused
+    module-level import, which scripts/verify_import_hoist.py flags. Must carry the epoch --
+    dropping it raises into the warm's _run_stage, leaving detection undone.
+    """
+    return _hardware.ensure_hardware_detected(epoch)
+
+
+def start_background_detection() -> None:
+    """Put detection on a daemon thread if nothing is running it yet."""
+    _hardware.start_background_detection()
+
+
 def export_capability() -> dict:
     """Return live export capability from the hardware module."""
     return _hardware.export_capability()
+
+
+def video_capability() -> dict:
+    """Return live video-generation capability from the hardware module."""
+    return _hardware.video_capability()
 
 
 def get_torch_device_str() -> str:
@@ -61,8 +87,11 @@ __all__ = [
     "CHAT_ONLY",
     "IS_ROCM",
     "detect_hardware",
+    "ensure_hardware_detected",
+    "start_background_detection",
     "get_device",
     "export_capability",
+    "video_capability",
     "is_apple_silicon",
     "clear_gpu_cache",
     "get_gpu_memory_info",
@@ -70,8 +99,12 @@ __all__ = [
     "get_gpu_summary",
     "get_package_versions",
     "get_gpu_utilization",
+    "cpu_frequency_mhz",
     "get_visible_gpu_utilization",
+    "rocm_windows_free_is_untrusted",
+    "trusted_mem_get_info",
     "get_backend_visible_gpu_info",
+    "get_vulkan_inference_gpu_info",
     "get_physical_gpu_count",
     "get_visible_gpu_count",
     "get_parent_visible_gpu_ids",

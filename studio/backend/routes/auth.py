@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 import base64
+import importlib.util
 import ipaddress
 import os
 import shlex
@@ -14,6 +15,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from models.auth import (
     ApiKeyListResponse,
@@ -23,20 +25,50 @@ from models.auth import (
     ChangePasswordRequest,
     CreateApiKeyRequest,
     CreateApiKeyResponse,
+    DesktopInitialPasswordRequest,
     DesktopLoginRequest,
     RefreshTokenRequest,
 )
 from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
+    authenticated_via_desktop_jwt,
     create_access_token,
     create_refresh_token,
+    get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
     refresh_access_token,
 )
 
 router = APIRouter()
+
+
+# Byte-identical to _WINDOWS_CLI_ENTRYPOINT in unsloth_cli/commands/studio.py and to
+# the bootstrap unsloth_cli/__main__.py documents for user-site installs.
+_CLI_BOOTSTRAP = (
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
+)
+
+
+def _cli_is_inside(prefix: str) -> bool:
+    """Whether unsloth_cli lives under *prefix*, so -I would still find it.
+
+    Located rather than imported: this runs in a request handler, and a spec
+    lookup answers the only question asked here, which is where the package is
+    on disk and not whether it starts.
+    """
+    try:
+        spec = importlib.util.find_spec("unsloth_cli")
+        origin = getattr(spec, "origin", None)
+        if not origin:
+            # A namespace package, or nothing found. Either way there is no
+            # location to compare, so do not claim isolation would work.
+            return False
+        return Path(origin).resolve().is_relative_to(Path(prefix).resolve())
+    except (ImportError, OSError, ValueError, AttributeError):
+        return False
 
 
 def _reset_password_command() -> str:
@@ -48,19 +80,42 @@ def _reset_password_command() -> str:
     POSIX paths are shell-quoted. On Windows we use the bare absolute path only
     when it has no spaces (a quoted path differs between cmd and PowerShell);
     otherwise, or if the launcher can't be located, fall back to the PATH form.
+
+    Windows never names unsloth.exe here, present or not. Existing is not the
+    same as runnable: an Application Control policy leaves the generated,
+    unsigned unsloth.exe on disk and denies it at CreateProcess (issue #8490),
+    and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE
+    ahead of the .cmd shim. Whoever is locked out of Studio is exactly who needs
+    this command to work, so it must not be the one a policy refuses. Preference
+    order is therefore the interpreter's module entry, which needs no quoting in
+    cmd or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops
+    PATHEXT reaching for the executable.
+
+    -I only when the package is inside this interpreter's own prefix. -I implies
+    -s, so a ``pip install --user`` install would be told to run a command that
+    cannot find itself; unsloth_cli/__main__.py documents that exception and the
+    bootstrap to use instead, and this prints that bootstrap. It is safe to show
+    to either shell: the trampoline contains single quotes only, so one pair of
+    double quotes wraps it identically in cmd and in PowerShell.
     """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
         if os.name == "nt":
-            exe = os.path.join(bin_dir, "unsloth.exe")
-            if os.path.isfile(exe) and " " not in exe:
-                return f"{exe} studio reset-password"
+            python = os.path.abspath(sys.executable)
+            if " " not in python:
+                if _cli_is_inside(sys.prefix):
+                    return f"{python} -I -m unsloth_cli studio reset-password"
+                return f'{python} -X utf8 -c "{_CLI_BOOTSTRAP}" studio reset-password'
+            # A spaced interpreter path cannot be written unquoted, so fall
+            # through to the PATH form below.
         else:
             exe = os.path.join(bin_dir, "unsloth")
             if os.path.isfile(exe):
                 return f"{shlex.quote(exe)} studio reset-password"
     except Exception:
         pass
+    if os.name == "nt":
+        return "unsloth.cmd studio reset-password"
     return "unsloth studio reset-password"
 
 
@@ -399,7 +454,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
-    salt, pwd_hash, _jwt_secret, must_change_password = record
+    salt, pwd_hash, jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
@@ -409,8 +464,10 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    access_token = create_access_token(subject = payload.username)
-    refresh_token = create_refresh_token(subject = payload.username)
+    # Issue against the credential version just verified, not whatever is in the DB
+    # now: a concurrent reset-password must not hand this login a post-reset session.
+    access_token = create_access_token(subject = payload.username, secret = jwt_secret)
+    refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -438,16 +495,17 @@ async def logout(
 @router.post("/desktop-login", response_model = Token)
 async def desktop_login(payload: DesktopLoginRequest) -> Token:
     """Exchange a local desktop secret for normal admin-subject tokens."""
-    username = storage.validate_desktop_secret(payload.secret)
-    if username is None:
+    verified = storage.validate_desktop_secret_with_credential(payload.secret)
+    if verified is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Desktop authentication failed",
         )
+    username, jwt_secret = verified
 
     return Token(
-        access_token = create_access_token(subject = username, desktop = True),
-        refresh_token = create_refresh_token(subject = username, desktop = True),
+        access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
+        refresh_token = create_refresh_token(subject = username, desktop = True, secret = jwt_secret),
         token_type = "bearer",
         must_change_password = False,
     )
@@ -462,9 +520,11 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
-    username, is_desktop = consumed
-    new_access_token = create_access_token(subject = username, desktop = is_desktop)
-    new_refresh_token = create_refresh_token(subject = username, desktop = is_desktop)
+    username, is_desktop, jwt_secret = consumed
+    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
+    new_refresh_token = create_refresh_token(
+        subject = username, desktop = is_desktop, secret = jwt_secret
+    )
 
     return Token(
         access_token = new_access_token,
@@ -474,11 +534,81 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
     )
 
 
+@router.post("/desktop-initial-password", response_model = Token)
+async def set_desktop_initial_password(
+    payload: DesktopInitialPasswordRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
+) -> Token:
+    """Set the first real password from the desktop app, which never sees the seeded one.
+
+    Desktop auth is passwordless, so the desktop user cannot complete the normal
+    flow: it needs the generated bootstrap password that only the terminal ever
+    printed. Remote browser logins do need a real password, so an
+    already-authenticated desktop session may set it while the seeded credential
+    is still in place. Once set, change-password owns every later change.
+    """
+    if not is_desktop:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "This action requires the Unsloth desktop app.",
+        )
+
+    record = storage.get_user_and_secret(current_subject)
+    if record is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "User session is invalid",
+        )
+
+    _salt, pwd_hash, _jwt_secret, must_change_password = record
+    if not must_change_password:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "A password is already set. Change it instead.",
+        )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
+
+    # Conditional on the credential just read: a web password change or a
+    # reset-password landing while this request is in flight must not be
+    # overwritten by a caller that verified no password at all.
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+        preserve_desktop_secret = True,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Try again.",
+        )
+    try:
+        request.app.state.bootstrap_password = None
+    except AttributeError:
+        pass
+    access_token = create_access_token(subject = current_subject, desktop = True, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, desktop = True, secret = new_secret)
+    return Token(
+        access_token = access_token,
+        refresh_token = refresh_token,
+        token_type = "bearer",
+        must_change_password = False,
+    )
+
+
 @router.post("/change-password", response_model = Token)
 async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
     record = storage.get_user_and_secret(current_subject)
@@ -507,13 +637,33 @@ async def change_password(
 
     # Single transaction: a separate refresh-token purge could fail after the
     # password commit, leaving pre-change tokens able to mint access tokens.
-    storage.update_password(current_subject, payload.new_password, revoke_refresh_tokens = True)
+    # Conditional on the hash just verified: a reset-password that landed while
+    # this request was in flight must not be overwritten by it.
+    # The desktop app authenticates with a local secret rather than this
+    # password; revoking that secret would break its auto-auth over a change it
+    # made itself. A browser session still revokes it.
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+        preserve_desktop_secret = is_desktop,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Sign in again.",
+        )
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    access_token = create_access_token(subject = current_subject)
-    refresh_token = create_refresh_token(subject = current_subject)
+    access_token = create_access_token(
+        subject = current_subject, desktop = is_desktop, secret = new_secret
+    )
+    refresh_token = create_refresh_token(
+        subject = current_subject, desktop = is_desktop, secret = new_secret
+    )
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -541,20 +691,28 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, current_subject: str = Depends(get_current_subject)
+    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
+    current_subject, generation = credential
     expires_at = None
     if payload.expires_in_days is not None:
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
         ).isoformat()
 
-    raw_key, row = storage.create_api_key(
-        username = current_subject,
-        name = payload.name,
-        expires_at = expires_at,
-    )
+    try:
+        raw_key, row = storage.create_api_key(
+            username = current_subject,
+            name = payload.name,
+            expires_at = expires_at,
+            expect_gen = generation,
+        )
+    except storage.CredentialRotated:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
     return CreateApiKeyResponse(
         key = raw_key,
         api_key = _row_to_api_key_response(row),

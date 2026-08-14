@@ -130,7 +130,7 @@ def _xdg_user_dir(key: str) -> Path | None:
     config = Path.home() / ".config" / "user-dirs.dirs"
     try:
         lines = config.read_text(encoding = "utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     prefix = f"{key}="
     for line in lines:
@@ -216,7 +216,7 @@ def lmstudio_model_dirs() -> list[Path]:
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
-            with open(settings_path) as f:
+            with open(settings_path, encoding = "utf-8-sig") as f:
                 settings = json.load(f)
             downloads = settings.get("downloadsFolder", "")
             if downloads:
@@ -292,16 +292,45 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
+        # unsloth_zoo defaults this to a bare relative name, which resolves
+        # against the CWD, and the Windows launcher runs Studio with
+        # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
+        # Must be set before unsloth_zoo.compiler imports: it reads the value
+        # at import time and puts it on sys.path.
+        "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
-        if key not in os.environ:
+        # Blank counts as unset: an inherited KEY= would otherwise pin the
+        # cache to "", which puts an empty entry on sys.path and sends the
+        # compiler to the system temp directory instead.
+        if not (os.environ.get(key) or "").strip():
             os.environ[key] = value
             # Best-effort: a non-writable custom HF_HOME must not crash startup;
             # HF surfaces a clear error at download time instead.
             try:
-                Path(value).mkdir(parents = True, exist_ok = True)
-            except OSError:
+                created = True
+                try:
+                    Path(value).mkdir(parents = True, exist_ok = False)
+                except FileExistsError:
+                    created = False
+                if key == "UNSLOTH_COMPILE_LOCATION" and created:
+                    # Marks the directory as ours, so the cleanup can delete
+                    # from it without inferring that from its contents. Only when
+                    # this call made it: the marker is what licenses an rmtree.
+                    from utils.cache_cleanup import CACHE_MARKER
+                    (Path(value) / CACHE_MARKER).touch(exist_ok = True)
+            except (OSError, ImportError):
                 pass
+
+
+def setup_cache_env() -> None:
+    """Seed the cache env vars without creating every studio directory.
+
+    For `uvicorn main:app`, which bypasses run.py and so never reaches
+    ensure_studio_directories, but still has to pin UNSLOTH_COMPILE_LOCATION
+    before unsloth_zoo.compiler is imported.
+    """
+    _setup_cache_env()
 
 
 def ensure_studio_directories() -> None:

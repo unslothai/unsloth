@@ -374,7 +374,7 @@ class TestRouteCompleteness:
     def _load_source(self):
         """Read routes/inference.py source once."""
         routes_path = Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        self._source = routes_path.read_text()
+        self._source = routes_path.read_text(encoding = "utf-8")
 
     def _find_construction_blocks(self, class_name: str) -> list[str]:
         """Extract all code blocks that construct a given response class."""
@@ -404,12 +404,13 @@ class TestRouteCompleteness:
         blocks = self._find_construction_blocks("LoadResponse")
         gguf_blocks = [b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b]
         assert (
-            len(gguf_blocks) >= 2
-        ), f"Expected at least 2 GGUF LoadResponse blocks, found {len(gguf_blocks)}"
+            len(gguf_blocks) == 1
+        ), f"Expected one shared GGUF LoadResponse block, found {len(gguf_blocks)}"
         for i, block in enumerate(gguf_blocks):
             assert (
-                "native_context_length" in block
-            ), f"GGUF LoadResponse block #{i} missing native_context_length:\n{block[:200]}"
+                "_llama_runtime_fields(llama_backend)" in block
+            ), f"GGUF LoadResponse block #{i} missing runtime fields:\n{block[:200]}"
+        assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
     def test_non_gguf_load_responses_omit_field(self):
         """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
@@ -433,16 +434,28 @@ class TestRouteCompleteness:
             ), f"Non-GGUF LoadResponse should set context_length:\n{block[:200]}"
 
     def test_status_path(self):
-        """InferenceStatusResponse construction with llama_backend has the field."""
+        """InferenceStatusResponse construction with llama_backend has the field.
+
+        The route may splat the helper's result straight in, or bind it first
+        and adjust a field before passing it on. Both carry the runtime fields.
+        """
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if "llama_backend" in block and "native_context_length" in block:
+            if "llama_backend" not in block:
+                continue
+            if "_llama_runtime_fields(llama_backend)" in block:
                 found = True
                 break
-        assert (
-            found
-        ), "No InferenceStatusResponse block with llama_backend has native_context_length"
+            if "**_runtime_fields" in block:
+                # Only counts if that dict is the helper's, not any local name.
+                assert (
+                    "_runtime_fields = _llama_runtime_fields(llama_backend)" in self._source
+                ), "**_runtime_fields is not built from _llama_runtime_fields(llama_backend)"
+                found = True
+                break
+        assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"
+        assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""

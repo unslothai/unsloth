@@ -32,16 +32,40 @@ class _LocalGgufEntry:
 
 
 _CACHE_TTL_S = 5.0
+# Monotonic timestamps are nonnegative, so a negative stamp encodes "additions-only
+# invalidated at -stamp". Keeps that trust inside the atomically published _scan
+# tuple instead of a second global, and keeps it time-bounded like any other.
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+# Not _lock: that is held for the whole scan, so the request path would wait on it.
+_warm_lock = threading.Lock()
+# Repos that finished downloading but are not in the published index yet: nothing
+# else covers them until the next scan, and the request path must not call them absent.
+_just_downloaded: set[str] = set()
+_warming = False
+# An invalidation landing while a warmer owns the slot asks it for another pass, so
+# a snapshot published already-stale is rebuilt off the request path. Callers still
+# pair invalidate_index() with warm_index_soon() for the case where it has retired.
+_warm_pending = False
+_last_scan_s = 0.0
+# Rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously.
+_WARM_DUTY = 10.0
 
 
 def _is_abs_path_id(value: str) -> bool:
     """True when an id is an absolute filesystem path (the ./models and LM Studio
-    scanners use the on-disk path as the id) rather than a repo id like org/name."""
-    from pathlib import Path
+    scanners use the on-disk path as the id) rather than a repo id like org/name.
+
+    Both spellings count on every host. Path() follows the running OS, so a
+    Windows backend read "/home/me/x.gguf" as relative and a POSIX one read
+    "C:\\models\\x.gguf" the same way, and either then reached /v1/models as a
+    published id. Ids outlive the machine that wrote them: settings sync, a WSL
+    session and a copied config all carry the other platform's spelling, and the
+    model-override identity already folds both. Neither reading can misfire on a
+    repo id, which has no leading separator, drive or UNC prefix."""
+    from pathlib import PurePosixPath, PureWindowsPath
     try:
-        return Path(value).is_absolute()
+        return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
     except Exception:
         return False
 
@@ -82,7 +106,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
-    from utils.models.model_config import _is_mmproj, list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -97,23 +121,39 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             # advertise a projector and a switch could load it instead of the weights,
             # evicting the loaded model. The directory branch below is already mmproj
             # free (list_local_gguf_variants drops mmproj quants).
-            if p.suffix.lower() != ".gguf" or _is_mmproj(p.name):
+            if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         load_dir = _resolve_load_dir(p)
         variants, _ = list_local_gguf_variants(str(load_dir))
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
-        return _LocalGgufEntry(loader_id, str(load_dir), quants) if quants else None
+        if not quants:
+            return None
+        # That call orders by descending size, so the head is the biggest quant (often
+        # F16). Downstream reads [0], and a bare id must mean whichever quant a plain
+        # load would take: answering with the largest can evict a model and then OOM.
+        from core.inference.openai_auto_download import preferred_quant
+
+        # Rank the ROOT checkpoints alone when there are any. A plain local load resolves
+        # through non-recursive detect_gguf_model and so always takes the repo root, while
+        # preferred_quant ranks on the key text and would hand a bare id an equally-good
+        # ``distilled/...`` row that sorts earlier -- the same id serving different weights
+        # depending on which resolver answered it. The qualified rows stay advertised; they
+        # simply are not what a bare id means.
+        unqualified = tuple(q for q in quants if "/" not in q)
+        best = preferred_quant(unqualified or quants)
+        if best and quants[0] != best:
+            quants = (best, *(q for q in quants if q != best))
+        return _LocalGgufEntry(loader_id, str(load_dir), quants)
     except Exception:
         return None
 
 
-def info_has_local_gguf(info) -> bool:
-    """True when *info* (a LocalModelInfo) points to on-disk GGUF weights the
-    auto-switch path can load. Read from the files, not ``info.model_format``: the
-    HF-cache scanner leaves model_format unset for GGUF snapshots, so a
-    model_format filter would drop every cached GGUF. Lets /v1/models advertise
-    exactly what /v1 can serve."""
+def local_gguf_quants(info) -> Optional[tuple[str, ...]]:
+    """On-disk quant labels for *info*, or None when it is not a servable local
+    GGUF. Read from the files, not ``info.model_format``: the HF-cache scanner
+    leaves that unset for GGUF snapshots, so filtering on it drops every cached
+    GGUF. One scan tells /v1/models what it can serve and which quant to name."""
     from pathlib import Path
 
     path = getattr(info, "path", None)
@@ -123,8 +163,14 @@ def info_has_local_gguf(info) -> bool:
     if isinstance(path, str) and any(
         seg in (".studio_links", "ollama_links") for seg in Path(path).parts
     ):
-        return False
-    return _local_gguf_entry(getattr(info, "id", "") or "", info) is not None
+        return None
+    entry = _local_gguf_entry(getattr(info, "id", "") or "", info)
+    return entry.variants if entry is not None else None
+
+
+def info_has_local_gguf(info) -> bool:
+    """True when *info* points to on-disk GGUF weights the auto-switch path can load."""
+    return local_gguf_quants(info) is not None
 
 
 def _build_index() -> dict[str, _LocalGgufEntry]:
@@ -287,6 +333,60 @@ def _sibling_revision_entries(raw_id: str, loader_id: str):
             yield sibling.name, entry
 
 
+def note_downloaded(repo_id: Optional[str]) -> None:
+    """Record a repo as present ahead of the scan that will index it."""
+    if not repo_id:
+        return
+    with _lock:
+        _just_downloaded.add(repo_id.strip().lower())
+
+
+def recently_downloaded(repo_id: str) -> bool:
+    """Whether *repo_id* finished downloading since the last completed scan."""
+    if not isinstance(repo_id, str) or not repo_id.strip():
+        return False
+    return repo_id.strip().lower() in _just_downloaded
+
+
+def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
+    """Whether a snapshot stamped *timestamp* may answer a model switch at *now*.
+
+    Positive is an ordinary scan, trusted for the TTL. Negative is when an
+    additions-only download invalidated it, trusted only while its rebuild could
+    still be running: one that keeps failing must not leave entries trusted forever,
+    or a model deleted on disk could still trigger a switch. Zero is revoked.
+    """
+    if timestamp > 0.0:
+        return now - timestamp < _CACHE_TTL_S
+    if timestamp < 0.0:
+        return now + timestamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY)
+    return False
+
+
+def invalidate_index(*, additions_only: bool = False) -> None:
+    """Mark the cached scan stale.
+
+    Entries stay available so an additions-only download invalidation can keep
+    serving known positive hits while its background rebuild adds the new model.
+    Other invalidations retain the allocation but revoke that trust, since a scan
+    root may have been removed. Ordinary TTL expiry is likewise not additions-only.
+    """
+    global _scan, _warm_pending
+    with _lock:
+        now = time.monotonic()
+        timestamp, retained = _scan
+        # Publish entries and their trust state together. A lock-free reader sees
+        # either the complete old snapshot or the complete invalidated one, never a
+        # fresh timestamp paired with already-revoked trust.
+        stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
+        _scan = (stamp, retained)
+    # This may have waited out a scan on _lock, so the warmer that just published can
+    # still own the slot with a snapshot that is stale again. See _warm_pending.
+    with _warm_lock:
+        if _warming:
+            _warm_pending = True
+
+
 def _index() -> dict[str, _LocalGgufEntry]:
     global _scan
     # Build under the lock so concurrent callers with an expired cache don't all
@@ -294,30 +394,125 @@ def _index() -> dict[str, _LocalGgufEntry]:
     with _lock:
         now = time.monotonic()
         ts, cached = _scan
-        if now - ts < _CACHE_TTL_S:
+        # ``ts > 0``: monotonic() counts from boot, so under a TTL of uptime an
+        # invalidated stamp reads as recent and would serve what was just revoked.
+        if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
         fresh = _build_index()
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on
         # an install with many local models can itself exceed the TTL, which would
         # store the cache already expired and make every request rebuild the index.
         _scan = (time.monotonic(), fresh)
+        # The scan supersedes the notes: whatever landed is in the index now.
+        _just_downloaded.clear()
         return fresh
 
 
-def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str]]:
+def index_is_built() -> bool:
+    """Whether a scan has ever completed, freshness aside.
+
+    Lock-free on purpose: ``_lock`` is held for the whole scan, so taking it would
+    park the request path on the scan it is trying to stay off. Safe because
+    ``_scan`` is only ever rebound, never mutated.
+    """
+    return _scan[0] > 0.0
+
+
+def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str]]:
+    """Resolve a positive cache hit only when its snapshot is safe to trust.
+
+    A snapshot is trustworthy while fresh, or after an explicit additions-only
+    invalidation. A positive hit from ordinary TTL expiry or a scan-root change
+    must be rebuilt before it can trigger a model switch. The identity checks close
+    the race where invalidation publishes a different snapshot during resolution or
+    while the trust state is being evaluated.
+    """
+    snapshot = _scan
+    resolved = _resolve_from_index(requested, snapshot[1])
+    if resolved is None or _scan is not snapshot:
+        return None
+    trusted = _snapshot_is_trusted(snapshot[0], time.monotonic())
+    return resolved if trusted and _scan is snapshot else None
+
+
+def warm_index_soon() -> None:
+    """(Re)build the index off the request path when it is missing or past its TTL.
+
+    The only refresh for callers using ``allow_scan=False``. Covers a stale index,
+    not just an absent one: a model downloaded through the Hub UI or dropped into a
+    scan folder has no invalidation hook and would otherwise stay invisible to them
+    for the life of the process. Never blocks, and never touches ``_lock``.
+    """
+    global _warming, _warm_pending
+    stamp = _scan[0]
+    if stamp > 0.0 and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
+        return
+    with _warm_lock:
+        if _warming:
+            return
+        _warming = True
+        _warm_pending = False
+
+    def _run() -> None:
+        global _warming, _warm_pending, _last_scan_s
+        released = False
+        try:
+            while True:
+                started = time.monotonic()
+                try:
+                    _index()
+                except Exception:
+                    pass
+                _last_scan_s = time.monotonic() - started
+                with _warm_lock:
+                    if _warm_pending:
+                        _warm_pending = False
+                        continue
+                    _warming, released = False, True
+                    return
+        finally:
+            # Only on a BaseException: leaving the slot held would kill background
+            # warming for the life of the process and put scans back on requests.
+            if not released:
+                with _warm_lock:
+                    _warming = _warm_pending = False
+
+    threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()
+
+
+def resolve_local_gguf(
+    requested: str, *, allow_scan: bool = True
+) -> Optional[tuple[str, Optional[str], str]]:
     """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
     ``load_path`` is the concrete on-disk path to hand /load (so it never fetches
     a remote), ``loader_id`` is the advertised id used as the launch-override key.
     ``requested`` is ``repo`` or ``repo:VARIANT``. An exact id match wins first
     (so ids containing a colon still resolve); else the last ``:VARIANT`` is split
-    off and resolves only when that quant is on disk.
+    off and resolves only when that quant is on disk, unless it names no quant at
+    all (an Ollama-style ":latest"), which means the repo.
+
+    ``allow_scan=False`` answers from the last built index and never rebuilds. It is
+    a raw snapshot read for callers that separately decide whether the snapshot is
+    trustworthy; use :func:`resolve_trusted_cached_local_gguf` for model switching.
     """
     if not isinstance(requested, str) or not requested.strip():
         return None
     requested = requested.strip()
     try:
-        index = _index()
+        index = _index() if allow_scan else _scan[1]
+        return _resolve_from_index(requested, index)
+    except Exception:
+        # Best-effort: any resolver failure falls through to the loaded model,
+        # so a malformed name can never turn a servable request into a 500.
+        return None
+
+
+def _resolve_from_index(
+    requested: str, index: dict[str, _LocalGgufEntry]
+) -> Optional[tuple[str, Optional[str], str]]:
+    """Resolve *requested* against one immutable published index mapping."""
+    try:
         entry = index.get(requested.lower())
         if entry is not None:
             variant = entry.variants[0] if entry.variants else None
@@ -333,8 +528,42 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str
         for v in entry.variants:
             if v.lower() == wanted:
                 return entry.load_path, v, entry.loader_id
-        return None
+        from core.inference.openai_auto_download import looks_like_quant
+
+        if looks_like_quant(variant):
+            return None
+        # ":latest" or ":8b" names no file, so it means the repo; a real quant that
+        # is not on disk still misses, or a swap would serve the wrong weights.
+        return entry.load_path, (entry.variants[0] if entry.variants else None), entry.loader_id
     except Exception:
-        # Best-effort: any resolver failure falls through to the loaded model,
-        # so a malformed name can never turn a servable request into a 500.
         return None
+
+
+MISS_MODEL_NOT_FOUND = "model_not_found"
+MISS_VARIANT_NOT_FOUND = "variant_not_found"
+
+
+def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
+    """Why :func:`resolve_local_gguf` missed, so an error can say "wrong quant"
+    instead of "no such model".
+
+    ``(MISS_VARIANT_NOT_FOUND, <local quants>)`` when the repo is downloaded but the
+    requested ``:VARIANT`` is not, else ``(MISS_MODEL_NOT_FOUND, ())``. Fail-safe: a
+    scan failure reports the generic miss rather than raising into the handler.
+    """
+    if not isinstance(requested, str) or not requested.strip():
+        return MISS_MODEL_NOT_FOUND, ()
+    base, sep, variant = requested.strip().rpartition(":")
+    from core.inference.openai_auto_download import looks_like_quant
+
+    # Split like the resolver or the two disagree: a tag naming no quant means the
+    # repo there, so reporting a missing quant for it would name one nobody asked for.
+    if not sep or not looks_like_quant(variant):
+        return MISS_MODEL_NOT_FOUND, ()
+    try:
+        entry = _index().get(base.strip().lower())
+    except Exception:
+        return MISS_MODEL_NOT_FOUND, ()
+    if entry is None or not entry.variants:
+        return MISS_MODEL_NOT_FOUND, ()
+    return MISS_VARIANT_NOT_FOUND, entry.variants

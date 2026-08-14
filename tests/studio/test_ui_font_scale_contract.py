@@ -39,12 +39,39 @@ def _frontend_sources():
             yield path
 
 
+def _rel(path):
+    """Source-relative path with forward slashes on every OS.
+
+    The allowlists above are written with "/", so a plain str(relative_to(SRC))
+    silently stops matching on Windows and every allowlisted file reports as an
+    offender. Keeping the separator normalised here also keeps failure messages
+    identical across platforms.
+    """
+    return path.relative_to(SRC).as_posix()
+
+
 def test_preference_writes_a_scale_not_the_root_font_size():
     assert 'setVar("--ui-font-scale"' in STORE
     assert 'el.setAttribute("data-ui-font-size"' in STORE
     # Older builds set an inline root font-size; the applier must clear it.
     assert 'style.removeProperty("font-size")' in STORE
     assert "style.fontSize" not in STORE
+
+
+def test_css_default_scale_matches_the_store_default():
+    """index.css carries the default as a scale, the store carries it as a px
+    size, and the applier only drops data-ui-font-size at the store's value.
+    Derive the scale so the two cannot drift: when they did, everything
+    rendered at one size while the preference control called it another."""
+    rng = re.search(r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", STORE)
+    assert rng is not None
+    base = re.search(r"const UI_FONT_SIZE_CSS_BASE = (\d+);", STORE)
+    assert base is not None
+    assert "c.uiFontSize ?? UI_FONT_SIZE_RANGE.default" in STORE
+    assert "effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default" in STORE
+    assert "effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE" in STORE
+    scale = int(rng.group(3)) / int(base.group(1))
+    assert f"--ui-font-scale: {scale:g};" in INDEX_CSS
 
 
 def test_named_text_tokens_scale():
@@ -100,7 +127,7 @@ def test_cn_knows_the_ui_typography_tokens():
 
 def test_icons_follow_the_ui_font_size_itself():
     """Standard glyphs render at --ui-icon-size, which follows the UI font
-    size itself: matches it below the 16px default and grows at half the
+    size itself: matches it below the 16px CSS scale base and grows at half the
     change above it (setting 20 gives 18px icons), so icons track the text
     when shrinking and read slightly smaller than it when growing. Sub 16px
     glyphs keep their proportions through the same curve as a factor.
@@ -136,7 +163,7 @@ def test_no_raw_pixel_text_utilities():
     for path in _frontend_sources():
         text = path.read_text(encoding = "utf-8")
         for m in re.finditer(r"(?<![\w-])(?:text|leading)-\[[0-9.]+px\]", text):
-            offenders.append(f"{path.relative_to(SRC)}: {m.group(0)}")
+            offenders.append(f"{_rel(path)}: {m.group(0)}")
     assert offenders == [], (
         "Raw px text utilities ignore the UI font size preference; use the "
         f"text-ui-* / leading-ui-* tokens in index.css instead: {offenders[:10]}"
@@ -157,7 +184,7 @@ def test_css_font_sizes_reference_the_scale():
                 continue
             if "1px" in decl:
                 continue  # library layout tricks (KaTeX-style), not text
-            offenders.append(f"{path.relative_to(SRC)}: {decl.strip()[:80]}")
+            offenders.append(f"{_rel(path)}: {decl.strip()[:80]}")
     assert offenders == [], (
         "CSS typography must multiply by var(--ui-font-scale, 1) or be "
         f"allowlisted here with a reason: {offenders[:10]}"
@@ -167,7 +194,7 @@ def test_css_font_sizes_reference_the_scale():
 def test_inline_font_size_styles_reference_the_scale():
     offenders = []
     for path in _frontend_sources():
-        rel = str(path.relative_to(SRC))
+        rel = _rel(path)
         if rel in FONTSIZE_STYLE_ALLOWLIST:
             continue
         text = path.read_text(encoding = "utf-8")

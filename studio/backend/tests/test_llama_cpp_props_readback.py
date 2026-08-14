@@ -104,6 +104,9 @@ def _make_backend(effective_ctx = 98304, port = 51234):
     inst._port = port
     inst._effective_context_length = effective_ctx
     inst._context_length = 262144
+    inst._effective_parallel_slots = 1
+    inst._kv_cache_unified = False
+    inst._kv_cache_context_total = None
     return inst
 
 
@@ -171,6 +174,31 @@ def test_fit_shrunk_ctx_overwrites_advertised_value(monkeypatch):
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 67584
     assert inst.context_length == 67584
+
+
+def test_props_keeps_total_cache_context_for_slot_preflight(monkeypatch):
+    inst = _make_backend(effective_ctx = 32768)
+    inst._effective_parallel_slots = 4
+    _stub_props(
+        monkeypatch,
+        body = {"default_generation_settings": {"n_ctx": 8192}},
+    )
+    inst._reconcile_effective_ctx_with_server()
+    assert inst._effective_context_length == 8192
+    assert inst._kv_cache_context_total == 32768
+
+
+def test_props_does_not_multiply_unified_cache_context(monkeypatch):
+    inst = _make_backend(effective_ctx = 32768)
+    inst._effective_parallel_slots = 4
+    inst._kv_cache_unified = True
+    _stub_props(
+        monkeypatch,
+        body = {"default_generation_settings": {"n_ctx": 32768}},
+    )
+    inst._reconcile_effective_ctx_with_server()
+    assert inst._effective_context_length == 32768
+    assert inst._kv_cache_context_total == 32768
 
 
 def test_matching_ctx_is_left_alone(monkeypatch):

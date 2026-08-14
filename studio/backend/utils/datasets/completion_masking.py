@@ -3,10 +3,11 @@
 
 """Completion-only masking policy shared by the CUDA and MLX training paths.
 
-Decides how train_on_responses_only is applied for a model: chat template
-auto-detection first, manual TEMPLATE_TO_RESPONSES_MAPPER markers as the
-fallback. gpt-oss included: its quantized checkpoints ship a different
-chat template, so only detection from the actual template is reliable.
+Decides how train_on_responses_only is applied for a model: explicit dataset
+markers when requested, otherwise chat template auto-detection with manual
+TEMPLATE_TO_RESPONSES_MAPPER markers as the fallback. gpt-oss included: its
+quantized checkpoints ship a different chat template, so only detection from
+the actual template is reliable.
 """
 
 from .model_mappings import (
@@ -34,9 +35,10 @@ def apply_completion_masking(
     num_proc = None,
     notify = None,
     detect_fn = None,
+    dataset_template = None,
 ):
-    """Apply completion-only masking with auto-detection first and the manual
-    template table as fallback.
+    """Apply completion-only masking with an explicit dataset template or
+    auto-detection followed by the manual model-template fallback.
 
     Args:
         trainer: The platform trainer (SFTTrainer or MLXTrainer).
@@ -49,6 +51,8 @@ def apply_completion_masking(
         detect_fn: Marker detector (tokenizer/processor) -> (instruction_part,
             response_part). Defaults to unsloth_zoo's get_chat_template_parts,
             which raises loudly when the template cannot be parsed. Test seam.
+        dataset_template: Explicit template-table key for already-rendered
+            dataset text. Bypasses tokenizer marker detection when provided.
 
     Returns:
         (trainer, applied): the possibly wrapped trainer and whether masking
@@ -66,6 +70,43 @@ def apply_completion_masking(
     if num_proc is not None:
         kwargs["num_proc"] = num_proc
 
+    processor = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
+    if type(processor).__name__ == "TokenizerWrapper":
+        wrapped = getattr(processor, "_tokenizer", None)
+        if wrapped is not None:
+            processor = wrapped
+    inner = getattr(processor, "tokenizer", processor)
+
+    if dataset_template is not None:
+        markers = TEMPLATE_TO_RESPONSES_MAPPER.get(dataset_template)
+        if not markers:
+            raise ValueError(f"Unknown completion masking template: {dataset_template}")
+        has_preset_markers = hasattr(inner, "_unsloth_input_part") and hasattr(
+            inner, "_unsloth_output_part"
+        )
+        if has_preset_markers:
+            previous_instruction = inner._unsloth_input_part
+            previous_response = inner._unsloth_output_part
+            inner._unsloth_input_part = markers["instruction"]
+            inner._unsloth_output_part = markers["response"]
+            try:
+                trainer = train_fn(trainer, **kwargs)
+            finally:
+                inner._unsloth_input_part = previous_instruction
+                inner._unsloth_output_part = previous_response
+        else:
+            trainer = train_fn(
+                trainer,
+                instruction_part = markers["instruction"],
+                response_part = markers["response"],
+                **kwargs,
+            )
+        notify(
+            "info",
+            f"Train on responses only configured with dataset template markers ({dataset_template})",
+        )
+        return trainer, True
+
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
     # gpt-oss goes auto-first: quantized/BF16 checkpoints ship a channel-less
@@ -79,15 +120,6 @@ def apply_completion_masking(
             template = "gpt-oss"
             instruction_part = markers["instruction"]
             response_part = markers["response"]
-    processor = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
-    # mlx-lm TokenizerWrapper hides underscore attrs, so preset _unsloth_*
-    # markers are invisible through it. Unwrap to the real tokenizer (as
-    # zoo's MLX resolver does) before the preset check and detection.
-    if type(processor).__name__ == "TokenizerWrapper":
-        wrapped = getattr(processor, "_tokenizer", None)
-        if wrapped is not None:
-            processor = wrapped
-    inner = getattr(processor, "tokenizer", processor)
     if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
         # Markers preset on the tokenizer; zoo reuses them on a bare call.
         trainer = train_fn(trainer, **kwargs)

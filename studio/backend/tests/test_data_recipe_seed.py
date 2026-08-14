@@ -11,7 +11,7 @@ import pytest
 def _seed_route_source() -> str:
     return (
         Path(__file__).resolve().parent.parent / "routes" / "data_recipe" / "seed.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
 
 
 def test_seed_inspect_load_kwargs_disables_remote_code_execution():

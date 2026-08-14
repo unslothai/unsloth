@@ -403,9 +403,9 @@ def test_openai_tools_stream(base_url: str, api_key: str):
     )
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received"
-    assert _final_finish_reason(chunks) == "tool_calls", (
-        f"Expected final finish_reason='tool_calls', got " f"{_final_finish_reason(chunks)!r}"
-    )
+    assert (
+        _final_finish_reason(chunks) == "tool_calls"
+    ), f"Expected final finish_reason='tool_calls', got {_final_finish_reason(chunks)!r}"
     assembled = _collect_streamed_tool_calls(chunks)
     assert len(assembled) >= 1, "No tool_calls reassembled from stream"
     first = assembled[0]
@@ -486,16 +486,16 @@ def test_openai_sdk_tool_calling(base_url: str, api_key: str):
         tool_choice = "required",
         stream = False,
     )
-    assert resp.choices[0].finish_reason == "tool_calls", (
-        f"Expected finish_reason='tool_calls', got " f"{resp.choices[0].finish_reason!r}"
-    )
+    assert (
+        resp.choices[0].finish_reason == "tool_calls"
+    ), f"Expected finish_reason='tool_calls', got {resp.choices[0].finish_reason!r}"
     tool_calls = resp.choices[0].message.tool_calls
     assert tool_calls and len(tool_calls) >= 1, "No tool_calls from SDK"
     tc = tool_calls[0]
     assert tc.function.name == "get_weather"
     parsed = json.loads(tc.function.arguments)
     assert "city" in parsed
-    print(f"  PASS  openai SDK tool calling: " f"tool={tc.function.name}, args={parsed}")
+    print(f"  PASS  openai SDK tool calling: tool={tc.function.name}, args={parsed}")
 
 
 def test_invalid_key_rejected(base_url: str):
@@ -783,12 +783,17 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
         cmd.extend(["--gguf-variant", variant])
 
     LOG_FILE.parent.mkdir(parents = True, exist_ok = True)
-    log_fh = open(LOG_FILE, "w")
+    log_fh = open(LOG_FILE, "w", encoding = "utf-8")
+    # The child writes to this descriptor itself, so the parent's encoding does
+    # not transcode anything: tell the child to emit utf-8 or the reads below
+    # decode its locale bytes as utf-8 and raise on the first non-ASCII glyph.
+    child_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
         cmd,
         stdout = log_fh,
         stderr = subprocess.STDOUT,
         preexec_fn = os.setsid,
+        env = child_env,
     )
 
     # Wait for the banner containing the API key
@@ -798,16 +803,16 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
         time.sleep(2)
         if proc.poll() is not None:
             log_fh.flush()
-            log_text = LOG_FILE.read_text()
+            log_text = LOG_FILE.read_text(encoding = "utf-8")
             raise RuntimeError(f"Server exited early (code {proc.returncode}):\n{log_text[-2000:]}")
-        log_text = LOG_FILE.read_text()
+        log_text = LOG_FILE.read_text(encoding = "utf-8")
         m = re.search(r"API Key:\s+(sk-unsloth-[a-f0-9]+)", log_text)
         if m:
             api_key = m.group(1)
             break
 
     if not api_key:
-        log_text = LOG_FILE.read_text()
+        log_text = LOG_FILE.read_text(encoding = "utf-8")
         _kill_server(proc)
         raise RuntimeError(f"Timed out waiting for API key in server output:\n{log_text[-2000:]}")
 

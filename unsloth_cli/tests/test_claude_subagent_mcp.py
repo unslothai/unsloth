@@ -15,6 +15,16 @@ import pytest
 import unsloth_cli.claude_subagent_mcp as bridge
 
 
+def _stub_env(monkeypatch, tmp_path):
+    """Minimum env + claude lookup for driving run_local_agent under a fake Popen."""
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", "http://127.0.0.1:8888")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_API_KEY", "sk-unsloth-test")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model: ["--settings", "{}"])
+
+
 def test_protocol_lists_and_calls_local_agent():
     initialized = bridge._response(
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
@@ -229,6 +239,8 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert command[:3] == ["/usr/local/bin/claude", "--model", "unsloth/model-GGUF:Q4_K_M"]
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
+    disallowed = command[command.index("--disallowedTools") + 1]
+    assert disallowed == "AskUserQuestion,EnterPlanMode,ExitPlanMode"
     assert captured["cwd"] == str(tmp_path)
     assert captured["stdin"] is bridge.subprocess.DEVNULL
     assert captured["stdout"] is bridge.subprocess.PIPE
@@ -275,6 +287,10 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     assert bridge.run_local_agent("plan this", read_only = True) == "PLAN_OK"
     command = captured["command"]
     assert command[command.index("--permission-mode") + 1] == "plan"
+    disallowed = command[command.index("--disallowedTools") + 1]
+    assert disallowed == "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
+    # Bash matters: plan mode routes it through a classifier served by this same
+    # local model, so without the deny a "read-only" child can still write files.
     prompt = command[command.index("--append-system-prompt") + 1]
     assert "read-only local coding subagent" in prompt
 
@@ -403,3 +419,37 @@ def test_stop_child_kills_survivors_after_leader_exit(monkeypatch, tmp_path):
 def test_result_parser_accepts_diagnostics_before_json():
     output = "connector warning\n" + json.dumps({"is_error": False, "result": "OK"})
     assert bridge._result_text(output) == "OK"
+
+
+def test_child_is_stopped_when_it_produces_nothing_before_the_deadline(monkeypatch, tmp_path):
+    # A local server that accepts and never answers used to block the child, and
+    # the parent waiting on it, indefinitely. Measured past 400s before this.
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT", "0.3")
+    _stub_env(monkeypatch, tmp_path)
+    stopped = []
+
+    class _Hanging:
+        returncode = None
+
+        def communicate(self, timeout = None):
+            raise subprocess.TimeoutExpired("claude", timeout)
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(bridge, "_stop_child", lambda proc: stopped.append(proc))
+    monkeypatch.setattr(bridge.subprocess, "Popen", lambda *a, **k: _Hanging())
+
+    with pytest.raises(RuntimeError, match = "produced nothing"):
+        bridge.run_local_agent("hello")
+    assert stopped, "a timed-out child must be killed, not left running"
+
+
+def test_timeout_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT", "0")
+    assert bridge._timeout_seconds() == 0.0
+    for bad in ("", "   ", "abc"):
+        monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT", bad)
+        assert bridge._timeout_seconds() == bridge._DEFAULT_TIMEOUT_SECONDS
+    monkeypatch.delenv("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT")
+    assert bridge._timeout_seconds() == bridge._DEFAULT_TIMEOUT_SECONDS

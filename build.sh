@@ -103,7 +103,7 @@ else
     STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
 fi
 
-# 4. Build wheel/sdist
+# 4. Build wheel/sdist.
 python -m build
 
 if [ "${1:-}" = "publish" ]; then

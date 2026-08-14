@@ -90,7 +90,7 @@ def _store_colab_login_credentials(username: str, password: str) -> None:
     path = _colab_login_credentials_path()
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(f"{username}\n{password}\n")
+        path.write_text(f"{username}\n{password}\n", encoding = "utf-8")
         try:
             import os
             os.chmod(path, 0o600)
@@ -106,10 +106,10 @@ def _load_colab_login_credentials() -> "tuple[str, str] | None":
     try:
         if not path.is_file():
             return None
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding = "utf-8").splitlines()
         if len(lines) >= 2 and lines[0] and lines[1]:
             return lines[0], lines[1]
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         logger.info(f"Could not load Colab login credentials ({e}).")
     return None
 
@@ -381,12 +381,13 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         )
         return None
     try:
-        from cloudflare_tunnel import start_studio_tunnel
+        from cloudflare_tunnel import set_studio_tunnel_url_callback, start_studio_tunnel
     except Exception as e:
         logger.info(f"Cloudflare tunnel unavailable ({e}); using Colab proxy only.")
         return None
     try:
-        url = start_studio_tunnel(port)
+        set_studio_tunnel_url_callback(_publish_cloudflare_url)
+        url = start_studio_tunnel(port, managed_by = "colab")
     except Exception as e:
         logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
         return None
@@ -397,14 +398,6 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
 
 
 def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:
-    """Publish a directly-started tunnel URL onto app.state so /api/health advertises it.
-
-    run_server sets this only when it opens the tunnel itself (skipped on Colab), so we
-    set it here; otherwise the frontend's API examples fall back to an unreachable
-    server_url. Best-effort.
-    """
-    if not cloudflare_url:
-        return
     try:
         from main import app as _studio_app
         _studio_app.state.cloudflare_url = cloudflare_url
@@ -417,12 +410,6 @@ def _stop_cloudflare_tunnel() -> None:
     try:
         from cloudflare_tunnel import stop_studio_tunnel
         stop_studio_tunnel()
-    except Exception:
-        pass
-    # Stop /api/health advertising a dead tunnel.
-    try:
-        from main import app as _studio_app
-        _studio_app.state.cloudflare_url = None
     except Exception:
         pass
 
@@ -651,7 +638,6 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         try:
             colab_login = _finalize_colab_admin_password() if use_cloudflare else None
             cf_url = start_cloudflare_tunnel(port) if use_cloudflare else None
-            _publish_cloudflare_url(cf_url)
             _show_and_embed(
                 port,
                 cloudflare_url = cf_url,
@@ -722,7 +708,6 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     try:
         colab_login = _finalize_colab_admin_password() if use_cloudflare else None
         cf_url = start_cloudflare_tunnel(actual_port) if use_cloudflare else None
-        _publish_cloudflare_url(cf_url)
         _show_and_embed(
             actual_port,
             cloudflare_url = cf_url,

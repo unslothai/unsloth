@@ -13,6 +13,7 @@ import { fr } from "./locales/fr";
 import { ru } from "./locales/ru";
 import { de } from "./locales/de";
 import { ko } from "./locales/ko";
+import { it } from "./locales/it";
 import type { InterpolationValues, MessageKey } from "./types";
 
 export const LOCALES = {
@@ -24,6 +25,7 @@ export const LOCALES = {
   "pt-BR": { label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)" },
   fr: { label: "French", nativeLabel: "Français" },
   de: { label: "German", nativeLabel: "Deutsch" },
+  it: { label: "Italian", nativeLabel: "Italiano" },
   ru: { label: "Russian", nativeLabel: "Русский" },
   hi: { label: "Hindi", nativeLabel: "हिन्दी" },
   ar: { label: "Arabic", nativeLabel: "العربية" },
@@ -41,6 +43,7 @@ export const messages = {
   "pt-BR": ptBR,
   fr,
   de,
+  it,
   ru,
   hi,
   ar,
