@@ -9,11 +9,39 @@ export interface VramReportingDevice {
   vram_used_gb?: number;
 }
 
+export interface MemoryTotalDevice {
+  memory_total_gb?: number;
+  /** True when the reported GPU budget comes from shared system memory. */
+  shared_memory?: boolean;
+}
+
 export interface VramReportingGpu {
   devices?: VramReportingDevice[];
   /** Used VRAM across the visible GPUs when no single device's usage could be
    * attributed. Windows ROCm only; null everywhere else. See #7452. */
   vram_used_gb_aggregate?: number | null;
+}
+
+/** Sum dedicated VRAM while counting a shared host-memory pool only once.
+ *
+ * The backend rounds each device to 2dp before sending it, so adding the
+ * devices back up reintroduces binary floating point error: three B200s at
+ * 179.06 GiB each sum to 537.1800000000001. Not every caller rounds before
+ * printing the total, so the sum is returned at the precision the devices
+ * arrived with. */
+export function aggregateGpuMemoryTotalGb(
+  devices: MemoryTotalDevice[],
+): number {
+  const dedicated = devices
+    .filter((device) => !device.shared_memory)
+    .reduce((sum, device) => sum + (device.memory_total_gb ?? 0), 0);
+  const shared = Math.max(
+    0,
+    ...devices
+      .filter((device) => device.shared_memory)
+      .map((device) => device.memory_total_gb ?? 0),
+  );
+  return Math.round((dedicated + shared) * 100) / 100;
 }
 
 /** Whether every device reports its own usage, so each row and their sum are real. */
