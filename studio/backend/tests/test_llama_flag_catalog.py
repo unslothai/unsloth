@@ -301,25 +301,64 @@ def test_the_slot_probe_never_runs_on_the_event_loop(monkeypatch):
         loop_thread = threading.current_thread()
         return await inference_route._effective_default_slots(None)
 
-    assert asyncio.run(_run()) == 4
+    assert asyncio.run(_run()) == (4, False)
     assert probe_thread is not None, "the clamp did not consult the binary at all"
     assert probe_thread is not loop_thread, "the --help probe ran on the event loop"
 
 
-def test_a_single_slot_default_needs_no_probe(monkeypatch):
-    # One slot cannot be clamped below one, so the answer is known without the binary
-    # and the common case pays nothing.
+def test_a_single_slot_default_still_reports_the_clamp(monkeypatch):
+    # One slot cannot be clamped below one, so the default needs no probe. Whether
+    # this build clamps is a different question and still has to be answered: the
+    # editor sizes an EXPLICIT Slots value the user may raise without re-reading
+    # this route, and off the loop like the rest of it.
     import asyncio
+    import threading
 
     import routes.inference as inference_route
 
-    def _boom(*_a, **_k):
-        raise AssertionError("probed for a single slot")
+    loop_thread = None
+    probe_thread = None
+
+    def _probe(*_a, **_k):
+        nonlocal probe_thread
+        probe_thread = threading.current_thread()
+        return {"found": True, "supports_kv_unified": False}
 
     monkeypatch.setattr(
         inference_route.LlamaCppBackend,
         "probe_server_capabilities",
-        staticmethod(_boom),
+        staticmethod(_probe),
     )
     monkeypatch.setattr(inference_route, "_resolve_parallel_slots", lambda *a, **k: 1)
-    assert asyncio.run(inference_route._effective_default_slots(None)) == 1
+
+    async def _run():
+        nonlocal loop_thread
+        loop_thread = threading.current_thread()
+        return await inference_route._effective_default_slots(None)
+
+    assert asyncio.run(_run()) == (1, True)
+    assert probe_thread is not loop_thread, "the --help probe ran on the event loop"
+
+
+def test_the_clamp_is_read_from_the_same_helper_the_load_uses(monkeypatch):
+    import routes.inference as inference_route
+
+    monkeypatch.setattr(
+        inference_route.LlamaCppBackend,
+        "probe_server_capabilities",
+        staticmethod(lambda *a, **k: {"found": True, "supports_kv_unified": True}),
+    )
+    assert inference_route._parallel_slots_are_clamped() is False
+    monkeypatch.setattr(
+        inference_route.LlamaCppBackend,
+        "probe_server_capabilities",
+        staticmethod(lambda *a, **k: {"found": True, "supports_kv_unified": False}),
+    )
+    assert inference_route._parallel_slots_are_clamped() is True
+    # An unreadable probe keeps the ask here too, so nothing is refused over it.
+    monkeypatch.setattr(
+        inference_route.LlamaCppBackend,
+        "probe_server_capabilities",
+        staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no binary"))),
+    )
+    assert inference_route._parallel_slots_are_clamped() is False

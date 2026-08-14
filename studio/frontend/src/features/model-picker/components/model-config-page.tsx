@@ -148,6 +148,30 @@ const SPECULATIVE_TYPE_LABELS: Record<
   off: "Off",
 };
 
+/**
+ * The batch size llama-server will not go below for this load.
+ *
+ * Two is its own hard floor (it aborts on a batch of 1 at any slot count), and above
+ * that the floor follows the slots the launch SERVES. That is not always the number
+ * chosen here: a build without --kv-unified serves one slot however many are asked
+ * for, and load_model clamps to it, so sizing the floor from an explicit Slots value
+ * refused "--batch-size 2" against a command the backend accepts. With the field
+ * blank the server-wide default applies, which the catalogue already publishes
+ * effective. A backend that publishes neither leaves the hard floor in charge.
+ */
+function effectiveBatchFloor(
+  requestedSlots: number | null | undefined,
+  limits:
+    | { defaultParallelSlots?: number; parallelSlotsClamped?: boolean }
+    | null
+    | undefined,
+): number {
+  if (limits?.parallelSlotsClamped) {
+    return 2;
+  }
+  return Math.max(2, requestedSlots ?? limits?.defaultParallelSlots ?? 2);
+}
+
 function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   return (
     config.kvCacheDtype != null ||
@@ -1312,10 +1336,9 @@ function ExtraArgsRow({
     manualGpuMemory: config.gpuMemoryMode === "manual",
     // The same floor the batch control shows, for the same reason: with Slots blank
     // the count is the server default this page cannot see, so only the hard 2 holds.
-    batchFloor: Math.max(
-      2,
-      config.nParallel ?? catalog?.defaultParallelSlots ?? 2,
-    ),
+    // A build that clamps serves one slot whatever is chosen here, so an explicit
+    // Slots value must not raise the floor above a batch the backend would accept.
+    batchFloor: effectiveBatchFloor(config.nParallel, catalog),
     keepResident: modelMemory?.keepResident ?? false,
     noRamReserve: modelMemory?.noRamReserve ?? false,
   });
@@ -1689,13 +1712,10 @@ export function ModelConfigPage({
         diagnoseExtraArgs(formatExtraArgs(args), catalog, {
           gpuSelectionActive: configState.selectedGpuIds != null,
           manualGpuMemory: configState.gpuMemoryMode === "manual",
-          batchFloor: Math.max(
-            2,
-            // The server-wide default when the Slots field is blank: that is the
-            // count the launch will serve, and llama-server aborts on a batch
-            // below it.
-            configState.nParallel ?? catalog.defaultParallelSlots ?? 2,
-          ),
+          // The server-wide default when the Slots field is blank: that is the
+          // count the launch will serve, and llama-server aborts on a batch below
+          // it. Clamped builds serve one whatever is chosen.
+          batchFloor: effectiveBatchFloor(configState.nParallel, catalog),
         }),
       );
       // Only ever tightens. This judges the TOKENS, and formatExtraArgs quotes them
@@ -1855,10 +1875,7 @@ export function ModelConfigPage({
             // below it deterministically. Left out, this released Load on a stored
             // "--batch-size 2" against a four-slot server, and a click in the window
             // before the full catalogue check lands reaches that 400.
-            batchFloor: Math.max(
-              2,
-              configRef.current.nParallel ?? managed?.defaultParallelSlots ?? 2,
-            ),
+            batchFloor: effectiveBatchFloor(configRef.current.nParallel, managed),
           }),
         );
         // Read from a ref rather than inside the updater below: an updater must stay

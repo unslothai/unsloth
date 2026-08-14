@@ -976,6 +976,16 @@ class LlamaFlagCatalogResponse(BaseModel):
             "Slots field blank this is the number the launch will use."
         ),
     )
+    parallel_slots_clamped: bool = Field(
+        False,
+        description = (
+            "True when this build serves ONE slot however many are asked for, because "
+            "it has no --kv-unified and load_model falls back. The default above is "
+            "already effective, but an EXPLICIT Slots value is not: without this an "
+            "editor sizes its batch floor from a count the launch will not use, and "
+            "refuses a --batch-size the backend accepts."
+        ),
+    )
     probe_ok: bool = Field(
         False,
         description = (

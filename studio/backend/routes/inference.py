@@ -10161,7 +10161,19 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
     return supports_mtp, freshness
 
 
-async def _effective_default_slots(fastapi_request) -> int:
+def _parallel_slots_are_clamped() -> bool:
+    """Whether this build serves one slot whatever is asked for.
+
+    The published default is already effective, but an explicit Slots value is chosen
+    in the editor and never passes through here, so the editor cannot apply the clamp
+    without being told it exists: Slots 4 with "--batch-size 2" was refused there while
+    the backend, which clamps to one, accepts exactly that command. Asked of the same
+    helper the load uses, with a count above one, so the two can never drift.
+    """
+    return _effective_parallel_slots(2) == 1
+
+
+async def _effective_default_slots(fastapi_request) -> tuple[int, bool]:
     """The default slot count a load would really serve, without blocking the loop.
 
     _effective_parallel_slots asks the binary whether it supports --kv-unified, and on
@@ -10173,8 +10185,12 @@ async def _effective_default_slots(fastapi_request) -> int:
     """
     requested = _resolve_parallel_slots(_NoParallelRequest(), fastapi_request)
     if requested <= 1:
-        return requested
-    return await asyncio.to_thread(_effective_parallel_slots, requested)
+        # One slot cannot be clamped below one, but whether this build clamps is still
+        # the editor's question: it sizes an EXPLICIT Slots value the user may raise
+        # without ever re-reading this route.
+        return requested, await asyncio.to_thread(_parallel_slots_are_clamped)
+    effective = await asyncio.to_thread(_effective_parallel_slots, requested)
+    return effective, effective == 1
 
 
 @router.get("/llama-flags", response_model = LlamaFlagCatalogResponse)
@@ -10202,6 +10218,7 @@ async def get_llama_flags(
         sorted_managed_flags,
     )
 
+    _default_slots, _slots_clamped = await _effective_default_slots(fastapi_request)
     # What this host refuses on size, so an editor draws the same line rather than
     # letting a 25 KiB grammar through to a 400.
     limits = {
@@ -10216,7 +10233,8 @@ async def get_llama_flags(
         # The effective count, after the clamps the launch applies: a build without
         # --kv-unified serves one slot however many are configured, and an editor
         # sizing its batch floor from the raw default would refuse a batch that runs.
-        "default_parallel_slots": await _effective_default_slots(fastapi_request),
+        "default_parallel_slots": _default_slots,
+        "parallel_slots_clamped": _slots_clamped,
     }
 
     if managed_only:

@@ -26,6 +26,13 @@ export type LlamaFlagCatalog = {
    */
   defaultParallelSlots: number;
   /**
+   * True when this build serves ONE slot however many are asked for (no
+   * --kv-unified, so load_model falls back). defaultParallelSlots is already
+   * effective, but an EXPLICIT Slots value chosen in this panel is not, and sizing
+   * the batch floor from it refuses a --batch-size the backend accepts.
+   */
+  parallelSlotsClamped: boolean;
+  /**
    * False when `--help` could not be read. Nothing may then be reported as a typo:
    * an unverifiable flag is not a wrong one.
    */
@@ -43,6 +50,8 @@ type ApiLlamaFlagCatalog = {
   windows_command_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   default_parallel_slots?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  parallel_slots_clamped?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   probe_ok?: boolean;
 };
@@ -71,6 +80,13 @@ export type LlamaManagedFlags = {
   maxBytes: number;
   windowsCommandBudget: number;
   defaultParallelSlots: number;
+  /**
+   * True when this build serves ONE slot however many are asked for (no
+   * --kv-unified, so load_model falls back). defaultParallelSlots is already
+   * effective, but an EXPLICIT Slots value chosen in this panel is not, and sizing
+   * the batch floor from it refuses a --batch-size the backend accepts.
+   */
+  parallelSlotsClamped: boolean;
 };
 
 let inFlightManaged: Promise<LlamaManagedFlags | null> | null = null;
@@ -154,6 +170,9 @@ export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
         // 0 on a backend that predates the field, which reads as "not known" and
         // leaves the editor's own hard floor of 2 in charge.
         defaultParallelSlots: body.default_parallel_slots ?? 0,
+        // Absent on a backend that predates the field, and false is the safe read:
+        // the floor then follows the asked-for count, exactly as it did before.
+        parallelSlotsClamped: Boolean(body.parallel_slots_clamped),
       };
       if (generation !== catalogGeneration) {
         // The binary changed while this was in flight: answer "cannot verify"
@@ -204,6 +223,7 @@ export function loadLlamaFlagCatalog(): Promise<LlamaFlagCatalog | null> {
         // 0 on a backend that predates the field, which reads as "not known" and
         // leaves the editor's own hard floor of 2 in charge.
         defaultParallelSlots: body.default_parallel_slots ?? 0,
+        parallelSlotsClamped: Boolean(body.parallel_slots_clamped),
         probeOk: Boolean(body.probe_ok),
       };
       if (generation !== catalogGeneration) {

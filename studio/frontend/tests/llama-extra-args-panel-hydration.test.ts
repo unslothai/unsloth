@@ -142,7 +142,24 @@ test("the hidden hydration check knows the slot floor", () => {
   // The floor is already fetched here, and the backend refuses a batch below it
   // deterministically, so releasing Load without it opens a window where a click
   // reaches that 400.
-  assert.match(PANEL, /batchFloor: Math\.max\(\s*\n?\s*2,\s*\n?\s*configRef\.current\.nParallel \?\? managed\?\.defaultParallelSlots/);
+  assert.match(
+    PANEL,
+    /batchFloor: effectiveBatchFloor\(configRef\.current\.nParallel, managed\)/,
+  );
+});
+
+test("a build that serves one slot does not raise the floor", () => {
+  // The published default is already effective, but an EXPLICIT Slots value is not:
+  // a build without --kv-unified serves one slot however many are asked for, so
+  // Slots 4 with "--batch-size 2" was refused here while the backend, which clamps
+  // to one, accepts exactly that command. One helper at all three call sites, so the
+  // row and the two hidden checks cannot drift apart.
+  assert.match(PANEL, /if \(limits\?\.parallelSlotsClamped\) \{\n\s*return 2;/);
+  assert.equal(
+    PANEL.match(/effectiveBatchFloor\(/g)?.length,
+    4,
+    "one definition and three call sites",
+  );
 });
 
 const ADAPTER_AUTOLOAD = ADAPTER;
@@ -165,4 +182,22 @@ test("a compare pane records what it launched with", () => {
     COMPOSER,
     /loadedLlamaExtraArgs:\s*\n?\s*resp\.requested_llama_extra_args !== undefined/,
   );
+});
+
+const CHAT_PAGE = readFileSync(
+  path.join(HERE, "..", "src/features/chat/chat-page.tsx"),
+  "utf8",
+);
+
+test("a launch that only applies the remembered config still carries its arguments", () => {
+  // applyPerModelConfigToRuntime has no field for the launch flags, and /load only
+  // inherits them from the SAME resident model, so a cold launch or a switch from
+  // another model ran without the arguments this model was remembered with. Both
+  // paths that load through the runtime alone now pass the config itself.
+  assert.match(HUB, /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/);
+  assert.match(CHAT_PAGE, /const remembered = rememberedConfigFor\(selection\);/);
+  assert.match(CHAT_PAGE, /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/);
+  // Nothing is invented when there is no remembered config: the field stays absent,
+  // which is what lets /load keep a resident model's own flags.
+  assert.doesNotMatch(HUB, /config: rememberedConfig \?\? null/);
 });
