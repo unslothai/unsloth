@@ -99,7 +99,6 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
         "libegl1",
         "libgbm1",
         "libwayland-client0",
-
         "libwayland-egl1",
         "libxcb1",
         "libxinerama1",
@@ -256,6 +255,7 @@ def test_complete_appimage_verifier_accepts_a_coherent_runtime(tmp_path):
     )
     assert "Verified complete x86_64 AppImage runtime" in result.stdout
 
+
 def test_complete_appimage_verifier_rejects_global_library_path_and_missing_origin_runpath(
     tmp_path,
 ):
@@ -271,9 +271,7 @@ def test_complete_appimage_verifier_rejects_global_library_path_and_missing_orig
     assert "LD_LIBRARY_PATH" in result.stderr
 
     missing_runpath = _fake_complete_appdir(tmp_path / "missing-runpath")
-    _compile_fixture_elf(
-        missing_runpath / "usr/lib/WebKitWebProcess", origin_runpath = False
-    )
+    _compile_fixture_elf(missing_runpath / "usr/lib/WebKitWebProcess", origin_runpath = False)
     result = subprocess.run(
         [VERIFIER, "--appdir", missing_runpath],
         check = False,
