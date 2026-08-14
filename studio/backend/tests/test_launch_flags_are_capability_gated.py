@@ -18,9 +18,12 @@ lacks one may drop it.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import logging
 import subprocess
 import sys
+import textwrap
 import types as _types
 from pathlib import Path
 
@@ -40,7 +43,10 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
-from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import (  # noqa: E402
+    LlamaCppBackend,
+    _flash_attn_enabled_from_args,
+)
 
 GATED = (
     "supports_no_context_shift",
@@ -292,3 +298,62 @@ class TestTheCrashRecoveryMatchesTheEmittedForm:
         env = {"LLAMA_ARG_CTX_SIZE": "4096"}
         assert LlamaCppBackend._drop_env_flash_attn(env) is False
         assert env == {"LLAMA_ARG_CTX_SIZE": "4096"}
+
+
+def _flash_attn_env_scrub(*, known_off: bool) -> dict:
+    """Run load_model's real inherited-flash-attention env scrub, and report the env."""
+    source = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    blocks = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.If)
+        and "_drop_env_flash_attn"
+        in {a.attr for a in ast.walk(node) if isinstance(a, ast.Attribute)}
+        and "_flash_attn_known_off"
+        in {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+    ]
+    assert len(blocks) == 1, f"expected one scrub block, found {len(blocks)}"
+    scope = {
+        "self": LlamaCppBackend,
+        "logger": logging.getLogger(__name__),
+        "_flash_attn_known_off": known_off,
+        "env": {"LLAMA_ARG_FLASH_ATTN": "1", "LLAMA_ARG_CTX_SIZE": "4096"},
+    }
+    exec(ast.unparse(ast.Module(body = blocks, type_ignores = [])), scope)
+    return scope["env"]
+
+
+class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
+    """A build with no --flash-attn never reads LLAMA_ARG_FLASH_ATTN either.
+
+    llama.cpp resolves each LLAMA_ARG_* variable through the common_arg that
+    declares it, so a binary predating the flag registers neither. Studio still
+    reads the inherited env when it records what the child is running, and a
+    recorded-on flash attention under-sizes the padded V cache the resume-slot
+    estimate is capped on.
+    """
+
+    # What the gate leaves on the command line for such a build: no -fa at all.
+    CMD = ["llama-server", "-m", "m.gguf", "--no-context-shift", "-c", "8192"]
+
+    def test_the_inherited_value_is_dropped(self):
+        env = _flash_attn_env_scrub(known_off = True)
+        assert "LLAMA_ARG_FLASH_ATTN" not in env
+        # ...and nothing else in the inherited env is touched.
+        assert env == {"LLAMA_ARG_CTX_SIZE": "4096"}
+
+    def test_the_recorded_state_then_matches_the_launch(self):
+        env = _flash_attn_env_scrub(known_off = True)
+        assert _flash_attn_enabled_from_args(self.CMD, default = False, env = env) is False
+
+    @pytest.mark.parametrize("value", ["1", "on", "auto", "true"])
+    def test_every_enabling_spelling_would_otherwise_win(self, value):
+        """The unscrubbed env overrides the default on all of llama.cpp's truthy forms."""
+        env = {"LLAMA_ARG_FLASH_ATTN": value}
+        assert _flash_attn_enabled_from_args(self.CMD, default = False, env = env) is True
+
+    def test_a_build_that_has_the_flag_keeps_the_inherited_value(self):
+        """The scrub is scoped to the flagless build: everywhere else a deliberate
+        LLAMA_ARG_FLASH_ATTN must reach llama-server untouched."""
+        env = _flash_attn_env_scrub(known_off = False)
+        assert env["LLAMA_ARG_FLASH_ATTN"] == "1"
