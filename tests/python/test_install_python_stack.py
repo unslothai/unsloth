@@ -1274,6 +1274,91 @@ class TestDuplicateCoreMetadataRepair:
         cmd = calls[-1][0]
         assert cmd[cmd.index("--only-binary") + 1] == ":all:"
 
+    def test_the_annotated_index_is_recovered_with_its_credentials(self, monkeypatch):
+        """Measured on uv 0.10.7: the emitted index lines carry userinfo and the
+        `# from` annotation has it stripped. Taking the annotation at face value
+        hands pip an unauthenticated URL for a private index, which answers 401 and
+        aborts the repair."""
+        self._uv_only(monkeypatch)
+        self._uv_plan(
+            monkeypatch,
+            stdout = (
+                b"--index-url https://user:secret@private.corp/simple\n"
+                b"unsloth-zoo==1.0\n"
+                b"    # from https://private.corp/simple\n"
+            ),
+        )
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
+
+    def test_an_authenticated_extra_index_is_recovered_too(self, monkeypatch):
+        """uv puts a credentialed --index on the extra line and leaves --index-url as
+        the public default, so reading only --index-url would name the wrong index."""
+        self._uv_only(monkeypatch)
+        self._uv_plan(
+            monkeypatch,
+            stdout = (
+                b"--index-url https://pypi.org/simple\n"
+                b"--extra-index-url https://user:secret@private.corp/simple\n"
+                b"unsloth-zoo==1.0\n"
+                b"    # from https://private.corp/simple\n"
+            ),
+        )
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
+
+    def test_the_credentialed_form_wins_over_a_bare_duplicate(self, monkeypatch):
+        self._uv_only(monkeypatch)
+        self._uv_plan(
+            monkeypatch,
+            stdout = (
+                b"--index-url https://private.corp/simple\n"
+                b"--extra-index-url https://user:secret@private.corp/simple\n"
+                b"unsloth-zoo==1.0\n"
+                b"    # from https://private.corp/simple\n"
+            ),
+        )
+        _requirement, overrides, _options = ips._uv_staging_plan("unsloth-zoo")
+        assert overrides["PIP_INDEX_URL"] == "https://user:secret@private.corp/simple"
+
+    @pytest.mark.parametrize(
+        "url, bare",
+        (
+            ("https://u:p@h/simple", "https://h/simple"),
+            ("https://h/simple", "https://h/simple"),
+            ("https://h/simple?a=b", "https://h/simple?a=b"),
+            ("/local/dir", "/local/dir"),
+        ),
+    )
+    def test_userinfo_is_stripped_without_disturbing_the_rest(self, url, bare):
+        assert ips._strip_userinfo(url) == bare
+
+    def test_offline_still_stages_a_local_checkout(self, tmp_path, monkeypatch):
+        """--local hands the repair a checkout on disk. It needs no network, so
+        UV_OFFLINE has nothing to say about it, and refusing left the conflict in
+        place and failed the update for no reason."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        monkeypatch.setenv("UV_OFFLINE", "1")
+        calls = self._uv_plan(monkeypatch)
+        assert ips._stage_replacement(str(tmp_path)) is None
+        # It reached pip rather than refusing, and did not consult uv for a path.
+        assert calls and all(cmd[:3] != ["uv", "pip", "compile"] for cmd, _ in calls)
+        assert calls[-1][0][-1] == str(tmp_path)
+
+    def test_offline_still_refuses_a_git_reference(self, monkeypatch, capsys):
+        """A git URL is a network fetch however direct the reference is."""
+        self._uv_only(monkeypatch)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        monkeypatch.setenv("UV_OFFLINE", "1")
+
+        def fake_run(*args, **kwargs):
+            raise AssertionError("nothing may run while uv is offline")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        assert ips._stage_replacement("unsloth-zoo @ git+https://example/x") is None
+        assert "UV_OFFLINE" in capsys.readouterr().err
+
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)

@@ -4059,16 +4059,16 @@ def _stage_replacement(name: str):
     provenance and the reproducibility policy the other installs run under.
     """
     requirement, overrides, build_options = name, {}, []
-    if USE_UV:
-        if _uv_is_offline():
-            _safe_print(
-                _red(
-                    "   UV_OFFLINE is set and pip has no offline mode, so repairing "
-                    f"{name} would have to reach the network; leaving the install alone."
-                ),
-                file = sys.stderr,
-            )
-            return None
+    if USE_UV and _uv_is_offline() and not _is_local_source(name):
+        # A checkout on disk needs no network, so offline has nothing to say about it.
+        _safe_print(
+            _red(
+                "   UV_OFFLINE is set and pip has no offline mode, so repairing "
+                f"{name} would have to reach the network; leaving the install alone."
+            ),
+            file = sys.stderr,
+        )
+        return None
     if USE_UV and not _is_direct_reference(name):
         # A direct reference is its own provenance, so it is staged as written.
         plan = _uv_staging_plan(name)
@@ -4463,14 +4463,15 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
         if VERBOSE and result.stderr:
             _safe_print(_redact_install_output(result.stderr))
         return None
-    requirement, index_url = "", ""
+    requirement, origin = "", ""
+    emitted: list[str] = []
     find_links: list[str] = []
     build_options: list[str] = []
     canonical = _canonical_package_name(name)
     for raw in (result.stdout or b"").decode("utf-8", "replace").splitlines():
         line = raw.strip()
-        if line.startswith("--index-url "):
-            index_url = index_url or line.split(" ", 1)[1].strip()
+        if line.startswith(("--index-url ", "--extra-index-url ")):
+            emitted.append(line.split(" ", 1)[1].strip())
         elif line.startswith("--find-links "):
             find_links.append(line.split(" ", 1)[1].strip())
         elif line.startswith(("--no-binary ", "--only-binary ")):
@@ -4481,8 +4482,11 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
             build_options.extend((option, value.strip()))
         elif line.startswith("# from "):
             # The annotation names the index this package actually came from, which is
-            # the one to reproduce; --index-url is only the fallback when uv omits it.
-            index_url = line[len("# from ") :].strip() or index_url
+            # the one to reproduce. It is not usable as written: measured on uv 0.10.7,
+            # userinfo is stripped from the annotation while the emitted index lines
+            # keep it, so it is matched back to the emitted URL that carries the
+            # credentials. A private index would answer 401 otherwise.
+            origin = line[len("# from ") :].strip() or origin
         elif line and not line.startswith(("#", "-")):
             pinned = line.split(";", 1)[0].strip()
             if _canonical_package_name(pinned.split("==", 1)[0]) == canonical:
@@ -4499,6 +4503,7 @@ def _uv_staging_plan(name: str) -> "tuple[str, dict[str, str]] | None":
         "PIP_NO_INDEX": "",
         "PIP_FIND_LINKS": " ".join(find_links),
     }
+    index_url = _credentialed_index(origin, emitted)
     if index_url:
         overrides["PIP_INDEX_URL"] = index_url
     # Measured on uv 0.10.7: --emit-build-options surfaces the policy from uv.toml but
@@ -4573,6 +4578,43 @@ def _canonical_package_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).strip().lower()
 
 
+def _strip_userinfo(url: str) -> str:
+    """The URL without any `user:password@`, which is how uv writes an annotation."""
+    scheme, separator, rest = url.partition("://")
+    if not separator:
+        return url
+    authority, slash, tail = rest.partition("/")
+    _credentials, at_sign, host = authority.rpartition("@")
+    return f"{scheme}://{host}{slash}{tail}" if at_sign else url
+
+
+def _credentialed_index(origin: str, emitted: "list[str]") -> str:
+    """The emitted index matching the annotated origin, credentials intact.
+
+    uv emits every index it was configured with, credentials and all, but strips
+    userinfo from the `# from` annotation that says which one answered. Taking the
+    annotation at face value hands pip an unauthenticated URL for a private index,
+    which answers 401 and aborts the repair. Matching is on the credential-free form
+    of each emitted URL, so an authenticated extra index is recovered too.
+    """
+    if origin:
+        target = _strip_userinfo(origin).rstrip("/")
+        matches = [url for url in emitted if _strip_userinfo(url).rstrip("/") == target]
+        # One index can be emitted both with and without credentials; the whole point
+        # here is the credentialed form, so it wins over a bare match on the same URL.
+        for url in matches:
+            if _strip_userinfo(url) != url:
+                return url
+        if matches:
+            return matches[0]
+    return origin or (emitted[0] if emitted else "")
+
+
+def _is_local_source(requirement: str) -> bool:
+    """True when the replacement is already on disk, so no network is needed."""
+    return os.path.exists(requirement)
+
+
 def _is_direct_reference(requirement: str) -> bool:
     """True when the requirement already names the source to build from.
 
@@ -4582,7 +4624,7 @@ def _is_direct_reference(requirement: str) -> bool:
     Asking uv to resolve it would also compare a bare spec against uv's output, which
     appends the resolved commit and so could never match.
     """
-    return "://" in requirement or os.path.exists(requirement)
+    return "://" in requirement or _is_local_source(requirement)
 
 
 def _uv_upload_cutoff_args() -> "list[str] | None":
