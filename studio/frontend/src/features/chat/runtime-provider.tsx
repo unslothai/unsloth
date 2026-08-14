@@ -64,6 +64,7 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
   beginThreadScopedPairing,
+  commitHeldThreadScopedEditsToTheirThread,
   releaseHeldThreadScopedEdits,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -1714,11 +1715,26 @@ function ThreadScopedSettingsSync({
     let cancelled = false;
     let paired = false;
     let unpaired = false;
+    let defaulted = false;
 
     const sync = () => {
       if (cancelled || paired) return;
       // the composer is live while this read is out, so hold any edit made in the meantime
       // rather than writing it to the installation defaults and then discarding it.
+      // Drop to the installation defaults for the duration of the read. Until it lands the
+      // store still holds the OUTGOING chat's values, and the composer is usable: a send in
+      // that window is captured by snapshotQueuedChatRunSettings and carries the previous
+      // chat's permission level and pills, so a chat stored as "ask" could run tools
+      // without asking. The defaults are the only honest thing to show for a chat whose
+      // own settings are not known yet, and a read that never resolves now leaves those
+      // rather than another chat's.
+      //
+      // Before beginThreadScopedPairing, not after: this call ends any pairing in progress,
+      // so reversing the two would close the window that holds edits made during the read.
+      if (!defaulted) {
+        defaulted = true;
+        applyThreadScopedSettings(null, null);
+      }
       beginThreadScopedPairing(activeThreadId);
       void getStoredChatThreadReadResult(activeThreadId)
         .then(({ thread, cacheable }) => {
@@ -1741,16 +1757,19 @@ function ThreadScopedSettingsSync({
             thread.settings ? sanitizeThreadScopedSettings(thread.settings) : null,
           );
         })
-        // a failed read keeps the current values: the defaults would be the wrong chat's modes.
-        // A held edit still has to go somewhere, and the defaults are where it went before.
-        .catch(() => releaseHeldThreadScopedEdits());
+        // A failed read leaves the installation defaults up (dropped to above), not the
+        // outgoing chat's settings, which would otherwise stay live indefinitely. The held
+        // edit goes to the chat it was made in.
+        .catch(() => commitHeldThreadScopedEditsToTheirThread());
     };
 
     sync();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     return () => {
       cancelled = true;
-      releaseHeldThreadScopedEdits();
+      // switched away mid-read: the edit belongs to the chat it was made in, not to the
+      // installation defaults that every other snapshot-less chat follows.
+      commitHeldThreadScopedEditsToTheirThread();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };
   }, [activeThreadId, enabled, settingsHydrated]);

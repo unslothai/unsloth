@@ -696,6 +696,20 @@ function readThreadScopedSettings(
 export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   key: K,
 ): ThreadScopedSettings[K] | undefined {
+  // activeThreadScopedSettings is only refreshed when the debounce fires, so for the 400ms
+  // after an edit it still holds the pre-edit values, and the capture path deliberately
+  // wrote nothing to localStorage either. A model load or a status poll landing in that
+  // window would read the old value, revert the pill, and then be persisted by the write
+  // the edit itself scheduled. The store already holds the edit, so prefer it.
+  // A pending PIN carries its own snapshot and is authoritative, so it is left alone.
+  if (
+    threadSettingsWriteThreadId !== null &&
+    threadSettingsWriteThreadId === threadScopedSettingsThreadId &&
+    threadSettingsWriteSnapshot === null
+  ) {
+    const live = readThreadScopedSettings(useChatRuntimeStore.getState());
+    if (live[key] !== undefined) return live[key];
+  }
   return activeThreadScopedSettings?.[key];
 }
 
@@ -730,7 +744,9 @@ function buildThreadScopedSnapshot(
     threadId === threadScopedSettingsThreadId &&
     activeThreadScopedSettings?.deepResearchEnabled === true &&
     settings.deepResearchEnabled !== true &&
-    (isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) ||
+    (externalCheckpointRefusesDeepResearch(
+      useChatRuntimeStore.getState().params.checkpoint,
+    ) ||
       useChatRuntimeStore.getState().incognito)
   ) {
     settings.deepResearchEnabled = true;
@@ -759,20 +775,39 @@ function sendThreadScopedSettingsBeacon(
   }).catch(() => undefined);
 }
 
-async function writeThreadScopedSettings(
+// One chain per thread. The write REPLACES settings_json rather than merging it, so two
+// unordered writes do not merge into the newer one, they pick a winner: a slow first
+// request landing after a fast second restores the settings the user just moved away from.
+const threadSettingsWriteChains = new Map<string, Promise<void>>();
+
+function writeThreadScopedSettings(
   threadId: string,
   snapshot: ThreadScopedSettings | null,
 ): Promise<void> {
+  // Built now, not inside the chain: the snapshot must describe the store as it is at the
+  // moment of the edit, not as it will be once the previous write has finished.
   const settings = buildThreadScopedSnapshot(threadId, snapshot);
-  try {
-    const { updateStoredChatThread } = await import(
-      "../utils/chat-history-storage"
-    );
-    await updateStoredChatThread(threadId, { settings });
-  } catch {
-    // the chat still behaves as edited; only the snapshot for the next visit is lost.
-    warnSettingsPersistenceFailure();
-  }
+  const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        const { updateStoredChatThread } = await import(
+          "../utils/chat-history-storage"
+        );
+        await updateStoredChatThread(threadId, { settings });
+      } catch {
+        // the chat still behaves as edited; only the snapshot for the next visit is lost.
+        warnSettingsPersistenceFailure();
+      }
+    })
+    .finally(() => {
+      if (threadSettingsWriteChains.get(threadId) === next) {
+        threadSettingsWriteChains.delete(threadId);
+      }
+    });
+  threadSettingsWriteChains.set(threadId, next);
+  return next;
 }
 
 function flushThreadScopedSettingsWrite(keepalive = false): void {
@@ -840,6 +875,26 @@ export function releaseHeldThreadScopedEdits(): void {
   heldThreadScopedEdits = [];
   pendingPairingThreadId = null;
   for (const edit of held) edit.writeGlobal?.();
+}
+
+/**
+ * The user left before the read finished. The edit belongs to the chat it was made in, so
+ * write it there; replaying it into the installation defaults would move every
+ * snapshot-less chat, which is the leak this path exists to prevent.
+ *
+ * The store still holds the edited values here: the incoming chat's own read has not
+ * resolved yet, so nothing has overwritten them. A chat with no row of its own writes
+ * nothing (`ensureStoredChatThread` only adopts a record that already exists), which
+ * correctly leaves an unsaved chat following the defaults.
+ */
+export function commitHeldThreadScopedEditsToTheirThread(): void {
+  const threadId = pendingPairingThreadId;
+  const held = heldThreadScopedEdits;
+  heldThreadScopedEdits = [];
+  pendingPairingThreadId = null;
+  if (threadId === null || held.length === 0) return;
+  scheduleThreadScopedSettingsWrite(threadId);
+  flushThreadScopedSettingsWrite();
 }
 
 // reports whether the edit was taken; with no chat open the caller persists globally as before.
@@ -2744,14 +2799,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           continue;
         }
         // full access was accepted through a warning dialog: a switch must not drop it.
+        // The chat is still pinned with the level underneath it, or a chat first opened
+        // under full access would store no level at all and follow the installation one
+        // forever after, which is the opposite of what pinning on open is for.
         if (key === "permissionMode" && state.permissionMode === "full") {
+          const underneath =
+            stored?.permissionMode ??
+            globalThreadScopedDefaults?.permissionMode ??
+            loadPermissionMode();
+          if (underneath !== "full") applied[key] = underneath;
           continue;
         }
         // setCheckpoint clears deep research for external models in the store only, so a
-        // stored true would come back and fail every send in that chat.
+        // stored true would come back and fail every send in that chat. openai_codex is the
+        // exception the composer already makes, so use the same predicate rather than
+        // refusing every external checkpoint.
         if (
           key === "deepResearchEnabled" &&
-          (isExternalModelId(state.params.checkpoint) || state.incognito)
+          (externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
+            state.incognito)
         ) {
           continue;
         }
