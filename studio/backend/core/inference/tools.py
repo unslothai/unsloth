@@ -9001,8 +9001,15 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 #                               never categorically
 #   API coverage differs per rewrite -> _makedirs calls _remap only, so the
 #                               generic fallback is open/io.open/os.open alone and
-#                               os.makedirs under a missing parent targets the REAL
-#                               host path -- an attempt, not an outcome: measured
+#                               os.makedirs under a missing parent OUTSIDE the
+#                               convention prefixes targets the REAL host path.
+#                               Inside them _remap still rewrites, measured:
+#                               makedirs("/mnt/data/reports") created ./reports and
+#                               raised nothing, so the clause has to name the prefixes
+#                               rather than say "not rewritten at all" -- a model told
+#                               otherwise reports the host path for a directory that
+#                               is in its working directory.
+#                               An attempt, not an outcome: measured
 #                               under this shim, makedirs into a mode-500 directory
 #                               raised PermissionError and created nothing, neither
 #                               on the host nor in the workdir, so the clause must
@@ -9024,9 +9031,9 @@ _FULL_ACCESS_CLAUSE = {
         "unrelated file, though rewriting the same absolute path just replaces "
         "what your own earlier call left there. The convention rewrite covers "
         "open() and the mkdir calls; the other covers open() alone, so "
-        "os.makedirs under a missing absolute parent is not rewritten at all and "
-        "attempts the real host path, which then succeeds or fails on the "
-        "filesystem's own permissions. "
+        "os.makedirs under a missing parent outside those prefixes is not "
+        "rewritten and attempts the real host path, which then succeeds or fails "
+        "on the filesystem's own permissions. "
         "Neither touches os.rename or os.symlink, which simply fail, and a helper "
         "such as shutil.copy can write the rewritten file and still raise on a "
         "later step. Report where a file actually landed rather than the path you "

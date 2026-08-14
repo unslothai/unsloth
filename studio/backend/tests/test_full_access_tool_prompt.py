@@ -143,12 +143,16 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
         # Only open/io.open/os.open and the mkdir family are wrapped. Measured:
         # os.rename and os.symlink raise, and shutil.copy writes the rewritten
         # file through open and then raises in copymode.
-        # Measured: os.makedirs under a missing absolute parent targets the REAL
-        # host path, because _makedirs calls _remap only and never the generic
-        # fallback, so the two rewrites do NOT cover the same APIs.
+        # Measured: os.makedirs under a missing parent OUTSIDE the convention
+        # prefixes targets the REAL host path, because _makedirs calls _remap only
+        # and never the generic fallback, so the two rewrites do NOT cover the same
+        # APIs. Inside a prefix _remap still rewrites, so the clause is scoped:
+        # makedirs("/mnt/data/reports") with no /mnt/data created ./reports.
         assert "The convention rewrite covers open() and the mkdir calls" in full
         assert "the other covers open() alone" in full
-        assert "os.makedirs under a missing absolute parent is not rewritten at all" in full
+        assert "os.makedirs under a missing parent outside those prefixes" in full
+        assert "is not rewritten and attempts the real host path" in full
+        assert "missing absolute parent is not rewritten at all" not in full
         assert "shutil.copy can write the rewritten file and still raise" in full
     else:
         assert "absolute paths do resolve as the shell resolves them" in full
@@ -435,8 +439,14 @@ def _sandbox_site_dir():
     return Path(tools.__file__).resolve().parent / "sandbox_site"
 
 
+# hasattr, not the win32 marker above: a marker's argument is evaluated when the decorator
+# is applied, so os.geteuid() runs at import on a platform that has no geteuid and takes the
+# whole module down at collection, every test in it, not just this one.
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX directory modes")
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores a mode-500 directory")
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason = "root ignores a mode-500 directory",
+)
 def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
     """The unrewritten mkdir path is an attempt, and the clause may not promise more.
 
@@ -498,5 +508,49 @@ def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
     assert (
         "really does create it" not in full
     ), "the clause promises a directory the filesystem may refuse to create"
-    assert "is not rewritten at all" in full
+    assert "outside those prefixes is not rewritten" in full
     assert "attempts the real host path" in full
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX directory modes")
+@pytest.mark.skipif(os.path.exists("/mnt/data"), reason = "a real mount is never shadowed")
+def test_the_mkdir_clause_is_scoped_to_parents_outside_the_convention_prefixes(tmp_path):
+    """Inside a convention prefix, makedirs IS rewritten, so the clause cannot be flat.
+
+    ``_makedirs`` calls ``_remap``, and ``_remap``'s convention branch keeps the
+    suffix under the working directory before it reaches the generic fallback. So
+    ``/mnt/data/reports`` has a missing absolute parent and still lands in the
+    workdir. A clause saying makedirs under a missing absolute parent is not
+    rewritten at all would have the model report a host path for a directory
+    sitting in its working directory, which is the one thing the closing sentence
+    asks it not to do.
+    """
+    import subprocess
+
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, os\n"
+            "target = '/mnt/data/reports'\n"
+            "try:\n"
+            "    os.makedirs(target)\n"
+            "    outcome = 'created'\n"
+            "except OSError as exc:\n"
+            "    outcome = type(exc).__name__\n"
+            "print(json.dumps({'outcome': outcome, 'host': os.path.exists(target),\n"
+            "                  'workdir': sorted(os.listdir('.'))}))\n",
+        ],
+        cwd = workdir,
+        env = {**os.environ, "PYTHONPATH": str(_sandbox_site_dir())},
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert probe.returncode == 0, probe.stderr
+    measured = json.loads(probe.stdout.strip().splitlines()[-1])
+    assert measured["outcome"] == "created", measured
+    assert measured["host"] is False, "the absent prefix is not created on the host"
+    assert measured["workdir"] == ["reports"], measured
