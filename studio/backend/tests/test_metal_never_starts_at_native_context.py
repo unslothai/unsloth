@@ -168,6 +168,21 @@ class TestOnMetal:
         """The cap is guarded on ctx > 0, so this GGUF was never capped."""
         assert _floor(0, False, "auto", None) == 4096
 
+    def test_a_cap_below_the_floor_wins(self, on_metal):
+        """The exception path keeps max_available_ctx after discarding the context.
+
+        Its KV-based answer can sit under 4096, and floating back up would
+        re-create a smaller version of the same over-commit.
+        """
+        assert _floor(0, False, "auto", 262144, 2048) == 2048
+
+    def test_a_cap_above_the_floor_does_not_raise_it(self, on_metal):
+        assert _floor(0, False, "auto", 262144, 131072) == 4096
+
+    def test_no_cap_yet_still_floors(self, on_metal):
+        """The no-metadata path never ran the cap, so there is no ceiling to respect."""
+        assert _floor(0, False, "auto", None, 0) == 4096
+
     def test_a_positive_context_is_left_alone(self, on_metal):
         assert _floor(8192, False, "auto", 262144) == 0
 

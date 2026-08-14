@@ -5867,6 +5867,7 @@ class LlamaCppBackend:
         auto_fit: bool,
         gpu_memory_mode: Optional[str],
         native_ctx: Optional[int],
+        max_available_ctx: Optional[int] = None,
     ) -> int:
         """Context to start at when Metal would otherwise be sent "-c 0", else 0.
 
@@ -5897,7 +5898,12 @@ class LlamaCppBackend:
             return 0
         if not LlamaCppBackend._apple_metal_memory_budget_bytes():
             return 0
-        return min(4096, native_ctx or 4096)
+        # Never above a ceiling the cap already worked out: on the exception path
+        # max_available_ctx outlives the reset that discarded effective_ctx, and
+        # its KV-based answer can sit below 4096. Floating back up would re-create
+        # a smaller version of the same over-commit, and advertise it as the
+        # ceiling to the UI.
+        return min(4096, native_ctx or 4096, max_available_ctx or 4096)
 
     @staticmethod
     def _metal_drops_zero_ctx_override(
@@ -14144,7 +14150,11 @@ class LlamaCppBackend:
                         "model's native length and disables --fit."
                     )
                 _metal_floor = self._metal_zero_ctx_floor(
-                    effective_ctx, auto_fit, gpu_memory_mode, self._context_length
+                    effective_ctx,
+                    auto_fit,
+                    gpu_memory_mode,
+                    self._context_length,
+                    max_available_ctx,
                 )
                 if _metal_floor:
                     effective_ctx = _metal_floor
