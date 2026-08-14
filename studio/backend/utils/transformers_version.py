@@ -2025,8 +2025,18 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 )
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 # Version-tagged extension suffixes (.cpython-313-darwin.so, .cp313-win_amd64.pyd,
-# free-threaded .cpython-314t-*). abi3 and untagged binaries carry no version and are skipped.
+# free-threaded .cpython-314t-*). Untagged binaries carry no version and are skipped, as
+# are pypy/graalpy/debug spellings, which this deliberately does not match: an unrecognised
+# name reports nothing rather than guessing, in line with the rest of the scan.
 _EXT_VERSION_TAG_RE = re.compile(r"\.(?:cpython-|cp)(\d{2,}t?)\b")
+# Stable-ABI binaries. A GIL build imports one produced by any older CPython, so they are
+# skipped there. A free-threaded build cannot: it still advertises .abi3.so in
+# EXTENSION_SUFFIXES, but the object layout differs and importing a GIL-built one takes the
+# whole interpreter down with SIGSEGV instead of raising ImportError. No installer ever puts
+# one into a free-threaded tree -- packaging offers those builds abi3t, never abi3 -- so
+# reporting it cannot loop: the reinstall fetches the cp<ver>t wheel and the next scan is
+# clean. Only a venv whose interpreter was swapped underneath it can hold one.
+_ABI3_EXT_RE = re.compile(r"\.abi3\.(?:so|pyd)$")
 _CURRENT_EXT_TAG = "{}{}{}".format(
     sys.version_info.major,
     sys.version_info.minor,
@@ -2174,10 +2184,20 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
             elif rel.endswith((".so", ".pyd")):
                 # A sidecar built by one interpreter survives a Python upgrade intact,
                 # but its compiled extensions no longer load (issue: cp313 .so under 3.14).
-                m = _EXT_VERSION_TAG_RE.search(rel)
+                # The BASENAME alone decides. rel is a whole RECORD path, and a directory
+                # component carrying a wheel-style tag (build.cp312/, pkg.cp312.libs/) says
+                # nothing about the untagged binary sitting inside it; searching the path
+                # would wipe several hundred MB over a directory name.
+                base = rel.replace("\\", "/").rsplit("/", 1)[-1]
+                m = _EXT_VERSION_TAG_RE.search(base)
                 if m and m.group(1) != _CURRENT_EXT_TAG:
                     found.append(
                         f"{name}: {rel} targets cp{m.group(1)}, interpreter is cp{_CURRENT_EXT_TAG}"
+                    )
+                elif m is None and _CURRENT_EXT_TAG.endswith("t") and _ABI3_EXT_RE.search(base):
+                    found.append(
+                        f"{name}: {rel} is a stable-ABI build, which free-threaded "
+                        f"cp{_CURRENT_EXT_TAG} cannot load"
                     )
         if len(found) >= limit:
             return found, inconclusive

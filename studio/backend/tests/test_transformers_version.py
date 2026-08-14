@@ -1907,7 +1907,10 @@ class TestVenvDirFileIntegrity:
     def test_extension_built_for_another_interpreter_is_detected(
         self, tmp_path: Path, ext_name: str
     ):
-        stale = "313" if _CURRENT_EXT_TAG != "313" else "312"
+        # Pick a stale tag by VERSION, not by whole tag: one template appends "t", so
+        # deriving it from _CURRENT_EXT_TAG directly builds "313t" -- the current tag --
+        # when the suite runs on a free-threaded 3.13, and the case asserts damage.
+        stale = "313" if _CURRENT_EXT_TAG.rstrip("t") != "313" else "312"
         venv_dir = self._make_venv(
             tmp_path / "venv",
             files = {
@@ -1923,11 +1926,79 @@ class TestVenvDirFileIntegrity:
             files = {
                 "transformers/__init__.py": "x" * 40,
                 f"regex/_regex.cpython-{_CURRENT_EXT_TAG}-darwin.so": "y" * 40,
-                "hf_xet/hf_xet.abi3.so": "z" * 40,
                 "yaml/_yaml.so": "w" * 40,
+                # Spellings the tag regex deliberately does not recognise. Each has to fail
+                # OPEN: guessing wrong here costs a several-hundred-MB re-download.
+                "regex/_regex.pypy311-pp73-x86_64-linux-gnu.so": "p" * 40,
+                "regex/_regex.graalpy311-310-native-x86_64-linux.so": "g" * 40,
+                "regex/_regex.cpython-313d-x86_64-linux-gnu.so": "d" * 40,
             },
         )
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            # The tag sits in a DIRECTORY component; the binary itself is untagged and fine.
+            "vendor/build.cp312/libhelper.so",
+            "pkg.cp312.libs/libfoo.so",
+            "data/v.cp39/native.pyd",
+        ],
+    )
+    def test_a_version_tag_in_a_directory_name_is_not_damage(self, tmp_path: Path, rel: str):
+        """Matching the whole RECORD path wipes the sidecar over a directory name."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {"transformers/__init__.py": "x" * 40, rel: "y" * 40},
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "expect_damage"),
+        [("313", False), ("314", False), ("313t", True), ("314t", True)],
+    )
+    def test_stable_abi_is_damage_only_on_a_free_threaded_build(
+        self, tmp_path: Path, monkeypatch, current_tag: str, expect_damage: bool
+    ):
+        """A GIL build loads any older .abi3.so. A free-threaded one segfaults on it, and
+        the file survives an in-place interpreter swap because nothing else changes."""
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                "hf_xet/hf_xet.abi3.so": "z" * 40,
+                "win/_thing.abi3.pyd": "z" * 40,
+            },
+        )
+        if expect_damage:
+            assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        else:
+            assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "ext_tag"),
+        [
+            # Both directions of the GIL/free-threaded swap, on a fixed pair of versions so
+            # the case cannot collapse into "current tag" on whichever build runs the suite.
+            ("313t", "313"),
+            ("313", "313t"),
+            ("314t", "314"),
+            ("314", "314t"),
+        ],
+    )
+    def test_free_threaded_mismatch_is_detected_in_both_directions(
+        self, tmp_path: Path, monkeypatch, current_tag: str, ext_tag: str
+    ):
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{ext_tag}-x86_64-linux-gnu.so": "y" * 40,
+            },
+        )
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):
         """The whole dir is prepended to sys.path, so a shadowing dep breaks the
