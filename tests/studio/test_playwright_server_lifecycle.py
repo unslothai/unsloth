@@ -79,7 +79,9 @@ def test_start_vite_picks_the_platform_process_group(monkeypatch, no_signals, os
 def test_posix_teardown_signals_the_group_and_escalates(monkeypatch, no_signals) -> None:
     sent = []
     monkeypatch.setattr(robust.os, "name", "posix")
-    monkeypatch.setattr(robust.os, "killpg", lambda pid, sig: sent.append((pid, sig)))
+    monkeypatch.setattr(
+        robust.os, "killpg", lambda pid, sig: sent.append((pid, sig)), raising = False
+    )
     robust.stop_process(_FakeProc())
     assert sent == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
 
@@ -99,7 +101,7 @@ def test_teardown_never_raises_over_the_failure_that_called_it(monkeypatch, no_s
     """stop_process runs from a `finally`. A child that outlives SIGKILL must not replace the
     harness's real error with a TimeoutExpired."""
     monkeypatch.setattr(robust.os, "name", "posix")
-    monkeypatch.setattr(robust.os, "killpg", lambda pid, sig: None)
+    monkeypatch.setattr(robust.os, "killpg", lambda pid, sig: None, raising = False)
     robust.stop_process(_FakeProc())
 
 
@@ -108,7 +110,7 @@ def test_teardown_tolerates_a_process_that_already_vanished(monkeypatch, no_sign
         raise ProcessLookupError
 
     monkeypatch.setattr(robust.os, "name", "posix")
-    monkeypatch.setattr(robust.os, "killpg", gone)
+    monkeypatch.setattr(robust.os, "killpg", gone, raising = False)
     robust.stop_process(_FakeProc())
 
 
