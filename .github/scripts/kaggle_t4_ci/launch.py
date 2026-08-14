@@ -177,6 +177,41 @@ OUTPUT_PAGE_LIMIT = 20
 READ_CHUNK_BYTES = 1 << 16
 
 
+def worst_case_seconds(max_wait: int, kernels: int) -> int:
+    """Wall clock ONE invocation of this launcher can take, from its constants.
+
+    Every phase that can keep a pushed kernel UP is in it, because a kernel
+    bills from the moment Kaggle accepts it until a delete is confirmed:
+
+    * ``push()``, per notebook: PUSH_ATTEMPTS attempts at the subprocess
+      ceiling, the backoffs between them, and the ``_discard()`` of the previous
+      attempt's slug that rides along with every retry.
+    * the polling, which shares ONE deadline started before the first push, so
+      it does not stack on top of the pushes; the longer of the two is spent.
+    * the evidence phase, ONE budget for every kernel together.
+    * ``release()``, which deletes every slug every push FILED, not just the
+      accepted one.
+
+    Computed here rather than restated by each consumer: the workflow's job
+    deadline, the quota the gate reserves, and the pre-push guard in main() are
+    all wrong by the same amount if a phase is left out, and lowering
+    PUSH_ATTEMPTS or a delete ceiling has to move all three at once.
+    """
+    one_delete = DELETE_ATTEMPTS * DELETE_SUBPROCESS_TIMEOUT_SEC + sum(
+        DELETE_BACKOFF_SEC * 2**i for i in range(DELETE_ATTEMPTS - 1)
+    )
+    per_push = (
+        PUSH_ATTEMPTS * PUSH_SUBPROCESS_TIMEOUT_SEC
+        + sum(PUSH_BACKOFF_SEC * 2**i for i in range(PUSH_ATTEMPTS - 1))
+        + (PUSH_ATTEMPTS - 1) * one_delete
+    )
+    return (
+        max(kernels * per_push, max_wait)
+        + EVIDENCE_BUDGET_SEC
+        + kernels * PUSH_ATTEMPTS * one_delete
+    )
+
+
 def _log(msg: str) -> None:
     print(f"[launch] {msg}", flush = True)
 
@@ -786,6 +821,13 @@ def main() -> int:
     ap.add_argument(
         "--keep-kernel", action = "store_true", help = "do not delete the kernel after collecting"
     )
+    ap.add_argument(
+        "--deadline-epoch",
+        type = int,
+        default = 0,
+        help = "unix time at which the CALLER is killed. Nothing is pushed unless "
+        "worst_case_seconds() still fits before it. 0 disables the check",
+    )
     args = ap.parse_args()
 
     # Before the first network call, and globally: the Kaggle client has no
@@ -851,6 +893,47 @@ def main() -> int:
         _out("slug", result["slug"] or "")
         _log(f"verdict={result['verdict']} reason={result['reason']}")
         return code
+
+    # BEFORE authentication and long before the first push: the one question
+    # that has to be answered while the answer can still be acted on.
+    #
+    # The caller (the workflow job) is killed at a fixed time, and killing it
+    # takes finish() -> release() with it: GitHub sends SIGINT to the step's
+    # entry process and kills the process tree about ten seconds later
+    # ("Canceling a workflow", docs.github.com), which is not a window in which
+    # DELETE_ATTEMPTS retries against a slow Kaggle can finish. A kernel nobody
+    # deletes bills accelerator quota to its own ceiling with nobody reading the
+    # result, so the only safe moment to notice that the window has gone is
+    # before anything is pushed.
+    #
+    # Nothing bounds the steps that run BEFORE this one -- a checkout, a pip
+    # install off a slow index, the harness suite -- so "the job deadline sits
+    # above the worst case with room for setup" is an assumption about their
+    # duration rather than a property of the run. This measures what is left
+    # instead, against the same worst case the job deadline and the reserved
+    # quota are derived from.
+    #
+    # Standing down green is the answer the workflow's FAILURE SEMANTICS give
+    # every infrastructure outcome: nothing was learned about the code, and no
+    # quota was spent finding that out.
+    if args.deadline_epoch:
+        need = worst_case_seconds(args.max_wait, len(args.notebook))
+        left = int(args.deadline_epoch - time.time())
+        if left < need:
+            result["reason"] = (
+                f"only {left}s of the job's deadline are left and this launcher can "
+                f"take {need}s, so a push now could be killed during cleanup"
+            )
+            print(
+                "::warning title=Stood down before pushing::"
+                f"the setup steps left {left}s of the job's deadline and the launcher's "
+                f"worst case is {need}s. Pushing now risks the runner being killed while "
+                "kernels are still up, which would bill accelerator quota to their own "
+                "ceiling. Nothing was pushed and nothing was learned about this change.",
+                flush = True,
+            )
+            return finish()
+        _log(f"{left}s left of the job deadline, worst case {need}s")
 
     try:
         api = _api()

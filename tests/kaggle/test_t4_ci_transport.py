@@ -510,6 +510,87 @@ def _drive_main(
     return waits, deleted, result
 
 
+_TWO_PUSHES = [
+    {
+        "ok": True,
+        "slug": "someuser/unsloth-t4-ci-aaaa",
+        "attempts": ["someuser/unsloth-t4-ci-aaaa"],
+    },
+    {
+        "ok": True,
+        "slug": "someuser/unsloth-t4-ci-bbbb",
+        "attempts": ["someuser/unsloth-t4-ci-bbbb"],
+    },
+]
+
+
+def test_the_launcher_will_not_push_what_it_may_not_live_to_delete(monkeypatch, tmp_path):
+    """A window one second short of the worst case pushes nothing.
+
+    The job that runs this launcher is killed at a fixed time and killing it
+    takes release() with it, so a kernel pushed with less than the launcher's
+    own worst case left can be left up billing quota to its own ceiling. The
+    steps before it -- a checkout, a pip install, the harness suite -- have no
+    deadline of their own, so the job timeout leaving room for them is an
+    assumption rather than a fact about the run; this measures what is actually
+    left.
+    """
+    _, deleted, result = _drive_main(
+        monkeypatch,
+        tmp_path,
+        push_seconds = 0.0,
+        pushes = _TWO_PUSHES,
+        extra_argv = (
+            "--deadline-epoch",
+            str(int(1_000_000 + launch.worst_case_seconds(5400, 2)) - 1),
+        ),
+    )
+    assert not result.get("kernels"), "a kernel was pushed with no room to delete it"
+    assert result["slug"] is None and deleted == []
+    assert result["verdict"] == "infra"
+    assert "could be killed during cleanup" in result["reason"]
+
+
+def test_a_window_that_fits_still_launches(monkeypatch, tmp_path):
+    """The guard has to stand down for a short window and ONLY for one.
+
+    One second more than the worst case is the whole of it, so this is the
+    ordinary run: a guard that refused here, or that read the deadline as an
+    absolute duration rather than the moment the job dies, would stand every
+    invocation down and the workflow would never test anything again -- green
+    every time, which is exactly how it would go unnoticed.
+    """
+    waits, _, result = _drive_main(
+        monkeypatch,
+        tmp_path,
+        push_seconds = 0.0,
+        pushes = _TWO_PUSHES,
+        extra_argv = (
+            "--deadline-epoch",
+            str(int(1_000_000 + launch.worst_case_seconds(5400, 2))),
+        ),
+    )
+    assert [k["slug"] for k in result["kernels"]] == [p["slug"] for p in _TWO_PUSHES]
+    assert waits == [5400, 5400]
+    assert result["verdict"] == "pass"
+
+
+def test_no_deadline_is_no_guard(monkeypatch, tmp_path):
+    """Run by hand, with no job to be killed by, there is nothing to check.
+
+    The flag defaults to 0 and the launcher then pushes exactly as it always
+    did, so a local reproduction does not have to invent a deadline to get a
+    kernel.
+    """
+    _, _, result = _drive_main(
+        monkeypatch,
+        tmp_path,
+        push_seconds = 0.0,
+        pushes = _TWO_PUSHES,
+    )
+    assert [k["slug"] for k in result["kernels"]] == [p["slug"] for p in _TWO_PUSHES]
+
+
 def test_the_deletion_deadline_covers_the_time_spent_pushing(monkeypatch, tmp_path):
     """A kernel bills from the moment Kaggle accepts it, not from the last push.
 

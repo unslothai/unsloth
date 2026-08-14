@@ -2720,13 +2720,62 @@ def test_the_job_deadline_exceeds_the_launchers_worst_case():
     """
     worst = _launcher_worst_case_seconds()
     # Checkout, the CPU torch wheel and the harness suite all run before the
-    # launcher does, and they come out of the same job deadline.
+    # launcher does, and they come out of the same job deadline. An ALLOWANCE,
+    # not a limit: nothing bounds those steps, which is why the launcher is
+    # handed the deadline and refuses to push without the whole of `worst` left
+    # (see the two tests below). This keeps a normal run from standing down.
     before_the_launcher = 900
     timeout_s = _workflow()["jobs"]["t4-smoke"]["timeout-minutes"] * 60
     assert timeout_s >= worst + before_the_launcher, (
         f"the launcher can take {worst}s, the steps before it up to "
         f"{before_the_launcher}s, and the job is killed at {timeout_s}s"
     )
+
+
+def test_the_launcher_agrees_with_the_deadline_about_its_own_worst_case():
+    """The guard and the deadline have to be reading the same number.
+
+    launch.py refuses to push unless ``worst_case_seconds()`` still fits before
+    the job deadline, and that deadline is set from the derivation above. The
+    two are computed independently -- this file walks launch.py's constants out
+    of the source text, the launcher adds them up itself -- so a phase dropped
+    from either one shows up here rather than as a run that pushed with no room
+    to clean up, or one that stood down on every invocation.
+    """
+    import launch
+
+    source = WORKFLOW.read_text(encoding = "utf-8")
+    max_wait = int(re.search(r"--max-wait (\d+)", source).group(1))
+    assert (
+        launch.worst_case_seconds(max_wait, _kernels_per_invocation())
+        == _launcher_worst_case_seconds()
+    )
+
+
+def test_the_launcher_is_told_when_the_job_is_killed():
+    """The guard is only as good as the deadline it is handed.
+
+    Three things have to hold, and each is a way the guard silently reads
+    optimistic:
+
+    * the start is recorded in the job's FIRST step. Taken after a checkout or a
+      pip install, the computed deadline sits that much later than the real one.
+    * the launcher is actually given it.
+    * the minutes handed over are this job's own timeout-minutes. A job cannot
+      read its own, so the number is restated in the step's environment and
+      asserted equal here; moving one without the other is this test going red.
+    """
+    job = _workflow()["jobs"]["t4-smoke"]
+    steps = job["steps"]
+    assert "JOB_START_EPOCH=$(date +%s)" in steps[0].get("run", ""), (
+        "the job's start is not recorded by its first step, so every step ahead "
+        "of it is invisible to the launcher's guard"
+    )
+    assert "if" not in steps[0], "a conditional start would leave JOB_START_EPOCH unset"
+    launch_step = next(s for s in steps if s.get("id") == "launch")
+    assert "--deadline-epoch" in launch_step["run"]
+    assert "JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60" in launch_step["run"]
+    assert int(launch_step["env"]["JOB_TIMEOUT_MINUTES"]) == job["timeout-minutes"]
 
 
 def test_the_reserved_budget_covers_every_billable_launcher_phase():

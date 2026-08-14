@@ -404,6 +404,15 @@ jobs:
     # launcher wedged; lower the launcher's wait, PUSH_ATTEMPTS or the delete
     # ceilings before lowering it, and the harness suite recomputes the relation
     # either way.
+    #
+    # THAT ~30 MIN IS AN ALLOWANCE, NOT A LIMIT, and nothing above enforces it:
+    # a checkout, a pip install off a slow index and the harness suite have no
+    # cumulative deadline of their own, so a slow setup could eat into the
+    # launcher's window and leave it to be killed mid-release() exactly as the
+    # 200 did. So the launcher is handed this deadline (--deadline-epoch below)
+    # and refuses to push unless its whole worst case still fits before it. This
+    # number bounds how long a wedged run holds a runner; the guard is what
+    # keeps the promise.
     timeout-minutes: 260
     # Deliberately NOT keyed on the ref: the Kaggle account is one global
     # resource with a 2-kernel cap and this job takes both, so two runs on
@@ -414,6 +423,17 @@ jobs:
       group: kaggle-t4-notebook-ci-account
       cancel-in-progress: false
     steps:
+      # FIRST, ahead of even the audit hardening, and it is an `echo` so there
+      # is nothing for the hardening to audit. The launcher stands down rather
+      # than push kernels it may not live long enough to delete, and it decides
+      # that by comparing its own worst case against what is left of the
+      # deadline below. That subtraction needs the moment the job's clock
+      # started: taken any later, the deadline it computes sits AFTER the real
+      # one and the guard reads optimistic, which is the one direction that
+      # costs quota.
+      - name: Record when the job started
+        run: echo "JOB_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Harden runner (audit)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
@@ -750,11 +770,28 @@ jobs:
         run: |
           echo "::warning title=Stood down at the second check::${REASON}"
 
+      # --deadline-epoch is when THIS JOB is killed, and the launcher pushes
+      # nothing unless its whole worst case still fits before it. Everything
+      # above is unbounded -- a checkout, a pip install off a slow index, the
+      # harness suite, three network resolutions -- so the timeout-minutes above
+      # leaving room for them is an assumption about their duration, not a
+      # property of the run. Spend that room and the launcher would still push,
+      # and the runner would then be killed with kernels up: GitHub kills the
+      # process tree about ten seconds after it starts cancelling, which does
+      # not cover release()'s retries, and a kernel nobody deletes bills quota
+      # to its own ceiling. So the launcher measures what is left instead, and a
+      # window too short is a green stand-down, like every other infrastructure
+      # outcome here.
+      #
+      # JOB_TIMEOUT_MINUTES restates this job's timeout-minutes because a job
+      # cannot read its own; the harness suite asserts the two agree, so moving
+      # one without the other is a red test rather than a silent gap.
       - name: Launch on Kaggle and collect
         id: launch
         if: steps.recheck.outputs.should_run == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+          JOB_TIMEOUT_MINUTES: 260
         run: |
           python .github/scripts/kaggle_t4_ci/launch.py \
             ${{ steps.build.outputs.notebooks }} \
@@ -763,7 +800,8 @@ jobs:
             --expect '${{ steps.build.outputs.payloads }}' \
             --kernel-timeout-sec 3600 \
             --max-wait 5400 \
-            --poll-every 60
+            --poll-every 60 \
+            --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
 
       # always(): the evidence is most valuable when something went wrong, and
       # the executed notebooks are kilobytes.
