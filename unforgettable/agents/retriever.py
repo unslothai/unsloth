@@ -14,16 +14,72 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from unforgettable.store.search import search_records
 
+# Episode summaries are last-run logs, not standing knowledge.
+DEFAULT_RETRIEVE_KINDS = frozenset(
+    {"claim", "procedure", "error_fix", "entity", "directive", "twin_note"}
+)
 
-def retrieve(query: str, *, top_k: int = 6, db_path=None) -> list[dict[str, Any]]:
+DEFAULT_MAX_RECORDS = 6
+DEFAULT_MAX_CHARS = 2400
+DEFAULT_SNIPPET_CHARS = 280
+DEFAULT_MAX_TWIN_NOTES = 1
+STALE_AGE_DAYS = 30
+
+HIGH_STAKES_PROVENANCE = ("world", "mixed", "human")
+
+_INJECT_HEADER = "Durable memories relevant to this task:"
+_ELLIPSIS = "..."
+
+
+@dataclass(frozen=True)
+class RetrievePolicy:
+    max_records: int = DEFAULT_MAX_RECORDS
+    max_chars: int = DEFAULT_MAX_CHARS
+    snippet_chars: int = DEFAULT_SNIPPET_CHARS
+    high_stakes: bool = False
+    max_twin_notes: int = DEFAULT_MAX_TWIN_NOTES
+
+
+def retrieve(
+    query: str, *, policy: Optional[RetrievePolicy] = None, db_path=None
+) -> list[dict[str, Any]]:
     if not (query or "").strip():
         return []
-    return search_records(query, top_k=top_k, db_path=db_path)
+    policy = policy or RetrievePolicy()
+    provenances = HIGH_STAKES_PROVENANCE if policy.high_stakes else None
+    hits = search_records(
+        query,
+        top_k=policy.max_records,
+        kinds=DEFAULT_RETRIEVE_KINDS,
+        provenances=provenances,
+        db_path=db_path,
+    )
+    return _cap_twin_notes(hits, policy.max_twin_notes)
+
+
+def _cap_twin_notes(
+    records: list[dict[str, Any]], max_twin_notes: int
+) -> list[dict[str, Any]]:
+    twins = [rec for rec in records if rec.get("kind") == "twin_note"]
+    if len(twins) <= max_twin_notes:
+        return records
+    keep_ids = {
+        rec["id"]
+        for rec in sorted(
+            twins, key=lambda rec: rec.get("updated_at") or "", reverse=True
+        )[:max_twin_notes]
+    }
+    return [
+        rec
+        for rec in records
+        if rec.get("kind") != "twin_note" or rec["id"] in keep_ids
+    ]
 
 
 def _age_note(updated_at: Optional[str]) -> str:
@@ -36,22 +92,50 @@ def _age_note(updated_at: Optional[str]) -> str:
         days = (datetime.now(timezone.utc) - when).days
     except ValueError:
         return ""
-    if days >= 30:
+    if days >= STALE_AGE_DAYS:
         return f" (last updated {days}d ago — verify)"
     return ""
 
 
-def format_inject(records: list[dict[str, Any]]) -> str:
+def _clip_text(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= len(_ELLIPSIS):
+        return text[:limit]
+    return text[: limit - len(_ELLIPSIS)] + _ELLIPSIS
+
+
+def _record_block(rec: dict[str, Any], snippet_chars: int) -> str:
+    age = _age_note(rec.get("updated_at"))
+    line = f"- [{rec['id'][:8]}] ({rec['kind']}, {rec['provenance']}) {rec['title']}{age}"
+    body = (rec.get("body") or "").strip()
+    if not body:
+        return line
+    return f"{line}\n  {_clip_text(body, snippet_chars)}"
+
+
+def format_inject(
+    records: list[dict[str, Any]], *, policy: Optional[RetrievePolicy] = None
+) -> str:
+    policy = policy or RetrievePolicy()
     if not records:
         return ""
-    lines = ["Durable memories relevant to this task:"]
-    for rec in records:
-        age = _age_note(rec.get("updated_at"))
-        lines.append(
-            f"- [{rec['id'][:8]}] ({rec['kind']}, {rec['provenance']}) {rec['title']}{age}"
-        )
-        body = (rec.get("body") or "").strip()
-        if body:
-            snippet = body if len(body) <= 280 else body[:277] + "..."
-            lines.append(f"  {snippet}")
-    return "\n".join(lines)
+    blocks: list[str] = []
+    used = 0
+    for index, rec in enumerate(records):
+        block = _record_block(rec, policy.snippet_chars)
+        if index == 0:
+            # Keep the first hit even when it exceeds the budget; clip it.
+            if len(block) > policy.max_chars:
+                block = _clip_text(block, policy.max_chars)
+            blocks.append(block)
+            used = len(block)
+            continue
+        extra = 1 + len(block)
+        if used + extra > policy.max_chars:
+            break
+        blocks.append(block)
+        used += extra
+    return _INJECT_HEADER + "\n" + "\n".join(blocks)

@@ -178,6 +178,7 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
         thread_id = payload.thread_id,
         stream = bool(payload.stream),
         inner_model = model,
+        stakes = getattr(payload, "stakes", None),
     )
     if payload.stream:
         queue: asyncio.Queue = asyncio.Queue()

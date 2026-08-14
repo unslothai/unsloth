@@ -18,6 +18,7 @@ import json
 from typing import Any, Optional
 
 from unforgettable.agents.admissions import admit
+from unforgettable.agents.retriever import DEFAULT_MAX_RECORDS, DEFAULT_RETRIEVE_KINDS
 from unforgettable.constants import DEFAULT_NAMESPACE_ID
 from unforgettable.loop.runtime import current_db_path, current_episode_id, current_namespace
 from unforgettable.store.records import (
@@ -83,8 +84,8 @@ def _search(args: dict[str, Any], *, db_path) -> str:
     query = str(args.get("query") or "").strip()
     if not query:
         return "Error: query is empty."
-    top_k = int(args.get("top_k") or 6)
-    kinds = None
+    top_k = int(args.get("top_k") or DEFAULT_MAX_RECORDS)
+    kinds = DEFAULT_RETRIEVE_KINDS
     raw_kinds = args.get("kinds")
     if raw_kinds:
         kinds = [part.strip() for part in str(raw_kinds).split(",") if part.strip()]

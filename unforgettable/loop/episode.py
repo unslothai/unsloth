@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from unforgettable.agents.admissions import admit
 from unforgettable.agents.extractor import from_drift, from_episode, llm_extract
-from unforgettable.agents.retriever import format_inject, retrieve
+from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
 from unforgettable.eyes.basic import inspect_tool_result
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
@@ -80,9 +80,17 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     actions: list[str] = []
     text = ""
     try:
-        retrieved = retrieve(last_user_text(request.messages), db_path=db_path)
+        retrieve_policy = RetrievePolicy(high_stakes=request.stakes == "high")
+        retrieved = retrieve(
+            last_user_text(request.messages), policy=retrieve_policy, db_path=db_path
+        )
         inject = "\n\n".join(
-            part for part in (_MEMORY_PREAMBLE, format_inject(retrieved)) if part
+            part
+            for part in (
+                _MEMORY_PREAMBLE,
+                format_inject(retrieved, policy=retrieve_policy),
+            )
+            if part
         )
         messages = _with_system(request.messages, inject)
         while True:

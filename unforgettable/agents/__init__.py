@@ -14,11 +14,12 @@
 
 from .admissions import AdmissionDecision, admit
 from .extractor import from_drift, from_episode, llm_extract
-from .retriever import format_inject, retrieve
+from .retriever import RetrievePolicy, format_inject, retrieve
 
 __all__ = [
     "AdmissionDecision",
     "admit",
+    "RetrievePolicy",
     "format_inject",
     "from_drift",
     "from_episode",

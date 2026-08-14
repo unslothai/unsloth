@@ -31,6 +31,7 @@ class EpisodeRequest:
     inner_model: Optional[str] = None
     namespace: str = DEFAULT_NAMESPACE_ID
     on_chunk: Optional[OnChunk] = None
+    stakes: Optional[str] = None
 
 
 @dataclass
