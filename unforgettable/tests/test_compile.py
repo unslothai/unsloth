@@ -113,6 +113,7 @@ def test_standing_max_chars_keeps_first_section(db_path):
     full = format_standing(rows)
     text = format_standing(rows, max_chars=200)
     assert len(full) > 200
+    assert len(text) <= 200
     assert "###" in text
     assert rec["title"] in text
     assert f"Source: {rec['id']}" in text

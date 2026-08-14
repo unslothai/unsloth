@@ -218,7 +218,7 @@ def pack_standing(
         return "", []
     heading, _, source = _section_parts(rows[0], body_chars=COMPILE_BODY_CHARS)
     leftover = max_chars - len(STANDING_HEADER) - 1
-    reserved = len(heading) + 2 + len(source)
+    reserved = len(heading) + 3 + len(source)
     if leftover > reserved:
         body = _clip_text(
             (rows[0].get("body") or "").strip(),
