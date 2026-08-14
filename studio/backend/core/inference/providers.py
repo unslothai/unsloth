@@ -556,6 +556,11 @@ _METADATA_IPS = frozenset(
         "fd20:ce::254",
         "100.100.100.200",
         "100.100.100.110",
+        # metadata.tencentyun.com, on VPC and on the classic network. Listed
+        # exactly because the resolved-address check reads this set rather than
+        # the link-local network below.
+        "169.254.0.23",
+        "169.254.10.10",
     )
 )
 # Link-local, where the IPv4 metadata services live. Matched as a network so a
@@ -695,6 +700,14 @@ def _transport_host(hostname: str) -> str:
         return hostname
 
 
+def _cached_addresses(hostname: str) -> tuple[str, ...] | None:
+    """What ``_resolve_host`` already learned about ``hostname``, if anything."""
+    now = time.monotonic()
+    with _dns_cache_lock:
+        cached = _dns_cache.get(_transport_host(hostname))
+    return cached[1] if cached is not None and cached[0] > now else None
+
+
 def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ...] | None:
     """Addresses for ``hostname``, or ``None`` when the resolver did not answer.
 
@@ -705,11 +718,10 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
     import socket
 
     hostname = _transport_host(hostname)
+    cached = _cached_addresses(hostname)
+    if cached is not None:
+        return cached
     now = time.monotonic()
-    with _dns_cache_lock:
-        cached = _dns_cache.get(hostname)
-        if cached is not None and cached[0] > now:
-            return cached[1]
 
     # Bound to a local: a worker abandoned at the deadline may outlive the
     # global, and BoundedSemaphore raises if it releases one it never took.
@@ -781,7 +793,11 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
     try:
         addresses = [ipaddress.ip_address(hostname)]
     except ValueError:
-        resolved = _resolve_host(hostname, port, scheme)
+        # The metadata check ran a moment ago and cached whatever it learned, so
+        # this reads that rather than starting a second bounded lookup: on a
+        # slow resolver the pair of them would each spend a deadline before the
+        # fallback below spent a third.
+        resolved = _cached_addresses(hostname)
         if resolved is None:
             # This path blocked on an unbounded getaddrinfo before the metadata
             # check existed, and a resolver slower than that check's deadline is

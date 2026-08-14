@@ -202,6 +202,36 @@ def test_a_link_local_literal_is_still_refused():
         validate_provider_base_url("http://169.254.1.1/v1")
 
 
+@pytest.mark.parametrize("address", ["169.254.0.23", "169.254.10.10"])
+def test_a_dns_alias_of_tencents_metadata_service_is_refused(address, monkeypatch):
+    """metadata.tencentyun.com lives on link-local, so it is listed exactly."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 80))],
+    )
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://alias.attacker.test/latest/meta-data")
+
+
+def test_the_opt_in_path_does_not_re_resolve_after_a_timeout(monkeypatch):
+    """One slow host, one deadline, then the unbounded fallback. Not three."""
+    import time as _time
+
+    monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
+    monkeypatch.setattr(_providers, "_DNS_TIMEOUT_SECONDS", 0.05)
+    calls = []
+
+    def _slow(host, port, *args, **kwargs):
+        calls.append(host)
+        _time.sleep(0.2)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    assert validate_provider_base_url("https://slowdns.example/v1") == "https://slowdns.example/v1"
+    assert len(calls) == 2
+
+
 def test_a_unicode_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
     """getaddrinfo speaks IDNA 2003, httpx IDNA 2008, and they differ on ß."""
     seen = []
