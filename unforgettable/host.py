@@ -26,6 +26,9 @@ OnChunk = Callable[[bytes], Awaitable[None] | None]
 # One-shot extract completion cap. Not the user's generate budget.
 EXTRACT_MAX_TOKENS = 800
 
+RUN_ACTION_NAMES = frozenset({"python", "terminal"})
+RUN_ACTION_TIMEOUT_SEC = 300
+
 
 @dataclass
 class GenerateRequest:
@@ -79,4 +82,16 @@ class Host(Protocol):
     ) -> str:
         """One-shot text completion. No tools, no memory inject, no act/sim.
         Used by llm_extract. Must not re-enter episode.run."""
+        ...
+
+    async def run_action(
+        self,
+        session_id: str,
+        name: str,
+        arguments: dict,
+        *,
+        timeout: int | None = None,
+        on_chunk: OnChunk | None = None,
+    ) -> str:
+        """May be absent; episode.run uses getattr."""
         ...

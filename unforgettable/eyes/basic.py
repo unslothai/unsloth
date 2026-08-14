@@ -45,6 +45,15 @@ _GO_FAIL_TAB = re.compile(r"FAIL\t")
 
 _RUNNER_TOOL_NAMES = frozenset({"python", "terminal"})
 
+RUN_ACTION_FAIL_PREFIXES = (
+    "Execution timed out after ",
+    "Execution cancelled.",
+    "Blocked command(s) for safety:",
+    "Execution error:",
+    "Error: run_action supports",
+    "No command provided.",
+)
+
 
 def user_declares_failure(text: str) -> bool:
     folded = (text or "").casefold().replace("\u2019", "'")
@@ -93,3 +102,17 @@ def inspect_tool_result(
     if "command failed" in lowered or "returned non-zero" in lowered:
         return RecognizedFailure(summary=f"{name} failed", source=contact)
     return None
+
+
+def grade_run_action(
+    name: str, result: str | None, *, contact: str = "sim"
+) -> Optional[RecognizedFailure]:
+    """Grade a harness result. Timeout / cancel / block / empty are fail, never pass."""
+    text = "" if result is None else str(result)
+    if not text.strip():
+        return RecognizedFailure(summary=f"{name} empty result", source=contact)
+    head = text.lstrip()
+    for prefix in RUN_ACTION_FAIL_PREFIXES:
+        if head.startswith(prefix):
+            return RecognizedFailure(summary=head.splitlines()[0][:200], source=contact)
+    return inspect_tool_result(name, text, contact=contact)

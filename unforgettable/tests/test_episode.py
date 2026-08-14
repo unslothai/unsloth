@@ -15,10 +15,19 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 
 from unforgettable.agents.extractor import EPISODE_TITLE_ID_CHARS, TWIN_NOTE_TITLE
-from unforgettable.host import EXTRACT_MAX_TOKENS, GenerateRequest, GenerateResult, ToolTrace
+from unforgettable.host import (
+    EXTRACT_MAX_TOKENS,
+    RUN_ACTION_NAMES,
+    RUN_ACTION_TIMEOUT_SEC,
+    GenerateRequest,
+    GenerateResult,
+    ToolTrace,
+)
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run
 from unforgettable.store.records import (
@@ -32,7 +41,7 @@ from unforgettable.throne.policy import Action
 
 
 class FakeHost:
-    def __init__(self, root: Path, results: list[GenerateResult]):
+    def __init__(self, root: Path, results: list[GenerateResult], *, run_action=None):
         self.db = root / "memory.db"
         self.world = root / "world"
         self.world.mkdir()
@@ -41,6 +50,7 @@ class FakeHost:
         self.removed: list[str] = []
         self.calls: list[str] = []
         self._results = list(results)
+        self._run_action = run_action
         self.last_messages = None
 
     def memory_db_path(self) -> Path:
@@ -73,6 +83,51 @@ class FakeHost:
 
     async def complete(self, messages, *, max_tokens=EXTRACT_MAX_TOKENS) -> str:
         return ""
+
+    async def run_action(
+        self,
+        session_id: str,
+        name: str,
+        arguments: dict,
+        *,
+        timeout: int | None = None,
+        on_chunk=None,
+    ) -> str:
+        if self._run_action is not None:
+            result = self._run_action(
+                session_id, name, arguments, timeout=timeout, on_chunk=on_chunk
+            )
+            if hasattr(result, "__await__"):
+                return await result
+            return result
+        if name not in RUN_ACTION_NAMES:
+            return f"Error: run_action supports python|terminal only, got {name!r}"
+        sandbox = self.sandbox_path(session_id)
+        effective = RUN_ACTION_TIMEOUT_SEC if timeout is None else timeout
+        args = arguments or {}
+        if name == "terminal":
+            completed = subprocess.run(
+                args.get("command") or "",
+                shell=True,
+                cwd=sandbox,
+                capture_output=True,
+                text=True,
+                timeout=effective,
+            )
+        else:
+            completed = subprocess.run(
+                [sys.executable, "-c", args.get("code") or ""],
+                cwd=sandbox,
+                capture_output=True,
+                text=True,
+                timeout=effective,
+            )
+        text = (completed.stdout or "") + (completed.stderr or "")
+        if completed.returncode:
+            if text and not text.endswith("\n"):
+                text += "\n"
+            text += f"exit code {completed.returncode}"
+        return text
 
 
 def _fail_world() -> GenerateResult:

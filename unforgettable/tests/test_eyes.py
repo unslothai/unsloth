@@ -14,7 +14,11 @@
 
 from __future__ import annotations
 
-from unforgettable.eyes.basic import inspect_tool_result, user_declares_failure
+from unforgettable.eyes.basic import (
+    grade_run_action,
+    inspect_tool_result,
+    user_declares_failure,
+)
 
 
 def test_pytest_failures_banner_is_fail():
@@ -85,3 +89,17 @@ def test_user_declares_failure_phrases():
     assert user_declares_failure("That didn't work.")
     assert user_declares_failure("That didn’t work.")
     assert not user_declares_failure("please try again")
+
+
+def test_grade_run_action_sentinels_are_fail():
+    blobs = (
+        "Execution timed out after 300 seconds.",
+        "Execution cancelled.",
+        "Blocked command(s) for safety: rm",
+        "Execution error: [Errno 12] Cannot allocate memory",
+        "Error: run_action supports python|terminal only, got 'web_search'",
+        "",
+    )
+    for blob in blobs:
+        fail = grade_run_action("terminal", blob)
+        assert fail is not None, repr(blob)
