@@ -1636,6 +1636,10 @@ class ChatMessageConflictError(RuntimeError):
     """Raised when a chat message id already belongs to another thread."""
 
 
+class ChatMessageProtectedError(RuntimeError):
+    """Raised when pruning would remove a message owned by a durable feature."""
+
+
 class CorruptSettingsError(RuntimeError):
     """Raised when a partial settings patch would overwrite corrupt settings."""
 
