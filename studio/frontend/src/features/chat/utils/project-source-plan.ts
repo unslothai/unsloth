@@ -11,12 +11,26 @@ export interface ProjectSourcePlan {
 export interface ProjectSourceThread {
   readonly id: string;
   readonly modelId?: string;
+  readonly modelType?: string;
 }
 
 /** "unsloth/Qwen3-8B-GGUF:Q4_K_M" reads as "Qwen3-8B-GGUF" in a filename. */
 function modelLabel(thread: ProjectSourceThread): string | undefined {
   const label = thread.modelId?.split("/").pop()?.split(":")[0]?.trim();
   return label || undefined;
+}
+
+/**
+ * What tells two halves apart once their model labels do not. The LoRA compare
+ * runs one checkpoint with the adapter off and on, so both threads record the
+ * same modelId and only modelType differs; the same happens when the two panes
+ * of a general compare answered on the same checkpoint. Name the halves as the
+ * compare header does ("Base Model" / "Fine-tuned"), else by position.
+ */
+function sideLabel(thread: ProjectSourceThread, index: number): string {
+  if (thread.modelType === "base") return "base";
+  if (thread.modelType === "lora") return "fine-tuned";
+  return String(index + 1);
 }
 
 /**
@@ -33,8 +47,18 @@ export function planChatItemSources(
   if (threads.length <= 1) {
     return threads.map((thread) => ({ id: thread.id, title: item.title }));
   }
-  return threads.map((thread, index) => ({
-    id: thread.id,
-    title: `${item.title} - ${modelLabel(thread) ?? index + 1}`,
+  const named = threads.map((thread, index) => ({
+    thread,
+    index,
+    label: modelLabel(thread) ?? String(index + 1),
   }));
+  const uses = new Map<string, number>();
+  for (const { label } of named) uses.set(label, (uses.get(label) ?? 0) + 1);
+  return named.map(({ thread, index, label }) => {
+    // Only a colliding half carries a side, so two different models keep the
+    // plain "<title> - <model>" name.
+    const side =
+      (uses.get(label) ?? 0) > 1 ? ` - ${sideLabel(thread, index)}` : "";
+    return { id: thread.id, title: `${item.title} - ${label}${side}` };
+  });
 }
