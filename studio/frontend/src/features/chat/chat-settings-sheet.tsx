@@ -428,8 +428,11 @@ function specFallbackMessage({
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
     case "mtp_partial_offload":
       // Not the default copy: this build does support MTP, so telling the user to
-      // update llama.cpp would name the wrong cause and the wrong remedy.
-      return "This model does not fit entirely in VRAM, and MTP's extra state pushes more layers to the CPU than it wins back, so Auto turned it off for this load. Choose MTP in Settings to force it.";
+      // update llama.cpp would name the wrong cause and the wrong remedy. Says
+      // what the placement IS rather than that the model could not fit: a Manual
+      // layer count is a partial placement the user picked, on a card that may
+      // have room for all of it, and there the useful remedy is more layers.
+      return "Only part of this model is on the GPU, and MTP's extra state costs more there than the drafting wins back, so Auto turned it off for this load. Put every layer on the GPU to get it back, or choose MTP in Settings to force it at this placement.";
     case "drafter_no_vram":
       // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod
       // in the drafter's place where the build has it, so only the drafter is off.

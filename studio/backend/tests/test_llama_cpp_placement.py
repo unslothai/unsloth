@@ -740,10 +740,15 @@ def test_a_pass_through_drafter_pays_the_rollback_its_type_calls_for(
     assert set(charged) == {rollback if pays_rollback else 0}
 
 
-def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(tmp_path):
+@pytest.mark.parametrize("requested_depth", [None, 2])
+def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
+    tmp_path, requested_depth
+):
     # Studio emits no --spec-draft-n-max when the extras own the spec block, so
     # the child runs at the build's own default. Budgeting Studio's 2 instead
-    # under-reserves the rollback copies, which scale directly with it.
+    # under-reserves the rollback copies, which scale directly with it -- and a
+    # request field carries no further than the platform default does, since
+    # neither is emitted.
     backend, gguf, _sidecar = _hybrid_reserve_backend(
         tmp_path,
         caps = {
@@ -758,6 +763,7 @@ def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(tmp_p
         backend,
         gguf,
         speculative_type = "auto",
+        spec_draft_n_max = requested_depth,
         n_ctx = 8192,
         n_parallel = 4,
         extra_args = ["--spec-type", "draft-mtp"],
@@ -766,6 +772,27 @@ def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(tmp_p
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
     assert set(charged) == {16 * base}
+
+
+def test_auto_stands_down_for_an_explicit_pin_the_vram_probe_cannot_see(tmp_path):
+    # The probe answered nothing, but the pick still pins the child to those
+    # devices, so the launch does offload to them and --fit on can leave part of
+    # the model behind. The probe-only view read this as a CPU-only box.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        gpu_ids = [0],
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
 
 
 def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):

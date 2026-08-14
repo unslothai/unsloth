@@ -25,4 +25,9 @@ test("the Hybrid Mamba partial-offload stand-down has its own notice", () => {
   const copy = branch[1];
   assert.doesNotMatch(copy, /llama\.cpp|update/i);
   assert.match(copy, /Settings/);
+
+  // And it must not diagnose a failed fit. Manual mode reaches this with a
+  // partial layer count the user picked, on a card that may hold the whole
+  // model, where the useful remedy is more layers rather than forcing MTP.
+  assert.doesNotMatch(copy, /not fit|cannot fit|doesn't fit|too (big|large)/i);
 });

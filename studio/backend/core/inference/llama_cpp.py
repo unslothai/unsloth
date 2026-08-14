@@ -13870,18 +13870,19 @@ class LlamaCppBackend:
                         )
                     )
 
-                    # Effective draft depth: extras win (last-wins at launch), else
-                    # the field, else the platform default (2 GPU / 3 CPU).
+                    # Effective draft depth, by what the CHILD will run on rather than
+                    # what was asked for: an extras depth wins (last-wins at launch),
+                    # else the field, else the platform default (2 GPU / 3 CPU).
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
-                    _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
+                    _mtp_eff_n_max = _extra_n_max
                     if _mtp_eff_n_max is None and _extra_args_set_spec_type(extra_args):
                         # The extras own the spec block, so _build_speculative_flags
-                        # returns without emitting a depth and the platform default
-                        # below never reaches the child. What does: the inherited env,
-                        # which survives exactly this case, then the build's own
-                        # default. The rollback reserve scales by this number, so
-                        # assuming Studio's 2 against a build defaulting higher
-                        # under-reserves.
+                        # returns without emitting a depth at all: neither the request
+                        # field nor the platform default below reaches the child. What
+                        # does: the inherited env, which survives exactly this case,
+                        # then the build's own default. The rollback reserve scales by
+                        # this number, so carrying a request field of 2 into a build
+                        # that drafts 16 under-reserves by a factor of eight.
                         _env_n_max = _spec_env.get("LLAMA_ARG_SPEC_DRAFT_N_MAX")
                         if _is_positive_int(_env_n_max):
                             _mtp_eff_n_max = int(str(_env_n_max).strip())
@@ -13892,6 +13893,8 @@ class LlamaCppBackend:
                                 )
                             except Exception:
                                 _mtp_eff_n_max = None
+                    elif _mtp_eff_n_max is None:
+                        _mtp_eff_n_max = spec_draft_n_max
                     if _mtp_eff_n_max is None:
                         # _detected_gpus (not gpus) so manual -- which empty
                         # gpus to bypass the planner -- keep the GPU draft depth the
@@ -15462,7 +15465,10 @@ class LlamaCppBackend:
                         # and only the planner lowers it), and there the rollback copies
                         # cost no VRAM at all -- same reason the helper treats -ngl 0 as
                         # CPU-only rather than partial. Those keep the CPU MTP policy.
-                        and _detected_gpus
+                        # gpu_indices counts too: an explicit pick the VRAM probe could
+                        # not enumerate still pins the child to those devices, so the
+                        # launch offloads to them whatever the probe returned.
+                        and (_detected_gpus or gpu_indices)
                         and self._partially_offloads_layers(
                             [*cmd, *(_spec_placement_extras or [])],
                             _spec_placement_env,
