@@ -9,6 +9,7 @@ checked by AST so we never import its heavy deps (uvicorn/structlog).
 """
 
 import ast
+import hashlib
 import importlib.util
 import io
 import os
@@ -2346,6 +2347,51 @@ def test_a_login_child_that_will_not_die_keeps_the_record_that_names_it(cf, monk
     monkeypatch.setattr(ct, "_pid_alive", lambda _pid: False)
     _settle()
     assert ct._read(ct._RECORD) is None
+
+
+def test_a_certificate_rewritten_after_the_digest_is_still_claimed_by_the_reap(cf, monkeypatch):
+    # The digest is taken while the child can still write, so a login that
+    # outlived termination and then replaced what it had already written would
+    # otherwise leave a file this install created and could never name.
+    stale = hashlib.sha256(b"HALF-WRITTEN").hexdigest()
+    ct._write(
+        ct._RECORD,
+        {"hostname": _HOST, "login_pid": 999_000, "login_token": "t", "cert_digest": stale},
+    )
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: True)
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(ct.os, "kill", lambda *_a: None)
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("STUDIO-CERT", encoding = "utf-8")
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == _cert(cf) else real_unlink(path, **kw),
+    )
+
+    # A refresh only the running process knows about is no proof at all: the
+    # record it has to survive in is the one on disk.
+    assert _settle() is False
+    assert _cert(cf).exists()
+    assert ct._read(ct._RECORD)["cert_digest"] == hashlib.sha256(b"STUDIO-CERT").hexdigest()
+
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    _settle()
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+
+
+def test_a_certificate_beside_an_unidentifiable_login_is_left_alone(cf, monkeypatch):
+    # Nothing here shows who wrote this file. Claiming it would delete the one
+    # the user made with their own cloudflared login just as readily.
+    ct._write(ct._RECORD, {"hostname": _HOST, "login_pid": 999_000, "login_token": "t"})
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: False)
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("SOMEONE-ELSES-CERT", encoding = "utf-8")
+
+    _settle()
+    assert _cert(cf).read_text(encoding = "utf-8") == "SOMEONE-ELSES-CERT"
 
 
 @pytest.mark.parametrize("landing", ["adopting the pid", "starting the reader"])

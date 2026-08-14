@@ -1924,19 +1924,20 @@ def _abandon(binary: Optional[str], names) -> None:
         _write(_ABANDONED, list(dict.fromkeys(_string_list(_ABANDONED) + stranded)))
 
 
-def _reap_login_child(record: dict) -> bool:
-    """End a recorded login child. False when one is still running."""
+def _reap_login_child(record: dict) -> str:
+    """End a recorded login child: "ours" once this call ended one it identified,
+    "gone" when nothing it could identify was running, "running" otherwise."""
     pid = record.get("login_pid")
     if not _same_process(record.get("login_token"), pid):
-        return True
+        return "gone"
     try:
         import psutil
 
         os.kill(pid, signal.SIGTERM)
         psutil.Process(pid).wait(timeout = 5.0)
-        return True
+        return "ours"
     except Exception:
-        return not _pid_alive(pid)
+        return "running" if _pid_alive(pid) else "ours"
 
 
 def _delete_our_certificate(record: dict, *, required: bool = False) -> bool:
@@ -1974,12 +1975,19 @@ def _settle(
         if (_state_dir() / _RECORD).exists():
             logger.warning("Cloudflare setup record is unreadable; leaving it in place.")
         return False
-    if not _reap_login_child(record):
+    reaped = _reap_login_child(record)
+    if reaped == "running":
         # This record is the only thing naming that child. Clearing it now would
         # leave a login able to write the certificate with nothing able to
         # identify what wrote it, which is the state setup cannot recover from.
         logger.warning("Cloudflare login is still running; leaving its setup record in place.")
         return False
+    if reaped == "ours":
+        # The digest was taken while that child could still write, so whatever it
+        # left is only accounted for now that this call has ended it. A child
+        # this call could not identify is not re-attributed: the certificate
+        # would then be as likely to be one the user wrote themselves.
+        _capture_certificate(record)
     identity = read_identity()
     teardown = record.get("operation") == "teardown"
     stranded = False
