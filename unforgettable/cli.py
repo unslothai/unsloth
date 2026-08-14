@@ -31,6 +31,7 @@ from unforgettable.store.records import (
     get_record,
     list_admissions,
     list_records,
+    list_rollouts,
     set_record_status,
 )
 from unforgettable.store.search import search_records
@@ -141,7 +142,11 @@ def _cmd_get(args: argparse.Namespace, db_path: Path) -> int:
     rec = get_record(args.id, db_path=db_path)
     if rec is None:
         return _unknown_id(args.id)
-    _print_json(rec)
+    payload: dict[str, Any] = dict(rec)
+    if rec.get("kind") == "episode":
+        episode_id = rec.get("source_episode_id") or rec["id"]
+        payload["rollouts"] = list_rollouts(episode_id=episode_id, db_path=db_path)
+    _print_json(payload)
     return 0
 
 

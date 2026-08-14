@@ -14,10 +14,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from unforgettable.cli import COMPACT_FIRST_DRY_RUN_HELP, main
-from unforgettable.store.records import get_record, insert_record
+from unforgettable.store.records import get_record, insert_record, insert_rollout
 
 
 def test_list_prints_title(db_path, capsys):
@@ -76,3 +77,35 @@ def test_compact_dry_run_prints_report(db_path, capsys):
     assert main(["compact", "--dry-run", "--db", str(db_path)]) == 0
     out = capsys.readouterr().out
     assert '"dry_run": true' in out
+
+
+def test_get_episode_prints_rollouts(db_path, capsys):
+    rec = insert_record(
+        kind="episode",
+        title="Episode abcdef12",
+        body="run the tests",
+        provenance="mixed",
+        source_episode_id="ep-1",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-1",
+        contact="world",
+        outcome="fail",
+        summary="exit code 1",
+        source_record_id=rec["id"],
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-1",
+        contact="sim",
+        outcome="pass",
+        summary="fixed in sim",
+        source_record_id=rec["id"],
+        db_path=db_path,
+    )
+    assert main(["get", rec["id"], "--db", str(db_path)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "episode"
+    grades = {(row["contact"], row["outcome"]) for row in payload["rollouts"]}
+    assert grades == {("world", "fail"), ("sim", "pass")}

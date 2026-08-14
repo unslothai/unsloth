@@ -19,12 +19,17 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from unforgettable.agents.admissions import admit
-from unforgettable.agents.extractor import from_drift, from_episode, llm_extract
+from unforgettable.agents.extractor import (
+    episode_summary,
+    from_drift,
+    from_episode,
+    llm_extract,
+)
 from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
 from unforgettable.eyes.basic import inspect_tool_result
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
-from unforgettable.store.records import insert_record
+from unforgettable.store.records import insert_record, insert_rollout
 from unforgettable.throne.policy import Action, decide, default_policy
 from unforgettable.tools.specs import MEMORY_TOOLS
 
@@ -141,42 +146,94 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 continue
             break
 
-        error_fix_id = _extract(state, db_path)
-        if state.sim_session and not state.keep_sim:
-            host.remove_sim_session(state.sim_session)
+        error_fix_id = _extract(
+            state,
+            db_path,
+            last_user=last_user_text(request.messages),
+            actions=actions,
+        )
         return EpisodeOutcome(
             text=text, state=state, error_fix_id=error_fix_id, actions=actions
         )
     finally:
-        reset_episode(tokens)
+        try:
+            if state.sim_session and not state.keep_sim:
+                host.remove_sim_session(state.sim_session)
+        finally:
+            reset_episode(tokens)
 
 
-def _extract(state: EpisodeState, db_path: str) -> Optional[str]:
+ROLLOUT_PASS = "pass"
+ROLLOUT_FAIL = "fail"
+ROLLOUT_CONTACT_ORDER = ("world", "sim")
+
+
+def _write_draft(state: EpisodeState, draft: dict[str, Any], db_path: str) -> dict[str, Any]:
+    decision = admit(
+        kind=draft["kind"],
+        provenance=draft["provenance"],
+        explicit=bool(draft.get("explicit")),
+        bookkeeping=bool(draft.get("bookkeeping")),
+        db_path=db_path,
+    )
+    return insert_record(
+        kind=draft["kind"],
+        title=draft["title"],
+        body=draft["body"],
+        provenance=draft["provenance"],
+        status=decision.status,
+        source_episode_id=state.episode_id,
+        contact_tag=draft["provenance"],
+        db_path=db_path,
+    )
+
+
+def _write_rollouts(state: EpisodeState, *, source_record_id: str, db_path: str) -> None:
+    last_by_contact: dict[str, dict[str, Any]] = {}
+    for event in state.trace_events:
+        contact = event.get("contact")
+        if contact in ROLLOUT_CONTACT_ORDER:
+            last_by_contact[contact] = event
+    for contact in ROLLOUT_CONTACT_ORDER:
+        event = last_by_contact.get(contact)
+        if event is None:
+            continue
+        outcome = ROLLOUT_PASS if event.get("kind") == "success" else ROLLOUT_FAIL
+        insert_rollout(
+            episode_id=state.episode_id,
+            contact=contact,
+            outcome=outcome,
+            summary=event.get("summary") or "",
+            source_record_id=source_record_id,
+            db_path=db_path,
+        )
+
+
+def _extract(
+    state: EpisodeState,
+    db_path: str,
+    *,
+    last_user: str,
+    actions: list[str],
+) -> Optional[str]:
     drafts = list(from_episode(state))
     drafts.extend(from_drift(state))
     drafts.extend(llm_extract(state))
     written_id = None
+    draft_ids: list[str] = []
     for draft in drafts:
-        decision = admit(
-            kind=draft["kind"],
-            provenance=draft["provenance"],
-            explicit=bool(draft.get("explicit")),
-            bookkeeping=bool(draft.get("bookkeeping")),
-            db_path=db_path,
-        )
-        rec = insert_record(
-            kind=draft["kind"],
-            title=draft["title"],
-            body=draft["body"],
-            provenance=draft["provenance"],
-            status=decision.status,
-            source_episode_id=state.episode_id,
-            contact_tag=draft["provenance"],
-            db_path=db_path,
-        )
+        rec = _write_draft(state, draft, db_path)
+        draft_ids.append(rec["id"])
         if rec["kind"] == "error_fix" and rec["status"] in {"active", "proposed"}:
             state.keep_sim = True
             written_id = rec["id"]
         elif written_id is None:
             written_id = rec["id"]
+    episode_draft = episode_summary(
+        state, last_user=last_user, draft_ids=draft_ids, actions=actions
+    )
+    episode_rec = _write_draft(state, episode_draft, db_path)
+    _write_rollouts(state, source_record_id=episode_rec["id"], db_path=db_path)
+    if written_id is None:
+        written_id = episode_rec["id"]
     return written_id

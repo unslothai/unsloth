@@ -16,13 +16,18 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from unforgettable.loop.context import EpisodeState
 
 TWIN_NOTE_TITLE = "World/sim disagreement"
 TWIN_NOTE_BODY_CAP = 800
+EPISODE_USER_TEXT_CLIP = 200
+EPISODE_BODY_CAP = 2000
+EPISODE_TITLE_ID_CHARS = 8
+EPISODE_RIM_CONTACTS = frozenset({"world", "sim"})
+EPISODE_FALLBACK_PROVENANCE = "infer"
 
 
 def llm_extract(_state: "EpisodeState") -> list[dict[str, Any]]:
@@ -95,3 +100,54 @@ def from_episode(state: "EpisodeState") -> list[dict[str, Any]]:
             "explicit": False,
         }
     ]
+
+
+def _clip(text: str, cap: int) -> str:
+    if len(text) <= cap:
+        return text
+    return text[:cap]
+
+
+def _episode_provenance(state: "EpisodeState") -> str:
+    contacts = {
+        event.get("contact")
+        for event in state.trace_events
+        if event.get("contact") in EPISODE_RIM_CONTACTS
+    }
+    if contacts == EPISODE_RIM_CONTACTS:
+        return "mixed"
+    if len(contacts) == 1:
+        return next(iter(contacts))
+    return EPISODE_FALLBACK_PROVENANCE
+
+
+def episode_summary(
+    state: "EpisodeState",
+    *,
+    last_user: str,
+    draft_ids: list[str],
+    actions: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Build the bookkeeping episode draft. Pointer, not a transcript."""
+    sections = [f"## User\n{_clip(last_user or '', EPISODE_USER_TEXT_CLIP)}"]
+    action_list = list(actions or [])
+    if action_list:
+        sections.append("## Actions\n" + "\n".join(f"- {action}" for action in action_list))
+    if state.trace_events:
+        lines = []
+        for event in state.trace_events:
+            contact = event.get("contact") or EPISODE_FALLBACK_PROVENANCE
+            kind = event.get("kind") or ""
+            summary = event.get("summary") or ""
+            lines.append(f"- {contact}/{kind}: {summary}")
+        sections.append("## Events\n" + "\n".join(lines))
+    if draft_ids:
+        sections.append("## Drafts\n" + "\n".join(f"- {rid}" for rid in draft_ids))
+    return {
+        "kind": "episode",
+        "title": f"Episode {state.episode_id[:EPISODE_TITLE_ID_CHARS]}",
+        "body": _clip("\n\n".join(sections), EPISODE_BODY_CAP),
+        "provenance": _episode_provenance(state),
+        "explicit": False,
+        "bookkeeping": True,
+    }

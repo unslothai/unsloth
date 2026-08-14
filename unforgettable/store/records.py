@@ -30,6 +30,8 @@ from unforgettable.constants import (
 from .db import get_connection
 
 DEFAULT_ADMISSIONS_LIMIT = 50
+ROLLOUT_CONTACTS = frozenset({"world", "sim"})
+ROLLOUT_OUTCOMES = frozenset({"pass", "fail"})
 
 
 def _now() -> str:
@@ -346,3 +348,61 @@ def set_record_status(
     if found is None:
         raise RuntimeError("status update did not persist")
     return found
+
+
+def insert_rollout(
+    *,
+    episode_id: str,
+    contact: str,
+    outcome: str,
+    summary: str,
+    source_record_id: Optional[str] = None,
+    rollout_id: Optional[str] = None,
+    db_path=None,
+) -> dict[str, Any]:
+    if contact not in ROLLOUT_CONTACTS:
+        raise ValueError(f"unknown rollout contact: {contact}")
+    if outcome not in ROLLOUT_OUTCOMES:
+        raise ValueError(f"unknown rollout outcome: {outcome}")
+    rid = rollout_id or str(uuid.uuid4())
+    now = _now()
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO rollouts(
+                id, episode_id, contact, outcome, summary, source_record_id, created_at
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (rid, episode_id, contact, outcome, summary, source_record_id, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    found = _get_rollout(rid, db_path=db_path)
+    if found is None:
+        raise RuntimeError("rollout insert did not persist")
+    return found
+
+
+def _get_rollout(rollout_id: str, db_path=None) -> Optional[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM rollouts WHERE id = ?", (rollout_id,)
+        ).fetchone()
+        return _row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_rollouts(*, episode_id: str, db_path=None) -> list[dict[str, Any]]:
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM rollouts WHERE episode_id = ? ORDER BY created_at ASC",
+            (episode_id,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()

@@ -17,11 +17,16 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from unforgettable.agents.extractor import TWIN_NOTE_TITLE
+from unforgettable.agents.extractor import EPISODE_TITLE_ID_CHARS, TWIN_NOTE_TITLE
 from unforgettable.host import GenerateRequest, GenerateResult, ToolTrace
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run
-from unforgettable.store.records import get_record, insert_record, list_records
+from unforgettable.store.records import (
+    get_record,
+    insert_record,
+    list_records,
+    list_rollouts,
+)
 from unforgettable.store.search import search_records
 from unforgettable.throne.policy import Action
 
@@ -155,6 +160,17 @@ def test_episode_sim_ok_world_retry_fail_writes_twin_note(tmp_path: Path):
     assert len(fixes) == 1
     assert fixes[0]["status"] == "proposed"
     assert fixes[0]["kind"] == "error_fix"
+    episodes = list_records(kinds=["episode"], db_path=host.db)
+    assert len(episodes) == 1
+    episode = episodes[0]
+    assert episode["status"] == "active"
+    assert episode["source_episode_id"] == outcome.state.episode_id
+    assert episode["title"] == f"Episode {outcome.state.episode_id[:EPISODE_TITLE_ID_CHARS]}"
+    grades = {
+        (row["contact"], row["outcome"])
+        for row in list_rollouts(episode_id=outcome.state.episode_id, db_path=host.db)
+    }
+    assert grades == {("world", "fail"), ("sim", "pass")}
 
 
 def test_retrieve_injects_before_generate(tmp_path: Path):

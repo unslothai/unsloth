@@ -67,6 +67,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             body,
             record_id UNINDEXED
         );
+
+        CREATE TABLE IF NOT EXISTS rollouts (
+            id TEXT NOT NULL PRIMARY KEY,
+            episode_id TEXT NOT NULL,
+            contact TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            source_record_id TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rollouts_episode ON rollouts(episode_id);
         """
     )
     _add_missing_columns(conn)

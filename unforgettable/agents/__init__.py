@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from .admissions import AdmissionDecision, admit
-from .extractor import from_drift, from_episode, llm_extract
+from .extractor import episode_summary, from_drift, from_episode, llm_extract
 from .retriever import RetrievePolicy, format_inject, retrieve
 
 __all__ = [
@@ -21,6 +21,7 @@ __all__ = [
     "admit",
     "RetrievePolicy",
     "format_inject",
+    "episode_summary",
     "from_drift",
     "from_episode",
     "llm_extract",
