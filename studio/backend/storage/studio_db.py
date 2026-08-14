@@ -1824,9 +1824,7 @@ def update_chat_thread(
             applied = cursor.rowcount
         if guarded and applied == 0:
             conn.rollback()
-            if conn.execute(
-                "SELECT 1 FROM chat_threads WHERE id = ?", (id,)
-            ).fetchone() is None:
+            if conn.execute("SELECT 1 FROM chat_threads WHERE id = ?", (id,)).fetchone() is None:
                 return None
             raise ChatThreadPreconditionFailed(id)
         if settings_write is not None:
