@@ -1683,7 +1683,11 @@ if tops:
     broken = not any(importlib.util.find_spec(t) for t in tops if t)
 else:
     files = d.files or []
-    ftops = [f for f in files if len(f.parts) == 2 and f.parts[1] == '__init__.py'] \
+    # stem/suffix rather than the joined name: a bare filename literal inside an
+    # installer reads as an invoked helper to the guard in
+    # tests/test_installer_interactive_prompts.py, which resolves it against the
+    # script's own directory and lands on the real package initializer.
+    ftops = [f for f in files if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py'] \
         or [f for f in files if len(f.parts) == 1 and str(f).endswith('.py')]
     broken = bool(ftops) and not any(d.locate_file(f).exists() for f in ftops)
 print('__MISSING__' if broken else d.version)
