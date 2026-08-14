@@ -200,6 +200,30 @@ function Install-UnslothStudio {
         }
     }
 
+    # Mirrors _uv_download_markers in install.sh; only what was opened is closed.
+    $script:UvDownloadMarkerMinBytes = 52428800
+    if ($env:UNSLOTH_DL_MARKER_MIN_BYTES -match '^\d+$') {
+        $script:UvDownloadMarkerMinBytes = [long]$env:UNSLOTH_DL_MARKER_MIN_BYTES
+    }
+    $script:UvAnnouncedDownloads = @{}
+    function Write-UvDownloadMarker {
+        param([string]$Line)
+        if (-not $TauriMode) { return }
+        if ($Line -match '(?:^|\s)Downloading (\S+) \(([0-9.]+)(KiB|MiB|GiB)\)\s*$') {
+            $unit = @{ KiB = 1024L; MiB = 1048576L; GiB = 1073741824L }[$Matches[3]]
+            if ([double]$Matches[2] * $unit -ge $script:UvDownloadMarkerMinBytes) {
+                $script:UvAnnouncedDownloads[$Matches[1]] = $true
+                Write-TauriLog "DL" "$($Matches[1]) $($Matches[2])$($Matches[3])"
+            }
+        } elseif ($Line -match '(?:^|\s)Downloaded (\S+)\s*$') {
+            # ContainsKey, not Remove's return: Hashtable.Remove is void.
+            if ($script:UvAnnouncedDownloads.ContainsKey($Matches[1])) {
+                $script:UvAnnouncedDownloads.Remove($Matches[1])
+                Write-TauriLog "DL_DONE" $Matches[1]
+            }
+        }
+    }
+
     function Clear-TauriInstallError {
         param([string]$Message)
         if ($TauriMode) {
@@ -1047,9 +1071,19 @@ public static class UnslothStudioFinalPathV2
                 # Redact per record: uv echoes index URLs (credentials and all) in
                 # its errors, and verbose mode must not bypass the quiet path's
                 # redaction. ForEach-Object/Out-Host leave $LASTEXITCODE untouched.
-                & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                & $Command 2>&1 | ForEach-Object {
+                    Write-UvDownloadMarker "$_"
+                    Redact-InstallOutput "$_"
+                } | Out-Host
             } else {
-                $output = & $Command 2>&1 | Out-String
+                # Streamed, not collected, so a marker reaches the app mid-download.
+                $collected = [System.Text.StringBuilder]::new()
+                & $Command 2>&1 | ForEach-Object {
+                    $line = "$_"
+                    [void]$collected.AppendLine($line)
+                    Write-UvDownloadMarker $line
+                }
+                $output = $collected.ToString()
                 if ($LASTEXITCODE -ne 0) {
                     Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
                 }
