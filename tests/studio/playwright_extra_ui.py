@@ -9,6 +9,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -56,7 +57,7 @@ HF_OFFLINE = os.environ.get("STUDIO_UI_HF_OFFLINE", "0") == "1"
 # blackholed runner's search ends in, so the transport failure that permits the fallback is
 # observed before the wait gives up. Those 200ms of headroom only hold while the debounce fires
 # on time, so when the wait runs out with the search still open the budget is re-based onto the
-# request itself (search_abort_extension_ms) rather than spent. The 30s ceiling is that wait
+# request itself (search_abort_extension) rather than spent. The 30s ceiling is that wait
 # plus the re-basing a starved runner needs, plus what is left to do after
 # it: a list swap landing mid-wheel costs one 2s wheel round, and an unreachable-Hub run has
 # already spent its first 15.5s searching when it clears the query and wheels the built-in list.
@@ -135,6 +136,20 @@ with sync_playwright() as p:
     # own search timeout is still running can wait for its abort instead of guessing.
     hf_inflight: dict[object, float] = {}
 
+    def _is_hub_url(url: str) -> bool:
+        """Only the origin the picker itself queries counts as Hub connectivity.
+
+        A substring test also matches datasets-server.huggingface.co, which the training
+        split lookup calls. The frontend keys its backoff by exact origin
+        (HUGGING_FACE_ORIGIN in studio/frontend/src/features/hub/lib/network.ts), so a
+        failure at a sibling host says nothing about the picker's search, and counting it
+        would let an unrelated lookup hand a real search regression the built-in list.
+        """
+        try:
+            return urllib.parse.urlsplit(url).netloc.lower() == "huggingface.co"
+        except Exception:
+            return False
+
     def _note_hf_unreachable(why: str) -> None:
         if not hf_unreachable:
             info(f"WARN Hugging Face unreachable from this runner: {why}")
@@ -142,7 +157,7 @@ with sync_playwright() as p:
 
     def _on_request(req) -> None:
         try:
-            if "huggingface.co" in req.url:
+            if _is_hub_url(req.url):
                 hf_inflight[req] = time.monotonic()
         except Exception:
             pass
@@ -150,7 +165,7 @@ with sync_playwright() as p:
     def _on_requestfailed(req) -> None:
         try:
             hf_inflight.pop(req, None)
-            if "huggingface.co" not in req.url:
+            if not _is_hub_url(req.url):
                 return
             failure = req.failure or ""
             # net::ERR_ABORTED is how a blackholed request ends, at the frontend's own 15s
@@ -174,7 +189,7 @@ with sync_playwright() as p:
         # 429 and 5xx are the Hub refusing to serve this runner. Every other 4xx is a request the
         # app itself built wrong, which is a real defect and must not excuse anything.
         try:
-            if "huggingface.co" not in resp.url:
+            if not _is_hub_url(resp.url):
                 return
             if resp.status == 429 or resp.status >= 500:
                 _note_hf_unreachable(f"HTTP {resp.status}")
@@ -691,10 +706,10 @@ with sync_playwright() as p:
                 wheel_deadline = time.monotonic() + WHEEL_DEADLINE_S
                 wheel_scrolled = False
                 cleared_search = False
-                extended = False
+                extended_for: set = set()
                 next_rows_ms = float(WHEEL_ROWS_TIMEOUT_MS)
 
-                def search_abort_extension_ms() -> float:
+                def search_abort_extension() -> tuple:
                     """How much of the frontend's own search timeout is still to run.
 
                     WHEEL_ROWS_TIMEOUT_MS is counted from `fill`, but the frontend starts its 15s
@@ -706,14 +721,21 @@ with sync_playwright() as p:
                     Only requests issued after the query was typed count: an unrelated Hub
                     request left hanging from an earlier step started long ago and would anchor
                     the budget to a deadline that has already passed.
+
+                    Returns the request as well, because the picker searches twice in sequence
+                    (unsloth-owned, then general: mergedModelIterator in
+                    studio/frontend/src/features/hub/hooks/use-hub-model-search.ts). A slow but
+                    healthy first search can spend the extension, and the second then starts with
+                    its own full budget, so the caller has to be able to re-base onto that one
+                    rather than treat the step as already extended.
                     """
-                    started = min(
-                        (at for at in hf_inflight.values() if at >= query_typed_at),
-                        default = None,
+                    live = [(at, req) for req, at in hf_inflight.items() if at >= query_typed_at]
+                    if not live:
+                        return None, 0.0
+                    started, req = min(live, key = lambda pair: pair[0])
+                    return req, max(
+                        0.0, (started - time.monotonic()) * 1000 + WHEEL_ROWS_TIMEOUT_MS
                     )
-                    if started is None:
-                        return 0.0
-                    return max(0.0, (started - time.monotonic()) * 1000 + WHEEL_ROWS_TIMEOUT_MS)
 
                 while not wheel_scrolled:
                     remaining_ms = (wheel_deadline - time.monotonic()) * 1000
@@ -735,10 +757,14 @@ with sync_playwright() as p:
                         # wheel wait; swallowed here it becomes a hard "did not wheel-scroll".
                         if page_crashed(page, row_err):
                             raise
-                        if not (cleared_search or extended or hf_unreachable or HF_OFFLINE):
-                            extra_ms = search_abort_extension_ms()
-                            if extra_ms > 0:
-                                extended = True
+                        if not (cleared_search or hf_unreachable or HF_OFFLINE):
+                            open_req, extra_ms = search_abort_extension()
+                            if (
+                                open_req is not None
+                                and open_req not in extended_for
+                                and extra_ms > 0
+                            ):
+                                extended_for.add(open_req)
                                 next_rows_ms = extra_ms
                                 info(
                                     "WARN search rows are not in and a Hugging Face request is "
