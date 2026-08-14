@@ -95,6 +95,7 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
+from utils.process_lifetime import is_signalable_pid as _is_signalable_pid
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
@@ -3249,6 +3250,36 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _report_live_llama_timings(callback, chunk) -> None:
+    """Report request-scoped llama.cpp progress without altering the public stream."""
+    if callback is None or not isinstance(chunk, dict):
+        return
+    timings = chunk.get("timings")
+    sample = dict(timings) if isinstance(timings, dict) else {}
+    # Live samples are not TTFT; terminal metadata retains prompt_ms for the fallback.
+    sample.pop("prompt_ms", None)
+    progress = chunk.get("prompt_progress")
+    if isinstance(progress, dict):
+        try:
+            processed = max(0.0, float(progress.get("processed", 0)))
+            cached = max(0.0, float(progress.get("cache", 0)))
+            elapsed_ms = float(progress.get("time_ms", 0))
+            prompt_n = max(0.0, processed - cached)
+            if math.isfinite(elapsed_ms) and elapsed_ms > 0 and math.isfinite(prompt_n):
+                sample.update(
+                    prompt_n = prompt_n,
+                    prompt_per_second = prompt_n / (elapsed_ms / 1000.0),
+                )
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if not sample:
+        return
+    try:
+        callback(sample)
+    except Exception:
+        logger.debug("Ignoring API monitor throughput callback failure", exc_info = True)
+
+
 # Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
@@ -5868,6 +5899,24 @@ class LlamaCppBackend:
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
         fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
+
+        Both of those inputs describe the MACHINE, not the moment. MLX's
+        max_recommended_working_set_size is a static device property, and
+        virtual_memory().total obviously is, so on a 16 GB Mac the budget came
+        out around 9 GB whether the machine was idle or already holding several
+        gigabytes. Studio's own idle footprint alone is over a gigabyte once the
+        warm thread has imported torch and, on Apple Silicon, MLX. The fit then
+        sized a context against headroom that was not there, and llama-server
+        died in KV or compute allocation.
+
+        So take whichever is smaller: the device ceiling, or what is actually
+        available right now. The ceiling still applies on a machine with plenty
+        free, which is the case the working-set number was chosen for.
+
+        _APPLE_UNIFIED_MEMORY_FRACTION then earns a second job it did not have
+        over a static ceiling: available is a snapshot, and llama-server spends
+        seconds loading weights, so another app can take memory inside that
+        window. Budgeting all of it would re-create the failure this avoids.
         """
         from utils.hardware import is_apple_silicon
 
@@ -5880,12 +5929,31 @@ class LlamaCppBackend:
                 rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
         except Exception:
             rec_bytes = 0
+        vm = None
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+        except Exception:
+            vm = None
         if rec_bytes <= 0:
+            if vm is None:
+                return 0
             try:
-                import psutil
-                rec_bytes = int(psutil.virtual_memory().total)
+                rec_bytes = int(vm.total)
             except Exception:
                 return 0
+        # available, not free: psutil's macOS free subtracts speculative pages and
+        # leaves out the inactive queue, so it reads far below what a new allocation
+        # can get. available is inactive + free (psutil arch/osx/mem.c), which adds
+        # that reclaimable cache back. An estimate either way, since it counts dirty
+        # inactive pages that cost a compression to reclaim and ignores the
+        # compressor entirely. Only ever lowers the budget.
+        try:
+            available = int(getattr(vm, "available", 0) or 0) if vm is not None else 0
+        except Exception:
+            available = 0
+        if available > 0:
+            rec_bytes = min(rec_bytes, available)
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
@@ -16930,8 +16998,17 @@ class LlamaCppBackend:
 
     @staticmethod
     def _leading_process_group(pid):
-        """The pid's own process group, when it leads one. None otherwise."""
-        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+        """The pid's own process group, when it leads one. None otherwise.
+
+        `not pid` rejects 0 and None but not 1, and `getpgid(1) == 1`, so init
+        reads as a group leader here and the caller below would then broadcast
+        SIGKILL to every process the user owns. The pid comes from a live Popen
+        today so it cannot be 1, but the floor is a line and the consequence of
+        losing that property later is not recoverable.
+        """
+        if not _is_signalable_pid(pid):
+            return None
+        if os.name != "posix" or not hasattr(os, "getpgid"):
             return None
         try:
             pgid = os.getpgid(pid)
@@ -16942,7 +17019,9 @@ class LlamaCppBackend:
     @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
-        if pgid is None or not hasattr(os, "killpg"):
+        if not _is_signalable_pid(pgid):
+            return  # killpg(1) is kill(-1); killpg(0) is our own group
+        if not hasattr(os, "killpg"):
             return
         try:
             os.killpg(pgid, signal.SIGKILL)
@@ -17229,7 +17308,12 @@ class LlamaCppBackend:
         except Exception:
             pid = -1
 
-        if pid <= 0:
+        # `pid <= 0` let pid 1 through. The cmdline check further down is what
+        # actually keeps this honest and init cannot pass it, but the reaper in
+        # process_lifetime had a start-time identity check that was just as
+        # convincing and a record naming pid 1 still went through it, so the
+        # cheap bound goes in front of the clever one here too.
+        if not _is_signalable_pid(pid):
             cls._unlink_pidfile(path)  # garbage record
             return 0
         if pid == os.getpid():
@@ -17491,6 +17575,14 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
+                # Floored here rather than in each enumerator: both the /proc scan
+                # and the psutil scan feed this loop, and a third one added later
+                # would too. Not hypothetical for pid 1 either, since #7894
+                # established Studio can run as a container entrypoint, and a
+                # container whose entrypoint is llama-server puts a process this
+                # sweep recognises at pid 1. Killing it takes the container down.
+                if not _is_signalable_pid(pid):
+                    continue
                 # Ownership: exact match OR binary under a known root.
                 is_ours = binary in exact_binaries or any(
                     binary.is_relative_to(root) for root in resolved_roots
@@ -18211,6 +18303,37 @@ class LlamaCppBackend:
                 yield response, first_token_deadline
 
     @staticmethod
+    def _sse_event_has_generated_output(event: str) -> bool:
+        """Return true when a complete SSE event carries model-generated output."""
+        payload_lines = [
+            line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
+        ]
+        if not payload_lines:
+            return False
+        try:
+            data = json.loads("\n".join(payload_lines))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if data.get("type") == "diffusion_frame":
+            return True
+        choices = data.get("choices")
+        if not isinstance(choices, list):
+            return False
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict) and any(
+                value not in (None, "", []) for key, value in delta.items() if key != "role"
+            ):
+                return True
+            if choice.get("text") not in (None, ""):
+                return True
+        return False
+
+    @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
         cancel_event: Optional[threading.Event] = None,
@@ -18223,6 +18346,7 @@ class LlamaCppBackend:
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
+        prefill_sse_buffer = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
@@ -18234,7 +18358,17 @@ class LlamaCppBackend:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
                     LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
                 chunk = next(text_iter)
-                if chunk:
+                starts_output = last_chunk_at is not None
+                if chunk and last_chunk_at is None:
+                    prefill_sse_buffer += chunk
+                    while match := re.search(r"(?:\r\n|\r|\n){2}", prefill_sse_buffer):
+                        event = prefill_sse_buffer[: match.start()]
+                        prefill_sse_buffer = prefill_sse_buffer[match.end() :]
+                        if LlamaCppBackend._sse_event_has_generated_output(event):
+                            starts_output = True
+                            prefill_sse_buffer = ""
+                            break
+                if chunk and starts_output:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,
@@ -18586,6 +18720,7 @@ class LlamaCppBackend:
         continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -18622,6 +18757,9 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
+        if perf_callback is not None:
+            payload["return_progress"] = True
+            payload["timings_per_token"] = True
         # Per-request enable_thinking / reasoning_effort / preserve_thinking
         _reasoning_kw = self._request_reasoning_kwargs(
             enable_thinking, reasoning_effort, preserve_thinking
@@ -18697,6 +18835,7 @@ class LlamaCppBackend:
 
                         try:
                             data = json.loads(line[6:])
+                            _report_live_llama_timings(perf_callback, data)
                             # Diffusion frame (per-step canvas) from the shim: forward untouched so
                             # the frontend renders it in place. No assistant text, so it never enters
                             # the cumulative content.
@@ -18787,6 +18926,7 @@ class LlamaCppBackend:
                     continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
+                    perf_callback = perf_callback,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -18830,6 +18970,7 @@ class LlamaCppBackend:
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -19110,6 +19251,10 @@ class LlamaCppBackend:
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
             }
+
+            if perf_callback is not None:
+                payload["return_progress"] = True
+                payload["timings_per_token"] = True
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
@@ -19229,6 +19374,8 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+
+                                _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")
                                 if _ct:
                                     _iter_timings = _ct
@@ -20273,6 +20420,10 @@ class LlamaCppBackend:
             stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
 
+        if perf_callback is not None:
+            stream_payload["return_progress"] = True
+            stream_payload["timings_per_token"] = True
+
         cumulative = ""
         _last_emitted = ""
         in_thinking = False
@@ -20332,6 +20483,8 @@ class LlamaCppBackend:
 
                         try:
                             chunk_data = json.loads(line[6:])
+
+                            _report_live_llama_timings(perf_callback, chunk_data)
                             # Capture server timings/usage from final chunks.
                             _chunk_timings = chunk_data.get("timings")
                             if _chunk_timings:
