@@ -101,10 +101,13 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
         "tobase64string",
         "b64decode",
         "b64encode",
-        "base64 -d",
-        "base64 --decode",
     ):
         assert banned not in text, f"{name} contains {banned}"
+    # Whitespace-aware: `base64  -d`, a tab, or a combined flag cluster (-di) still
+    # decode, so the decoder ban cannot be a fixed substring. Text is lowercased
+    # above, which also folds macOS's -D into this.
+    decoder = re.search(r"base64\s+-(d\w*|-decode)\b", text)
+    assert not decoder, f"{name} invokes a base64 decoder: {decoder.group(0)!r}"
     # PowerShell accepts unambiguous prefixes of -EncodedCommand (-e, -enc, ...) and
     # the backend's command screen in studio/backend/core/inference/tools.py treats
     # them as equivalent, so this guard must too. Only powershell/pwsh invocation
