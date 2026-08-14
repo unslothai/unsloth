@@ -15810,8 +15810,7 @@ class LlamaCppBackend:
                 # above cannot reach.
                 if _flash_attn_known_off and self._drop_env_quantized_v_cache(env):
                     logger.info(
-                        "Dropped inherited quantized V-cache env: this build has "
-                        "no --flash-attn."
+                        "Dropped inherited quantized V-cache env: this build has no --flash-attn."
                     )
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final

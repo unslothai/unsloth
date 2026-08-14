@@ -214,7 +214,7 @@ def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit)
     )
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
-    backend._select_gpus = lambda *args, **kwargs: ((None, True) if use_fit else ([0], False))
+    backend._select_gpus = lambda *args, **kwargs: (None, True) if use_fit else ([0], False)
     backend.probe_server_capabilities = lambda _binary = None: {
         "supports_dspark": True,
         "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -468,9 +468,7 @@ def test_auto_disables_embedded_hybrid_mtp_with_manual_partial_layers(tmp_path):
 
 
 @pytest.mark.parametrize("gpu_layers", [0, 66])
-def test_auto_keeps_embedded_hybrid_mtp_without_manual_partial_layers(
-    tmp_path, gpu_layers
-):
+def test_auto_keeps_embedded_hybrid_mtp_without_manual_partial_layers(tmp_path, gpu_layers):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
 
     result = _launch(
@@ -894,7 +892,7 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
-    backend._get_gguf_size_bytes = lambda path: (6 * gb if str(path) == str(sidecar) else 16 * gb)
+    backend._get_gguf_size_bytes = lambda path: 6 * gb if str(path) == str(sidecar) else 16 * gb
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 8192)
     backend._can_estimate_kv = lambda: True
     # Context-linear, so an unreleased drafter reserve is paid for in context.
@@ -998,7 +996,7 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     )
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
-    backend._get_gguf_size_bytes = lambda path: (8 * gb if str(path) == str(sidecar) else 16 * gb)
+    backend._get_gguf_size_bytes = lambda path: 8 * gb if str(path) == str(sidecar) else 16 * gb
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 8192)
     backend._can_estimate_kv = lambda: True
     # Context-linear throughout, so GPU0 alone can shrink its way to holding both.
