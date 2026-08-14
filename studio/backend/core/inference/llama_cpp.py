@@ -18244,9 +18244,7 @@ class LlamaCppBackend:
     def _sse_event_has_generated_output(event: str) -> bool:
         """Return true when a complete SSE event carries model-generated output."""
         payload_lines = [
-            line[5:].lstrip()
-            for line in event.splitlines()
-            if line.startswith("data:")
+            line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
         ]
         if not payload_lines:
             return False
