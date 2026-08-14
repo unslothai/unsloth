@@ -649,15 +649,18 @@ function flushPreHydrationSettings(): void {
  */
 function persistSetting(key: string, raw: string): void {
   const mirrored = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
-  if (mirrored && captureThreadScopedEdit(mirrored.field)) return;
-  // Before hydration the cache says nothing about the server's value, so an
-  // explicit write is recorded even where it changes nothing locally. A
-  // constraint write (deep research turning the tool pills off) has to reach
-  // the backend, or hydration restores the toggle it was there to clear.
-  if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
-    mirrorSettingToBackend(key, raw);
-  }
-  writeStorageValue(key, raw);
+  const writeGlobal = () => {
+    // Before hydration the cache says nothing about the server's value, so an
+    // explicit write is recorded even where it changes nothing locally. A
+    // constraint write (deep research turning the tool pills off) has to reach
+    // the backend, or hydration restores the toggle it was there to clear.
+    if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
+      mirrorSettingToBackend(key, raw);
+    }
+    writeStorageValue(key, raw);
+  };
+  if (mirrored && captureThreadScopedEdit(mirrored.field, writeGlobal)) return;
+  writeGlobal();
 }
 
 const THREAD_SETTINGS_DEBOUNCE_MS = 400;
@@ -715,6 +718,18 @@ function buildThreadScopedSnapshot(
     activeThreadScopedSettings?.permissionMode !== undefined
   ) {
     settings.permissionMode = activeThreadScopedSettings.permissionMode;
+  }
+  // Same for deep research, which apply() also holds back (external models and incognito
+  // cannot run it). Without this, toggling any other pill in such a chat erases the true
+  // it had stored, and it comes back off once the chat is on a local model again.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    activeThreadScopedSettings?.deepResearchEnabled === true &&
+    settings.deepResearchEnabled !== true &&
+    (isExternalModelId(useChatRuntimeStore.getState().params.checkpoint) ||
+      useChatRuntimeStore.getState().incognito)
+  ) {
+    settings.deepResearchEnabled = true;
   }
   if (threadId === threadScopedSettingsThreadId) {
     activeThreadScopedSettings = settings;
@@ -798,16 +813,49 @@ function scheduleThreadScopedSettingsWrite(
   }, THREAD_SETTINGS_DEBOUNCE_MS);
 }
 
+// the chat whose snapshot is in flight, and the edits made before it landed. The store already
+// shows them; only the read can say whether they belong to this chat or to the defaults, so they
+// wait here. Writing them globally in the meantime moved every other chat's default and was then
+// overwritten by the arriving snapshot, so the click both leaked and appeared to do nothing.
+let pendingPairingThreadId: string | null = null;
+let heldThreadScopedEdits: {
+  field: string;
+  writeGlobal: (() => void) | null;
+}[] = [];
+
+/** Start of the window: the read for `threadId` is out but its snapshot has not landed. */
+export function beginThreadScopedPairing(threadId: string): void {
+  if (pendingPairingThreadId === threadId) return;
+  releaseHeldThreadScopedEdits();
+  pendingPairingThreadId = threadId;
+}
+
+/** The chat turned out to own no snapshot: send the held edits to the defaults, as before. */
+export function releaseHeldThreadScopedEdits(): void {
+  const held = heldThreadScopedEdits;
+  heldThreadScopedEdits = [];
+  pendingPairingThreadId = null;
+  for (const edit of held) edit.writeGlobal?.();
+}
+
 // reports whether the edit was taken; with no chat open the caller persists globally as before.
-function captureThreadScopedEdit(field: string): boolean {
+function captureThreadScopedEdit(
+  field: string,
+  writeGlobal: (() => void) | null = null,
+): boolean {
   if (!isThreadOwnedSettingKey(field)) return false;
   const threadId = useChatRuntimeStore.getState().activeThreadId;
+  if (threadId === null) return false;
   // both ids: between a switch and its snapshot arriving the store still holds the old values.
-  if (threadId === null || threadId !== threadScopedSettingsThreadId) {
-    return false;
+  if (threadId === threadScopedSettingsThreadId) {
+    scheduleThreadScopedSettingsWrite(threadId);
+    return true;
   }
-  scheduleThreadScopedSettingsWrite(threadId);
-  return true;
+  if (threadId === pendingPairingThreadId) {
+    heldThreadScopedEdits.push({ field, writeGlobal });
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -2123,9 +2171,12 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   if (Object.is(value, currentValue)) {
     return;
   }
-  if (captureThreadScopedEdit(key)) return;
-  scalarSettingMutationVersions[key] += 1;
-  saveSettingsPatch({ [key]: value });
+  const writeGlobal = () => {
+    scalarSettingMutationVersions[key] += 1;
+    saveSettingsPatch({ [key]: value });
+  };
+  if (captureThreadScopedEdit(key, writeGlobal)) return;
+  writeGlobal();
 }
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
@@ -2657,6 +2708,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       // the pending write belongs to the outgoing thread, so it goes out before the swap.
       flushThreadScopedSettingsWrite();
+      // edits made while this chat's snapshot was in flight: keep them and store them on the
+      // chat. Anything else and the read would silently undo a click the user already saw.
+      const heldFields = new Set<string>();
+      if (threadId !== null && threadId === pendingPairingThreadId) {
+        for (const edit of heldThreadScopedEdits) heldFields.add(edit.field);
+        heldThreadScopedEdits = [];
+        pendingPairingThreadId = null;
+      } else {
+        releaseHeldThreadScopedEdits();
+      }
       // nothing was overridden while unpaired, so there is nothing to restore.
       if (threadScopedSettingsThreadId === null && threadId === null) {
         return state;
@@ -2673,6 +2734,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const target = nextState as Record<string, unknown>;
       const applied: Record<string, unknown> = {};
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
+        // the user set this one while the read was in flight, so it wins over what came back.
+        if (heldFields.has(key)) {
+          applied[key] = state[key];
+          continue;
+        }
         // full access was accepted through a warning dialog: a switch must not drop it.
         if (key === "permissionMode" && state.permissionMode === "full") {
           continue;
@@ -2692,10 +2758,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         if (!isSameThreadScopedValue(value, state[key])) target[key] = value;
       }
       // pin what the chat shows now, or changing the defaults later would rewrite its modes.
-      if (threadId !== null && stored === null) {
+      // A chat that already had a snapshot only needs a write if it is carrying a held edit.
+      if (threadId !== null && (stored === null || heldFields.size > 0)) {
         scheduleThreadScopedSettingsWrite(
           threadId,
-          sanitizeThreadScopedSettings(applied),
+          stored === null ? sanitizeThreadScopedSettings(applied) : null,
         );
       }
       if (!hasKeys(nextState)) return state;

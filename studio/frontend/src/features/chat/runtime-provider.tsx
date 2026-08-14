@@ -62,7 +62,11 @@ import {
   readOpenDocumentAttachmentContent,
 } from "./open-document";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  beginThreadScopedPairing,
+  releaseHeldThreadScopedEdits,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import {
   notifyPromptQueueRunFailed,
@@ -1713,13 +1717,19 @@ function ThreadScopedSettingsSync({
 
     const sync = () => {
       if (cancelled || paired) return;
+      // the composer is live while this read is out, so hold any edit made in the meantime
+      // rather than writing it to the installation defaults and then discarding it.
+      beginThreadScopedPairing(activeThreadId);
       void getStoredChatThreadReadResult(activeThreadId)
         .then(({ thread, cacheable }) => {
           if (cancelled || paired) return;
           // a legacy fallback row carries no snapshot, and pinning would overwrite the real one.
           if (!thread || !cacheable) {
             // a new chat's runtime-made id has no row yet, so it stays on the global settings.
-            if (unpaired) return;
+            if (unpaired) {
+              releaseHeldThreadScopedEdits();
+              return;
+            }
             unpaired = true;
             applyThreadScopedSettings(null, null);
             return;
@@ -1732,13 +1742,15 @@ function ThreadScopedSettingsSync({
           );
         })
         // a failed read keeps the current values: the defaults would be the wrong chat's modes.
-        .catch(() => undefined);
+        // A held edit still has to go somewhere, and the defaults are where it went before.
+        .catch(() => releaseHeldThreadScopedEdits());
     };
 
     sync();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     return () => {
       cancelled = true;
+      releaseHeldThreadScopedEdits();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };
   }, [activeThreadId, enabled, settingsHydrated]);
