@@ -4973,7 +4973,9 @@ def test_the_listing_probe_reads_the_installed_version_instead_of_importing_diff
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
 
     assert family_pipeline_available(z_image) is True
-    assert family_pipeline_available(h3) is False  # 0.40.0 is the first release with its transformer
+    assert (
+        family_pipeline_available(h3) is False
+    )  # 0.40.0 is the first release with its transformer
     assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
 
     installed[0] = "0.40.0.dev0"  # a dev build of the release that has it

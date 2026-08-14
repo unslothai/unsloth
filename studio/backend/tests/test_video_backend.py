@@ -794,9 +794,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
         "try_to_load_from_cache",
         lambda repo_id, filename, **kw: "/fake/cache/blobs/model.gguf",
     )
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_architecture", lambda path: "ltxv"
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "ltxv")
     fam = _detect_load_family("someorg/opaque-quants", "model.gguf", None)
     assert fam is not None and fam.name == "ltx-2"
 
@@ -808,9 +806,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
     monkeypatch.setattr(
         huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/fake/cache/blobs/model.gguf"
     )
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_architecture", lambda path: "wan"
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "wan")
     assert _detect_load_family("someorg/opaque-quants", "model.gguf", None) is None
 
     # The blob lives in a NON-active cache root: the active probe misses, but the per-root probe finds it.
@@ -818,9 +814,7 @@ def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
 
     monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: "/fake/legacy")
     monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: "/fake/default")
-    monkeypatch.setattr(
-        gguf_meta, "read_gguf_architecture", lambda path: "ltxv"
-    )
+    monkeypatch.setattr(gguf_meta, "read_gguf_architecture", lambda path: "ltxv")
     monkeypatch.setattr(
         huggingface_hub,
         "try_to_load_from_cache",

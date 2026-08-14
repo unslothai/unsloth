@@ -1197,7 +1197,6 @@ def _installed_diffusers_version() -> Optional[str]:
             return installed.strip()
     try:
         from importlib.metadata import version
-
         installed = version("diffusers")
     except Exception:  # noqa: BLE001 -- not installed / unreadable metadata: caller fails open
         return None

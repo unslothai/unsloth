@@ -4019,7 +4019,6 @@ def _gguf_architecture(path: str) -> Optional[str]:
     """The GGUF ``general.architecture``, or None. Delegates to the shared,
     bounds-checked header reader (cached by path/mtime/size)."""
     from utils.models.gguf_metadata import read_gguf_architecture
-
     return read_gguf_architecture(path)
 
 

@@ -431,7 +431,11 @@ class _CountingFile:
         self.operations += 1
         return self._handle.read(size)
 
-    def seek(self, offset, whence = 0):
+    def seek(
+        self,
+        offset,
+        whence = 0,
+    ):
         self.operations += 1
         return self._handle.seek(offset, whence)
 

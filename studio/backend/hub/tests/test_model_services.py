@@ -7160,9 +7160,7 @@ def test_local_inventory_classifies_off_the_event_loop(monkeypatch):
             loop_is_free.set()
 
         listing = asyncio.create_task(local_inventory.list_local_models_response("./models"))
-        await asyncio.wait_for(
-            asyncio.gather(listing, keep_the_loop_moving()), timeout = 15
-        )
+        await asyncio.wait_for(asyncio.gather(listing, keep_the_loop_moving()), timeout = 15)
         return threading.get_ident(), listing.result()
 
     loop_ident, listed = asyncio.run(run())
