@@ -39,21 +39,40 @@ def _is_retryable_cache_error(error: OSError) -> bool:
     return isinstance(error, PermissionError) or _is_windows_symlink_privilege_error(error)
 
 
+class _NoSymlinkSupport(dict):
+    """Answers "already probed, unsupported" for every cache dir.
+
+    Hub before 1.9 has no disable flag and re-probes dirs missing from this
+    cache, which can lose the same race again, so leave it nothing to probe.
+    """
+
+    def __contains__(self, cache_dir) -> bool:
+        return True
+
+    def __missing__(self, cache_dir) -> bool:
+        return False
+
+
 def _disable_hf_symlinks_for_process() -> None:
     """Switch an affected worker to HF's regular-file cache fallback."""
     os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
-    # huggingface_hub is already imported, so update its live state too: Hub 1.x
-    # reads this constant, the Python 3.9 pin (0.36.2) only its capability cache.
-    from huggingface_hub import constants, file_download
+    # huggingface_hub is already imported, so update its live state too. Hub 1.9
+    # added this constant; older installs, including the Python 3.9 pin (0.36.2),
+    # decide purely from the per-directory capability cache below.
+    try:
+        from huggingface_hub import constants, file_download
+    except ImportError:  # never mask the load error we are recovering from
+        return
 
     if hasattr(constants, "HF_HUB_DISABLE_SYMLINKS"):
         constants.HF_HUB_DISABLE_SYMLINKS = True
     symlink_support = getattr(file_download, "_are_symlinks_supported_in_dir", None)
     if isinstance(symlink_support, dict):
-        # Every probed dir, not just this one; unprivileged Windows cannot link
-        # in any of them, so the rest would fail the same way.
+        # Existing entries are flipped in place for anything already holding the
+        # dict; unprivileged Windows cannot link in any cache dir, not just this one.
         for cache_dir in tuple(symlink_support):
             symlink_support[cache_dir] = False
+        file_download._are_symlinks_supported_in_dir = _NoSymlinkSupport(symlink_support)
 
 
 def studio_datasets_cache() -> str:
