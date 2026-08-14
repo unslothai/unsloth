@@ -574,6 +574,8 @@ export interface OpenAIChatCompletionsRequest {
     context_length?: number;
   };
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
