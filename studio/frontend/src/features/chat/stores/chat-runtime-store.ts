@@ -1503,12 +1503,13 @@ function getReplayStatePatch(
   nextParams: InferenceParams,
   outgoing: Record<string, PersistedInferenceParams> | null,
   baseParams: InferenceParams,
+  visible: boolean,
 ): Partial<ChatRuntimeStore> {
   const replayed = baseParams !== state.params;
   persistReplayedParams(state, nextParams, replayed);
   return {
     ...(outgoing ? { paramsByModel: outgoing } : {}),
-    ...getReplayedPresetPatch(state, replayed),
+    ...(visible ? getReplayedPresetPatch(state, replayed) : {}),
   };
 }
 
@@ -1956,7 +1957,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         params: nextParams,
         ...(paramsByModel ? { paramsByModel } : {}),
-        ...getReplayedPresetPatch(state, nextParams !== params),
+        ...(options?.trackQueuedSettings === false
+          ? {}
+          : getReplayedPresetPatch(state, nextParams !== params)),
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
           : {}),
@@ -2197,7 +2200,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
       return {
         params: nextParams,
-        ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
+        // A background load and the restore that follows it both switch the
+        // checkpoint with trackQueuedSettings off. Their replays are not visible
+        // settings changes, and the restore does not carry provenance back, so
+        // marking there would leave the visible model reading as modified.
+        ...getReplayStatePatch(
+          state,
+          nextParams,
+          outgoing,
+          baseParams,
+          options?.trackQueuedSettings !== false,
+        ),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
