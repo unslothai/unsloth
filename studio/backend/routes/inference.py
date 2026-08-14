@@ -15088,7 +15088,7 @@ async def openai_chat_completions(
                 _sf_finish = "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
                 yield _chat_final_chunk(completion_id, created, model_name, _sf_finish)
                 # Reuse the reason already sent to the client. Outside the stats block
-                # below: only MLX reports stats.
+                # below: a run whose token count is unknown reports no stats.
                 api_monitor.set_perf(monitor_id, stop_reason = _sf_finish)
                 if _stats:
                     usage_line = _openai_stream_usage_chunk(
@@ -15209,7 +15209,7 @@ async def openai_chat_completions(
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
             # Reuse the reason this response carries. Outside the stats block below:
-            # only MLX reports stats.
+            # a run whose token count is unknown reports no stats.
             _sf_json_finish = "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
             api_monitor.set_perf(monitor_id, stop_reason = _sf_json_finish)
             if _stats:
@@ -15565,7 +15565,7 @@ async def openai_chat_completions(
                 )
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Reuse the reason already sent to the client. Outside the stats block
-                # below: only MLX reports stats.
+                # below: a run whose token count is unknown reports no stats.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)
                 if _stats:
                     usage_line = _openai_stream_usage_chunk(
@@ -15752,8 +15752,8 @@ async def openai_chat_completions(
                     f"[tool_calls] {_calls_text}" if _calls_text else ""
                 )
             api_monitor.set_reply(monitor_id, _monitor_reply)
-            # Reuse the response's finish_reason. Outside the stats block: only
-            # MLX reports stats.
+            # Reuse the response's finish_reason. Outside the stats block: a run
+            # whose token count is unknown reports no stats.
             api_monitor.set_perf(monitor_id, stop_reason = _finish)
             _stats = stats_holder.get("stats")
             if _stats:
