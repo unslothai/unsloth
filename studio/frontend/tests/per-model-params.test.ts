@@ -129,6 +129,42 @@ test("a local model load replays memory over the backend's recommendation", () =
   assert.equal(live.temperature, 0.2, "the tuned value beats the recommendation");
 });
 
+// A model is only recorded once something is edited, so without snapshotting the
+// model being left, an install upgrading from the single global set loses the
+// active model's settings the first time the user switches away.
+test("the model being switched away from is remembered", () => {
+  // Startup after an upgrade: global params hydrated, nothing remembered yet.
+  const onA = params({ checkpoint: QWEN, temperature: 0.2, systemPrompt: "A" });
+  const memory = record({}, QWEN, pickPersistedInferenceParams(onA), onA);
+  assert.ok(memory, "leaving A records what A was running with");
+
+  const onB = getReplayedParams(true, memory, onA, LLAMA, true);
+  const editedB = { ...onB, checkpoint: LLAMA, systemPrompt: "B" };
+  const afterB = record(memory, LLAMA, { systemPrompt: "B" }, editedB) ?? memory;
+
+  const backOnA = getReplayedParams(true, afterB, editedB, QWEN, true);
+  assert.equal(backOnA.systemPrompt, "A");
+  assert.equal(backOnA.temperature, 0.2);
+});
+
+// The auto-load calls setCheckpoint and then setParams with the load response,
+// which carries the model's context length as maxTokens. Replay has to run on
+// that second call too or the remembered output limit is lost every load.
+test("a load response does not overwrite a remembered token budget", () => {
+  const memory = { [QWEN]: { ...pickPersistedInferenceParams(params()), maxTokens: 4096 } };
+  const afterCheckpoint = getReplayedParams(true, memory, params(), QWEN, true);
+  assert.equal(afterCheckpoint.maxTokens, 4096);
+
+  // setParams(fromModelLoad) with the load response: checkpoint unchanged, so
+  // only the forced replay keeps the remembered budget.
+  const loadResponse = { ...afterCheckpoint, maxTokens: 131072 };
+  const withoutForcedReplay = getReplayedParams(true, memory, loadResponse, QWEN, false);
+  assert.equal(withoutForcedReplay.maxTokens, 131072, "this is the reported bug");
+
+  const withForcedReplay = getReplayedParams(true, memory, loadResponse, QWEN, true);
+  assert.equal(withForcedReplay.maxTokens, 4096);
+});
+
 // Null is how the store leaves the map and its hydration version untouched.
 test("nothing is recorded when there is nothing to record", () => {
   const snapshot = pickPersistedInferenceParams(params());

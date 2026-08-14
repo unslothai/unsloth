@@ -152,17 +152,16 @@ function sanitizeInferenceParams(
   return hasKeys(params) ? params : undefined;
 }
 
-// The server merge never removes keys, so this load-time trim is what bounds the
-// map. Insertion order is preserved, so it drops the longest-known models first.
-const MAX_REMEMBERED_MODELS = 100;
-
+// Not capped. The server merge never removes keys and keeps an existing key in
+// its original position, so a load-time trim would permanently hide the oldest
+// entries: editing one of those models would write an update that the next
+// reload silently drops again. Entries are a dozen numbers each.
 function sanitizeInferenceParamsByModel(
   value: unknown,
 ): Record<string, PersistedInferenceParams> | undefined {
   if (!isRecord(value)) return undefined;
   const byModel: Record<string, PersistedInferenceParams> = {};
-  const entries = Object.entries(value).slice(-MAX_REMEMBERED_MODELS);
-  for (const [modelId, params] of entries) {
+  for (const [modelId, params] of Object.entries(value)) {
     if (!modelId) continue;
     const sanitized = sanitizeInferenceParams(params);
     if (sanitized) byModel[modelId] = sanitized;

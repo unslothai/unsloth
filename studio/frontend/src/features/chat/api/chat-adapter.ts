@@ -2878,6 +2878,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
+          fromModelLoad: true,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -3246,6 +3247,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
+            fromModelLoad: true,
           },
         );
         const defaultModel: ChatModelSummary = {
