@@ -44,6 +44,7 @@ const CATALOG: LlamaFlagCatalog = {
   maxBytes: 32 * 1024,
   windowsCommandBudget: 0,
   defaultParallelSlots: 0,
+  parallelSlotsClamped: false,
   probeOk: true,
 };
 
@@ -118,6 +119,7 @@ test("nothing is called unknown when the probe failed", () => {
     maxBytes: 32 * 1024,
     windowsCommandBudget: 0,
     defaultParallelSlots: 0,
+    parallelSlotsClamped: false,
     probeOk: false,
   };
   assert.deepEqual(
@@ -906,6 +908,7 @@ test("an unverified flag keeps the benefit of the doubt at the end", () => {
     maxBytes: 0,
     windowsCommandBudget: 0,
     defaultParallelSlots: 0,
+    parallelSlotsClamped: false,
     probeOk: false,
   };
   assert.deepEqual(diagnoseExtraArgs("--rope-scaling", unverified), []);
@@ -926,6 +929,7 @@ test("a two-value flag left short is refused whatever the catalogue says", () =>
     maxBytes: 0,
     windowsCommandBudget: 0,
     defaultParallelSlots: 0,
+    parallelSlotsClamped: false,
     probeOk: false,
   };
   assert.equal(levels("--control-vector-layer-range 1", unverified)[0], "error");
@@ -1288,6 +1292,9 @@ test("the managed answer is invalidated with the catalogue", () => {
   assert.match(flagsApi, /cachedManaged = null; inFlightManaged = null;/);
   // The dynamic limits are what make it stale, so they have to be in that answer.
   assert.match(flagsApi, /defaultParallelSlots: number;/);
+  // parallelSlotsClamped goes stale the same way and for the same reason: it is
+  // read off the same probe, so a cached answer can outlive the build it describes.
+  assert.match(flagsApi, /parallelSlotsClamped: boolean;/);
 });
 
 test("a flag quoted with stray spaces is refused, not silently sent", () => {
