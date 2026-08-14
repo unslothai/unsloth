@@ -171,7 +171,12 @@ import {
   usePlusMenuPrefsStore,
   writeComposerDraft,
 } from "@/features/chat";
-import { applySentTextGuard } from "@/features/chat/utils/composer-send-guard";
+import {
+  applySentTextGuard,
+  armSentTextGuard,
+  sentTextGuardBlocksDraft,
+  type SentTextGuard,
+} from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
   getStoredChatThread,
@@ -2122,10 +2127,10 @@ const Composer: FC<{
     (s) => s.setPendingImageEditReference,
   );
   // Read by both writers that could put the sent text back: the input handlers
-  // and the draft restore.
-  const justSentTextRef = useRef<string | null>(null);
+  // and the draft restore. Armed by every path that clears the composer.
+  const justSentRef = useRef<SentTextGuard | null>(null);
   const { inputProps, isComposing, isComposingRef } =
-    useImeComposerInputHandlers({ submitOnEnter: true, justSentTextRef });
+    useImeComposerInputHandlers({ submitOnEnter: true, justSentRef });
   // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
@@ -2620,8 +2625,11 @@ const Composer: FC<{
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     // A save that raced the send still holds the sent text; restoring it would
-    // undo the clear.
-    if (draft.length > 0 && draft === justSentTextRef.current) return;
+    // undo the clear. Keyed on the thread that sent, so another thread's
+    // identical draft still restores.
+    if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey, Date.now())) {
+      return;
+    }
     composer.setText(draft);
   }, [draftKey, aui]);
   // Separate from the text restore above, which must stay keyed on the draft
@@ -2683,6 +2691,15 @@ const Composer: FC<{
     draftKeyRef.current = draftKey;
     pasteDraftKeyRef.current = pasteDraftKey;
   }, [draftKey, pasteDraftKey]);
+  // Call wherever the composer is emptied because its text left as a message,
+  // whether it was sent or queued.
+  const armJustSent = useCallback((...texts: string[]) => {
+    justSentRef.current = armSentTextGuard(
+      texts,
+      draftKeyRef.current,
+      Date.now(),
+    );
+  }, []);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -3152,6 +3169,7 @@ const Composer: FC<{
               composer.setText("");
             });
             clearStoredDraft();
+            armJustSent(state.text);
           });
         })
         .catch(() => {
@@ -3247,7 +3265,9 @@ const Composer: FC<{
     ],
   );
 
-  const sendReservedComposer = useCallback(() => {
+  // alsoGuard: text the composer showed before this path rewrote it, so a late
+  // write carrying what the user actually typed is refused too.
+  const sendReservedComposer = useCallback((alsoGuard?: string) => {
     const assistantRuntime =
       aui.threads().__internal_getAssistantRuntime?.();
     let reservationToken: symbol | null = null;
@@ -3278,10 +3298,8 @@ const Composer: FC<{
     try {
       const sentText = aui.composer().getState().text;
       aui.composer().send();
-      // Stamping "" would refuse the clear an attachment-only send needs.
-      if (sentText.length > 0) {
-        justSentTextRef.current = sentText;
-      }
+      // Empty texts are dropped, so an attachment-only send still clears.
+      armJustSent(sentText, alsoGuard ?? "");
     } catch (error) {
       if (releasePreStreamRunReservation(reservationToken)) {
         notifyPromptQueueRunFailed(referenceThreadId);
@@ -3292,7 +3310,7 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, preStreamThreadIds, referenceThreadId]);
+  }, [aui, armJustSent, preStreamThreadIds, referenceThreadId]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -3536,13 +3554,16 @@ const Composer: FC<{
           [queuedPrompt],
           liveThreadIsRunning || livePreStreamRunActive,
           () => {
-            if (aui.composer().getState().text.trim() !== queuedPrompt) {
+            // Guard the untrimmed text too: that is what a late write carries.
+            const cleared = aui.composer().getState().text;
+            if (cleared.trim() !== queuedPrompt) {
               return;
             }
             flushResourcesSync(() => {
               aui.composer().setText("");
             });
             clearStoredDraft();
+            armJustSent(queuedPrompt, cleared);
           },
         );
         return;
@@ -3592,7 +3613,8 @@ const Composer: FC<{
         });
         closeOverlay();
         event.preventDefault();
-        sendReservedComposer();
+        // The wrapper replaced what the user typed, so guard that text as well.
+        sendReservedComposer(trimmed);
         return;
       }
 
@@ -3777,15 +3799,15 @@ const Composer: FC<{
                   [queuedPrompt],
                   true,
                   () => {
-                    if (
-                      aui.composer().getState().text.trim() !== queuedPrompt
-                    ) {
+                    const cleared = aui.composer().getState().text;
+                    if (cleared.trim() !== queuedPrompt) {
                       return;
                     }
                     flushResourcesSync(() => {
                       aui.composer().setText("");
                     });
                     clearStoredDraft();
+                    armJustSent(queuedPrompt, cleared);
                   },
                 );
               }}
@@ -3864,6 +3886,14 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
+// An autocorrect commit or an undo, never a keystroke or a paste. Its value can
+// differ from what was sent, so equality alone would let it through.
+function isTextReplacement(event: Event | undefined) {
+  if (event === undefined || !("inputType" in event)) return false;
+  const inputType = (event as InputEvent).inputType;
+  return inputType === "insertReplacementText" || inputType === "historyUndo";
+}
+
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
 // a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
@@ -3874,11 +3904,11 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
-  justSentTextRef,
+  justSentRef,
 }: {
   submitOnEnter?: boolean;
-  // Text the last send took. See setComposerText below.
-  justSentTextRef?: RefObject<string | null>;
+  // Guard armed by the last send or queue. See setComposerText below.
+  justSentRef?: RefObject<SentTextGuard | null>;
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
@@ -3925,16 +3955,24 @@ function useImeComposerInputHandlers({
   // False when refused, so the caller can preventDefault and stop
   // ComposerPrimitive.Input's own handler applying the same value.
   const setComposerText = useCallback(
-    (value: string): boolean => {
+    (value: string, nativeEvent?: Event): boolean => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) {
         return false;
       }
       // Refuse a write that is the sent message coming back.
-      if (justSentTextRef) {
-        const guard = applySentTextGuard(justSentTextRef.current, value);
-        justSentTextRef.current = guard.sentText;
-        if (!guard.accept) {
+      if (justSentRef) {
+        const result = applySentTextGuard(
+          justSentRef.current,
+          {
+            value,
+            replacesText: isTextReplacement(nativeEvent),
+            composerIsEmpty: composer.getState().text.length === 0,
+          },
+          Date.now(),
+        );
+        justSentRef.current = result.guard;
+        if (!result.accept) {
           return false;
         }
       }
@@ -3943,7 +3981,7 @@ function useImeComposerInputHandlers({
       });
       return true;
     },
-    [aui, justSentTextRef],
+    [aui, justSentRef],
   );
 
   const onCompositionStart = useCallback(() => {
@@ -3957,7 +3995,7 @@ function useImeComposerInputHandlers({
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
       setCompositionState(false);
-      if (!setComposerText(e.currentTarget.value)) {
+      if (!setComposerText(e.currentTarget.value, e.nativeEvent)) {
         e.preventDefault();
       }
     },
@@ -3967,7 +4005,7 @@ function useImeComposerInputHandlers({
   const onChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
       setCompositionState(isNativeComposing(e.nativeEvent));
-      if (!setComposerText(e.target.value)) {
+      if (!setComposerText(e.target.value, e.nativeEvent)) {
         e.preventDefault();
       }
     },
