@@ -1132,7 +1132,10 @@ class ResearchSupervisor:
         token, key = await asyncio.to_thread(
             auth_storage.create_api_key,
             username = run["ownerSubject"],
-            name = "deep-research workflow",
+            # The name is load-bearing, not a label: the external-provider route
+            # scopes its saved-credential exception to exactly this workflow, so
+            # the two sides must not drift apart.
+            name = auth_storage.DEEP_RESEARCH_WORKFLOW_KEY_NAME,
             expires_at = expires,
             internal = True,
         )
@@ -1155,7 +1158,10 @@ class ResearchSupervisor:
             "temperature": inference.get("temperature", 0.2),
         }
 
-        if inference.get("providerType") == "openai_codex":
+        # Route the hop to whichever saved connection the run was created with.
+        # The route's _sanitize_config already refused anything but an enabled
+        # saved connection of a studio-tools-capable provider type.
+        if inference.get("providerType"):
             payload.update(
                 {
                     "provider_id": inference["providerId"],
