@@ -4790,8 +4790,13 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # nested file a partial quarantine took. The distribution is selected from the
 # venv's own purelib/platlib, not the startup-modified sys.path, so a complete
 # external copy prepended by an executable .pth cannot answer for the managed
-# one. Carve-outs, same reasoning as the mirrors: sizes only bind paths exactly
-# one distribution claims; larger than recorded is a collision, not damage;
+# one. Carve-outs, same reasoning as the mirrors: a recorded size binds a path
+# only when every claim on it carries one and the file sits below the smallest --
+# below every claim it matches none of them, while an unsized claim could be the
+# copy that landed (tighter than the mirrors' skip-when-shared rule on purpose:
+# an interrupted upgrade's duplicate dist-info would otherwise waive the whole
+# shrinkage check for the package's own files); larger than recorded is a
+# collision, not damage;
 # shared non-runtime roots (tests/, docs/, ...) are skipped outright;
 # package-lock.json keeps existence but loses its size (setup's npm install
 # rewrites it in place); .dist-info//.egg-info//.pyc are installer-owned or
@@ -4803,7 +4808,8 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # Rows, the truncation check and the reported version come only from the SELECTED
 # distribution: an interrupted upgrade can leave a second dist-info for the same
 # name, and the stale RECORD from the other one must not damage a complete
-# install -- the newest by numeric version is selected. An editable install
+# install -- the newest wins, by PEP 440 when packaging imports and by a
+# numeric-prefix-with-suffix-rank fallback when it does not. An editable install
 # (direct_url.json dir_info.editable; a venv left editable by an earlier --local
 # run is supported state) records only its site-packages shims, which say nothing
 # about the checkout they point at, so it is validated through find_spec instead:
@@ -4823,7 +4829,7 @@ _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
 _shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
 _rewritten = frozenset(('package-lock.json',))
-owners = {}
+sizes = {}
 cands = []
 for x in importlib.metadata.distributions(path=_paths):
     try:
@@ -4846,10 +4852,31 @@ for x in importlib.metadata.distributions(path=_paths):
         if f.is_absolute() or '..' in f.parts:
             continue
         key = os.path.normcase(str(x.locate_file(f)))
-        owners[key] = owners.get(key, 0) + 1
+        _sz = (r[2] if len(r) > 2 else '').strip()
+        if key not in sizes:
+            sizes[key] = int(_sz) if _sz.isdigit() else None
+        elif sizes[key] is not None:
+            sizes[key] = min(sizes[key], int(_sz)) if _sz.isdigit() else None
 def _vkey(c):
-    m = re.match(r'\d+(\.\d+)*', c[0].version or '')
-    return [int(n) for n in m.group(0).split('.')] if m else []
+    v = c[0].version or ''
+    try:
+        from packaging.version import Version
+        return (1, Version(v))
+    except Exception:
+        pass
+    m = re.match(r'\d+(\.\d+)*', v)
+    if not m:
+        return (0, ([], -9))
+    rest = v[m.end():].lower()
+    if re.match(r'[-._]?dev', rest):
+        rank = -3
+    elif re.match(r'[-._]?(a|b|c|rc|alpha|beta|pre|preview)', rest):
+        rank = -2
+    elif re.match(r'[-._]?post', rest):
+        rank = 1
+    else:
+        rank = 0
+    return (0, ([int(n) for n in m.group(0).split('.')], rank))
 if not cands:
     print('POSTVER=__MISSING__')
     sys.exit(0)
@@ -4874,10 +4901,10 @@ if not _edit:
             continue
         if len(f.parts) > 1 and f.parts[0] in _shared:
             continue
-        rows.append((f, (r[2] if len(r) > 2 else '').strip(), os.path.normcase(str(d.locate_file(f)))))
+        rows.append((f, os.path.normcase(str(d.locate_file(f)))))
 damaged = bool(d_record) and not _edit and not selfrec
 if not damaged:
-    for f, sz, key in rows:
+    for f, key in rows:
         try:
             st = d.locate_file(f).stat()
         except OSError:
@@ -4886,7 +4913,8 @@ if not damaged:
         if not stat.S_ISREG(st.st_mode):
             damaged = True
             break
-        if owners.get(key, 0) == 1 and sz.isdigit() and f.name not in _rewritten and st.st_size < int(sz):
+        _min = sizes.get(key)
+        if _min is not None and f.name not in _rewritten and st.st_size < _min:
             damaged = True
             break
 tops = (d.read_text('top_level.txt') or '').split()
