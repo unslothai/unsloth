@@ -277,3 +277,56 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
         calls["n"] <= ceiling
     ), f"stat called {calls['n']} times for 400 files; the presort is not working"
     assert calls["n"] < 400, "cost still scales with the directory"
+
+
+def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):
+    """The writer and the reader disagreed about the tilde.
+
+    _swa_cache_path builds Path(home) raw, so a value passed literally (systemd
+    EnvironmentFile, dotenv) makes the runners write into a directory NAMED
+    "~", while expanduser sent discovery to the real home. Scanning one of the
+    two lost the llama logs the viewer exists to reach.
+    """
+    monkeypatch.chdir(tmp_path)
+    literal = tmp_path / "~" / "studio"
+    (literal / "logs" / "llama-server").mkdir(parents = True)
+    (literal / "logs" / "llama-server" / "llama-1786000000.log").write_text("x", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
+
+    labels = [source.label for source in debug_log_sources.list_sources()]
+    assert "llama-1786000000.log" in labels
+
+
+def test_no_live_session_defaults_to_the_newest_log_not_an_old_server_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    server_dir = tmp_path / "logs" / "server"
+    llama_dir = tmp_path / "logs" / "llama-server"
+    server_dir.mkdir(parents = True)
+    llama_dir.mkdir(parents = True)
+    # A retained log from a previous run: a pid that is not ours.
+    old = server_dir / "server-20260101-000000-pid1.log"
+    old.write_text("previous run\n", encoding = "utf-8")
+    newest = llama_dir / "llama-1786000000.log"
+    newest.write_text("the failure\n", encoding = "utf-8")
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(newest, (2_000_000, 2_000_000))
+
+    chosen = debug_log_sources.resolve_source_id(debug_log_sources.default_source_id())
+    assert chosen == newest
+
+
+def test_a_live_server_session_still_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    server_dir = tmp_path / "logs" / "server"
+    llama_dir = tmp_path / "logs" / "llama-server"
+    server_dir.mkdir(parents = True)
+    llama_dir.mkdir(parents = True)
+    current = server_dir / f"server-20260101-000000-pid{os.getpid()}.log"
+    current.write_text("this session\n", encoding = "utf-8")
+    newer = llama_dir / "llama-1786000000.log"
+    newer.write_text("a runner\n", encoding = "utf-8")
+    os.utime(current, (1_000_000, 1_000_000))
+    os.utime(newer, (2_000_000, 2_000_000))
+
+    chosen = debug_log_sources.resolve_source_id(debug_log_sources.default_source_id())
+    assert chosen == current

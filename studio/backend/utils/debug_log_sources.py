@@ -94,10 +94,19 @@ def candidate_roots() -> list[Path]:
         os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
     ).strip()
     if env_home:
-        try:
-            _add(Path(env_home).expanduser())
-        except (OSError, ValueError):
-            pass
+        # Both spellings, because the writer and the reader disagree about the
+        # tilde: _swa_cache_path builds Path(home) raw, so a value passed
+        # literally (a systemd EnvironmentFile or a dotenv line never runs the
+        # shell's expansion) makes the runners write to a directory NAMED "~",
+        # while expanduser sends discovery to the real home. Scanning one of
+        # them loses the llama and diffusion logs this viewer exists to reach.
+        # Not the earlier env-versus-legacy case: these are two spellings of one
+        # value, so neither can be another installation's home.
+        for spelling in (Path(env_home).expanduser(), Path(env_home)):
+            try:
+                _add(spelling)
+            except (OSError, ValueError):
+                pass
     else:
         try:
             _add(Path.home() / ".unsloth" / "studio")
@@ -249,9 +258,11 @@ def default_source_id() -> Optional[str]:
     for source in sources:
         if source.family == "server" and source.is_current:
             return source.id
-    for source in sources:
-        if source.family == "server":
-            return source.id
+    # No live session: the newest file across every family, NOT any retained
+    # server log. Preferring a stale server log opened the tab on a previous
+    # run while the llama log holding the failure sat one entry down, which is
+    # the state after UNSLOTH_STUDIO_NO_FILE_LOG=1 or a failed log setup, the
+    # two cases where a user is most likely to be looking.
     return max(sources, key = lambda s: s.modified_at).id
 
 
