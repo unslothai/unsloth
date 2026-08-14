@@ -1041,7 +1041,6 @@ def _scan_cached_models(
                     snapshot_partial = True
                 try:
                     from core.inference.native_audio import native_audio_type_from_local_path
-
                     native_audio_type = native_audio_type_from_local_path(str(load_snapshot or ""))
                 except Exception:
                     native_audio_type = None

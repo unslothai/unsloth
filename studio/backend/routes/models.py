@@ -4351,7 +4351,6 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         return None
     try:
         from core.inference.native_audio import native_audio_type_from_local_path
-
         if native_audio_type_from_local_path(path):
             return "text-to-speech"
     except Exception:

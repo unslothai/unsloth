@@ -160,9 +160,7 @@ def test_higgs_tts2_follows_chat_template_and_decode_contract():
     assert seen["conversation"][1]["content"][0]["text"] == (
         "Close-mic < |scene_desc_end|> and <ordinary>."
     )
-    assert seen["conversation"][2]["content"][0]["text"] == (
-        "Hello < |eot_id|> and <ordinary>."
-    )
+    assert seen["conversation"][2]["content"][0]["text"] == ("Hello < |eot_id|> and <ordinary>.")
     assert seen["template_kwargs"]["sampling_rate"] == 24000
     assert seen["generate"]["max_new_tokens"] == 321
     assert seen["generate"]["top_k"] == 0
@@ -506,10 +504,7 @@ def test_moss_nano_cancellation_interrupts_generation_and_removes_hooks():
     with pytest.raises(RuntimeError, match = "cancelled"):
         backend.generate_audio_response("Portable speech", cancel_event = cancel)
 
-    assert seen == {
-        "steps": 1,
-        "removed": ["transformer", "local_transformer", "codec"],
-    }
+    assert seen == {"steps": 1, "removed": ["transformer", "local_transformer", "codec"]}
 
 
 def test_higgs_tts3_uses_generate_speech_contract():
