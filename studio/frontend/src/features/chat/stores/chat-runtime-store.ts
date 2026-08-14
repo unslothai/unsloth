@@ -34,6 +34,7 @@ import {
   type PersistedInferenceParamKey,
   getRememberedParamsPatch,
   getReplayedParams,
+  pickRememberedChanges,
   pickRememberedParams,
   setInferenceParam,
 } from "../lib/per-model-params";
@@ -1737,10 +1738,6 @@ const SCALAR_SETTING_KEYS = [
 // other models. A switch away files a snapshot here too, which is why the
 // narrower set below exists.
 const locallyRememberedModels = new Set<string>();
-// Ids the user has actually edited here. Only these, and models with no entry
-// at all, are written back in full: the server merges per key, so a tab that
-// has merely read an entry must not put its copy over a newer one.
-const locallyEditedModels = new Set<string>();
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
 ) as Record<PersistedInferenceParamKey, number>;
@@ -1892,7 +1889,6 @@ function getParamsByModelAfterEdit(
   nextParams: InferenceParams,
   changedParams: PersistedInferenceParams,
   persist: boolean,
-  checkpointChanged: boolean,
 ): Record<string, PersistedInferenceParams> | null {
   if (!persist) {
     return outgoing;
@@ -1908,11 +1904,6 @@ function getParamsByModelAfterEdit(
     ),
     nextParams.checkpoint,
   );
-  // A switch moves these params too, by replaying the destination's entry over
-  // them. That is this browser reading the entry, not writing one.
-  if (recorded && nextParams.checkpoint && !checkpointChanged) {
-    locallyEditedModels.add(nextParams.checkpoint);
-  }
   return recorded ?? outgoing;
 }
 
@@ -1924,9 +1915,11 @@ function rememberOutgoingModel(
   outgoing: InferenceParams,
 ): Record<string, PersistedInferenceParams> | null {
   const snapshot = pickRememberedParams(outgoing);
-  const speaksForModel =
-    locallyEditedModels.has(outgoing.checkpoint) ||
-    state.paramsByModel[outgoing.checkpoint] === undefined;
+  // Only to seed a model with no entry: that is what this snapshot is for, and
+  // every later change is written by the edit that made it, key by key. A full
+  // snapshot for a model that already has one would put this browser's copy of
+  // keys it never touched over another tab's.
+  const seeding = state.paramsByModel[outgoing.checkpoint] === undefined;
   const next = trackParamsByModel(
     state,
     getRememberedParamsPatch(
@@ -1943,7 +1936,7 @@ function rememberOutgoingModel(
   // about the model: an edit made here, or an entry that does not exist yet.
   // Otherwise a second tab switching models, with no edit at all, would put its
   // stale copy over settings the first tab has since changed.
-  if (next && state.settingsHydrated && outgoing.checkpoint && speaksForModel) {
+  if (next && state.settingsHydrated && outgoing.checkpoint && seeding) {
     saveSettingsPatch({
       inferenceParamsByModel: { [outgoing.checkpoint]: snapshot },
     });
@@ -1961,10 +1954,14 @@ function persistParamEdit(
   if (!hasKeys(changedParams)) {
     return;
   }
+  // Only what moved, not the snapshot the local map keeps. The server merges
+  // per key, so sending the rest would put this browser's copy of every other
+  // key over one another tab may have changed since.
+  const rememberedChanges = pickRememberedChanges(changedParams);
   saveSettingsPatch({
     inferenceParams: changedParams,
-    ...(paramsByModel && modelId
-      ? { inferenceParamsByModel: { [modelId]: paramsByModel[modelId] } }
+    ...(paramsByModel && modelId && hasKeys(rememberedChanges)
+      ? { inferenceParamsByModel: { [modelId]: rememberedChanges } }
       : {}),
   });
 }
@@ -2526,7 +2523,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nextParams,
         changedParams,
         options?.persist !== false && !fromModelDefaults,
-        checkpointChanged,
       );
       if (options?.persist !== false && state.settingsHydrated) {
         // A switch replays the destination's entry over the params, so writing
@@ -3236,9 +3232,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ),
         state.params.checkpoint,
       );
+      // Turning it on is an explicit statement about the model on screen, so the
+      // whole snapshot is what it means, not a key-by-key patch.
       if (paramsByModel && state.settingsHydrated && state.params.checkpoint) {
-        // Turning it on is an explicit statement about the model on screen.
-        locallyEditedModels.add(state.params.checkpoint);
         saveSettingsPatch({
           inferenceParamsByModel: {
             [state.params.checkpoint]: paramsByModel[state.params.checkpoint],

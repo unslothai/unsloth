@@ -849,15 +849,31 @@ test("a browser that only read an entry does not write it back", async () => {
   // The replay still happens, it is only the write that is withheld.
   assert.equal(useChatRuntimeStore.getState().params.temperature, 0.7);
 
-  // An edit here is this browser's own, and is written.
+  // An edit here is this browser's own, and is written -- but only the key it
+  // moved. The server merges per key, so sending the rest would put this
+  // browser's copy of the prompt over one the other tab has since changed.
+  settingsHttp.puts.length = 0;
   const editing = useChatRuntimeStore.getState();
   editing.setParams({ ...editing.params, temperature: 0.42 });
-  assert.deepEqual(await perModelWrites(), [LLAMA]);
+  await settled();
+  const patch: Record<string, Record<string, unknown>> = {};
+  for (const put of settingsHttp.puts) {
+    Object.assign(
+      patch,
+      (put.inferenceParamsByModel ?? {}) as Record<
+        string,
+        Record<string, unknown>
+      >,
+    );
+  }
+  settingsHttp.puts.length = 0;
+  assert.deepEqual(patch, { [LLAMA]: { temperature: 0.42 } });
 
-  // And switching away from it now carries the snapshot, as before.
+  // And switching away from it writes nothing more: the edit already said it,
+  // and the rest of the entry is not this browser's to restate.
   const leaving = useChatRuntimeStore.getState();
   leaving.setParams({ ...leaving.params, checkpoint: QWEN });
-  assert.deepEqual(await perModelWrites(), [LLAMA]);
+  assert.deepEqual(await perModelWrites(), []);
 });
 
 // The case the outgoing snapshot exists for: a model with no entry at all,

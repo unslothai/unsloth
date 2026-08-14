@@ -70,6 +70,23 @@ function movedRememberedParam(changed: PersistedInferenceParams): boolean {
   );
 }
 
+/** Just the keys an edit moved that the memory keeps. What goes to the server
+ * for a model it already has an entry for: it merges per key, so sending the
+ * whole snapshot would put this browser's copy of every other key over one
+ * another tab may have changed since. */
+export function pickRememberedChanges(
+  changed: PersistedInferenceParams,
+): PersistedInferenceParams {
+  const picked: PersistedInferenceParams = {};
+  for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
+    const value = changed[key];
+    if (value !== undefined) {
+      setInferenceParam(picked as InferenceParams, key, value);
+    }
+  }
+  return picked;
+}
+
 /** The map after an edit, or null when there is nothing to record (off, no model,
  * or no persisted param moved). Null leaves the map and its hydration version
  * untouched. */
