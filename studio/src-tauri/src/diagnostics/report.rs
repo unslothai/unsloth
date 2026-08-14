@@ -1,7 +1,7 @@
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
-use std::time::UNIX_EPOCH;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::phase_log::{collect_phase_groups, path_has_symlink};
 use super::redaction::{redact_text, RedactionReport};
@@ -363,6 +363,27 @@ fn append_log_sections(
         append_tail_section(out, &path, name, "local-app-log", warnings);
     }
 
+    let server_logs = newest_server_logs(SERVER_LOG_TAIL_FILES);
+    if server_logs.is_empty() {
+        out.push_str("backend_session_logs=unavailable\n");
+    }
+    for path in server_logs {
+        let label = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("server.log")
+            .to_string();
+        append_tail_section_capped(
+            out,
+            &path,
+            &label,
+            "backend-session-log",
+            SERVER_LOG_TAIL_MAX_LINES,
+            SERVER_LOG_TAIL_MAX_BYTES,
+            warnings,
+        );
+    }
+
     let phase_groups = collect_phase_groups(snapshot, warnings);
     if phase_groups.is_empty() {
         out.push_str("phase_logs=unavailable\n");
@@ -381,6 +402,47 @@ fn append_log_sections(
     }
 }
 
+/// How many backend session logs to tail. Two, so a crash and the restart that
+/// followed it both land in one report.
+const SERVER_LOG_TAIL_FILES: usize = 2;
+
+/// Smaller than the other tails on purpose. enforce_report_limit chops the END of the
+/// body, so bytes spent here come out of the phase logs below; a faulthandler dump is
+/// a few KB and lands at the end of the file, which is the half read_tail returns.
+const SERVER_LOG_TAIL_MAX_LINES: usize = 400;
+const SERVER_LOG_TAIL_MAX_BYTES: usize = 64 * 1024;
+
+/// Newest `server-*.log` files, most recent first.
+///
+/// The backend aims faulthandler at this directory (run.py's
+/// `_setup_server_disk_logging`), so when the GPU runtime aborts, the Python stack
+/// naming the call that died is written here and nowhere else Studio keeps. Without
+/// it a report shows the process exiting and nothing about what it was doing.
+fn newest_server_logs(max: usize) -> Vec<PathBuf> {
+    newest_server_logs_in(&logs_dir().join("server"), max)
+}
+
+fn newest_server_logs_in(dir: &Path, max: usize) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut logs: Vec<(SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("server-") && name.ends_with(".log"))
+        })
+        .filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path())))
+        .collect();
+    // Name breaks an mtime tie, descending like the mtime itself: the stamp is in the
+    // filename, so two logs written inside one clock tick still order newest-first.
+    logs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    logs.truncate(max);
+    logs.into_iter().map(|(_, path)| path).collect()
+}
+
 fn append_tail_section(
     out: &mut String,
     path: &Path,
@@ -388,7 +450,28 @@ fn append_tail_section(
     source: &str,
     warnings: &mut Vec<String>,
 ) {
-    match read_tail(path, TAIL_MAX_LINES, TAIL_MAX_BYTES) {
+    append_tail_section_capped(
+        out,
+        path,
+        label,
+        source,
+        TAIL_MAX_LINES,
+        TAIL_MAX_BYTES,
+        warnings,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_tail_section_capped(
+    out: &mut String,
+    path: &Path,
+    label: &str,
+    source: &str,
+    max_lines: usize,
+    max_bytes: usize,
+    warnings: &mut Vec<String>,
+) {
+    match read_tail(path, max_lines, max_bytes) {
         Ok(tail) => {
             out.push_str(&format!(
                 "file={} label={} source={} size_bytes={} mtime_ms={} included_bytes={} included_lines={} truncated={}\n",
@@ -591,6 +674,103 @@ mod tests {
         let studio = studio_dir().display().to_string();
         assert!(!report.contains(&studio));
         assert!(report.contains("<studio_home>"));
+    }
+
+    fn server_log_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-server-logs-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn server_logs_are_newest_first_and_capped() {
+        let dir = server_log_dir("order");
+        for stamp in ["20260101-000000", "20260102-000000", "20260103-000000"] {
+            fs::write(dir.join(format!("server-{stamp}-pid1.log")), b"x").unwrap();
+        }
+
+        let found = newest_server_logs_in(&dir, 2);
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "server-20260103-000000-pid1.log",
+                "server-20260102-000000-pid1.log"
+            ]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn server_logs_ignore_unrelated_files() {
+        let dir = server_log_dir("filter");
+        fs::write(dir.join("server-20260101-000000-pid1.log"), b"x").unwrap();
+        fs::write(dir.join("tauri.log"), b"x").unwrap();
+        fs::write(dir.join("server-notes.txt"), b"x").unwrap();
+
+        let found = newest_server_logs_in(&dir, 5);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("server-20260101-000000-pid1.log"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn server_log_section_stays_inside_its_smaller_budget() {
+        let dir = server_log_dir("budget");
+        let path = dir.join("server-20260101-000000-pid1.log");
+        // Wide lines so the BYTE cap binds first: with short ones the line cap alone
+        // keeps the section small and raising the byte cap would go unnoticed.
+        let wide = "x".repeat(1024);
+        let bulk: String = (0..1_000).map(|i| format!("line {i} {wide}\n")).collect();
+        fs::write(
+            &path,
+            format!("{bulk}Current thread 0x1 (most recent call first):\n"),
+        )
+        .unwrap();
+
+        let mut out = String::new();
+        let mut warnings = Vec::new();
+        append_tail_section_capped(
+            &mut out,
+            &path,
+            "server.log",
+            "backend-session-log",
+            SERVER_LOG_TAIL_MAX_LINES,
+            SERVER_LOG_TAIL_MAX_BYTES,
+            &mut warnings,
+        );
+
+        // A literal, not a multiple of the constant under test: an assert derived from
+        // SERVER_LOG_TAIL_MAX_BYTES would scale with any raise and never catch one.
+        // 128 KiB sits above the 64 KiB cap plus its header and below TAIL_MAX_BYTES.
+        assert!(
+            out.len() < 128 * 1024,
+            "section grew into the phase-log budget: {}",
+            out.len()
+        );
+        assert!(
+            TAIL_MAX_BYTES >= 128 * 1024,
+            "budget headroom assumption broke"
+        );
+        // The faulthandler stack sits at the end of the file, so the tail must keep it.
+        assert!(out.contains("Current thread 0x1 (most recent call first):"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn server_logs_absent_directory_is_empty() {
+        let missing =
+            std::env::temp_dir().join(format!("unsloth-no-server-logs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&missing);
+        assert!(newest_server_logs_in(&missing, 2).is_empty());
     }
 
     #[test]
