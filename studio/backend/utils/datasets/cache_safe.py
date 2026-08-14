@@ -67,8 +67,7 @@ def _disable_hf_symlinks_for_process() -> None:
         constants.HF_HUB_DISABLE_SYMLINKS = True
     symlink_support = getattr(file_download, "_are_symlinks_supported_in_dir", None)
     if isinstance(symlink_support, dict):
-        # Existing entries are flipped in place for anything already holding the
-        # dict; unprivileged Windows cannot link in any cache dir, not just this one.
+        # Flipped in place too, for anything already holding the old dict.
         for cache_dir in tuple(symlink_support):
             symlink_support[cache_dir] = False
         file_download._are_symlinks_supported_in_dir = _NoSymlinkSupport(symlink_support)
@@ -104,8 +103,8 @@ def load_dataset_cache_safe(*args, **kwargs):
             try:
                 return load_dataset(*args, **kwargs)
             except OSError as retry_error:
-                # A second 1314 means a cache dir HF had not probed yet; the
-                # Unsloth-owned cache is probed fresh, so it clears both cases.
+                # A second 1314 is a cache dir Hub had not probed; the
+                # Unsloth-owned cache is probed fresh and clears both cases.
                 if _is_retryable_cache_error(retry_error):
                     return _retry_in_studio_cache(load_dataset, args, kwargs, retry_error)
                 raise
