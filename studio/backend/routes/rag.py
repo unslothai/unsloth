@@ -1163,7 +1163,25 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
 # .pdf and .docx are deliberately absent: neither survives being retyped as plain
 # text, so both are display-only.
 _EDITABLE_EXTS = {".txt", ".md", ".markdown", ".html", ".htm"}
-_MARKDOWN_EXTS = {".md", ".markdown"}
+
+# What the modal's "View" tab shows, per extension. "source" means the raw text is
+# the only honest view, so the modal offers no toggle and goes straight to the
+# editor. Anything richer gets a View/Edit pair: "markdown" renders it, "extracted"
+# shows the text the indexer derived from a file whose source is not that text.
+#
+# Keyed by extension so a newly supported upload type (see config.UPLOAD_EXTS)
+# picks a view here and the client needs no change.
+_PREVIEW_MODES = {
+    ".md": "markdown",
+    ".markdown": "markdown",
+    # Rendered in the chat artifact canvas: a sandboxed, opaque-origin iframe with
+    # network access denied by default. That sandbox is what makes rendering an
+    # uploaded page safe -- it must never be dropped into the app's own origin.
+    ".html": "html",
+    ".htm": "html",
+    # No source to edit, so the extracted text is both the view and the whole of it.
+    ".docx": "extracted",
+}
 # Read (and accept) at most this much text. Beyond it the preview is truncated for
 # display and editing is refused, because saving a truncated body would silently
 # delete the tail of the file.
@@ -1171,10 +1189,10 @@ _MAX_TEXT_EDIT_BYTES = 1024 * 1024
 
 
 def _document_text(stored_path: str, ext: str) -> str:
-    """The document's text for display, as the indexer sees it.
+    """The document's own text.
 
-    .docx has no plain-text form on disk, so it goes back through the ingestion
-    parser: what the modal shows is then exactly what was chunked and embedded.
+    A .docx has none on disk, so it goes back through the ingestion parser and
+    what the modal shows is exactly what was chunked and embedded.
     """
     if ext == ".docx":
         from core.rag import parsers
@@ -1209,7 +1227,7 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
         "documentId": document_id,
         "filename": doc["filename"],
         "mediaKind": "pdf" if ext == ".pdf" else "text",
-        "format": "markdown" if ext in _MARKDOWN_EXTS else "plain",
+        "preview": _PREVIEW_MODES.get(ext, "source"),
         "text": None,
         "editable": False,
         "truncated": False,
@@ -1230,6 +1248,9 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
 
     try:
         out["text"] = _document_text(stored_path, ext)
+        # markdown and html both render from `text` itself, and .docx's extraction
+        # already is its text, so no second body is ever needed today. The field
+        # stays for a future type whose view differs from its source.
     except Exception as exc:  # noqa: BLE001 - a broken file is a preview failure, not a 500
         logger.warning("failed to read document %s for preview", document_id, exc_info = True)
         raise HTTPException(

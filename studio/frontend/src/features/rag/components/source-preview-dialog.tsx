@@ -23,6 +23,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
+import { ArtifactHtmlFrame } from "@/features/chat/artifacts/html-frame";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useState } from "react";
@@ -131,8 +132,9 @@ export function SourcePreviewDialog({
     }
   }
 
-  const markdown = content?.format === "markdown";
-  const showEditor = content?.editable === true && (!markdown || editing);
+  // "source" has nothing to switch to, so those open straight in the editor.
+  const hasView = content !== null && content.preview !== "source";
+  const showEditor = content?.editable === true && (!hasView || editing);
 
   return (
     <>
@@ -149,7 +151,7 @@ export function SourcePreviewDialog({
             </DialogDescription>
           </DialogHeader>
 
-          {markdown && content?.editable ? (
+          {hasView && content?.editable ? (
             <div className="flex shrink-0 gap-1">
               {(["view", "edit"] as const).map((mode) => {
                 const active = (mode === "edit") === editing;
@@ -199,15 +201,23 @@ export function SourcePreviewDialog({
                 aria-label={`Edit ${filename}`}
                 className="h-full overflow-auto font-mono text-sm leading-relaxed"
               />
-            ) : markdown ? (
+            ) : content?.preview === "markdown" ? (
               <MarkdownPreview
                 markdown={text}
                 className="h-full max-h-none overflow-auto border-0 bg-transparent p-0 text-sm"
               />
+            ) : content?.preview === "html" ? (
+              // The chat artifact canvas: a sandboxed, opaque-origin iframe with
+              // network access off by default. Rendering an uploaded page is only
+              // safe inside it, so this must never become a plain innerHTML.
+              <div className="h-full overflow-hidden rounded-xl border">
+                <ArtifactHtmlFrame
+                  code={text}
+                  fill={true}
+                  title={`${filename} preview`}
+                />
+              </div>
             ) : text ? (
-              // Never rendered as HTML: an uploaded page would execute its scripts
-              // same-origin. The backend serves these as text/plain for the same
-              // reason, so the modal shows source text too.
               <pre className="h-full overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted/30 p-4 font-mono text-sm leading-relaxed text-foreground/90">
                 {text}
               </pre>
@@ -222,26 +232,16 @@ export function SourcePreviewDialog({
             <p className="text-ui-11 text-muted-foreground">
               {content && !content.editable ? content.readOnlyReason : null}
             </p>
-            {/* Read-only sources get no button: the corner X already closes the
-              modal, and a second control for it was pure duplication. */}
+            {/* Save is the only button: closing is the corner X, which runs the
+              same unsaved-changes guard a Cancel would have. */}
             {content?.editable ? (
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={saving}
-                  onClick={() => handleOpenChange(false)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  disabled={!dirty || saving}
-                  onClick={() => void handleSave()}
-                >
-                  {saving ? "Saving…" : "Save"}
-                </Button>
-              </div>
+              <Button
+                type="button"
+                disabled={!dirty || saving}
+                onClick={() => void handleSave()}
+              >
+                {saving ? "Saving…" : "Save"}
+              </Button>
             ) : null}
           </DialogFooter>
         </DialogContent>

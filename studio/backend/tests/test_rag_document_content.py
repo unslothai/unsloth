@@ -101,19 +101,56 @@ def test_markdown_source_is_returned_editable(rag_home, stub_embeddings):
     body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
 
     assert body["mediaKind"] == "text"
-    assert body["format"] == "markdown"
+    assert body["preview"] == "markdown"
     assert "kickoff is on the third" in body["text"]
     assert body["editable"] is True
     assert body["readOnlyReason"] is None
     assert body["truncated"] is False
 
 
-def test_plain_text_source_is_editable_but_not_markdown(rag_home, stub_embeddings):
+def test_plain_text_source_opens_straight_in_the_editor(rag_home, stub_embeddings):
+    # No richer view than the text itself, so the modal offers no View/Edit pair.
     _, doc_id, _ = _ingest("log.txt", "plain body\n")
     body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
 
-    assert body["format"] == "plain"
+    assert body["preview"] == "source"
     assert body["editable"] is True
+
+
+def test_html_previews_in_the_canvas_and_stays_editable(rag_home, stub_embeddings):
+    # "html" routes the View tab to the sandboxed artifact canvas; Edit keeps the
+    # raw markup, so the pair behaves like markdown's.
+    markup = "<!DOCTYPE html><html><body><h1>Report</h1></body></html>"
+    _, doc_id, _ = _ingest("page.html", markup)
+    body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
+
+    assert body["preview"] == "html"
+    assert body["text"] == markup, "Edit must show the markup, not stripped text"
+    assert body["editable"] is True
+
+
+def test_docx_preview_mode_is_extracted(rag_home, stub_embeddings):
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import ingestion, store
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    path = ensure_dir(rag_uploads_root()) / "brief.docx"
+    document = docx.Document()
+    document.add_paragraph("body text")
+    document.save(str(path))
+    doc_id, job_id = ingestion.start_ingestion(
+        store.project_scope(PROJECT_ID),
+        None,
+        None,
+        "brief.docx",
+        str(path),
+        project_id = PROJECT_ID,
+    )
+    _await_job(job_id)
+
+    assert _client().get(f"/api/rag/documents/{doc_id}/content").json()["preview"] == "extracted"
 
 
 def test_pdf_is_display_only_and_carries_no_text(rag_home, stub_embeddings):
@@ -278,6 +315,26 @@ def test_a_failed_reindex_leaves_the_original_searchable(rag_home, stub_embeddin
     # embedder the fixture installed, sending the search below to a real model.
     monkeypatch.setattr(embeddings, "encode", working)
     assert _search(client, "kickoff third"), "the original is no longer retrievable"
+
+
+def test_editing_html_saves_the_markup_and_indexes_its_visible_text(
+    rag_home, stub_embeddings
+):
+    # The Edit tab holds markup, so the file must round-trip as markup while the
+    # index keeps holding the stripped text the HTML parser produces.
+    _, doc_id, _ = _ingest("page.html", "<html><body><p>before</p></body></html>")
+    client = _client()
+
+    edited = "<html><body><p>afterwards indexed</p><script>ignored()</script></body></html>"
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": edited})
+    assert res.status_code == 200
+    new_id = res.json()["documentId"]
+    _await_job(res.json()["jobId"])
+
+    reopened = client.get(f"/api/rag/documents/{new_id}/content").json()
+    assert reopened["text"] == edited, "the markup did not round-trip"
+    assert _search(client, "afterwards indexed")
+    assert not _search(client, "ignored"), "script contents must not be indexed"
 
 
 def test_emptying_a_source_keeps_it_as_an_empty_document(rag_home, stub_embeddings):

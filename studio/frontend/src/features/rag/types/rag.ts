@@ -189,7 +189,9 @@ export interface DocumentContent {
   filename: string;
   /** "pdf" renders from the signed file URL and carries no text. */
   mediaKind: "pdf" | "text";
-  format: "markdown" | "plain";
+  /** What the View tab shows. "source" has no richer view, so the modal shows the
+   * text alone with no toggle; the rest pair a View with an Edit. */
+  preview: "source" | "markdown" | "html" | "extracted";
   text?: string | null;
   editable: boolean;
   /** Text was cut off at the size cap, so it is shown but not editable. */
