@@ -3146,13 +3146,15 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
     )
 
 
-def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
+def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
     """Scan outputs folder for trained Unsloth models.
 
     Returns:
         List of (display_name, model_path, model_type), where model_type is
         "lora" for adapter runs or "merged" for full finetunes.
     """
+    if outputs_dir is None:
+        outputs_dir = str(outputs_root())
     trained_models = []
     outputs_path = resolve_output_dir(outputs_dir)
 

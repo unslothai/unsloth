@@ -778,6 +778,9 @@ async def lifespan(app: FastAPI):
         lambda: clear_compiled_cache_unless_shared(app),
         _hw_module,
     )
+    from storage.db_snapshot import flush_snapshot
+    from utils.paths import studio_db_path
+    await asyncio.to_thread(flush_snapshot, studio_db_path())
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.
     reset_background_warm()
 
