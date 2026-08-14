@@ -466,19 +466,47 @@ class TestHardenedPipConfigRelaxation:
             assert ips._install_env_for_cmd(["python", "-m", "pip", "--version"]) is None
             assert ips._install_env_for_cmd(["python", "-m", "ensurepip", "--upgrade"]) is None
 
-    def test_pinned_cmd_strips_restrictive_policy_env(self):
+    def test_pinned_cmd_strips_the_policy_it_cannot_satisfy(self):
         """The pinned branch neutralises the config FILES, but an env var outranks a
         config file, so a hardened shell could still fail a torch repair the pin was
-        supposed to make deterministic."""
+        supposed to make deterministic. Only the unsatisfiable half goes: the pinned
+        specs carry no hashes, and an exclude-newer cutoff can remove the pinned release
+        from the resolution outright."""
         with mock.patch.dict(os.environ, self.HOSTILE):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
         assert env is not None
-        for name in ("PIP_REQUIRE_HASHES", "PIP_ONLY_BINARY", "UV_NO_BUILD", "UV_EXCLUDE_NEWER"):
+        for name in ("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES", "UV_EXCLUDE_NEWER"):
             assert name not in env, f"{name} must be cleared for a pinned install"
         # The pre-existing pinned contract is unchanged.
         assert env["UV_NO_CONFIG"] == "1" and env["PIP_CONFIG_FILE"] == os.devnull
+
+    def test_pinned_cmd_keeps_the_binary_only_policy(self):
+        """Every pinned index we use serves wheels, so a no-build/only-binary policy IS
+        satisfiable there and must survive -- it is the control that stops an sdist
+        running setup.py during a torch repair."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert env["UV_NO_BUILD"] == "1"
+
+    def test_pinned_cmd_still_drops_the_force_source_build_vars(self):
+        """The mirror image: NO_BINARY forces a source BUILD of whatever the pin
+        fetches, i.e. compiling torch from source. More untrusted execution, not less,
+        so it goes under strict policy too."""
+        forced = {"PIP_NO_BINARY": ":all:", "UV_NO_BINARY": ":all:", "UV_NO_BINARY_PACKAGE": "torch"}
+        for strict in ("0", "1"):
+            with mock.patch.dict(
+                os.environ, dict(forced, UNSLOTH_STRICT_PM_POLICY = strict)
+            ):
+                env = ips._install_env_for_cmd(
+                    ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+                )
+            for name in forced:
+                assert name not in env, f"{name} must never reach a pinned install"
 
     def test_the_parent_environment_is_never_mutated(self):
         """The relaxation is a child-env override. Leaking it into os.environ would
@@ -511,6 +539,121 @@ class TestHardenedPipConfigRelaxation:
         assert seen["env"]["PIP_REQUIRE_HASHES"] == "0"
         for name in ips.SDIST_ONLY_PACKAGES:
             assert name in seen["cmd"], "the fallback lost the source-build exemptions"
+
+
+class TestStrictPmPolicyOptOut:
+    """UNSLOTH_STRICT_PM_POLICY=1 is the operator's answer to every relaxation above.
+
+    require-hashes / no-build is a security control, so an operator who set it
+    deliberately must be able to have it honoured -- and then the install is allowed to
+    fail on a wheel-less or unhashed requirement, which is #8530 again, by choice.
+    """
+
+    HOSTILE = dict(
+        TestHardenedPipConfigRelaxation.HOSTILE,
+        UV_REQUIRE_HASHES = "1",
+        UNSLOTH_STRICT_PM_POLICY = "1",
+    )
+
+    def test_non_pinned_pip_inherits_the_policy_verbatim(self):
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            assert (
+                ips._install_env_for_cmd(["python", "-m", "pip", "install", "-r", "extras.txt"])
+                is None
+            ), "strict policy must not switch hash mode off"
+
+    def test_pinned_cmd_keeps_policy_and_config_discovery(self):
+        """The index scrub is what the pin needs and stays; the policy overrides go."""
+        with mock.patch.dict(
+            os.environ, dict(self.HOSTILE, UV_INDEX = "https://mirror.corp/simple")
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        assert "UV_INDEX" not in env, "the pin still overrides an inherited index"
+        for name, value in self.HOSTILE.items():
+            assert env[name] == value, f"strict policy must keep {name}"
+        assert "UV_NO_CONFIG" not in env, "strict policy must not disable uv config files"
+        assert env.get("PIP_CONFIG_FILE") != os.devnull, "nor pip config files"
+
+    def test_pinned_cmd_keeps_the_operator_uv_config_file(self):
+        """With discovery left on, dropping the pointer would only swap their policy
+        file for whichever uv.toml uv finds next to the cwd."""
+        with mock.patch.dict(os.environ, dict(self.HOSTILE, UV_CONFIG_FILE = "/etc/uv/uv.toml")):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["UV_CONFIG_FILE"] == "/etc/uv/uv.toml"
+
+    def test_the_source_build_exemptions_are_dropped(self):
+        """--no-binary for the four wheel-less names IS the no-build override, so it
+        cannot survive the switch that turns overriding off."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            assert ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES) == []
+            assert ips._sdist_only_build_args("diffusers") == []
+
+    def test_default_behaviour_is_unchanged(self):
+        """Everything above is opt-in: an unset (or 0) variable installs as before."""
+        for value in ("", "0"):
+            with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": value}):
+                assert ips._sdist_only_build_args("openai-whisper") == [
+                    "--no-binary",
+                    "openai-whisper",
+                ]
+                env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
+                assert env is not None and env["PIP_REQUIRE_HASHES"] == "0"
+
+
+class TestPmPolicyRelaxationIsReported:
+    """A bypassed security control that nobody is told about is the actual finding.
+
+    The relaxations stay (nothing we ship is hash-locked), so the install still works on
+    a hardened host -- but it says which policy it overrode and which switch enforces it.
+    """
+
+    def _sources(self, env: dict, pip_config: str = "") -> list[str]:
+        result = mock.Mock(returncode = 0, stdout = pip_config)
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            return ips._hardened_pm_policy_sources()
+
+    def test_quiet_on_an_unconfigured_host(self):
+        assert self._sources({}) == []
+
+    def test_zero_and_empty_are_not_a_policy(self):
+        assert self._sources({"PIP_REQUIRE_HASHES": "0", "UV_NO_BUILD": ""}) == []
+
+    def test_names_the_policy_environment_variables(self):
+        found = self._sources({"PIP_REQUIRE_HASHES": "1", "UV_NO_BUILD": "1"})
+        assert set(found) == {"PIP_REQUIRE_HASHES", "UV_NO_BUILD"}
+
+    def test_reads_the_pip_config_files_too(self):
+        """#8530 was pip.conf and uv.toml, not env vars, so env alone would miss it.
+        `pip config list` renders every file pip would load, PIP_CONFIG_FILE included."""
+        found = self._sources(
+            {},
+            pip_config = (
+                "global.require-hashes='true'\n"
+                "global.only-binary=':all:'\n"
+                "global.index-url='https://mirror.corp/simple'\n"
+                # pip renders the PIP_* env vars as a section of its own; those are
+                # reported from the environment, so listing them again reads like a
+                # second, separate setting.
+                ":env:.require-hashes='true'\n"
+            ),
+        )
+        assert found == ["pip config global.require-hashes", "pip config global.only-binary"]
+
+    def test_a_broken_pip_is_not_fatal(self):
+        """Best effort: the report is one printed line, never a failed install."""
+        with (
+            mock.patch.dict(os.environ, {"PIP_REQUIRE_HASHES": "1"}, clear = True),
+            mock.patch.object(ips.subprocess, "run", side_effect = OSError("no pip")),
+        ):
+            assert ips._hardened_pm_policy_sources() == ["PIP_REQUIRE_HASHES"]
 
 
 class TestProgressLineNotes:

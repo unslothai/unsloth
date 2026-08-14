@@ -3749,7 +3749,14 @@ def _sdist_only_build_args(*names: str) -> list[str]:
 
     Naming a package that the resolution never reaches is harmless (verified), so this
     is safe next to the NO_TORCH / Windows requirement filtering.
+
+    Empty under UNSLOTH_STRICT_PM_POLICY=1: these flags exist to override an operator's
+    no-build/only-binary policy for four audited names, and strict policy is the operator
+    saying no build may happen at all. On a host with no such policy this changes nothing
+    -- none of these packages has a wheel to prefer in the first place.
     """
+    if _strict_pm_policy():
+        return []
     args: list[str] = []
     for name in names:
         args += ["--no-binary", name]
@@ -4048,20 +4055,50 @@ def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
     return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
-# Restrictive policy a pinned install must not inherit from the ENVIRONMENT. The pinned
-# branch neutralises the config FILES (UV_NO_CONFIG=1 + PIP_CONFIG_FILE=devnull), but an
-# env var outranks a config file, so a hardened shell could still fail a torch repair the
-# pin was supposed to make deterministic (#8530).
-_PM_POLICY_ENV_VARS = (
-    "UV_NO_BUILD",
-    "UV_NO_BUILD_PACKAGE",
+# A require-hashes / no-build policy is a SECURITY control, not just a preference, so
+# every relaxation below is opt-out-able in one place. UNSLOTH_STRICT_PM_POLICY=1 honours
+# the operator's pip/uv policy verbatim: the install then fails loudly on a hardened host
+# (that is #8530 again, by choice) instead of quietly installing what the policy refused.
+# Read per call, not at import, so a caller can set it around a single invocation.
+_STRICT_PM_POLICY_ENV_VAR = "UNSLOTH_STRICT_PM_POLICY"
+
+
+def _strict_pm_policy() -> bool:
+    """True when the operator asked for their package-manager policy to be honoured."""
+    return os.environ.get(_STRICT_PM_POLICY_ENV_VAR, "") == "1"
+
+
+# Policy a PINNED install cannot honour, split by what honouring it would actually do.
+#
+# These FORCE a source build of whatever the pin fetches, so honouring them against
+# download.pytorch.org means compiling torch from source. A build is strictly more
+# untrusted code execution than the wheel it replaces, so dropping them is a hardening
+# rather than a relaxation and it happens under strict policy too.
+_PM_POLICY_FORCED_SOURCE_ENV_VARS = (
     "UV_NO_BINARY",
     "UV_NO_BINARY_PACKAGE",
-    "UV_REQUIRE_HASHES",
-    "UV_EXCLUDE_NEWER",
-    "PIP_ONLY_BINARY",
     "PIP_NO_BINARY",
+)
+
+# These are integrity controls, and they are dropped only because a pinned command
+# cannot satisfy them: the specs are command-line specs with no hashes attached, and
+# UV_EXCLUDE_NEWER can cut the pinned release out of the resolution entirely, failing a
+# torch repair the pin was supposed to make deterministic (#8530). Kept in force under
+# UNSLOTH_STRICT_PM_POLICY=1.
+#
+# UV_NO_BUILD / UV_NO_BUILD_PACKAGE / PIP_ONLY_BINARY are deliberately NOT here: every
+# pinned index we use serves wheels for the whole torch closure (enumerated on
+# download.pytorch.org and repo.amd.com -- an sdist is present for a few deps, but never
+# without a matching wheel), so a binary-only policy is satisfiable on this path and
+# stays in force. That is what stops an sdist running setup.py during a torch repair.
+# The wheel-less requirements are exempted per package instead, on the command line, in
+# _sdist_only_build_args(). A custom UNSLOTH_PYTORCH_MIRROR / UNSLOTH_AMD_ROCM_MIRROR
+# serving an sdist-only version is the one case where honouring it can fail a repair,
+# and it fails loudly, naming the policy.
+_PM_POLICY_RELAXED_ENV_VARS = (
+    "UV_REQUIRE_HASHES",
     "PIP_REQUIRE_HASHES",
+    "UV_EXCLUDE_NEWER",
 )
 
 
@@ -4070,7 +4107,8 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 
     Empty for anything that is not a `pip install` / `pip download` this module drives,
     every `uv` command included, so the "non-pinned installs inherit the caller env
-    unchanged" contract holds on a machine with no hostile pip config.
+    unchanged" contract holds on a machine with no hostile pip config. Empty as well
+    under UNSLOTH_STRICT_PM_POLICY=1, which is how an operator keeps their policy.
 
     `require-hashes = true` makes pip reject any requirement without a --hash, which is
     every requirements file we ship; that is what took the pip FALLBACK down in #8530
@@ -4079,7 +4117,77 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     """
     if cmd[:1] == ["uv"] or not any(arg in ("install", "download") for arg in cmd):
         return {}
+    if _strict_pm_policy():
+        return {}
     return {"PIP_REQUIRE_HASHES": "0"}
+
+
+# Policy keys whose presence in a pip config file means the relaxations above will
+# actually override something the operator set, rather than being the no-ops they are on
+# an unconfigured host. `pip config list` renders every file pip would load (including a
+# PIP_CONFIG_FILE override), which is why this asks pip instead of guessing paths.
+_PM_POLICY_CONFIG_KEYS = ("require-hashes", "only-binary", "no-binary", "no-build")
+
+
+def _hardened_pm_policy_sources() -> list[str]:
+    """Names of the operator policy settings the installer is about to override.
+
+    Best effort and non-fatal: a wrong answer costs one printed line, so a missing pip,
+    an unreadable config or a slow subprocess just reports what the environment shows.
+    """
+    found = [
+        name
+        for name in (*_PM_POLICY_RELAXED_ENV_VARS, "PIP_ONLY_BINARY", "UV_NO_BUILD")
+        if os.environ.get(name, "").strip() not in ("", "0", "false", "False")
+    ]
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 30,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        return found
+    if result.returncode != 0 or not result.stdout:
+        return found
+    for line in result.stdout.splitlines():
+        key = line.split("=", 1)[0].strip()
+        # `pip config list` renders the PIP_* env vars as a `:env:` section; they are
+        # already named above, and naming them twice reads like two separate settings.
+        if key.startswith(":env:"):
+            continue
+        if any(key.endswith(f".{policy}") for policy in _PM_POLICY_CONFIG_KEYS):
+            found.append(f"pip config {key}")
+    return found
+
+
+def _report_pm_policy_relaxation() -> None:
+    """Say so when the installer is about to override a policy the operator set.
+
+    The overrides exist because nothing we ship is hash-locked (#8530), but a
+    require-hashes / no-build policy is a security control, so it must not be bypassed
+    silently: name what is being overridden and name the switch that enforces it.
+    """
+    if _strict_pm_policy():
+        _note(
+            f"{_STRICT_PM_POLICY_ENV_VAR}=1 -- honouring your pip/uv policy verbatim; "
+            "an unhashed or wheel-less requirement will fail this install rather than "
+            "be relaxed"
+        )
+        return
+    sources = _hardened_pm_policy_sources()
+    if not sources:
+        return
+    _note(
+        "Hardened package-manager policy detected (" + ", ".join(sorted(set(sources))) + "). "
+        "Unsloth's own dependency installs relax hash-required mode and build the four "
+        "wheel-less requirements from source, because no requirements file we ship is "
+        f"hash-locked. Set {_STRICT_PM_POLICY_ENV_VAR}=1 to enforce your policy instead.",
+        _cyan,
+    )
 
 
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
@@ -4093,7 +4201,12 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     A non-pinned `pip` command also gets hash-required mode switched off, the one
     relaxation with no command-line equivalent; the wheel-less requirements go through
     the package-scoped --no-binary in _sdist_only_build_args() instead.
+
+    UNSLOTH_STRICT_PM_POLICY=1 drops every one of those relaxations, including the config
+    neutralisation, and keeps only the scrub the pin itself needs. The operator's
+    require-hashes / no-build / only-binary policy then applies to our installs as well.
     """
+    strict = _strict_pm_policy()
     if not _is_pinned_index_cmd(cmd):
         relaxed = _relaxed_pip_policy_env(cmd)
         if not relaxed:
@@ -4103,11 +4216,19 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
         return env
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
+        # Under strict policy UV_CONFIG_FILE is the operator's POLICY file, not just an
+        # index override, and config discovery stays on below -- so removing the pointer
+        # would only swap their file for whichever uv.toml uv happens to find.
+        if strict and name == "UV_CONFIG_FILE":
+            continue
         env.pop(name, None)
-    for name in _PM_POLICY_ENV_VARS:
+    for name in _PM_POLICY_FORCED_SOURCE_ENV_VARS:
         env.pop(name, None)
-    env["UV_NO_CONFIG"] = "1"
-    env["PIP_CONFIG_FILE"] = os.devnull
+    if not strict:
+        for name in _PM_POLICY_RELAXED_ENV_VARS:
+            env.pop(name, None)
+        env["UV_NO_CONFIG"] = "1"
+        env["PIP_CONFIG_FILE"] = os.devnull
     return env
 
 
@@ -4407,6 +4528,10 @@ def install_python_stack() -> int:
                 "Upgrading pip",
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
+
+    # After the pip bootstrap: this reads `pip config list`, and on a uv venv from
+    # install.sh pip only exists from here on.
+    _report_pm_policy_relaxation()
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
