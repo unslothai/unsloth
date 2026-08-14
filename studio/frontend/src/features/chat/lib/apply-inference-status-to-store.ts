@@ -161,8 +161,13 @@ export function applyActiveModelStatusToStore(
         presetSource: store.activePresetSource,
       }),
       // The model's own remembered settings outrank the recommendation, or
-      // every poll would undo them.
-      { fromModelDefaults: true },
+      // every poll would undo them, but not past the context it loaded with.
+      {
+        fromModelDefaults: true,
+        maxTokensCap: status.is_gguf
+          ? (status.context_length ?? undefined)
+          : undefined,
+      },
     );
   }
 

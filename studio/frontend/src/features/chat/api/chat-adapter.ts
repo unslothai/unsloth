@@ -2879,6 +2879,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
           fromModelDefaults: true,
+          // A budget remembered from a larger context does not fit this load.
+          maxTokensCap:
+            candidate.kind === "gguf"
+              ? (loadResp.context_length ?? undefined)
+              : undefined,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -3248,6 +3253,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
             fromModelDefaults: true,
+            maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
         const defaultModel: ChatModelSummary = {

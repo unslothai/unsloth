@@ -1220,6 +1220,12 @@ type ChatRuntimeStore = {
        * the built-in per-family values), so the model's remembered settings are
        * laid back over them even though the checkpoint did not change. */
       fromModelDefaults?: boolean;
+      /** The context the model just loaded with. A remembered output budget
+       * from a larger context would not fit it. */
+      maxTokensCap?: number;
+      /** These params belong to the model about to load, applied while the
+       * previous one is still current. */
+      stagedForLoad?: boolean;
     },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -1436,9 +1442,13 @@ function getSettingsHydrationVersions(): SettingsHydrationVersions {
   };
 }
 
+/** `bumpVersions` fences the moved keys against a hydration response already in
+ * flight. A model's own defaults do not get that: they must not outrank the
+ * settings the user saved for it, which is what hydration is delivering. */
 function getChangedInferenceParams(
   nextParams: InferenceParams,
   currentParams: InferenceParams,
+  bumpVersions = true,
 ): PersistedInferenceParams {
   const changedParams: PersistedInferenceParams = {};
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
@@ -1446,7 +1456,9 @@ function getChangedInferenceParams(
     if (Object.is(nextValue, currentParams[key])) {
       continue;
     }
-    inferenceParamMutationVersions[key] += 1;
+    if (bumpVersions) {
+      inferenceParamMutationVersions[key] += 1;
+    }
     if (nextValue !== undefined) {
       setInferenceParam(changedParams as InferenceParams, key, nextValue);
     }
@@ -1502,7 +1514,12 @@ function getReplayStatePatch(
 /** The per-model map after a setParams call: the destination's new snapshot,
  * falling back to whatever the outgoing snapshot already produced. A
  * non-persisting update (a background load preserving what is on screen) must
- * not rewrite durable memory, so it keeps the outgoing result only. */
+ * not rewrite durable memory, so it keeps the outgoing result only.
+ *
+ * Only an edit is recorded. A model's defaults are not settings it was used
+ * with, and recording them would make the next defaults hook replay them over
+ * itself; staged load params describe the model about to load, not the current
+ * one. Both are picked up by the snapshot taken when the model is left. */
 function getParamsByModelAfterEdit(
   state: ChatRuntimeStore,
   outgoing: Record<string, PersistedInferenceParams> | null,
@@ -1661,13 +1678,27 @@ function getHydratedSettingsState(
   // published by a status response that beat it -- never crossed a checkpoint
   // transition, so nothing replayed its memory. Without this it runs on the
   // global set, which belongs to whichever model was used last.
-  nextState.params = getReplayedParams(
-    nextState.rememberParamsPerModel ?? state.rememberParamsPerModel,
-    nextState.paramsByModel ?? state.paramsByModel,
-    params,
-    params.checkpoint,
-    true,
-  );
+  const remembered = (nextState.paramsByModel ?? state.paramsByModel)[
+    params.checkpoint
+  ];
+  if (
+    (nextState.rememberParamsPerModel ?? state.rememberParamsPerModel) &&
+    remembered
+  ) {
+    // Same fence as the global set above: a key the user moved while this
+    // request was in flight is their edit, and the memory does not outrank it.
+    const replayed = { ...params };
+    for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+      const value = remembered[key];
+      if (
+        value !== undefined &&
+        inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+      ) {
+        setInferenceParam(replayed, key, value);
+      }
+    }
+    nextState.params = replayed;
+  }
   return nextState;
 }
 
@@ -1916,6 +1947,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // via setParams() before setCheckpoint runs, leaving stale per-turn
       // counters under the new checkpoint.
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      const fromModelDefaults = options?.fromModelDefaults === true;
+      // Params staged for the model about to load describe that model, not the
+      // one still on screen, so they must neither replay nor be recorded.
+      const stagedForLoad = options?.stagedForLoad === true;
       // Remember what the outgoing model was running with before replacing it.
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)
@@ -1931,11 +1966,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         outgoing ?? state.paramsByModel,
         params,
         params.checkpoint,
-        checkpointChanged || options?.fromModelDefaults === true,
+        !stagedForLoad && (checkpointChanged || fromModelDefaults),
+        options?.maxTokensCap,
       );
-      // Bump version unconditionally so a late hydration response won't clobber
-      // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
-      const changedParams = getChangedInferenceParams(nextParams, state.params);
+      // A user edit fences the keys it moved against a hydration response still
+      // in flight; only the HTTP write is gated on settingsHydrated.
+      const changedParams = getChangedInferenceParams(
+        nextParams,
+        state.params,
+        !fromModelDefaults,
+      );
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         state.params,
         nextParams,
@@ -1948,7 +1988,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         outgoing,
         nextParams,
         changedParams,
-        options?.persist !== false,
+        options?.persist !== false && !fromModelDefaults && !stagedForLoad,
       );
       if (options?.persist !== false && state.settingsHydrated) {
         persistParamEdit(changedParams, paramsByModel, nextParams.checkpoint);
@@ -2251,6 +2291,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      // An unload or eviction leaves the model the same way a switch does, so
+      // record what it was running with. Without this the next model to be
+      // edited becomes what this one replays.
+      ...(() => {
+        const outgoing = rememberOutgoingModel(state, state.params);
+        return outgoing ? { paramsByModel: outgoing } : {};
+      })(),
       params: {
         ...state.params,
         checkpoint: "",

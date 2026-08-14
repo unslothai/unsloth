@@ -79,17 +79,28 @@ export function getRememberedParamsPatch(
 
 /** The params a model switch should land on. A model with nothing remembered
  * keeps what is on screen rather than snapping to defaults. Returns `current` by
- * identity when nothing was replayed, so callers can tell the two apart. */
+ * identity when nothing was replayed, so callers can tell the two apart.
+ *
+ * `maxTokensCap` is the context the model just loaded with, when the caller
+ * knows it: a budget remembered from a larger context does not fit. */
 export function getReplayedParams(
   enabled: boolean,
   paramsByModel: Record<string, PersistedInferenceParams>,
   current: InferenceParams,
   modelId: string,
   checkpointChanged: boolean,
+  maxTokensCap?: number,
 ): InferenceParams {
   if (!(enabled && checkpointChanged)) {
     return current;
   }
   const remembered = paramsByModel[modelId];
-  return remembered ? { ...current, ...remembered } : current;
+  if (!remembered) {
+    return current;
+  }
+  const replayed = { ...current, ...remembered };
+  if (maxTokensCap !== undefined && replayed.maxTokens > maxTokensCap) {
+    replayed.maxTokens = maxTokensCap;
+  }
+  return replayed;
 }
