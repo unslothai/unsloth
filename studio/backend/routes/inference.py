@@ -4828,12 +4828,18 @@ def _switch_model_for_payload(payload) -> str:
     return payload.model if "model" in payload.model_fields_set else _RELOAD_ONLY_MODEL
 
 
-def _target_is_vision(load_path: str, gguf_variant: Optional[str] = None) -> bool:
+def _target_is_vision(
+    load_path: str,
+    gguf_variant: Optional[str] = None,
+    need_image: bool = True,
+) -> bool:
     # A local GGUF's vision capability is its companion mmproj, a filesystem check
     # (no model load). Matches the loaded backend's is_vision, so rejecting a swap
-    # here can't differ from the post-load guard, hence the quant. Thread the ambient HF
-    # token so the probe keeps the capability-probe invariant (the resolver only yields
-    # local paths, where the token is unused, but the rule requires it regardless).
+    # here can't differ from the post-load guard, hence the quant. An audio request
+    # needs that projector too but not a vision tower, so it asks with need_image
+    # False. Thread the ambient HF token so the probe keeps the capability-probe
+    # invariant (the resolver only yields local paths, where the token is unused,
+    # but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
         # Deliberately unguarded: the resolver only yields local paths, so this returns
@@ -4844,6 +4850,7 @@ def _target_is_vision(load_path: str, gguf_variant: Optional[str] = None) -> boo
                 load_path,
                 hf_token = os.environ.get("HF_TOKEN"),
                 gguf_variant = gguf_variant,
+                require_image = need_image,
             )
         )
     except Exception as exc:
@@ -5480,6 +5487,7 @@ async def _maybe_auto_switch_model(
     current_subject: str,
     *,
     require_vision: bool = False,
+    require_image: bool = True,
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
@@ -5488,7 +5496,9 @@ async def _maybe_auto_switch_model(
     compat); a miss only reaches the network when auto-download is also on, and
     even then only for ``namespace/name`` ids. ``require_vision`` rejects a swap
     to a text-only target before it runs, so an image request can't evict the
-    resident vision model only to 400 afterwards.
+    resident vision model only to 400 afterwards; ``require_image`` is what makes
+    that rejection modality-aware, since an audio request needs the projector but
+    not a vision tower.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -5641,7 +5651,7 @@ async def _maybe_auto_switch_model(
         if (
             require_vision
             and resolved is not None
-            and not await asyncio.to_thread(_target_is_vision, target_id, variant)
+            and not await asyncio.to_thread(_target_is_vision, target_id, variant, require_image)
         ):
             raise HTTPException(
                 status_code = 400,
@@ -12450,6 +12460,7 @@ async def openai_chat_completions(
     # Parse once and reuse below.
     _pre_parsed = None
     _needs_vision = False
+    _needs_image = False
     if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -12547,16 +12558,18 @@ async def openai_chat_completions(
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
         # Audio input rides the same companion-mmproj projector as vision, so a
-        # text-only target can't serve it either; guard both before the switch.
-        _needs_vision = (
-            bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
-        )
+        # text-only target can't serve it either; guard both before the switch. An
+        # audio-only request asks for the projector alone, since an audio model's
+        # projector carries no vision tower.
+        _needs_image = bool(_pre_parsed[2]) or _request_has_image(payload)
+        _needs_vision = _needs_image or bool(payload.audio_base64)
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
         require_vision = _needs_vision,
+        require_image = _needs_image,
     )
 
     llama_backend = get_llama_cpp_backend()

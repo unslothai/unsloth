@@ -13,6 +13,7 @@ pattern used by ``detect_audio_type()``. These tests verify:
 * Exceptions that fall back to False are cached.
 """
 
+import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -141,10 +142,17 @@ class TestVisionCacheSubprocessPath:
 # --- Local GGUF capability path ---
 
 
+def _projector_declaring(path: Path, key: str) -> Path:
+    """A minimal GGUF carrying one ``clip.has_*_encoder`` bool, no tensors."""
+    kv = struct.pack("<Q", len(key)) + key.encode() + struct.pack("<I", 7) + struct.pack("<?", True)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + kv)
+    return path
+
+
 class TestLocalGgufVisionDetection:
-    """``detect_mmproj_file`` skips a zero-byte projector as an interrupted download, so every
-    projector fixture here is written non-empty; the byte content itself is never read (there is
-    no GGUF header, so pairing falls back to the filename)."""
+    """Every projector fixture is non-empty, since ``detect_mmproj_file`` skips a zero-byte one
+    as an interrupted download; those built by ``_projector_declaring`` also carry a header,
+    because the capability they assert is read from it."""
 
     @patch(
         "utils.models.model_config._is_vision_model_subprocess",
@@ -230,6 +238,22 @@ class TestLocalGgufVisionDetection:
         assert config.is_vision is True
         assert config.gguf_mmproj_file == str(mmproj.resolve())
         mock_subprocess.assert_not_called()
+
+    def test_an_audio_only_projector_is_not_a_vision_model(self, tmp_path):
+        """ultravox / Voxtral / Qwen3-ASR ship a projector for audio input; offering images
+        for it is a capability the model does not have."""
+        model = tmp_path / "Voxtral-Mini-3B-2507-Q4_K_M.gguf"
+        model.write_bytes(b"\0" * 32)
+        _projector_declaring(tmp_path / "mmproj-F16.gguf", "clip.has_audio_encoder")
+
+        assert is_vision_model(str(model)) is False
+
+    def test_a_projector_declaring_vision_is_still_a_vision_model(self, tmp_path):
+        model = tmp_path / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+        model.write_bytes(b"\0" * 32)
+        _projector_declaring(tmp_path / "mmproj-F16.gguf", "clip.has_vision_encoder")
+
+        assert is_vision_model(str(model)) is True
 
     @patch(
         "utils.models.model_config._is_vision_model_subprocess",

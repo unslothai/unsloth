@@ -19,6 +19,7 @@ from utils.paths import (
 from utils.utils import without_hf_auth
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
+    mmproj_accepts_image,
     pairing_score,
     read_gguf_general_metadata,
 )
@@ -944,6 +945,7 @@ def is_vision_model(
     local_files_only: bool = False,
     revision: Optional[str] = None,
     gguf_variant: Optional[str] = None,
+    require_image: bool = True,
 ) -> bool:
     """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
     models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
@@ -951,7 +953,8 @@ def is_vision_model(
     key so an offline probe never shares an online entry.
 
     ``gguf_variant`` picks the quant out of a directory, so the probe reads the weight
-    file the load will open."""
+    file the load will open. ``require_image=False`` asks only for a companion projector,
+    which is what an audio request needs: audio input rides the same file."""
     # Local GGUF models are served by llama-server, so multimodal capability comes from a
     # companion mmproj, not a Transformers config. Do not cache: a projector may be added
     # beside an existing weight file after it was first inspected.
@@ -967,7 +970,10 @@ def is_vision_model(
         if gguf_file:
             companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
             mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
-            is_vision = mmproj_file is not None
+            # An audio-only projector serves this model's audio input, never an image.
+            is_vision = mmproj_file is not None and (
+                not require_image or mmproj_accepts_image(mmproj_file)
+            )
             logger.debug(
                 "Local GGUF vision check for '%s': mmproj=%s, is_vision=%s",
                 gguf_file,
