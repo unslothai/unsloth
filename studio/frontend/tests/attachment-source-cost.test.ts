@@ -94,16 +94,24 @@ test("the attachment selector still resolves text and image attachments", () => 
 test("the pdf and docx adapters refuse an oversized file at add, with a toast", () => {
   const provider = source("features/chat/runtime-provider.tsx");
 
-  for (const [adapter, label] of [
-    ["PDFAttachmentAdapter", "PDF"],
-    ["DocxAttachmentAdapter", "DOCX"],
+  // DOCX also has to clear its per-part bound at add: a small archive can
+  // still declare a part mammoth would inflate past the cap.
+  for (const [adapter, call, toast] of [
+    [
+      "PDFAttachmentAdapter",
+      'getDocumentAttachmentSizeError(file, "PDF")',
+      "toast.error(sizeError)",
+    ],
+    [
+      "DocxAttachmentAdapter",
+      "await getDocxAttachmentError(file)",
+      "toast.error(error)",
+    ],
   ]) {
     const start = provider.indexOf(`class ${adapter}`);
     assert.notEqual(start, -1, `${adapter} not found`);
     const body = provider.slice(start, provider.indexOf("\n}", start));
-    const guard = body.indexOf(
-      `getDocumentAttachmentSizeError(file, "${label}")`,
-    );
+    const guard = body.indexOf(call);
     assert.notEqual(
       guard,
       -1,
@@ -115,7 +123,7 @@ test("the pdf and docx adapters refuse an oversized file at add, with a toast", 
       true,
       `${adapter} accepts a file past the ceiling and only fails at send`,
     );
-    const toasted = body.indexOf("toast.error(sizeError)");
+    const toasted = body.indexOf(toast);
     assert.equal(
       toasted > guard && toasted < body.indexOf("async send("),
       true,

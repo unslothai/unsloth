@@ -64,6 +64,7 @@ import {
   extractHtmlAttachmentText,
   extractPdfAttachmentText,
   getDocumentAttachmentSizeError,
+  getDocxAttachmentError,
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
@@ -398,20 +399,23 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   accept =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-  add({ file }: { file: File }): Promise<PendingAttachment> {
-    const sizeError = getDocumentAttachmentSizeError(file, "DOCX");
-    if (sizeError) {
-      toast.error(sizeError);
-      throw new Error(sizeError);
+  // The archive's own parts are checked here too, not just the upload ceiling:
+  // a small .docx can still declare a part that only mammoth's inflate would
+  // grow past the cap, and refusing that at send() would empty the composer.
+  async add({ file }: { file: File }): Promise<PendingAttachment> {
+    const error = await getDocxAttachmentError(file);
+    if (error) {
+      toast.error(error);
+      throw new Error(error);
     }
-    return Promise.resolve({
+    return {
       id: crypto.randomUUID(),
       type: "document",
       name: file.name,
       contentType: file.type,
       file,
       status: { type: "requires-action", reason: "composer-send" },
-    });
+    };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {

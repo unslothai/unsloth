@@ -13,6 +13,7 @@ registerBundlerResolver();
 const {
   attachmentAudioSrc,
   countAttachmentTextLines,
+  getDocxAttachmentError,
   isAudioAttachment,
   parseAttachmentText,
   readAttachmentText,
@@ -431,6 +432,117 @@ test("readAttachmentText lets a docx with a large embedded image through", async
   if (error) {
     assert.doesNotMatch(error.message, /too large/);
   }
+});
+
+// mammoth hands the relationships to a real XML parser, so every attribute
+// form that parser resolves has to resolve here too: a target it reaches and
+// the guard does not is inflated on the main thread unbounded.
+test("readAttachmentText refuses a relationship target in any XML attribute form", async () => {
+  const huge = strToU8("a".repeat(11 * 1024 * 1024));
+  const type =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
+  const forms: Array<[string, string, string]> = [
+    [
+      "single-quoted attributes",
+      "payload.bin",
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id='rId1' Type='${type}' Target='payload.bin'/></Relationships>`,
+    ],
+    [
+      "an entity-encoded target",
+      "payload.bin",
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${type}" Target="pay&#108;oad.bin"/></Relationships>`,
+    ],
+    [
+      "a prefixed element name",
+      "payload.bin",
+      `<pkg:Relationships xmlns:pkg="http://schemas.openxmlformats.org/package/2006/relationships"><pkg:Relationship Id="rId1" Type="${type}" Target="payload.bin"/></pkg:Relationships>`,
+    ],
+    [
+      "a target holding a decoy attribute",
+      "payload.bin",
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id='Target="word/document.xml"' Type="${type}" Target="payload.bin"/></Relationships>`,
+    ],
+    [
+      "a target holding a closing bracket",
+      "pay>load.bin",
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${type}" Target="pay>load.bin"/></Relationships>`,
+    ],
+  ];
+
+  for (const [label, target, rels] of forms) {
+    const bytes = zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": strToU8(rels),
+      [target]: huge,
+    });
+    const bomb = fakeDocumentFile("bomb.docx", bytes.length, bytes, []);
+    assert.equal(bomb.size < 1024 * 1024, true);
+    await assert.rejects(
+      readAttachmentText(bomb, bomb.name, undefined),
+      new RegExp(
+        `DOCX XML file is too large: bomb\\.docx:${target.replace(/[.>]/g, "\\$&")}$`,
+      ),
+      `${label} reached mammoth unbounded`,
+    );
+  }
+});
+
+// findPartPaths only opens the package parts and what the relationships point
+// at, so an .xml part nothing references is never inflated. Custom XML data is
+// a standard payload and may be large, so the suffix must not decide.
+test("readAttachmentText lets a docx with a large unreferenced xml part through", async () => {
+  const reads: string[] = [];
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+    "word/_rels/document.xml.rels": relationships([]),
+    "customXml/item1.xml": strToU8(
+      `<data>${"b".repeat(11 * 1024 * 1024)}</data>`,
+    ),
+  });
+  const file = fakeDocumentFile("custom.docx", bytes.length, bytes, reads);
+  const error = await readAttachmentText(file, file.name, undefined).then(
+    () => null,
+    (thrown: Error) => thrown,
+  );
+  assert.deepEqual(reads, ["custom.docx"]);
+  if (error) {
+    assert.doesNotMatch(error.message, /too large/);
+  }
+});
+
+// The composer empties itself before it awaits send(), so a part that only
+// fails there takes the typed message with it: add() has to decide instead.
+test("getDocxAttachmentError refuses an oversized part before the attachment is added", async () => {
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+    "word/_rels/document.xml.rels": relationships([["styles", "styles.dat"]]),
+    "word/styles.dat": strToU8("a".repeat(11 * 1024 * 1024)),
+  });
+  const bomb = fakeDocumentFile("styles.docx", bytes.length, bytes, []);
+  assert.equal(bomb.size < 1024 * 1024, true);
+  assert.equal(
+    await getDocxAttachmentError(bomb),
+    "DOCX XML file is too large: styles.docx:word/styles.dat",
+  );
+
+  const oversized = fakeDocumentFile(
+    "huge.docx",
+    60 * 1024 * 1024,
+    new Uint8Array(0),
+    [],
+  );
+  assert.equal(
+    await getDocxAttachmentError(oversized),
+    "DOCX file is too large: huge.docx",
+  );
+
+  const okBytes = docxBytes("<w:document><w:body/></w:document>");
+  const ok = fakeDocumentFile("notes.docx", okBytes.length, okBytes, []);
+  assert.equal(await getDocxAttachmentError(ok), null);
 });
 
 test("parseAttachmentText keeps an unterminated tag as plain text", () => {

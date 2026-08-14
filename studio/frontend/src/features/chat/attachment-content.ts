@@ -34,29 +34,50 @@ const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-// Every part mammoth parses as XML, wherever it sits in the archive.
-const DOCX_XML_PART_RE = /\.(xml|rels)$/i;
 // mammoth picks the parts it parses out of the relationships, not out of the
 // filenames, so a target may be called anything ("payload.bin") and still be
-// inflated and parsed as XML. Only these types are read that way; an image
-// target stays lazy and is never read by extractRawText.
+// inflated and parsed as XML, while an .xml part nothing points at (customXml,
+// the glossary document) is never opened at all. The bound therefore follows
+// docx-reader.js: the two package parts it always reads, the main document and
+// its relationships, and the five parts resolved out of those relationships,
+// each with mammoth's own "word/<name>.xml" fallback. Image targets stay lazy
+// and are never read by extractRawText.
+const DOCX_CONTENT_TYPES_PART = "[Content_Types].xml";
 const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
 const DOCX_RELATIONSHIP_NAMESPACE =
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/";
-const DOCX_XML_RELATIONSHIP_TYPES = new Set(
-  [
-    "officeDocument",
-    "styles",
-    "numbering",
-    "footnotes",
-    "endnotes",
-    "comments",
-  ].map((name) => `${DOCX_RELATIONSHIP_NAMESPACE}${name}`),
-);
-const DOCX_RELATIONSHIP_TAG_RE = /<Relationship\b[^>]*>/gi;
-const DOCX_RELATIONSHIP_TYPE_RE = /\bType\s*=\s*"([^"]*)"/i;
-const DOCX_RELATIONSHIP_TARGET_RE = /\bTarget\s*=\s*"([^"]*)"/i;
+const DOCX_MAIN_DOCUMENT_TYPE = `${DOCX_RELATIONSHIP_NAMESPACE}officeDocument`;
+const DOCX_RELATED_PART_NAMES = [
+  "comments",
+  "endnotes",
+  "footnotes",
+  "numbering",
+  "styles",
+];
+// readXmlFileWithBody opens the relationships of every part it reads a body
+// from, so these three carry a .rels part of their own.
+const DOCX_BODY_PART_NAMES = new Set(["comments", "endnotes", "footnotes"]);
 const DOCX_MAIN_DOCUMENT_FALLBACK = "word/document.xml";
+// A <Relationship> tag, with the element prefix mammoth's namespace mapping
+// accepts, and skipping any ">" that sits inside an attribute value.
+const DOCX_RELATIONSHIP_TAG_RE =
+  /<(?:[^\s/>"'=]+:)?Relationship(?=[\s/>])(?:"[^"]*"|'[^']*'|[^"'>])*>/g;
+// Attribute names are matched by consuming whole name="value" pairs, so a
+// value that itself contains Target= cannot be mistaken for an attribute.
+// mammoth reads child.attributes.Target, which a prefixed r:Target never
+// populates, so prefixed names are deliberately not accepted here.
+const XML_ATTRIBUTE_RE = /([^\s/>"'=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const XML_ENTITY_RE = /&(?:#(\d+)|#[xX]([\da-fA-F]+)|([a-zA-Z]+));/g;
+const XML_NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+// add() unzips the archive to check its parts, so send() and the preview reuse
+// that verdict instead of unzipping the same File a second time.
+const validatedDocxFiles = new WeakSet<File>();
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -168,22 +189,53 @@ function joinDocxPath(basePath: string, target: string): string {
   return joined.startsWith("/") ? joined.slice(1) : joined;
 }
 
-// The relationship parts are XML, but only their targets are needed, so they are
-// scanned rather than parsed: DOMParser is not available where this also runs
-// under test, and a malformed rels file is mammoth's to report.
+// XML attribute values are entity-decoded by the parser mammoth hands the
+// relationships to, so a target only matches the archive once decoded.
+function decodeXmlEntities(value: string): string {
+  return value.replace(XML_ENTITY_RE, (match, decimal, hex, name) => {
+    const code = decimal
+      ? Number.parseInt(decimal, 10)
+      : hex
+        ? Number.parseInt(hex, 16)
+        : Number.NaN;
+    if (Number.isNaN(code)) {
+      return XML_NAMED_ENTITIES[name] ?? match;
+    }
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+  });
+}
+
+// The relationship parts are XML, but only their targets are needed, so they
+// are scanned rather than parsed: DOMParser is not available where this also
+// runs under test, and a malformed rels file is mammoth's to report. The scan
+// accepts every attribute form mammoth's parser resolves (both quote styles,
+// entity-encoded values, a prefixed element name, ">" inside a value), so a
+// crafted rels file cannot hide a target from the bound below.
 function readDocxXmlTargets(
   rels: Uint8Array | undefined,
   basePath: string,
-): string[] {
+): Map<string, string[]> {
+  const targets = new Map<string, string[]>();
   if (!rels) {
-    return [];
+    return targets;
   }
-  const targets: string[] = [];
   for (const tag of strFromU8(rels).match(DOCX_RELATIONSHIP_TAG_RE) ?? []) {
-    const type = tag.match(DOCX_RELATIONSHIP_TYPE_RE)?.[1];
-    const target = tag.match(DOCX_RELATIONSHIP_TARGET_RE)?.[1];
-    if (type && target && DOCX_XML_RELATIONSHIP_TYPES.has(type)) {
-      targets.push(joinDocxPath(basePath, target));
+    let type: string | undefined;
+    let target: string | undefined;
+    for (const [, name, quoted, apostrophed] of tag.matchAll(
+      XML_ATTRIBUTE_RE,
+    )) {
+      const value = quoted ?? apostrophed ?? "";
+      if (name === "Type") {
+        type = decodeXmlEntities(value);
+      } else if (name === "Target") {
+        target = decodeXmlEntities(value);
+      }
+    }
+    if (type && target) {
+      const resolved = targets.get(type) ?? [];
+      resolved.push(joinDocxPath(basePath, target));
+      targets.set(type, resolved);
     }
   }
   return targets;
@@ -198,12 +250,11 @@ function docxRelationshipsPath(path: string): string {
 }
 
 // mammoth takes no entry filter, so the sizes the archive declares are checked
-// first. Every .xml and .rels part is covered, not just word/: mammoth opens
-// "_rels/.rels" and "[Content_Types].xml" before it ever reaches the document
-// body. Suffixes alone are not enough, because mammoth resolves the body,
-// styles, numbering and note parts through the relationships, so those targets
-// are bounded by name as well. Only the relationship parts are decompressed
-// here, and only after their own declared size has passed.
+// first, for exactly the parts it goes on to inflate: findPartPaths resolves
+// the main document out of "_rels/.rels" and the styles, numbering and note
+// parts out of the document's own .rels, falling back to a fixed name when no
+// target resolves. Only the relationship parts are decompressed here, and only
+// after their own declared size has passed.
 function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
   const sizes = new Map<string, number>();
   const oversized: string[] = [];
@@ -220,36 +271,44 @@ function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
     }
     return unzipSync(bytes, { filter: (entry) => entry.name === path })[path];
   };
+  // findPartPath keeps the first target that exists, and every target it
+  // discards is one mammoth never opens.
+  const resolve = (targets: string[] | undefined, fallback: string) =>
+    targets?.find((path) => sizes.has(path)) ?? fallback;
 
   try {
     unzipSync(bytes, {
       filter: (entry) => {
         sizes.set(entry.name, entry.originalSize);
-        if (
-          DOCX_XML_PART_RE.test(entry.name) &&
-          entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES
-        ) {
-          oversized.push(entry.name);
-        }
         return false;
       },
     });
 
-    if (oversized.length === 0) {
-      const mainDocuments = readDocxXmlTargets(
-        read(DOCX_PACKAGE_RELATIONSHIPS),
-        "",
-      ).filter((path) => sizes.has(path));
-      const mainDocument = mainDocuments[0] ?? DOCX_MAIN_DOCUMENT_FALLBACK;
-      for (const path of mainDocuments) {
-        bound(path);
-      }
-      const cut = mainDocument.lastIndexOf("/");
-      for (const path of readDocxXmlTargets(
-        read(docxRelationshipsPath(mainDocument)),
-        cut === -1 ? "" : mainDocument.slice(0, cut),
-      )) {
-        bound(path);
+    bound(DOCX_CONTENT_TYPES_PART);
+    bound(DOCX_PACKAGE_RELATIONSHIPS);
+    const mainDocument = resolve(
+      readDocxXmlTargets(read(DOCX_PACKAGE_RELATIONSHIPS), "").get(
+        DOCX_MAIN_DOCUMENT_TYPE,
+      ),
+      DOCX_MAIN_DOCUMENT_FALLBACK,
+    );
+    bound(mainDocument);
+    const mainDocumentRels = docxRelationshipsPath(mainDocument);
+    bound(mainDocumentRels);
+
+    const cut = mainDocument.lastIndexOf("/");
+    const documentTargets = readDocxXmlTargets(
+      read(mainDocumentRels),
+      cut === -1 ? "" : mainDocument.slice(0, cut),
+    );
+    for (const name of DOCX_RELATED_PART_NAMES) {
+      const path = resolve(
+        documentTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`),
+        `word/${name}.xml`,
+      );
+      bound(path);
+      if (DOCX_BODY_PART_NAMES.has(name)) {
+        bound(docxRelationshipsPath(path));
       }
     }
   } catch {
@@ -261,6 +320,26 @@ function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
   if (oversized.length > 0) {
     throw new Error(`DOCX XML file is too large: ${filename}:${oversized[0]}`);
   }
+}
+
+// The composer clears its text and attachments before it awaits send(), so a
+// DOCX whose parts only fail there discards the typed message along with the
+// file. add() calls this instead, the way the audio adapter checks its own
+// ceiling, and the verdict is cached so send() does not unzip the file again.
+export async function getDocxAttachmentError(
+  file: File,
+): Promise<string | null> {
+  const sizeError = getDocumentAttachmentSizeError(file, "DOCX");
+  if (sizeError) {
+    return sizeError;
+  }
+  try {
+    assertDocxXmlSizes(file.name, new Uint8Array(await file.arrayBuffer()));
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  validatedDocxFiles.add(file);
+  return null;
 }
 
 export async function extractPdfAttachmentText(file: File): Promise<string> {
@@ -280,7 +359,10 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     import("mammoth"),
     file.arrayBuffer(),
   ]);
-  assertDocxXmlSizes(file.name, new Uint8Array(arrayBuffer));
+  if (!validatedDocxFiles.has(file)) {
+    assertDocxXmlSizes(file.name, new Uint8Array(arrayBuffer));
+    validatedDocxFiles.add(file);
+  }
   const { value } = await mammoth.extractRawText({ arrayBuffer });
   return value;
 }
