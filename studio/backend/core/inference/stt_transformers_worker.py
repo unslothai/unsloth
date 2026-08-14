@@ -331,6 +331,12 @@ class WhisperWorker:
         self._ready_event = None
         # Whether the child ever answered a command.
         self._answered = False
+        # Set once close() found a child that outlived terminate and kill. The
+        # handle is kept so its memory stays accounted, but a child that
+        # answered neither signal answers no later command either, and a
+        # terminate taken mid-queue leaves that queue liable to corruption, so
+        # it must never be handed to a later dictation.
+        self.survived_kill = False
         self.device: Optional[str] = None
         # Read by the sidecar the way it read the model's, so an English-only
         # checkpoint still drops the task/language kwargs it rejects.
@@ -509,6 +515,11 @@ class WhisperWorker:
                     "pid record so the sweep can still reach it",
                     process.pid,
                 )
+                # Recorded on the handle, not just returned: a cancelled or
+                # timed-out command closes the worker from inside _await and
+                # raises over this answer, so the sidecar would otherwise keep
+                # offering the wedged child to the next dictation.
+                self.survived_kill = True
                 return False
             try:
                 from utils.process_lifetime import forget_pid

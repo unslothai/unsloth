@@ -719,6 +719,70 @@ def test_a_surviving_worker_is_not_handed_to_the_next_dictation(monkeypatch):
     assert sidecar.loaded_model == "small"
 
 
+def test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_dictation(
+    monkeypatch,
+):
+    # A cancel that outruns the grace closes the worker from inside the handle,
+    # so close() answers False to nobody and the sidecar never learns the child
+    # outlived both signals. Handing it to the next dictation spends the whole
+    # command timeout on a child that answers nothing, under the model lock.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    workers = []
+
+    class WedgedByCancelWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.survived_kill = False
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+
+        def is_alive(self):
+            return True
+
+        def transcribe_window(
+            self,
+            _pcm,
+            _generate_kwargs,
+            _cancel_event = None,
+        ):
+            # What _await does once the cancel grace expires: close() terminates
+            # and kills, the child answers neither, and the cancellation is
+            # raised over the False that close() returned.
+            self.survived_kill = True
+            raise stt_sidecar_module.SttTranscriptionCancelledError("Transcription cancelled.")
+
+        def close(self):
+            return False
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker",
+        WedgedByCancelWorker,
+        raising = True,
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    cancel_event = threading.Event()
+    with pytest.raises(stt_sidecar_module.SttTranscriptionCancelledError):
+        sidecar.transcribe(b"audio", "small", cancel_event = cancel_event)
+
+    with pytest.raises(SttModelBusyError, match = "did not exit"):
+        sidecar.load("small")
+
+    assert len(workers) == 1
+    # Still accounted for: it holds its memory until the kill finally takes.
+    assert sidecar.loaded_model == "small"
+
+
 def _install_worker_that_survives_its_own_start(monkeypatch, error):
     """A worker whose start() fails over a child that outlived its own kill.
 

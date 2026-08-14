@@ -1022,6 +1022,16 @@ def _engine_is_alive(engine) -> bool:
         return True
 
 
+def _engine_survived_kill(engine) -> bool:
+    """Whether a handle says its own child outlived terminate and kill.
+
+    close() reports that to its caller, but a cancelled or timed-out command
+    closes the worker from inside the handle and raises over the answer, so the
+    only record that reaches here is the one the handle keeps on itself.
+    """
+    return bool(getattr(engine, "survived_kill", False))
+
+
 def _close_engine(engine) -> bool:
     """End the worker behind an engine handle, if it has one.
 
@@ -1315,6 +1325,23 @@ class WhisperSttSidecar:
         )
         self._schedule_idle_unload_locked()
 
+    def _is_survivor_locked(self) -> bool:
+        """Whether the resident engine is held for its memory, not its answers.
+
+        Folds in the flag the handle raised on itself: a command that was
+        cancelled or timed out closes the worker from inside the handle, so
+        close()'s False never reaches the sidecar and this is the only way it
+        learns the child outlived both signals. Handing such a worker to the
+        next dictation would spend the whole command timeout on it under the
+        model lock; refusing lets the idle timer retry the kill instead.
+        """
+        if self._survivor:
+            return True
+        if self._engine is not None and _engine_survived_kill(self._engine):
+            self._survivor = True
+            return True
+        return False
+
     def _release_dead_engine_locked(self) -> None:
         """Drop a worker whose process is gone, so the next use loads a fresh one."""
         if self._engine is not None and not _engine_is_alive(self._engine):
@@ -1381,7 +1408,8 @@ class WhisperSttSidecar:
         """
         model_id = resolve_model_id(model_id)
         with self._lock:
-            if self._engine is not None and self._model_id == model_id and not self._survivor:
+            reusable = self._engine is not None and self._model_id == model_id
+            if reusable and not self._is_survivor_locked():
                 resident_model = (
                     self._engine[0] if isinstance(self._engine, (tuple, list)) else self._engine
                 )
@@ -1430,7 +1458,8 @@ class WhisperSttSidecar:
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
             self._release_dead_engine_locked()
-            if self._engine is not None and self._model_id == model_id and not self._survivor:
+            reusable = self._engine is not None and self._model_id == model_id
+            if reusable and not self._is_survivor_locked():
                 self._schedule_idle_unload_locked()
                 return self._engine
             import torch

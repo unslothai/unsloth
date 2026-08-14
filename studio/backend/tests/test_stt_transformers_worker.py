@@ -643,6 +643,45 @@ def test_a_child_that_survives_terminate_and_kill_keeps_its_pid_and_handle(monke
     assert handle._cmd_queue is not None
 
 
+def test_a_child_that_outlived_a_cancelled_command_marks_its_handle_unusable(monkeypatch):
+    # The cancel grace expires and close() terminates and kills a child that
+    # answers neither, so the handle is kept for its memory. It answers no
+    # later command either, and the terminate it already took leaves its queues
+    # liable to corruption, so the handle has to say it is spent: the cancel is
+    # raised over close(), so its False reaches nobody.
+    monkeypatch.setattr(worker_module, "_CANCEL_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
+
+    class _Unkillable(_FakeProcess):
+        def terminate(self):
+            self.terminated = True  # neither signal reaches it
+
+        def kill(self):
+            self.killed = True
+
+    handle = _wired_worker(_Unkillable())
+    assert handle.survived_kill is False
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(SttTranscriptionCancelledError):
+        handle._await("text", 30.0, cancel_event, "transcribe")
+
+    assert handle.is_alive() is True
+    assert handle.survived_kill is True
+
+
+def test_a_handle_whose_child_did_exit_is_still_usable(monkeypatch):
+    # The flag is only for a child that outlived both signals; an ordinary
+    # close must not retire a handle that gave its memory back.
+    monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
+
+    handle = _wired_worker()
+
+    assert handle.close() is True
+    assert handle.survived_kill is False
+
+
 def test_closing_a_handle_that_ignores_shutdown_escalates_to_a_kill(monkeypatch):
     monkeypatch.setattr("utils.process_lifetime.forget_pid", lambda _pid: None)
 
