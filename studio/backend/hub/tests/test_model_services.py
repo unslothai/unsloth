@@ -1788,6 +1788,7 @@ def _diffusion_scan(
     *,
     task: str | None,
     modular_manifest: dict | None = None,
+    config_manifest: dict | None = None,
 ):
     """One cached diffusion repo through _scan_cached_models, with the download-partial signal
     forced off so only the pipeline-shape checks can flag the row.
@@ -1808,6 +1809,8 @@ def _diffusion_scan(
         (snapshot / "modular_model_index.json").write_text(
             json.dumps(modular_manifest), encoding = "utf-8"
         )
+    if config_manifest is not None:
+        (snapshot / "config.json").write_text(json.dumps(config_manifest), encoding = "utf-8")
     refs = repo_path / "refs"
     refs.mkdir(parents = True, exist_ok = True)
     (refs / "main").write_text(_SNAPSHOT_SHA)
@@ -1949,6 +1952,31 @@ def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
     assert row["companion"] is False
     # ...and an ordinary chat repo keeps its chat capability.
     assert row["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    ("repo_id", "config"),
+    [
+        ("OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano", {}),
+        ("Acme/custom-moss-codec", {"model_type": "moss-audio-tokenizer"}),
+        ("Acme/legacy-moss-codec", {"model_type": "speech_tokenizer"}),
+        ("Acme/custom-higgs-codec", {"architectures": ["HiggsAudioV2TokenizerModel"]}),
+    ],
+)
+def test_native_audio_codec_repos_are_companion_infrastructure(
+    monkeypatch, tmp_path, repo_id, config
+):
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        repo_id,
+        [_file("config.json", 100), _file("model.safetensors", 100)],
+        task = None,
+        config_manifest = config,
+    )
+
+    assert row["companion"] is True
+    assert row["capabilities"]["can_chat"] is False
 
 
 def test_the_real_companion_shape_never_reaches_a_row_at_all(monkeypatch, tmp_path):

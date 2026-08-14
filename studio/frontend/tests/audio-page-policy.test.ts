@@ -21,6 +21,7 @@ import {
   stagedTtsLoadIsOwned,
   sttSelectionReady,
   trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
 } from "../src/features/audio/audio-page-policy.ts";
 
 const audioPageSource = readFileSync(
@@ -171,6 +172,21 @@ test("native audio training rows expose merged checkpoints but not adapters", ()
     assert.equal(trainedTtsCheckpointIsLoadable(audioType, "merged"), true);
   }
   assert.equal(trainedTtsCheckpointIsLoadable("snac", "lora"), true);
+});
+
+test("macOS exposes merged native speech checkpoints but not native adapters or Music3", () => {
+  for (const audioType of [
+    "higgs_tts2",
+    "moss_tts_local",
+    "moss_tts_nano",
+    "higgs_tts3",
+  ]) {
+    assert.equal(trainedTtsCheckpointIsRunnableOnMac(audioType, "merged"), true);
+    assert.equal(trainedTtsCheckpointIsRunnableOnMac(audioType, "lora"), false);
+  }
+  assert.equal(trainedTtsCheckpointIsRunnableOnMac("minimax_music3", "merged"), false);
+  assert.equal(trainedTtsCheckpointIsRunnableOnMac("snac", "merged"), false);
+  assert.equal(trainedTtsCheckpointIsRunnableOnMac("snac", "gguf"), true);
 });
 
 test("hidden MiniMax instructions are not sent to speech models", () => {
@@ -556,13 +572,10 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
   assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
 });
 
-test("macOS hides trained TTS checkpoints that are not GGUF", () => {
-  // MLX has no TTS decoder, so a LoRA or merged safetensors row deterministically fails
-  // with "not supported on the MLX backend yet". The catalog rows are already filtered to
-  // families with a GGUF sibling; these have none.
+test("the trained-model list applies the native-aware macOS checkpoint policy", () => {
   assert.match(
     audioPageSource,
-    /\.filter\(\(lora\) => !isMac \|\| lora\.export_type === "gguf"\)/,
+    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(lora\.audio_type, lora\.export_type\)/,
   );
 });
 

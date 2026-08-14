@@ -53,6 +53,19 @@ export function trainedTtsCheckpointIsLoadable(
   return !audioType || !NATIVE_TTS_AUDIO_TYPES.has(audioType) || exportType === "merged";
 }
 
+export function trainedTtsCheckpointIsRunnableOnMac(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  if (exportType === "gguf") return true;
+  return Boolean(
+    exportType === "merged" &&
+      audioType &&
+      NATIVE_TTS_AUDIO_TYPES.has(audioType) &&
+      audioType !== "minimax_music3",
+  );
+}
+
 type SttDownloadedStatus = {
   downloaded_models?: readonly string[];
   transformers?: { downloaded_models?: readonly string[] };

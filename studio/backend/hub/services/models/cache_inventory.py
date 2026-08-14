@@ -439,8 +439,8 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     return is_hidden_model(*values)
 
 
-def _cached_row_companion(repo_id: str) -> bool:
-    """Whether this row is an sd.cpp companion mirror (VAE / text encoders, no denoiser).
+def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool:
+    """Whether this row is infrastructure for another load, not a checkpoint.
 
     Same classifier the models API uses. The chat picker is backed by THIS endpoint, so a flag set
     only on the legacy route arrives as undefined here and the filter never fires -- the same trap
@@ -448,7 +448,39 @@ def _cached_row_companion(repo_id: str) -> bool:
     """
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
-        return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
+
+        normalized = (repo_id or "").strip().lower()
+        if normalized in sd_cpp_companion_only_repo_ids():
+            return True
+
+        from core.inference.native_audio import NATIVE_AUDIO_COMPANION_REPOS
+
+        native_companions = {
+            companion.strip().lower()
+            for companions in NATIVE_AUDIO_COMPANION_REPOS.values()
+            for companion in companions
+        }
+        if normalized in native_companions:
+            return True
+
+        # MOSS Local may name a different compatible tokenizer in its processor
+        # config. Classify the codec architecture too, so that dynamically
+        # resolved companion cannot surface as a chat checkpoint after download.
+        config = _read_json_object(snapshot / "config.json") if snapshot is not None else {}
+        model_type = str(config.get("model_type") or "").strip().lower()
+        if model_type in {
+            "moss-audio-tokenizer",
+            "moss-audio-tokenizer-nano",
+            "moss_audio_tokenizer",
+            "speech_tokenizer",
+            "higgs_audio_v2_tokenizer",
+        }:
+            return True
+        architectures = config.get("architectures")
+        return isinstance(architectures, list) and any(
+            str(name) in {"MossAudioTokenizerModel", "HiggsAudioV2TokenizerModel"}
+            for name in architectures
+        )
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return False
 
@@ -1087,7 +1119,7 @@ def _scan_cached_models(
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but
                     # flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": _cached_row_companion(repo_id),
+                    "companion": _cached_row_companion(repo_id, load_snapshot),
                     **local_metadata,
                 }
                 last_modified = max(

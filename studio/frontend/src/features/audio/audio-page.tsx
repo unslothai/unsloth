@@ -108,6 +108,7 @@ import {
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
   trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
   sttDownloadedArtifacts,
   sttSelectionReady,
 } from "./audio-page-policy";
@@ -1908,11 +1909,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (cancelled) return;
         setTrainedTtsModels(
           res.loras
-            // MLX has no TTS decoder, so a trained LoRA or merged safetensors checkpoint
-            // deterministically fails with "not supported on the MLX backend yet" on Mac.
-            // The catalog rows are already filtered to families with a GGUF sibling; these
-            // have none, so offering them only produces that error.
-            .filter((lora) => !isMac || lora.export_type === "gguf")
+            // Merged native speech checkpoints bypass MLX through the portable
+            // audio worker. Other safetensors exports still need a GGUF build on Mac.
+            .filter(
+              (lora) =>
+                !isMac ||
+                trainedTtsCheckpointIsRunnableOnMac(lora.audio_type, lora.export_type),
+            )
             .filter((lora) => isTtsAudioType(lora.audio_type))
             .filter((lora) =>
               trainedTtsCheckpointIsLoadable(lora.audio_type, lora.export_type),

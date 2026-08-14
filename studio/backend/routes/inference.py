@@ -390,6 +390,7 @@ _MIN_SPEECH_OUTPUT_TOKENS = 64
 # than this and 32 tokens off a 2048 context is not worth threading it up here.
 _TTS_PROMPT_FORMAT_RESERVE = 32
 _MINIMAX_MUSIC3_DEFAULT_FRAMES = 750
+_MINIMAX_MUSIC3_RESIDENT_GB = 24.0
 
 
 def _tts_max_new_tokens(
@@ -6910,7 +6911,13 @@ async def _preflight_native_audio_placement(
                 )
             )
         )
-        required_gb = None
+        # The published repo is about 67 GB, but the official BF16 modular
+        # pipeline is resident on one 24 GB CUDA device. Using repository bytes
+        # here makes auto-placement select several GPUs and the single-device
+        # native backend then rejects a model that fits one supported card.
+        required_gb = (
+            _MINIMAX_MUSIC3_RESIDENT_GB if audio_type == "minimax_music3" else None
+        )
         if len(targets) > 1:
             required_gb = 0.0
             for target in targets:

@@ -973,6 +973,30 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         with self.assertRaisesRegex(HTTPException, "NVIDIA CUDA"):
             self._run("minimax_music3", DeviceType.CUDA, selected = [0], rocm = True)
 
+    def test_minimax_uses_resident_memory_for_single_gpu_auto_selection(self):
+        config = SimpleNamespace(
+            identifier = "MiniMaxAI/MiniMax-Music3",
+            audio_type = "minimax_music3",
+        )
+        request = SimpleNamespace(gpu_ids = None, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(None, None, False, False)
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "core.inference.native_audio.native_audio_security_targets",
+                return_value = [config.identifier],
+            ),
+            patch("utils.hardware.prepare_gpu_selection", return_value = ([1], {})) as prepare,
+        ):
+            result = asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
+        self.assertEqual(result.resolved_gpu_ids, [1])
+        self.assertEqual(result.native_required_gb, 24.0)
+        self.assertEqual(prepare.call_args.kwargs["required_override_gb"], 24.0)
+
     def test_higgs_rejects_python_39_before_gpu_resolution(self):
         with patch.object(self.route.sys, "version_info", (3, 9, 18)):
             for audio_type in ("higgs_tts2", "higgs_tts3"):
