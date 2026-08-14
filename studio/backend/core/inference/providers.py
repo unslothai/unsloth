@@ -646,6 +646,27 @@ _REGISTRY_HOSTNAMES = frozenset(
 )
 
 
+def _metadata_address(address: str) -> bool:
+    """``_metadata_host`` for a RESOLVED address: the exact services, no net.
+
+    The 169.254.0.0/16 clause exists to catch a caller who types a link-local
+    address at the metadata service directly, and it stays for that. It cannot
+    be applied to a resolved address: 169.254/16 is the general IPv4 link-local
+    range (RFC 3927), so a self-assigned host, an mDNS .local name on a network
+    without DHCP, or a captive portal answering every query would all read as
+    the metadata service. Those are refused today by nobody, and this change is
+    not the place to start.
+    """
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    for candidate in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
+        if candidate is not None and _metadata_address(candidate.compressed):
+            return True
+    return ip in _METADATA_IPS
+
+
 def _transport_host(hostname: str) -> str:
     """The ASCII host httpx will dial, so the checked name is the dialled name.
 
@@ -730,7 +751,7 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
         return False
     except ValueError:
         pass
-    return any(_metadata_host(address) for address in _resolve_host(hostname, port, scheme) or ())
+    return any(_metadata_address(address) for address in _resolve_host(hostname, port, scheme) or ())
 
 
 def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:

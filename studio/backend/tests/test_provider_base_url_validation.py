@@ -167,6 +167,35 @@ def test_unresolvable_names_are_refused_only_under_the_opt_in(monkeypatch):
         validate_provider_base_url("http://my_ollama:11434/v1")
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        # A self-assigned host, an mDNS .local name on a network without DHCP,
+        # and a captive portal answering every query all land in 169.254/16.
+        "169.254.3.7",
+        "169.254.1.1",
+        # A LAN gateway and an ordinary public answer are equally none of our
+        # business on the default path.
+        "192.168.1.50",
+        "93.184.216.34",
+    ],
+)
+def test_a_name_resolving_to_a_non_metadata_address_stays_allowed(address, monkeypatch):
+    """Only the metadata services themselves, not the whole link-local range."""
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 80))],
+    )
+    assert validate_provider_base_url("http://box.local:11434/v1") == "http://box.local:11434/v1"
+
+
+def test_a_link_local_literal_is_still_refused():
+    """Typing the address stays refused, which is what main already did."""
+    with pytest.raises(ValueError, match = "metadata"):
+        validate_provider_base_url("http://169.254.1.1/v1")
+
+
 def test_a_unicode_host_is_resolved_the_way_httpx_dials_it(monkeypatch):
     """getaddrinfo speaks IDNA 2003, httpx IDNA 2008, and they differ on ß."""
     seen = []
