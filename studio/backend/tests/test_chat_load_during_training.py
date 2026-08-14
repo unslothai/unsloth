@@ -916,6 +916,20 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         with self.assertRaisesRegex(HTTPException, "require one GPU"):
             self._run("higgs_tts2", DeviceType.CUDA, selected = [0, 1])
 
+    def test_native_audio_lora_is_rejected_before_gpu_resolution(self):
+        config = SimpleNamespace(
+            identifier = "test/native-audio-lora",
+            audio_type = "higgs_tts3",
+            is_lora = True,
+        )
+        request = SimpleNamespace(gpu_ids = None, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(None, None, False, False)
+
+        with self.assertRaisesRegex(HTTPException, "merged checkpoint"):
+            asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
     def test_minimax_rejects_cpu_and_rocm_hosts(self):
         with self.assertRaisesRegex(HTTPException, "NVIDIA CUDA"):
             self._run("minimax_music3", DeviceType.CPU)

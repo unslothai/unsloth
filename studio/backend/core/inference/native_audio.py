@@ -421,6 +421,7 @@ class NativeAudioBackend:
             **token_kwargs,
         )
         model = self._move(model)
+        model.get_audio_codec()
         sample_rate = int(getattr(model.config, "sample_rate", 24000))
         entry.update(model = model, processor = tokenizer, sample_rate = sample_rate)
 
@@ -625,6 +626,9 @@ class NativeAudioBackend:
 
     @staticmethod
     def _generate_higgs_tts3(entry, text, temperature, top_p, top_k, max_new_tokens):
+        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+
+        text = neutralize_tts_prompt_text(text, "higgs_tts3")
         audio = entry["model"].generate_speech(
             text,
             entry["processor"],

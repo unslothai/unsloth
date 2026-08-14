@@ -6867,6 +6867,14 @@ async def _preflight_native_audio_placement(
     audio_type = getattr(config, "audio_type", None)
     if audio_type not in NATIVE_AUDIO_TYPES:
         return placement
+    if getattr(config, "is_lora", False):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Native audio LoRA adapters are not supported yet. "
+                "Load a merged checkpoint instead."
+            ),
+        )
 
     def _resolve() -> Optional[List[int]]:
         import utils.hardware as hardware
@@ -10180,6 +10188,11 @@ async def _generate_tts_wav(
         raise HTTPException(
             status_code = 400,
             detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
+        )
+    if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
+        raise HTTPException(
+            status_code = 400,
+            detail = "MiniMax Music 3 requires a music description in addition to lyrics.",
         )
 
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before

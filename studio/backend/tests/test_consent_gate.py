@@ -656,7 +656,7 @@ class TestStructuredFindingsForDialog:
         # The scan route pins one combined fingerprint over adapter + base, so adapter code is reviewed and approvable too.
         assert "preflight_remote_code_consent_for_targets" in src
 
-    def _run_scan_route(self, monkeypatch, *, adapter, base, in_cache):
+    def _run_scan_route(self, monkeypatch, *, adapter, base, in_cache, seen_targets = None):
         """Call scan_model_remote_code with all network/cache deps stubbed; in_cache(repo)
         decides whether a repo pre-existed in cache (so it is not reported scan-created)."""
         import asyncio
@@ -674,7 +674,10 @@ class TestStructuredFindingsForDialog:
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",
-            lambda *_a, **_k: SimpleNamespace(
+            lambda targets, **_k: (
+                seen_targets.extend(targets) if seen_targets is not None else None
+            )
+            or SimpleNamespace(
                 has_remote_code = False,
                 response_payload = lambda: {"has_remote_code": False, "approvable": True},
             ),
@@ -718,6 +721,21 @@ class TestStructuredFindingsForDialog:
         )
         assert payload["scan_created_repos"] == [base]
         assert payload["created_by_scan"] is False
+
+    def test_scan_route_fingerprint_includes_native_audio_companion(self, monkeypatch):
+        model = "multimodalart/higgs-audio-v3-tts-4b-transformers"
+        companion = "bosonai/higgs-audio-v2-tokenizer"
+        targets = []
+
+        self._run_scan_route(
+            monkeypatch,
+            adapter = model,
+            base = None,
+            in_cache = lambda _n: True,
+            seen_targets = targets,
+        )
+
+        assert targets == [model, companion]
 
     def test_scan_route_uses_selected_cached_snapshot(self, monkeypatch, tmp_path):
         import asyncio

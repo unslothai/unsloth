@@ -77,6 +77,47 @@ def test_route_passes_request_cancel_event_to_transformers_backend(monkeypatch):
     assert captured["cancel_event"].is_set() is False
 
 
+def test_minimax_missing_description_is_a_client_error_before_generation(monkeypatch):
+    generated = []
+
+    class _Llama:
+        is_loaded = False
+        _is_audio = False
+
+    class _Backend:
+        active_model_name = "MiniMaxAI/MiniMax-Music3"
+        models = {
+            active_model_name: {"is_audio": True, "audio_type": "minimax_music3"}
+        }
+
+        def generate_audio_response(self, **kwargs):
+            generated.append(kwargs)
+            return b"RIFFfake", 32000
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "MiniMaxAI/MiniMax-Music3",
+        messages = [{"role": "user", "content": "lyrics"}],
+        audio_instructions = "   ",
+    )
+
+    with pytest.raises(inference_route.HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._generate_tts_wav(
+                "lyrics", payload, request = None, current_subject = "t"
+            )
+        )
+
+    assert excinfo.value.status_code == 400
+    assert "music description" in str(excinfo.value.detail).lower()
+    assert generated == []
+
+
 def test_audio_response_stopped_while_queued_is_never_sent(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)

@@ -210,6 +210,8 @@ _TTS_MARKUP_BY_CODEC = {
     # (model_config.py:992-995), and add_special_tokens = True makes the document boundaries
     # forgeable from the text too (#7066).
     "csm": re.compile(r"\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos|begin_of_text|end_of_text)\|>)"),
+    # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
+    "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
 }
 # An unrecognised codec gets the union: still far narrower than the chat sweep, but it does
 # not assume a prompt shape this module has not seen.

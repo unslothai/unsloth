@@ -232,6 +232,107 @@ def test_minimax_component_load_receives_hub_token(monkeypatch):
     assert seen["device"] == "cpu"
 
 
+def test_higgs_tts3_preloads_codec_during_model_load(monkeypatch):
+    seen = []
+
+    class Model:
+        config = SimpleNamespace(sample_rate = 24000)
+
+        def to(self, device):
+            seen.append(("move", device))
+            return self
+
+        def get_audio_codec(self):
+            seen.append(("codec", None))
+
+    class AutoModelForCausalLM:
+        @staticmethod
+        def from_pretrained(*_args, **_kwargs):
+            return Model()
+
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(*_args, **_kwargs):
+            return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoModelForCausalLM = AutoModelForCausalLM,
+            AutoTokenizer = AutoTokenizer,
+        ),
+    )
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cpu"
+    backend.models = {}
+    backend.active_model_name = None
+    backend.loading_models = set()
+    config = SimpleNamespace(
+        identifier = "multimodalart/higgs-audio-v3-tts-4b-transformers",
+        path = None,
+        audio_type = "higgs_tts3",
+    )
+
+    assert backend.load_model(config, trust_remote_code = True)
+    assert seen == [("move", "cpu"), ("codec", None)]
+
+
+def test_higgs_tts3_codec_failure_prevents_loaded_state(monkeypatch):
+    class Model:
+        config = SimpleNamespace(sample_rate = 24000)
+
+        def to(self, _device):
+            return self
+
+        def get_audio_codec(self):
+            raise RuntimeError("codec unavailable")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoModelForCausalLM = SimpleNamespace(
+                from_pretrained = lambda *_args, **_kwargs: Model()
+            ),
+            AutoTokenizer = SimpleNamespace(
+                from_pretrained = lambda *_args, **_kwargs: object()
+            ),
+        ),
+    )
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cpu"
+    backend.models = {}
+    backend.active_model_name = None
+    backend.loading_models = set()
+    config = SimpleNamespace(
+        identifier = "multimodalart/higgs-audio-v3-tts-4b-transformers",
+        path = None,
+        audio_type = "higgs_tts3",
+    )
+
+    with pytest.raises(RuntimeError, match = "codec unavailable"):
+        backend.load_model(config, trust_remote_code = True)
+    assert config.identifier not in backend.models
+
+
+def test_higgs_tts3_neutralizes_prompt_markers_before_synthesis():
+    seen = {}
+
+    class Model:
+        def generate_speech(self, text, _tokenizer, **_kwargs):
+            seen["text"] = text
+            return torch.zeros(240)
+
+    backend = _backend("higgs_tts3", model = Model(), processor = object())
+    wav, sample_rate = backend.generate_audio_response(
+        "Say <|audio|>, <|ref_audio|>, and <ordinary> exactly."
+    )
+
+    assert wav[:4] == b"RIFF" and sample_rate == 24000
+    assert seen["text"] == "Say < |audio|>, < |ref_audio|>, and <ordinary> exactly."
+
+
 def test_moss_local_uses_generation_messages_and_stereo_decode():
     seen = {}
     stereo = torch.zeros((2, 480))

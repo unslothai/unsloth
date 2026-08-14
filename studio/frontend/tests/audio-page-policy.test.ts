@@ -183,6 +183,22 @@ test("local native audio architecture metadata drives runtime and consent", () =
   }
 });
 
+test("custom-code audio models require consent and pass its fingerprint", () => {
+  assert.match(audioPageSource, /confirmRemoteCodeIfNeeded\(\{/);
+  assert.match(
+    audioPageSource,
+    /if \(audioModelRequiresRemoteCode\(repoId, audioType\)\)/,
+  );
+  assert.match(
+    audioPageSource,
+    /onApprove: \(fingerprint\) => \{[\s\S]*trustRemoteCode = true/,
+  );
+  assert.match(
+    audioPageSource,
+    /approved_remote_code_fingerprint: approvedRemoteCodeFingerprint/,
+  );
+});
+
 test("MiniMax is rejected before model selection mutates page lifecycle", () => {
   const musicPick = audioPageSource.indexOf("const musicPick =");
   const hardwareCheck = audioPageSource.indexOf("await fetchSystemInfo()", musicPick);

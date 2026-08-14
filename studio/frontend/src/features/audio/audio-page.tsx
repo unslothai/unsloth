@@ -67,6 +67,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   isTrackingSttDownload,
   trackSttDownload,
@@ -730,16 +731,36 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setBusy("loading");
       const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`);
       try {
+        const hfToken = hfApiToken(getHfToken()) ?? null;
+        let trustRemoteCode = false;
+        let approvedRemoteCodeFingerprint: string | null = null;
+        if (audioModelRequiresRemoteCode(repoId, audioType)) {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: loadId || repoId,
+            hfToken,
+            requiresTrustRemoteCode: true,
+            onApprove: (fingerprint) => {
+              trustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fingerprint;
+            },
+          });
+          if (!approved)
+            throw new Error(
+              "Custom code approval is required to load this model.",
+            );
+          if (controller.signal.aborted || !isCurrent()) return;
+        }
         const res = await loadModel(
           {
             model_path: loadId || repoId,
             load_request_id: loadRequestId,
-            hf_token: hfApiToken(getHfToken()) ?? null,
+            hf_token: hfToken,
             max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
             load_in_4bit: false,
             is_lora: false,
             gguf_variant: ggufFilename ?? null,
-            trust_remote_code: audioModelRequiresRemoteCode(repoId, audioType),
+            trust_remote_code: trustRemoteCode,
+            approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           },
           {
             signal: controller.signal,
