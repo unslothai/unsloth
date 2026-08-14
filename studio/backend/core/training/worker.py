@@ -4017,7 +4017,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
-        from core.training.trainer import UnslothTrainer
+        from core.training.trainer import UnslothTrainer, max_steps_dataset_rows
         from utils.paths import (
             ensure_dir,
             resolve_output_dir,
@@ -4084,6 +4084,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
 
+        # Packing opts out: one packed sample spans an unknown number of rows, so
+        # steps cannot be converted to a row count. Streaming and an explicit
+        # train-split range opt out inside load_and_format_dataset, where they live.
+        max_train_rows = (
+            None
+            if config.get("packing", False)
+            else max_steps_dataset_rows(
+                config.get("max_steps", 0) or 0,
+                config.get("batch_size", 2),
+                config.get("gradient_accumulation_steps", 4),
+            )
+        )
+
         def _load_training_dataset():
             result = trainer.load_and_format_dataset(
                 dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
@@ -4107,6 +4120,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                max_train_rows = max_train_rows,
+                max_train_rows_seed = config.get("random_seed", 3407),
             )
             if isinstance(result, tuple):
                 loaded_dataset, loaded_eval_dataset = result

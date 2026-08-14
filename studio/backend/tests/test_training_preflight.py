@@ -150,12 +150,20 @@ class _SizedDataset:
     ):
         self.size = size
         self.info = SimpleNamespace(splits = {name: object() for name in splits})
+        self.shuffle_seeds = []
 
     def __len__(self):
         return self.size
 
     def select(self, indices):
-        return _SizedDataset(len(indices), tuple(self.info.splits))
+        selected = _SizedDataset(len(indices), tuple(self.info.splits))
+        selected.shuffle_seeds = list(self.shuffle_seeds)
+        return selected
+
+    def shuffle(self, seed = None):
+        shuffled = _SizedDataset(self.size, tuple(self.info.splits))
+        shuffled.shuffle_seeds = [*self.shuffle_seeds, seed]
+        return shuffled
 
 
 class _SplittableDataset(_SizedDataset):
@@ -460,6 +468,120 @@ def test_bounded_cached_train_forwards_only_required_row_count(monkeypatch):
     assert len(result[0]["dataset"]) == 25
     assert result[1] is validation
     assert cache_calls == [("train", 33), ("validation", None)]
+
+
+def _cached_only_loader(monkeypatch, train, validation = None):
+    """A trainer whose dataset comes from cache, with remote access fatal."""
+    from hub.utils import dataset_cache
+
+    _patch_dataset_formatting(monkeypatch)
+
+    # row_limit arrives on the explicit-slice path, which fetches end + 1 rows.
+    def load_cached(
+        repo_id,
+        local_path,
+        *,
+        subset,
+        split,
+        token = None,
+        row_limit = None,
+    ):
+        if split == "validation":
+            return validation
+        return _SizedDataset(row_limit) if row_limit else train
+
+    def fail_remote(*args, **kwargs):
+        raise AssertionError("remote dataset access is not allowed")
+
+    monkeypatch.setattr(dataset_cache, "load_cached_hf_dataset", load_cached)
+    monkeypatch.setattr("core.training.trainer.load_dataset", fail_remote)
+    monkeypatch.setattr(sys.modules["datasets"], "get_dataset_split_names", fail_remote)
+    return _dataset_loader_self()
+
+
+def test_max_steps_dataset_rows_bounds_the_run():
+    from core.training.trainer import (
+        MAX_STEPS_ROW_SLACK,
+        MIN_MAX_STEPS_ROWS,
+        max_steps_dataset_rows,
+    )
+
+    # An epoch-bounded run reads its whole dataset, so there is nothing to bound.
+    assert max_steps_dataset_rows(0, 2, 4) is None
+    assert max_steps_dataset_rows(None, 2, 4) is None
+
+    assert max_steps_dataset_rows(2000, 8, 16) == 2000 * 8 * 16 * MAX_STEPS_ROW_SLACK
+    # Small runs land on the floor rather than a statistically useless handful.
+    assert max_steps_dataset_rows(30, 2, 4) == MIN_MAX_STEPS_ROWS
+    assert max_steps_dataset_rows(1, 1, 1) == MIN_MAX_STEPS_ROWS
+
+
+def test_max_steps_bound_subsets_before_formatting(monkeypatch):
+    # The whole point: 30 steps must not tokenize a corpus of 500k rows.
+    trainer = _cached_only_loader(monkeypatch, _SizedDataset(500_000))
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+        max_train_rows = 1024,
+        max_train_rows_seed = 99,
+    )
+
+    assert result is not None
+    bounded = result[0]["dataset"]
+    assert len(bounded) == 1024
+    # Shuffled first: the head of a corpus ordered by source is not a sample of it.
+    assert bounded.shuffle_seeds == [99]
+
+
+def test_max_steps_bound_leaves_a_small_dataset_alone(monkeypatch):
+    train = _SizedDataset(40)
+    trainer = _cached_only_loader(monkeypatch, train)
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+        max_train_rows = 1024,
+    )
+
+    assert result is not None
+    # Untouched, so no shuffle cost and no reordering for a run that reads it all.
+    assert result[0]["dataset"] is train
+
+
+def test_max_steps_bound_defers_to_an_explicit_slice(monkeypatch):
+    trainer = _cached_only_loader(monkeypatch, _SizedDataset(500_000))
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+        dataset_slice_start = 8,
+        dataset_slice_end = 32,
+        max_train_rows = 1024,
+    )
+
+    assert result is not None
+    sliced = result[0]["dataset"]
+    # The user named the rows; the bound must not resample them.
+    assert len(sliced) == 25
+    assert sliced.shuffle_seeds == []
+
+
+def test_max_steps_bound_is_off_without_it(monkeypatch):
+    train = _SizedDataset(500_000)
+    trainer = _cached_only_loader(monkeypatch, train)
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+    )
+
+    assert result is not None
+    assert result[0]["dataset"] is train
 
 
 def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):

@@ -94,6 +94,33 @@ logger = get_logger(__name__)
 # Streaming eval has no __len__, so an unbounded eval would iterate the whole
 # source on every eval step. Cap it so each evaluation terminates.
 STREAMING_EVAL_MAX_SAMPLES = 500
+# Slack on the row bound below. Rows are consumed by things that never produce a
+# step: the eval split carved off the train set, and the rows
+# train_on_responses_only drops when the response template is missing. Running
+# short is not an error -- max_steps just re-reads the subset -- but it trains on
+# the same rows twice, so the bound is deliberately loose. Even 4x is three
+# orders of magnitude under the datasets this exists for.
+MAX_STEPS_ROW_SLACK = 4
+# Below this a subset is small enough to skew a run for no meaningful saving.
+MIN_MAX_STEPS_ROWS = 1024
+
+
+def max_steps_dataset_rows(
+    max_steps: int,
+    batch_size: int,
+    gradient_accumulation_steps: int,
+) -> Optional[int]:
+    """Rows a max_steps run can reach, or None when it is unbounded.
+
+    TRL prepares the whole train_dataset in the SFTTrainer constructor and never
+    looks at max_steps, so a 30-step run over a large corpus tokenizes millions
+    of rows to read a few hundred. The count is known before any of that: a step
+    draws batch_size * gradient_accumulation_steps rows.
+    """
+    if not max_steps or max_steps <= 0:
+        return None
+    per_step = max(1, batch_size) * max(1, gradient_accumulation_steps)
+    return max(MIN_MAX_STEPS_ROWS, max_steps * per_step * MAX_STEPS_ROW_SLACK)
 
 
 def _build_report_targets(training_args) -> list[str] | str:
@@ -2572,12 +2599,17 @@ class UnslothTrainer:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        max_train_rows: Optional[int] = None,
+        max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
 
         Strategy: format first, then split — ensures both train and eval
         portions are formatted and templated.
+
+        max_train_rows bounds the rows kept before formatting, for a max_steps
+        run that cannot reach the whole dataset; see max_steps_dataset_rows.
 
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
@@ -3016,6 +3048,34 @@ class UnslothTrainer:
                 self._update_progress(
                     status_message = f"Sliced dataset to {len(dataset)} rows (indices {start}-{end})"
                 )
+
+            # Before the formatting, template and tokenization passes, all of which map
+            # over every row: that is the cost this avoids. Skipped when the user named
+            # an explicit range, which is already the rows they asked for, and when
+            # streaming, which was bounded lazily above.
+            if (
+                (not dataset_streaming)
+                and max_train_rows is not None
+                and dataset_slice_start is None
+                and dataset_slice_end is None
+            ):
+                total_rows = len(dataset)
+                if total_rows > max_train_rows:
+                    # Shuffled, not the head. A corpus ordered by source or difficulty
+                    # would otherwise make a short run train on one homogeneous slab.
+                    # shuffle() builds an indices mapping; it does not rewrite the table.
+                    dataset = dataset.shuffle(seed = max_train_rows_seed).select(
+                        range(max_train_rows)
+                    )
+                    logger.info(
+                        f"Bounded dataset to {max_train_rows} of {total_rows} rows for a "
+                        f"max_steps run (seed {max_train_rows_seed})\n"
+                    )
+                    self._update_progress(
+                        status_message = (
+                            f"Using {max_train_rows} of {total_rows} rows (max_steps run)"
+                        )
+                    )
 
             if self.should_stop:
                 logger.info("Stopped before applying chat template\n")
