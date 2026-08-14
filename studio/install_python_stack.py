@@ -408,14 +408,6 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str | None, str, str]":
         version, hip, cuda = (_fields + ["", ""])[:3]
     _TORCH_RUNTIME_PROBE = (True, probe.returncode == 0, version, hip, cuda)
     return _TORCH_RUNTIME_PROBE
-    # Last non-empty line only: torch and its dependencies can chatter on import.
-    lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
-    version = hip = cuda = ""
-    if lines:
-        version, _sep, _rest = lines[-1].partition("|")
-        hip, _sep, cuda = _rest.partition("|")
-    _TORCH_RUNTIME_PROBE = (True, probe.returncode == 0, version, hip, cuda)
-    return _TORCH_RUNTIME_PROBE
 
 
 def _probe_installed_torch_version() -> str | None:
