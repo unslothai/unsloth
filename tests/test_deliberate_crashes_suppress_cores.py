@@ -316,9 +316,7 @@ def _clears_dumpable_before(scope, line) -> bool:
     Order matters. Suppression placed after the fault does nothing, so accepting it
     anywhere in the scope blessed a child that still dumps.
     """
-    return any(
-        _prctl_clears_dumpable(node) and node.lineno < line for node in ast.walk(scope)
-    )
+    return any(_prctl_clears_dumpable(node) and node.lineno < line for node in ast.walk(scope))
 
 
 def _suppressed(node, scope, functions) -> bool:
