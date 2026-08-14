@@ -3809,6 +3809,7 @@ class FastLlamaModel:
 
         # Prevent transformers >= 4.43+ inplace loss modification crash
         old_forward = model.forward
+
         def new_forward(*args, **kwargs):
             outputs = old_forward(*args, **kwargs)
             if hasattr(outputs, "loss") and outputs.loss is not None:
@@ -3816,6 +3817,7 @@ class FastLlamaModel:
             elif isinstance(outputs, tuple) and outputs[0] is not None:
                 outputs = (outputs[0].clone(),) + outputs[1:]
             return outputs
+
         model.forward = new_forward
 
         return model
