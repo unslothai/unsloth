@@ -115,12 +115,26 @@ def refresh_compiled(db_path=None) -> list[str]:
     return dropped
 
 
+def _is_blocked(record_id: str, *, db_path=None) -> bool:
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM compiled_blocked WHERE source_record_id = ?",
+            (record_id,),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def maybe_compile(db_path=None) -> list[str]:
     refresh_compiled(db_path)
     pinned: list[str] = []
     for rec in list_records(kinds=["procedure"], statuses=["active"], db_path=db_path):
         rid = rec["id"]
         if get_compiled(rid, db_path=db_path) is not None:
+            continue
+        if _is_blocked(rid, db_path=db_path):
             continue
         hits = procedure_hits(rid, db_path=db_path)
         if not is_compile_candidate(rec, hits=hits, explicit=False):
@@ -155,6 +169,9 @@ def pin_compiled(record_id: str, *, explicit: bool = False, db_path=None) -> dic
     conn = get_connection(db_path)
     try:
         conn.execute(
+            "DELETE FROM compiled_blocked WHERE source_record_id = ?", (record_id,)
+        )
+        conn.execute(
             "INSERT INTO compiled(source_record_id, explicit, compiled_at) VALUES(?,?,?)",
             (record_id, 1 if explicit else 0, _now()),
         )
@@ -171,6 +188,10 @@ def unpin_compiled(record_id: str, *, db_path=None) -> None:
     conn = get_connection(db_path)
     try:
         conn.execute("DELETE FROM compiled WHERE source_record_id = ?", (record_id,))
+        conn.execute(
+            "INSERT OR IGNORE INTO compiled_blocked(source_record_id) VALUES(?)",
+            (record_id,),
+        )
         conn.commit()
     finally:
         conn.close()

@@ -216,11 +216,17 @@ def from_episode(state: "EpisodeState") -> list[dict[str, Any]]:
     """If a world/sim failure was later followed by success, propose one error_fix."""
     fail = None
     success = None
+    world_success = None
     for event in state.trace_events:
         if event.get("kind") == "failure" and fail is None:
             fail = event
-        if event.get("kind") == "success" and fail is not None and success is None:
-            success = event
+        if event.get("kind") == "success" and fail is not None:
+            if success is None:
+                success = event
+            if event.get("contact") == "world":
+                world_success = event
+    if world_success is not None:
+        success = world_success
     if fail is None or success is None:
         return []
     fail_contact = fail.get("contact") or "world"

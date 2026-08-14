@@ -51,7 +51,11 @@ class RetrievePolicy:
 
 
 def retrieve(
-    query: str, *, policy: Optional[RetrievePolicy] = None, db_path=None
+    query: str,
+    *,
+    policy: Optional[RetrievePolicy] = None,
+    db_path=None,
+    namespace_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     if not (query or "").strip():
         return []
@@ -62,15 +66,18 @@ def retrieve(
         if policy.high_stakes and policy.contact == "world"
         else None
     )
+    overfetch = policy.max_records + len(policy.exclude_ids)
     hits = search_records(
         query,
-        top_k=policy.max_records,
+        top_k=overfetch,
         kinds=DEFAULT_RETRIEVE_KINDS,
         provenances=provenances,
+        namespace_id=namespace_id,
         db_path=db_path,
     )
     if policy.exclude_ids:
         hits = [rec for rec in hits if rec.get("id") not in policy.exclude_ids]
+    hits = hits[: policy.max_records]
     capped = _cap_twin_notes(hits, policy.max_twin_notes)
     if policy.contact == "sim":
         return _prefer_sim_lessons(capped)

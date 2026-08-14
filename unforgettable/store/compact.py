@@ -96,7 +96,11 @@ def _dedupe_pairs(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
             continue
         if rec["kind"] not in COMPACT_DEDUPE_KINDS:
             continue
-        key = (rec["kind"], normalize_title(rec.get("title") or ""))
+        key = (
+            rec.get("namespace_id") or "",
+            rec["kind"],
+            normalize_title(rec.get("title") or ""),
+        )
         groups.setdefault(key, []).append(rec)
     pairs: list[tuple[str, str]] = []
     for group in groups.values():

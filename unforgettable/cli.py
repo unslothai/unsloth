@@ -95,6 +95,11 @@ def resolve_db_path(explicit: str | None) -> Path:
     env = (os.environ.get(DB_ENV_NAME) or "").strip()
     if env:
         return Path(env).expanduser()
+    studio = (os.environ.get("STUDIO_HOME") or "").strip()
+    if studio:
+        candidate = Path(studio).expanduser() / "memory" / "memory.db"
+        if candidate.is_file() or candidate.parent.is_dir():
+            return candidate
     return default_db_path()
 
 
@@ -388,7 +393,7 @@ def _cmd_train(args: argparse.Namespace, db_path: Path) -> int:
             return UNKNOWN_ID_EXIT
         from unforgettable.sidecar.train import UnslothTrainBackend
 
-        backend = UnslothTrainBackend()
+        backend = UnslothTrainBackend(base_model=args.base)
         base_model = args.base
     else:
         backend = FakeTrainBackend()
@@ -441,13 +446,20 @@ def _cmd_adapters(args: argparse.Namespace, db_path: Path) -> int:
 
 
 def _cmd_eval(args: argparse.Namespace, db_path: Path) -> int:
-    if get_adapter(args.id, db_path=db_path) is None:
+    adapter = get_adapter(args.id, db_path=db_path)
+    if adapter is None:
         return _unknown_id(args.id)
     world = Path(args.world).expanduser() if args.world else None
+    if adapter.get("backend") == "unsloth":
+        from unforgettable.sidecar.train import UnslothTrainBackend
+
+        backend = UnslothTrainBackend(base_model=adapter.get("base_model"))
+    else:
+        backend = FakeTrainBackend()
     try:
         report = eval_adapter(
             args.id,
-            backend=FakeTrainBackend(),
+            backend=backend,
             world=world,
             db_path=db_path,
         )

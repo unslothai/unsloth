@@ -27,6 +27,7 @@ from unforgettable.store.compile import (
     pin_compiled,
     procedure_hits,
     refresh_compiled,
+    unpin_compiled,
 )
 from unforgettable.store.records import (
     deprecate_record,
@@ -254,6 +255,24 @@ def test_sim_and_proposed_never_pin(db_path):
         pin_compiled(sim["id"], explicit=True, db_path=db_path)
     with pytest.raises(ValueError):
         pin_compiled(proposed["id"], explicit=True, db_path=db_path)
+
+
+def test_uncompile_blocks_auto_recompile(db_path):
+    rec = insert_record(
+        kind="procedure",
+        title="How we format",
+        body="ruff then pytest",
+        provenance="world",
+        db_path=db_path,
+    )
+    _world_pass_use(rec["id"], "ep-1", db_path)
+    _world_pass_use(rec["id"], "ep-2", db_path)
+    assert rec["id"] in maybe_compile(db_path)
+    unpin_compiled(rec["id"], db_path=db_path)
+    assert get_compiled(rec["id"], db_path=db_path) is None
+    assert maybe_compile(db_path) == []
+    pin_compiled(rec["id"], explicit=True, db_path=db_path)
+    assert get_compiled(rec["id"], db_path=db_path) is not None
 
 
 def test_refresh_drops_pin_after_deprecate(db_path):

@@ -528,5 +528,7 @@ def test_preference_pairs_from_episode_writer_world_pass(db_path):
     assert len(pairs) == 1
     assert pairs[0]["episode_id"] == state.episode_id
     assert pairs[0]["chosen"] == fixes[0]["body"]
+    assert "works in world" in pairs[0]["chosen"]
+    assert "ok in sim" not in pairs[0]["chosen"]
     assert pairs[0]["rejected"] == "exit code 1"
     assert pairs[0]["prompt"] == [{"role": "user", "content": "exit code 1"}]

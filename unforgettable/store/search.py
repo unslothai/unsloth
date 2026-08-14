@@ -23,11 +23,47 @@ from .db import get_connection
 from .records import get_record
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "do",
+        "for",
+        "from",
+        "how",
+        "i",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "run",
+        "the",
+        "to",
+        "we",
+        "what",
+        "when",
+        "where",
+        "with",
+    }
+)
 
 
 def _match_query(query: str) -> str:
     toks = _TOKEN.findall(query.lower())
-    return " OR ".join(f'"{t}"' for t in toks)
+    content = [t for t in toks if t not in _STOPWORDS and len(t) > 1]
+    if not content:
+        content = [t for t in toks if len(t) > 1]
+    if not content:
+        return ""
+    return " AND ".join(f'"{t}"' for t in content)
 
 
 def search_records(

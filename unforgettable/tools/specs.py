@@ -22,8 +22,9 @@ MEMORY_WRITE = {
         "name": "memory_write",
         "description": (
             "Write a durable memory record (claim, procedure, error_fix, entity, "
-            "episode, directive, or twin_note). Use this when the user asks to "
-            "remember something or a lesson should persist past this episode."
+            "directive, or twin_note). Use this when the user asks to remember "
+            "something or a lesson should persist past this episode. Do not write "
+            "episode summaries; the runner owns those."
         ),
         "parameters": {
             "type": "object",
@@ -35,7 +36,6 @@ MEMORY_WRITE = {
                         "procedure",
                         "error_fix",
                         "entity",
-                        "episode",
                         "directive",
                         "twin_note",
                     ],

@@ -51,7 +51,9 @@ def admit(
     elif bookkeeping:
         decision = AdmissionDecision("active", "bookkeeping write admitted")
     elif kind in {"claim", "procedure"} and provenance == "sim":
-        decision = AdmissionDecision("proposed", "sim-only claims are not auto-promoted")
+        decision = AdmissionDecision(
+            "proposed", "sim-only claims and procedures are not auto-promoted"
+        )
     elif not explicit:
         decision = AdmissionDecision("proposed", "auto-extract is proposed until eyes confirm")
     elif provenance == "infer" and kind != "directive":

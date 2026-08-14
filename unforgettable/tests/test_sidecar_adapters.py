@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ from unforgettable.sidecar.adapters import (
     rollback_adapter,
 )
 from unforgettable.sidecar.eval import eval_adapter
-from unforgettable.sidecar.pack import pack_from_admitted_b
+from unforgettable.sidecar.pack import ROLE_HOLDOUT, list_pack_items, pack_from_admitted_b
 from unforgettable.sidecar.train import FakeTrainBackend, train_pack
 from unforgettable.store.records import insert_record, insert_retrieve_use, insert_rollout
 
@@ -120,6 +121,21 @@ def test_promote_after_eval_without_force_succeeds(db_path, monkeypatch):
         base_model="fake",
         db_path=db_path,
     )
+    dest = Path(result.path) / "fake_gold.json"
+    gold = json.loads(dest.read_text(encoding="utf-8")) if dest.is_file() else {}
+    for item in list_pack_items(report.pack_id, db_path=db_path):
+        if item.get("role") != ROLE_HOLDOUT:
+            continue
+        user = ""
+        assistant = ""
+        for msg in item.get("messages") or []:
+            if msg.get("role") == "user":
+                user = msg.get("content") or ""
+            elif msg.get("role") == "assistant":
+                assistant = msg.get("content") or ""
+        if user:
+            gold[user] = assistant
+    dest.write_text(json.dumps(gold), encoding="utf-8")
     scored = eval_adapter(
         result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
     )

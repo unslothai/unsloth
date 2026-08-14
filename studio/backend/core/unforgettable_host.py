@@ -562,6 +562,8 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
         permission_mode = getattr(payload, "permission_mode", None),
         max_clones = getattr(payload, "max_clones", None),
         max_sim_turns = getattr(payload, "max_sim_turns", None),
+        adapter_id = getattr(payload, "adapter_id", None),
+        skip_standing = bool(getattr(payload, "skip_standing", False)),
     )
     if payload.stream:
         queue: asyncio.Queue = asyncio.Queue()

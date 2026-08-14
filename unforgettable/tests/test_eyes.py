@@ -91,6 +91,19 @@ def test_user_declares_failure_phrases():
     assert not user_declares_failure("please try again")
 
 
+def test_world_studio_sentinels_are_recognized_failures():
+    blobs = (
+        "Execution timed out after 300 seconds.",
+        "Execution cancelled.",
+        "Blocked command(s) for safety: rm",
+        "Execution error: [Errno 12] Cannot allocate memory",
+        "No command provided.",
+    )
+    for blob in blobs:
+        fail = inspect_tool_result("terminal", blob, contact="world")
+        assert fail is not None, repr(blob)
+
+
 def test_grade_run_action_sentinels_are_fail():
     blobs = (
         "Execution timed out after 300 seconds.",

@@ -86,6 +86,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (source_record_id) REFERENCES records(id)
         );
 
+        CREATE TABLE IF NOT EXISTS compiled_blocked (
+            source_record_id TEXT NOT NULL PRIMARY KEY
+        );
+
         CREATE TABLE IF NOT EXISTS retrieve_uses (
             id TEXT NOT NULL PRIMARY KEY,
             episode_id TEXT NOT NULL,

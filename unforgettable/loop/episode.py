@@ -27,6 +27,7 @@ from unforgettable.agents.extractor import (
     llm_extract,
 )
 from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
+from unforgettable.constants import DEFAULT_NAMESPACE_ID
 from unforgettable.eyes.basic import (
     ENTER_SIM_TOOL_NAMES,
     grade_run_action,
@@ -40,7 +41,7 @@ from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import resolve_test_command
 from unforgettable.sidecar.adapters import STATUS_DISCARDED, get_adapter
-from unforgettable.sidecar.pack import list_pack_items
+from unforgettable.sidecar.pack import ROLE_TRAIN, list_pack_items
 from unforgettable.store.compile import list_standing, maybe_compile, pack_standing
 from unforgettable.store.records import (
     insert_inject_stats,
@@ -58,10 +59,37 @@ from .runtime import bind_episode, current_traces, reset_episode, set_contact
 
 _MEMORY_PREAMBLE = (
     "You have durable memory tools: memory_write, memory_search, memory_get, "
-    "memory_supersede, memory_deprecate. Facts, corrections, and lessons that "
-    "should survive this episode must go through those tools. After a recognized "
-    "failure, call rims_enter_sim to request a sim clone of the world tree."
+    "memory_supersede, memory_deprecate, memory_compact, memory_compile. "
+    "Facts, corrections, and lessons that should survive this episode must go "
+    "through those tools. After a recognized failure, call rims_enter_sim to "
+    "request a sim clone of the world tree."
 )
+REPAIR_TEXT_CHARS = 1200
+
+
+def _clip_repair(text: str, limit: int = REPAIR_TEXT_CHARS) -> str:
+    body = (text or "").strip()
+    if len(body) <= limit:
+        return body
+    return body[:limit].rstrip() + "..."
+
+
+def _repair_context(state: EpisodeState) -> str:
+    """Working-memory A for CONTINUE_SIM / RETRY_WORLD. Not durable B."""
+    lines = ["Repaired-plan notes (this episode only):"]
+    if state.last_fail_summary:
+        lines.append(f"- Last failure: {state.last_fail_summary}")
+    if state.last_sim_summary:
+        lines.append(f"- Sim: {state.last_sim_summary}")
+    if state.test_command:
+        lines.append(f"- Test command: {state.test_command}")
+    clip = _clip_repair(state.last_generate_text)
+    if clip:
+        lines.append("- Last inner pass:")
+        lines.append(clip)
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
 
 
 @dataclass
@@ -154,7 +182,7 @@ def _resolve_attached_adapter(
             exclude = frozenset(
                 item["source_id"]
                 for item in list_pack_items(pack_id, db_path=db_path)
-                if item.get("source_id")
+                if item.get("source_id") and item.get("role") == ROLE_TRAIN
             )
     return adapter_path, exclude
 
@@ -168,6 +196,7 @@ def _inject_bundle(
     db_path: str,
     contact: str = "world",
     exclude_standing_ids: frozenset[str] = frozenset(),
+    namespace: Optional[str] = None,
 ) -> str:
     standing_rows = [] if skip_standing else list_standing(db_path)
     if exclude_standing_ids:
@@ -184,7 +213,9 @@ def _inject_bundle(
         exclude_ids=frozenset(retrieve_exclude),
         max_twin_notes=3 if contact == "sim" else 1,
     )
-    retrieved = retrieve(query, policy=policy, db_path=db_path)
+    retrieved = retrieve(
+        query, policy=policy, db_path=db_path, namespace_id=namespace
+    )
     retrieve_text = format_inject(retrieved, policy=policy)
     trajectories = retrieve_trajectories(
         query,
@@ -232,16 +263,24 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     text = ""
     adapter_path, exclude_standing_ids = _resolve_attached_adapter(request, db_path)
     try:
-        inject = _inject_bundle(
-            last_user_text(request.messages),
-            stakes=request.stakes,
-            skip_standing=request.skip_standing,
-            episode_id=episode_id,
-            db_path=db_path,
-            contact="world",
-            exclude_standing_ids=exclude_standing_ids,
-        )
-        messages = _with_system(request.messages, inject)
+        def _rebuild(contact: str, suffix: str) -> list[dict[str, Any]]:
+            inject = _inject_bundle(
+                last_user_text(request.messages),
+                stakes=request.stakes,
+                skip_standing=request.skip_standing,
+                episode_id=episode_id,
+                db_path=db_path,
+                contact=contact,
+                exclude_standing_ids=exclude_standing_ids,
+                namespace=request.namespace,
+            )
+            notes = _repair_context(state)
+            parts = [inject, suffix, notes]
+            return _with_system(
+                request.messages, "\n\n".join(p for p in parts if p)
+            )
+
+        messages = _rebuild("world", "")
         generated = False
         while True:
             set_contact(state.contact)
@@ -269,6 +308,8 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 )
                 generated = True
                 text = gen.text or text
+                if gen.text:
+                    state.last_generate_text = gen.text
                 state.traces.extend(gen.tool_traces)
                 ran, grade = False, None
                 if state.contact == "sim":
@@ -300,9 +341,18 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             actions.append(action)
             if action == Action.ENTER_SIM:
                 sim_id = host.create_sim_session(episode_id)
-                if not sim_id or sim_id == world or sim_id.startswith("project-"):
-                    raise ValueError(f"refusing to share world sandbox as sim: {sim_id!r}")
-                clone_tree(host.sandbox_path(world), host.sandbox_path(sim_id))
+                state.track_sim(sim_id)
+                try:
+                    if not sim_id or sim_id == world or sim_id.startswith("project-"):
+                        raise ValueError(
+                            f"refusing to share world sandbox as sim: {sim_id!r}"
+                        )
+                    clone_tree(host.sandbox_path(world), host.sandbox_path(sim_id))
+                except Exception:
+                    LogGateEyes().note(
+                        f"sim: clone failed for {sim_id!r}", db_path=db_path
+                    )
+                    raise
                 state.enter_sim(sim_id)
                 set_contact("sim")
                 state.test_command = resolve_test_command(
@@ -310,19 +360,9 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                     db_path=db_path,
                     tree=host.sandbox_path(sim_id),
                 )
-                inject = _inject_bundle(
-                    last_user_text(request.messages),
-                    stakes=request.stakes,
-                    skip_standing=request.skip_standing,
-                    episode_id=episode_id,
-                    db_path=db_path,
-                    contact="sim",
-                    exclude_standing_ids=exclude_standing_ids,
-                )
-                messages = _with_system(
-                    request.messages,
-                    inject
-                    + f"\n\nYou are in a sim clone of the world tree. Previous world failure: {fail_summary}",
+                messages = _rebuild(
+                    "sim",
+                    f"You are in a sim clone of the world tree. Previous world failure: {fail_summary}",
                 )
                 ran, grade = await _maybe_run_sim_tests(host, state, request.on_chunk)
                 if ran:
@@ -335,22 +375,17 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                         actions.append(action)
                         if action == Action.RETRY_WORLD:
                             state.enter_world()
-                            inject = _inject_bundle(
-                                last_user_text(request.messages),
-                                stakes=request.stakes,
-                                skip_standing=request.skip_standing,
-                                episode_id=episode_id,
-                                db_path=db_path,
-                                contact="world",
-                                exclude_standing_ids=exclude_standing_ids,
-                            )
-                            messages = _with_system(
-                                request.messages,
-                                inject + "\n\nRetry in the world with the repaired plan.",
+                            messages = _rebuild(
+                                "world",
+                                "Retry in the world with the repaired plan.",
                             )
                             continue
                         if action == Action.CONTINUE_SIM:
                             state.sim_turns += 1
+                            messages = _rebuild(
+                                "sim",
+                                f"You are in a sim clone of the world tree. Previous world failure: {fail_summary}",
+                            )
                             continue
                         if action != Action.ENTER_SIM:
                             break
@@ -358,24 +393,23 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                         state.note_failure(
                             f"tests: {state.test_command}: {grade.summary}", "sim"
                         )
+                        messages = _rebuild(
+                            "sim",
+                            f"You are in a sim clone of the world tree. Previous world failure: {fail_summary}",
+                        )
                 continue
             if action == Action.CONTINUE_SIM:
                 state.sim_turns += 1
+                messages = _rebuild(
+                    "sim",
+                    f"You are in a sim clone of the world tree. Previous world failure: {state.last_fail_summary}",
+                )
                 continue
             if action == Action.RETRY_WORLD:
                 state.enter_world()
-                inject = _inject_bundle(
-                    last_user_text(request.messages),
-                    stakes=request.stakes,
-                    skip_standing=request.skip_standing,
-                    episode_id=episode_id,
-                    db_path=db_path,
-                    contact="world",
-                    exclude_standing_ids=exclude_standing_ids,
-                )
-                messages = _with_system(
-                    request.messages,
-                    inject + "\n\nRetry in the world with the repaired plan.",
+                messages = _rebuild(
+                    "world",
+                    "Retry in the world with the repaired plan.",
                 )
                 continue
             break
@@ -386,13 +420,20 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             last_user=last_user_text(request.messages),
             actions=actions,
             host=host,
+            namespace=request.namespace,
         )
         await _run_episode_probes(host, request, state, db_path)
         return EpisodeOutcome(text=text, state=state, error_fix_id=error_fix_id, actions=actions)
     finally:
         try:
-            if state.sim_session and not state.keep_sim:
-                host.remove_sim_session(state.sim_session)
+            kept = state.sim_session if state.keep_sim else None
+            seen: set[str] = set()
+            for sid in list(state.created_sims):
+                if not sid or sid in seen:
+                    continue
+                seen.add(sid)
+                if sid != kept:
+                    host.remove_sim_session(sid)
         finally:
             reset_episode(tokens)
 
@@ -402,7 +443,14 @@ ROLLOUT_FAIL = "fail"
 ROLLOUT_CONTACT_ORDER = ("world", "sim")
 
 
-def _write_draft(state: EpisodeState, draft: dict[str, Any], db_path: str) -> dict[str, Any]:
+def _write_draft(
+    state: EpisodeState,
+    draft: dict[str, Any],
+    db_path: str,
+    *,
+    namespace: str = DEFAULT_NAMESPACE_ID,
+) -> dict[str, Any]:
+    rid = str(uuid.uuid4())
     review_reason = review_write(
         kind=draft["kind"],
         title=draft["title"],
@@ -414,6 +462,8 @@ def _write_draft(state: EpisodeState, draft: dict[str, Any], db_path: str) -> di
         kind=draft["kind"],
         provenance=draft["provenance"],
         explicit=bool(draft.get("explicit")),
+        namespace_id=namespace,
+        record_id=rid,
         bookkeeping=bool(draft.get("bookkeeping")),
         force_proposed_reason=review_reason or None,
         db_path=db_path,
@@ -424,8 +474,10 @@ def _write_draft(state: EpisodeState, draft: dict[str, Any], db_path: str) -> di
         body=draft["body"],
         provenance=draft["provenance"],
         status=decision.status,
+        namespace_id=namespace,
         source_episode_id=state.episode_id,
         contact_tag=draft["provenance"],
+        record_id=rid,
         db_path=db_path,
     )
 
@@ -458,6 +510,7 @@ async def _extract(
     last_user: str,
     actions: list[str],
     host: Host,
+    namespace: str = DEFAULT_NAMESPACE_ID,
 ) -> Optional[str]:
     drafts = list(from_episode(state))
     drafts.extend(from_drift(state))
@@ -467,7 +520,7 @@ async def _extract(
     written_id = None
     draft_ids: list[str] = []
     for draft in drafts:
-        rec = _write_draft(state, draft, db_path)
+        rec = _write_draft(state, draft, db_path, namespace=namespace)
         draft_ids.append(rec["id"])
         if rec["kind"] == "error_fix" and rec["status"] in {"active", "proposed"}:
             written_id = rec["id"]
@@ -476,7 +529,7 @@ async def _extract(
     episode_draft = episode_summary(
         state, last_user=last_user, draft_ids=draft_ids, actions=actions
     )
-    episode_rec = _write_draft(state, episode_draft, db_path)
+    episode_rec = _write_draft(state, episode_draft, db_path, namespace=namespace)
     _write_rollouts(state, source_record_id=episode_rec["id"], db_path=db_path)
     maybe_compile(db_path)
     if written_id is None:
@@ -485,7 +538,7 @@ async def _extract(
     for rec in list_records(kinds=["error_fix", "twin_note"], db_path=db_path):
         if rec.get("source_episode_id") != state.episode_id:
             continue
-        if rec["kind"] == "twin_note":
+        if rec["kind"] == "twin_note" and rec["status"] == "active":
             state.keep_sim = True
         elif rec["kind"] == "error_fix" and rec["status"] == "active":
             state.keep_sim = True

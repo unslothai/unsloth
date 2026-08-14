@@ -206,6 +206,9 @@ class FakeTrainBackend:
 class UnslothTrainBackend:
     name = "unsloth"
 
+    def __init__(self, base_model: Optional[str] = None) -> None:
+        self._base_model = base_model
+
     def train(
         self,
         examples: list[dict],
@@ -283,15 +286,25 @@ class UnslothTrainBackend:
         _refuse_full_finetune()
         from unsloth import FastLanguageModel
 
-        load_name = adapter_path or getattr(self, "_base_model", None)
-        if not load_name:
+        base = getattr(self, "_base_model", None)
+        if not base:
             return ""
         model, tokenizer = FastLanguageModel.from_pretrained(
-            load_name,
+            base,
             max_seq_length=2048,
             load_in_4bit=True,
             full_finetuning=False,
         )
+        if adapter_path:
+            try:
+                from peft import PeftModel
+
+                model = PeftModel.from_pretrained(model, adapter_path)
+            except Exception:
+                load_adapter = getattr(model, "load_adapter", None)
+                if not callable(load_adapter):
+                    raise
+                load_adapter(adapter_path)
         FastLanguageModel.for_inference(model)
         inputs = tokenizer(_prompt_text(messages, tokenizer), return_tensors="pt")
         device = getattr(model, "device", None)

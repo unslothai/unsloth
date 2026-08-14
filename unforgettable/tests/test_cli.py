@@ -17,7 +17,11 @@ from __future__ import annotations
 import json
 import re
 
+from pathlib import Path
+
 from unforgettable.cli import COMPACT_FIRST_DRY_RUN_HELP, PACK_FIRST_DRY_RUN_HELP, main
+from unforgettable.sidecar.adapters import get_adapter
+from unforgettable.sidecar.pack import ROLE_HOLDOUT, list_pack_items
 from unforgettable.store.records import (
     get_record,
     insert_inject_stats,
@@ -37,6 +41,36 @@ def test_list_prints_title(db_path, capsys):
     )
     assert main(["list", "--db", str(db_path)]) == 0
     assert "Pump max rate" in capsys.readouterr().out
+
+
+def test_admit_after_compact_strips_deprecate_suffix(db_path):
+    first = insert_record(
+        kind="claim",
+        title="Dup",
+        body="world body",
+        provenance="world",
+        db_path=db_path,
+    )
+    insert_record(
+        kind="claim",
+        title="Dup",
+        body="infer body",
+        provenance="infer",
+        db_path=db_path,
+    )
+    assert main(["compact", "--db", str(db_path)]) == 0
+    infer = None
+    from unforgettable.store.records import list_records
+
+    for rec in list_records(kinds=["claim"], db_path=db_path):
+        if rec["id"] != first["id"] and rec["status"] == "deprecated":
+            infer = rec
+    assert infer is not None
+    assert "[deprecated]" in infer["body"]
+    assert main(["admit", infer["id"], "--db", str(db_path)]) == 0
+    restored = get_record(infer["id"], db_path=db_path)
+    assert restored["status"] == "active"
+    assert "[deprecated]" not in restored["body"]
 
 
 def test_admit_flips_proposed_to_active(db_path):
@@ -459,6 +493,19 @@ def test_train_adapters_rollback_promote_help_include_db(capsys):
             assert "--world" in out
 
 
+def test_eval_without_holdout_gold_exits_1(db_path, capsys, monkeypatch):
+    monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
+    _voted_procedures(db_path, n=5)
+    assert main(["pack", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
+    trained = json.loads(capsys.readouterr().out)
+    assert main(["eval", trained["adapter_id"], "--db", str(db_path)]) == 1
+    scored = json.loads(capsys.readouterr().out)
+    assert scored["n_holdout"] >= 1
+    assert scored["passed"] is False
+
+
 def test_eval_then_promote_without_force(db_path, capsys, monkeypatch):
     monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
     _voted_procedures(db_path, n=5)
@@ -467,6 +514,22 @@ def test_eval_then_promote_without_force(db_path, capsys, monkeypatch):
     assert packed["n_holdout"] >= 1
     assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
     trained = json.loads(capsys.readouterr().out)
+    adapter = get_adapter(trained["adapter_id"], db_path=db_path)
+    dest = Path(adapter["path"]) / "fake_gold.json"
+    gold = json.loads(dest.read_text(encoding="utf-8")) if dest.is_file() else {}
+    for item in list_pack_items(adapter["pack_id"], db_path=db_path):
+        if item.get("role") != ROLE_HOLDOUT:
+            continue
+        user = ""
+        assistant = ""
+        for msg in item.get("messages") or []:
+            if msg.get("role") == "user":
+                user = msg.get("content") or ""
+            elif msg.get("role") == "assistant":
+                assistant = msg.get("content") or ""
+        if user:
+            gold[user] = assistant
+    dest.write_text(json.dumps(gold), encoding="utf-8")
     assert main(["eval", trained["adapter_id"], "--db", str(db_path)]) == 0
     scored = json.loads(capsys.readouterr().out)
     assert scored["n_holdout"] >= 1

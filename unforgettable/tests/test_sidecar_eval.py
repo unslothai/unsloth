@@ -97,6 +97,32 @@ def test_eval_holdout_gold_beats_base(db_path, monkeypatch):
     assert metrics["passed"] is True
 
 
+def test_eval_without_holdout_gold_fails(db_path, monkeypatch):
+    monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
+    for i in range(5):
+        _voted_procedure(
+            db_path,
+            title=f"Playbook {i}",
+            body=f"steps {i}",
+            episode_id=f"ep-{i}",
+        )
+    packed = pack_from_admitted_b(db_path=db_path)
+    assert packed.n_holdout >= 1
+    result = train_pack(
+        packed.pack_id,
+        backend=FakeTrainBackend(),
+        base_model="fake",
+        db_path=db_path,
+    )
+    report = eval_adapter(
+        result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
+    )
+    assert report.n_holdout >= 1
+    assert report.adapter_lean == 0.0
+    assert report.base_lean == 0.0
+    assert report.passed is False
+
+
 def test_eval_empty_holdout_no_world_fails(db_path):
     for i in range(4):
         _voted_procedure(

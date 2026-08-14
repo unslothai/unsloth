@@ -22,6 +22,7 @@ from unforgettable.store.records import (
     insert_record,
     insert_retrieve_use,
     insert_rollout,
+    list_admissions,
 )
 from unforgettable.tools.handlers import dispatch
 from unforgettable.tools.specs import (
@@ -78,6 +79,64 @@ def test_write_search_get_supersede_deprecate(db_path):
     )
     assert deprecated["status"] == "deprecated"
     assert "No matching" in dispatch("memory_search", {"query": "cite ids"}, db_path=db_path)
+
+
+def test_write_logs_admission_record_id(db_path):
+    written = json.loads(
+        dispatch(
+            "memory_write",
+            {
+                "kind": "directive",
+                "title": "Cite ids",
+                "body": "Always cite memory ids.",
+                "provenance": "human",
+            },
+            db_path=db_path,
+        )
+    )
+    rows = list_admissions(db_path=db_path)
+    assert any(row.get("record_id") == written["id"] for row in rows)
+
+
+def test_supersede_proposed_stays_proposed(db_path):
+    written = json.loads(
+        dispatch(
+            "memory_write",
+            {
+                "kind": "claim",
+                "title": "Sim rate",
+                "body": "rate is 1",
+                "provenance": "sim",
+            },
+            db_path=db_path,
+        )
+    )
+    assert written["status"] == "proposed"
+    out = json.loads(
+        dispatch(
+            "memory_supersede",
+            {"id": written["id"], "body": "rate is 2"},
+            db_path=db_path,
+        )
+    )
+    assert out["status"] == "proposed"
+    assert get_record(written["id"], db_path=db_path)["status"] == "superseded"
+    assert get_record(out["id"], db_path=db_path)["status"] == "proposed"
+
+
+def test_write_unknown_namespace_is_error(db_path):
+    result = dispatch(
+        "memory_write",
+        {
+            "kind": "claim",
+            "title": "X",
+            "body": "y",
+            "provenance": "human",
+            "namespace": "missing-ns",
+        },
+        db_path=db_path,
+    )
+    assert result.startswith("Error:")
 
 
 def test_memory_compact_default_is_dry_run(db_path):

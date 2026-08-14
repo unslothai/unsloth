@@ -74,6 +74,14 @@ def inspect_tool_result(
     if name in ENTER_SIM_TOOL_NAMES:
         return RecognizedFailure(summary="enter_sim requested", source="tool")
     text = result or ""
+    head = text.lstrip()
+    if name in _RUNNER_TOOL_NAMES:
+        for prefix in RUN_ACTION_FAIL_PREFIXES:
+            if head.startswith(prefix):
+                return RecognizedFailure(
+                    summary=head.splitlines()[0][:200] if head else f"{name} failed",
+                    source=contact,
+                )
     if _TRACEBACK in text:
         return RecognizedFailure(summary=f"{name} raised", source=contact)
     if text.startswith("Error:") or "\nError:" in text:

@@ -75,6 +75,31 @@ def _assert_both_active(db_path, first, second):
     assert get_record(second["id"], db_path=db_path)["status"] == "active"
 
 
+def test_compact_does_not_dedupe_across_namespaces(db_path):
+    from unforgettable.store.records import create_namespace
+
+    create_namespace(name="other", namespace_id="other", db_path=db_path)
+    first = insert_record(
+        kind="claim",
+        title="Shared title",
+        body="default ns",
+        provenance="world",
+        db_path=db_path,
+    )
+    second = insert_record(
+        kind="claim",
+        title="Shared title",
+        body="other ns",
+        provenance="infer",
+        namespace_id="other",
+        db_path=db_path,
+    )
+    report = run_compact(db_path=db_path)
+    assert report.deduped == []
+    assert get_record(first["id"], db_path=db_path)["status"] == "active"
+    assert get_record(second["id"], db_path=db_path)["status"] == "active"
+
+
 def test_duplicate_claims_deprecate_loser(db_path):
     world, infer = _insert_pair(
         db_path,

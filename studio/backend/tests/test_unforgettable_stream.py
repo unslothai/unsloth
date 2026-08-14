@@ -148,6 +148,31 @@ def test_forward_inner_stream_acloses_on_cancel():
     assert iterator.closed
 
 
+def test_stream_tool_execution_copies_episode_context():
+    from core.inference.tool_stream_exec import stream_tool_execution
+    from unforgettable.loop.runtime import bind_episode, current_db_path, reset_episode
+
+    seen = {}
+
+    def invoke(_cb):
+        seen["db"] = current_db_path()
+        return "ok"
+
+    tokens, _ = bind_episode(db_path = "/tmp/unforgettable-ctx.db", episode_id = "ep-ctx")
+    try:
+        gen = stream_tool_execution(invoke, tool_name = "memory_write")
+        result = None
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            result = stop.value
+    finally:
+        reset_episode(tokens)
+    assert result == "ok"
+    assert seen["db"] == "/tmp/unforgettable-ctx.db"
+
+
 def test_enabled_tools_union_keeps_pills_and_adds_apache_tools():
     unioned = union_unforgettable_enabled_tools(["python", "terminal"])
     assert unioned is not None

@@ -140,22 +140,28 @@ class FakeHost:
         effective = RUN_ACTION_TIMEOUT_SEC if timeout is None else timeout
         args = arguments or {}
         if name == "terminal":
-            completed = subprocess.run(
-                args.get("command") or "",
-                shell=True,
-                cwd=sandbox,
-                capture_output=True,
-                text=True,
-                timeout=effective,
-            )
+            try:
+                completed = subprocess.run(
+                    args.get("command") or "",
+                    shell=True,
+                    cwd=sandbox,
+                    capture_output=True,
+                    text=True,
+                    timeout=effective,
+                )
+            except subprocess.TimeoutExpired:
+                return f"Execution timed out after {effective} seconds."
         else:
-            completed = subprocess.run(
-                [sys.executable, "-c", args.get("code") or ""],
-                cwd=sandbox,
-                capture_output=True,
-                text=True,
-                timeout=effective,
-            )
+            try:
+                completed = subprocess.run(
+                    [sys.executable, "-c", args.get("code") or ""],
+                    cwd=sandbox,
+                    capture_output=True,
+                    text=True,
+                    timeout=effective,
+                )
+            except subprocess.TimeoutExpired:
+                return f"Execution timed out after {effective} seconds."
         text = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode:
             if text and not text.endswith("\n"):
@@ -218,8 +224,15 @@ def test_episode_fail_sim_retry_writes_error_fix(tmp_path: Path):
     assert outcome.error_fix_id
     fix = get_record(outcome.error_fix_id, db_path=host.db)
     assert fix["kind"] == "error_fix"
-    assert fix["provenance"] == "mixed"
+    assert fix["provenance"] == "world"
     assert fix["status"] == "proposed"
+    assert "works in world" in (fix["body"] or "")
+    retry_system = " ".join(
+        str(m.get("content")) for m in (host.last_messages or []) if m.get("role") == "system"
+    )
+    assert "Retry in the world with the repaired plan." in retry_system
+    assert "Repaired-plan notes" in retry_system
+    assert "Last failure" in retry_system
     assert (host.sims[host.calls[1]] / "app.py").read_text() == "print('world')\n"
     assert host.removed == [host.calls[1]]
     injected = " ".join(
@@ -393,6 +406,55 @@ def test_episode_test_command_after_clone(tmp_path: Path):
     assert outcome.state.test_command == "pytest"
     assert outputs == []
     assert host.removed == [host.calls[1]]
+
+
+def test_episode_world_timeout_enters_sim(tmp_path: Path):
+    host = FakeHost(
+        tmp_path,
+        [
+            GenerateResult(
+                text="hung",
+                tool_traces=[
+                    ToolTrace(
+                        "terminal",
+                        {"command": "sleep 999"},
+                        "Execution timed out after 300 seconds.",
+                        "world",
+                    )
+                ],
+            ),
+            _ok("fixed in sim", "sim"),
+            _ok("works in world", "world"),
+        ],
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(messages=[{"role": "user", "content": "run the tests"}]),
+        )
+    )
+    assert host.calls[0] == "world"
+    assert host.calls[1].startswith("sim-")
+    assert Action.ENTER_SIM in outcome.actions
+
+
+def test_episode_clone_failure_removes_created_sim(tmp_path: Path):
+    class BoomHost(FakeHost):
+        def sandbox_path(self, session_id: str) -> Path:
+            if str(session_id).startswith("sim-"):
+                raise FileNotFoundError("sim path missing")
+            return super().sandbox_path(session_id)
+
+    host = BoomHost(tmp_path, [_fail_world()])
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(
+            run(
+                host,
+                EpisodeRequest(messages=[{"role": "user", "content": "run the tests"}]),
+            )
+        )
+    assert host.removed
+    assert host.removed[0].startswith("sim-")
 
 
 def test_episode_timeout_is_sim_fail(tmp_path: Path):
@@ -685,6 +747,7 @@ def test_episode_re_retrieve_on_enter_sim(tmp_path: Path):
     assert sim_fix["title"] not in world_system
     assert world_claim["title"] in world_system
     assert "Retry in the world with the repaired plan." in retry_system
+    assert "Repaired-plan notes" in retry_system
     assert sim_fix["title"] not in retry_system
     stats = list_inject_stats(db_path=host.db)
     assert len(stats) == 3

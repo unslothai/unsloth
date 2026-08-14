@@ -215,33 +215,61 @@ def supersede_record(
     provenance: Optional[str] = None,
     source_episode_id: Optional[str] = None,
     status: str = "active",
+    new_id: Optional[str] = None,
     db_path=None,
 ) -> dict[str, Any]:
     old = get_record(record_id, db_path=db_path)
     if old is None:
         raise KeyError(record_id)
+    if status not in STATUSES:
+        raise ValueError(f"unknown status: {status}")
+    new_prov = provenance or old["provenance"]
+    if new_prov not in PROVENANCES:
+        raise ValueError(f"unknown provenance: {new_prov}")
+    rid = new_id or str(uuid.uuid4())
+    now = _now()
+    new_title = title if title is not None else old["title"]
     conn = get_connection(db_path)
     try:
         conn.execute(
             "UPDATE records SET status = 'superseded', updated_at = ? WHERE id = ?",
-            (_now(), record_id),
+            (now, record_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO records(
+                id, namespace_id, kind, status, title, body, provenance,
+                confidence, supersedes_id, source_episode_id, contact_tag,
+                created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                rid,
+                old["namespace_id"],
+                old["kind"],
+                status,
+                new_title,
+                body,
+                new_prov,
+                old.get("confidence"),
+                record_id,
+                source_episode_id or old.get("source_episode_id"),
+                new_prov,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO record_fts(title, body, record_id) VALUES(?,?,?)",
+            (new_title, body, rid),
         )
         conn.commit()
     finally:
         conn.close()
-    return insert_record(
-        kind=old["kind"],
-        title=title if title is not None else old["title"],
-        body=body,
-        provenance=provenance or old["provenance"],
-        status=status,
-        namespace_id=old["namespace_id"],
-        confidence=old.get("confidence"),
-        supersedes_id=record_id,
-        source_episode_id=source_episode_id or old.get("source_episode_id"),
-        contact_tag=provenance or old.get("contact_tag"),
-        db_path=db_path,
-    )
+    found = get_record(rid, db_path=db_path)
+    if found is None:
+        raise RuntimeError("supersede did not persist")
+    return found
 
 
 def deprecate_record(record_id: str, *, reason: Optional[str] = None, db_path=None) -> dict[str, Any]:
@@ -324,6 +352,9 @@ def set_record_status(
         raise KeyError(record_id)
     now = _now()
     body = rec["body"]
+    if status == "active":
+        while "\n\n[deprecated]" in body:
+            body = body.rsplit("\n\n[deprecated]", 1)[0]
     if reason and status == "deprecated":
         body = f"{body}\n\n[deprecated] {reason}"
     conn = get_connection(db_path)

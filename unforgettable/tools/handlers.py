@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any, Optional
 
 from unforgettable.agents.admissions import admit
@@ -79,25 +80,31 @@ def _write(args: dict[str, Any], *, db_path) -> str:
         provenance=provenance,
         db_path=db_path,
     )
+    rid = str(uuid.uuid4())
     decision = admit(
         kind=kind,
         provenance=provenance,
         explicit=True,
         namespace_id=namespace,
+        record_id=rid,
         db_path=db_path,
         force_proposed_reason=review_reason or None,
     )
-    rec = insert_record(
-        kind=kind,
-        title=title,
-        body=body,
-        provenance=provenance,
-        status=decision.status,
-        namespace_id=namespace,
-        source_episode_id=current_episode_id(),
-        contact_tag=provenance,
-        db_path=db_path,
-    )
+    try:
+        rec = insert_record(
+            kind=kind,
+            title=title,
+            body=body,
+            provenance=provenance,
+            status=decision.status,
+            namespace_id=namespace,
+            source_episode_id=current_episode_id(),
+            contact_tag=provenance,
+            record_id=rid,
+            db_path=db_path,
+        )
+    except ValueError as exc:
+        return f"Error: {exc}"
     return json.dumps(
         {"id": rec["id"], "status": rec["status"], "admission": decision.reason},
         indent=2,
@@ -111,16 +118,20 @@ def _search(args: dict[str, Any], *, db_path) -> str:
     top_k = int(args.get("top_k") or DEFAULT_MAX_RECORDS)
     kinds = DEFAULT_RETRIEVE_KINDS
     raw_kinds = args.get("kinds")
-    if raw_kinds:
+    if isinstance(raw_kinds, (list, tuple)):
+        kinds = [str(part).strip() for part in raw_kinds if str(part).strip()]
+    elif raw_kinds:
         kinds = [part.strip() for part in str(raw_kinds).split(",") if part.strip()]
     provenances = None
     if args.get("provenance"):
         provenances = [str(args["provenance"])]
+    namespace = current_namespace() or None
     hits = search_records(
         query,
         top_k=top_k,
         kinds=kinds,
         provenances=provenances,
+        namespace_id=namespace if namespace != DEFAULT_NAMESPACE_ID else None,
         db_path=db_path,
     )
     if not hits:
@@ -154,18 +165,54 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
     body = args.get("body")
     if not rid or body is None:
         return "Error: id and body are required."
+    old = get_record(rid, db_path=db_path)
+    if old is None:
+        return f"Error: no record {rid}"
+    new_title = args.get("title")
+    if new_title is None:
+        new_title = old["title"]
+    else:
+        new_title = str(new_title)
+    new_prov = str(args.get("provenance") or old["provenance"])
+    review_reason = review_write(
+        kind=old["kind"],
+        title=new_title,
+        body=str(body),
+        provenance=new_prov,
+        db_path=db_path,
+    )
+    new_id = str(uuid.uuid4())
+    decision = admit(
+        kind=old["kind"],
+        provenance=new_prov,
+        explicit=True,
+        namespace_id=old["namespace_id"],
+        record_id=new_id,
+        db_path=db_path,
+        force_proposed_reason=review_reason or None,
+    )
     try:
         rec = supersede_record(
             rid,
             body=str(body),
-            title=args.get("title"),
-            provenance=args.get("provenance"),
+            title=new_title,
+            provenance=new_prov,
             source_episode_id=current_episode_id(),
+            status=decision.status,
+            new_id=new_id,
             db_path=db_path,
         )
-    except KeyError:
-        return f"Error: no record {rid}"
-    return json.dumps({"id": rec["id"], "supersedes": rid, "status": rec["status"]}, indent=2)
+    except (KeyError, ValueError) as exc:
+        return f"Error: {exc}"
+    return json.dumps(
+        {
+            "id": rec["id"],
+            "supersedes": rid,
+            "status": rec["status"],
+            "admission": decision.reason,
+        },
+        indent=2,
+    )
 
 
 def _deprecate(args: dict[str, Any], *, db_path) -> str:

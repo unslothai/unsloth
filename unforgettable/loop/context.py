@@ -56,6 +56,10 @@ class EpisodeState:
     trace_events: list[dict[str, Any]] = field(default_factory=list)
     keep_sim: bool = False
     test_command: Optional[str] = None
+    created_sims: list[str] = field(default_factory=list)
+    last_generate_text: str = ""
+    last_fail_summary: str = ""
+    last_sim_summary: str = ""
 
     @property
     def active_session(self) -> str:
@@ -63,7 +67,12 @@ class EpisodeState:
             return self.sim_session
         return self.world_session
 
+    def track_sim(self, session_id: str) -> None:
+        if session_id and session_id not in self.created_sims:
+            self.created_sims.append(session_id)
+
     def enter_sim(self, session_id: str) -> None:
+        self.track_sim(session_id)
         self.contact = "sim"
         self.sim_session = session_id
         self.clone_count += 1
@@ -74,6 +83,9 @@ class EpisodeState:
     def note_failure(self, summary: str, contact: str) -> None:
         if contact == "world":
             self.had_world_failure = True
+        self.last_fail_summary = summary or self.last_fail_summary
+        if contact == "sim":
+            self.last_sim_summary = summary or self.last_sim_summary
         self.trace_events.append(
             {"kind": "failure", "summary": summary, "contact": contact}
         )
@@ -83,6 +95,8 @@ class EpisodeState:
             ev.get("kind") == "failure" for ev in self.trace_events
         ):
             self.had_success_after_failure = True
+        if contact == "sim":
+            self.last_sim_summary = summary or self.last_sim_summary
         self.trace_events.append(
             {"kind": "success", "summary": summary, "contact": contact}
         )

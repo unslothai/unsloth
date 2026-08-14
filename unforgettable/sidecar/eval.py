@@ -120,8 +120,12 @@ def eval_adapter(
 
     if n_holdout == 0 and not probes_ran:
         passed = False
+    elif n_holdout > 0 and adapter_lean == 0.0 and base_lean == 0.0:
+        # Empty completions on both sides are not a lean win (Fake holdout
+        # titles are not in train gold; Unsloth-without-base also scores 0).
+        passed = False
     else:
-        passed = adapter_lean >= base_lean and probes_fail == 0
+        passed = adapter_lean >= base_lean and adapter_lean > 0.0 and probes_fail == 0
 
     report = EvalReport(
         adapter_id=adapter_id,
