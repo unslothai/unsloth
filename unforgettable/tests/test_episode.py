@@ -294,3 +294,81 @@ def test_episode_user_phrase_enters_sim_before_generate(tmp_path: Path):
     )
     assert "user declared failure" in system
     assert Action.ENTER_SIM in outcome.actions
+
+
+_PYTEST_FAIL = "===== 1 failed, 2 passed in 0.12s =====\n"
+_PYTEST_PASS = "===== 3 passed in 0.12s =====\n"
+
+
+def test_episode_test_command_after_clone(tmp_path: Path):
+    outputs = [_PYTEST_FAIL, _PYTEST_FAIL, _PYTEST_PASS]
+    generate_counts: list[int] = []
+
+    def scripted_run_action(session_id, name, arguments, timeout=None, on_chunk=None):
+        generate_counts.append(len(host.calls))
+        assert name == "terminal"
+        assert arguments.get("command") == "pytest"
+        assert session_id.startswith("sim-")
+        return outputs.pop(0)
+
+    host = FakeHost(
+        tmp_path,
+        [
+            _fail_world(),
+            GenerateResult(text="I fixed it", finished=True),
+            _ok("still rehearsing", "sim"),
+            _ok("works in world", "world"),
+        ],
+        run_action=scripted_run_action,
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "run the tests"}],
+                test_command="pytest",
+            ),
+        )
+    )
+    assert generate_counts[0] == 1
+    assert host.calls[0] == "world"
+    assert host.calls[1].startswith("sim-")
+    assert host.calls[2].startswith("sim-")
+    assert host.calls[3] == "world"
+    assert Action.ENTER_SIM in outcome.actions
+    assert Action.CONTINUE_SIM in outcome.actions
+    assert Action.RETRY_WORLD in outcome.actions
+    assert outcome.actions.index(Action.CONTINUE_SIM) < outcome.actions.index(
+        Action.RETRY_WORLD
+    )
+    assert outcome.state.test_command == "pytest"
+    assert outputs == []
+    assert host.removed == []
+
+
+def test_episode_timeout_is_sim_fail(tmp_path: Path):
+    def timed_out(session_id, name, arguments, timeout=None, on_chunk=None):
+        return "Execution timed out after 300 seconds."
+
+    host = FakeHost(
+        tmp_path,
+        [
+            _fail_world(),
+            GenerateResult(text="I fixed it", finished=True),
+            GenerateResult(text="still going", finished=True),
+        ],
+        run_action=timed_out,
+    )
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "run the tests"}],
+                test_command="pytest",
+                max_sim_turns=1,
+            ),
+        )
+    )
+    assert Action.CONTINUE_SIM in outcome.actions
+    assert Action.RETRY_WORLD not in outcome.actions
+    assert Action.ESCALATE in outcome.actions

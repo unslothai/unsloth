@@ -28,18 +28,21 @@ from unforgettable.agents.extractor import (
 from unforgettable.agents.retriever import RetrievePolicy, format_inject, retrieve
 from unforgettable.eyes.basic import (
     ENTER_SIM_TOOL_NAMES,
+    grade_run_action,
     inspect_tool_result,
     user_declares_failure,
 )
 from unforgettable.eyes.gate import review_write
+from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
+from unforgettable.rims.detect import resolve_test_command
 from unforgettable.store.records import insert_record, insert_rollout
-from unforgettable.throne.policy import Action, decide, default_policy
+from unforgettable.throne.policy import Action, decide, policy_from_request
 from unforgettable.tools.specs import CONTACT_TOOLS, MEMORY_TOOLS
 
 from .context import EpisodeRequest, EpisodeState, last_user_text
-from .runtime import bind_episode, reset_episode, set_contact
+from .runtime import bind_episode, current_traces, reset_episode, set_contact
 
 _MEMORY_PREAMBLE = (
     "You have durable memory tools: memory_write, memory_search, memory_get, "
@@ -81,12 +84,30 @@ def _pass_failure(result: GenerateResult) -> Optional[str]:
     return last
 
 
+async def _maybe_run_sim_tests(
+    host: Host, state: EpisodeState, on_chunk
+) -> tuple[bool, Optional[RecognizedFailure]]:
+    cmd = state.test_command
+    run_fn = getattr(host, "run_action", None)
+    if not cmd or run_fn is None:
+        return False, None
+    before = len(current_traces())
+    result = await run_fn(
+        state.active_session,
+        "terminal",
+        {"command": cmd},
+        on_chunk=on_chunk,
+    )
+    state.traces.extend(current_traces()[before:])
+    return True, grade_run_action("terminal", result, contact="sim")
+
+
 async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
     episode_id = str(uuid.uuid4())
     db_path = str(host.memory_db_path())
     world = request.world_session_id or host.world_session_id(request)
     state = EpisodeState(episode_id=episode_id, world_session=world)
-    policy = default_policy()
+    policy = policy_from_request(request)
     tokens, _ = bind_episode(db_path=db_path, episode_id=episode_id, namespace=request.namespace)
     actions: list[str] = []
     text = ""
@@ -131,26 +152,68 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 generated = True
                 text = gen.text or text
                 state.traces.extend(gen.tool_traces)
-                fail_summary = _pass_failure(gen)
-                if fail_summary:
-                    state.note_failure(fail_summary, state.contact)
-                    event = "failure"
-                elif gen.finished:
-                    state.note_success(gen.text or "completed", state.contact)
-                    event = "success"
+                ran, grade = False, None
+                if state.contact == "sim":
+                    ran, grade = await _maybe_run_sim_tests(
+                        host, state, request.on_chunk
+                    )
+                if ran:
+                    if grade is None:
+                        state.note_success(f"tests: {state.test_command}", "sim")
+                        event = "success"
+                    else:
+                        fail_summary = f"tests: {state.test_command}: {grade.summary}"
+                        state.note_failure(fail_summary, "sim")
+                        event = "failure"
                 else:
-                    event = "finished"
+                    fail_summary = _pass_failure(gen)
+                    if fail_summary:
+                        state.note_failure(fail_summary, state.contact)
+                        event = "failure"
+                    elif gen.finished:
+                        state.note_success(gen.text or "completed", state.contact)
+                        event = "success"
+                    else:
+                        event = "finished"
             action = decide(event, state, policy)
             actions.append(action)
             if action == Action.ENTER_SIM:
                 sim_id = host.create_sim_session(episode_id)
                 clone_tree(host.sandbox_path(world), host.sandbox_path(sim_id))
                 state.enter_sim(sim_id)
+                set_contact("sim")
+                state.test_command = resolve_test_command(
+                    requested=request.test_command,
+                    db_path=db_path,
+                    tree=host.sandbox_path(sim_id),
+                )
                 messages = _with_system(
                     request.messages,
                     inject
                     + f"\n\nYou are in a sim clone of the world tree. Previous world failure: {fail_summary}",
                 )
+                ran, grade = await _maybe_run_sim_tests(host, state, request.on_chunk)
+                if ran:
+                    if grade is None:
+                        state.note_success(f"tests: {state.test_command}", "sim")
+                        action = decide("success", state, policy)
+                        actions.append(action)
+                        if action == Action.RETRY_WORLD:
+                            state.enter_world()
+                            messages = _with_system(
+                                request.messages,
+                                inject + "\n\nRetry in the world with the repaired plan.",
+                            )
+                            continue
+                        if action == Action.CONTINUE_SIM:
+                            state.sim_turns += 1
+                            continue
+                        if action != Action.ENTER_SIM:
+                            break
+                    else:
+                        state.note_failure(
+                            f"tests: {state.test_command}: {grade.summary}", "sim"
+                        )
                 continue
             if action == Action.CONTINUE_SIM:
                 state.sim_turns += 1

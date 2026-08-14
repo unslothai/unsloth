@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,7 @@ if _BACKEND_DIR not in sys.path:
 
 from core.unforgettable_host import (
     VIRTUAL_MODEL_ID,
+    StudioHost,
     _forward_inner_stream,
     _rewrite_inner_frame,
     union_unforgettable_enabled_tools,
@@ -151,3 +154,68 @@ def test_enabled_tools_union_keeps_pills_and_adds_apache_tools():
     assert "rims_enter_sim" in unioned
     assert "memory_write" in unioned
     assert union_unforgettable_enabled_tools(None) is None
+
+
+def _install_execute_tool(monkeypatch, fn) -> None:
+    name = "core.inference.tools"
+    if name not in sys.modules:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setattr(sys.modules[name], "execute_tool", fn, raising = False)
+
+
+def test_studio_host_run_action_emits_tool_start_and_end(monkeypatch):
+    seen = {}
+
+    def execute_tool(name, arguments, session_id = None, timeout = None, cancel_event = None, **kwargs):
+        seen["name"] = name
+        seen["arguments"] = arguments
+        seen["session_id"] = session_id
+        seen["timeout"] = timeout
+        seen["cancel_event"] = cancel_event
+        time.sleep(0.08)
+        return "===== 3 passed in 0.01s =====\n"
+
+    _install_execute_tool(monkeypatch, execute_tool)
+    monkeypatch.setattr(
+        "core.inference.tool_stream_exec.TOOL_HEARTBEAT_INTERVAL_S",
+        0.02,
+    )
+    host = StudioHost(
+        payload = None,
+        request = None,
+        current_subject = "u",
+        inner = None,
+        inner_model = "default",
+    )
+    frames: list[bytes] = []
+
+    def on_chunk(data: bytes) -> None:
+        frames.append(data)
+
+    result = asyncio.run(
+        host.run_action("sim-1", "terminal", {"command": "pytest"}, on_chunk = on_chunk)
+    )
+    assert result.startswith("=====")
+    assert seen["name"] == "terminal"
+    assert seen["session_id"] == "sim-1"
+    assert seen["timeout"] == 300
+    assert seen["cancel_event"] is host.cancel_event
+    data_frames = [frame for frame in frames if frame.startswith(b"data: ")]
+    assert len(data_frames) >= 2
+    start = _data_json(data_frames[0])
+    end = _data_json(data_frames[-1])
+    assert start["type"] == "tool_start"
+    assert start["tool_name"] == "terminal"
+    assert start["approval_id"] == ""
+    assert start["awaiting_confirmation"] is False
+    assert start["tool_call_id"].startswith("rims-action-")
+    assert len(start["tool_call_id"]) == len("rims-action-") + 16
+    assert start["arguments"] == {"command": "pytest"}
+    assert end["type"] == "tool_end"
+    assert end["tool_name"] == "terminal"
+    assert end["tool_call_id"] == start["tool_call_id"]
+    assert end["result"].startswith("=====")
+    assert b": keep-alive\n\n" in frames
+
+    denied = asyncio.run(host.run_action("sim-1", "web_search", {}))
+    assert denied == "Error: run_action supports python|terminal only, got 'web_search'"

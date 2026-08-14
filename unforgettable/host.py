@@ -28,6 +28,7 @@ EXTRACT_MAX_TOKENS = 800
 
 RUN_ACTION_NAMES = frozenset({"python", "terminal"})
 RUN_ACTION_TIMEOUT_SEC = 300
+RUN_ACTION_CLIP = 200
 
 
 @dataclass

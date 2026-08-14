@@ -32,6 +32,9 @@ class EpisodeRequest:
     namespace: str = DEFAULT_NAMESPACE_ID
     on_chunk: Optional[OnChunk] = None
     stakes: Optional[str] = None
+    test_command: Optional[str] = None
+    max_clones: Optional[int] = None
+    max_sim_turns: Optional[int] = None
 
 
 @dataclass
@@ -47,6 +50,7 @@ class EpisodeState:
     traces: list[ToolTrace] = field(default_factory=list)
     trace_events: list[dict[str, Any]] = field(default_factory=list)
     keep_sim: bool = False
+    test_command: Optional[str] = None
 
     @property
     def active_session(self) -> str:

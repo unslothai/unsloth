@@ -13,13 +13,23 @@ import asyncio
 import inspect
 import json
 import logging
+import threading
 import time
+import uuid
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from unforgettable import VIRTUAL_MODEL_ID, inner_model_id, is_virtual_model
-from unforgettable.host import EXTRACT_MAX_TOKENS, GenerateRequest, GenerateResult, Host
+from unforgettable.host import (
+    EXTRACT_MAX_TOKENS,
+    RUN_ACTION_CLIP,
+    RUN_ACTION_NAMES,
+    RUN_ACTION_TIMEOUT_SEC,
+    GenerateRequest,
+    GenerateResult,
+    Host,
+)
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run as run_episode
 from unforgettable.loop.runtime import current_traces
@@ -225,6 +235,13 @@ def _rewrite_inner_frame(frame: bytes | str) -> bytes | None:
     return _as_sse_bytes(original if original is not None else text)
 
 
+def _clip_action_args(name: str, arguments: dict | None) -> dict:
+    args = arguments or {}
+    if name == "python":
+        return {"code": (args.get("code") or "")[:RUN_ACTION_CLIP]}
+    return {"command": (args.get("command") or "")[:RUN_ACTION_CLIP]}
+
+
 async def _emit_on_chunk(on_chunk: Callable, data: bytes) -> bool:
     """Forward one frame. False means the client is gone; do not keep decoding."""
     try:
@@ -323,6 +340,7 @@ class StudioHost:
         self.inner = inner
         self.inner_model = inner_model
         self._sim_n = 0
+        self.cancel_event = threading.Event()
 
     def memory_db_path(self) -> Path:
         from utils.paths import studio_root
@@ -378,6 +396,61 @@ class StudioHost:
             text = _choice_text(_response_payload(resp))
         return GenerateResult(text = text, tool_traces = current_traces()[before:])
 
+    async def run_action(
+        self, session_id, name, arguments, *, timeout = None, on_chunk = None
+    ) -> str:
+        from core.inference.tool_stream_exec import TOOL_HEARTBEAT_INTERVAL_S
+        from core.inference.tools import execute_tool
+
+        if name not in RUN_ACTION_NAMES:
+            return f"Error: run_action supports python|terminal only, got {name!r}"
+        effective = RUN_ACTION_TIMEOUT_SEC if timeout is None else timeout
+        tool_call_id = f"rims-action-{uuid.uuid4().hex[:16]}"
+        if on_chunk is not None:
+            start_event = {
+                "type": "tool_start",
+                "tool_name": name,
+                "tool_call_id": tool_call_id,
+                "arguments": _clip_action_args(name, arguments),
+                "approval_id": "",
+                "awaiting_confirmation": False,
+            }
+            await _emit_on_chunk(
+                on_chunk,
+                _as_sse_bytes("data: " + json.dumps(start_event, separators = (",", ":"))),
+            )
+        work = asyncio.create_task(asyncio.to_thread(
+            execute_tool,
+            name,
+            arguments or {},
+            session_id = session_id,
+            timeout = effective,
+            cancel_event = self.cancel_event,
+        ))
+        try:
+            while True:
+                done, _ = await asyncio.wait({work}, timeout = TOOL_HEARTBEAT_INTERVAL_S)
+                if done:
+                    break
+                if on_chunk is not None:
+                    await _emit_on_chunk(on_chunk, b": keep-alive\n\n")
+            result = work.result()
+        finally:
+            if not work.done():
+                work.cancel()
+        if on_chunk is not None:
+            end_event = {
+                "type": "tool_end",
+                "tool_name": name,
+                "tool_call_id": tool_call_id,
+                "result": (result or "")[:RUN_ACTION_CLIP],
+            }
+            await _emit_on_chunk(
+                on_chunk,
+                _as_sse_bytes("data: " + json.dumps(end_event, separators = (",", ":"))),
+            )
+        return result
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -420,6 +493,9 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
         stream = bool(payload.stream),
         inner_model = model,
         stakes = getattr(payload, "stakes", None),
+        test_command = getattr(payload, "test_command", None),
+        max_clones = getattr(payload, "max_clones", None),
+        max_sim_turns = getattr(payload, "max_sim_turns", None),
     )
     if payload.stream:
         queue: asyncio.Queue = asyncio.Queue()
@@ -454,6 +530,7 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
                         break
                     yield item
             finally:
+                host.cancel_event.set()
                 await task
 
         return _sse_streaming_response(gen())

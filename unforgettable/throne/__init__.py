@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .policy import Action, Policy, default_policy, decide
+from .policy import Action, Policy, default_policy, decide, policy_from_request
 
-__all__ = ["Action", "Policy", "decide", "default_policy"]
+__all__ = ["Action", "Policy", "decide", "default_policy", "policy_from_request"]

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from unforgettable.loop.context import EpisodeState
+    from unforgettable.loop.context import EpisodeRequest, EpisodeState
 
 
 class Action:
@@ -40,6 +40,18 @@ class Policy:
 
 def default_policy() -> Policy:
     return Policy()
+
+
+def policy_from_request(request: "EpisodeRequest") -> Policy:
+    max_clones = 1
+    max_sim_turns = 8
+    requested_clones = getattr(request, "max_clones", None)
+    requested_turns = getattr(request, "max_sim_turns", None)
+    if requested_clones is not None and requested_clones >= 1:
+        max_clones = requested_clones
+    if requested_turns is not None and requested_turns >= 1:
+        max_sim_turns = requested_turns
+    return Policy(max_clones=max_clones, max_sim_turns=max_sim_turns)
 
 
 def decide(event: str, state: "EpisodeState", policy: Policy | None = None) -> str:
