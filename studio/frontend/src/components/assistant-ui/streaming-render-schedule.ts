@@ -4,6 +4,9 @@
 import remend from "remend";
 import { type BlockProps, parseMarkdownIntoBlocks } from "streamdown";
 
+// How far behind the live edge a block has to be before it can be retained.
+// The block list interleaves "\n\n" separators, so this is about four
+// paragraphs of slack for a construct that a later line can still reinterpret.
 const ROLLBACK_BLOCKS = 8;
 // Balanced marker prefixes preserve the whole-document facts that remend uses
 // to decide how an incomplete tail should close, without changing parity.
@@ -11,10 +14,11 @@ const MULTILINE_KATEX_CONTEXT = "$$\n$$\n\n";
 const BOLD_CONTEXT = "**x**\n\n";
 const SINGLE_ASTERISK_CONTEXT = "*x*\n\n";
 const SINGLE_UNDERSCORE_CONTEXT = "_x_\n\n";
-const INLINE_CODE_ASTERISK_CONTEXT = "`a *b`\n\n";
-const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b`\n\n";
+const INLINE_CODE_ASTERISK_CONTEXT = "`a *b* c`\n\n";
+const INLINE_CODE_UNDERSCORE_CONTEXT = "`a _b_ c`\n\n";
 const FOOTNOTE_REFERENCE_RE = /\[\^[\w-]{1,200}\](?!:)/;
 const FOOTNOTE_DEFINITION_RE = /\[\^[\w-]{1,200}\]:/;
+const LINK_DEFINITION_RE = /^ {0,3}\[([^\]\n^][^\]\n]{0,200})\]:/gm;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -67,6 +71,20 @@ const createRepairParity = (): RepairParity => ({
   displayMath: false,
   inlineMath: false,
 });
+
+// Marked keeps link reference definitions in one per-document map and emits no
+// token for a label it has already seen. Lexing only the tail cannot know about
+// an earlier definition, so a redefinition would show up as a literal line.
+function linkDefinitionLabels(text: string): string[] {
+  LINK_DEFINITION_RE.lastIndex = 0;
+  const labels: string[] = [];
+  let match = LINK_DEFINITION_RE.exec(text);
+  while (match) {
+    labels.push(match[1].toLowerCase().replace(/\s+/g, " ").trim());
+    match = LINK_DEFINITION_RE.exec(text);
+  }
+  return labels;
+}
 
 const isTripleBacktick = (text: string, index: number): boolean =>
   (index >= 2 && text.slice(index - 2, index + 1) === "```") ||
@@ -256,14 +274,14 @@ function updateAsteriskParity(
       ? "inlineCode"
       : "normal";
   }
+  if (countsAsSingleAsterisk(parity, text, index)) {
+    parity.singleAsterisk = !parity.singleAsterisk;
+  }
   if (text[index + 1] === "*") {
     parity.boldCandidate = true;
     parity.firstBoldOrSingleUnderscore ??= "bold";
     parity.bold = !parity.bold;
     return index + 1;
-  }
-  if (countsAsSingleAsterisk(parity, text, index)) {
-    parity.singleAsterisk = !parity.singleAsterisk;
   }
   return index;
 }
@@ -316,19 +334,37 @@ function updateBracketDepth(parity: RepairParity, character: string): void {
   }
 }
 
+// Remend consumes an escaped backtick before testing for a fence, so a fence
+// that starts one character after a backslash is not a fence. Returns the index
+// to resume from, or the same index when neither applies.
+function skipEscapeOrFence(
+  parity: RepairParity,
+  text: string,
+  index: number,
+): number {
+  if (text[index] === "\\" && text[index + 1] === "`") {
+    return index + 1;
+  }
+  if (text.slice(index, index + 3) === "```") {
+    parity.boldFence = !parity.boldFence;
+    return index + 2;
+  }
+  return index;
+}
+
 function updateEmphasisParity(parity: RepairParity, text: string): void {
   for (let index = 0; index < text.length; index += 1) {
     index = updateEmphasisMathParity(parity, text, index);
-    if (text.slice(index, index + 3) === "```") {
-      parity.boldFence = !parity.boldFence;
-      index += 2;
+    const skipped = skipEscapeOrFence(parity, text, index);
+    if (skipped !== index) {
+      index = skipped;
       continue;
     }
     recordBoldMarker(parity, text, index);
     if (parity.boldFence) {
       continue;
     }
-    if (text[index] === "`" && (index === 0 || text[index - 1] !== "\\")) {
+    if (text[index] === "`") {
       parity.emphasisInlineCode = !parity.emphasisInlineCode;
       continue;
     }
@@ -443,6 +479,7 @@ const hasNeutralRepairParity = (parity: RepairParity): boolean =>
     parity.bracketDepth > 0,
     parity.bold,
     parity.boldFence,
+    parity.emphasisInlineCode,
     parity.doubleUnderscore,
     parity.emphasisDisplayMath,
     parity.emphasisInlineMath,
@@ -594,6 +631,7 @@ export class IncrementalMarkdownCache {
   private context = createRetainedContext();
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
+  private committedLinkLabels = new Set<string>();
   private droppedRetainedBlocks = false;
   // Bumped only when the Markdown string alone cannot signal a changed render.
   renderGeneration = 0;
@@ -618,8 +656,10 @@ export class IncrementalMarkdownCache {
 
   private resetIncrementalState(markdown: string): void {
     this.droppedRetainedBlocks ||= this.committedBlocks.length > 0;
+    this.source = markdown;
     this.tail = markdown;
     this.committedBlocks = [];
+    this.committedLinkLabels.clear();
     this.context = createRetainedContext();
   }
 
@@ -659,6 +699,17 @@ export class IncrementalMarkdownCache {
       return this.renderFullDocument(markdown);
     }
 
+    // A label the retained prefix already defined has to be lexed together with
+    // its redefinition, so give up the prefix rather than show a literal line.
+    if (
+      this.committedLinkLabels.size > 0 &&
+      linkDefinitionLabels(repaired).some((label) =>
+        this.committedLinkLabels.has(label),
+      )
+    ) {
+      return this.renderFullDocument(markdown);
+    }
+
     const blocks = parseMarkdownIntoBlocks(repaired);
     const candidateCount = Math.max(0, blocks.length - ROLLBACK_BLOCKS);
     if (candidateCount === 0) {
@@ -677,10 +728,11 @@ export class IncrementalMarkdownCache {
       return this.render(repaired);
     }
 
+    const committedText = this.tail.slice(0, commit.length);
     const nextContext = advanceContext(
       this.context,
       commit.parity,
-      this.tail.slice(0, commit.length),
+      committedText,
     );
     const nextTail = this.tail.slice(commit.length);
     const nextMarkdown = repairTail(nextTail, nextContext);
@@ -694,6 +746,9 @@ export class IncrementalMarkdownCache {
     }
 
     this.committedBlocks.push(...blocks.slice(0, commit.count));
+    for (const label of linkDefinitionLabels(committedText)) {
+      this.committedLinkLabels.add(label);
+    }
     this.context = nextContext;
     this.tail = nextTail;
 

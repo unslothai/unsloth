@@ -40,6 +40,8 @@ const paragraphs = (count: number, label = "part") =>
   Array.from({ length: count }, (_, index) => `${label} ${index}\n\n`).join("");
 const retainedCase = (fragment: string) =>
   `${paragraphs(12, "before")} ${fragment}\n\n${paragraphs(12, "after")}`;
+// Just past the rollback window, since the block list interleaves separators.
+const SHORT_GAP = "\n\np0\n\np1\n\np2\n\np3\n\n";
 
 const MARKDOWN_CASES = [
   retainedCase(
@@ -82,6 +84,22 @@ const MARKDOWN_CASES = [
   `Escape a backtick as \\\`\n\n${paragraphs(10)}$$\nE=mc^2\n$$`,
   // Remend orders its closers from a raw "**" search, fenced code included.
   `\`\`\`c\nchar **argv;\n\`\`\`\n\n${paragraphs(12)}set _flag to **on`,
+  // Reduced shapes, one per whole-document rule the retained prefix has to
+  // reproduce. Reported by @mahiatlinux on the PR.
+  `\`\`\`x\`\`\`\`${SHORT_GAP}~~ y`,
+  `see [note${SHORT_GAP}tail`,
+  `\\\`${SHORT_GAP}$$`,
+  `********${SHORT_GAP}*a`,
+  `\`\`\`\n**\n\`\`\`${SHORT_GAP}_u then **v then **`,
+  `use \`a *b* c\` here${SHORT_GAP}****x`,
+  `a \`\`\` b\n\nc \\\`\`\` d${SHORT_GAP}- >= 4 GB`,
+  `[x]: https://e.test\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
+  // Retained-prefix contexts that nothing else reaches: a balanced single
+  // underscore, one first seen inside inline code, and an underscore that
+  // precedes the first bold marker.
+  `Use _snake_ case.${SHORT_GAP}see _italic`,
+  `use \`a _b_ c\` here${SHORT_GAP}see _italic`,
+  `Set _flag_ and **mode** now.${SHORT_GAP}see _italic and **bold`,
 ];
 
 const processStreamingText = (text: string): string =>
