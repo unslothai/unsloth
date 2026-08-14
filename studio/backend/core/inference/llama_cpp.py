@@ -13837,8 +13837,7 @@ class LlamaCppBackend:
                         or _user_mtp_via_extras
                         or (
                             _user_draft_via_extras
-                            and "draft-eagle3"
-                            in _accumulated_spec_types(extra_args, env = _spec_env)
+                            and "draft-eagle3" in _accumulated_spec_types(extra_args, env = _spec_env)
                         )
                     )
 
