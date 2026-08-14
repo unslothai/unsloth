@@ -23483,9 +23483,7 @@ async def openai_image_generations(
                 detail = openai_error_body(str(exc), status = 400, param = "size"),
             )
         logger.error("openai_images.generate_failed: %s", exc)
-        raise HTTPException(
-            status_code = 500, detail = _generate_failure_detail(str(exc))
-        )
+        raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
 
     created = int(time.time())
     want_b64 = body.response_format == "b64_json"
