@@ -4772,33 +4772,100 @@ function Fast-Download {
 # Skip all Python dependency work if versions match (fast update path).
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 # Payload-presence probe, shared by the fast-path escape and the post-update check
-# (mirrors _PKG_PROBE_PY in setup.sh). POSTVER=__MISSING__ only when the metadata
-# positively reports no such package or its payload is gone: a leftover dist-info
-# with the payload deleted still reports a version, so the verdict comes from the
-# recorded files themselves -- everything the RECORD places under the install must
-# exist on disk, and not as an empty file where RECORD says bytes: that is the
-# unambiguous truncation signature, while an exact size compare would also flag a
-# hand-patched module, and editing an installed file in place is a real support
-# workaround here. Data included: the wheel ships runtime payload that is not .py
-# (unsloth_cli/pi_subagent.ts, studio/frontend/dist), and start.py fails outright
-# without it. Existence via locate_file, not find_spec: an emptied package
-# directory still answers find_spec as a namespace package, a same-name copy
-# reachable through a .pth hook answers for a deleted managed payload, and neither
-# sees a nested file a partial quarantine took while every initializer survived.
-# The distribution itself is selected from the venv's own purelib/platlib, not the
-# startup-modified sys.path: an executable .pth can prepend a directory carrying a
-# complete same-name install, and the default lookup would validate that copy --
-# metadata, payload and version -- instead of the managed one. Excluded from the
-# existence pass: __pycache__/.pyc (legitimately purged by disk cleaners), scheme
-# paths like ../../bin console scripts (managed by the installers themselves), and
-# the .dist-info entries (metadata, not payload); requiring any of those would
-# brick healthy venvs. RECORD is read as text, not through d.files: 3.14+ filters
-# d.files to files that exist, which is blind to exactly the deletions this probe
-# looks for. find_spec remains only for a RECORD-less install, best effort, with
-# PYTHONPATH and working-directory entries dropped from sys.path first (python -c
-# leaves the inherited cwd on sys.path; the shell probe's -I covers both). Names
-# are PEP 503-normalized on both sides, matching importlib.metadata's own lookup.
-$_pkgProbeCode = "import csv, os, site, sys, sysconfig; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _paths = [_lp for _lp in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if _lp]; _d = next((d for d in m.distributions(path=_paths) if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _rows = [_r for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _pay = [(_f, _sz) for _f, _sz in ((PurePosixPath(_r[0]), (_r[2] if len(_r) > 2 else '').strip()) for _r in _rows) if not _f.is_absolute() and _f.parts[0] != '..' and not _f.parts[0].endswith('.dist-info') and '__pycache__' not in _f.parts and _f.suffix not in ('.pyc', '.pyo')]; _intact = lambda _f, _sz: (lambda _p: _p.exists() and not (_sz.isdigit() and int(_sz) > 0 and _p.stat().st_size == 0))(_d.locate_file(_f)); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _broken = (not all(_intact(_f, _sz) for _f, _sz in _pay)) if _pay else ((not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else False); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
+# (mirrors _PKG_PROBE_PY in setup.sh; the package name rides in an environment
+# variable and the program itself on stdin via Invoke-BoundedPythonStdinProbe, so
+# nothing is interpolated into a command line and nothing needs encoding). Third
+# deliberate mirror of the damage predicate in unsloth_cli/_studio_deps.py
+# damaged_installed_files and studio/backend/utils/transformers_version.py
+# _sidecar_scan_impl -- keep the predicates in sync. POSTVER=__MISSING__ only
+# when the venv's own libdirs hold no such distribution; POSTVER=__DAMAGED__ when
+# they do but a recorded file is gone, is not a regular file, or is shorter than
+# pip recorded -- a leftover dist-info still reports a version, pip treats intact
+# metadata as satisfied and reinstalls nothing, so only the RECORD-vs-filesystem
+# compare sees this. Data counts too: the wheel ships runtime payload that is not
+# .py (unsloth_cli/pi_subagent.ts, studio/frontend/dist) and start.py fails
+# outright without it. locate_file, not find_spec: an emptied package directory
+# still answers find_spec as a namespace package, a same-name copy reachable
+# through a .pth hook answers for a deleted managed payload, and neither sees a
+# nested file a partial quarantine took. The distribution is selected from the
+# venv's own purelib/platlib, not the startup-modified sys.path, so a complete
+# external copy prepended by an executable .pth cannot answer for the managed
+# one. Carve-outs, same reasoning as the mirrors: sizes only bind paths exactly
+# one distribution claims; larger than recorded is a collision, not damage;
+# shared non-runtime roots (tests/, docs/, ...) are skipped outright;
+# package-lock.json keeps existence but loses its size (setup's npm install
+# rewrites it in place); .dist-info//.egg-info//.pyc are installer-owned or
+# regenerated. Divergence from the CLI mirror: absolute and ../ scheme rows
+# (console scripts) are dropped here, because the installers rewrite or remove
+# launchers themselves and this probe's finding fails setup rather than printing
+# advice. RECORD is read as text, not through d.files: 3.14+ filters d.files to
+# files that exist, which is blind to exactly these deletions. find_spec remains
+# only for a RECORD-less install, best effort, with PYTHONPATH and
+# working-directory entries dropped from sys.path first (python - leaves the
+# inherited cwd on sys.path; the shell probe's -I covers both).
+$_pkgProbeCode = @'
+import csv, importlib.metadata, importlib.util, os, re, site, stat, sys, sysconfig
+from pathlib import PurePosixPath
+_keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else []))
+_pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p)
+_pp.add(os.getcwd())
+sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]
+_pkg = os.environ.get('STUDIO_VERIFY_PKG') or ''
+_paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
+_norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
+_shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
+_rewritten = frozenset(('package-lock.json',))
+d = None
+owners = {}
+rows = []
+for x in importlib.metadata.distributions(path=_paths):
+    try:
+        name = x.metadata['Name']
+    except Exception:
+        continue
+    mine = _norm(name) == _norm(_pkg)
+    if mine and d is None:
+        d = x
+    try:
+        record = x.read_text('RECORD') or ''
+    except Exception:
+        record = ''
+    for r in csv.reader(record.splitlines()):
+        rel = r[0] if r else ''
+        if not rel or rel.endswith('/'):
+            continue
+        if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+            continue
+        f = PurePosixPath(rel.replace(chr(92), '/'))
+        if f.is_absolute() or '..' in f.parts:
+            continue
+        key = os.path.normcase(str(x.locate_file(f)))
+        owners[key] = owners.get(key, 0) + 1
+        if len(f.parts) > 1 and f.parts[0] in _shared:
+            continue
+        if mine:
+            rows.append((f, (r[2] if len(r) > 2 else '').strip(), key))
+if d is None:
+    print('POSTVER=__MISSING__')
+    sys.exit(0)
+damaged = False
+for f, sz, key in rows:
+    try:
+        st = d.locate_file(f).stat()
+    except OSError:
+        damaged = True
+        break
+    if not stat.S_ISREG(st.st_mode):
+        damaged = True
+        break
+    if owners.get(key, 0) == 1 and sz.isdigit() and f.name not in _rewritten and st.st_size < int(sz):
+        damaged = True
+        break
+tops = (d.read_text('top_level.txt') or '').split()
+if not rows and not damaged and tops:
+    damaged = not all(importlib.util.find_spec(t) for t in tops if t)
+print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
+'@
 $SkipPythonDeps = $false
 $LatestVer = ""
 # True only when the version-check gate ran: the post-update probe must stay off in
@@ -4939,10 +5006,13 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # the managed one only. A crashed or silent probe says nothing about the venv
         # and leaves the fast path alone.
         if ($SkipPythonDeps) {
-            $_fastProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_pkgProbeCode
+            $_fastProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_pkgProbeCode -ProbeEnv @{ STUDIO_VERIFY_PKG = $_PkgName }
             $_fastVer = if ($_fastProbe.Ok -and $_fastProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
             if ($_fastVer -eq "__MISSING__") {
-                substep "$_PkgName metadata is current but its modules are missing -- forcing dependency pass to repair..." "Cyan"
+                substep "managed $_PkgName is not installed -- forcing dependency pass to repair..." "Cyan"
+                $SkipPythonDeps = $false
+            } elseif ($_fastVer -eq "__DAMAGED__") {
+                substep "$_PkgName files are missing or damaged -- forcing dependency pass to repair..." "Cyan"
                 $SkipPythonDeps = $false
             } elseif ($_fastVer -and $_fastVer -ne $LatestVer) {
                 substep "managed $_PkgName is at $_fastVer, not $LatestVer -- forcing dependency pass to update..." "Cyan"
@@ -5548,10 +5618,10 @@ $_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$e
 if ($_verifyUpdate) {
     # See $_pkgProbeCode for what counts as missing: a probe that merely crashed must
     # not read as "not installed" and fail setup.
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_pkgProbeCode
+    $_postProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_pkgProbeCode -ProbeEnv @{ STUDIO_VERIFY_PKG = $_PkgName }
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
-    if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {
+    if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__" -and $PostVer -ne "__DAMAGED__") {
         # newer than announced is fine (a release can land mid-update); PEP 440
         # ordering so an installed pre/post/dev build never passes as the release
         $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
@@ -5657,12 +5727,14 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
     }
     if ($_updateOk) {
         substep "$_PkgName $PostVer confirmed"
-    } elseif ($PostVer -eq "__MISSING__") {
-        # the one unambiguous failure: a "successful" pass with no package left
-        # behind (no-op pass, stale dist-info) -- the case this check exists for.
-        # The pass already wrote its success manifest (step 15, before this check)
-        # and verify_install accepts a null recorded version, so the marker must
-        # not survive: its presence means "install completed".
+    } elseif ($PostVer -eq "__MISSING__" -or $PostVer -eq "__DAMAGED__") {
+        # the unambiguous failures: a "successful" pass that left no package behind
+        # (no-op pass, stale dist-info) or left its files damaged -- pip sees intact
+        # metadata and reinstalls nothing, so an update cannot fix either; the answer
+        # is reinstall over the top and the update must say so. The pass already
+        # wrote its success manifest (step 15, before this check) and verify_install
+        # accepts a null recorded version, so the marker must not survive: its
+        # presence means "install completed".
         $_manifestState = ""
         try {
             $_manifestState = (& python -c "
@@ -5708,8 +5780,13 @@ print('MANIFEST=' + ('gone' if ok else 'stuck'))
             substep "[WARN] stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "Yellow"
         }
         $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
-        Write-StudioLine "[FAILED] update ran but $_PkgName is not installed$_expected" -ForegroundColor Red
-        Exit-SetupFailure "update ran but $_PkgName is not installed$_expected"
+        $_postMsg = if ($PostVer -eq "__DAMAGED__") {
+            "update ran but $_PkgName files are damaged -- reinstall over the top"
+        } else {
+            "update ran but $_PkgName is not installed$_expected"
+        }
+        Write-StudioLine "[FAILED] $_postMsg" -ForegroundColor Red
+        Exit-SetupFailure $_postMsg
     } elseif (-not $PostVer) {
         $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
         substep "[WARN] could not verify $_PkgName version after update$_expected" "Yellow"

@@ -1794,58 +1794,94 @@ if [ "$_COLAB_NO_VENV" = true ]; then
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # Payload-presence probe, shared by the fast-path escape and the post-update check
-# (mirrors $_pkgProbeCode in setup.ps1). __MISSING__ only when the metadata
-# positively reports no such package or its payload is gone: a leftover dist-info
-# with the payload deleted still reports a version, so the verdict comes from the
-# recorded files themselves -- everything the RECORD places under the install must
-# exist on disk, and not as an empty file where RECORD says bytes, data included:
-# the wheel ships runtime payload that is not .py (unsloth_cli/pi_subagent.ts,
-# studio/frontend/dist), and start.py fails outright without it. Existence via
-# locate_file, not find_spec: an emptied package
-# directory still answers find_spec as a namespace package, a same-name copy
-# reachable through a .pth hook answers for a deleted managed payload, and neither
-# sees a nested file a partial quarantine took while every initializer survived.
-# The distribution itself is selected from the venv's own purelib/platlib, not the
-# startup-modified sys.path: an executable .pth can prepend a directory carrying a
-# complete same-name install, and the default lookup would validate that copy --
-# metadata, payload and version -- instead of the managed one. Excluded from the
-# existence pass: __pycache__/.pyc (legitimately purged by disk cleaners), scheme
-# paths like ../../bin console scripts (managed by the installers themselves), and
-# the .dist-info entries (metadata, not payload); requiring any of those would
-# brick healthy venvs. RECORD is read as text, not through d.files: 3.14+ filters
-# d.files to files that exist, which is blind to exactly the deletions this probe
-# looks for. find_spec remains only for a RECORD-less install, best effort. The
-# POSTVER= sentinel keeps a printing sitecustomize or .pth hook out of the
-# caller's exact compares: -I implies -E/-P/-s only, so site hooks still run.
+# (mirrors $_pkgProbeCode in setup.ps1). Third deliberate mirror of the damage
+# predicate in unsloth_cli/_studio_deps.py damaged_installed_files and
+# studio/backend/utils/transformers_version.py _sidecar_scan_impl -- keep the
+# predicates in sync. POSTVER=__MISSING__ only when the venv's own libdirs hold
+# no such distribution; POSTVER=__DAMAGED__ when they do but a recorded file is
+# gone, is not a regular file, or is shorter than pip recorded -- a leftover
+# dist-info still reports a version, pip treats intact metadata as satisfied and
+# reinstalls nothing, so only the RECORD-vs-filesystem compare sees this. Data
+# counts too: the wheel ships runtime payload that is not .py
+# (unsloth_cli/pi_subagent.ts, studio/frontend/dist) and start.py fails outright
+# without it. locate_file, not find_spec: an emptied package directory still
+# answers find_spec as a namespace package, a same-name copy reachable through a
+# .pth hook answers for a deleted managed payload, and neither sees a nested
+# file a partial quarantine took. The distribution is selected from the venv's
+# own purelib/platlib, not the startup-modified sys.path, so a complete external
+# copy prepended by an executable .pth cannot answer for the managed one.
+# Carve-outs, same reasoning as the mirrors: sizes only bind paths exactly one
+# distribution claims (whichever copy landed says nothing about either RECORD);
+# larger than recorded is a collision, not damage; shared non-runtime roots
+# (tests/, docs/, ...) are skipped outright -- unsloth_zoo <= 2026.8.5 shipped
+# tests/ into that squatted namespace and a clobbered copy wedged every update;
+# package-lock.json keeps existence but loses its size (setup's npm install
+# rewrites it in place); .dist-info//.egg-info//.pyc are installer-owned or
+# regenerated. Divergence from the CLI mirror: absolute and ../ scheme rows
+# (console scripts) are dropped here, because the installers rewrite or remove
+# launchers themselves and this probe's finding fails setup rather than printing
+# advice. RECORD is read as text, not through d.files: 3.14+ filters d.files to
+# files that exist, which is blind to exactly these deletions. find_spec remains
+# only for a RECORD-less install, best effort. The POSTVER= sentinel keeps a
+# printing sitecustomize or .pth hook out of the caller's exact compares: -I
+# implies -E/-P/-s only, so site hooks still run.
 _PKG_PROBE_PY="
-import csv, importlib.metadata, importlib.util, re, sys, sysconfig
+import csv, importlib.metadata, importlib.util, os, re, stat, sys, sysconfig
 from pathlib import PurePosixPath
 _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
-d = next((x for x in importlib.metadata.distributions(path=_paths) if _norm(x.metadata['Name']) == _norm(sys.argv[1])), None)
+_shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
+_rewritten = frozenset(('package-lock.json',))
+d = None
+owners = {}
+rows = []
+for x in importlib.metadata.distributions(path=_paths):
+    try:
+        name = x.metadata['Name']
+    except Exception:
+        continue
+    mine = _norm(name) == _norm(sys.argv[1])
+    if mine and d is None:
+        d = x
+    try:
+        record = x.read_text('RECORD') or ''
+    except Exception:
+        record = ''
+    for r in csv.reader(record.splitlines()):
+        rel = r[0] if r else ''
+        if not rel or rel.endswith('/'):
+            continue
+        if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+            continue
+        f = PurePosixPath(rel.replace(chr(92), '/'))
+        if f.is_absolute() or '..' in f.parts:
+            continue
+        key = os.path.normcase(str(x.locate_file(f)))
+        owners[key] = owners.get(key, 0) + 1
+        if len(f.parts) > 1 and f.parts[0] in _shared:
+            continue
+        if mine:
+            rows.append((f, (r[2] if len(r) > 2 else '').strip(), key))
 if d is None:
     print('POSTVER=__MISSING__')
     sys.exit(0)
-rows = [r for r in csv.reader((d.read_text('RECORD') or '').splitlines()) if r and r[0]]
-payload = [(f, sz) for f, sz in ((PurePosixPath(r[0]), (r[2] if len(r) > 2 else '').strip()) for r in rows)
-    if not f.is_absolute() and f.parts[0] != '..'
-    and not f.parts[0].endswith('.dist-info')
-    and '__pycache__' not in f.parts and f.suffix not in ('.pyc', '.pyo')]
-def intact(f, sz):
-    # present AND not empty where RECORD says bytes -- the unambiguous truncation
-    # signature. An exact size compare would also flag a hand-patched file, and
-    # editing an installed module in place is a real support workaround here, so
-    # only the zero-byte case reads as damage.
-    p = d.locate_file(f)
-    return p.exists() and not (sz.isdigit() and int(sz) > 0 and p.stat().st_size == 0)
+damaged = False
+for f, sz, key in rows:
+    try:
+        st = d.locate_file(f).stat()
+    except OSError:
+        damaged = True
+        break
+    if not stat.S_ISREG(st.st_mode):
+        damaged = True
+        break
+    if owners.get(key, 0) == 1 and sz.isdigit() and f.name not in _rewritten and st.st_size < int(sz):
+        damaged = True
+        break
 tops = (d.read_text('top_level.txt') or '').split()
-if payload:
-    broken = not all(intact(f, sz) for f, sz in payload)
-elif tops:
-    broken = not all(importlib.util.find_spec(t) for t in tops if t)
-else:
-    broken = False
-print('POSTVER=' + ('__MISSING__' if broken else d.version))
+if not rows and not damaged and tops:
+    damaged = not all(importlib.util.find_spec(t) for t in tops if t)
+print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 "
 # Never inherited from the caller's environment: the post-update check below keys on
 # these, and the block that assigns them is skipped in installer-driven/local/Colab
@@ -2002,7 +2038,10 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         if [ "$_SKIP_PYTHON_DEPS" = true ]; then
             _FAST_VER=$({ "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" 2>/dev/null || true; } | sed -n 's/^POSTVER=//p' | tail -n 1)
             if [ "$_FAST_VER" = "__MISSING__" ]; then
-                substep "$_PKG_NAME metadata is current but its modules are missing -- forcing dependency pass to repair..."
+                substep "managed $_PKG_NAME is not installed -- forcing dependency pass to repair..."
+                _SKIP_PYTHON_DEPS=false
+            elif [ "$_FAST_VER" = "__DAMAGED__" ]; then
+                substep "$_PKG_NAME files are missing or damaged -- forcing dependency pass to repair..."
                 _SKIP_PYTHON_DEPS=false
             elif [ -n "$_FAST_VER" ] && [ "$_FAST_VER" != "$LATEST_VER" ]; then
                 substep "managed $_PKG_NAME is at $_FAST_VER, not $LATEST_VER -- forcing dependency pass to update..."
@@ -2034,7 +2073,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
         _UPDATE_OK=false
         if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
             _UPDATE_OK=true
-        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && "$VENV_DIR/bin/python" -I -c "
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && "$VENV_DIR/bin/python" -I -c "
 import re, sys
 def nums(v):
     m = re.match(r'\d+(\.\d+)*', v)
@@ -2050,7 +2089,7 @@ sys.exit(0 if ok else 1)
             # newer than announced is fine (a release can land mid-update); PEP 440
             # ordering so an installed pre/post/dev build never passes as the release
             _UPDATE_OK=true
-        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -I -c "
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -I -c "
 import json, sys
 raw = sys.stdin.read()
 try:
@@ -2107,10 +2146,12 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
         fi
         if [ "$_UPDATE_OK" = true ]; then
             substep "$_PKG_NAME $POST_VER confirmed"
-        elif [ "$POST_VER" = "__MISSING__" ]; then
-            # the one unambiguous failure: a "successful" pass with no package left
-            # behind (no-op pass, stale dist-info) -- the case this check exists for.
-            # The pass already wrote its success manifest (step 15, before this
+        elif [ "$POST_VER" = "__MISSING__" ] || [ "$POST_VER" = "__DAMAGED__" ]; then
+            # the unambiguous failures: a "successful" pass that left no package
+            # behind (no-op pass, stale dist-info) or left its files damaged -- pip
+            # sees intact metadata and reinstalls nothing, so an update cannot fix
+            # either; the answer is reinstall over the top and the update must say
+            # so. The pass already wrote its success manifest (step 15, before this
             # check) and verify_install accepts a null recorded version, so the
             # marker must not survive: its presence means "install completed".
             _MANIFEST_STATE=$("$VENV_DIR/bin/python" -c "
@@ -2154,8 +2195,13 @@ print('MANIFEST=' + ('gone' if ok else 'stuck'))
             case "$_MANIFEST_STATE" in *stuck*)
                 substep "stale success manifest could not be removed or invalidated -- later checks may misread this venv as complete" "$C_WARN" ;;
             esac
-            step "python" "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}" "$C_ERR"
-            setup_fail 1 "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}"
+            if [ "$POST_VER" = "__DAMAGED__" ]; then
+                _POST_MSG="update ran but $_PKG_NAME files are damaged -- reinstall over the top"
+            else
+                _POST_MSG="update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}"
+            fi
+            step "python" "$_POST_MSG" "$C_ERR"
+            setup_fail 1 "$_POST_MSG"
         elif [ -z "$POST_VER" ]; then
             step "python" "could not verify $_PKG_NAME version after update${LATEST_VER:+ (expected $LATEST_VER)}" "$C_WARN"
         elif [ -z "$LATEST_VER" ]; then
