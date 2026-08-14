@@ -7948,17 +7948,12 @@ def test_clearing_one_quant_stops_the_legacy_repo_row_from_answering(monkeypatch
     _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = [])
 
     assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {"llama_extra_args": []}
-    key, override = settings.resolve_override_for_load(
-        "unsloth/B-GGUF", None, "Q4_K_M"
-    )
+    key, override = settings.resolve_override_for_load("unsloth/B-GGUF", None, "Q4_K_M")
     assert key == "unsloth/B-GGUF:Q4_K_M"
     assert override.get("llama_extra_args") == []
     # And the bare row is untouched, because it is still the fallback for every other
     # quant of this repo that has no row of its own.
-    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == [
-        "--top-k",
-        "40",
-    ]
+    assert settings.get_model_override("unsloth/B-GGUF")["llama_extra_args"] == ["--top-k", "40"]
     other_key, other = settings.resolve_override_for_load("unsloth/B-GGUF", None, "Q8_0")
     assert other_key == "unsloth/B-GGUF"
     assert other["llama_extra_args"] == ["--top-k", "40"]

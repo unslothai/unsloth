@@ -47,9 +47,7 @@ def main() -> None:
         info(f"starting vite dev server on port {PORT}")
     vite = start_vite(PORT) if OWNS_SERVER else None
     try:
-        wait_for_smoke_page(
-            f"{BASE}/smoke-ansi.html", "smoke-ansi-main.tsx", proc = vite, info = info
-        )
+        wait_for_smoke_page(f"{BASE}/smoke-ansi.html", "smoke-ansi-main.tsx", proc = vite, info = info)
 
         with sync_playwright() as playwright:
             browser_name = os.environ.get("PW_BROWSER", "chromium").lower()
