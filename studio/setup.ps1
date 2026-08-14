@@ -4774,27 +4774,26 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # Payload-presence probe, shared by the fast-path escape and the post-update check
 # (mirrors _PKG_PROBE_PY in setup.sh). POSTVER=__MISSING__ only when the metadata
 # positively reports no such package or its payload is gone: a leftover dist-info
-# with the payload deleted still reports a version, so metadata only counts when
-# every recorded top-level module resolves to real files -- the wheel records
-# studio, unsloth and unsloth_cli, and a partial quarantine that leaves one behind
-# must still read as broken. An emptied package directory still answers find_spec
-# as a namespace package (origin None), so a top level whose recorded initializer
-# sits in RECORD must resolve with an origin; one recorded without an initializer
-# is namespace by design and keeps the bare spec test. RECORD is read as text,
-# not through d.files: 3.14+ filters d.files to files that exist, which would
-# blind both the initializer set and the no-top_level fallback to exactly the
-# deletions they look for. Names are PEP 503-normalized on both sides, matching
-# importlib.metadata's own lookup; PYTHONPATH and working-directory entries are
-# dropped from sys.path so same-name metadata outside the managed environment
-# cannot satisfy the probe (python -c leaves the inherited cwd on sys.path; the
-# shell probe's -I covers both) -- except the interpreter's own site-packages,
-# which stays even when the caller launched from inside it or named it on
-# PYTHONPATH. The initializer is matched by stem and suffix rather than by its
-# joined name: a bare filename literal inside an installer reads as an invoked
-# helper to the guard in tests/test_installer_interactive_prompts.py, which
-# resolves it against the script's own directory and lands on the real package
-# initializer.
-$_pkgProbeCode = "import csv, os, site, sys; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _rec = [PurePosixPath(_r[0]) for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _inits = set(_f.parts[0] for _f in _rec if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'); _pres = lambda _t: (lambda _s: _s is not None and (_s.origin is not None or _t not in _inits))(importlib.util.find_spec(_t)); _ftops = [_f for _f in _rec if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'] or [_f for _f in _rec if len(_f.parts) == 1 and str(_f).endswith('.py')]; _broken = (not all(_pres(_t) for _t in _tl if _t)) if _tl else (bool(_ftops) and not all(_d.locate_file(_f).exists() for _f in _ftops)); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
+# with the payload deleted still reports a version, so the verdict comes from the
+# recorded files themselves -- every .py the RECORD places under the install must
+# exist on disk. Existence via locate_file, not find_spec: an emptied package
+# directory still answers find_spec as a namespace package, a same-name copy
+# reachable through a .pth hook answers for a deleted managed payload, and neither
+# sees a nested module a partial quarantine took while every initializer survived.
+# locate_file resolves against the distribution's own location, so it catches all
+# three. Only relative .py entries count: __pycache__ is legitimately purged by
+# disk cleaners, and recorded console scripts (../.. scheme paths) are managed by
+# the installers themselves, so requiring either would brick healthy venvs.
+# RECORD is read as text, not through d.files: 3.14+ filters d.files to files
+# that exist, which is blind to exactly the deletions this probe looks for.
+# find_spec remains only for a RECORD-less install, best effort. Names are PEP
+# 503-normalized on both sides, matching importlib.metadata's own lookup;
+# PYTHONPATH and working-directory entries are dropped from sys.path so same-name
+# metadata outside the managed environment cannot satisfy the probe (python -c
+# leaves the inherited cwd on sys.path; the shell probe's -I covers both) --
+# except the interpreter's own site-packages, which stays even when the caller
+# launched from inside it or named it on PYTHONPATH.
+$_pkgProbeCode = "import csv, os, site, sys; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _rec = [PurePosixPath(_r[0]) for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _pkg = [_f for _f in _rec if _f.suffix == '.py' and not _f.is_absolute() and _f.parts[0] != '..']; _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _broken = (not all(_d.locate_file(_f).exists() for _f in _pkg)) if _pkg else ((not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else False); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
 $SkipPythonDeps = $false
 $LatestVer = ""
 # True only when the version-check gate ran: the post-update probe must stay off in

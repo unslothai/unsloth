@@ -92,11 +92,13 @@ def test_no_remote_script_is_piped_into_a_shell_first(name: str) -> None:
 def test_no_encoded_or_base64_command_payloads(name: str) -> None:
     # ToBase64String / b64decode: an encoded python payload came back once (#8505, reverted
     # in #8824). Multi-line probes ride in on stdin with env-var inputs instead.
-    text = _text(name)
+    # Case-insensitive because PowerShell is: [Convert]::tobase64string is the same
+    # construct, and macOS base64 decodes with -D.
+    text = _text(name).lower()
     for banned in (
-        "-EncodedCommand",
-        "FromBase64String",
-        "ToBase64String",
+        "-encodedcommand",
+        "frombase64string",
+        "tobase64string",
         "b64decode",
         "b64encode",
         "base64 -d",

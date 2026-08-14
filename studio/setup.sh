@@ -1796,18 +1796,21 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # Payload-presence probe, shared by the fast-path escape and the post-update check
 # (mirrors $_pkgProbeCode in setup.ps1). __MISSING__ only when the metadata
 # positively reports no such package or its payload is gone: a leftover dist-info
-# with the payload deleted still reports a version, so metadata only counts when
-# every recorded top-level module resolves to real files -- the wheel records
-# studio, unsloth and unsloth_cli, and a partial quarantine that leaves one behind
-# must still read as broken. An emptied package directory still answers find_spec
-# as a namespace package (origin None), so a top level whose recorded initializer
-# sits in RECORD must resolve with an origin; one recorded without an initializer
-# is namespace by design and keeps the bare spec test. RECORD is read as text, not
-# through d.files: 3.14+ filters d.files to files that exist, which would blind
-# both the initializer set and the no-top_level fallback to exactly the deletions
-# they look for. The POSTVER= sentinel keeps a printing sitecustomize or .pth
-# hook out of the caller's exact compares: -I implies -E/-P/-s only, so site
-# hooks still run.
+# with the payload deleted still reports a version, so the verdict comes from the
+# recorded files themselves -- every .py the RECORD places under the install must
+# exist on disk. Existence via locate_file, not find_spec: an emptied package
+# directory still answers find_spec as a namespace package, a same-name copy
+# reachable through a .pth hook answers for a deleted managed payload, and neither
+# sees a nested module a partial quarantine took while every initializer survived.
+# locate_file resolves against the distribution's own location, so it catches all
+# three. Only relative .py entries count: __pycache__ is legitimately purged by
+# disk cleaners, and recorded console scripts (../.. scheme paths) are managed by
+# the installers themselves, so requiring either would brick healthy venvs.
+# RECORD is read as text, not through d.files: 3.14+ filters d.files to files
+# that exist, which is blind to exactly the deletions this probe looks for.
+# find_spec remains only for a RECORD-less install, best effort. The POSTVER=
+# sentinel keeps a printing sitecustomize or .pth hook out of the caller's exact
+# compares: -I implies -E/-P/-s only, so site hooks still run.
 _PKG_PROBE_PY="
 import csv, importlib.util, sys
 from importlib.metadata import distribution, PackageNotFoundError
@@ -1817,22 +1820,15 @@ try:
 except PackageNotFoundError:
     print('POSTVER=__MISSING__')
     sys.exit(0)
-tops = (d.read_text('top_level.txt') or '').split()
 rec = [PurePosixPath(r[0]) for r in csv.reader((d.read_text('RECORD') or '').splitlines()) if r and r[0]]
-# stem/suffix rather than the joined name: a bare filename literal inside an
-# installer reads as an invoked helper to the guard in
-# tests/test_installer_interactive_prompts.py, which resolves it against the
-# script's own directory and lands on the real package initializer.
-inits = set(f.parts[0] for f in rec if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py')
-def present(t):
-    s = importlib.util.find_spec(t)
-    return s is not None and (s.origin is not None or t not in inits)
-if tops:
-    broken = not all(present(t) for t in tops if t)
+pkg_files = [f for f in rec if f.suffix == '.py' and not f.is_absolute() and f.parts[0] != '..']
+tops = (d.read_text('top_level.txt') or '').split()
+if pkg_files:
+    broken = not all(d.locate_file(f).exists() for f in pkg_files)
+elif tops:
+    broken = not all(importlib.util.find_spec(t) for t in tops if t)
 else:
-    ftops = [f for f in rec if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py'] \
-        or [f for f in rec if len(f.parts) == 1 and str(f).endswith('.py')]
-    broken = bool(ftops) and not all(d.locate_file(f).exists() for f in ftops)
+    broken = False
 print('POSTVER=' + ('__MISSING__' if broken else d.version))
 "
 # Never inherited from the caller's environment: the post-update check below keys on
