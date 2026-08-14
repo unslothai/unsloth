@@ -109,3 +109,28 @@ def test_get_episode_prints_rollouts(db_path, capsys):
     assert payload["kind"] == "episode"
     grades = {(row["contact"], row["outcome"]) for row in payload["rollouts"]}
     assert grades == {("world", "fail"), ("sim", "pass")}
+
+
+def test_probes_db_prints_fixture_title(db_path, capsys):
+    insert_record(
+        kind="procedure",
+        title="Probe: old login",
+        body="echo login\n",
+        provenance="human",
+        db_path=db_path,
+    )
+    assert main(["probes", "--db", str(db_path)]) == 0
+    assert "Probe: old login" in capsys.readouterr().out
+
+
+def test_probes_run_world_failing_command_exits_1(tmp_path, db_path):
+    insert_record(
+        kind="procedure",
+        title="Probe: broken",
+        body="false\n",
+        provenance="human",
+        db_path=db_path,
+    )
+    world = tmp_path / "world"
+    world.mkdir()
+    assert main(["probes", "--run", "--world", str(world), "--db", str(db_path)]) == 1

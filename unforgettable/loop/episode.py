@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -33,6 +34,7 @@ from unforgettable.eyes.basic import (
     user_declares_failure,
 )
 from unforgettable.eyes.gate import review_write
+from unforgettable.eyes.probes import MAX_EPISODE_PROBES, run_probes
 from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
@@ -234,6 +236,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
             actions=actions,
             host=host,
         )
+        await _run_episode_probes(host, request, state, db_path)
         return EpisodeOutcome(text=text, state=state, error_fix_id=error_fix_id, actions=actions)
     finally:
         try:
@@ -328,3 +331,21 @@ async def _extract(
     if written_id is None:
         written_id = episode_rec["id"]
     return written_id
+
+
+async def _run_episode_probes(
+    host: Host, request: EpisodeRequest, state: EpisodeState, db_path: str
+) -> None:
+    if state.sim_session is None:
+        return
+    if getattr(host, "run_action", None) is None:
+        return
+    result = run_probes(
+        world=host.sandbox_path(state.world_session),
+        host=host,
+        db_path=db_path,
+        limit=MAX_EPISODE_PROBES,
+        on_chunk=request.on_chunk,
+    )
+    if inspect.isawaitable(result):
+        await result

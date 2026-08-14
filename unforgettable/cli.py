@@ -26,6 +26,7 @@ from typing import Any, Iterable, Optional
 
 from unforgettable.constants import KINDS, STATUSES
 from unforgettable.eyes.gate import contradictions
+from unforgettable.eyes.probes import list_probes, run_probes
 from unforgettable.store.compact import run_compact
 from unforgettable.store.db import default_db_path
 from unforgettable.store.records import (
@@ -71,20 +72,9 @@ def _print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, default=str))
 
 
-def _print_table(records: list[dict[str, Any]]) -> None:
-    if not records:
+def _print_aligned(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
+    if not rows:
         return
-    headers = ("id", "kind", "status", "provenance", "title")
-    rows = [
-        (
-            rec["id"][:TABLE_ID_CHARS],
-            rec["kind"],
-            rec["status"],
-            rec["provenance"],
-            rec["title"],
-        )
-        for rec in records
-    ]
     widths = [
         max(len(headers[i]), max(len(row[i]) for row in rows))
         for i in range(len(headers))
@@ -97,6 +87,40 @@ def _print_table(records: list[dict[str, Any]]) -> None:
     print(fmt("-" * w for w in widths))
     for row in rows:
         print(fmt(row))
+
+
+def _print_table(records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+    _print_aligned(
+        ("id", "kind", "status", "provenance", "title"),
+        [
+            (
+                rec["id"][:TABLE_ID_CHARS],
+                rec["kind"],
+                rec["status"],
+                rec["provenance"],
+                rec["title"],
+            )
+            for rec in records
+        ],
+    )
+
+
+def _print_probe_table(records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+    _print_aligned(
+        ("id", "title", "command"),
+        [
+            (
+                rec["id"][:TABLE_ID_CHARS],
+                rec["title"],
+                rec.get("command") or "",
+            )
+            for rec in records
+        ],
+    )
 
 
 def _unknown_id(record_id: str) -> int:
@@ -214,6 +238,17 @@ def _cmd_compact(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _cmd_probes(args: argparse.Namespace, db_path: Path) -> int:
+    if not args.run:
+        _print_probe_table(list_probes(db_path=db_path))
+        return 0
+    world = Path(args.world).expanduser() if args.world else Path.cwd()
+    results = run_probes(world=world, host=None, db_path=db_path, on_chunk=None)
+    if any(row.get("outcome") != "pass" for row in results):
+        return 1
+    return 0
+
+
 def _add_db_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--db",
@@ -317,6 +352,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     compact_p.set_defaults(func=_cmd_compact)
+
+    probes_p = sub.add_parser(
+        "probes",
+        help="List or run active Probe: procedures.",
+    )
+    _add_db_flag(probes_p)
+    probes_p.add_argument(
+        "--run",
+        action="store_true",
+        help="Execute every listed probe in a temp clone of --world.",
+    )
+    probes_p.add_argument(
+        "--world",
+        default=None,
+        help="World tree to clone when running probes (default: cwd).",
+    )
+    probes_p.set_defaults(func=_cmd_probes)
 
     return parser
 

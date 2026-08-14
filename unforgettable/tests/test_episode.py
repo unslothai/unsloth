@@ -52,6 +52,7 @@ class FakeHost:
         self._results = list(results)
         self._run_action = run_action
         self.last_messages = None
+        self.last_run_action_kwargs = None
 
     def memory_db_path(self) -> Path:
         return self.db
@@ -60,7 +61,8 @@ class FakeHost:
         return "world"
 
     def create_sim_session(self, episode_id: str) -> str:
-        sid = f"sim-{episode_id}-1"
+        n = len(self.sims) + 1
+        sid = f"sim-{episode_id}-{n}"
         path = self.world.parent / sid
         path.mkdir()
         self.sims[sid] = path
@@ -93,6 +95,13 @@ class FakeHost:
         timeout: int | None = None,
         on_chunk=None,
     ) -> str:
+        self.last_run_action_kwargs = {
+            "session_id": session_id,
+            "name": name,
+            "arguments": arguments,
+            "timeout": timeout,
+            "on_chunk": on_chunk,
+        }
         if self._run_action is not None:
             result = self._run_action(
                 session_id, name, arguments, timeout=timeout, on_chunk=on_chunk
