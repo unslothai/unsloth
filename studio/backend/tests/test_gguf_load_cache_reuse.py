@@ -1204,9 +1204,10 @@ class TestLoadHubDownloadExclusion:
         # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
         assert self._capture_hub_guard_require_mmproj([]) is True
         # An explicit request list wins over the stored one, both ways.
-        assert self._capture_hub_guard_require_mmproj(
-            [], request_extra_args = ["--no-mmproj"]
-        ) == "quarantined"
+        assert (
+            self._capture_hub_guard_require_mmproj([], request_extra_args = ["--no-mmproj"])
+            == "quarantined"
+        )
         assert (
             self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
         )

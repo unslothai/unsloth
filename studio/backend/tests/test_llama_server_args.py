@@ -350,10 +350,7 @@ def test_poisoned_or_oversized_stored_args_are_quarantined_whole():
 
 
 def test_llama_server_launch_scrubs_denied_environment_before_spawn():
-    source = (
-        _LSA_PATH.with_name("llama_cpp.py")
-        .read_text(encoding = "utf-8")
-    )
+    source = _LSA_PATH.with_name("llama_cpp.py").read_text(encoding = "utf-8")
     scrub = source.index("_denied_env = scrub_denied_env(env)")
     spawn = source.index("self._process = subprocess.Popen(", scrub)
     assert scrub < spawn
@@ -450,9 +447,7 @@ def test_internal_horizontal_tab_remains_legal_argv_data():
     "codepoint",
     [*range(0x20), *range(0x7F, 0xA0), 0xD800, 0xDFFF, 0x2028, 0x2029],
 )
-def test_all_c0_c1_surrogates_and_unicode_line_separators_are_rejected_except_tab(
-    codepoint,
-):
+def test_all_c0_c1_surrogates_and_unicode_line_separators_are_rejected_except_tab(codepoint):
     if codepoint == 0x09:
         pytest.skip("horizontal tab is intentionally accepted inside a token")
     with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
@@ -492,15 +487,9 @@ def test_first_denied_flag_short_circuits():
 
 @pytest.mark.parametrize(
     "policy,spelling",
-    [
-        (policy, spelling)
-        for policy in _lsa.BLOCKED_FLAG_POLICIES
-        for spelling in policy.spellings
-    ],
+    [(policy, spelling) for policy in _lsa.BLOCKED_FLAG_POLICIES for spelling in policy.spellings],
 )
-def test_every_checked_in_capability_alias_is_blocked_with_safe_metadata(
-    policy, spelling
-):
+def test_every_checked_in_capability_alias_is_blocked_with_safe_metadata(policy, spelling):
     with pytest.raises(_lsa.LlamaServerArgsError) as excinfo:
         validate_extra_args([spelling, "private-value"])
     error = excinfo.value

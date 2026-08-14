@@ -33,6 +33,7 @@ BATCH_MAX = 65536
 EXTRA_ARGS_MAX_TOKENS = 256
 EXTRA_ARGS_MAX_UTF8_BYTES = 32 * 1024
 
+
 class LlamaServerFlagPolicy(NamedTuple):
     """Canonical alias and arity record for a blocked capability."""
 
@@ -67,7 +68,9 @@ def _safe(
 
 
 def _safe_compute(
-    canonical: str, *aliases: str, value_arity: int = 1
+    canonical: str,
+    *aliases: str,
+    value_arity: int = 1,
 ) -> LlamaServerFlagPolicy:
     return _safe(
         canonical,
@@ -78,7 +81,9 @@ def _safe_compute(
 
 
 def _safe_sampling(
-    canonical: str, *aliases: str, value_arity: int = 1
+    canonical: str,
+    *aliases: str,
+    value_arity: int = 1,
 ) -> LlamaServerFlagPolicy:
     return _safe(
         canonical,
@@ -89,7 +94,9 @@ def _safe_sampling(
 
 
 def _safe_speculative(
-    canonical: str, *aliases: str, value_arity: int = 1
+    canonical: str,
+    *aliases: str,
+    value_arity: int = 1,
 ) -> LlamaServerFlagPolicy:
     return _safe(
         canonical,
@@ -100,7 +107,9 @@ def _safe_speculative(
 
 
 def _safe_runtime(
-    canonical: str, *aliases: str, value_arity: int = 1
+    canonical: str,
+    *aliases: str,
+    value_arity: int = 1,
 ) -> LlamaServerFlagPolicy:
     return _safe(
         canonical,
@@ -149,7 +158,14 @@ BLOCKED_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
     _blocked("--hf-repo-v", "-hfv", "-hfrv", value_arity = 1, category = "Network/downloader"),
     _blocked("--hf-file-v", "-hffv", value_arity = 1, category = "Network/downloader"),
     _blocked("--mmproj-url", "-mmu", value_arity = 1, category = "Network/downloader"),
-    _blocked("--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft", value_arity = 1, category = "Network/downloader"),
+    _blocked(
+        "--spec-draft-hf",
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
+        value_arity = 1,
+        category = "Network/downloader",
+    ),
     _blocked("--embd-gemma-default", category = "Network/downloader"),
     _blocked("--fim-qwen-1.5b-default", category = "Network/downloader"),
     _blocked("--fim-qwen-3b-default", category = "Network/downloader"),
@@ -182,7 +198,13 @@ BLOCKED_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
     _blocked("--ui", "--webui", "--no-ui", "--no-webui", category = "UI/media"),
     _blocked("--ui-config", "--webui-config", value_arity = 1, category = "UI/media"),
     _blocked("--ui-config-file", "--webui-config-file", value_arity = 1, category = "UI/media"),
-    _blocked("--ui-mcp-proxy", "--webui-mcp-proxy", "--no-ui-mcp-proxy", "--no-webui-mcp-proxy", category = "UI/media"),
+    _blocked(
+        "--ui-mcp-proxy",
+        "--webui-mcp-proxy",
+        "--no-ui-mcp-proxy",
+        "--no-webui-mcp-proxy",
+        category = "UI/media",
+    ),
     _blocked("--mmproj-auto", "--no-mmproj", "--no-mmproj-auto", category = "UI/media"),
     # Tool/process execution surfaces.
     _blocked("--tools", value_arity = 1, category = "Tools/agent/process"),
@@ -308,7 +330,9 @@ KNOWN_SAFE_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
     _safe_speculative("--spec-draft-prio-batch", "--prio-batch-draft"),
     _safe_speculative("--spec-draft-poll-batch", "--poll-batch-draft"),
     _safe_speculative("--spec-draft-override-tensor", "-otd", "--override-tensor-draft"),
-    _safe_speculative("--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"),
+    _safe_speculative(
+        "--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"
+    ),
     _safe_speculative("--spec-draft-n-max"),
     _safe_speculative("--spec-draft-n-min"),
     _safe_speculative("--spec-draft-p-split", "--draft-p-split"),
@@ -355,9 +379,7 @@ KNOWN_SAFE_SWITCH_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
     _safe_compute("--flash-attn", "-fa", value_arity = 0),
     _safe_compute("--perf", "--no-perf", value_arity = 0),
     _safe_runtime("--escape", "-e", "--no-escape", value_arity = 0),
-    _safe_compute(
-        "--kv-offload", "-kvo", "-nkvo", "--no-kv-offload", value_arity = 0
-    ),
+    _safe_compute("--kv-offload", "-kvo", "-nkvo", "--no-kv-offload", value_arity = 0),
     _safe_compute("--repack", "-nr", "--no-repack", value_arity = 0),
     _safe_compute("--no-host", value_arity = 0),
     _safe_compute("--mlock", value_arity = 0),
@@ -380,58 +402,38 @@ KNOWN_SAFE_SWITCH_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
     _safe_runtime("--log-timestamps", "--no-log-timestamps", value_arity = 0),
     _safe_sampling("--ignore-eos", value_arity = 0),
     _safe_sampling("--backend-sampling", "-bs", value_arity = 0),
-    _safe_speculative(
-        "--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft", value_arity = 0
-    ),
+    _safe_speculative("--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft", value_arity = 0),
     _safe_speculative(
         "--spec-draft-backend-sampling",
         "--no-spec-draft-backend-sampling",
         value_arity = 0,
     ),
     _safe_speculative("--spec-ngram-", value_arity = 0),
-    _safe_compute(
-        "--kv-unified", "-kvu", "-no-kvu", "--no-kv-unified", value_arity = 0
-    ),
-    _safe_compute(
-        "--cache-idle-slots", "--no-cache-idle-slots", value_arity = 0
-    ),
+    _safe_compute("--kv-unified", "-kvu", "-no-kvu", "--no-kv-unified", value_arity = 0),
+    _safe_compute("--cache-idle-slots", "--no-cache-idle-slots", value_arity = 0),
     _safe_compute("--context-shift", "--no-context-shift", value_arity = 0),
     _safe_runtime("--special", "-sp", value_arity = 0),
     _safe_compute("--warmup", "--no-warmup", value_arity = 0),
     _safe_runtime("--spm-infill", value_arity = 0),
-    _safe_compute(
-        "--cont-batching", "-cb", "-nocb", "--no-cont-batching", value_arity = 0
-    ),
+    _safe_compute("--cont-batching", "-cb", "-nocb", "--no-cont-batching", value_arity = 0),
     _safe_compute("--mmproj-offload", "--no-mmproj-offload", value_arity = 0),
     _safe_compute("--cache-prompt", "--no-cache-prompt", value_arity = 0),
     _safe_runtime("--jinja", "--no-jinja", value_arity = 0),
     _safe_runtime("--reasoning", "-rea", value_arity = 0),
-    _safe_runtime(
-        "--reasoning-preserve", "--no-reasoning-preserve", value_arity = 0
-    ),
-    _safe_runtime(
-        "--skip-chat-parsing", "--no-skip-chat-parsing", value_arity = 0
-    ),
-    _safe_runtime(
-        "--prefill-assistant", "--no-prefill-assistant", value_arity = 0
-    ),
+    _safe_runtime("--reasoning-preserve", "--no-reasoning-preserve", value_arity = 0),
+    _safe_runtime("--skip-chat-parsing", "--no-skip-chat-parsing", value_arity = 0),
+    _safe_runtime("--prefill-assistant", "--no-prefill-assistant", value_arity = 0),
     _safe_speculative("--spec-default", value_arity = 0),
 )
 
 _POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
-    spelling: policy
-    for policy in BLOCKED_FLAG_POLICIES
-    for spelling in policy.spellings
+    spelling: policy for policy in BLOCKED_FLAG_POLICIES for spelling in policy.spellings
 }
 _SAFE_POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
-    spelling: policy
-    for policy in KNOWN_SAFE_FLAG_POLICIES
-    for spelling in policy.spellings
+    spelling: policy for policy in KNOWN_SAFE_FLAG_POLICIES for spelling in policy.spellings
 }
 _SAFE_SWITCH_POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
-    spelling: policy
-    for policy in KNOWN_SAFE_SWITCH_POLICIES
-    for spelling in policy.spellings
+    spelling: policy for policy in KNOWN_SAFE_SWITCH_POLICIES for spelling in policy.spellings
 }
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = tuple(
     frozenset(policy.spellings) for policy in BLOCKED_FLAG_POLICIES
@@ -480,9 +482,7 @@ _ATTACHED_SHORT_SPELLINGS: tuple[str, ...] = tuple(
                 **_POLICY_BY_SPELLING,
                 **_SAFE_POLICY_BY_SPELLING,
             }.items()
-            if policy.value_arity > 0
-            and spelling.startswith("-")
-            and not spelling.startswith("--")
+            if policy.value_arity > 0 and spelling.startswith("-") and not spelling.startswith("--")
         },
         key = len,
         reverse = True,
@@ -629,9 +629,7 @@ def _coerce_args(args: Optional[Iterable[str]]) -> list[str]:
     if args is None:
         return []
     if isinstance(args, (str, bytes)):
-        raise LlamaServerArgsError(
-            "malformed", "llama-server extra args must be a list of strings"
-        )
+        raise LlamaServerArgsError("malformed", "llama-server extra args must be a list of strings")
     out: list[str] = []
     try:
         for raw in args:
@@ -659,7 +657,7 @@ def validate_argv_tokens(
     if enforce_custom_limits and len(out) > EXTRA_ARGS_MAX_TOKENS:
         raise LlamaServerArgsError(
             "too_many_tokens",
-            f"llama-server extra args exceed the {EXTRA_ARGS_MAX_TOKENS}-token limit"
+            f"llama-server extra args exceed the {EXTRA_ARGS_MAX_TOKENS}-token limit",
         )
 
     total_bytes = 0
@@ -681,7 +679,7 @@ def validate_argv_tokens(
             raise LlamaServerArgsError(
                 "too_large",
                 "llama-server extra args exceed the "
-                f"{EXTRA_ARGS_MAX_UTF8_BYTES}-byte total UTF-8 limit"
+                f"{EXTRA_ARGS_MAX_UTF8_BYTES}-byte total UTF-8 limit",
             )
     return out
 
@@ -775,9 +773,7 @@ def assess_extra_args(args: Optional[Iterable[str]]) -> ExtraArgsAssessment:
     return ExtraArgsAssessment(tuple(validated))
 
 
-def drop_managed_flags(
-    args: Optional[Iterable[str]],
-) -> tuple[list[str], list[str]]:
+def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[str]]:
     """Deprecated compatibility shim; invalid lists now fail atomically.
 
     Callers handling persistence should use :func:`assess_extra_args` and mark
@@ -1242,10 +1238,7 @@ _MODEL_MEMORY_OVERLAP_FLAGS: frozenset[str] = frozenset().union(
 
 def extra_args_override_model_memory(args: Optional[Iterable[str]]) -> bool:
     """Whether custom argv explicitly owns the Model Memory launch mode."""
-    return any(
-        (_flag_name(str(raw)) or "") in _MODEL_MEMORY_OVERLAP_FLAGS
-        for raw in (args or ())
-    )
+    return any((_flag_name(str(raw)) or "") in _MODEL_MEMORY_OVERLAP_FLAGS for raw in (args or ()))
 
 
 def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
@@ -1459,9 +1452,7 @@ def scrub_memory_env(env: dict) -> list[str]:
 
 
 def scrub_llama_server_env(
-    env: dict[str, str],
-    *,
-    managed_env: Optional[Mapping[str, str]] = None,
+    env: dict[str, str], *, managed_env: Optional[Mapping[str, str]] = None
 ) -> list[str]:
     """Create the final Studio-owned llama-server environment boundary.
 

@@ -116,9 +116,7 @@ class LlamaServerHelpProbe:
             # Completion metadata may disappear; managed protection may not.
             "managed_flags": list(managed_flags()),
             "managed_flag_groups": [list(group) for group in managed_flag_groups()],
-            "blocked_categories": sorted(
-                {policy.category for policy in BLOCKED_FLAG_POLICIES}
-            ),
+            "blocked_categories": sorted({policy.category for policy in BLOCKED_FLAG_POLICIES}),
             "arguments": [argument.as_public_dict() for argument in self.arguments]
             if self.available
             else [],
@@ -184,9 +182,7 @@ _CAPABILITY_NAME_FRAGMENTS = (
 )
 
 
-def capability_policy_gaps(
-    arguments: Iterable[LlamaServerArgument],
-) -> tuple[str, ...]:
+def capability_policy_gaps(arguments: Iterable[LlamaServerArgument]) -> tuple[str, ...]:
     """Documented capability flags not covered by the checked-in policy.
 
     This is intentionally a focused compatibility audit, not a promise to
@@ -337,11 +333,7 @@ def probe_llama_server_help(
         cached = _probe_cache.get(fingerprint)
         if cached is not None:
             retry_after = _probe_retry_after.get(fingerprint)
-            if (
-                cached.authoritative
-                or retry_after is None
-                or time.monotonic() < retry_after
-            ):
+            if cached.authoritative or retry_after is None or time.monotonic() < retry_after:
                 _probe_cache.move_to_end(fingerprint)
                 return cached
             _probe_cache.pop(fingerprint, None)
@@ -379,8 +371,8 @@ def probe_llama_server_help(
             env = probe_env,
         )
         returncode = int(getattr(result, "returncode", 1))
-        help_text = (getattr(result, "stdout", "") or "") + "\n" + (
-            getattr(result, "stderr", "") or ""
+        help_text = (
+            (getattr(result, "stdout", "") or "") + "\n" + (getattr(result, "stderr", "") or "")
         )
         if not help_text.strip():
             error_code = "probe_failed" if returncode != 0 else "empty_help"
@@ -401,9 +393,7 @@ def probe_llama_server_help(
     else:
         available = False
         if error_code is None:
-            error_code = (
-                "probe_failed" if returncode not in {None, 0} else "unrecognized_help"
-            )
+            error_code = "probe_failed" if returncode not in {None, 0} else "unrecognized_help"
     probe = LlamaServerHelpProbe(
         binary = str(path),
         fingerprint = fingerprint,
@@ -506,10 +496,7 @@ def _choices(value_hint: Optional[str], description: str) -> tuple[str, ...]:
     sources: list[str] = []
     if value_hint:
         sources.append(value_hint.strip())
-    sources.extend(
-        match.group(0)
-        for match in re.finditer(r"[\[({<][^\])}>]+[\])}>]", description)
-    )
+    sources.extend(match.group(0) for match in re.finditer(r"[\[({<][^\])}>]+[\])}>]", description))
     for source in sources:
         body = source.strip().strip("[](){}<>")
         # Ellipses/repetition, indexed device metavariables, and structured

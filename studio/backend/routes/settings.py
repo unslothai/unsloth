@@ -1039,8 +1039,7 @@ def get_openai_auto_switch(
 
 @router.put("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
 def update_openai_auto_switch(
-    payload: OpenAIAutoSwitchPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
         (

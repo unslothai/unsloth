@@ -646,9 +646,7 @@ def _matches_request(request, backend) -> bool:
     routes = _load_inference_routes_module()
     backend_extra = list(backend.extra_args or ())
     effective_extra = (
-        request.llama_extra_args
-        if request.llama_extra_args is not None
-        else backend_extra
+        request.llama_extra_args if request.llama_extra_args is not None else backend_extra
     )
     compare_extra = list(effective_extra or ())
     intent = GgufLoadIntent(

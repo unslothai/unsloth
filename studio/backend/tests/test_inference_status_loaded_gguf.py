@@ -119,9 +119,7 @@ def test_studio_hydration_is_revision_bound_and_ui_only(monkeypatch):
     assert response.llama_extra_args == ["--top-k", "20"]
 
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            inference_route.get_active_llama_server_arguments("tester", via_api_key = True)
-        )
+        asyncio.run(inference_route.get_active_llama_server_arguments("tester", via_api_key = True))
     assert excinfo.value.status_code == 403
 
 
@@ -179,9 +177,7 @@ def test_studio_hydration_reads_identity_revision_and_args_under_one_lock(monkey
     assert backend._lock.held is False
 
 
-def test_studio_hydration_returns_exact_private_identity_without_shared_disclosure(
-    monkeypatch,
-):
+def test_studio_hydration_returns_exact_private_identity_without_shared_disclosure(monkeypatch):
     leased = os.path.join(os.sep, "models", "private", "A-Q4_K_M.gguf")
     backend = _StatusBackend(leased, native_grant_backed = True)
     backend.hf_variant = None
@@ -199,11 +195,8 @@ def test_studio_hydration_returns_exact_private_identity_without_shared_disclosu
 
 def test_argument_catalog_is_ui_session_only():
     from fastapi import HTTPException
-
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            inference_route.get_llama_server_arguments("tester", via_api_key = True)
-        )
+        asyncio.run(inference_route.get_llama_server_arguments("tester", via_api_key = True))
     assert excinfo.value.status_code == 403
 
 

@@ -1135,13 +1135,9 @@ def test_override_settings_are_ui_session_only(monkeypatch):
         settings_route.get_openai_auto_switch_overrides("tester", via_api_key = True)
     assert read_exc.value.status_code == 403
 
-    payload = settings_route.ModelOverridePayload(
-        model_id = "unsloth/B-GGUF", llama_extra_args = []
-    )
+    payload = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", llama_extra_args = [])
     with pytest.raises(HTTPException) as write_exc:
-        settings_route.update_openai_auto_switch_override(
-            payload, "tester", via_api_key = True
-        )
+        settings_route.update_openai_auto_switch_override(payload, "tester", via_api_key = True)
     assert write_exc.value.status_code == 403
     assert settings.get_model_overrides() == {}
 
@@ -1159,9 +1155,12 @@ def test_model_override_roundtrip(monkeypatch):
     # Explicit [] is stored data: it blocks fallback to a lower-priority entry.
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
     assert settings.get_model_override("unsloth/B-GGUF") == {"llama_extra_args": []}
-    assert settings.model_override_load_kwargs(
-        settings.get_model_override("unsloth/B-GGUF"), is_gguf = True
-    )["llama_extra_args"] == []
+    assert (
+        settings.model_override_load_kwargs(
+            settings.get_model_override("unsloth/B-GGUF"), is_gguf = True
+        )["llama_extra_args"]
+        == []
+    )
 
     settings.delete_model_override("unsloth/B-GGUF")
     assert settings.get_model_override("unsloth/B-GGUF") == {}
@@ -1201,20 +1200,15 @@ def test_override_route_quarantines_legacy_managed_args_during_unrelated_save(mo
     _mock_override_store(monkeypatch)
     settings.set_model_override(
         "unsloth/B-GGUF",
-        llama_extra_args=["--slot-save-path", "/tmp/slots", "--top-k", "20"],
-        max_seq_length=2048,
+        llama_extra_args = ["--slot-save-path", "/tmp/slots", "--top-k", "20"],
+        max_seq_length = 2048,
     )
 
     with pytest.raises(HTTPException) as excinfo:
-        _put("unsloth/B-GGUF", max_seq_length=4096)
+        _put("unsloth/B-GGUF", max_seq_length = 4096)
     assert excinfo.value.status_code == 409
     saved = settings.get_model_override("unsloth/B-GGUF")
-    assert saved["llama_extra_args"] == [
-        "--slot-save-path",
-        "/tmp/slots",
-        "--top-k",
-        "20",
-    ]
+    assert saved["llama_extra_args"] == ["--slot-save-path", "/tmp/slots", "--top-k", "20"]
     assert saved["max_seq_length"] == 2048
 
 
@@ -1261,11 +1255,8 @@ def test_override_carry_quarantines_a_present_saved_null(monkeypatch):
         pytest.param(["x" * (32 * 1024 + 1)], id = "total-over-32-kib"),
     ],
 )
-def test_override_route_enforces_llama_extra_arg_size_limits(
-    override_store, extra_args
-):
+def test_override_route_enforces_llama_extra_arg_size_limits(override_store, extra_args):
     from fastapi import HTTPException
-
     with pytest.raises(HTTPException) as excinfo:
         _put("unsloth/B-GGUF", llama_extra_args = extra_args)
     assert excinfo.value.status_code == 400
@@ -6452,9 +6443,7 @@ def test_qualified_clear_stops_bare_override_fallback(override_store):
 
     qualified = settings.get_model_override("unsloth/B-GGUF:Q4_K_M")
     assert qualified == {"llama_extra_args": []}
-    assert settings.model_override_load_kwargs(qualified, is_gguf = True) == {
-        "llama_extra_args": []
-    }
+    assert settings.model_override_load_kwargs(qualified, is_gguf = True) == {"llama_extra_args": []}
 
 
 def test_remove_false_with_real_fields_saves_normally(override_store):

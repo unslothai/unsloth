@@ -79,13 +79,7 @@ def test_policy_audit_blocks_capabilities_but_keeps_unknown_pass_through():
 
 def test_installed_help_alias_and_category_matrix():
     binary = (
-        Path.home()
-        / ".unsloth"
-        / "llama.cpp"
-        / "build"
-        / "bin"
-        / "Release"
-        / "llama-server.exe"
+        Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "Release" / "llama-server.exe"
     )
     if not binary.is_file():
         pytest.skip("installed llama-server is unavailable")

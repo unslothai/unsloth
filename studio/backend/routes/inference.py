@@ -2445,9 +2445,7 @@ async def get_llama_server_arguments(
     return await asyncio.to_thread(LlamaCppBackend.get_server_argument_catalog)
 
 
-@studio_router.get(
-    "/llama-server/active-arguments", response_model = ActiveLlamaArgumentsResponse
-)
+@studio_router.get("/llama-server/active-arguments", response_model = ActiveLlamaArgumentsResponse)
 async def get_active_llama_server_arguments(
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -4872,9 +4870,7 @@ def _llama_runtime_revision_from_snapshot(snapshot: _ActiveLlamaArgumentsSnapsho
     )
     # Private paths and argument values influence freshness but never leave the
     # process.  The browser receives only this fixed-width digest.
-    return _hashlib.sha256(repr(revision_inputs).encode("utf-8", "surrogatepass")).hexdigest()[
-        :24
-    ]
+    return _hashlib.sha256(repr(revision_inputs).encode("utf-8", "surrogatepass")).hexdigest()[:24]
 
 
 def _llama_runtime_revision(llama_backend) -> Optional[str]:
@@ -5713,8 +5709,8 @@ async def _maybe_auto_switch_model(
         file_variant = None
         if not variant and target_id.lower().endswith(".gguf"):
             from hub.utils.gguf import extract_quant_label
-
             file_variant = extract_quant_label(os.path.basename(target_id))
+
         def _fresh_load_kwargs() -> dict[str, Any]:
             """Reread the authoritative override at each destructive boundary."""
 
@@ -7394,7 +7390,6 @@ def _resolve_inherited_extra_args(
         file_variant = None
         if not resolved_variant and model_identifier.lower().endswith(".gguf"):
             from hub.utils.gguf import extract_quant_label
-
             file_variant = extract_quant_label(os.path.basename(model_identifier))
         _key, override = resolve_model_override_candidates(
             model_identifier,
@@ -7946,9 +7941,7 @@ async def load_model(
             current_subject,
             user_initiated = via_api_key is not True,
             args_origin = (
-                LlamaArgsOrigin.API_REQUEST
-                if via_api_key is True
-                else LlamaArgsOrigin.UI_REQUEST
+                LlamaArgsOrigin.API_REQUEST if via_api_key is True else LlamaArgsOrigin.UI_REQUEST
             ),
         ),
         label = "Model load",
@@ -8986,9 +8979,7 @@ async def validate_model(
             model_identifier,
             None,
             args_origin = (
-                LlamaArgsOrigin.API_REQUEST
-                if via_api_key is True
-                else LlamaArgsOrigin.UI_REQUEST
+                LlamaArgsOrigin.API_REQUEST if via_api_key is True else LlamaArgsOrigin.UI_REQUEST
             ),
         )
 

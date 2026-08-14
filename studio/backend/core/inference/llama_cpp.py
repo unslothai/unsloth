@@ -2803,6 +2803,7 @@ def _paravirtual_split_mode_pin(extra_args: Optional[Iterable[str]]) -> List[str
     )
     return ["--split-mode", "layer"]
 
+
 def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
@@ -12823,9 +12824,7 @@ class LlamaCppBackend:
                     tensor_split = None
                     intent = replace(intent, tensor_parallel = False, tensor_split = None)
                 elif (
-                    tensor_parallel
-                    and _cache_non_tensor_safe
-                    and not _custom_cache_non_tensor_safe
+                    tensor_parallel and _cache_non_tensor_safe and not _custom_cache_non_tensor_safe
                 ):
                     logger.info(
                         "Tensor parallelism requires a non-quantized KV cache; "
@@ -13253,9 +13252,7 @@ class LlamaCppBackend:
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
-                    _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(
-                        extra_args, env = _spec_env
-                    )
+                    _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = _spec_env)
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
                     _mtp_draft_weights = 0
@@ -16268,17 +16265,13 @@ class LlamaCppBackend:
                 if extra_args is not None:
                     # Persist the authoritative list exactly as launched. A
                     # custom --device is allowed to outrank the GPU picker.
-                    self._extra_args = (
-                        list(extra_args)
-                    )
+                    self._extra_args = list(extra_args)
                     _pv_requested = (
                         _pv_suppressed_spec_extra_args
                         if _pv_suppressed_spec_extra_args is not None
                         else extra_args
                     )
-                    self._requested_extra_args = (
-                        list(_pv_requested)
-                    )
+                    self._requested_extra_args = list(_pv_requested)
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.

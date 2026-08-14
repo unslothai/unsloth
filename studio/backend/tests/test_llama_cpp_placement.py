@@ -19,6 +19,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+
 def _stub_module(name: str, **attrs):
     if name in sys.modules:
         return
