@@ -7,8 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { authFetch } from "@/features/auth";
 
 import { SandboxFiles } from "./sandbox-files-view";
-import type { SandboxFile } from "./sandbox-files";
-import { isSandboxFileList } from "@/features/chat/api/chat-adapter";
+import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
 import {
   preferSanitizedFullToolOutput,
   useChatRuntimeStore,
