@@ -176,8 +176,8 @@ export const zhCN = {
       unreadable: "无法读取日志文件。",
       timeout: "日志请求超时。服务器可能无法访问。",
       droppedNotice: "已跳过部分行：日志的写入速度超过了读取速度。",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "仍在读取更多行，它们将在下次刷新时显示。",
+      staleSession: "文件日志已关闭，因此这是较早的会话，不会更新。",
       keywords: "调试 日志 错误 崩溃 堆栈 跟踪 诊断 排查 故障 debug log logs error",
     },
     voice: {

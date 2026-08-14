@@ -178,8 +178,8 @@ export const ar = {
       unreadable: "تعذّرت قراءة ملف السجل.",
       timeout: "انتهت مهلة طلب السجل. قد يتعذر الوصول إلى الخادم.",
       droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "لا يزال يجري قراءة أسطر إضافية، وستظهر عند التحديث التالي.",
+      staleSession: "تسجيل الملفات معطل، لذا هذه جلسة سابقة ولن يتم تحديثها.",
       keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {

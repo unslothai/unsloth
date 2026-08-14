@@ -145,8 +145,8 @@ export const it = {
       unreadable: "Non è stato possibile leggere il file di log.",
       timeout: "La richiesta del log e scaduta. Il server potrebbe non essere raggiungibile.",
       droppedNotice: "Alcune righe sono state saltate: il log è stato scritto più velocemente di quanto potesse essere letto.",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "Altre righe sono ancora in lettura; arriveranno al prossimo aggiornamento.",
+      staleSession: "La registrazione su file e disattivata, quindi questa e una sessione precedente e non verra aggiornata.",
       keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {

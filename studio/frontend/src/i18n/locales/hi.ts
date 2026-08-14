@@ -181,8 +181,8 @@ export const hi = {
       unreadable: "लॉग फ़ाइल पढ़ी नहीं जा सकी।",
       timeout: "लॉग अनुरोध का समय समाप्त हो गया। सर्वर तक पहुंच नहीं हो पा रही है।",
       droppedNotice: "कुछ पंक्तियाँ छोड़ दी गईं: लॉग इतनी तेज़ी से लिखा गया कि उसे पढ़ा नहीं जा सका।",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "और पंक्तियां अभी पढ़ी जा रही हैं; वे अगले रिफ्रेश पर आएंगी।",
+      staleSession: "फ़ाइल लॉगिंग बंद है, इसलिए यह पुराना सत्र है और अपडेट नहीं होगा।",
       keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {

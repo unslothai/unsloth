@@ -182,8 +182,8 @@ export const de = {
       unreadable: "Die Protokolldatei konnte nicht gelesen werden.",
       timeout: "Die Protokollanfrage hat das Zeitlimit uberschritten. Der Server ist moglicherweise nicht erreichbar.",
       droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "Weitere Zeilen werden noch gelesen; sie erscheinen bei der nachsten Aktualisierung.",
+      staleSession: "Die Protokollierung in Dateien ist deaktiviert, daher ist dies eine fruhere Sitzung und wird nicht aktualisiert.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {

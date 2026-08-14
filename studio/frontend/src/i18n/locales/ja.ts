@@ -180,8 +180,8 @@ export const ja = {
       unreadable: "ログファイルを読み取れませんでした。",
       timeout: "ログの取得がタイムアウトしました。サーバーに接続できない可能性があります。",
       droppedNotice: "一部の行がスキップされました。ログの書き込みが読み取りに追いつきませんでした。",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "さらに行を読み込み中です。次回の更新時に表示されます。",
+      staleSession: "ファイルへのログ出力が無効なため、これは以前のセッションであり更新されません。",
       keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {

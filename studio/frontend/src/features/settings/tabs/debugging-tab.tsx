@@ -219,7 +219,14 @@ export function DebuggingTab() {
     cursorRef.current = null;
     setBuffer(EMPTY_BUFFER);
     setRealpath(null);
+    // Every notice below describes the file being left, so all of them go with
+    // it. Clearing only `dropped` let a failed first read on the new source
+    // keep claiming the OLD one's state, and in manual mode nothing retries to
+    // correct it: the pane would sit there calling a live log a frozen session.
     setDropped(false);
+    setMorePending(false);
+    setStaleSession(false);
+    setNotice(null);
   }, [sourceId]);
 
   useEffect(() => {

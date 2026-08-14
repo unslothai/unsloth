@@ -180,8 +180,8 @@ export const ptBR = {
       unreadable: "Não foi possível ler o arquivo de log.",
       timeout: "A solicitacao do registro expirou. O servidor pode estar inacessivel.",
       droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "Mais linhas ainda estao sendo lidas; elas chegam na proxima atualizacao.",
+      staleSession: "O registro em arquivo esta desativado, portanto esta e uma sessao anterior e nao sera atualizada.",
       keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {

@@ -31,6 +31,15 @@ export function isRequestTimeout(error: unknown): boolean {
   return error instanceof DebugLogTimeoutError;
 }
 
+/** What `fetch` rejects with on an abort. Built by hand rather than taken from
+ * a cancelled request, for the tie where the deadline won the race but the
+ * caller had already asked to stop. */
+function abortError(): Error {
+  const error = new Error("Aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
 /** Generous next to a 1s poll: this is the "this request will never answer"
  * backstop, not a latency budget. A remote tunnel can legitimately be slow. */
 export const REQUEST_TIMEOUT_MS = 20_000;
@@ -82,6 +91,12 @@ export function parseRefreshMode(value: unknown): RefreshMode {
  * that opens and never settles hangs its awaiter for good. The poll loop awaits
  * the source rescan first, so an unanswered /sources froze the pane. Signals are
  * linked by hand because `AbortSignal.any` is Safari 17.4 against a 16.4 floor.
+ *
+ * The deadline is RACED rather than awaited behind the abort, because aborting
+ * only settles work that watches the signal. `authFetch` awaits
+ * `refreshSession()` on a 401 and hands it no signal, so an expired token plus a
+ * hung refresh left this promise pending for good: the caller's in-flight guard
+ * stayed pinned and the pane froze, which is precisely what the backstop is for.
  */
 export async function withRequestTimeout<T>(
   task: (signal: AbortSignal) => Promise<T>,
@@ -92,19 +107,29 @@ export async function withRequestTimeout<T>(
   if (signal?.aborted) local.abort();
   const relay = () => local.abort();
   signal?.addEventListener("abort", relay);
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    local.abort();
-  }, timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const running = task(local.signal);
+  // The loser of the race can still reject afterwards, and an unobserved
+  // rejection is a console error (a process-level crash under node:test).
+  running.catch(() => {});
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      // Reject BEFORE aborting. `local.abort()` settles an abort-aware task
+      // synchronously, and that rejection would then win the race and arrive
+      // as an ordinary AbortError, which the poll loop drops in silence: the
+      // deadline would announce itself only for work that ignores the signal.
+      reject(new DebugLogTimeoutError(timeoutMs));
+      local.abort();
+    }, timeoutMs);
+  });
   try {
-    return await task(local.signal);
+    return await Promise.race([running, deadline]);
   } catch (error) {
     // The caller's own abort wins the tie: an unmount or a source switch is
     // silent by design, and it can race the timer on a request that was
     // already doomed. Only a backstop with no caller abort behind it is a
     // fault the user needs told about.
-    if (timedOut && !signal?.aborted) throw new DebugLogTimeoutError(timeoutMs);
+    if (signal?.aborted && isRequestTimeout(error)) throw abortError();
     throw error;
   } finally {
     clearTimeout(timer);

@@ -181,8 +181,8 @@ export const es = {
       unreadable: "No se pudo leer el archivo de registro.",
       timeout: "La solicitud del registro agoto el tiempo de espera. Puede que el servidor no este accesible.",
       droppedNotice: "Se omitieron algunas líneas: el registro se escribió más rápido de lo que se podía leer.",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "Aun se estan leyendo mas lineas; llegaran en la proxima actualizacion.",
+      staleSession: "El registro en archivo esta desactivado, por lo que esta es una sesion anterior y no se actualizara.",
       keywords: "depuracion depurar registro registros log logs error errores fallo traza diagnostico solucion de problemas debug",
     },
     voice: {

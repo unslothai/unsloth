@@ -291,3 +291,27 @@ test("the skipped-lines warning outlives the poll that raised it", () => {
     false,
   );
 });
+
+test("the deadline fires even when the work ignores the abort", async () => {
+  // authFetch awaits refreshSession() on a 401 and hands it no signal, so
+  // aborting settled nothing: the promise stayed pending, the caller's
+  // in-flight guard stayed pinned and the pane froze. Racing the deadline is
+  // what makes the backstop a backstop.
+  const deaf = () => new Promise<never>(() => {});
+  const started = Date.now();
+  await assert.rejects(
+    () => withRequestTimeout(deaf, 20),
+    (error: Error) => isRequestTimeout(error),
+  );
+  assert.ok(Date.now() - started < 2000);
+});
+
+test("a caller abort still reads as one when the work ignores it too", async () => {
+  const deaf = () => new Promise<never>(() => {});
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => withRequestTimeout(deaf, 20, controller.signal),
+    (error: Error) => isAbort(error) && !isRequestTimeout(error),
+  );
+});

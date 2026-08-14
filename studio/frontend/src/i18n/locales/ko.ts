@@ -178,8 +178,8 @@ export const ko = {
       unreadable: "로그 파일을 읽을 수 없습니다.",
       timeout: "로그 요청 시간이 초과되었습니다. 서버에 연결할 수 없을 수 있습니다.",
       droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
-      morePending: "More lines are still being read; they arrive on the next refresh.",
-      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      morePending: "아직 더 많은 줄을 읽고 있습니다. 다음 새로 고침에 표시됩니다.",
+      staleSession: "파일 로깅이 꺼져 있으므로 이것은 이전 세션이며 업데이트되지 않습니다.",
       keywords: "디버그 디버깅 로그 오류 에러 충돌 스택 추적 진단 문제 해결 debug log logs error",
     },
     voice: {
