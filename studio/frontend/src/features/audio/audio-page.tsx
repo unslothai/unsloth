@@ -1832,81 +1832,91 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
   return (
     <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      <div className="relative flex h-[48px] shrink-0 items-start justify-between gap-2 pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        {/* min-w-0: a long resident model name would otherwise push the mode pill off a narrow window. */}
-        <div className="flex min-w-0 items-center gap-2">
-          <ModelSelector
-            models={selectorModels}
-            additionalOnDeviceModels={
-              mode === "transcribe" ? sttOnDeviceModels : trainedTtsModels
-            }
-            loadedModelIdOverride={
-              mode === "transcribe" && sttReady
-                ? (selectedSttRepo ?? undefined)
-                : undefined
-            }
-            loaded={mode === "transcribe" ? sttReady : undefined}
-            value={selectorValue}
-            onValueChange={handleModelSelect}
-            onEject={busy === null && selectorValue ? handleEject : undefined}
-            variant="ghost"
-            className="!h-[34px]"
-            task={HUB_TASKS_BY_MODE[mode]}
-            catalog={AUDIO_CATALOG}
-            // TTS/ASR come from the checkpoint's own tokenizer, not a curated
-            // recipe, so any publisher's audio repo loads here.
-            communityModelPolicy="search-only"
-            placeholder="Select audio model"
-            open={active && selectorOpen}
-            onOpenChange={(o) => setSelectorOpen(active && o)}
-          />
+      {/* Keep the tabs centered over the preview region at every width. The model rail
+          holds at 408px when space permits and shrinks only to preserve the controls. */}
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
+        <div className="pointer-events-none flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60">
+          {/* A long resident model name must yield to the mode pill instead of painting over it. */}
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+            <ModelSelector
+              models={selectorModels}
+              additionalOnDeviceModels={
+                mode === "transcribe" ? sttOnDeviceModels : trainedTtsModels
+              }
+              loadedModelIdOverride={
+                mode === "transcribe" && sttReady
+                  ? (selectedSttRepo ?? undefined)
+                  : undefined
+              }
+              loaded={mode === "transcribe" ? sttReady : undefined}
+              value={selectorValue}
+              onValueChange={handleModelSelect}
+              onEject={busy === null && selectorValue ? handleEject : undefined}
+              variant="ghost"
+              className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+              triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+              task={HUB_TASKS_BY_MODE[mode]}
+              catalog={AUDIO_CATALOG}
+              // TTS/ASR come from the checkpoint's own tokenizer, not a curated
+              // recipe, so any publisher's audio repo loads here.
+              communityModelPolicy="search-only"
+              placeholder="Select audio model"
+              open={active && selectorOpen}
+              onOpenChange={(o) => setSelectorOpen(active && o)}
+            />
+          </div>
         </div>
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
-          <PillTabs
-            ariaLabel="Page mode"
-            // Always "create": Train navigates away, so the pill never latches.
-            value="create"
-            onValueChange={(v) => {
-              if (v !== "train") return;
-              toast.info(
-                "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
-                { duration: 8000 },
-              );
-              void navigateSelf({ to: "/studio" });
-            }}
-            fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
-            tabs={[
-              {
-                value: "create",
-                label: "Create",
-                icon: (
-                  <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                ),
-              },
-              {
-                value: "train",
-                label: "Train",
-                icon: (
-                  <HugeiconsIcon
-                    icon={TestTubeOutlineIcon}
-                    className="size-3.5"
-                  />
-                ),
-              },
-            ]}
-          />
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto] @[50rem]:grid-cols-[1fr_auto_1fr]">
+          <div className="pointer-events-auto col-start-2 justify-self-end pr-3 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center @[50rem]:pr-0">
+            <PillTabs
+              ariaLabel="Page mode"
+              // Always "create": Train navigates away, so the pill never latches.
+              value="create"
+              onValueChange={(v) => {
+                if (v !== "train") return;
+                toast.info(
+                  "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
+                  { duration: 8000 },
+                );
+                void navigateSelf({ to: "/studio" });
+              }}
+              fit={true}
+              className="h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              tabs={[
+                {
+                  value: "create",
+                  label: "Create",
+                  icon: (
+                    <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+                  ),
+                },
+                {
+                  value: "train",
+                  label: "Train",
+                  icon: (
+                    <HugeiconsIcon
+                      icon={TestTubeOutlineIcon}
+                      className="size-3.5"
+                    />
+                  ),
+                },
+              ]}
+            />
+          </div>
         </div>
       </div>
       {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and
           Video: side by side, the 408px rail plus a usable preview needs more width than that. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
+        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-8 @[50rem]:overflow-y-auto",
+              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              mode === "speak"
+                ? "panel-scroll-fade-action"
+                : "panel-scroll-fade",
               settingsFadeClass,
             )}
           >
@@ -2035,7 +2045,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8">
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
               <Button
                 className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                 onClick={
@@ -2061,9 +2071,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           ) : null}
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 @[50rem]:min-h-0">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
           {mode === "transcribe" ? (
-            <div className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 pl-8">
+            <div className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
               {busy === "transcribing" ? (
                 <div className="flex items-center gap-2 text-ui-13 text-muted-foreground">
                   <Spinner className="size-4" />
@@ -2104,7 +2114,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
               ) : null}
             </div>
           ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 pl-8">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[60px]">
               <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4">
                 {selectedClip ? (
                   <div className="flex w-full max-w-xl flex-col gap-3">
