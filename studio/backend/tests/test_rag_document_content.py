@@ -164,7 +164,10 @@ def test_docx_shows_extracted_text_and_refuses_editing(rag_home, stub_embeddings
     assert body["mediaKind"] == "text"
     assert "quarterly revenue is up twelve percent" in body["text"]
     assert body["editable"] is False
-    assert "Word" in body["readOnlyReason"]
+    assert (
+        body["readOnlyReason"]
+        == "Word documents are shown as the text indexed and cannot be edited here."
+    )
 
 
 def test_oversized_text_previews_truncated_and_unsavable(rag_home, stub_embeddings, monkeypatch):

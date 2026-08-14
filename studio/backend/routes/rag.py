@@ -1239,7 +1239,7 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
     size = _stored_size(stored_path) or 0
     if ext not in _EDITABLE_EXTS:
         out["readOnlyReason"] = (
-            "Word documents are shown as the text Unsloth indexed and cannot be edited here."
+            "Word documents are shown as the text indexed and cannot be edited here."
         )
     elif doc.get("linked_folder_id"):
         # Editing the snapshot would be undone by the next folder sync, and the

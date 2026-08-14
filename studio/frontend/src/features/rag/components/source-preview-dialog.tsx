@@ -140,10 +140,12 @@ export function SourcePreviewDialog({
         <DialogContent className="flex h-[80dvh] w-full flex-col gap-4 sm:max-w-3xl">
           <DialogHeader className="pr-10">
             <DialogTitle className="truncate text-base">{filename}</DialogTitle>
+            {/* Why a source is read-only is stated once, in the footer. Repeating
+              it here put the same sentence twice on screen. */}
             <DialogDescription>
               {content?.editable
                 ? "Edits are saved to this project's copy and the source is re-indexed."
-                : (content?.readOnlyReason ?? "Preview of this source.")}
+                : "Preview of this source."}
             </DialogDescription>
           </DialogHeader>
 
@@ -220,6 +222,8 @@ export function SourcePreviewDialog({
             <p className="text-ui-11 text-muted-foreground">
               {content && !content.editable ? content.readOnlyReason : null}
             </p>
+            {/* Read-only sources get no button: the corner X already closes the
+              modal, and a second control for it was pure duplication. */}
             {content?.editable ? (
               <div className="flex gap-2">
                 <Button
@@ -238,11 +242,7 @@ export function SourcePreviewDialog({
                   {saving ? "Saving…" : "Save"}
                 </Button>
               </div>
-            ) : (
-              <Button type="button" variant="outline" onClick={onClose}>
-                Close
-              </Button>
-            )}
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>
