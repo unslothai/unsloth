@@ -984,3 +984,81 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
     ]
     assert stalled, "the hosted result never reached the reprompt"
     assert stalled[0].get("extra_content") == {"google": {"thought_signature": signature}}
+
+
+def test_an_empty_argument_the_model_meant_survives(executed):
+    """Anthropic's text editor deletes by replacing with the empty string.
+
+    ``str_replace`` with ``new_str: ""`` is an intentional deletion, and the
+    schema allows it, so dropping the key leaves the next turn unable to tell a
+    deletion from a replacement whose value was never captured. The provisional
+    empty prompt this once guarded against is overwritten by the end event
+    anyway, since the two halves merge in order.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "code_execution",
+                        "tool_call_id": "edit_1",
+                        "arguments": {
+                            "kind": "text_editor",
+                            "command": "str_replace",
+                            "old_str": "debug = True",
+                            "new_str": "",
+                        },
+                    }
+                ),
+                _hosted_event(
+                    {"type": "tool_end", "tool_call_id": "edit_1", "result": "Edited"}
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = "".join(
+        str(m.get("content")) for m in transport.requests[1]["messages"] if m["role"] == "assistant"
+    )
+    assert '"new_str":""' in replayed, "the deletion looked like a missing value"
+
+
+def test_a_page_that_writes_the_image_marker_is_not_an_image(executed):
+    """The sentinel is an envelope, not any line mentioning the marker.
+
+    A fetched page documenting the output protocol contains the literal text.
+    Reading that as a picture reports an image the turn never produced.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _hosted_event(
+                    {
+                        "type": "tool_start",
+                        "tool_name": "web_fetch",
+                        "tool_call_id": "hosted-1",
+                        "arguments": {"url": "https://unsloth.ai/docs/protocol"},
+                    }
+                ),
+                _hosted_event(
+                    {
+                        "type": "tool_end",
+                        "tool_call_id": "hosted-1",
+                        "result": "The card reads a line beginning __IMAGES__: and renders it.",
+                    }
+                ),
+                _call_line(),
+                _finish(),
+            ],
+            [_finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport)
+    replayed = _replayed(transport)
+    assert "produced an image" not in replayed

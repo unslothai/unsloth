@@ -148,6 +148,23 @@ _HOSTED_ARGUMENT_MAX_CHARS = 2000
 _HOSTED_ARGUMENT_PLUMBING_KEYS = frozenset({"google", "_server_tool"})
 
 
+def _carries_image_sentinel(result: str) -> bool:
+    """Whether a hosted result ends in the ``__IMAGES__`` envelope itself.
+
+    Validated rather than matched on sight, the way the local strippers
+    validate theirs: a fetched page that merely writes the marker is prose, and
+    reading it as a picture would report an image the turn never made.
+    """
+    _, sep, payload = result.rpartition("\n__IMAGES__:")
+    if not sep:
+        return False
+    try:
+        images = json.loads(payload)
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(images, list) and bool(images) and all(isinstance(i, str) and i for i in images)
+
+
 def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
     """The part of a hosted tool's arguments worth showing the model."""
     if not isinstance(arguments, dict):
@@ -155,12 +172,7 @@ def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
     return {
         key: value
         for key, value in arguments.items()
-        if key not in _HOSTED_ARGUMENT_PLUMBING_KEYS
-        and not key.startswith("openai_")
-        # OpenAI opens an image_generation_call with an empty prompt and only
-        # names it on the end event, so an empty placeholder kept here would
-        # block the real prompt from merging in.
-        and value not in ("", None, {}, [])
+        if key not in _HOSTED_ARGUMENT_PLUMBING_KEYS and not key.startswith("openai_")
     }
 
 
@@ -380,7 +392,7 @@ class _Turn:
             # after the start. A non-string is a malformed frame, not an outcome.
             entry["ended"] = True
         if isinstance(result, str) and result.strip():
-            if "__IMAGES__:" in result:
+            if _carries_image_sentinel(result):
                 # A Gemini plot with no stdout is nothing BUT the sentinel, so
                 # stripping leaves an empty string and the entry looks empty.
                 entry["produced_image"] = True
