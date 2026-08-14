@@ -88,6 +88,7 @@ export function mapBackendModelConfigToTrainingPatch(
   const training = config.training;
   const lora = config.lora;
   const logging = config.logging;
+  const backup = config.checkpoint_backup;
 
   const maxSeqLength = toNumber(training?.max_seq_length);
   if (maxSeqLength !== undefined) patch.contextLength = maxSeqLength;
@@ -131,6 +132,20 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const saveSteps = toNumber(training?.save_steps);
   if (saveSteps !== undefined) patch.saveSteps = saveSteps;
+
+  if (backup) {
+    patch.checkpointBackup = {
+      enabled: backup.enabled === true,
+      provider: "huggingface",
+      repoId: typeof backup.repo_id === "string" ? backup.repo_id : null,
+      private: backup.private !== false,
+      intervalSteps: toNumber(backup.interval_steps) ?? saveSteps ?? 100,
+      strategy: "latest",
+      keepRemote: toNumber(backup.keep_remote) ?? 1,
+      uploadOnStop: backup.upload_on_stop !== false,
+      uploadOnComplete: backup.upload_on_complete !== false,
+    };
+  }
 
   const evalSteps = toNumber(training?.eval_steps);
   if (evalSteps !== undefined) patch.evalSteps = evalSteps;

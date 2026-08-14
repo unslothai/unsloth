@@ -41,7 +41,8 @@ export const MODEL_DEFAULT_STATE_KEYS = [
 
 export type ModelDefaultsPatch = Partial<
   Pick<TrainingConfigState, (typeof MODEL_DEFAULT_STATE_KEYS)[number]>
->;
+> &
+  Partial<Pick<TrainingConfigState, "checkpointBackup">>;
 
 export function trainingConfigPatchTouchesModelDefaults(
   patch: Partial<TrainingConfigState>,
