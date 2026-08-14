@@ -860,7 +860,7 @@ def _standing_pack_adapter(tmp_path: Path):
 def test_episode_adapter_shrinks_pack_standing(tmp_path: Path):
     pinned, result = _standing_pack_adapter(tmp_path)
     host = FakeHost(tmp_path, [_ok("ok", "world")])
-    asyncio.run(
+    outcome = asyncio.run(
         run(
             host,
             EpisodeRequest(
@@ -871,6 +871,24 @@ def test_episode_adapter_shrinks_pack_standing(tmp_path: Path):
     )
     system = host.last_messages[0]["content"]
     assert f"Source: {pinned['id']}" not in system
+    header = "Durable memories relevant to this task:"
+    if header in system:
+        assert pinned["title"] not in system.split(header, 1)[1]
+    stats = [
+        row
+        for row in list_inject_stats(db_path=host.db)
+        if row["episode_id"] == outcome.state.episode_id
+    ]
+    assert stats
+    retrieved_ids = [part for part in (stats[0].get("retrieved_ids") or "").split(",") if part]
+    assert pinned["id"] not in retrieved_ids
+    use_ids = {
+        row["record_id"]
+        for row in list_retrieve_uses(
+            episode_id=outcome.state.episode_id, db_path=host.db
+        )
+    }
+    assert pinned["id"] not in use_ids
     assert host.last_adapter_path
     assert Path(host.last_adapter_path).name == result.adapter_id
 

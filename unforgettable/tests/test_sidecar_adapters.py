@@ -124,9 +124,50 @@ def test_promote_after_eval_without_force_succeeds(db_path, monkeypatch):
         result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
     )
     assert scored.n_holdout >= 1
+    assert scored.passed is True
     promoted = promote_adapter(result.adapter_id, db_path=db_path)
     assert promoted["status"] == "promoted"
     assert get_promoted_adapter(db_path=db_path)["id"] == result.adapter_id
+
+
+def test_promote_after_empty_holdout_eval_requires_force(db_path):
+    result = _train_shadow(db_path)
+    scored = eval_adapter(
+        result.adapter_id, backend=FakeTrainBackend(), db_path=db_path
+    )
+    assert scored.n_holdout == 0
+    assert scored.passed is False
+    with pytest.raises(ValueError, match="eval did not pass"):
+        promote_adapter(result.adapter_id, db_path=db_path)
+    assert get_promoted_adapter(db_path=db_path) is None
+    assert get_adapter(result.adapter_id, db_path=db_path)["status"] == "shadow"
+    promoted = promote_adapter(result.adapter_id, force=True, db_path=db_path)
+    assert promoted["status"] == "promoted"
+
+
+def test_promote_after_probe_fail_eval_requires_force(db_path):
+    result = _train_shadow(db_path)
+    insert_record(
+        kind="procedure",
+        title="Probe: broken",
+        body="false\n",
+        provenance="human",
+        db_path=db_path,
+    )
+    world = db_path.parent / "probe-world"
+    world.mkdir()
+    scored = eval_adapter(
+        result.adapter_id,
+        backend=FakeTrainBackend(),
+        world=world,
+        db_path=db_path,
+    )
+    assert scored.probes_fail >= 1
+    assert scored.passed is False
+    with pytest.raises(ValueError, match="eval did not pass"):
+        promote_adapter(result.adapter_id, db_path=db_path)
+    assert get_promoted_adapter(db_path=db_path) is None
+    assert get_adapter(result.adapter_id, db_path=db_path)["status"] == "shadow"
 
 
 def test_discarded_promote_without_force_raises(db_path):

@@ -214,6 +214,8 @@ def promote_adapter(adapter_id: str, *, force: bool = False, db_path=None) -> di
         metrics = _parse_metrics(row.get("metrics"))
         if metrics is None or "adapter_lean" not in metrics or "base_lean" not in metrics:
             raise ValueError("promote refused: no eval metrics")
+        if metrics.get("passed") is not True:
+            raise ValueError("promote refused: eval did not pass")
         if metrics["adapter_lean"] < metrics["base_lean"]:
             raise ValueError("promote refused: adapter_lean < base_lean")
     now = _now()
