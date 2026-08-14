@@ -11,14 +11,77 @@ mapping", which names a column-mapping problem rather than the read that failed.
 
 from __future__ import annotations
 
+import importlib
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS
-from core.training.trainer import UnslothTrainer
+
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the backend pytest job does not install.
+
+    Same helper and reason as test_trainer_stdout_quiet.py: core.training.trainer imports
+    unsloth (and through it unsloth_zoo) and trl at module scope, while the pytest matrix in
+    studio-backend-ci.yml installs studio.txt plus torch and transformers and deliberately
+    stops there, because the repo-cpu-tests job beside it is the one that installs
+    unsloth_zoo, for the REPO-ROOT tests/ tree. Unstubbed, this module fails COLLECTION and
+    takes the whole job down. A real install is left alone. __spec__ = None keeps the
+    trainer's own _ensure_real_packages namespace-shadow guard a no-op on the stub.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS  # noqa: E402
+from core.training.trainer import UnslothTrainer  # noqa: E402
+
+# Drop the stubs now that the trainer holds its own references, because they outlive this module
+# otherwise and the whole suite then runs against them. utils.hardware.hardware._shared_policy
+# branches on `"unsloth" in sys.modules` and reaches for unsloth.dataset_num_proc, which a
+# spec-less non-package stub cannot provide, so it returns None and every shared-policy case in
+# test_dataset_map_num_proc.py skips instead of running. core.training.trainer itself stays in
+# sys.modules: the tests below monkeypatch it by dotted name, which would re-import it, and this
+# is the job where the real unsloth is not installed. A real install stubs nothing, so this is a
+# no-op there.
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
+import transformers  # noqa: E402
+
+# transformers 5 rebuilds sys.modules["transformers"] as a fresh lazy facade the first time an
+# attribute resolves through a submodule import, so an object bound by an earlier `import
+# transformers` is not the one `from transformers import AutoProcessor` reads, and a stub on the
+# stale one is invisible to the trainer, which then makes a real network call. Resolving both
+# names once here settles that before any test patches them. Only visible with unsloth stubbed:
+# a real `import unsloth` resolves them long before collection reaches this module.
+transformers.AutoProcessor  # noqa: B018
+transformers.AutoTokenizer  # noqa: B018
+transformers = sys.modules["transformers"]
 
 _BACKEND = Path(__file__).resolve().parents[1]
 _load_and_format_dataset = UnslothTrainer.load_and_format_dataset
@@ -81,6 +144,21 @@ def _run(
         dataset_local_files_only = True,
         dataset_local_path = "/cache/snapshot",
     )
+
+
+def test_the_stubs_do_not_outlive_this_module():
+    """A leaked stub silently disables coverage in modules collected after this one.
+
+    utils.hardware.hardware._shared_policy takes `"unsloth" in sys.modules` as proof the real
+    package is usable; against a stub it returns None and test_dataset_map_num_proc.py skips its
+    shared-policy cases rather than failing, so nothing else would report this.
+    """
+    from utils.hardware import hardware as hw
+
+    for name in _STUBBED:
+        assert name not in sys.modules, name
+    if _STUBBED:
+        assert hw._shared_policy() is not None, "the stub is still hiding the policy module"
 
 
 def test_an_inconclusive_probe_on_an_audio_dataset_is_refused(monkeypatch):
@@ -230,8 +308,6 @@ def test_a_transient_probe_failure_is_rechecked_after_the_tokenizer_loads(monkey
         def from_pretrained(cls, *a, **kw):
             return object()
 
-    import transformers
-
     monkeypatch.setattr(transformers, "AutoProcessor", _Proc, raising = False)
     monkeypatch.setattr(transformers, "AutoTokenizer", _Proc, raising = False)
 
@@ -255,8 +331,6 @@ def test_a_probe_that_stays_inconclusive_is_not_overwritten(monkeypatch):
         @classmethod
         def from_pretrained(cls, *a, **kw):
             return object()
-
-    import transformers
 
     monkeypatch.setattr(transformers, "AutoTokenizer", _Proc, raising = False)
 
@@ -322,8 +396,6 @@ def test_the_retry_reloads_the_processor_when_it_discovers_whisper(monkeypatch):
             loaded.append("tokenizer")
             return object()
 
-    import transformers
-
     monkeypatch.setattr(transformers, "AutoProcessor", _Processor, raising = False)
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
@@ -351,8 +423,6 @@ def test_the_retry_does_not_reload_when_the_answer_is_unchanged(monkeypatch):
         def from_pretrained(cls, *a, **kw):
             loaded.append("tokenizer")
             return object()
-
-    import transformers
 
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
@@ -415,8 +485,6 @@ def test_the_first_tokenizer_load_failing_still_reaches_the_retry(monkeypatch):
                 raise OSError("Can't load tokenizer for 'org/spark'")
             return object()
 
-    import transformers
-
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
     trainer = UnslothTrainer()
@@ -440,8 +508,6 @@ def test_a_load_failure_with_a_definitive_type_is_not_swallowed(monkeypatch):
         @classmethod
         def from_pretrained(cls, *a, **kw):
             raise OSError("Can't load tokenizer for 'org/broken'")
-
-    import transformers
 
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
