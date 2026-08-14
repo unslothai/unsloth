@@ -1759,12 +1759,19 @@ export function SharedComposer({
     (items: string[]) => {
       const filtered = items.filter((p) => p.trim());
       if (!filtered.length) return;
-      // Ordinary sends gate on `busy`, and this path did not: starting a list
-      // mid-generation overwrote the queue refs and fired sendRef 100ms later,
-      // on top of the run already in flight. The queue refs are equally
-      // clobberable by a second list started while the first is still stepping.
+      // Ordinary sends gate on `busy` and `isDictating`, and this path did not:
+      // starting a list mid-generation overwrote the queue refs and fired
+      // sendRef 100ms later, on top of the run already in flight. The queue refs
+      // are equally clobberable by a second list started while the first is
+      // still stepping. Dictation is its own hazard -- the composer text is set
+      // here, then a transcription lands on top of it before the timeout fires,
+      // so the queue sends the dictated words instead of the saved prompt.
       if (busy || isQueueRunningRef.current) {
         toast.error("Wait for the current response to finish");
+        return;
+      }
+      if (isDictating) {
+        toast.error("Finish dictating before running a list");
         return;
       }
       const hasCompareHandles = Boolean(
@@ -1794,7 +1801,7 @@ export function SharedComposer({
         sendRef.current?.();
       }, 100);
     },
-    [busy, handlesRef, model1?.id, model2?.id],
+    [busy, isDictating, handlesRef, model1?.id, model2?.id],
   );
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top

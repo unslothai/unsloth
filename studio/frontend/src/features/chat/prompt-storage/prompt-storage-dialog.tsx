@@ -2131,11 +2131,15 @@ export function PromptStorageDialog({
           </div>
 
           {/* */}
-          {/* The floor is capped against the viewport so it can never outgrow
-              the dialog's 94dvh on a short window, which would clip the detail
-              pane's actions behind DialogContent's overflow-hidden. Below `sm`
-              the rail stacks above the detail pane instead of squeezing it. */}
-          <div className="flex-1 min-h-[min(420px,50dvh)] px-4 sm:px-6 pb-6 grid gap-4 grid-cols-1 grid-rows-[minmax(96px,30%)_minmax(0,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
+          {/* The floor subtracts the chrome above it rather than taking a flat
+              share of the viewport: the header and the tab/search block are
+              ~13rem and do not shrink, so a percentage floor still added up past
+              DialogContent's 94dvh on a phone in landscape and clipped the
+              detail actions behind its overflow-hidden. max(0px,...) keeps the
+              value legal when the viewport is shorter than the chrome. Below
+              `sm` the rail stacks above the detail pane instead of squeezing
+              it. */}
+          <div className="flex-1 min-h-[max(0px,min(420px,calc(94dvh_-_13rem)))] px-4 sm:px-6 pb-6 grid gap-4 grid-cols-1 grid-rows-[minmax(96px,30%)_minmax(0,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
             <div className="flex min-h-0 flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button

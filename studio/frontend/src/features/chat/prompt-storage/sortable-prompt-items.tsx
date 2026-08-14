@@ -219,6 +219,11 @@ export function SortablePromptItems({
       // pen contacts report button 0, so they still drag; isPrimary keeps a
       // second finger from starting a competing drag.
       if (e.button !== 0 || !e.isPrimary) return;
+      // isPrimary is scoped per pointer type, so on a hybrid device a primary
+      // mouse or pen press passes the check above while a touch drag is already
+      // running. Without this the second device would take over the drag, and
+      // the finger that started it would have its events filtered out.
+      if (pointerIdRef.current !== null) return;
       pointerIdRef.current = e.pointerId;
       // Deliberately no setPointerCapture here. Reordering makes React move the
       // row's DOM node (insertBefore detaches and reattaches it), and detaching
