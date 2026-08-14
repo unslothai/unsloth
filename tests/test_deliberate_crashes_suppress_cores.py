@@ -45,6 +45,7 @@ Three things this deliberately gets right, each of which it got wrong first:
 from __future__ import annotations
 
 import ast
+import re
 import warnings
 from functools import lru_cache
 from pathlib import Path
@@ -85,6 +86,9 @@ _FATAL_SIGNALS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP",
 # SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGSEGV: the Linux signals whose
 # default action is "terminate and dump core".
 _FATAL_SIGNAL_NUMBERS = {3, 4, 5, 6, 7, 8, 11}
+
+# Whole names only: a variable merely spelled `SIGQUIT_HANDLER` names no signal.
+_FATAL_SIGNAL_RE = re.compile(r"\b(?:" + "|".join(_FATAL_SIGNALS) + r")\b")
 
 _PR_SET_DUMPABLE = 4
 
@@ -167,7 +171,9 @@ def _prctl_dumpable_value(node):
     cmd_ok = (isinstance(cmd, ast.Constant) and cmd.value == _PR_SET_DUMPABLE) or (
         isinstance(cmd, ast.Name) and cmd.id.endswith("PR_SET_DUMPABLE")
     )
-    return value.value if cmd_ok and isinstance(value, ast.Constant) else None
+    if not cmd_ok or not isinstance(value, ast.Constant) or value.value not in (0, 1):
+        return None
+    return value.value
 
 
 def _fold(node, env):
@@ -225,7 +231,7 @@ def _string_env(tree):
     return owner, module_env, scoped
 
 
-def _iter_executable(scope):
+def _iter_executable(scope, enter_classes = True):
     """Nodes that run when `scope` runs, skipping bodies that need a separate call.
 
     Walking everything treated a call inside an uninvoked nested `def` as having
@@ -235,14 +241,17 @@ def _iter_executable(scope):
         # Not a class body: that one runs the moment the class is defined.
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
+        if not enter_classes and isinstance(child, ast.ClassDef):
+            continue
         yield child
-        yield from _iter_executable(child)
+        yield from _iter_executable(child, enter_classes)
 
 
 def _rebound_names(scope):
     """Names this scope binds itself, which therefore no longer mean the import."""
     out = set()
-    for node in _iter_executable(scope):
+    # Class bodies excluded: `class C: abort = ...` binds C.abort, not abort.
+    for node in _iter_executable(scope, enter_classes = False):
         pair = _assigned_pair(node)
         if pair is not None:
             out.add(pair[0].id)
@@ -383,7 +392,7 @@ def _is_crash_call(node, aliases = None) -> bool:
     # Only the signal argument, so a PID never reads as a signal.
     signal_argument = node.args[index]
     rendered = ast.unparse(signal_argument)
-    if any(s in rendered for s in _FATAL_SIGNALS):
+    if _FATAL_SIGNAL_RE.search(rendered):
         return True
     # Numeric signals. `signal.raise_signal(11)` and `os.kill(pid, 6)` dump exactly the
     # same core as the named forms, so matching only symbolic names missed them.
@@ -425,26 +434,44 @@ def _position(node):
 _AFTER_EVERYTHING = (float("inf"), 0)
 
 
-def _clears_dumpable_before(scope, position) -> bool:
+_BRANCHING = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.Try)
+
+
+def _dumpable_writes(scope, certain = True):
+    """`(position, value, certain)` for each prctl dumpability write on this path."""
+    for child in ast.iter_child_nodes(scope):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(child, ast.Call):
+            value = _prctl_dumpable_value(child)
+            if value is not None:
+                yield _position(child), value, certain
+        yield from _dumpable_writes(child, certain and not isinstance(child, _BRANCHING))
+
+
+def _clears_dumpable_before(scope, position, inherited = False) -> bool:
     """A prctl(4, 0, ...) on this scope's own path that runs before `position`.
 
     Order matters. Suppression placed after the fault does nothing, so accepting it
     anywhere in the scope blessed a child that still dumps.
     """
-    latest = None
-    for node in _iter_executable(scope):
-        value = _prctl_dumpable_value(node)
-        if value is None or _position(node) >= position:
-            continue
-        if latest is None or _position(node) > latest[0]:
-            latest = (_position(node), value)
-    return latest is not None and latest[1] == 0
+    writes = sorted(w for w in _dumpable_writes(scope) if w[0] < position)
+    # A branch that may not run cannot be relied on to have restored dumping, and the
+    # recommended suppression is itself platform-guarded, so only a write that
+    # certainly executes decides. A conditional clear still counts, since
+    # `if sys.platform == "linux": prctl(4, 0, ...)` is the documented shape.
+    certain = [w for w in writes if w[2]]
+    if certain:
+        return certain[-1][1] == 0
+    if any(value == 0 for _pos, value, _certain in writes):
+        return True
+    return inherited
 
 
-def _suppressed(node, scope, functions) -> bool:
+def _suppressed(node, scope, functions, inherited = False) -> bool:
     """Whether this crash call is covered, directly or by a helper it calls first."""
     position = _position(node)
-    if _clears_dumpable_before(scope, position):
+    if _clears_dumpable_before(scope, position, inherited):
         return True
     # Following one level of local helper covers `suppress_core()` then the fault,
     # which is the natural shape once more than one test needs this.
@@ -490,7 +517,7 @@ def _live_aliases(aliases, scope, rebound):
     return {bound: original for bound, original in aliases.items() if bound not in shadowed}
 
 
-def _unsuppressed_crashes(tree):
+def _unsuppressed_crashes(tree, inherited = False):
     """Crash calls in this tree whose core dump is not suppressed first."""
     owner = _enclosing_scopes(tree)
     functions = None
@@ -503,7 +530,7 @@ def _unsuppressed_crashes(tree):
             continue
         if functions is None:
             functions = _functions_by_name(tree)
-        if not _suppressed(node, scope, functions):
+        if not _suppressed(node, scope, functions, inherited):
             out.append((node, scope))
     return out
 
@@ -522,13 +549,26 @@ _NESTED_EXEC = {"exec", "eval"}
 _MAX_SNIPPET_DEPTH = 5
 
 
+def _bindings_before(tree, scope, position):
+    """String bindings visible in `scope` that are already set at `position`."""
+    env = {}
+    for owner_scope in (tree, scope) if scope is not tree else (tree,):
+        for node in _iter_executable(owner_scope):
+            pair = _assigned_pair(node)
+            if pair is None or _position(node) >= position:
+                continue
+            folded, _ids = _fold(pair[1], env)
+            if folded is not None:
+                env[pair[0].id] = folded
+    return env
+
+
 def _nested_scripts(tree):
     """Source a snippet hands to exec/eval, or on to another child interpreter.
 
     `SCRIPT = 'exec("import os; os.abort()")'` parses cleanly and holds no crash call
     of its own, so without this the crash one level down was never looked at.
     """
-    _owner, module_env, scoped = _string_env(tree)
     owner = _enclosing_scopes(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -536,10 +576,12 @@ def _nested_scripts(tree):
         scope = owner.get(id(node), tree)
         if _called_name(node) in _NESTED_EXEC:
             argument = node.args[0] if node.args else None
-            env = scoped.get(id(scope), module_env)
+            # Bindings in effect AT the exec, so a name reused afterwards for
+            # something else is not what gets analysed.
+            env = _bindings_before(tree, scope, _position(node))
             payload, _ids = _fold(argument, env) if argument is not None else (None, set())
             if payload is not None:
-                # Same interpreter, so a prctl above the exec already covers it.
+                # Same interpreter, so dumpability carries into the payload.
                 yield payload, _clears_dumpable_before(scope, _position(node))
         else:
             for nested in _snippets_of_call(node):
@@ -555,7 +597,7 @@ def _snippets_of_call(node):
                     yield element.value
 
 
-def _snippet_state(snippet: str, depth: int = 0):
+def _snippet_state(snippet: str, depth: int = 0, inherited: bool = False):
     """`(crashes, violates)` for a child script.
 
     The snippet is Python, so parse it and reuse the same call detector rather than
@@ -571,16 +613,18 @@ def _snippet_state(snippet: str, depth: int = 0):
     except (SyntaxError, ValueError):
         crashes = any(marker in snippet for marker in _CRASH_MARKERS) or (
             any(m in snippet for m in _SIGNAL_DIRECTED)
-            and any(s in snippet for s in _FATAL_SIGNALS)
+            and _FATAL_SIGNAL_RE.search(snippet)
         )
-        suppressed = "prctl(4, 0" in snippet or "PR_SET_DUMPABLE, 0" in snippet
+        suppressed = (
+            inherited or "prctl(4, 0" in snippet or "PR_SET_DUMPABLE, 0" in snippet
+        )
         return crashes, crashes and not suppressed
-    crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree))
+    crashes, violates = _tree_crashes(tree), bool(_unsuppressed_crashes(tree, inherited))
     if depth < _MAX_SNIPPET_DEPTH:
-        for nested, already_suppressed in _nested_scripts(tree):
-            inner_crashes, inner_violates = _snippet_state(nested, depth + 1)
+        for nested, inherited in _nested_scripts(tree):
+            inner_crashes, inner_violates = _snippet_state(nested, depth + 1, inherited)
             crashes = crashes or inner_crashes
-            violates = violates or (inner_violates and not already_suppressed)
+            violates = violates or inner_violates
     return crashes, violates
 
 
@@ -880,6 +924,56 @@ _FIXTURES = {
         "exec('import os; os.abort()')\"\n"
         'subprocess.run([sys.executable, "-c", SCRIPT])\n',
         False,  # same interpreter, so the prctl above covers the nested crash
+    ),
+    # Six more, each one a way the fixes above were themselves wrong.
+    "class_attribute_shadowing_a_crash_alias": (
+        "from os import abort\n"
+        "class C:\n    abort = lambda: None\n"
+        "abort()\n",
+        True,  # a class attribute is C.abort, and the module name still crashes
+    ),
+    "restore_inside_a_branch_that_may_not_run": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    if False:\n        ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a conditional restore cannot be assumed to have run
+    ),
+    "platform_guarded_suppression": (
+        "import ctypes, sys\n"
+        "def child():\n"
+        '    if sys.platform == "linux":\n'
+        "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the documented shape, since prctl is Linux-only
+    ),
+    "exec_payload_restores_dumpability": (
+        "import subprocess, sys\n"
+        'SCRIPT = "import ctypes; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); '
+        "exec('import ctypes, os; ctypes.CDLL(None).prctl(4, 1, 0, 0, 0); os.abort()')\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        True,  # inherited suppression is a starting state, not a blanket pass
+    ),
+    "exec_payload_name_reused_afterwards": (
+        "import subprocess, sys\n"
+        "SCRIPT = \"INNER = 'pass'\\nexec(INNER)\\nINNER = 'import os; os.abort()'\"\n"
+        'subprocess.run([sys.executable, "-c", SCRIPT])\n',
+        False,  # exec runs what the name held at the time
+    ),
+    "signal_name_only_as_a_substring": (
+        "import signal\n"
+        "SIGQUIT_HANDLER = signal.SIGTERM\n"
+        "def child():\n    signal.raise_signal(SIGQUIT_HANDLER)\n",
+        False,  # SIGTERM does not dump, whatever the variable is called
+    ),
+    "prctl_value_the_kernel_rejects": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.CDLL(None).prctl(4, 2, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # PR_SET_DUMPABLE takes 0 or 1; 2 is EINVAL and changes nothing
     ),
 }
 
