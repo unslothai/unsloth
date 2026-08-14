@@ -6,7 +6,7 @@
   </picture></a>
 </h1>
 <h3 align="center" style="margin: 0; margin-top: 0;">
-Unsloth lets you run and train models locally.
+Unsloth is the first desktop app to run and train models.
 </h3>
 
 <p align="center">
@@ -14,6 +14,12 @@ Unsloth lets you run and train models locally.
   <a href="#-install">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
   <a href="https://unsloth.ai/docs">Documentation</a>
+</p>
+
+<p align="center">
+  <a href="https://unsloth.ai/docs/desktop">
+    <img height="400" alt="unsloth desktop" src="https://unsloth.ai/cgi/image/unsloth_qwen3.8_final_ut2eqWnYJ-SLmu0s7x522.png?format=raw" />
+  </a>
 </p>
 
 ## ⚡ Get started
@@ -168,6 +174,10 @@ To pick it before the first launch instead, set `UNSLOTH_LLAMA_CPP_BACKEND` **be
 export UNSLOTH_LLAMA_CPP_BACKEND=vulkan   # or cpu, cuda, rocm, auto
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+
+On Linux and WSL this is the path for the AMD GPUs Unsloth has no ROCm PyTorch wheels for: Polaris (RX 470/480/570/580/590) and RDNA 1 (RX 5500/5600/5700). torch stays on CPU there, so training and GPU inference are unavailable, but GGUF chat runs on the GPU through Vulkan. Not every pre-RDNA 2 card is in this group: Vega 20 (Radeon VII, MI50, `gfx906`) keeps a ROCm PyTorch path and the installer routes it there. The older `UNSLOTH_FORCE_VULKAN=1` still works and is read when `UNSLOTH_LLAMA_CPP_BACKEND` is unset.
+
+macOS has no Vulkan llama.cpp bundle and does not need one: the installer always uses the Metal build, which covers Apple Silicon and the AMD GPUs in Intel Macs, and it says so and carries on if the variable is set.
 
 #### Windows:
 ```powershell

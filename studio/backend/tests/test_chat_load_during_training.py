@@ -1154,6 +1154,57 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
 # ── _estimate_gguf_required_gb (sizes the same weights the loader loads) ──────
 
 
+class TestRemoteGgufComputeReserve(unittest.TestCase):
+    """The compute reserve a remote GGUF estimate carries.
+
+    Every other caller here patches it to zero to assert exact GB totals, so its arithmetic goes
+    unasserted even though it decides whether a load is refused. These pin the shape, not the
+    magnitude: retuning a safety factor keeps them passing, dropping a term does not.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.route = _load_inference_route()
+
+    def _reserve(self, **kwargs):
+        # Drop LLAMA_ARG_BATCH / LLAMA_ARG_UBATCH: a host exporting either moves the effective
+        # micro-batch off _DEFAULT_N_UBATCH and fails these for reasons unrelated to slot count.
+        import os
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH")
+        }
+        with patch.dict(os.environ, env, clear = True):
+            return self.route._remote_gguf_compute_reserve_gb(max_seq_length = 4096, **kwargs)
+
+    def test_a_single_slot_still_reserves_an_output_buffer(self):
+        """llama-server allocates an output buffer for its one slot, but the old
+        max(0, n_parallel - 1) count reserved nothing there.
+
+        The total is spelled out absolutely rather than compared against a neighbouring call: the
+        reserve is linear in slot count, so any two samples are one buffer apart under both the
+        old formula and the new one, and only an absolute anchor sees the floor.
+        """
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
+        mask = 4096 * ubatch * 2 * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+        per_slot = (
+            self.route._ASSUMED_MAX_VOCAB * ubatch * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+        )
+        self.assertAlmostEqual(self._reserve(n_parallel = 1), (mask + per_slot) / (1024**3), places = 6)
+        # One more buffer for a second slot, pinning the count as well as the floor.
+        self.assertAlmostEqual(
+            self._reserve(n_parallel = 2), (mask + 2 * per_slot) / (1024**3), places = 6
+        )
+
+    def test_diffusion_reserves_nothing(self):
+        """The default micro-batch is a llama-server notion: a diffusion estimate has no ubatch to
+        assume, and charging one would refuse loads that fit."""
+        self.assertEqual(self._reserve(n_parallel = 1, is_diffusion = True), 0.0)
+
+
 class TestEstimateGgufRequiredGb(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

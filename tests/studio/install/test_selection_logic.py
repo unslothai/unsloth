@@ -3043,6 +3043,33 @@ class TestPublishedRocmGfxSelection:
                 is None
             ), unbuilt
 
+    def test_choice_records_the_concrete_built_archs(self):
+        # The choice carries the arch pair into the install marker, where the
+        # runtime GPU gate reads mapped_targets and drops devices outside it
+        # (#7624). It must be the CONCRETE list: recording the umbrella family
+        # label instead would match no device's reported arch and gate every GPU
+        # off the host, silently forcing CPU.
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+            release, self._host("gfx1100"), "linux-rocm"
+        )
+        assert choice.gfx_target == "gfx110X"
+        assert choice.mapped_targets == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+
+    def test_family_token_match_still_records_concrete_archs(self):
+        # The update path forwards the family token (gfx110X) rather than a
+        # concrete arch, so selection matches on gfx_target instead of on the
+        # mapped list. That branch must record the same concrete archs -- this is
+        # the one path where the matched token itself is NOT a device arch.
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        for token in ("gfx110X", "gfx110x"):
+            choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+                release, self._host(token), "linux-rocm"
+            )
+            assert choice is not None, token
+            assert choice.mapped_targets == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"], token
+            assert token.lower() not in [t.lower() for t in choice.mapped_targets], token
+
     def test_family_token_matches_family_bundle(self):
         # The update path forwards a family token (gfx110X, lowercased to gfx110x), not
         # a concrete arch; it must still select the family bundle, not source-build.

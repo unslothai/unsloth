@@ -26,5 +26,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["tests"]
+  // The ambient declarations too: a test that reaches a src module pulling in
+  // the dictation adapter needs the SpeechRecognition globals it declares.
+  "include": ["tests", "src/speech-recognition.d.ts"]
 }

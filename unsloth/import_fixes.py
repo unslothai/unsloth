@@ -2293,6 +2293,100 @@ def disable_torchcodec_if_broken():
         sys.modules["torchcodec"] = None
 
 
+def disable_torchaudio_if_cuda_mismatched():
+    """Make a CUDA-mismatched torchaudio behave as if uninstalled.
+
+    `torchaudio._extension.utils._check_cuda_version` compares the CUDA
+    version torchaudio was BUILT against with torch's, and raises on any
+    difference:
+
+        RuntimeError: Detected that PyTorch and TorchAudio were compiled with
+        different CUDA versions.
+
+    That check runs at extension init, so it takes down the whole import --
+    including for callers that only ever wanted CPU-side audio I/O, and
+    including callers that never asked for torchaudio at all and merely
+    imported something that does. Measured on a Kaggle 2xT4 session running
+    `Kaggle-Muse_Glimmer_(30B)-GRPO`, a text model: it died at cell 4 on this,
+    having never reached anything to do with audio.
+
+    Same shape as `disable_torchcodec_if_broken` and for the same reason: the
+    package is present, `find_spec` says so, and the failure is at native
+    init rather than at resolution, so downstream `except ImportError`
+    handlers never get their chance. Seating the sentinel gives them one.
+
+    What this deliberately does NOT do is patch out `_check_cuda_version`.
+    The check is right -- torchaudio's CUDA ops really are unusable against a
+    different runtime -- and silencing it in place would leave those ops
+    reachable and wrong. Making the package absent is the honest version of
+    the same repair, and it is loud: the warning names both versions and the
+    wheel that would fix it.
+    """
+    try:
+        import importlib.util
+        if importlib.util.find_spec("torchaudio") is None:
+            return
+        import torchaudio  # noqa: F401
+    except ImportError:
+        return
+    except (RuntimeError, OSError) as exc:
+        if "different CUDA versions" not in str(exc) and "torchaudio" not in str(exc).lower():
+            # Some other failure. Not this function's business, and swallowing
+            # it would hide a real one behind a message about CUDA versions.
+            raise
+        try:
+            import warnings
+            warnings.warn(
+                f"Unsloth: torchaudio cannot initialise against this torch and has been "
+                f"disabled for this process, so anything that needs it will report it as "
+                f"missing rather than crash at import. Install the matching wheel to "
+                f"restore it. Original error: {exc}",
+                stacklevel = 2,
+            )
+        except Exception:
+            # Warning filters promoted to errors must not abort the repair.
+            pass
+
+        try:
+            import transformers.utils.import_utils as tf_import_utils
+            try:
+                tf_import_utils._torchaudio_available = False
+            except AttributeError:
+                pass
+            # `speech` is transformers' composite backend and it is nothing but
+            # torchaudio (`is_speech_available` returns `is_torchaudio_available()`).
+            # On 4.x both read one module global, so setting the flag above covers
+            # them. On 5.x each is separately `@lru_cache`d, so a `speech` answer
+            # computed before this repair stays True and `requires_backends(...,
+            # "speech")` waves callers on into a torchaudio that is now a None
+            # sentinel -- a raw crash instead of the unavailable-backend path this
+            # whole function exists to restore. Clear both caches.
+            for _name in ("is_torchaudio_available", "is_speech_available"):
+                is_avail = getattr(tf_import_utils, _name, None)
+                if is_avail is None:
+                    continue
+                try:
+                    is_avail.cache_clear()
+                except AttributeError:
+                    pass
+                setattr(tf_import_utils, _name, lambda: False)
+        except ImportError:
+            pass
+
+        try:
+            import datasets.config as datasets_config
+            if hasattr(datasets_config, "TORCHAUDIO_AVAILABLE"):
+                datasets_config.TORCHAUDIO_AVAILABLE = False
+        except ImportError:
+            pass
+
+        for _stale in [
+            n for n in list(sys.modules) if n == "torchaudio" or n.startswith("torchaudio.")
+        ]:
+            sys.modules.pop(_stale, None)
+        sys.modules["torchaudio"] = None
+
+
 def disable_broken_wandb():
     """Disable wandb if it's installed but cannot actually import.
 

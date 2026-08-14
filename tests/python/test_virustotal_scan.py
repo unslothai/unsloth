@@ -478,6 +478,53 @@ class TestRenderMarkdown:
         assert "Flagging engines" in text
         assert "AlphaAV (Trojan)" in text
 
+    def test_a_flagged_asset_gets_a_submission_packet(self):
+        # The build job only ever assembled a packet for the Windows -setup.exe, so the one
+        # detection that actually arrived -- Trojan:Script/Wacatac.B!ml on the Linux AppImage --
+        # produced nothing to submit.
+        text = vt.render_markdown(
+            [
+                vt.FileReport(
+                    name = "Unsloth-Desktop-Linux.AppImage",
+                    sha256 = "e3aa9b36",
+                    size = 46193144,
+                    stats = vt.ScanStats(malicious = 1, undetected = 62),
+                    detections = ["Microsoft (Trojan:Script/Wacatac.B!ml)"],
+                )
+            ],
+            0,
+        )
+        assert "False-positive submission packet" in text
+        assert "Unsloth-Desktop-Linux.AppImage" in text
+        assert "e3aa9b36" in text
+        assert "46193144 bytes" in text
+        assert "wdsi/filesubmission" in text
+
+    def test_a_flagged_asset_with_no_readable_engine_list_still_gets_a_packet(self):
+        # stats and results are separate fields of the same response. The table reports the
+        # count, so the packet has to key on the same thing or it skips the one asset that
+        # needs one.
+        text = vt.render_markdown(
+            [
+                vt.FileReport(
+                    name = "a.exe",
+                    sha256 = "ab",
+                    size = 10,
+                    stats = vt.ScanStats(malicious = 1, undetected = 60),
+                    detections = [],
+                )
+            ],
+            0,
+        )
+        assert "False-positive submission packet" in text
+        assert "Flagging engines" not in text
+
+    def test_a_clean_run_gets_no_submission_packet(self):
+        text = vt.render_markdown(
+            [vt.FileReport(name = "a.exe", sha256 = "ab", stats = vt.ScanStats(undetected = 60))], 0
+        )
+        assert "False-positive submission packet" not in text
+
 
 class TestFailClosedOnMalformedLookup:
     """A 200 whose body does not parse must not be read as 'never seen'.

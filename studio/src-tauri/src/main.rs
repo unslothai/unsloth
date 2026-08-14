@@ -39,12 +39,30 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and,
-/// outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
+/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and a
+/// Windows/Linux close button when close-to-tray is disabled), the Unix signal listener, and
+/// `RunEvent::Exit`.
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
+
+const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
+
+/// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
+/// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
+/// the NSIS uninstaller drops it on any non-update run (installer.nsi), and an antivirus
+/// quarantine or a registry cleaner takes it the same way. Reading the setting back off the
+/// registry alone, as this file used to, turns every one of those into a silent, permanent
+/// "off" that the user only discovers the next morning.
+const LAUNCH_AT_LOGIN_PREFERENCE_FILE: &str = "launch-at-login-v1";
+
+struct CloseToTrayState(AtomicBool);
+
+fn new_close_to_tray_state() -> CloseToTrayState {
+    // Closing keeps its historical quit behavior until the user explicitly opts in.
+    CloseToTrayState(AtomicBool::new(false))
+}
 
 /// Resolved once, at setup, where the marker is consumed, so no later caller can flip the answer.
 static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
@@ -134,16 +152,200 @@ fn reveal_main_window(app: tauri::AppHandle) {
     show_main_window(&app);
 }
 
+fn close_to_tray_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(CLOSE_TO_TRAY_PREFERENCE_FILE)
+}
+
+fn read_close_to_tray_preference(config_dir: &Path) -> bool {
+    let path = close_to_tray_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid close-to-tray preference {}: {error}",
+                    path.display()
+                );
+                false
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            warn!(
+                "Could not read close-to-tray preference {}: {error}",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
+fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = close_to_tray_preference_path(config_dir);
+    fs::write(&path, format!("{enabled}\n")).map_err(|error| {
+        format!(
+            "Failed to save close-to-tray preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
+}
+
+/// The stored answer, or None when this install has never been told one.
+///
+/// None is not false: an install that predates this file, or one whose preference could not be
+/// read, has no record to restore from, and inventing one would enable autostart for someone who
+/// never asked. Only an explicit `true` ever puts an entry back.
+fn read_launch_at_login_preference(config_dir: &Path) -> Option<bool> {
+    let path = launch_at_login_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(enabled) => Some(enabled),
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid launch-at-login preference {}: {error}",
+                    path.display()
+                );
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            warn!(
+                "Could not read launch-at-login preference {}: {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn write_launch_at_login_preference(config_dir: &Path, enabled: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = launch_at_login_preference_path(config_dir);
+    fs::write(&path, format!("{enabled}\n")).map_err(|error| {
+        format!(
+            "Failed to save launch-at-login preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+/// Record the answer without letting a failed write fail the toggle: the OS entry is the thing
+/// the user asked for and it is already written. Losing the record only costs the restore.
+fn store_launch_at_login_preference(app: &tauri::AppHandle, enabled: bool) {
+    match app.path().app_config_dir() {
+        Ok(dir) => {
+            if let Err(error) = write_launch_at_login_preference(&dir, enabled) {
+                warn!("Could not record the launch-at-login preference: {error}");
+            }
+        }
+        Err(error) => warn!("Could not determine app configuration directory: {error}"),
+    }
+}
+
+fn stored_launch_at_login_preference(app: &tauri::AppHandle) -> Option<bool> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .and_then(|dir| read_launch_at_login_preference(&dir))
+}
+
+fn initialize_close_to_tray(app: &tauri::AppHandle) {
+    let enabled = app
+        .path()
+        .app_config_dir()
+        .map(|dir| read_close_to_tray_preference(&dir))
+        .unwrap_or_else(|error| {
+            warn!("Could not determine app configuration directory: {error}");
+            false
+        });
+    app.state::<CloseToTrayState>()
+        .0
+        .store(enabled, Ordering::SeqCst);
+}
+
 #[tauri::command]
-fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
+fn get_close_to_tray(state: tauri::State<'_, CloseToTrayState>) -> Option<bool> {
+    cfg!(any(target_os = "windows", target_os = "linux")).then(|| state.0.load(Ordering::SeqCst))
+}
+
+#[tauri::command]
+fn set_close_to_tray(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, CloseToTrayState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !cfg!(any(target_os = "windows", target_os = "linux")) {
+        return Err("Close to system tray is only configurable on Windows and Linux".to_string());
+    }
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))?;
+    write_close_to_tray_preference(&config_dir, enabled)?;
+    state.0.store(enabled, Ordering::SeqCst);
+    Ok(enabled)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MainWindowCloseAction {
+    Hide,
+    Quit,
+}
+
+fn main_window_close_action(close_to_tray: bool) -> MainWindowCloseAction {
+    if cfg!(target_os = "macos")
+        || (cfg!(any(target_os = "windows", target_os = "linux")) && close_to_tray)
+    {
+        MainWindowCloseAction::Hide
+    } else {
+        MainWindowCloseAction::Quit
+    }
+}
+
+/// The autostart state as the OS records it.
+///
+/// On Windows this reads the two keys itself rather than calling `is_enabled`, which folds them
+/// together through the trailing-bytes rule above and so reports a re-enabled entry as off.
+fn autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
     // is_enabled only checks the entry file exists, so a DE-disabled entry would read as on.
-    if cfg!(target_os = "linux") && linux_autostart_disabled(&app) {
+    if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return Ok(false);
     }
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|error| error.to_string())
+    #[cfg(windows)]
+    {
+        // A Run key we cannot open reads as present and disabled, which is off here and
+        // restores nothing below: an unreadable key is not evidence either way.
+        let (present, disabled) = windows_autostart_entry_state(app);
+        Ok(present && !disabled)
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch()
+            .is_enabled()
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
+    autostart_enabled(&app)
 }
 
 #[tauri::command]
@@ -159,7 +361,10 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
     if enabled {
         harden_autostart_entry(&app);
     }
-    autolaunch.is_enabled().map_err(|error| error.to_string())
+    // After the OS write, so a failed one leaves no record to restore from, and on both arms:
+    // a stored `false` is what stops the restore from arguing with someone turning this off.
+    store_launch_at_login_preference(&app, enabled);
+    autostart_enabled(&app)
 }
 
 fn harden_autostart_entry(app: &tauri::AppHandle) {
@@ -204,6 +409,95 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
     };
     if let Some(quoted) = quoted_windows_run_command(&value) {
         let _ = run.set_value(name, &quoted);
+    }
+}
+
+/// Whether Windows itself holds the entry disabled, from the StartupApproved bytes.
+///
+/// Task Manager's Startup tab and Settings > Apps > Startup disable an entry by writing a
+/// timestamp into the last eight bytes here; they never delete the Run value. The state lives in
+/// the FIRST byte though: 02 for enabled, 03 for disabled, and 06 for enabled again after the
+/// user switched it back on. Only 02 leaves the trailing bytes zero, so reading them, as
+/// auto-launch does, calls every re-enabled entry disabled and never recovers.
+///
+/// An absent or truncated value is not a state Windows recorded, and it starts such an entry.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn startup_approved_disabled(bytes: &[u8]) -> bool {
+    match bytes.first() {
+        Some(0x02) | Some(0x06) | None => false,
+        Some(_) => true,
+    }
+}
+
+/// Restore a *deleted* entry, never a disabled one.
+///
+/// The distinction is the whole safety argument. Turning autostart off in Task Manager is a
+/// decision, and re-enabling it on the next launch would be the app overruling the user once a
+/// day. Deletion is not a decision anybody makes: no Windows UI removes the Run value, so an
+/// absent one against a stored `true` is something that happened *to* the install.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn should_restore_autostart_entry(
+    stored: Option<bool>,
+    entry_present: bool,
+    disabled: bool,
+) -> bool {
+    stored == Some(true) && !entry_present && !disabled
+}
+
+/// (Run value present, disabled by Windows). Unreadable registry reads as "present and disabled",
+/// the pair that restores nothing: a key we cannot read is not evidence anything was removed.
+#[cfg(windows)]
+fn windows_autostart_entry_state(app: &tauri::AppHandle) -> (bool, bool) {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let name = &app.package_info().name;
+    let Ok(run) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        KEY_QUERY_VALUE,
+    ) else {
+        return (true, true);
+    };
+    let present = run.get_value::<String, _>(name).is_ok();
+    let disabled = hkcu
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            KEY_QUERY_VALUE,
+        )
+        .ok()
+        .and_then(|approved| approved.get_raw_value(name).ok())
+        // No override recorded is the state a never-touched entry is in.
+        .is_some_and(|value| startup_approved_disabled(&value.bytes));
+    (present, disabled)
+}
+
+/// Whether an autostart entry the OS reports as off should be written back.
+///
+/// Windows only, and deliberately so. Removing a login item is a first-class gesture on the other
+/// two: macOS System Settings > Login Items deletes the LaunchAgent, and GNOME's startup UI
+/// deletes the .desktop file, so a restore there would resurrect something the user just removed.
+/// Windows has no such gesture, which is why its entry going missing is a bug and not a choice.
+fn restore_missing_autostart_entry(app: &tauri::AppHandle) -> bool {
+    #[cfg(windows)]
+    {
+        let (present, disabled) = windows_autostart_entry_state(app);
+        let restore = should_restore_autostart_entry(
+            stored_launch_at_login_preference(app),
+            present,
+            disabled,
+        );
+        if restore {
+            info!(
+                "The \"Run Unsloth at login\" entry is gone but was last set to on; restoring it."
+            );
+        }
+        restore
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        false
     }
 }
 
@@ -365,11 +659,16 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return;
     }
-    let autolaunch = app.autolaunch();
-    if !autolaunch.is_enabled().unwrap_or(false) {
+    if autostart_enabled(app).unwrap_or(false) {
+        // Adopt an entry made before this install kept a record, so the first thing that
+        // deletes it can be undone rather than being the one loss that teaches us to care.
+        if stored_launch_at_login_preference(app).is_none() {
+            store_launch_at_login_preference(app, true);
+        }
+    } else if !restore_missing_autostart_entry(app) {
         return;
     }
-    if autolaunch.enable().is_ok() {
+    if app.autolaunch().enable().is_ok() {
         harden_autostart_entry(app);
     }
 }
@@ -1180,9 +1479,9 @@ where
                     },
                     || {
                         quit_raises_the_overlay(
-                            // Windows only. macOS never reaches here from the close button,
-                            // which hides to the tray, and on Linux the button already quit
-                            // without an overlay: the freeze this covers was reported on
+                            // Windows only. macOS and an enabled Windows/Linux close-to-tray
+                            // preference bypass request_quit; Linux quits and tray quits do not use
+                            // the overlay. The freeze this covers was reported on
                             // Windows, where stop_backend spends its liveness, shutdown and
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
@@ -1519,6 +1818,8 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(new_close_to_tray_state())
+        .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
             set_training_active,
             set_renderer_activity,
@@ -1552,6 +1853,7 @@ fn main() {
             native_file_dialogs::save_native_file,
             native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::read_native_chat_import_chunk,
             native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
@@ -1570,6 +1872,8 @@ fn main() {
             mark_in_app_relaunch,
             clear_in_app_relaunch,
             reveal_main_window,
+            get_close_to_tray,
+            set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
         ])
@@ -1582,6 +1886,8 @@ fn main() {
             if launched_hidden {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
+
+            initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
             // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
@@ -1619,13 +1925,13 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.
                 api.prevent_close();
-                if cfg!(target_os = "macos") {
-                    // Closing a window leaves the app in the Dock; Reopen restores it.
-                    let _ = window.hide();
-                } else {
-                    // Elsewhere the close button means quit, not hiding what the user
-                    // believes they just closed.
-                    request_quit(window.app_handle());
+                let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);
+                match main_window_close_action(close_to_tray) {
+                    MainWindowCloseAction::Hide => {
+                        // The tray's Open action and a second app launch restore the window.
+                        let _ = window.hide();
+                    }
+                    MainWindowCloseAction::Quit => request_quit(window.app_handle()),
                 }
             }
         })
@@ -1729,12 +2035,122 @@ mod tests {
         assert!(!in_app_relaunch_marker_path(dir.path()).exists());
     }
 
+    #[test]
+    fn close_to_tray_preference_defaults_off_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(!read_close_to_tray_preference(dir.path()));
+        write_close_to_tray_preference(dir.path(), false).unwrap();
+        assert!(!read_close_to_tray_preference(dir.path()));
+        write_close_to_tray_preference(dir.path(), true).unwrap();
+        assert!(read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn invalid_close_to_tray_preference_falls_back_to_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert!(!read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn launch_at_login_preference_round_trips_and_starts_with_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Not Some(false): an install that has never been told cannot be restored to anything.
+        assert_eq!(read_launch_at_login_preference(dir.path()), None);
+        write_launch_at_login_preference(dir.path(), true).unwrap();
+        assert_eq!(read_launch_at_login_preference(dir.path()), Some(true));
+        write_launch_at_login_preference(dir.path(), false).unwrap();
+        assert_eq!(read_launch_at_login_preference(dir.path()), Some(false));
+    }
+
+    #[test]
+    fn an_unreadable_launch_at_login_preference_restores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(launch_at_login_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert_eq!(read_launch_at_login_preference(dir.path()), None);
+        assert!(!should_restore_autostart_entry(None, false, false));
+    }
+
+    #[test]
+    fn only_a_deleted_entry_with_a_stored_yes_is_restored() {
+        // The bug this exists for: the value is gone and the user had asked for it.
+        assert!(should_restore_autostart_entry(Some(true), false, false));
+
+        // Turned off in Task Manager. The value survives, so re-enabling would overrule them.
+        assert!(!should_restore_autostart_entry(Some(true), true, true));
+        // Deleted *and* disabled: still their decision, so it stays gone.
+        assert!(!should_restore_autostart_entry(Some(true), false, true));
+        // Nothing to restore: never asked for, or turned off on purpose.
+        assert!(!should_restore_autostart_entry(None, false, false));
+        assert!(!should_restore_autostart_entry(Some(false), false, false));
+        // Already there. reconcile_autostart_entry repoints it; this decides nothing.
+        assert!(!should_restore_autostart_entry(Some(true), true, false));
+    }
+
+    /// The state is the first byte, not the trailing timestamp.
+    #[test]
+    fn startup_approved_bytes_are_read_from_the_state_byte() {
+        // What auto-launch's own enable() writes: a 0x02 lead and eight zero bytes after it.
+        assert!(!startup_approved_disabled(&[
+            0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]));
+        // Disabled in Task Manager: 0x03, and the last eight bytes hold the timestamp.
+        assert!(startup_approved_disabled(&[
+            0x03, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
+        ]));
+        // Switched back on: 0x06, and the timestamp stays. Reading the trailing bytes calls
+        // this disabled, which is how a user who toggled the entry twice lost the setting.
+        assert!(!startup_approved_disabled(&[
+            0x06, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
+        ]));
+        // No state byte at all is no state Windows recorded, and it starts such an entry.
+        assert!(!startup_approved_disabled(&[0x02, 0, 0, 0]));
+        assert!(!startup_approved_disabled(&[]));
+    }
+
+    /// A re-enabled entry is present and on, so it is adopted and never restored over.
+    #[test]
+    fn a_re_enabled_entry_is_not_treated_as_deleted() {
+        let re_enabled = [
+            0x06, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01,
+        ];
+        let disabled = startup_approved_disabled(&re_enabled);
+
+        assert!(!disabled);
+        assert!(!should_restore_autostart_entry(Some(true), true, disabled));
+    }
+
+    #[test]
+    fn enabled_close_to_tray_hides_the_main_window_on_supported_desktops() {
+        let expected = if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
+            MainWindowCloseAction::Hide
+        } else {
+            MainWindowCloseAction::Quit
+        };
+        assert_eq!(main_window_close_action(true), expected);
+
+        let disabled_expected = if cfg!(target_os = "macos") {
+            MainWindowCloseAction::Hide
+        } else {
+            MainWindowCloseAction::Quit
+        };
+        assert_eq!(main_window_close_action(false), disabled_expected);
+    }
+
     #[cfg(target_os = "linux")]
     const BID: &str = "ai.unsloth.studio";
 
-    // Only XDG_DATA_HOME is swapped, and nothing else in the crate reads it, so the
-    // tests running beside these stay clear. HOME is left alone for the same reason:
-    // `dirs::home_dir` is all over this crate.
+    // Only XDG_DATA_HOME is swapped, and it is read elsewhere now (a relocated CLI
+    // child pins it), so the swap holds the crate-wide env lock and readers take it
+    // too. HOME is left alone: `dirs::home_dir` is all over this crate.
     #[cfg(target_os = "linux")]
     fn with_xdg_data_home<T>(value: &str, f: impl FnOnce() -> T) -> T {
         // The crate-wide lock, not one of this module's own: the path policy
@@ -1983,9 +2399,8 @@ mod tests {
         assert_eq!(
             events.into_inner(),
             ["reap"],
-            "macOS closes to the tray and Linux quit without an overlay before this \
-             existed, so neither may see the event at all, and neither may a tray quit \
-             with no window on screen"
+            "window-close and tray paths can bypass the overlay entirely, and a tray quit with no \
+             window on screen must not emit it"
         );
     }
 
