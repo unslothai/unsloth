@@ -121,7 +121,9 @@ function InheritedProjectSources({
         <HugeiconsIcon icon={Folder02Icon} strokeWidth={2} className="size-3.5" />
         <span>Project sources</span>
       </span>
-      <div className="flex flex-1 flex-row flex-wrap items-center gap-1.5">
+      {/* Same cap as the editable list: a linked folder can carry hundreds of
+          sources, and an uncapped row would swallow the chat viewport. */}
+      <div className="flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto">
         {documents.map((doc) => (
           <DocumentStatusChip
             key={`inherited:${doc.id}`}
@@ -146,6 +148,9 @@ function useThreadProjectId(threadId: string | null): string | null {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [resolved, setResolved] = useState<{
     threadId: string;
+    // The activeProjectId this answer was produced for. A change means the chat
+    // may have moved, so the old answer stops counting until the re-read lands.
+    trigger: string | null;
     projectId: string | null;
   } | null>(null);
 
@@ -164,16 +169,14 @@ function useThreadProjectId(threadId: string | null): string | null {
         }
         // No row yet: initialize() does not await the write, so the composer's
         // project is the answer that row is about to record.
-        const projectId = thread
-          ? (thread.projectId ?? null)
-          : useChatRuntimeStore.getState().activeProjectId;
-        setResolved({ threadId, projectId });
+        const projectId = thread ? (thread.projectId ?? null) : activeProjectId;
+        setResolved({ threadId, trigger: activeProjectId, projectId });
       },
       // A failed lookup is not proof of no project, but it is no basis for
       // filing a file into one either.
       () => {
         if (!cancelled) {
-          setResolved({ threadId, projectId: null });
+          setResolved({ threadId, trigger: activeProjectId, projectId: null });
         }
       },
     );
@@ -190,7 +193,9 @@ function useThreadProjectId(threadId: string | null): string | null {
   if (isThreadIncognito(threadId)) {
     return null;
   }
-  return resolved?.threadId === threadId ? resolved.projectId : null;
+  return resolved?.threadId === threadId && resolved.trigger === activeProjectId
+    ? resolved.projectId
+    : null;
 }
 
 /** The composer's attach control. Wording and glyph follow the active target, so

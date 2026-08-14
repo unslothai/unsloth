@@ -1766,6 +1766,12 @@ async function resolveChatInstructions(
     .join("\n\n");
 }
 
+// A run resolves the project separately for the sandbox, the RAG scope and the
+// instructions. While a fresh thread's row is still being written they all take
+// the composer fallback, so it is answered once per thread and reused, or
+// navigation between those calls could mix two projects into one request.
+const composerProjectByPendingThread = new Map<string, string | null>();
+
 async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
@@ -1784,6 +1790,7 @@ async function resolveProjectId(
       return null;
     }
     if (thread) {
+      composerProjectByPendingThread.delete(threadId);
       return thread.projectId ?? null;
     }
     // No row yet: initialize() does not await the write, so a fresh chat's first
@@ -1793,6 +1800,11 @@ async function resolveProjectId(
     if (isThreadIncognito(threadId)) {
       return null;
     }
+    const pending = composerProjectByPendingThread.get(threadId);
+    if (pending !== undefined) {
+      return pending;
+    }
+    composerProjectByPendingThread.set(threadId, composerProjectId ?? null);
   }
   return composerProjectId ?? null;
 }
