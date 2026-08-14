@@ -6,10 +6,13 @@ Fusion. ``dense_score`` is carried so callers can apply a similarity floor."""
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 
 from . import config, embeddings, store
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,11 +43,40 @@ def retrieve_dense(
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
     effective = model_name or config.effective_embedding_model()
-    vec = embeddings.encode([query], model_name = effective, normalize = True)[0]
+    # The identity comes from the encode, so it names the backend that actually served
+    # this query even if a concurrent ST failure swapped the process meanwhile.
+    vectors, identity = embeddings.encode_with_identity(
+        [query], model_name = effective, normalize = True
+    )
+    vec = vectors[0]
+    _warn_once_on_untagged(conn)
     return [
         Hit(cid, s, dense_score = s)
-        for cid, s in store.search_dense(conn, scope, vec, k, embedding_model = effective)
+        for cid, s in store.search_dense(conn, scope, vec, k, embedding_model = identity)
     ]
+
+
+_untagged_warned = False
+
+
+def _warn_once_on_untagged(conn: sqlite3.Connection) -> None:
+    """Say once that some documents predate embedder identities, so their vectors are
+    served as if current. We cannot tell which backend wrote them, and re-embedding a
+    corpus unasked is not obviously kinder than leaving it, so we report instead."""
+    global _untagged_warned
+    if _untagged_warned:
+        return
+    _untagged_warned = True
+    try:
+        stale = store.count_untagged_documents(conn)
+    except Exception:  # noqa: BLE001 - a diagnostic must never break retrieval
+        return
+    if stale:
+        logger.warning(
+            "%d document(s) were indexed before the embedder was recorded; they are "
+            "searched as if current. Re-upload them if dense results look wrong.",
+            stale,
+        )
 
 
 def _rrf(rankings: list[list[Hit]], rrf_k: int, top_k: int) -> list[Hit]:

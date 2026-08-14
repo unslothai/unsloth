@@ -95,6 +95,7 @@ from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
 from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
+from utils.process_lifetime import is_signalable_pid as _is_signalable_pid
 from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
@@ -3249,6 +3250,36 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _report_live_llama_timings(callback, chunk) -> None:
+    """Report request-scoped llama.cpp progress without altering the public stream."""
+    if callback is None or not isinstance(chunk, dict):
+        return
+    timings = chunk.get("timings")
+    sample = dict(timings) if isinstance(timings, dict) else {}
+    # Live samples are not TTFT; terminal metadata retains prompt_ms for the fallback.
+    sample.pop("prompt_ms", None)
+    progress = chunk.get("prompt_progress")
+    if isinstance(progress, dict):
+        try:
+            processed = max(0.0, float(progress.get("processed", 0)))
+            cached = max(0.0, float(progress.get("cache", 0)))
+            elapsed_ms = float(progress.get("time_ms", 0))
+            prompt_n = max(0.0, processed - cached)
+            if math.isfinite(elapsed_ms) and elapsed_ms > 0 and math.isfinite(prompt_n):
+                sample.update(
+                    prompt_n = prompt_n,
+                    prompt_per_second = prompt_n / (elapsed_ms / 1000.0),
+                )
+        except (TypeError, ValueError, OverflowError):
+            pass
+    if not sample:
+        return
+    try:
+        callback(sample)
+    except Exception:
+        logger.debug("Ignoring API monitor throughput callback failure", exc_info = True)
+
+
 # Host RAM to leave free on an integrated GPU, matching llama.cpp's own --fit
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
@@ -4803,6 +4834,27 @@ class LlamaCppBackend:
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_cache_lock = threading.Lock()
 
+    # The value form of the flash-attention flag. Newer llama.cpp declares it
+    # with an enum, "-fa, --flash-attn [on|off|auto]"; older builds take a bare
+    # boolean and reject a following "on" as a stray positional, which is an
+    # immediate "invalid argument" exit rather than a degraded launch.
+    _FLASH_ATTN_ENUM_RE = re.compile(
+        r"(?im)^[^\n]*--flash-attn[^\n]*\bon\b[ \t]*\|[ \t]*\boff\b[^\n]*$"
+    )
+
+    @classmethod
+    def _flash_attn_takes_value(cls, help_text: str) -> bool:
+        """Whether this build's --flash-attn accepts on/off/auto.
+
+        Fails open: a build whose help never mentions the flag at all keeps
+        today's behaviour, because the pinned prebuilt is the value form and a
+        wrong answer there would break the supported path for a hypothetical
+        one.
+        """
+        if not help_text or "--flash-attn" not in help_text:
+            return True
+        return bool(cls._FLASH_ATTN_ENUM_RE.search(help_text))
+
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
@@ -4839,6 +4891,13 @@ class LlamaCppBackend:
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
+                # Fail OPEN, unlike every key above. These three are emitted on
+                # every launch today, so a failed probe must keep emitting them;
+                # only a build whose --help positively lacks one drops it.
+                "supports_no_context_shift": True,
+                "supports_jinja": True,
+                "supports_flash_attn": True,
+                "flash_attn_takes_value": True,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
                 "supports_cache_ram": False,
@@ -4875,6 +4934,11 @@ class LlamaCppBackend:
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
+        # See the fallback dict: these fail open.
+        supports_no_context_shift = True
+        supports_jinja = True
+        supports_flash_attn = True
+        flash_attn_takes_value = True
         supports_fit_ctx = False
         supports_fit_target = False
         supports_cache_ram = False
@@ -5011,6 +5075,19 @@ class LlamaCppBackend:
                 spec_draft_n_max_flag = "--draft-max"
 
             supports_kv_unified = _is_real("--kv-unified")
+            # Only once the help actually parsed AND `--help` succeeded. Empty
+            # `blocks` means the probe told us nothing, and a nonzero exit means
+            # the listing may be a fragment; neither may read as "absent" for a
+            # flag we would otherwise always send. A real llama-server prints
+            # usage and exits 0, so this costs no supported build anything.
+            if probe_ok and blocks:
+                supports_no_context_shift = _is_real("--no-context-shift")
+                supports_jinja = _is_real("--jinja")
+                # Two answers, not one: whether the flag exists, and whether its
+                # declaration takes a value. A build predating flash attention
+                # has neither, and emitting the flag there is an immediate exit.
+                supports_flash_attn = _is_real("--flash-attn")
+                flash_attn_takes_value = cls._flash_attn_takes_value(help_text)
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
@@ -5076,6 +5153,10 @@ class LlamaCppBackend:
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
+            "supports_no_context_shift": supports_no_context_shift,
+            "supports_jinja": supports_jinja,
+            "supports_flash_attn": supports_flash_attn,
+            "flash_attn_takes_value": flash_attn_takes_value,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
             "supports_cache_ram": supports_cache_ram,
@@ -5868,6 +5949,24 @@ class LlamaCppBackend:
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
         fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
+
+        Both of those inputs describe the MACHINE, not the moment. MLX's
+        max_recommended_working_set_size is a static device property, and
+        virtual_memory().total obviously is, so on a 16 GB Mac the budget came
+        out around 9 GB whether the machine was idle or already holding several
+        gigabytes. Studio's own idle footprint alone is over a gigabyte once the
+        warm thread has imported torch and, on Apple Silicon, MLX. The fit then
+        sized a context against headroom that was not there, and llama-server
+        died in KV or compute allocation.
+
+        So take whichever is smaller: the device ceiling, or what is actually
+        available right now. The ceiling still applies on a machine with plenty
+        free, which is the case the working-set number was chosen for.
+
+        _APPLE_UNIFIED_MEMORY_FRACTION then earns a second job it did not have
+        over a static ceiling: available is a snapshot, and llama-server spends
+        seconds loading weights, so another app can take memory inside that
+        window. Budgeting all of it would re-create the failure this avoids.
         """
         from utils.hardware import is_apple_silicon
 
@@ -5880,12 +5979,31 @@ class LlamaCppBackend:
                 rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
         except Exception:
             rec_bytes = 0
+        vm = None
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+        except Exception:
+            vm = None
         if rec_bytes <= 0:
+            if vm is None:
+                return 0
             try:
-                import psutil
-                rec_bytes = int(psutil.virtual_memory().total)
+                rec_bytes = int(vm.total)
             except Exception:
                 return 0
+        # available, not free: psutil's macOS free subtracts speculative pages and
+        # leaves out the inactive queue, so it reads far below what a new allocation
+        # can get. available is inactive + free (psutil arch/osx/mem.c), which adds
+        # that reclaimable cache back. An estimate either way, since it counts dirty
+        # inactive pages that cost a compression to reclaim and ignores the
+        # compressor entirely. Only ever lowers the budget.
+        try:
+            available = int(getattr(vm, "available", 0) or 0) if vm is not None else 0
+        except Exception:
+            available = 0
+        if available > 0:
+            rec_bytes = min(rec_bytes, available)
         return int(rec_bytes * _APPLE_UNIFIED_MEMORY_FRACTION)
 
     @staticmethod
@@ -11131,52 +11249,21 @@ class LlamaCppBackend:
         return out if found else None
 
     @staticmethod
-    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
-        """Return cmd with flash attention forced off, or None when its effective
-        (last-wins) value is already off/absent so there is nothing to retry. FA
-        kernels hard-crash at startup on some ROCm builds; disabling FA keeps
-        vision and MTP, the least destructive rung. A bare --flash-attn/-fa reads
-        as on, so it counts toward the effective value and is neutralised too;
-        every form is flipped in place (length preserved for downstream slices)."""
+    def _reset_quantized_v_cache(cmd: list[str], reason: str) -> list[str]:
+        """Return cmd with any quantized V cache reset to f16, for a launch that
+        runs without flash attention.
+
+        A quantized V cache requires flash attention in llama.cpp: the init aborts
+        with "V cache quantization requires flash_attn". A quantized K cache has no
+        such requirement and runs fine without FA, so it is left untouched --
+        resetting it would needlessly enlarge the K cache and can OOM a
+        memory-constrained config. Main and draft are both reset (the draft context
+        shares the global --flash-attn flag, so its V cache aborts too) to f16 (the
+        llama.cpp default); non-quantized types -- f16/bf16/f32 -- run fine without
+        FA and are left untouched. The value is rewritten in place so the list
+        length is preserved for downstream slices.
+        """
         out = list(cmd)
-
-        def explicit(i):
-            nxt = out[i + 1] if i + 1 < len(out) else None
-            return nxt if nxt in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES else None
-
-        effective = None
-        for i, tok in enumerate(out):
-            name = _flag_name(tok)
-            if name in ("--flash-attn", "-fa") and "=" in tok:
-                effective = tok.partition("=")[2]
-            elif name in ("--flash-attn", "-fa"):
-                effective = explicit(i) or "on"
-        if effective not in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
-            return None
-        for i, tok in enumerate(out):
-            name = _flag_name(tok)
-            if name in ("--flash-attn", "-fa") and "=" in tok:
-                flag, _, value = tok.partition("=")
-                if value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
-                    out[i] = f"{flag}=off"
-            elif name in ("--flash-attn", "-fa"):
-                if explicit(i) in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
-                    out[i + 1] = "off"
-                elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
-                    out[i] = f"{tok}=off"
-
-        # A quantized V cache requires flash attention in llama.cpp: the init
-        # aborts with "V cache quantization requires flash_attn". A quantized K
-        # cache has no such requirement and runs fine without FA, so it is left
-        # untouched -- resetting it would needlessly enlarge the K cache and can
-        # OOM a memory-constrained config. Studio launches with FA on, so a
-        # quantized --cache-type-v is legal at launch but would make THIS FA-off
-        # retry crash on init instead of recovering. Reset a quantized V cache --
-        # main and draft (the draft context shares the global --flash-attn flag,
-        # so its V cache aborts too) -- to f16 (the llama.cpp default);
-        # non-quantized types -- f16/bf16/f32 -- run fine without FA and are left
-        # untouched. The value is rewritten in place so the list length is
-        # preserved for downstream slices, matching the flash-attn flip above.
         _v_cache_flags = (
             "--cache-type-v",
             "-ctv",
@@ -11206,11 +11293,64 @@ class LlamaCppBackend:
                     _cache_reset = True
         if _cache_reset:
             logger.info(
-                "V cache dtype reset to f16 because flash attention was disabled "
-                "by the crash-recovery fallback (quantized V cache requires flash "
-                "attention in llama.cpp; the K cache is left untouched)."
+                "V cache dtype reset to f16 because flash attention is off (%s): a "
+                "quantized V cache requires flash attention in llama.cpp. The K "
+                "cache is left untouched.",
+                reason,
             )
         return out
+
+    @staticmethod
+    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
+        """Return cmd with flash attention forced off, or None when its effective
+        (last-wins) value is already off/absent so there is nothing to retry. FA
+        kernels hard-crash at startup on some ROCm builds; disabling FA keeps
+        vision and MTP, the least destructive rung. A bare --flash-attn/-fa reads
+        as on, so it counts toward the effective value and is neutralised too --
+        by dropping it, since only the older boolean builds accept the bare form
+        and they take no value. Valued forms are flipped in place."""
+        out = list(cmd)
+
+        def explicit(i):
+            nxt = out[i + 1] if i + 1 < len(out) else None
+            return nxt if nxt in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES else None
+
+        effective = None
+        for i, tok in enumerate(out):
+            name = _flag_name(tok)
+            if name in ("--flash-attn", "-fa") and "=" in tok:
+                effective = tok.partition("=")[2]
+            elif name in ("--flash-attn", "-fa"):
+                effective = explicit(i) or "on"
+        if effective not in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+            return None
+        # A bare flag cannot be turned off in place: llama.cpp looks each argv
+        # token up verbatim (only '_' -> '-'), so --flash-attn=off is "invalid
+        # argument" everywhere, and the boolean builds that are the only ones
+        # accepting the bare form take no value at all. Dropping the token is
+        # what disables FA there. Collected first, removed back to front, so the
+        # indices stay valid.
+        bare_at: list[int] = []
+        for i, tok in enumerate(out):
+            name = _flag_name(tok)
+            if name in ("--flash-attn", "-fa") and "=" in tok:
+                flag, _, value = tok.partition("=")
+                if value in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+                    out[i] = f"{flag}=off"
+            elif name in ("--flash-attn", "-fa"):
+                if explicit(i) in _LLAMA_ARG_TRUE_OR_AUTO_VALUES:
+                    out[i + 1] = "off"
+                elif explicit(i) is None:  # bare flag (reads as on) -> drop it
+                    bare_at.append(i)
+        for i in reversed(bare_at):
+            del out[i]
+
+        # Studio launches with FA on, so a quantized --cache-type-v is legal at
+        # launch but would make THIS FA-off retry crash on init instead of
+        # recovering.
+        return LlamaCppBackend._reset_quantized_v_cache(
+            out, "disabled by the crash-recovery fallback"
+        )
 
     @staticmethod
     def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
@@ -11233,6 +11373,19 @@ class LlamaCppBackend:
                 env.pop(var, None)
                 dropped = True
         return dropped
+
+    @staticmethod
+    def _drop_env_flash_attn(env: MutableMapping[str, str]) -> bool:
+        """Drop an inherited LLAMA_ARG_FLASH_ATTN in place before a flash-attn-off
+        retry, returning True if anything was removed.
+
+        On the older builds whose --flash-attn takes no value the argv rewrite can
+        only drop the flag, never negate it, and llama.cpp reads the env var before
+        parsing argv, so LLAMA_ARG_FLASH_ATTN=1 would turn the kernel that just
+        crashed straight back on. Newer builds get an explicit --flash-attn off,
+        which already beats the env, so dropping it changes nothing there.
+        """
+        return env.pop("LLAMA_ARG_FLASH_ATTN", None) is not None
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -11974,6 +12127,11 @@ class LlamaCppBackend:
             # clamp before an HF download, command build after), and with a 30s window a
             # later success would otherwise erase an earlier one that already degraded it.
             _launch_probe_inconclusive = False
+            # Set where flash attention ends up off with the argv unable to say
+            # so: a build that has no --flash-attn at all, and the crash-recovery
+            # retry on a build whose flag takes no value, which disables FA by
+            # dropping it. Either way the default below has to carry the answer.
+            _flash_attn_known_off = False
 
             def _launch_caps(bin_path):
                 nonlocal _launch_probe_inconclusive
@@ -14075,6 +14233,14 @@ class LlamaCppBackend:
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
+                # Gated like every other optional flag, but failing OPEN: these
+                # are emitted on every launch, so an unreadable --help keeps
+                # today's command and only a build that positively lacks one
+                # drops it. Harmless for the pinned prebuilt, which has all
+                # three; the case this covers is a stale or user-supplied
+                # LLAMA_SERVER_PATH, where an unknown argument is an immediate
+                # exit rather than a degraded launch.
+                _caps = _launch_caps(binary)
                 cmd = [
                     binary,
                     "-m",
@@ -14083,11 +14249,23 @@ class LlamaCppBackend:
                     str(self._port),
                     "--parallel",
                     str(n_parallel),
-                    "--flash-attn",
-                    "on",  # Force flash attention for speed
-                    # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
-                    "--no-context-shift",
                 ]
+                # Force flash attention for speed. Two separate answers: whether
+                # the build has the flag at all (predates flash attention, or a
+                # wrapper that never exposed it), and whether its declaration
+                # takes a value -- older builds take -fa as a bare boolean and
+                # read a following "on" as a stray positional.
+                if _caps.get("supports_flash_attn", True):
+                    cmd.append("--flash-attn")
+                    if _caps.get("flash_attn_takes_value", True):
+                        cmd.append("on")
+                else:
+                    # Only ever reached on an authoritative --help that has no
+                    # flash attention to lose, so there is no speed to give up.
+                    _flash_attn_known_off = True
+                # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
+                if _caps.get("supports_no_context_shift", True):
+                    cmd.append("--no-context-shift")
                 # A positive context is always passed (in auto-fit, --fit then
                 # optimizes the gpu-layer offload around it). When auto-fit has
                 # no explicit context, omit -c so --fit sizes it to fit VRAM:
@@ -14272,7 +14450,8 @@ class LlamaCppBackend:
                     cmd.extend(["--threads", str(n_threads)])
 
                 # Enable Jinja chat template rendering
-                cmd.extend(["--jinja"])
+                if _caps.get("supports_jinja", True):
+                    cmd.extend(["--jinja"])
 
                 # KV cache data type
                 _valid_cache_types = {
@@ -14769,6 +14948,18 @@ class LlamaCppBackend:
                 if _pv_device_pin:
                     cmd.extend(_pv_device_pin)
 
+                # A build with no --flash-attn cannot run a quantized V cache
+                # either: llama.cpp aborts init with "V cache quantization
+                # requires flash_attn", and the KV type is emitted from the
+                # user's setting with no flash-attn coupling. The crash-recovery
+                # rung resets V for exactly that abort, but it only fires when
+                # the argv had a flag to turn off, so on a build that never had
+                # one nothing would catch it. Before the log below, so what is
+                # logged is what launches; length is preserved, so _spec_start
+                # still indexes the same tokens.
+                if _flash_attn_known_off:
+                    cmd = self._reset_quantized_v_cache(cmd, "this build has no --flash-attn")
+
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
@@ -14824,6 +15015,23 @@ class LlamaCppBackend:
                 # arg handler and silently force hardware_concurrency(). #5692
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
+                # A build whose help has no --flash-attn never registers the option,
+                # so it never reads LLAMA_ARG_FLASH_ATTN either (llama.cpp resolves
+                # each env var through the arg that declares it). Leaving an
+                # inherited one in place would only fool the accounting below, which
+                # reads env plus argv and would then record flash attention as on for
+                # a server running without it, under-sizing the padded V cache.
+                if _flash_attn_known_off and self._drop_env_flash_attn(env):
+                    logger.info(
+                        "Dropped inherited LLAMA_ARG_FLASH_ATTN: this build has no --flash-attn."
+                    )
+                # Same for an env-only quantized V cache, which the argv reset
+                # above cannot reach.
+                if _flash_attn_known_off and self._drop_env_quantized_v_cache(env):
+                    logger.info(
+                        "Dropped inherited quantized V-cache env: this build has "
+                        "no --flash-attn."
+                    )
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
@@ -15671,6 +15879,15 @@ class LlamaCppBackend:
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
                             )
+                        # Same reach problem for the flag itself: where the rewrite
+                        # could only drop a bare --flash-attn, the env var alone
+                        # still enables it.
+                        if self._drop_env_flash_attn(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
+                                "--flash-attn off retry."
+                            )
+                        _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
@@ -15726,6 +15943,15 @@ class LlamaCppBackend:
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
                             )
+                        # Same reach problem for the flag itself: where the rewrite
+                        # could only drop a bare --flash-attn, the env var alone
+                        # still enables it.
+                        if self._drop_env_flash_attn(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
+                                "--flash-attn off retry."
+                            )
+                        _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = (
                             _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
@@ -15972,7 +16198,9 @@ class LlamaCppBackend:
                     int(self._DEFAULT_N_UBATCH if _launched_ubatch is None else _launched_ubatch),
                 )
                 self._flash_attn_enabled = (
-                    _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)
+                    _flash_attn_enabled_from_args(
+                        _last_spawn_cmd, default = not _flash_attn_known_off, env = env
+                    )
                     and self._architecture != "grok"
                 )
                 self._effective_cache_types = _effective_main_cache_types(
@@ -16930,8 +17158,17 @@ class LlamaCppBackend:
 
     @staticmethod
     def _leading_process_group(pid):
-        """The pid's own process group, when it leads one. None otherwise."""
-        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+        """The pid's own process group, when it leads one. None otherwise.
+
+        `not pid` rejects 0 and None but not 1, and `getpgid(1) == 1`, so init
+        reads as a group leader here and the caller below would then broadcast
+        SIGKILL to every process the user owns. The pid comes from a live Popen
+        today so it cannot be 1, but the floor is a line and the consequence of
+        losing that property later is not recoverable.
+        """
+        if not _is_signalable_pid(pid):
+            return None
+        if os.name != "posix" or not hasattr(os, "getpgid"):
             return None
         try:
             pgid = os.getpgid(pid)
@@ -16942,7 +17179,9 @@ class LlamaCppBackend:
     @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
-        if pgid is None or not hasattr(os, "killpg"):
+        if not _is_signalable_pid(pgid):
+            return  # killpg(1) is kill(-1); killpg(0) is our own group
+        if not hasattr(os, "killpg"):
             return
         try:
             os.killpg(pgid, signal.SIGKILL)
@@ -17229,7 +17468,12 @@ class LlamaCppBackend:
         except Exception:
             pid = -1
 
-        if pid <= 0:
+        # `pid <= 0` let pid 1 through. The cmdline check further down is what
+        # actually keeps this honest and init cannot pass it, but the reaper in
+        # process_lifetime had a start-time identity check that was just as
+        # convincing and a record naming pid 1 still went through it, so the
+        # cheap bound goes in front of the clever one here too.
+        if not _is_signalable_pid(pid):
             cls._unlink_pidfile(path)  # garbage record
             return 0
         if pid == os.getpid():
@@ -17491,6 +17735,14 @@ class LlamaCppBackend:
 
             # -- Ownership check, orphan check, kill ---------------------------
             for pid, binary, kill in candidates:
+                # Floored here rather than in each enumerator: both the /proc scan
+                # and the psutil scan feed this loop, and a third one added later
+                # would too. Not hypothetical for pid 1 either, since #7894
+                # established Studio can run as a container entrypoint, and a
+                # container whose entrypoint is llama-server puts a process this
+                # sweep recognises at pid 1. Killing it takes the container down.
+                if not _is_signalable_pid(pid):
+                    continue
                 # Ownership: exact match OR binary under a known root.
                 is_ours = binary in exact_binaries or any(
                     binary.is_relative_to(root) for root in resolved_roots
@@ -18211,6 +18463,37 @@ class LlamaCppBackend:
                 yield response, first_token_deadline
 
     @staticmethod
+    def _sse_event_has_generated_output(event: str) -> bool:
+        """Return true when a complete SSE event carries model-generated output."""
+        payload_lines = [
+            line[5:].lstrip() for line in event.splitlines() if line.startswith("data:")
+        ]
+        if not payload_lines:
+            return False
+        try:
+            data = json.loads("\n".join(payload_lines))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if data.get("type") == "diffusion_frame":
+            return True
+        choices = data.get("choices")
+        if not isinstance(choices, list):
+            return False
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict) and any(
+                value not in (None, "", []) for key, value in delta.items() if key != "role"
+            ):
+                return True
+            if choice.get("text") not in (None, ""):
+                return True
+        return False
+
+    @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
         cancel_event: Optional[threading.Event] = None,
@@ -18223,6 +18506,7 @@ class LlamaCppBackend:
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
+        prefill_sse_buffer = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
@@ -18234,7 +18518,17 @@ class LlamaCppBackend:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
                     LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
                 chunk = next(text_iter)
-                if chunk:
+                starts_output = last_chunk_at is not None
+                if chunk and last_chunk_at is None:
+                    prefill_sse_buffer += chunk
+                    while match := re.search(r"(?:\r\n|\r|\n){2}", prefill_sse_buffer):
+                        event = prefill_sse_buffer[: match.start()]
+                        prefill_sse_buffer = prefill_sse_buffer[match.end() :]
+                        if LlamaCppBackend._sse_event_has_generated_output(event):
+                            starts_output = True
+                            prefill_sse_buffer = ""
+                            break
+                if chunk and starts_output:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,
@@ -18586,6 +18880,7 @@ class LlamaCppBackend:
         continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -18622,6 +18917,9 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
+        if perf_callback is not None:
+            payload["return_progress"] = True
+            payload["timings_per_token"] = True
         # Per-request enable_thinking / reasoning_effort / preserve_thinking
         _reasoning_kw = self._request_reasoning_kwargs(
             enable_thinking, reasoning_effort, preserve_thinking
@@ -18697,6 +18995,7 @@ class LlamaCppBackend:
 
                         try:
                             data = json.loads(line[6:])
+                            _report_live_llama_timings(perf_callback, data)
                             # Diffusion frame (per-step canvas) from the shim: forward untouched so
                             # the frontend renders it in place. No assistant text, so it never enters
                             # the cumulative content.
@@ -18787,6 +19086,7 @@ class LlamaCppBackend:
                     continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
+                    perf_callback = perf_callback,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -18830,6 +19130,7 @@ class LlamaCppBackend:
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -19110,6 +19411,10 @@ class LlamaCppBackend:
                 "repeat_penalty": repetition_penalty,
                 "presence_penalty": presence_penalty,
             }
+
+            if perf_callback is not None:
+                payload["return_progress"] = True
+                payload["timings_per_token"] = True
             # As in the passthrough builder: if every name carried markup the catalog is
             # now empty, and "tools": [] would still advertise tool use.
             if safe_tools:
@@ -19229,6 +19534,8 @@ class LlamaCppBackend:
 
                             try:
                                 chunk_data = json.loads(line[6:])
+
+                                _report_live_llama_timings(perf_callback, chunk_data)
                                 _ct = chunk_data.get("timings")
                                 if _ct:
                                     _iter_timings = _ct
@@ -20273,6 +20580,10 @@ class LlamaCppBackend:
             stream_payload["seed"] = seed
         stream_payload["stream_options"] = {"include_usage": True}
 
+        if perf_callback is not None:
+            stream_payload["return_progress"] = True
+            stream_payload["timings_per_token"] = True
+
         cumulative = ""
         _last_emitted = ""
         in_thinking = False
@@ -20332,6 +20643,8 @@ class LlamaCppBackend:
 
                         try:
                             chunk_data = json.loads(line[6:])
+
+                            _report_live_llama_timings(perf_callback, chunk_data)
                             # Capture server timings/usage from final chunks.
                             _chunk_timings = chunk_data.get("timings")
                             if _chunk_timings:

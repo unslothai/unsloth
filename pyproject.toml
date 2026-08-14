@@ -81,11 +81,23 @@ include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = [
     "images*",
     "tests*",
+    "studio.backend.tests*",
+    "studio.backend.*.tests*",
     "unsloth_compiled_cache*",
     "*.unsloth_compiled_cache*",
     "*.node_modules",
     "*.node_modules.*",
 ]
+
+# packages.find only decides what is importable. include-package-data then hands
+# every tracked file to the nearest parent package that survived, so dropping
+# studio.backend.tests above just re-shipped the same 505 files as data of
+# studio.backend (pypa/setuptools#3260). exclude-package-data has the highest
+# precedence of the file selection options, so the veto has to be repeated here.
+# Source layout, not the wheel, so the sdist keeps the suites either way.
+[tool.setuptools.exclude-package-data]
+"studio.backend" = ["tests/*"]
+"studio.backend.hub" = ["tests/*"]
 
 [project.optional-dependencies]
 # Studio's server stack, mirroring studio/backend/requirements/studio.txt.
