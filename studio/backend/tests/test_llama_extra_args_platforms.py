@@ -106,17 +106,13 @@ def test_windows_unicode_slot_path_only_drops_optional_persistence(tmp_path, mon
     ascii_dir = tmp_path / "Egor" / "llama-slots"
     unicode_dir = tmp_path / "Егор" / "llama-slots"
 
-    _ascii_backend, ascii_cmd = _launch_with_slot_dir(
-        tmp_path, monkeypatch, windows, ascii_dir
-    )
+    _ascii_backend, ascii_cmd = _launch_with_slot_dir(tmp_path, monkeypatch, windows, ascii_dir)
     unicode_backend, unicode_cmd = _launch_with_slot_dir(
         tmp_path, monkeypatch, windows, unicode_dir
     )
 
     assert ascii_cmd[ascii_cmd.index("--slot-save-path") + 1] == str(ascii_dir)
-    assert _stable(unicode_cmd) == _without_flag_value(
-        _stable(ascii_cmd), "--slot-save-path"
-    )
+    assert _stable(unicode_cmd) == _without_flag_value(_stable(ascii_cmd), "--slot-save-path")
     assert unicode_backend._slot_save_dir is None
     assert unicode_backend._slot_save_binary is None
 
@@ -125,9 +121,7 @@ def test_windows_unicode_slot_path_only_drops_optional_persistence(tmp_path, mon
 def test_unicode_slot_path_is_unchanged_off_native_windows(tmp_path, monkeypatch, platform):
     slot_dir = tmp_path / "Егор" / "llama-slots"
 
-    _backend_instance, cmd = _launch_with_slot_dir(
-        tmp_path, monkeypatch, platform, slot_dir
-    )
+    _backend_instance, cmd = _launch_with_slot_dir(tmp_path, monkeypatch, platform, slot_dir)
 
     assert cmd[cmd.index("--slot-save-path") + 1] == str(slot_dir)
 
