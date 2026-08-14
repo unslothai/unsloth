@@ -879,3 +879,34 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     assert "--model-draft" not in cmd
     assert backend.spec_fallback_reason == "drafter_no_vram"
     assert cmd[cmd.index("-c") + 1] == "8192"
+
+
+def _offload_backend(tmp_path, *, gguf_gb, free_mib):
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, free_mib, 6141)])
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
+    # no subset holds the model, so --fit on owns placement and spills to host ram
+    backend._select_gpus = lambda *args, **kwargs: (None, True)
+    return backend, gguf
+
+
+def test_fit_spill_larger_than_system_ram_is_refused(tmp_path, monkeypatch):
+    """The field case: a 13.3 GB GGUF on a 6 GB laptop card holding 4877 MiB free
+    leaves ~8.5 GB in host RAM, which a 10 GB host cannot hold. Unrefused, the
+    mmap'd spill thrashes until the OS kills Studio and the desktop session."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
+def test_fit_spill_a_large_ram_host_can_hold_still_launches(tmp_path, monkeypatch):
+    """Deliberate CPU offload stays supported; only a shortfall refuses."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 64_000)
+    )
+
+    assert "--fit" in _launch(backend, gguf)["cmd"]

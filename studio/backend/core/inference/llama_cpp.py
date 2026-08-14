@@ -6840,6 +6840,31 @@ class LlamaCppBackend:
             "(on WSL, raise the memory limit in .wslconfig)."
         )
 
+    @staticmethod
+    def _host_offload_shortfall_message(
+        offload_bytes: int,
+        avail_mib: Optional[int],
+        headroom_mib: int = 2048,
+    ) -> Optional[str]:
+        """On a discrete GPU, return a user-facing refusal when the part of a load
+        that misses VRAM cannot fit in available system RAM (else None). The spill is
+        mmap'd, so an oversized one thrashes the mapping instead of failing, until the
+        OS kills the app. Priced against free VRAM with no margin subtracted, so it
+        under-states the spill and only an unambiguous shortfall refuses. None avail
+        (unknown RAM), and anything VRAM-resident, never refuse."""
+        if offload_bytes <= 0 or avail_mib is None:
+            return None
+        need_mib = offload_bytes / (1024 * 1024)
+        if need_mib <= avail_mib - headroom_mib:
+            return None
+        return (
+            f"About {need_mib / 1024:.0f} GB of this model does not fit in GPU memory "
+            f"and would run from system RAM, but only about {avail_mib / 1024:.0f} GB "
+            "is available. The weights are memory-mapped, so the machine pages them in "
+            "and out until it stops responding and the OS kills the app. Use a smaller "
+            "or more quantized GGUF, lower the context length, or free memory."
+        )
+
     # Skip the wait when the last kill is older than this; the driver has
     # already reclaimed the prior process's allocations.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
@@ -13418,6 +13443,9 @@ class LlamaCppBackend:
                 _arch_gate_forced_cpu = False
                 total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                # assigned last in the fit try, so None means no fit ran and no gpu pool to price
+                kv_cache_bytes: Optional[int] = None
+                _mtp_reserve_bytes = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -14814,6 +14842,33 @@ class LlamaCppBackend:
                             _ram_msg = None
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)
+
+                # same ceiling for a discrete gpu, where only the spill lands in host ram
+                if (
+                    use_fit
+                    and model_size is not None
+                    and kv_cache_bytes is not None
+                    and not self._amd_apu_wants_unified_memory(gpu_indices)
+                ):
+                    # a cpu-forced launch carries --device none, so it holds no vram
+                    _fit_vram_mib = (
+                        0
+                        if (_paravirtual_cpu_forced or _arch_gate_forced_cpu)
+                        else sum(
+                            max(0, _free)
+                            for _idx, _free in _detected_gpus
+                            if gpu_indices is None or _idx in gpu_indices
+                        )
+                    )
+                    _offload_msg = self._host_offload_shortfall_message(
+                        model_size
+                        + kv_cache_bytes
+                        + _mtp_reserve_bytes
+                        - _fit_vram_mib * 1024 * 1024,
+                        self._available_system_memory_mib(),
+                    )
+                    if _offload_msg:
+                        raise RuntimeError(_offload_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names. A projector passed only via
