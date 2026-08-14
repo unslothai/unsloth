@@ -285,9 +285,7 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         assert isinstance(error, RuntimeError)
         assert launches == []
 
-    def test_the_uis_default_speculative_auto_still_launches_on_cpu(
-        self, tmp_path, monkeypatch
-    ):
+    def test_the_uis_default_speculative_auto_still_launches_on_cpu(self, tmp_path, monkeypatch):
         # The chat store seeds speculativeType from readPersistedSpeculativeType(),
         # which defaults to "auto", so nearly every /load carries it. Auto resolves
         # to a drafterless ngram mode here, no --model-draft is emitted and the
