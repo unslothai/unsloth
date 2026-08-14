@@ -368,10 +368,9 @@ test("a model without custom code reports no verdict to carry", async () => {
   assert.equal(outcome.requiresTrustRemoteCode, false);
 });
 
-// The other half of the question: everything that worked before this gate existed has
-// to keep working. The realistic mismatch is a frontend bundle newer than the backend
-// serving it, which is every in-place upgrade between the moment the assets swap and the
-// moment the server restarts. The route answers 404 or 405 and the check throws.
+// Everything that worked before this gate has to keep working. The realistic mismatch
+// is a bundle newer than the backend serving it, which is every in-place upgrade between
+// the assets swapping and the server restarting: the route 404s and the check throws.
 for (const [label, failure] of [
   ["a 404 from a backend without the route", new Error("404: API endpoint not found")],
   ["a 405 from a backend without the route", new Error("405: Method Not Allowed")],

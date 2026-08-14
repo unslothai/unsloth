@@ -1280,9 +1280,9 @@ def test_waiter_never_answers_no_upgrade_while_the_refresh_is_still_running(monk
     tl.clear_caches()
 
 
-# The transfer budget is bounded from above by the tests near it. The risk it carries is
-# the opposite one, and it lands on chat as well as training: a budget that also rejects
-# ORDINARY responses would silently stop /validate ever finding an upgrade.
+# The tests near this bound the transfer budget from above. The opposite risk lands on
+# chat as well as training: a budget that also rejects ORDINARY responses would silently
+# stop /validate ever finding an upgrade.
 
 
 class _BodyServer:
@@ -1369,17 +1369,16 @@ def test_an_empty_body_is_not_a_failure():
 
 
 def test_a_missing_file_stays_distinguishable_from_a_failure():
-    # auto_mappings.py does not exist on pre-5.10 tags, so a 404 has to remain its own
-    # answer: read as a failure it would break every lookup against an older tag, and
-    # read as an empty body it would cache a mapping that supports nothing.
+    # auto_mappings.py does not exist on pre-5.10 tags, so a 404 stays its own answer:
+    # as a failure it breaks every lookup against an older tag, as an empty body it
+    # caches a mapping that supports nothing.
     with _BodyServer(b"nope", status = 404) as server:
         assert tl._fetch_text(server.url) == tl._FETCH_MISSING
 
 
 def test_a_truncated_source_fails_the_lookup_instead_of_shrinking_the_map(monkeypatch):
-    # The worst outcome this module can produce: a short mapping cached for the TTL as
-    # "these are the architectures the release ships", which offers an upgrade to every
-    # model missing from it.
+    # The worst outcome here: a short mapping cached for the TTL as "the architectures
+    # this release ships", offering an upgrade to every model missing from it.
     truncated = _AUTO_SOURCE[: len(_AUTO_SOURCE) // 2].encode()
     with _BodyServer(truncated) as server:
         monkeypatch.setattr(tl, "_RAW_URL", server.url + "?{ref}{name}")

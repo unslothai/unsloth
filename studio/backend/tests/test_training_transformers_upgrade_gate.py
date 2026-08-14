@@ -352,15 +352,13 @@ def test_route_is_off_the_openai_compatible_mount():
     assert "/transformers-upgrade-check" not in {route.path for route in inf_mod.router.routes}
 
 
-# The other half of the question: for everything that worked BEFORE this gate existed,
-# does it still behave exactly as it did? The tests above prove the gate fires; these
-# pin the far more common case where it must not.
+# The tests above prove the gate fires. These pin the far more common case where it
+# must not: everything that worked before it existed still behaving as it did.
 
 
 def test_an_old_client_sends_the_identifier_alone():
-    # Every added request field has to be optional, or a frontend built before them
-    # (an in-place upgrade mid-restart, a desktop build whose bundle leads its backend)
-    # fails validation on a route that used to accept its payload.
+    # Every added field has to be optional, or a frontend built before them (an
+    # in-place upgrade mid-restart) fails validation on a payload the route once took.
     from models.inference import TransformersUpgradeCheckRequest
 
     request = TransformersUpgradeCheckRequest(model_name = MODEL)
@@ -370,8 +368,8 @@ def test_an_old_client_sends_the_identifier_alone():
 
 
 def test_a_minimal_response_reads_as_the_pre_gate_behaviour():
-    # The defaults are what an older client sees, and what a newer one falls back to:
-    # no upgrade, no precision claim, no refusal.
+    # What an older client sees and a newer one falls back to: no upgrade, no
+    # precision claim, no refusal.
     from models.inference import TransformersUpgradeCheckResponse
 
     response = TransformersUpgradeCheckResponse(model_name = MODEL)
@@ -398,7 +396,7 @@ def test_a_minimal_response_reads_as_the_pre_gate_behaviour():
 def test_forces_16bit_over_every_combination(
     monkeypatch, latest_tier, installable, custom_code, expected
 ):
-    # The preview draws its VRAM claim from this one field, so a wrong cell is a wrong
+    # The preview draws its VRAM claim from this field, so a wrong cell is a wrong
     # number in front of the user. Exhaustive rather than sampled.
     upgrade = None
     if installable or custom_code:
@@ -423,9 +421,8 @@ def test_forces_16bit_over_every_combination(
     ],
 )
 def test_a_failing_preflight_never_escapes_the_route(monkeypatch, failure):
-    # The additive promise, and the only thing standing behind it. This route runs in
-    # front of every training start, so a raise here is a failed start for a model that
-    # loads perfectly well.
+    # The additive promise, and the only thing behind it: this route runs in front of
+    # every start, so a raise here fails a start for a model that loads fine.
     inf_mod = _route()
     import utils.transformers_latest as latest_mod
     import utils.transformers_version as tv
@@ -449,8 +446,7 @@ def test_a_failing_preflight_never_escapes_the_route(monkeypatch, failure):
 
 
 def test_the_route_is_behind_authentication():
-    # An unauthenticated model probe would be a new way to make the server fetch an
-    # arbitrary repo id.
+    # Otherwise this is a new way to make the server fetch an arbitrary repo id.
     import inspect
 
     inf_mod = _route()
