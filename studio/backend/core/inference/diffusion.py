@@ -59,8 +59,13 @@ from .diffusion_families import (
 from .diffusion_compat import assert_flux2_pick_compatible, flux2_pick_mismatch
 from .diffusion_device import (
     DiffusionDeviceTarget,
+    apply_diffusion_device_ordinal,
+    diffusion_device_scope,
     diffusion_device_target_from_torch_device,
+    pin_cuda_ordinal,
+    placed_cuda_ordinal,
     resolve_diffusion_device_target,
+    resolve_selected_cuda_ordinal,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_hidream import HIDREAM_FAMILY_NAME, hidream_te4_kwargs
@@ -778,6 +783,14 @@ class _LoadState:
     resolved: Optional[dict] = None
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
+    # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
+    # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
+    gpu_ordinal: Optional[int] = None
+    # The card the weights are ACTUALLY on, including the automatic case, where it is whichever
+    # device the load thread was pointing at. Only for re-pinning a pooled generate worker that a
+    # previous pinned load left on another card; the target and the reported build read
+    # gpu_ordinal, so the automatic path still resolves a bare device.
+    placed_ordinal: Optional[int] = None
     # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids).
     # Stored rather than rebuilt so generate()'s activation re-check budgets with the SAME
     # distilled / edit multipliers the load did, and the two can never drift apart.
@@ -1099,11 +1112,15 @@ class DiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
-    def _pick_device_and_dtype(self) -> tuple[str, Any]:
+    def _pick_device_and_dtype(self, ordinal: Optional[int] = None) -> tuple[str, Any]:
         """(device, dtype) for the current host. Thin wrapper over the device
         policy module, kept as a method so tests can still monkeypatch it."""
-        target = resolve_diffusion_device_target()
-        return target.device, target.dtype
+        if ordinal is None:
+            target = resolve_diffusion_device_target()
+            return target.device, target.dtype
+        target = resolve_diffusion_device_target(ordinal = ordinal)
+        # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
+        return target.torch_device, target.dtype
 
     # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
     # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
@@ -1116,6 +1133,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         memory_mode: Optional[str] = None,
         cpu_offload: bool = False,
+        gpu_ordinal: Optional[int] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -1134,8 +1152,34 @@ class DiffusionBackend:
         te_mode = normalize_te_quant(text_encoder_quant)
         if pinned is None and te_mode is None:
             return
-        # One probe for both checks (it reads the live device).
-        target = self._resolve_device_target(fam)
+        # One probe for both checks, asked of the card THIS load will use: on a mixed box the
+        # default device can be a different generation, which would refuse a scheme the selected
+        # card supports, or pass one it does not and fail only after eviction. Scoped, because the
+        # route calls this on a pooled thread and the probes below use argument-less CUDA calls.
+        with diffusion_device_scope(gpu_ordinal):
+            target = self._target_for_ordinal(fam, gpu_ordinal)
+            return self._assert_precision_for_target(
+                fam,
+                target,
+                model_kind = model_kind,
+                pinned = pinned,
+                te_mode = te_mode,
+                memory_mode = memory_mode,
+                cpu_offload = cpu_offload,
+            )
+
+    def _assert_precision_for_target(
+        self,
+        fam: Optional[DiffusionFamily],
+        target: DiffusionDeviceTarget,
+        *,
+        model_kind: str,
+        pinned: Optional[str],
+        te_mode: Optional[str],
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+    ) -> None:
+        """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
             reason = None
             if model_kind != "gguf":
@@ -1227,7 +1271,12 @@ class DiffusionBackend:
                 )
             )
 
-    def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
+    def _resolve_device_target(
+        self,
+        fam: Optional[DiffusionFamily],
+        *,
+        ordinal: Optional[int] = None,
+    ) -> DiffusionDeviceTarget:
         """The device target with the family fp16 guard applied.
 
         Routes through _pick_device_and_dtype() (so a monkeypatched override still
@@ -1235,14 +1284,47 @@ class DiffusionBackend:
         families (Z-Image), rebuilding the target so dtype + capability flags stay
         consistent with the effective dtype.
         """
-        device, dtype = self._pick_device_and_dtype()
+        # Called with no argument on the automatic path so a monkeypatched seam keeps working.
+        device, dtype = (
+            self._pick_device_and_dtype()
+            if ordinal is None
+            else self._pick_device_and_dtype(ordinal)
+        )
         effective = _resolve_diffusion_compute_dtype(fam, dtype)
         if effective is not dtype:
             logger.warning(
                 "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
                 getattr(fam, "name", None),
             )
+        # Builds only. Pinning is the CALLER's decision: a worker thread is dedicated and takes
+        # the permanent pin, while a route preflight runs on a pooled executor thread where an
+        # unrestored set_device would leak this request's card into the next one.
         return diffusion_device_target_from_torch_device(device, effective)
+
+    def _target_for_ordinal(
+        self, fam: Optional[DiffusionFamily], ordinal: Optional[int]
+    ) -> DiffusionDeviceTarget:
+        """``_resolve_device_target`` with the ordinal only when there is one, so a monkeypatched
+        seam taking just ``fam`` keeps working on the automatic path."""
+        if ordinal is None:
+            return self._resolve_device_target(fam)
+        return self._resolve_device_target(fam, ordinal = ordinal)
+
+    def _state_device_target(self, state: _LoadState) -> DiffusionDeviceTarget:
+        """The resident pipeline's target, pinned onto the calling thread.
+
+        Every worker touching the loaded pipeline goes through this rather than resolving bare:
+        the weights are on ``state.gpu_ordinal`` while ``state.device`` is un-indexed, so an
+        unpinned thread would resolve to its own default card.
+        """
+        target = self._target_for_ordinal(state.family, state.gpu_ordinal)
+        apply_diffusion_device_ordinal(target)
+        # And put an AUTOMATIC load back on its own card. generate() runs on a pooled
+        # asyncio.to_thread worker, so a previous pinned model leaves that thread set to its GPU
+        # for good; with no ordinal to pin, the bare "cuda" Generators below would then target that
+        # card while these weights sit on the default one.
+        pin_cuda_ordinal(state.placed_ordinal)
+        return target
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -1314,74 +1396,98 @@ class DiffusionBackend:
                 return False
             if mm is None and kwargs.get("cpu_offload"):
                 return False
-            target = self._resolve_device_target(fam)
-            # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
-            # plan must not stage the base transformer/ shards either.
-            if (
-                auto
-                # Active weights only: disagreeing with the load stages shards it never reads.
-                and not _has_active_lora(kwargs.get("loras"))
-                and _uncached_prequant_repo(
+            # The card this load will land on, and SCOPED: the selectors below use argument-less
+            # capability, smoke and memory probes, so building an indexed target is not enough to
+            # move them off the default card.
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                return self._dense_quant_prefetch_decision(
                     fam,
-                    target,
-                    mode,
-                    base_repo = kwargs.get("base_repo"),
-                    prequant_path = kwargs.get("transformer_prequant_path"),
-                )
-                is not None
-            ):
-                return False
-            # The same rule, applied to the base repo's own dense shards. The fast path loads
-            # transformer/ INSTEAD of the GGUF, so on a pick the user made BY QUANT an uncached
-            # base means fetching a second, much larger denoiser and never opening the first:
-            # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
-            # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
-            # path, and an EXPLICIT transformer_quant still opts in as before.
-            #
-            # This returns the same False a PREQUANT candidate returns below, so a cached
-            # pre-quant reaches the load with no transformer/ staged and NOT because a download
-            # was refused. That is why the load side re-asks the resolver rather than reading an
-            # empty stage as a decline: same verdict here, two different reasons there.
-            if (
-                auto
-                and not _has_active_lora(kwargs.get("loras"))
-                and not _dense_transformer_cached(
-                    kwargs.get("base_repo"),
+                    kwargs,
+                    auto = auto,
+                    mode = mode,
                     companion_files = companion_files,
                     transformer_files = transformer_files,
                 )
-            ):
-                return False
-            # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
-            candidate = resolve_dense_quant_candidate(
-                fam = fam,
-                target = target,
-                requested = mode,
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the GGUF
+            return False
+
+    def _dense_quant_prefetch_decision(
+        self,
+        fam: DiffusionFamily,
+        kwargs: dict,
+        *,
+        auto: bool,
+        mode: str,
+        companion_files: Optional[Sequence[str]] = None,
+        transformer_files: Optional[Sequence[str]] = None,
+    ) -> bool:
+        """``_dense_quant_prefetch_needed``'s body, run with the selected card current."""
+        target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+        # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
+        # plan must not stage the base transformer/ shards either.
+        if (
+            auto
+            # Active weights only: disagreeing with the load stages shards it never reads.
+            and not _has_active_lora(kwargs.get("loras"))
+            and _uncached_prequant_repo(
+                fam,
+                target,
+                mode,
                 base_repo = kwargs.get("base_repo"),
                 prequant_path = kwargs.get("transformer_prequant_path"),
-                # An all-zero list bakes nothing; sizing it dense stages shards the load never reads.
-                force_dense = _has_active_lora(kwargs.get("loras")),
-                logger = None,
             )
-            # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
-            if candidate is None or candidate.prequant:
-                return False
-            # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense path anyway.
-            from .diffusion_memory import (
-                _reserve_mib,
-                snapshot_device_memory,
-            )
-
-            memory = snapshot_device_memory(target)
-            total = memory.total_mib
-            steady = getattr(candidate, "steady_total_mib", None)
-            if total is not None and steady is not None:
-                budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
-                if int(steady) > budget:
-                    return False
-            return True
-        except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
+            is not None
+        ):
             return False
+        # The same rule, applied to the base repo's own dense shards. The fast path loads
+        # transformer/ INSTEAD of the GGUF, so on a pick the user made BY QUANT an uncached
+        # base means fetching a second, much larger denoiser and never opening the first:
+        # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
+        # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
+        # path, and an EXPLICIT transformer_quant still opts in as before.
+        #
+        # This returns the same False a PREQUANT candidate returns below, so a cached
+        # pre-quant reaches the load with no transformer/ staged and NOT because a download
+        # was refused. That is why the load side re-asks the resolver rather than reading an
+        # empty stage as a decline: same verdict here, two different reasons there.
+        if (
+            auto
+            and not _has_active_lora(kwargs.get("loras"))
+            and not _dense_transformer_cached(
+                kwargs.get("base_repo"),
+                companion_files = companion_files,
+                transformer_files = transformer_files,
+            )
+        ):
+            return False
+        # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
+        candidate = resolve_dense_quant_candidate(
+            fam = fam,
+            target = target,
+            requested = mode,
+            base_repo = kwargs.get("base_repo"),
+            prequant_path = kwargs.get("transformer_prequant_path"),
+            # An all-zero list bakes nothing; sizing it dense stages shards the load never reads.
+            force_dense = _has_active_lora(kwargs.get("loras")),
+            logger = None,
+        )
+        # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
+        if candidate is None or candidate.prequant:
+            return False
+        # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense path anyway.
+        from .diffusion_memory import (
+            _reserve_mib,
+            snapshot_device_memory,
+        )
+
+        memory = snapshot_device_memory(target)
+        total = memory.total_mib
+        steady = getattr(candidate, "steady_total_mib", None)
+        if total is not None and steady is not None:
+            budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
+            if int(steady) > budget:
+                return False
+        return True
 
     @staticmethod
     def _auto_prequant_retry_scheme(
@@ -1662,10 +1768,26 @@ class DiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
         loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's
+        # 400 rather than a load that dies mid-download, and only once so free VRAM cannot re-rank
+        # the choice after the weights land. Gated on the resolved backend, since XPU / MPS / CPU
+        # ignore physical ids and would otherwise 400 a selection the contract says to drop.
+        # Re-ranked only when the caller did not already do it: free VRAM moves between the
+        # route's preflight and here (network preflight, engine activation, arbiter eviction), so
+        # resolving twice can approve a scheme against one card and place the weights on another.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         # base_repo is gated at the route pre-eviction; this only cheap-fails the resolved repo/family.
         fam = self.validate_load_request(
             repo_id,
@@ -1682,6 +1804,7 @@ class DiffusionBackend:
             model_kind = resolve_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            gpu_ordinal = gpu_ordinal,
         )
 
         with self._lock:
@@ -1718,6 +1841,7 @@ class DiffusionBackend:
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
                 loras = loras,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1745,7 +1869,10 @@ class DiffusionBackend:
             kwargs["base_repo"] = base
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
             te_prequant_files = self._te_prequant_plan_files(
-                fam, kwargs.get("text_encoder_quant"), kwargs.get("hf_token")
+                fam,
+                kwargs.get("text_encoder_quant"),
+                kwargs.get("hf_token"),
+                kwargs.get("gpu_ordinal"),
             )
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -1894,7 +2021,10 @@ class DiffusionBackend:
 
     @staticmethod
     def _te_prequant_plan_files(
-        fam: Any, text_encoder_quant: Optional[str], hf_token: Optional[str]
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        hf_token: Optional[str],
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
         """``{component: (repo_id, [(rfilename, size)])}`` for the text encoders this pick will
         take PRE-CAST from a hosted checkpoint instead of the base repo's dense weights.
@@ -1909,7 +2039,12 @@ class DiffusionBackend:
             sources = te_prequant_sources(
                 fam,
                 te_quant_mode = text_encoder_quant,
-                target = resolve_diffusion_device_target(),
+                # The selected card, for the same reason the dense-quant probe uses it.
+                target = (
+                    resolve_diffusion_device_target()
+                    if gpu_ordinal is None
+                    else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+                ),
             )
             if not sources:
                 return {}
@@ -1957,62 +2092,70 @@ class DiffusionBackend:
                 return None
             if mm is None and kwargs.get("cpu_offload"):
                 return None
-            target = self._resolve_device_target(fam)
-            # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
-            # those bytes never land. Only a cached one, or an explicit request, counts.
-            if (
-                auto
-                and _uncached_prequant_repo(
-                    fam,
-                    target,
-                    mode,
-                    base_repo = kwargs.get("base_repo"),
-                    prequant_path = kwargs.get("transformer_prequant_path"),
-                )
-                is not None
-            ):
-                return None
-            scheme = select_transformer_quant_scheme(
-                target, mode, family = getattr(fam, "name", None)
-            )
-            if scheme is None:
-                return None
-            source = usable_prequant_source(
-                fam,
-                scheme,
-                path_override = kwargs.get("transformer_prequant_path"),
-                base_repo = kwargs.get("base_repo"),
-            )
-
-            if source is None and auto:
-                retry = self._auto_prequant_retry_scheme(
-                    target,
-                    fam,
-                    mode,
-                    scheme,
-                    base_repo = kwargs.get("base_repo"),
-                    path_override = kwargs.get("transformer_prequant_path"),
-                    loras = kwargs.get("loras"),
-                )
-                if retry is not None:
-                    source = usable_prequant_source(
+            # The card this load will land on, and SCOPED for the same reason as the dense-quant
+            # probe: the selectors below read the current device, so an indexed target alone
+            # leaves them on the default card.
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+                # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
+                # those bytes never land. Only a cached one, or an explicit request, counts.
+                if (
+                    auto
+                    and _uncached_prequant_repo(
                         fam,
-                        retry,
-                        path_override = kwargs.get("transformer_prequant_path"),
+                        target,
+                        mode,
                         base_repo = kwargs.get("base_repo"),
+                        prequant_path = kwargs.get("transformer_prequant_path"),
                     )
-            # A local override is the operator's own file: already on disk, never downloaded.
-            if source is None or source.kind != "repo":
-                return None
-            from huggingface_hub import HfApi
+                    is not None
+                ):
+                    return None
+                scheme = select_transformer_quant_scheme(
+                    target, mode, family = getattr(fam, "name", None)
+                )
+                if scheme is None:
+                    return None
+                source = usable_prequant_source(
+                    fam,
+                    scheme,
+                    path_override = kwargs.get("transformer_prequant_path"),
+                    base_repo = kwargs.get("base_repo"),
+                )
 
-            info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
-            sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
-            # Primary name first, then the legacy one, in the order the loader tries them.
-            for name in (source.filename, source.fallback_filename):
-                if name and name in sizes:
-                    return (source.location, name, int(sizes[name]))
-            return None
+                if source is None and auto:
+                    retry = self._auto_prequant_retry_scheme(
+                        target,
+                        fam,
+                        mode,
+                        scheme,
+                        base_repo = kwargs.get("base_repo"),
+                        path_override = kwargs.get("transformer_prequant_path"),
+                        loras = kwargs.get("loras"),
+                    )
+                    if retry is not None:
+                        source = usable_prequant_source(
+                            fam,
+                            retry,
+                            path_override = kwargs.get("transformer_prequant_path"),
+                            base_repo = kwargs.get("base_repo"),
+                        )
+                # A local override is the operator's own file: already on disk, never downloaded.
+                if source is None or source.kind != "repo":
+                    return None
+                from huggingface_hub import HfApi
+
+                info = HfApi(token = hf_token or None).model_info(
+                    source.location, files_metadata = True
+                )
+                sizes = {
+                    s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])
+                }
+                # Primary name first, then the legacy one, in the order the loader tries them.
+                for name in (source.filename, source.fallback_filename):
+                    if name and name in sizes:
+                        return (source.location, name, int(sizes[name]))
+                return None
         except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
             logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
             return None
@@ -2210,7 +2353,9 @@ class DiffusionBackend:
         # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
         incompatible = flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
-        te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
+        te_files = self._te_prequant_plan_files(
+            fam, text_encoder_quant, hf_token, load_kwargs.get("gpu_ordinal")
+        )
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
         revisions: dict[str, str] = {}
@@ -2872,6 +3017,8 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         # LoRA adapters to BAKE into a torchao int8/fp8 build. Ignored elsewhere (bf16/bnb take them at generate time).
         loras: Optional[list[tuple[str, float]]] = None,
+        # The torch ordinal begin_load resolved for this load, carried rather than re-derived.
+        gpu_ordinal: Optional[int] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         # True when the prefetch staged the base repo's ``transformer/`` shards, the only condition under which the dense-quant
@@ -2909,7 +3056,10 @@ class DiffusionBackend:
         # the only id handed to something that downloads. One decision per load (the background
         # path took it before staging), so nothing stages one repo and assembles from the other.
         fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
-        target = self._resolve_device_target(fam)
+        target = self._target_for_ordinal(fam, gpu_ordinal)
+        # A dedicated worker thread, so the pin is permanent and everything downstream -- the
+        # placement, the offload budget, the un-indexed state.device -- lands on the same card.
+        apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
 
         import diffusers
@@ -3974,7 +4124,14 @@ class DiffusionBackend:
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays honest.
                     effective_policy, effective_tiling = apply_memory_plan(
-                        pipe, plan, device = device, logger = logger
+                        pipe,
+                        plan,
+                        device = device,
+                        # Indexed when a card was selected: the CPU-offload APIs read the index off
+                        # this string and default to cuda:0 without one, which would page modules
+                        # onto a different card than the one generation runs on.
+                        placement_device = target.torch_device,
+                        logger = logger,
                     )
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is explicit.
@@ -4070,6 +4227,8 @@ class DiffusionBackend:
                         repo_id = repo_id,
                         base_repo = base,
                         device = device,
+                        gpu_ordinal = target.ordinal,
+                        placed_ordinal = placed_cuda_ordinal(target),
                         dtype = str(dtype).replace("torch.", ""),
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
@@ -5016,7 +5175,7 @@ class DiffusionBackend:
         from .diffusion_eager_patches import install_compile_safe_patches
         from .diffusion_arch_patches import install_arch_patches
 
-        target = self._resolve_device_target(state.family)
+        target = self._state_device_target(state)
         install_compile_safe_patches()
         install_arch_patches()
         object.__setattr__(state, "eager_patched", True)
@@ -5135,6 +5294,11 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:
+                # FIRST, before any device object exists. This worker is not the thread that loaded
+                # the pipeline, so until it is pinned the un-indexed state.device below -- and the
+                # ControlNet placement further down -- resolve to its own default card while the
+                # weights sit on the selected one.
+                self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image (prompt, seed) jobs
                 # up front: N prompts, one prompt x N seeds, or one prompt deriving base..base+batch_size-1 (as the native engine does).
                 jobs, seed = resolve_batch_jobs(
@@ -5398,7 +5562,7 @@ class DiffusionBackend:
                         # variant credits the same reclaimable bytes back arithmetically instead,
                         # so a warm allocator does not read as a full card and nothing is flushed.
                         device_memory = reclaimable_snapshot_device_memory(
-                            self._resolve_device_target(state.family)
+                            self._state_device_target(state)
                         ),
                         width = guard_width,
                         height = guard_height,
