@@ -104,7 +104,6 @@ export const initialTrainingConfigState: TrainingConfigState = {
     enabled: false,
     provider: "huggingface",
     repoId: null,
-    private: true,
     intervalCheckpoints: 1,
     strategy: "latest",
     keepRemote: 1,

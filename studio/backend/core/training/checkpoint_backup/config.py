@@ -17,7 +17,6 @@ class CheckpointBackupConfig(BaseModel):
     enabled: bool = False
     provider: Literal["huggingface"] = "huggingface"
     repo_id: Optional[str] = None
-    private: bool = True
     interval_checkpoints: int = Field(1, gt = 0, le = 1000)
     strategy: Literal["latest"] = "latest"
     keep_remote: int = Field(1, ge = 1)

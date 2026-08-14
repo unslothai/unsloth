@@ -80,9 +80,13 @@ export function CheckpointBackupSection(): ReactElement {
           />
           <span>Automatic Hugging Face backups</span>
           {store.backup.enabled && !open && (
-            <span className="ml-1 text-muted-foreground/80">
-              · {intervalLabel(count)} ·{" "}
-              {store.backup.private ? "Private repo" : "Public repo"}
+            <span className="ml-1 flex min-w-0 text-muted-foreground/80">
+              <span className="shrink-0">· {intervalLabel(count)}</span>
+              {store.backup.repoId && (
+                <span className="truncate" title={store.backup.repoId}>
+                  &nbsp;· {store.backup.repoId}
+                </span>
+              )}
             </span>
           )}
         </CollapsibleTrigger>
@@ -213,16 +217,6 @@ export function CheckpointBackupSection(): ReactElement {
             )}
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex items-center justify-between gap-3 text-xs">
-                Private repository{" "}
-                <Switch
-                  checked={store.backup.private}
-                  onCheckedChange={(privateRepo) =>
-                    update({ private: privateRepo })
-                  }
-                  aria-label="Private backup repository"
-                />
-              </div>
               <div className="flex items-center justify-between gap-3 text-xs">
                 Keep backups{" "}
                 <Input

@@ -18,7 +18,6 @@ export interface CheckpointBackupConfig {
   enabled: boolean;
   provider: "huggingface";
   repoId: string | null;
-  private: boolean;
   intervalCheckpoints: number;
   strategy: "latest";
   keepRemote: number;
