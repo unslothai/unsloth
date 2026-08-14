@@ -25,6 +25,9 @@ const { useChatRuntimeStore } = await import(
 const { mergeBackendRecommendedInference } = await import(
   "../src/features/chat/presets/preset-policy.ts"
 );
+const { DEFAULT_INFERENCE_PARAMS } = await import(
+  "../src/features/chat/types/runtime.ts"
+);
 
 const QWEN = "unsloth/Qwen3.5-9B-GGUF";
 const LLAMA = "unsloth/Llama-4-8B";
@@ -87,18 +90,24 @@ test("a status response that beats hydration keeps the model's settings", async 
   assert.equal(hydrated.params.topP, 0.5);
 
   // The reported failure was durable: switching away wrote the recommendation
-  // over the tuning, so it was gone on the next launch too.
+  // over the tuning, so it was gone on the next launch too. Nothing is written
+  // now, this browser having only read the entry, so the stored tuning stands.
   settingsHttp.puts.length = 0;
   useChatRuntimeStore
     .getState()
     .setParams({ ...useChatRuntimeStore.getState().params, checkpoint: LLAMA });
   await settled();
-  const written = settingsHttp.puts.at(-1)?.inferenceParamsByModel as Record<
-    string,
-    Record<string, unknown>
-  >;
-  assert.equal(written[QWEN].temperature, 0.2);
-  assert.equal(written[QWEN].maxTokens, 4096);
+  for (const put of settingsHttp.puts) {
+    assert.equal(
+      (put.inferenceParamsByModel as Record<string, unknown>)?.[QWEN],
+      undefined,
+      "the recommendation is not written over the tuning",
+    );
+  }
+  const held = useChatRuntimeStore.getState().paramsByModel[QWEN];
+  assert.equal(held?.temperature, 0.2, "the tuning this browser still holds");
+  assert.equal(held?.maxTokens, 4096);
+  assert.equal(held?.systemPrompt, "Be terse.");
 });
 
 // A status poll re-applies the recommendation on every refresh, so without
@@ -164,10 +173,14 @@ test("a pre-hydration edit outranks the replay", async () => {
   );
 });
 
-// A stored entry can be partial: an older write, or a field that did not survive
-// sanitising. Replay lays what it has over the params on screen, so the gaps
-// would come from whichever model happened to be selected beforehand.
-test("a partial stored entry does not borrow from the previous model", async () => {
+// A stored entry can be partial: an older write, or a field that did not
+// survive sanitising. It is kept as written. There is no honest value to invent
+// for a gap: the saved global set is whichever model was used last, and storing
+// it here would grow this model's entry to hold that one's settings for good,
+// while the shipped defaults would overwrite the backend's recommendation for
+// this model. The replay lays the entry over what a load or status published,
+// which is where a gap belongs.
+test("a partial stored entry is neither filled nor borrowed from", async () => {
   settingsHttp.settings = {
     inferenceParams: { temperature: 0.5, topP: 0.9, systemPrompt: "saved" },
     // Only one field, as an older client or a hand-written payload would leave it.
@@ -185,20 +198,26 @@ test("a partial stored entry does not borrow from the previous model", async () 
   });
   await useChatRuntimeStore.getState().hydratePersistedSettings();
 
-  const store = useChatRuntimeStore.getState();
-  assert.equal(
-    store.paramsByModel[QWEN]?.topP,
-    0.9,
-    "filled from the saved set",
+  assert.deepEqual(
+    useChatRuntimeStore.getState().paramsByModel[QWEN],
+    { temperature: 0.15 },
+    "stored as written, not grown with another model's settings",
   );
-  store.setParams({ ...store.params, checkpoint: QWEN });
+
+  // The load that follows publishes this model's own defaults, and the replay
+  // lays the entry over them.
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, checkpoint: QWEN, topP: 0.8, systemPrompt: "" },
+    { fromModelDefaults: true },
+  );
 
   const params = useChatRuntimeStore.getState().params;
   assert.equal(params.temperature, 0.15, "what the entry does hold");
-  assert.equal(params.topP, 0.9);
+  assert.equal(params.topP, 0.8, "the gap takes this model's own default");
   assert.equal(
     params.systemPrompt,
-    "saved",
+    "",
     "not the prompt the previous model was using",
   );
 });
@@ -748,4 +767,127 @@ test("turning the memory off keeps the settings on screen", async () => {
   const globals = written.inferenceParams as Record<string, unknown>;
   assert.equal(globals?.temperature, 0.11);
   assert.equal(globals?.systemPrompt, "B");
+});
+
+// An installation upgraded from before the memory has a global set and no
+// per-model entries at all, so the replay never runs and the cap that rides
+// with it never applied. The budget restored from the global set does not fit
+// the load either.
+test("the loaded context caps a global budget with no entry to replay", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    ggufContextLength: null,
+    paramsByModel: {},
+    params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
+  });
+  settingsHttp.settings = { inferenceParams: { maxTokens: 32768 } };
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, maxSeqLength: 8192, maxTokens: 8192 },
+    { fromModelDefaults: true, maxTokensCap: 8192 },
+  );
+
+  settingsHttp.release?.();
+  await hydrating;
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
+
+// The server merges per key, so a full snapshot rewrites every field of a
+// model's entry. A second tab that has only read an entry has nothing to say
+// about it, and switching models is not an edit.
+test("a browser that only read an entry does not write it back", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: false,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+  });
+  settingsHttp.settings = {
+    inferenceParamsByModel: {
+      [QWEN]: { temperature: 0.6 },
+      [LLAMA]: { temperature: 0.7 },
+    },
+  };
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: QWEN,
+      temperature: 0.6,
+    },
+  });
+  await settled();
+
+  const perModelWrites = async (): Promise<string[]> => {
+    await settled();
+    const keys = new Set<string>();
+    for (const put of settingsHttp.puts) {
+      for (const id of Object.keys(
+        (put.inferenceParamsByModel ?? {}) as object,
+      )) {
+        keys.add(id);
+      }
+    }
+    settingsHttp.puts.length = 0;
+    return [...keys];
+  };
+  await perModelWrites();
+
+  // Switching back and forth, touching nothing.
+  for (const checkpoint of [LLAMA, QWEN, LLAMA]) {
+    const store = useChatRuntimeStore.getState();
+    store.setParams({ ...store.params, checkpoint });
+    assert.deepEqual(
+      await perModelWrites(),
+      [],
+      "a switch reads the entries, it does not rewrite them",
+    );
+  }
+  // The replay still happens, it is only the write that is withheld.
+  assert.equal(useChatRuntimeStore.getState().params.temperature, 0.7);
+
+  // An edit here is this browser's own, and is written.
+  const editing = useChatRuntimeStore.getState();
+  editing.setParams({ ...editing.params, temperature: 0.42 });
+  assert.deepEqual(await perModelWrites(), [LLAMA]);
+
+  // And switching away from it now carries the snapshot, as before.
+  const leaving = useChatRuntimeStore.getState();
+  leaving.setParams({ ...leaving.params, checkpoint: QWEN });
+  assert.deepEqual(await perModelWrites(), [LLAMA]);
+});
+
+// The case the outgoing snapshot exists for: a model with no entry at all,
+// switched away from without ever being edited, still has to be seeded.
+test("a model with no entry is still seeded when it is left", async () => {
+  useChatRuntimeStore.setState({
+    settingsHydrated: true,
+    rememberParamsPerModel: true,
+    paramsByModel: {},
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: QWEN,
+      temperature: 0.31,
+    },
+  });
+  await settled();
+  settingsHttp.puts.length = 0;
+
+  const store = useChatRuntimeStore.getState();
+  store.setParams({ ...store.params, checkpoint: LLAMA });
+  await settled();
+  const written: Record<string, Record<string, unknown>> = {};
+  for (const put of settingsHttp.puts) {
+    Object.assign(
+      written,
+      (put.inferenceParamsByModel ?? {}) as Record<
+        string,
+        Record<string, unknown>
+      >,
+    );
+  }
+  assert.equal(written[QWEN]?.temperature, 0.31);
 });

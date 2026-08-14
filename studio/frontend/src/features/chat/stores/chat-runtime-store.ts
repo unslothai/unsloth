@@ -1732,9 +1732,15 @@ const SCALAR_SETTING_KEYS = [
   "gpuMemoryMode",
 ] as const satisfies readonly ScalarSettingKey[];
 
-// Ids edited locally since load. Hydration keeps these and merges the rest,
-// so an edit that lands before the settings response cannot drop other models.
+// Ids this browser holds a local answer for. Hydration keeps these and merges
+// the rest, so an edit that lands before the settings response cannot drop
+// other models. A switch away files a snapshot here too, which is why the
+// narrower set below exists.
 const locallyRememberedModels = new Set<string>();
+// Ids the user has actually edited here. Only these, and models with no entry
+// at all, are written back in full: the server merges per key, so a tab that
+// has merely read an entry must not put its copy over a newer one.
+const locallyEditedModels = new Set<string>();
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
 ) as Record<PersistedInferenceParamKey, number>;
@@ -1886,6 +1892,7 @@ function getParamsByModelAfterEdit(
   nextParams: InferenceParams,
   changedParams: PersistedInferenceParams,
   persist: boolean,
+  checkpointChanged: boolean,
 ): Record<string, PersistedInferenceParams> | null {
   if (!persist) {
     return outgoing;
@@ -1901,6 +1908,11 @@ function getParamsByModelAfterEdit(
     ),
     nextParams.checkpoint,
   );
+  // A switch moves these params too, by replaying the destination's entry over
+  // them. That is this browser reading the entry, not writing one.
+  if (recorded && nextParams.checkpoint && !checkpointChanged) {
+    locallyEditedModels.add(nextParams.checkpoint);
+  }
   return recorded ?? outgoing;
 }
 
@@ -1912,6 +1924,9 @@ function rememberOutgoingModel(
   outgoing: InferenceParams,
 ): Record<string, PersistedInferenceParams> | null {
   const snapshot = pickRememberedParams(outgoing);
+  const speaksForModel =
+    locallyEditedModels.has(outgoing.checkpoint) ||
+    state.paramsByModel[outgoing.checkpoint] === undefined;
   const next = trackParamsByModel(
     state,
     getRememberedParamsPatch(
@@ -1923,7 +1938,12 @@ function rememberOutgoingModel(
     ),
     outgoing.checkpoint,
   );
-  if (next && state.settingsHydrated && outgoing.checkpoint) {
+  // The server deep-merges per key, so a full snapshot rewrites every field of
+  // this model's entry. Send one only when this browser has something to say
+  // about the model: an edit made here, or an entry that does not exist yet.
+  // Otherwise a second tab switching models, with no edit at all, would put its
+  // stale copy over settings the first tab has since changed.
+  if (next && state.settingsHydrated && outgoing.checkpoint && speaksForModel) {
     saveSettingsPatch({
       inferenceParamsByModel: { [outgoing.checkpoint]: snapshot },
     });
@@ -1996,25 +2016,6 @@ function getHydratedPresetState(
       settings.activePresetSource ?? getPresetSource(activePreset);
   }
   return nextState;
-}
-
-/** A stored entry can be partial: an older write, a field that did not survive
- * sanitising, or one the model never set. Replay lays what it has over the
- * params on screen, so the gaps would be filled by whichever model was selected
- * beforehand. Fill them from the saved global set instead, which is the same
- * answer every time, and keep only the keys the memory owns. */
-function normalizeRememberedEntry(
-  entry: PersistedInferenceParams,
-  globals: PersistedInferenceParams | undefined,
-): PersistedInferenceParams {
-  const normalized: PersistedInferenceParams = {};
-  for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
-    const value = entry[key] ?? globals?.[key];
-    if (value !== undefined) {
-      setInferenceParam(normalized as InferenceParams, key, value);
-    }
-  }
-  return normalized;
 }
 
 /** Keys the user moved while the settings request was in flight. The same fence
@@ -2118,10 +2119,13 @@ function getHydratedSettingsState(
     for (const [modelId, entry] of Object.entries(
       settings.inferenceParamsByModel,
     )) {
-      hydrated[modelId] = normalizeRememberedEntry(
-        entry,
-        settings.inferenceParams,
-      );
+      // Stored as written. A gap is a key this model never pinned, and there is
+      // no honest value to invent for it: the global set is whichever model was
+      // used last, and the shipped defaults would overwrite the backend's own
+      // recommendation for this one. The replay lays the entry over the params
+      // a load or status just published, which is where a gap belongs, and the
+      // first switch away from the model writes a complete entry anyway.
+      hydrated[modelId] = entry;
     }
     for (const modelId of locallyRememberedModels) {
       const local = state.paramsByModel[modelId];
@@ -2210,11 +2214,14 @@ function getHydratedSettingsState(
     // The same cap the load and status replays apply: a status that beat this
     // response has already published the context the model actually loaded
     // with, and a budget remembered from a larger one does not fit it.
-    const cap = loadedContextFor(checkpoint) ?? state.ggufContextLength;
-    if (cap !== null && replayed.maxTokens > cap) {
-      replayed.maxTokens = cap;
-    }
     nextState.params = replayed;
+  }
+  // Outside the replay: an installation with only a global set has no entry to
+  // replay, and the budget restored from it does not fit the load either.
+  const capped = nextState.params ?? params;
+  const cap = loadedContextFor(checkpoint) ?? state.ggufContextLength;
+  if (cap !== null && capped.maxTokens > cap) {
+    nextState.params = { ...capped, maxTokens: cap };
   }
   return nextState;
 }
@@ -2519,9 +2526,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nextParams,
         changedParams,
         options?.persist !== false && !fromModelDefaults,
+        checkpointChanged,
       );
       if (options?.persist !== false && state.settingsHydrated) {
-        persistParamEdit(changedParams, paramsByModel, nextParams.checkpoint);
+        // A switch replays the destination's entry over the params, so writing
+        // it back says nothing new and, merged per key on the server, would put
+        // this browser's copy over one another tab has since changed.
+        persistParamEdit(
+          changedParams,
+          checkpointChanged ? null : paramsByModel,
+          nextParams.checkpoint,
+        );
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
           nextParams.checkpoint,
@@ -3222,6 +3237,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.params.checkpoint,
       );
       if (paramsByModel && state.settingsHydrated && state.params.checkpoint) {
+        // Turning it on is an explicit statement about the model on screen.
+        locallyEditedModels.add(state.params.checkpoint);
         saveSettingsPatch({
           inferenceParamsByModel: {
             [state.params.checkpoint]: paramsByModel[state.params.checkpoint],
