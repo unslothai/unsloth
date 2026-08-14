@@ -1899,9 +1899,9 @@ def _vkey(c):
     # Carry the stage AND its number, not just the class. An interrupted upgrade leaves
     # .post1 and .post2 side by side; ranking both as "post" tied their keys, and max()
     # keeps whichever enumerated first, so the verifier could confirm the stale one.
-    _dev = re.match(r'[-._]?dev\.?(\d*)', rest)
-    _pre = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c)\.?(\d*)', rest)
-    _post = re.match(r'[-._]?post\.?(\d*)', rest)
+    _dev = re.match(r'[-._]?dev[-._]?(\d*)', rest)
+    _pre = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c)[-._]?(\d*)', rest)
+    _post = re.match(r'[-._]?post[-._]?(\d*)', rest)
     _end = 0
     if _dev:
         rank, _end = (-3, int(_dev.group(1) or 0)), _dev.end()
@@ -1913,7 +1913,9 @@ def _vkey(c):
         rank, _end = (1, int(_post.group(1) or 0)), _post.end()
     else:
         rank = (0, 0)
-    # the compound tail still orders: 1.0rc1.dev1 < 1.0rc1 < 1.0rc1.post1
+    # PEP 440 allows -, _ or . before a suffix number (1.0.post-1 == 1.0.post1),
+    # so every separator is accepted above. The compound tail still orders too:
+    # 1.0rc1.dev1 < 1.0rc1 < 1.0rc1.post1
     _tm = re.search(r'(dev|post)[-._]?(\d*)', rest[_end:]) if _end else None
     _trail = ((-1 if _tm.group(1) == 'dev' else 1), int(_tm.group(2) or 0)) if _tm else (0, 0)
     return (0, (nums, rank + _trail))
@@ -1988,12 +1990,21 @@ print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 # pollute the caller's exact compares.
 _bounded_pkg_probe() {
     _bpp_out=$(mktemp) || return 0
-    ( "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" > "$_bpp_out" 2>/dev/null || true ) > /dev/null 2>&1 &
+    # Backgrounded directly, NOT wrapped in ( ... ): $! must be the interpreter
+    # itself. A wrapper subshell would take the TERM below and leave python
+    # reparented and still stuck, leaking a process that holds venv resources.
+    "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" > "$_bpp_out" 2>/dev/null &
     _bpp_pid=$!
     _bpp_i=0
     while kill -0 "$_bpp_pid" 2>/dev/null; do
         if [ "$_bpp_i" -ge 300 ]; then
             kill "$_bpp_pid" 2>/dev/null || true
+            # KILL after a grace period: a probe wedged in an interruptible stall
+            # exits on TERM, one ignoring it must not outlive this function. A
+            # D-state process survives both, which is why it is abandoned rather
+            # than waited on.
+            sleep 0.5
+            kill -9 "$_bpp_pid" 2>/dev/null || true
             rm -f "$_bpp_out"
             return 0
         fi
