@@ -54,7 +54,11 @@ from unforgettable.sidecar.adapters import (
     rollback_adapter,
 )
 from unforgettable.sidecar.eval import eval_adapter
-from unforgettable.sidecar.pack import list_packs, pack_from_admitted_b
+from unforgettable.sidecar.pack import (
+    list_packs,
+    pack_from_admitted_b,
+    pack_is_retrieval_heavy,
+)
 from unforgettable.sidecar.train import FAKE_BASE_MODEL, FakeTrainBackend, train_pack
 from unforgettable.store.search import search_records
 
@@ -397,12 +401,15 @@ def _cmd_train(args: argparse.Namespace, db_path: Path) -> int:
             print("no packs; run pack first", file=sys.stderr)
             return UNKNOWN_ID_EXIT
         pack_id = packs[0]["id"]
+    recipe = args.recipe
+    if recipe is None:
+        recipe = "distill" if pack_is_retrieval_heavy(db_path) else "sft"
     try:
         result = train_pack(
             pack_id,
             backend=backend,
             base_model=base_model,
-            recipe=args.recipe,
+            recipe=recipe,
             db_path=db_path,
         )
     except KeyError:
@@ -727,8 +734,8 @@ def build_parser() -> argparse.ArgumentParser:
     train_p.add_argument(
         "--recipe",
         choices=TRAIN_RECIPES,
-        default="sft",
-        help="Train recipe (default: sft).",
+        default=None,
+        help="Train recipe (default: distill if retrieval-heavy, else sft).",
     )
     train_p.set_defaults(func=_cmd_train)
 

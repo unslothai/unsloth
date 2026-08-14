@@ -367,6 +367,7 @@ def test_train_fake_exits_0_and_adapters_lists_shadow(db_path, capsys):
     trained = json.loads(capsys.readouterr().out)
     assert trained["backend"] == "fake"
     assert trained["adapter_id"]
+    assert trained["recipe"] == "sft"
     assert main(["adapters", "--db", str(db_path)]) == 0
     listed = capsys.readouterr().out
     assert trained["adapter_id"][:8] in listed
@@ -474,4 +475,68 @@ def test_eval_then_promote_without_force(db_path, capsys, monkeypatch):
     promoted = json.loads(capsys.readouterr().out)
     assert promoted["status"] == "promoted"
     assert promoted["id"] == trained["adapter_id"]
+
+
+def test_train_default_recipe_is_distill_when_heavy(db_path, capsys):
+    _voted_procedures(db_path)
+    insert_inject_stats(
+        episode_id="ep-world-heavy",
+        contact="world",
+        standing_chars=1800,
+        retrieve_chars=300,
+        trajectory_chars=0,
+        total_chars=2100,
+        compiled_ids="",
+        retrieved_ids="",
+        db_path=db_path,
+    )
+    assert main(["pack", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
+    trained = json.loads(capsys.readouterr().out)
+    assert trained["recipe"] == "distill"
+
+
+def test_train_honors_explicit_recipe_when_heavy(db_path, capsys):
+    _voted_procedures(db_path)
+    insert_inject_stats(
+        episode_id="ep-world-heavy",
+        contact="world",
+        standing_chars=1800,
+        retrieve_chars=300,
+        trajectory_chars=0,
+        total_chars=2100,
+        compiled_ids="",
+        retrieved_ids="",
+        db_path=db_path,
+    )
+    assert main(["pack", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert main(
+        ["train", "--backend", "fake", "--recipe", "sft", "--db", str(db_path)]
+    ) == 0
+    trained = json.loads(capsys.readouterr().out)
+    assert trained["recipe"] == "sft"
+
+
+def test_train_preference_without_pairs_exits_2(db_path, capsys):
+    _voted_procedures(db_path)
+    assert main(["pack", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "train",
+                "--backend",
+                "fake",
+                "--recipe",
+                "preference",
+                "--db",
+                str(db_path),
+            ]
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "preference pairs" in err
 

@@ -141,7 +141,7 @@ def test_unsloth_backend_preference_raises_before_import(tmp_path):
     import sys
 
     backend = UnslothTrainBackend()
-    with pytest.raises(RuntimeError, match="preference"):
+    with pytest.raises((RuntimeError, NotImplementedError), match="preference|DPO|wired"):
         backend.train(
             [{"messages": [{"role": "user", "content": "u"}]}],
             output_dir=tmp_path / "out",
@@ -150,3 +150,56 @@ def test_unsloth_backend_preference_raises_before_import(tmp_path):
         )
     assert "unsloth" not in sys.modules
     assert "torch" not in sys.modules
+
+
+def test_train_pack_preference_writes_pairs_jsonl(db_path):
+    report = _voted_pack(db_path, 4)
+    insert_rollout(
+        episode_id="ep-pref",
+        contact="world",
+        outcome="fail",
+        summary="broke in world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-pref",
+        contact="world",
+        outcome="pass",
+        summary="fixed in world",
+        db_path=db_path,
+    )
+    result = train_pack(
+        report.pack_id,
+        backend=FakeTrainBackend(),
+        base_model="fake",
+        recipe="preference",
+        db_path=db_path,
+    )
+    assert result.recipe == "preference"
+    assert result.n_examples == 1
+    dest = Path(result.path)
+    config = json.loads((dest / "adapter_config.json").read_text(encoding="utf-8"))
+    assert config["recipe"] == "preference"
+    assert config["n"] == 1
+    lines = (dest / "pairs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    pair = json.loads(lines[0])
+    assert pair["chosen"] == "fixed in world"
+    assert pair["rejected"] == "broke in world"
+    assert pair["episode_id"] == "ep-pref"
+    row = get_adapter(result.adapter_id, db_path=db_path)
+    assert row is not None
+    assert row["status"] == "shadow"
+    assert row["recipe"] == "preference"
+
+
+def test_train_pack_preference_without_pairs_raises(db_path):
+    report = _voted_pack(db_path, 4)
+    with pytest.raises(ValueError, match="preference pairs"):
+        train_pack(
+            report.pack_id,
+            backend=FakeTrainBackend(),
+            base_model="fake",
+            recipe="preference",
+            db_path=db_path,
+        )

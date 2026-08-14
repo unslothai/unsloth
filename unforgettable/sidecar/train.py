@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Optional, Protocol
 
 from unforgettable.sidecar.adapters import STATUS_SHADOW, insert_adapter
+from unforgettable.sidecar.format import preference_pairs
 from unforgettable.sidecar.pack import (
     PACK_MIN_TRAIN,
     ROLE_TRAIN,
@@ -37,6 +38,11 @@ FULL_FINETUNE_REFUSED = (
     "sidecar refuses full fine-tune; unset UNSLOTH_ENABLE_FULL_FINETUNING"
 )
 PREFERENCE_NEEDS_DPO = "preference recipe needs trl.DPOTrainer"
+PREFERENCE_DPO_UNWIRED = "Unsloth DPO training is not wired"
+NO_PREFERENCE_PAIRS = (
+    "no preference pairs (need a world fail then a later world pass)"
+)
+RECIPE_PREFERENCE = "preference"
 
 
 @dataclass(frozen=True)
@@ -128,6 +134,22 @@ def _prompt_text(messages: list[dict], tokenizer: Any) -> str:
     return f"user\n{user}\nassistant\n"
 
 
+def _preference_gold(examples: list[dict]) -> dict[str, str]:
+    gold: dict[str, str] = {}
+    for example in examples:
+        if not isinstance(example, dict):
+            continue
+        prompt = example.get("prompt") or []
+        user = ""
+        if isinstance(prompt, list):
+            for msg in prompt:
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    user = msg.get("content") or ""
+        if user:
+            gold[user] = example.get("chosen") or ""
+    return gold
+
+
 class FakeTrainBackend:
     name = "fake"
 
@@ -142,11 +164,18 @@ class FakeTrainBackend:
         del base_model
         dest = Path(output_dir)
         dest.mkdir(parents=True, exist_ok=True)
-        gold: dict[str, str] = {}
-        for example in examples:
-            user, assistant = _user_assistant(example)
-            if user:
-                gold[user] = assistant
+        if recipe == RECIPE_PREFERENCE:
+            (dest / "pairs.jsonl").write_text(
+                "".join(json.dumps(example) + "\n" for example in examples),
+                encoding="utf-8",
+            )
+            gold = _preference_gold(examples)
+        else:
+            gold = {}
+            for example in examples:
+                user, assistant = _user_assistant(example)
+                if user:
+                    gold[user] = assistant
         (dest / "adapter_config.json").write_text(
             json.dumps({"fake": True, "recipe": recipe, "n": len(examples)}),
             encoding="utf-8",
@@ -186,8 +215,13 @@ class UnslothTrainBackend:
         recipe: str = "sft",
     ) -> None:
         _refuse_full_finetune()
-        if recipe == "preference":
-            raise RuntimeError(PREFERENCE_NEEDS_DPO)
+        if recipe == RECIPE_PREFERENCE:
+            try:
+                from trl import DPOTrainer
+            except ImportError as exc:
+                raise RuntimeError(PREFERENCE_NEEDS_DPO) from exc
+            del DPOTrainer
+            raise NotImplementedError(PREFERENCE_DPO_UNWIRED)
         from unsloth import FastLanguageModel
         from trl import SFTTrainer, SFTConfig
         from datasets import Dataset
@@ -291,12 +325,17 @@ def train_pack(
         raise ValueError(
             f"need at least {PACK_MIN_TRAIN} train items, got {len(train_items)}"
         )
-    examples = []
-    for item in train_items:
-        messages = item.get("messages")
-        if isinstance(messages, str):
-            messages = json.loads(messages)
-        examples.append({"messages": messages or []})
+    if recipe == RECIPE_PREFERENCE:
+        examples = preference_pairs(db_path=db_path)
+        if not examples:
+            raise ValueError(NO_PREFERENCE_PAIRS)
+    else:
+        examples = []
+        for item in train_items:
+            messages = item.get("messages")
+            if isinstance(messages, str):
+                messages = json.loads(messages)
+            examples.append({"messages": messages or []})
     adapter_id = str(uuid.uuid4())
     output_dir = adapters_root(db_path) / adapter_id
     backend.train(

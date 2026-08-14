@@ -26,8 +26,9 @@ from typing import Any, Optional
 from unforgettable.eyes.probes import is_probe_title
 from unforgettable.rims.detect import TEST_COMMAND_TITLE
 from unforgettable.sidecar.format import PACK_BODY_CHARS, format_sft_item
+from unforgettable.store.compile import list_compiled
 from unforgettable.store.db import get_connection
-from unforgettable.store.records import list_records, list_rollouts
+from unforgettable.store.records import list_inject_stats, list_records, list_rollouts
 from unforgettable.store.titles import normalize_title
 
 PACK_KINDS = frozenset({"procedure", "error_fix"})
@@ -35,6 +36,9 @@ PACK_PROVENANCE = frozenset({"world", "mixed", "human"})
 PACK_MIN_TRAIN = 4
 HOLDOUT_FRACTION = 0.2
 HOLDOUT_MIN_EPISODES = 5
+DISTILL_CHAR_THRESHOLD = 2000
+DISTILL_MIN_COMPILED = 3
+DISTILL_STATS_WINDOW = 20
 
 PACK_SOURCE = "record"
 ROLE_TRAIN = "train"
@@ -101,6 +105,26 @@ def _refusal_reason(rec: Optional[dict[str, Any]]) -> Optional[str]:
 
 def is_pack_record(rec: dict) -> bool:
     return _refusal_reason(rec) is None
+
+
+def pack_is_retrieval_heavy(db_path=None) -> bool:
+    if len(list_compiled(db_path=db_path)) >= DISTILL_MIN_COMPILED:
+        return True
+    world_rows = [
+        row
+        for row in list_inject_stats(
+            limit=DISTILL_STATS_WINDOW * 10, db_path=db_path
+        )
+        if row.get("contact") == "world"
+    ][:DISTILL_STATS_WINDOW]
+    if not world_rows:
+        return False
+    total = 0
+    for row in world_rows:
+        total += int(row.get("standing_chars") or 0) + int(
+            row.get("retrieve_chars") or 0
+        )
+    return (total / len(world_rows)) >= DISTILL_CHAR_THRESHOLD
 
 
 def _compiled_ids(*, db_path=None) -> set[str]:

@@ -17,9 +17,19 @@ from __future__ import annotations
 import json
 
 from unforgettable.sidecar import pack_from_admitted_b
-from unforgettable.sidecar.pack import list_pack_items, list_packs
+from unforgettable.sidecar.format import preference_pairs
+from unforgettable.sidecar.pack import (
+    list_pack_items,
+    list_packs,
+    pack_is_retrieval_heavy,
+)
 from unforgettable.store.compile import pin_compiled
-from unforgettable.store.records import insert_record, insert_retrieve_use, insert_rollout
+from unforgettable.store.records import (
+    insert_inject_stats,
+    insert_record,
+    insert_retrieve_use,
+    insert_rollout,
+)
 
 
 def _world_pass_use(record_id: str, episode_id: str, db_path) -> None:
@@ -303,3 +313,156 @@ def test_compiled_membership_is_a_vote(db_path):
     items = list_pack_items(report.pack_id, db_path=db_path)
     assert items[0]["source_id"] == rec["id"]
     assert items[0]["messages"][0]["content"] == rec["title"]
+
+
+def test_pack_is_retrieval_heavy_when_compiled_count_meets_min(db_path):
+    assert pack_is_retrieval_heavy(db_path) is False
+    for i in range(3):
+        rec = _procedure(
+            title=f"Standing playbook {i}",
+            body=f"compiled body {i}",
+            db_path=db_path,
+        )
+        pin_compiled(rec["id"], explicit=True, db_path=db_path)
+    assert pack_is_retrieval_heavy(db_path) is True
+
+
+def test_pack_is_retrieval_heavy_when_inject_stats_mean_high(db_path):
+    rec = _procedure(
+        title="Standing playbook 0",
+        body="compiled body 0",
+        db_path=db_path,
+    )
+    pin_compiled(rec["id"], explicit=True, db_path=db_path)
+    assert pack_is_retrieval_heavy(db_path) is False
+    insert_inject_stats(
+        episode_id="ep-sim-heavy",
+        contact="sim",
+        standing_chars=9000,
+        retrieve_chars=9000,
+        trajectory_chars=0,
+        total_chars=18000,
+        compiled_ids="",
+        retrieved_ids="",
+        db_path=db_path,
+    )
+    assert pack_is_retrieval_heavy(db_path) is False
+    insert_inject_stats(
+        episode_id="ep-world-heavy",
+        contact="world",
+        standing_chars=1800,
+        retrieve_chars=300,
+        trajectory_chars=0,
+        total_chars=2100,
+        compiled_ids="",
+        retrieved_ids="",
+        db_path=db_path,
+    )
+    assert pack_is_retrieval_heavy(db_path) is True
+
+
+def test_preference_pairs_world_fail_then_pass(db_path):
+    insert_rollout(
+        episode_id="ep-pref",
+        contact="world",
+        outcome="fail",
+        summary="broke in world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-pref",
+        contact="world",
+        outcome="pass",
+        summary="fixed in world",
+        db_path=db_path,
+    )
+    pairs = preference_pairs(db_path=db_path)
+    assert len(pairs) == 1
+    assert pairs[0]["prompt"] == [{"role": "user", "content": "broke in world"}]
+    assert pairs[0]["chosen"] == "fixed in world"
+    assert pairs[0]["rejected"] == "broke in world"
+    assert pairs[0]["episode_id"] == "ep-pref"
+
+
+def test_preference_pairs_skips_twin_note_episode(db_path):
+    insert_rollout(
+        episode_id="ep-twin",
+        contact="world",
+        outcome="fail",
+        summary="broke in world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-twin",
+        contact="world",
+        outcome="pass",
+        summary="fixed in world",
+        db_path=db_path,
+    )
+    insert_record(
+        kind="twin_note",
+        title="Twin: world vs sim",
+        body="disagreement on ep-twin",
+        provenance="mixed",
+        source_episode_id="ep-twin",
+        db_path=db_path,
+    )
+    assert preference_pairs(db_path=db_path) == []
+
+
+def test_preference_pairs_sim_only_pass_not_chosen(db_path):
+    insert_rollout(
+        episode_id="ep-sim",
+        contact="world",
+        outcome="fail",
+        summary="broke in world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-sim",
+        contact="sim",
+        outcome="pass",
+        summary="sim only glory",
+        db_path=db_path,
+    )
+    assert preference_pairs(db_path=db_path) == []
+    insert_rollout(
+        episode_id="ep-sim",
+        contact="world",
+        outcome="pass",
+        summary="world fixed",
+        db_path=db_path,
+    )
+    pairs = preference_pairs(db_path=db_path)
+    assert len(pairs) == 1
+    assert pairs[0]["chosen"] == "world fixed"
+    assert pairs[0]["rejected"] == "broke in world"
+    assert "sim only glory" not in json.dumps(pairs)
+
+
+def test_preference_pairs_prefers_admitted_error_fix(db_path):
+    insert_rollout(
+        episode_id="ep-fix",
+        contact="world",
+        outcome="fail",
+        summary="broke in world",
+        db_path=db_path,
+    )
+    insert_rollout(
+        episode_id="ep-fix",
+        contact="world",
+        outcome="pass",
+        summary="fixed in world",
+        db_path=db_path,
+    )
+    insert_record(
+        kind="error_fix",
+        title="Error then fix",
+        body="the admitted fix body",
+        provenance="mixed",
+        source_episode_id="ep-fix",
+        db_path=db_path,
+    )
+    pairs = preference_pairs(db_path=db_path)
+    assert len(pairs) == 1
+    assert pairs[0]["chosen"] == "the admitted fix body"
