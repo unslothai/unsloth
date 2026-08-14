@@ -1196,7 +1196,6 @@ def _document_text(stored_path: str, ext: str) -> str:
     """
     if ext == ".docx":
         from core.rag import parsers
-
         return "\n".join(page.text for page in parsers.parse(stored_path))
     with open(stored_path, "rb") as handle:
         raw = handle.read(_MAX_TEXT_EDIT_BYTES)
@@ -1315,9 +1314,7 @@ def update_document_content(
         )
     ext = os.path.splitext(doc["filename"])[1].lower()
     if ext not in _EDITABLE_EXTS:
-        raise HTTPException(
-            status_code = 400, detail = f"'{ext}' documents cannot be edited"
-        )
+        raise HTTPException(status_code = 400, detail = f"'{ext}' documents cannot be edited")
     if doc.get("status") in ("pending", "running"):
         # An ingestion worker is reading the current file and will write this
         # document's rows; replacing it underneath would race that job.

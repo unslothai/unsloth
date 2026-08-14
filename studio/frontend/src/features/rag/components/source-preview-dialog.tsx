@@ -261,7 +261,15 @@ export function SourcePreviewDialog({
               // The chat artifact canvas: a sandboxed, opaque-origin iframe with
               // network access off by default. Rendering an uploaded page is only
               // safe inside it, so this must never become a plain innerHTML.
-              <div className="h-full overflow-auto rounded-xl border bg-white dark:bg-neutral-950">
+              <div
+                className={cn(
+                  "h-full rounded-xl border bg-white dark:bg-neutral-950",
+                  // Only zooming IN can overflow this box. At 1 and below the
+                  // scaled frame fits exactly, and leaving the scroller on gave
+                  // two bars for one surface: this one and the iframe's own.
+                  zoom > 1 ? "overflow-auto" : "overflow-hidden",
+                )}
+              >
                 {/* Zoom scales the frame from its top-left and widens it by the
                   inverse, so zooming out reveals more of a page laid out wider
                   than the modal (a 1600px SVG, say) instead of only shrinking a

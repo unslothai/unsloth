@@ -28,9 +28,7 @@ def chat_project(rag_home):
     from storage.studio_db import upsert_chat_project
 
     now = int(time.time() * 1000)
-    upsert_chat_project(
-        {"id": PROJECT_ID, "name": "Test", "createdAt": now, "updatedAt": now}
-    )
+    upsert_chat_project({"id": PROJECT_ID, "name": "Test", "createdAt": now, "updatedAt": now})
 
 
 def _client():
@@ -60,7 +58,12 @@ def _await_job(job_id: str, *, expect: str = "completed") -> dict:
     return status
 
 
-def _ingest(filename: str, body: str, *, project_id: str = "proj-1"):
+def _ingest(
+    filename: str,
+    body: str,
+    *,
+    project_id: str = "proj-1",
+):
     """Index one managed upload into a project scope, as the upload route does."""
     from core.rag import ingestion, store
     from utils.paths import ensure_dir, rag_uploads_root
@@ -86,7 +89,11 @@ def _document_row(document_id: str):
         conn.close()
 
 
-def _search(client, query: str, project_id: str = "proj-1"):
+def _search(
+    client,
+    query: str,
+    project_id: str = "proj-1",
+):
     return client.post(
         "/api/rag/search",
         json = {"query": query, "project_id": project_id, "mode": "lexical"},
@@ -317,9 +324,7 @@ def test_a_failed_reindex_leaves_the_original_searchable(rag_home, stub_embeddin
     assert _search(client, "kickoff third"), "the original is no longer retrievable"
 
 
-def test_editing_html_saves_the_markup_and_indexes_its_visible_text(
-    rag_home, stub_embeddings
-):
+def test_editing_html_saves_the_markup_and_indexes_its_visible_text(rag_home, stub_embeddings):
     # The Edit tab holds markup, so the file must round-trip as markup while the
     # index keeps holding the stripped text the HTML parser produces.
     _, doc_id, _ = _ingest("page.html", "<html><body><p>before</p></body></html>")
