@@ -68,6 +68,9 @@ export type RagDocumentScope =
 
 type Lister = () => Promise<RagDocument[]>;
 
+/** Attempts a mutation's reconciling list gets before the gate is released. */
+const REFRESH_RETRIES = 3;
+
 export function useRagDocuments(
   scope: RagDocumentScope | null,
   lister: Lister,
@@ -216,9 +219,12 @@ export function useRagDocuments(
     [patchDoc],
   );
 
+  /** Resolves to whether the list is now known: true when this request
+   * published it, or when a newer one took over and owns the answer. False
+   * only when the request still being awaited failed. */
   const refresh = useCallback(
-    async (opts?: { quiet?: boolean }) => {
-      if (!scopeKey) return;
+    async (opts?: { quiet?: boolean; silentErrors?: boolean }) => {
+      if (!scopeKey) return true;
       const requestId = ++refreshSeq.current;
       refreshInFlight.current = true;
       if (!opts?.quiet) setLoading(true);
@@ -226,7 +232,7 @@ export function useRagDocuments(
         // Merge server truth with local progress so a refresh mid-index keeps a
         // live "running %" chip. Failed docs hidden (toast warned at upload).
         const rows = (await lister()).filter((row) => row.status !== "failed");
-        if (refreshSeq.current !== requestId) return;
+        if (refreshSeq.current !== requestId) return true;
         setDocuments((prev) => {
           const merged = rows.map((row) => {
             const tracked = prev.find((p) => p.id === row.id);
@@ -244,18 +250,21 @@ export function useRagDocuments(
           );
           return [...merged, ...pendingLocal];
         });
+        return true;
       } catch (err) {
         // A superseded request's failure describes a scope that is no longer
         // shown, and a host where RAG cannot run answers 503 to every one of
         // these: neither is worth a toast per composer opened.
+        if (refreshSeq.current !== requestId) return true;
         if (
-          refreshSeq.current === requestId &&
+          !opts?.silentErrors &&
           !useRagAvailabilityStore.getState().isUnavailable()
         ) {
           toast.error("Failed to load documents", {
             description: err instanceof Error ? err.message : String(err),
           });
         }
+        return false;
       } finally {
         // Whoever is newest clears it. A superseded request clearing it would
         // report the list as known while the one that will publish is still
@@ -367,9 +376,25 @@ export function useRagDocuments(
       // instance reports nothing indexing and lets a send go out ahead of the
       // rows it is about to receive.
       noteProjectWork(projectScopeId, 1);
-      void refresh({ quiet: true }).finally(() => {
-        noteProjectWork(projectScopeId, -1);
-      });
+      void (async () => {
+        try {
+          // Releasing on a failed list would leave the composer with no rows,
+          // nothing indexing and nothing polling, while the source the
+          // mutation just added is still being chunked. Retry first; only the
+          // last attempt is worth a toast.
+          for (let attempt = 0; attempt < REFRESH_RETRIES; attempt += 1) {
+            const last = attempt === REFRESH_RETRIES - 1;
+            if (await refresh({ quiet: true, silentErrors: !last })) return;
+            if (!last) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, 1000 * (attempt + 1)),
+              );
+            }
+          }
+        } finally {
+          noteProjectWork(projectScopeId, -1);
+        }
+      })();
     };
     subscribeProjectSourcesBroadcast();
     window.addEventListener(PROJECT_SOURCES_CHANGED_EVENT, onChanged);

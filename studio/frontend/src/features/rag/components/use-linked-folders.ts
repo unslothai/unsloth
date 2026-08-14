@@ -14,6 +14,7 @@ import {
   deleteLinkedFolder,
   getFolderSyncJob,
   listLinkedFolders,
+  noteProjectWork,
   rebuildLinkedFolder,
   streamFolderSyncJobEvents,
   syncLinkedFolder,
@@ -51,6 +52,24 @@ export function useLinkedFolders(
   const currentScopeKey = useRef(scopeKey);
   const folderSnapshot = useRef<LinkedFolder[] | null>(null);
   const notifiedJobs = useRef(new Set<string>());
+
+  // The backend creates and starts the job before it answers, so the window
+  // between the request going out and trackJob registering it is time the
+  // project is being changed with nothing gating on it. trackJob takes its own
+  // lease inside this one, so the two overlap rather than leaving a gap.
+  const projectWorkScopeId = scopeType === "project" ? scopeId : null;
+  const withProjectWork = useCallback(
+    async <T>(run: () => Promise<T>): Promise<T> => {
+      if (!projectWorkScopeId) return run();
+      noteProjectWork(projectWorkScopeId, 1);
+      try {
+        return await run();
+      } finally {
+        noteProjectWork(projectWorkScopeId, -1);
+      }
+    },
+    [projectWorkScopeId],
+  );
 
   const notifySourcesChanged = useCallback(
     (job: FolderSyncJob) => {
@@ -243,10 +262,12 @@ export function useLinkedFolders(
     try {
       const selected = await pickNativeDocumentFolder();
       if (!selected || currentScopeKey.current !== operationScopeKey) return;
-      const result = await createLinkedFolder(
-        { type: scopeType, id: scopeId },
-        selected.token,
-        selected.displayName,
+      const result = await withProjectWork(() =>
+        createLinkedFolder(
+          { type: scopeType, id: scopeId },
+          selected.token,
+          selected.displayName,
+        ),
       );
       if (currentScopeKey.current !== operationScopeKey) return;
       setStateScopeKey(operationScopeKey);
@@ -269,6 +290,7 @@ export function useLinkedFolders(
     scopeId,
     nativePathLeasesSupported,
     trackJob,
+    withProjectWork,
     onSourcesChanged,
   ]);
 
@@ -276,10 +298,11 @@ export function useLinkedFolders(
     async (folderId: string, mode: "sync" | "rebuild") => {
       const operationScopeKey = scopeKey;
       try {
-        const { job } =
+        const { job } = await withProjectWork(() =>
           mode === "rebuild"
-            ? await rebuildLinkedFolder(folderId)
-            : await syncLinkedFolder(folderId);
+            ? rebuildLinkedFolder(folderId)
+            : syncLinkedFolder(folderId),
+        );
         if (currentScopeKey.current !== operationScopeKey) return;
         trackJob(job);
         onSourcesChanged?.();
@@ -289,7 +312,7 @@ export function useLinkedFolders(
         });
       }
     },
-    [scopeKey, trackJob, onSourcesChanged],
+    [scopeKey, trackJob, withProjectWork, onSourcesChanged],
   );
 
   const remove = useCallback(
@@ -309,7 +332,7 @@ export function useLinkedFolders(
         current.filter((folder) => folder.id !== folderId),
       );
       try {
-        await deleteLinkedFolder(folderId, removeIndex);
+        await withProjectWork(() => deleteLinkedFolder(folderId, removeIndex));
         if (currentScopeKey.current !== operationScopeKey) return;
         onSourcesChanged?.();
         setJobs((current) => {
@@ -333,7 +356,15 @@ export function useLinkedFolders(
         });
       }
     },
-    [scopeKey, folders, jobs, trackJob, refresh, onSourcesChanged],
+    [
+      scopeKey,
+      folders,
+      jobs,
+      trackJob,
+      refresh,
+      withProjectWork,
+      onSourcesChanged,
+    ],
   );
 
   return {

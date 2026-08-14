@@ -136,7 +136,7 @@ test("a failure is only reported for the request still being awaited", () => {
   );
   assert.match(
     source,
-    /refreshSeq\.current === requestId &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
+    /if \(refreshSeq\.current !== requestId\) return true;\s*if \(\s*!opts\?\.silentErrors &&\s*!useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\)/,
   );
 });
 
@@ -297,7 +297,7 @@ test("an invalidation crosses tabs", () => {
   // Work in flight crosses too, or the other tab stays sendable through it.
   assert.match(
     api,
-    /getProjectChannel\(\)\?\.postMessage\(\{ kind: "work", projectId, delta \}\)/,
+    /getProjectChannel\(\)\?\.postMessage\(\{\s*kind: "work",\s*projectId,\s*delta,\s*from: TAB_ID,/,
   );
   assert.match(api, /new BroadcastChannel\(PROJECT_SOURCES_CHANGED_EVENT\)/);
   const hook = readFileSync(
@@ -323,7 +323,7 @@ test("work reported by another tab lapses", () => {
   // Local and remote add up; a remote count past its deadline is dropped.
   assert.match(
     api,
-    /remote && remote\.until > Date\.now\(\) \? remote\.count : 0;\s*return \(projectWorkInFlight\.get\(projectId\) \?\? 0\) \+ remoteCount;/,
+    /if \(entry\.until > now\) remoteCount \+= entry\.count;\s*\}\s*return \(projectWorkInFlight\.get\(projectId\) \?\? 0\) \+ remoteCount;/,
   );
   // One pending wake-up per project, however chatty the other tab is.
   assert.match(api, /clearTimeout\(timer\)/);
@@ -365,7 +365,10 @@ test("overlapping remote work is counted, not flagged", () => {
     new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
     "utf8",
   );
-  assert.match(api, /const count = Math\.max\(0, entry\.count \+ delta\);/);
+  assert.match(
+    api,
+    /setRemoteProjectWork\(projectId, from, Math\.max\(0, current \+ delta\)\);/,
+  );
 
   const remote = new Map<string, { count: number; until: number }>();
   const note = (projectId: string, delta: number) => {
@@ -431,8 +434,9 @@ test("the refresh an invalidation triggers is counted as work", () => {
   );
   assert.match(
     hook,
-    /noteProjectWork\(projectScopeId, 1\);\s*void refresh\(\{ quiet: true \}\)\.finally\(\(\) => \{\s*noteProjectWork\(projectScopeId, -1\);/,
+    /noteProjectWork\(projectScopeId, 1\);\s*void \(async \(\) => \{/,
   );
+  assert.match(hook, /\} finally \{\s*noteProjectWork\(projectScopeId, -1\);/);
 });
 
 // One failed read is not a finished job. A backend restart answers a tick or
@@ -487,7 +491,7 @@ test("work in flight renews the deadline other tabs put on it", () => {
   assert.match(api, /const WORK_HEARTBEAT_MS = 45_000;/);
   assert.match(
     api,
-    /channel\.postMessage\(\{ kind: "work", projectId, delta: 0 \}\)/,
+    /channel\.postMessage\(\{ kind: "work", projectId, delta: 0, from: TAB_ID \}\)/,
   );
   // Started and stopped by the count itself, so an idle tab posts nothing.
   assert.match(
@@ -582,28 +586,125 @@ test("a tab that opens mid-upload asks what is already running", () => {
   assert.match(api, /postMessage\(\{ kind: "work-query" \}\)/);
   assert.match(
     api,
-    /channel\.postMessage\(\{ kind: "work-state", projectId, count \}\)/,
+    /channel\.postMessage\(\{ kind: "work-state", projectId, count, from: TAB_ID \}\)/,
   );
 
-  // The answer is a floor, not a replacement: a third tab's deltas are already
-  // counted, and its own answer arrives separately.
+  // Per sender, and a floor within it: the answer can race a delta from the
+  // same tab that is already counted, and must not lower it.
   const remote = new Map<string, { count: number; until: number }>();
-  const seed = (projectId: string, count: number) => {
+  const seed = (from: string, count: number) => {
     if (count <= 0) return;
-    const entry = remote.get(projectId);
+    const entry = remote.get(from);
     if (entry && entry.until > Date.now() && entry.count >= count) return;
-    remote.set(projectId, { count, until: Date.now() + 120_000 });
+    remote.set(from, { count, until: Date.now() + 120_000 });
   };
 
-  seed("proj-1", 2);
-  seed("proj-1", 1);
+  seed("tab-a", 2);
+  seed("tab-a", 1);
   assert.equal(
-    remote.get("proj-1")?.count,
+    remote.get("tab-a")?.count,
     2,
     "a smaller answer does not lower it",
   );
-  seed("proj-1", 3);
-  assert.equal(remote.get("proj-1")?.count, 3);
-  seed("proj-2", 0);
-  assert.equal(remote.has("proj-2"), false, "an idle tab seeds nothing");
+  seed("tab-a", 3);
+  assert.equal(remote.get("tab-a")?.count, 3);
+  seed("tab-b", 0);
+  assert.equal(remote.has("tab-b"), false, "an idle tab seeds nothing");
+});
+
+// Two tabs uploading to one project are two operations. Merged into a single
+// project-wide count, the first to finish clears the gate the second is still
+// holding, and a send goes out mid-upload.
+test("work is counted per reporting tab, not per project", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    api,
+    /const remoteProjectWork = new Map<\s*string,\s*Map<string, \{ count: number; until: number \}>\s*>\(\);/,
+  );
+  // Every message says who sent it, or the counts cannot be kept apart.
+  assert.match(api, /kind: "work",\s*projectId,\s*delta,\s*from: TAB_ID,/);
+  assert.match(
+    api,
+    /postMessage\(\{ kind: "work-state", projectId, count, from: TAB_ID \}\)/,
+  );
+  assert.match(api, /if \(entry\.until > now\) remoteCount \+= entry\.count;/);
+
+  // The reported sequence, per sender.
+  const TTL = 120_000;
+  const now = 1_000;
+  const byProject = new Map<
+    string,
+    Map<string, { count: number; until: number }>
+  >();
+  const set = (from: string, count: number) => {
+    const bySender = byProject.get("proj-1") ?? new Map();
+    if (count <= 0) bySender.delete(from);
+    else bySender.set(from, { count, until: now + TTL });
+    byProject.set("proj-1", bySender);
+  };
+  const total = () => {
+    let sum = 0;
+    for (const entry of byProject.get("proj-1")?.values() ?? []) {
+      if (entry.until > now) sum += entry.count;
+    }
+    return sum;
+  };
+
+  // Both existing tabs answer a late tab's query.
+  set("tab-a", 1);
+  set("tab-b", 1);
+  assert.equal(total(), 2, "two uploads, not one");
+
+  // One finishes; the other still holds the gate.
+  set("tab-a", 0);
+  assert.equal(total(), 1);
+  set("tab-b", 0);
+  assert.equal(total(), 0);
+});
+
+// The gate is released by the mutation's reconciling refresh, so a refresh that
+// fails releases it with the composer holding no rows at all.
+test("a failed reconciling refresh is retried before the gate drops", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /const REFRESH_RETRIES = 3;/);
+  assert.match(
+    hook,
+    /if \(await refresh\(\{ quiet: true, silentErrors: !last \}\)\) return;/,
+  );
+  // The release is still guaranteed, retries or not.
+  assert.match(hook, /\} finally \{\s*noteProjectWork\(projectScopeId, -1\);/);
+  // A superseded request reports the list as known: the newer one owns it.
+  assert.match(hook, /if \(refreshSeq\.current !== requestId\) return true;/);
+});
+
+// The backend creates and starts the job before it answers, so the request
+// itself is time the project is changing with nothing gating on it.
+test("a folder mutation takes the gate before its request", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-linked-folders.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    hook,
+    /noteProjectWork\(projectWorkScopeId, 1\);\s*try \{\s*return await run\(\);\s*\} finally \{\s*noteProjectWork\(projectWorkScopeId, -1\);/,
+  );
+  // Linking, syncing, rebuilding and unlinking all go through it.
+  assert.match(hook, /withProjectWork\(\(\) =>\s*createLinkedFolder\(/);
+  assert.match(hook, /await withProjectWork\(\(\) =>\s*mode === "rebuild"/);
+  assert.match(
+    hook,
+    /withProjectWork\(\(\) => deleteLinkedFolder\(folderId, removeIndex\)\)/,
+  );
 });

@@ -261,6 +261,7 @@ function getProjectChannel(): BroadcastChannel | null {
       projectId?: string;
       delta?: number;
       count?: number;
+      from?: string;
     } | null;
     if (!message) {
       return;
@@ -273,12 +274,23 @@ function getProjectChannel(): BroadcastChannel | null {
     if (!message.projectId) {
       return;
     }
-    if (message.kind === "work-state") {
-      seedRemoteProjectWork(message.projectId, message.count ?? 0);
+    if (message.kind === "work-state" && message.from) {
+      seedRemoteProjectWork(
+        message.projectId,
+        message.from,
+        message.count ?? 0,
+      );
       return;
     }
-    if (message.kind === "work") {
-      noteRemoteProjectWork(message.projectId, message.delta ?? 0);
+    if (message.kind === "work" && message.from) {
+      noteRemoteProjectWork(
+        message.projectId,
+        message.from,
+        message.delta ?? 0,
+      );
+      return;
+    }
+    if (message.kind === "work" || message.kind === "work-state") {
       return;
     }
     publishProjectSourcesChanged(message.projectId);
@@ -298,9 +310,14 @@ function answerWorkQuery(): void {
   const channel = projectChannel;
   if (!channel) return;
   for (const [projectId, count] of projectWorkInFlight) {
-    channel.postMessage({ kind: "work-state", projectId, count });
+    channel.postMessage({ kind: "work-state", projectId, count, from: TAB_ID });
   }
 }
+
+/** This tab, so its work is counted apart from every other tab's. Two tabs
+ * uploading to one project are two operations, and merging them into a single
+ * project-wide count lets the first to finish release the second's gate. */
+const TAB_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 /** Listeners only hear another tab once the channel is open. */
 export function subscribeProjectSourcesBroadcast(): void {
@@ -326,7 +343,12 @@ export function noteProjectWork(projectId: string, delta: number): void {
   } else {
     projectWorkInFlight.delete(projectId);
   }
-  getProjectChannel()?.postMessage({ kind: "work", projectId, delta });
+  getProjectChannel()?.postMessage({
+    kind: "work",
+    projectId,
+    delta,
+    from: TAB_ID,
+  });
   syncWorkHeartbeat();
   publishProjectWorkChanged(projectId);
 }
@@ -355,7 +377,7 @@ function syncWorkHeartbeat(): void {
     const channel = getProjectChannel();
     if (!channel) return;
     for (const projectId of projectWorkInFlight.keys()) {
-      channel.postMessage({ kind: "work", projectId, delta: 0 });
+      channel.postMessage({ kind: "work", projectId, delta: 0, from: TAB_ID });
     }
   }, WORK_HEARTBEAT_MS);
 }
@@ -377,51 +399,92 @@ function publishProjectWorkChanged(projectId: string): void {
  * the rows the list refresh brings, which is where the gate started.
  */
 const REMOTE_WORK_TTL_MS = 120_000;
-const remoteProjectWork = new Map<string, { count: number; until: number }>();
+/** Per project, per reporting tab. Two tabs uploading to one project are two
+ * operations: aggregating them here would let the first to finish clear the
+ * count the second is still holding. */
+const remoteProjectWork = new Map<
+  string,
+  Map<string, { count: number; until: number }>
+>();
 const remoteWorkTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-function noteRemoteProjectWork(projectId: string, delta: number): void {
-  const entry = remoteProjectWork.get(projectId) ?? { count: 0, until: 0 };
-  const count = Math.max(0, entry.count + delta);
+function armRemoteWorkExpiry(projectId: string): void {
   const timer = remoteWorkTimers.get(projectId);
   if (timer !== undefined) {
     clearTimeout(timer);
-    remoteWorkTimers.delete(projectId);
   }
-  if (count === 0) {
-    remoteProjectWork.delete(projectId);
+  // Re-publish when the deadline passes, so a listener re-reads instead of
+  // holding a count nothing will come back to clear. One timer per project: a
+  // chatty tab renews the deadline, it does not stack another wake-up on it.
+  remoteWorkTimers.set(
+    projectId,
+    setTimeout(() => {
+      remoteWorkTimers.delete(projectId);
+      publishProjectWorkChanged(projectId);
+    }, REMOTE_WORK_TTL_MS),
+  );
+}
+
+function setRemoteProjectWork(
+  projectId: string,
+  from: string,
+  count: number,
+): void {
+  const bySender = remoteProjectWork.get(projectId) ?? new Map();
+  if (count <= 0) {
+    bySender.delete(from);
   } else {
-    remoteProjectWork.set(projectId, {
-      count,
-      until: Date.now() + REMOTE_WORK_TTL_MS,
-    });
-    // Re-publish when it lapses, so a listener re-reads instead of holding a
-    // count nothing will come back to clear. One timer per project: a chatty
-    // tab renews the deadline, it does not stack another wake-up on it.
-    remoteWorkTimers.set(
-      projectId,
-      setTimeout(() => {
-        remoteWorkTimers.delete(projectId);
-        publishProjectWorkChanged(projectId);
-      }, REMOTE_WORK_TTL_MS),
-    );
+    bySender.set(from, { count, until: Date.now() + REMOTE_WORK_TTL_MS });
+  }
+  if (bySender.size === 0) {
+    remoteProjectWork.delete(projectId);
+    const timer = remoteWorkTimers.get(projectId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      remoteWorkTimers.delete(projectId);
+    }
+  } else {
+    remoteProjectWork.set(projectId, bySender);
+    armRemoteWorkExpiry(projectId);
   }
   publishProjectWorkChanged(projectId);
 }
 
-/** An absolute count another tab reports for work it started before this one
- * was listening. Taken as a floor, not a replacement: a third tab's deltas are
- * already counted here, and its own answer arrives separately. */
-function seedRemoteProjectWork(projectId: string, count: number): void {
-  if (count <= 0) return;
-  const entry = remoteProjectWork.get(projectId);
-  if (entry && entry.until > Date.now() && entry.count >= count) return;
-  noteRemoteProjectWork(projectId, count - (entry?.count ?? 0));
+function remoteSenderCount(projectId: string, from: string): number {
+  const entry = remoteProjectWork.get(projectId)?.get(from);
+  return entry && entry.until > Date.now() ? entry.count : 0;
+}
+
+function noteRemoteProjectWork(
+  projectId: string,
+  from: string,
+  delta: number,
+): void {
+  const current = remoteSenderCount(projectId, from);
+  // A zero delta is the heartbeat: it moves this sender's deadline and leaves
+  // its count alone, and says nothing about a sender with nothing running.
+  if (delta === 0 && current === 0) return;
+  setRemoteProjectWork(projectId, from, Math.max(0, current + delta));
+}
+
+/** An absolute count a tab reports for work it started before this one was
+ * listening. Recorded against that tab alone: every other tab answers the same
+ * query separately, and their deltas are already counted under their own ids. */
+function seedRemoteProjectWork(
+  projectId: string,
+  from: string,
+  count: number,
+): void {
+  if (count <= 0 || remoteSenderCount(projectId, from) >= count) return;
+  setRemoteProjectWork(projectId, from, count);
 }
 
 export function projectWorkCount(projectId: string): number {
-  const remote = remoteProjectWork.get(projectId);
-  const remoteCount = remote && remote.until > Date.now() ? remote.count : 0;
+  let remoteCount = 0;
+  const now = Date.now();
+  for (const entry of remoteProjectWork.get(projectId)?.values() ?? []) {
+    if (entry.until > now) remoteCount += entry.count;
+  }
   return (projectWorkInFlight.get(projectId) ?? 0) + remoteCount;
 }
 
