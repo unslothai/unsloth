@@ -359,7 +359,29 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
         assert env["LLAMA_ARG_FLASH_ATTN"] == "1"
 
 
-def _flagless_v_cache_fixup(*, known_off: bool, cmd: list, env: dict) -> tuple:
+class _SelfShim:
+    """Stand-in for the backend instance the fixup block runs against.
+
+    The block reads instance state (``_kv_lora_rank``) as well as class
+    methods, and binding the class itself meant any new ``self.<attr>`` in
+    that block raised AttributeError here rather than failing on its merits.
+    Anything not set on the shim falls through to the class.
+    """
+
+    def __init__(self, kv_lora_rank = None):
+        self._kv_lora_rank = kv_lora_rank
+
+    def __getattr__(self, name):
+        return getattr(LlamaCppBackend, name)
+
+
+def _flagless_v_cache_fixup(
+    *,
+    known_off: bool,
+    cmd: list,
+    env: dict,
+    mla: bool = False,
+) -> tuple:
     """Run load_model's real flagless-build V-cache fixup over cmd and env."""
     source = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
     blocks = [
@@ -373,7 +395,7 @@ def _flagless_v_cache_fixup(*, known_off: bool, cmd: list, env: dict) -> tuple:
     ]
     assert len(blocks) == 2, f"expected two V-cache fixup blocks, found {len(blocks)}"
     scope = {
-        "self": LlamaCppBackend,
+        "self": _SelfShim(kv_lora_rank = 512 if mla else None),
         "logger": logging.getLogger(__name__),
         "_flash_attn_known_off": known_off,
         "cmd": list(cmd),
@@ -439,3 +461,31 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
         never runs, and the log is the only record of what was launched."""
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert src.index("_reset_quantized_v_cache") < src.index("Starting llama-server")
+
+
+class TestTheFlaglessFixupKeepsMlaKAndVEqual:
+    """An MLA model rejects K != V outright, above the V-quantization check.
+
+    So the launch-site reset, which normally leaves K quantized on purpose,
+    has to bring K down with V there or it trades one abort for another.
+    """
+
+    CMD = [
+        "llama-server",
+        "-m",
+        "ds.gguf",
+        "--cache-type-k",
+        "q8_0",
+        "--cache-type-v",
+        "q8_0",
+    ]
+
+    def test_mla_brings_k_down_with_v(self):
+        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = True)
+        assert cmd[cmd.index("--cache-type-k") + 1] == "f16"
+        assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
+
+    def test_a_non_mla_model_still_keeps_its_quantized_k(self):
+        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = False)
+        assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
+        assert cmd[cmd.index("--cache-type-v") + 1] == "f16"

@@ -11843,7 +11843,12 @@ class LlamaCppBackend:
         return out if found else None
 
     @staticmethod
-    def _reset_quantized_v_cache(cmd: list[str], reason: str) -> list[str]:
+    def _reset_quantized_v_cache(
+        cmd: list[str],
+        reason: str,
+        *,
+        mla: bool = False,
+    ) -> list[str]:
         """Return cmd with any quantized V cache reset to f16, for a launch that
         runs without flash attention.
 
@@ -11851,7 +11856,26 @@ class LlamaCppBackend:
         with "V cache quantization requires flash_attn". A quantized K cache has no
         such requirement and runs fine without FA, so it is left untouched --
         resetting it would needlessly enlarge the K cache and can OOM a
-        memory-constrained config. Main and draft are both reset (the draft context
+        memory-constrained config.
+
+        ``mla`` overrides that on the models where leaving K alone is now itself
+        fatal. llama-context.cpp gained this in #25871, and it sits ABOVE the
+        V-quantization check, so it decides first:
+
+            if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4)
+                    && params.type_k != params.type_v) {
+                LLAMA_LOG_ERROR("model does not support different K (%s) and V
+                                 (%s) cache types");
+                return nullptr;
+            }
+
+        is_mla() covers DeepSeek V2/V3/R1, Kimi K2 and GLM-4.7/5.x. Resetting V
+        alone on one of those turns a quantized KV into K=q8_0 V=f16, which is a
+        hard abort for a DIFFERENT reason than the one being avoided: the retry
+        that exists to recover from a flash-attention crash fails on the K/V
+        mismatch instead. Both axes go to f16 together there, since equal is what
+        the rule asks for and f16 is the only value guaranteed to satisfy the V
+        rule as well. Main and draft are both reset (the draft context
         shares the global --flash-attn flag, so its V cache aborts too) to f16 (the
         llama.cpp default); non-quantized types -- f16/bf16/f32 -- run fine without
         FA and are left untouched. The value is rewritten in place so the list
@@ -11885,17 +11909,42 @@ class LlamaCppBackend:
                 if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                     out[i + 1] = "f16"
                     _cache_reset = True
+        if _cache_reset and mla:
+            # Symmetry, not size: an MLA model rejects K != V outright, so the K
+            # cache has to follow V down rather than stay quantized.
+            _k_cache_flags = (
+                "--cache-type-k",
+                "-ctk",
+                "--cache-type-k-draft",
+                "--spec-draft-type-k",
+                "-ctkd",
+            )
+            for i, tok in enumerate(out):
+                if _flag_name(tok) not in _k_cache_flags:
+                    continue
+                if "=" in tok:
+                    flag, _, value = tok.partition("=")
+                    if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                        out[i] = f"{flag}=f16"
+                elif i + 1 < len(out):
+                    if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                        out[i + 1] = "f16"
         if _cache_reset:
             logger.info(
                 "V cache dtype reset to f16 because flash attention is off (%s): a "
-                "quantized V cache requires flash attention in llama.cpp. The K "
-                "cache is left untouched.",
+                "quantized V cache requires flash attention in llama.cpp. %s",
                 reason,
+                (
+                    "The K cache followed it down: this model uses MLA, which "
+                    "rejects different K and V cache types."
+                    if mla
+                    else "The K cache is left untouched."
+                ),
             )
         return out
 
     @staticmethod
-    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
+    def _with_flash_attn_off(cmd: list[str], *, mla: bool = False) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
         kernels hard-crash at startup on some ROCm builds; disabling FA keeps
@@ -11943,7 +11992,7 @@ class LlamaCppBackend:
         # launch but would make THIS FA-off retry crash on init instead of
         # recovering.
         return LlamaCppBackend._reset_quantized_v_cache(
-            out, "disabled by the crash-recovery fallback"
+            out, "disabled by the crash-recovery fallback", mla = mla
         )
 
     @staticmethod
@@ -15592,7 +15641,11 @@ class LlamaCppBackend:
                 # logged is what launches; length is preserved, so _spec_start
                 # still indexes the same tokens.
                 if _flash_attn_known_off:
-                    cmd = self._reset_quantized_v_cache(cmd, "this build has no --flash-attn")
+                    cmd = self._reset_quantized_v_cache(
+                        cmd,
+                        "this build has no --flash-attn",
+                        mla = self._kv_lora_rank is not None,
+                    )
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
@@ -16519,7 +16572,9 @@ class LlamaCppBackend:
                 if not healthy and not _load_cancelled():
                     _fa_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
-                        self._with_flash_attn_off(_last_spawn_cmd)
+                        self._with_flash_attn_off(
+                            _last_spawn_cmd, mla = self._kv_lora_rank is not None
+                        )
                         if self._is_signal_crash(_fa_rc)
                         else None
                     )
@@ -16583,7 +16638,9 @@ class LlamaCppBackend:
                     # FA-off (keeps MTP) before dropping speculative decoding below.
                     _probe_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
-                        self._with_flash_attn_off(_last_spawn_cmd)
+                        self._with_flash_attn_off(
+                            _last_spawn_cmd, mla = self._kv_lora_rank is not None
+                        )
                         if self._is_signal_crash(_probe_rc)
                         else None
                     )
