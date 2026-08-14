@@ -32,19 +32,18 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Spawn, never fork: a forked CUDA context is unusable, and Windows and macOS
-# have no fork to begin with.
+# Spawn, never fork: a forked CUDA context is unusable, and Windows/macOS have no fork.
 _CTX = mp.get_context("spawn")
 
 _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 
-# Both bounds exist only to break a hang; a large-v3 load off a cold disk and a
-# 30 minute transcription are both legitimately slow.
+# Both bounds only break a hang: a cold-disk large-v3 load and a 30 minute
+# transcription are both legitimately slow.
 _LOAD_TIMEOUT_SECONDS = 600.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
-# How long a cancelled command gets to come back on its own before the child is
-# killed. Generation stops within a token, but a load inside from_pretrained
-# reaches no checkpoint at all, and training is waiting for that memory.
+# How long a cancelled command gets before the child is killed. Generation stops
+# within a token, but a load inside from_pretrained never sees the cancel, and
+# training is waiting for that memory.
 _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
@@ -115,9 +114,8 @@ def load_whisper(
     dtype = getattr(torch, dtype_name, None) or torch.float32
     processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
     _raise_if_cancelled(cancel_event)
-    # use_safetensors forces the pickle-free load path even if a
-    # pytorch_model.bin somehow reached the cache; the selector and the
-    # completeness check already exclude pickle weights upstream.
+    # use_safetensors forces the pickle-free load path even if a pytorch_model.bin
+    # reached the cache; the selector and completeness check exclude them upstream.
     model = WhisperForConditionalGeneration.from_pretrained(
         snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
     )
@@ -173,8 +171,7 @@ def _error_response(exc: BaseException) -> dict:
     kind = type(exc).__name__
     message = str(exc) or kind
     if kind not in _FORWARDED_ERRORS and _is_missing_local_model_error(exc):
-        # A local-cache miss is the one generic error with a specific meaning
-        # upstream: the model is not downloaded, not a broken runtime.
+        # A local-cache miss means the model is not downloaded, not a broken runtime.
         kind = "SttModelNotDownloadedError"
         message = "The dictation model is not downloaded."
     return {"type": "error", "kind": kind, "error": message}
@@ -216,18 +213,16 @@ def run_stt_worker(
     except Exception as exc:  # noqa: BLE001 - logging setup must not fail dictation
         logger.debug("STT worker logging setup failed: %s", exc)
 
-    # Say this interpreter is up before any model work is attempted. Without it
-    # the parent has only the exit code to go on, and Windows has no signals to
-    # report a fault with: a native crash inside the model load ends the child
-    # with a positive status there exactly as a child that never bootstrapped
-    # does. Reading that crash as a host that cannot spawn moves the same
-    # crashing load into the backend, which the backend does not survive.
+    # Say this interpreter is up before any model work. Without it the parent has
+    # only the exit code, and Windows has no signals: a native crash inside the model
+    # load ends the child with a positive status there exactly as a child that never
+    # bootstrapped does, and reading that crash as a host that cannot spawn moves the
+    # same crashing load into the backend, which the backend does not survive.
     #
-    # An Event, not a queue message. Queue.put only hands the object to a feeder
+    # An Event, not a queue message: Queue.put only hands the object to a feeder
     # thread, so a child that faults before that thread drains the buffer never
-    # delivers it: measured here, the load command is already queued when the
-    # child reaches get(), and the queued word was lost in 17 of 20 runs. Event
-    # is a shared-memory semaphore, set the moment it returns, and lost in 0.
+    # delivers it (measured here, the queued word was lost in 17 of 20 runs). An
+    # Event is shared memory, set the moment it returns, and was lost in none.
     if ready_event is not None:
         ready_event.set()
 
@@ -329,13 +324,11 @@ class WhisperWorker:
         # Set by the child before any model work, so this separates a host that
         # cannot bring a child up from a child that failed at something.
         self._ready_event = None
-        # Whether the child ever answered a command.
         self._answered = False
-        # Set once close() found a child that outlived terminate and kill. The
-        # handle is kept so its memory stays accounted, but a child that
-        # answered neither signal answers no later command either, and a
-        # terminate taken mid-queue leaves that queue liable to corruption, so
-        # it must never be handed to a later dictation.
+        # Set once close() found a child that outlived terminate and kill. The handle
+        # is kept so its memory stays accounted, but a child that answered neither
+        # signal answers no later command either, and its terminate left the queues
+        # liable to corruption, so it must never be handed to a later dictation.
         self.survived_kill = False
         self.device: Optional[str] = None
         # Read by the sidecar the way it read the model's, so an English-only
@@ -383,8 +376,7 @@ class WhisperWorker:
                 )
                 self._process.start()
         except Exception as exc:  # noqa: BLE001 - any refusal to spawn reads the same
-            # Nothing was started, so there is nothing to kill; drop the queues
-            # and say what happened in a class the caller can act on.
+            # Nothing was started, so nothing to kill; raise a class the caller can act on.
             self._process = None
             self._close_queues()
             raise SttWorkerSpawnError(
@@ -515,10 +507,9 @@ class WhisperWorker:
                     "pid record so the sweep can still reach it",
                     process.pid,
                 )
-                # Recorded on the handle, not just returned: a cancelled or
-                # timed-out command closes the worker from inside _await and
-                # raises over this answer, so the sidecar would otherwise keep
-                # offering the wedged child to the next dictation.
+                # Recorded on the handle, not just returned: a cancelled or timed-out
+                # command closes the worker from inside _await and raises over this
+                # answer, so the sidecar would keep offering the wedged child otherwise.
                 self.survived_kill = True
                 return False
             try:
@@ -562,11 +553,10 @@ class WhisperWorker:
                 if cancel_deadline is None:
                     cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
                 elif time.monotonic() >= cancel_deadline:
-                    # A load inside from_pretrained never sees the event, and the
-                    # memory is wanted now, so stop asking and end the process.
-                    # The grace WAS the graceful shutdown, and a child too busy
-                    # to read the cancel is too busy to read a shutdown command,
-                    # so terminate rather than wait _SHUTDOWN_TIMEOUT_SECONDS more.
+                    # A load inside from_pretrained never sees the event and the memory
+                    # is wanted now, so end the process. The grace WAS the graceful
+                    # shutdown, and a child too busy to read the cancel will not read a
+                    # shutdown, so terminate rather than wait _SHUTDOWN_TIMEOUT_SECONDS more.
                     self.close(graceful_timeout = 0.0)
                     self._raise_cancelled(phase)
             try:
@@ -576,10 +566,9 @@ class WhisperWorker:
                     raise SttWorkerError(self._crash_message(phase))
                 if time.monotonic() >= deadline:
                     if cancel_deadline is not None:
-                        # A cancel landing near the end of the command timeout is
-                        # still a cancel: the caller is owed the phase's own error
-                        # (409 for a load, 499 for a transcription), and a child
-                        # that never read the cancel will not read a shutdown.
+                        # A cancel landing near the end of the timeout is still a cancel:
+                        # the caller is owed the phase's own error (409 load, 499
+                        # transcription), and a child that ignored it ignores a shutdown.
                         self.close(graceful_timeout = 0.0)
                         self._raise_cancelled(phase)
                     self.close()

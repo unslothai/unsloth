@@ -533,10 +533,9 @@ def test_unload_stops_the_worker_process(monkeypatch):
 
 
 def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkeypatch):
-    # cancel_pending_load() deliberately does not wait for the model lock, so it can
-    # land after start() has already come back with a live child. Nothing installed
-    # that child, and dropping the handle does not end the process holding the
-    # accelerator context the training run is waiting for, so the load must close it.
+    # cancel_pending_load() does not wait for the model lock, so it can land after
+    # start() came back with a live child. Nothing installed that child, and dropping
+    # the handle does not end the process holding the context training waits for.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
@@ -580,10 +579,9 @@ def test_a_worker_rejected_by_a_late_cancel_is_stopped_rather_than_leaked(monkey
 
 
 def test_a_late_cancelled_worker_that_outlived_the_kill_stays_resident(monkeypatch):
-    # The same late cancel, against the child that answers False: it survived
-    # terminate and kill and still holds its accelerator memory. Reporting
-    # nothing resident is what the cancel is read as, so training would be
-    # admitted against memory that is not free.
+    # The same late cancel, against a child that answers False: it survived terminate
+    # and kill and still holds its accelerator memory, so reporting nothing resident
+    # would let training be admitted against memory that is not free.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
@@ -665,9 +663,9 @@ def _install_unkillable_worker(monkeypatch):
 
 
 def test_a_worker_that_outlived_the_kill_stays_resident_rather_than_reported_unloaded(monkeypatch):
-    # close() answers False for a child wedged in a driver call that outlives
-    # SIGKILL. It still holds its accelerator memory, so reporting the model
-    # unloaded would let training be admitted against memory that is not free.
+    # close() answers False for a child wedged in a driver call that outlives SIGKILL. It
+    # still holds its memory, so reporting the model unloaded would let training be
+    # admitted against memory that is not free.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = _install_unkillable_worker(monkeypatch)
@@ -700,10 +698,9 @@ def test_a_new_load_is_refused_while_the_previous_worker_still_holds_its_memory(
 
 
 def test_a_surviving_worker_is_not_handed_to_the_next_dictation(monkeypatch):
-    # It is held for its memory, not for its answers: it already had its shutdown
-    # queued and a terminate and a kill, so handing it to a transcription costs
-    # the caller the whole command timeout under the model lock. Refuse the way a
-    # switch to another model is refused, and let the retry try the kill again.
+    # It is held for its memory, not for its answers: it already had its shutdown, a
+    # terminate and a kill, so handing it to a transcription costs the caller the whole
+    # command timeout under the model lock. Refuse, and let the retry kill it again.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = _install_unkillable_worker(monkeypatch)
@@ -722,10 +719,9 @@ def test_a_surviving_worker_is_not_handed_to_the_next_dictation(monkeypatch):
 def test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_dictation(
     monkeypatch,
 ):
-    # A cancel that outruns the grace closes the worker from inside the handle,
-    # so close() answers False to nobody and the sidecar never learns the child
-    # outlived both signals. Handing it to the next dictation spends the whole
-    # command timeout on a child that answers nothing, under the model lock.
+    # A cancel that outruns the grace closes the worker from inside the handle, so
+    # close() answers False to nobody and the sidecar never learns the child outlived
+    # both signals. Handing it on spends the whole command timeout under the model lock.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = []
@@ -755,9 +751,8 @@ def test_a_worker_wedged_by_a_cancelled_transcription_is_not_handed_to_the_next_
             _generate_kwargs,
             _cancel_event = None,
         ):
-            # What _await does once the cancel grace expires: close() terminates
-            # and kills, the child answers neither, and the cancellation is
-            # raised over the False that close() returned.
+            # What _await does once the cancel grace expires: close() terminates and
+            # kills, the child answers neither, and the cancel is raised over its False.
             self.survived_kill = True
             raise stt_sidecar_module.SttTranscriptionCancelledError("Transcription cancelled.")
 
@@ -822,11 +817,10 @@ def _install_worker_that_survives_its_own_start(monkeypatch, error):
 
 
 def test_a_child_that_outlived_the_kill_inside_start_stays_accounted(monkeypatch):
-    # The cancel lands while the child is inside from_pretrained, which never
-    # reads it, so the load kills the child on the way out and the child outlives
-    # it. Nothing installed that handle, and it is the only one on the process:
-    # dropping it reports nothing resident while the context is still taken, and
-    # training is admitted against memory that is not free.
+    # The cancel lands while the child is inside from_pretrained, which never reads it,
+    # so the load kills the child on the way out and the child outlives it. Nothing
+    # installed that handle and it is the only one on the process: dropping it reports
+    # nothing resident while the context is taken, admitting training against it.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
     workers = _install_worker_that_survives_its_own_start(
@@ -920,9 +914,8 @@ def _closed(worker):
 
 
 def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
-    # An unanswerable probe is not evidence that the accelerator context was
-    # released, so reporting nothing resident would let training be admitted
-    # against memory the child is still holding.
+    # An unanswerable probe is not evidence that the context was released, so reporting
+    # nothing resident would let training be admitted against memory still held.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
@@ -940,9 +933,8 @@ def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
 
 
 def test_a_close_that_raises_is_a_failed_release(monkeypatch):
-    # close() raising out of join/terminate/kill says nothing was confirmed
-    # dead, so discarding the only handle would advertise the child's memory
-    # as free while it is still holding it.
+    # close() raising out of join/terminate/kill confirms nothing dead, so discarding
+    # the only handle would advertise memory the child is still holding as free.
     _install_fake_torch(monkeypatch)
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
@@ -1020,9 +1012,9 @@ def test_a_worker_being_reaped_stays_visible_to_training_admission(monkeypatch):
 
 
 def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch):
-    # Moving the engine out of process may not take dictation away from a host
-    # that cannot create a child at all. The accelerator attempt goes through
-    # the usual CPU retry first, so nobody is downgraded before that has run.
+    # Moving the engine out of process may not take dictation away from a host that
+    # cannot create a child. The accelerator attempt goes through the usual CPU retry
+    # first, so nobody is downgraded before that has run.
     import core.inference.stt_transformers_worker as worker_module
 
     _install_fake_torch(monkeypatch)

@@ -1154,9 +1154,8 @@ class WhisperSttSidecar:
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
-        # Whether the resident engine is only being held to keep its memory
-        # accounted: a worker that outlived its own kill answers nothing, so it
-        # is not something a later dictation can be handed.
+        # Held only to keep its memory accounted: a worker that outlived its own
+        # kill answers nothing, so a later dictation cannot be handed it.
         self._survivor = False
         # A child that outlived the kill start() gave it, handed from _build_model
         # to the load that called it. Written and read under _lock.
@@ -1503,8 +1502,7 @@ class WhisperSttSidecar:
                 except SttLoadCancelledError:
                     raise
                 except Exception as exc:
-                    # The worker classifies a cache miss for us, since the
-                    # original exception cannot cross a process boundary.
+                    # The worker classifies a cache miss; the exception cannot cross processes.
                     if isinstance(exc, SttModelNotDownloadedError) or _is_missing_local_model_error(
                         exc
                     ):
@@ -1512,12 +1510,11 @@ class WhisperSttSidecar:
                     if device == "cpu":
                         raise
                     if self._start_survivor is not None:
-                        # The attempt left a child that outlived its own kill and
-                        # still holds the device. A second child would sit beside
-                        # it, and installing that one would forget this one, which
-                        # is what lets training be admitted against memory that is
-                        # not free. Refuse the way a release that could not kill
-                        # its worker does, and let the idle timer try again.
+                        # The attempt left a child that outlived its own kill and still
+                        # holds the device. A second child would sit beside it, and
+                        # installing that one would forget this one, which is what lets
+                        # training be admitted against memory that is not free. Refuse as
+                        # a release that could not kill its worker does; the timer retries.
                         raise SttModelBusyError(
                             "The previous dictation worker did not exit and still holds its "
                             "memory. Try again shortly."
@@ -1559,28 +1556,25 @@ class WhisperSttSidecar:
                 logger.info("STT model %s ready on %s", model_id, device)
                 return self._engine
             except SttLoadCancelledError:
-                # cancel_pending_load() does not wait for the model lock, so the
-                # cancel can land between start() coming back with a live child
-                # and the check that rejects it. Nothing installed the candidate,
-                # and dropping the handle does not end the process holding the
-                # context that training is waiting for, so close it here.
+                # cancel_pending_load() does not wait for the model lock, so the cancel
+                # can land after start() came back with a live child. Nothing installed
+                # the candidate, and dropping the handle does not end the process holding
+                # the context training is waiting for, so close it here.
                 if self._start_survivor is not None:
-                    # start() ends its own child, so this one outlived terminate
-                    # and kill inside it and never became a candidate. It holds
-                    # its memory all the same, and it is the only handle on the
-                    # process, so keep it rather than let the cancel report the
-                    # memory given back. The kill is retried by the idle timer.
+                    # start() ends its own child, so this one outlived terminate and kill
+                    # inside it and never became a candidate. It holds its memory all the
+                    # same and this is the only handle on the process, so keep it rather
+                    # than let the cancel report the memory given back; the timer retries.
                     self._keep_survivor_locked(self._start_survivor, model_id, device)
                     _clear_device_cache(device)
                     raise
                 if not _close_engine(candidate):
-                    # It outlived terminate and kill, so it is still holding the
-                    # memory this cancel was made to free. Keep it, for the same
-                    # reason _release_engine_locked keeps its own survivor:
-                    # reporting nothing resident is what lets training be
-                    # admitted against memory that is not free. Nothing was
-                    # installed over, since a candidate exists only after the
-                    # resident was released.
+                    # It outlived terminate and kill, so it still holds the memory this
+                    # cancel was made to free. Keep it, for the same reason
+                    # _release_engine_locked keeps its own survivor: reporting nothing
+                    # resident is what lets training be admitted against memory that is
+                    # not free. Nothing is installed over, since a candidate exists only
+                    # after the resident was released.
                     self._keep_survivor_locked(candidate, model_id)
                     candidate = None
                     _clear_device_cache(device)
@@ -1597,10 +1591,9 @@ class WhisperSttSidecar:
                     _clear_device_cache(device)
                 raise
             except BaseException:
-                # Any other failed load, same reasoning: a child that outlived
-                # the kill start() gave it is still holding its memory, and this
-                # is the only handle on it. Reporting nothing resident is what
-                # lets training be admitted against memory that is not free.
+                # Same reasoning for any other failed load: this is the only handle on a
+                # child that outlived start()'s own kill and still holds its memory, and
+                # reporting nothing resident lets training be admitted against it.
                 if self._start_survivor is not None and self._engine is None:
                     self._keep_survivor_locked(self._start_survivor, model_id, device)
                     _clear_device_cache(device)
