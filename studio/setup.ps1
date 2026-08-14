@@ -5756,17 +5756,25 @@ if ($_verifyUpdate) {
                         # trailing number decides
                         $_sufRank = {
                             param($_v)
-                            $_rest = ($_v -replace '^[0-9.]+', '').ToLower()
+                            # class, stage, number: dev < a < b < c/rc < final < post --
+                            # a2 must not outrank rc1 on its number alone
+                            $_rest = (($_v -replace '^[0-9.]+', '') -replace '^[-._]+', '').ToLower()
                             $_n = 0
                             if ($_rest -match '(\d+)') { $_n = [int]$Matches[1] }
-                            if ($_rest -match '^[-._]?dev') { return @(-3, $_n) }
-                            if ($_rest -match '^[-._]?(a|b|c|rc|alpha|beta|pre|preview)') { return @(-2, $_n) }
-                            if ($_rest -match '^[-._]?post') { return @(1, $_n) }
-                            return @(0, $_n)
+                            $_t = ''
+                            if ($_rest -match '^(dev|post|alpha|beta|preview|pre|rc|a|b|c)') { $_t = $Matches[1] }
+                            switch ($_t) {
+                                'dev'  { return @(-3, 0, $_n) }
+                                'post' { return @(1, 0, $_n) }
+                                { $_ -in @('a', 'alpha') } { return @(-2, 0, $_n) }
+                                { $_ -in @('b', 'beta') } { return @(-2, 1, $_n) }
+                                { $_ -in @('c', 'rc', 'pre', 'preview') } { return @(-2, 2, $_n) }
+                            }
+                            return @(0, 0, $_n)
                         }
                         $_pr = & $_sufRank $PostVer
                         $_lr = & $_sufRank $LatestVer
-                        $_updateOk = ($_pr[0] -gt $_lr[0]) -or (($_pr[0] -eq $_lr[0]) -and ($_pr[1] -ge $_lr[1]))
+                        $_updateOk = ($_pr[0] -gt $_lr[0]) -or (($_pr[0] -eq $_lr[0]) -and (($_pr[1] -gt $_lr[1]) -or (($_pr[1] -eq $_lr[1]) -and ($_pr[2] -ge $_lr[2]))))
                     }
                 } catch {}
             }

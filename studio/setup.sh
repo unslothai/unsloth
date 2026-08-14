@@ -2177,12 +2177,19 @@ except Exception:
     a, ra = split(sys.argv[1])
     b, rb = split(sys.argv[2])
     def rank(rest):
-        m = re.search(r'\d+', rest)
+        # class, stage, number: dev < a < b < c/rc < final < post -- a2 must not
+        # outrank rc1 on its number alone (mirrors _vkey's ordering)
+        s = rest.lstrip('-._')
+        m = re.search(r'\d+', s)
         n = int(m.group(0)) if m else 0
-        if re.match(r'[-._]?dev', rest): return (-3, n)
-        if re.match(r'[-._]?(a|b|c|rc|alpha|beta|pre|preview)', rest): return (-2, n)
-        if re.match(r'[-._]?post', rest): return (1, n)
-        return (0, n)
+        t = re.match(r'(dev|post|alpha|beta|preview|pre|rc|a|b|c)', s)
+        t = t.group(1) if t else ''
+        if t == 'dev': return (-3, 0, n)
+        if t == 'post': return (1, 0, n)
+        if t in ('a', 'alpha'): return (-2, 0, n)
+        if t in ('b', 'beta'): return (-2, 1, n)
+        if t in ('c', 'rc', 'pre', 'preview'): return (-2, 2, n)
+        return (0, 0, n)
     # equal numeric prefixes: pre/dev orders BELOW the final release and post
     # ABOVE it, on either side -- an announced 1.0.post1 is not satisfied by an
     # installed 1.0, and within a class the trailing number decides
