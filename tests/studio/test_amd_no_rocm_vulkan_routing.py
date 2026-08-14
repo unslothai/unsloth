@@ -142,6 +142,50 @@ def test_drm_vendor_detection(monkeypatch, tmp_path, vendor_ids, expect_amd, exp
     assert host.has_intel_gpu is expect_intel
 
 
+@pytest.mark.parametrize(
+    "env, rocm_tool_installed, expect_amd",
+    [
+        ({}, False, True),  # the target host: driver-only AMD, no mask
+        ({}, True, True),  # ROCm tools present but the probe found nothing: still AMD
+        # A masked-out AMD GPU on a ROCm host leaves the rocminfo probe empty and looks
+        # exactly like a driver-only box. Vulkan honours no HIP mask, so routing there
+        # would hand llama.cpp the card the caller hid.
+        ({"ROCR_VISIBLE_DEVICES": ""}, True, False),
+        ({"HIP_VISIBLE_DEVICES": "-1"}, True, False),
+        ({"CUDA_VISIBLE_DEVICES": ""}, True, False),
+        # ...but a bare exported CUDA_VISIBLE_DEVICES on a host with no ROCm installed at
+        # all cannot be hiding a ROCm device, and must not cost the Steam Deck this branch
+        # exists for its Vulkan bundle.
+        ({"CUDA_VISIBLE_DEVICES": "0"}, False, True),
+        ({"ROCR_VISIBLE_DEVICES": ""}, False, True),
+    ],
+)
+def test_amd_visibility_mask_suppresses_auto_vulkan(
+    monkeypatch, tmp_path, env, rocm_tool_installed, expect_amd
+):
+    _patch_drm(monkeypatch, tmp_path, ["0x1002"])
+    _patch_no_nvidia_no_rocm(monkeypatch)
+    monkeypatch.setattr(ilp.platform, "system", lambda: "Linux")
+    for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_var, raising = False)
+    for _var, _val in env.items():
+        monkeypatch.setenv(_var, _val)
+    monkeypatch.setattr(ilp, "_rocm_probe_tool_present", lambda: rocm_tool_installed)
+    assert ilp.detect_host().has_amd_gpu_without_rocm is expect_amd
+
+
+def test_intel_detection_survives_an_amd_mask(monkeypatch, tmp_path):
+    """The masks address HIP devices; an Intel iGPU keeps its own Vulkan route."""
+    _patch_drm(monkeypatch, tmp_path, ["0x8086", "0x1002"])
+    _patch_no_nvidia_no_rocm(monkeypatch)
+    monkeypatch.setattr(ilp.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(ilp, "_rocm_probe_tool_present", lambda: True)
+    host = ilp.detect_host()
+    assert host.has_intel_gpu is True
+    assert host.has_amd_gpu_without_rocm is False
+
+
 def test_force_cpu_clears_the_flag():
     """--force-cpu must not leak out through the new Vulkan arm."""
     forced = ilp._apply_host_overrides(_host(has_amd_gpu_without_rocm = True), force_cpu = True)
