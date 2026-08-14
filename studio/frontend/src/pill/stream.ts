@@ -28,6 +28,7 @@ type ChatChunk = {
     delta?: { content?: string | null; reasoning_content?: string | null };
     finish_reason?: string | null;
   }>;
+  error?: string | { message?: string };
 };
 
 export async function* streamCompletion(
@@ -82,6 +83,16 @@ export async function* streamCompletion(
             chunk = JSON.parse(data) as ChatChunk;
           } catch {
             continue;
+          }
+          // A generation that fails mid-stream is reported in band, as an
+          // error frame followed straight by [DONE]. Without this the sentinel
+          // would return and the partial answer would read as a whole one.
+          if (chunk.error) {
+            const message =
+              typeof chunk.error === "string"
+                ? chunk.error
+                : chunk.error.message;
+            throw new Error(message || "The model reported an error");
           }
           if (chunk.choices?.[0]?.finish_reason) terminated = true;
           const delta = chunk.choices?.[0]?.delta?.content;
