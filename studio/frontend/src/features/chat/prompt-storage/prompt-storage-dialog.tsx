@@ -67,6 +67,7 @@ import {
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
+import { planChatItemSources } from "../utils/project-source-plan";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 
 function newId(): string {
@@ -232,10 +233,15 @@ function orderByParentChain<T extends _Msg>(
   return result;
 }
 
-async function loadConversationMessages(threadId: string) {
+async function loadConversationMessages(
+  threadId: string,
+  // Every other caller here is an export; the project-sources save is not, and
+  // reporting an export to someone who never asked for one is confusing.
+  emptyMessage = "No messages in this conversation to export.",
+) {
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
-    toast.info("No messages in this conversation to export.");
+    toast.info(emptyMessage);
     return null;
   }
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the
@@ -451,13 +457,21 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   notifyNoContent: () => toast.info("No exportable content."),
 });
 
+// "skipped" is an empty conversation, which has already said so and must not
+// stop the rest of a pair; "failed" has toasted a reason, so stop there rather
+// than stack a second one.
+type SaveSourceOutcome = "saved" | "skipped" | "failed";
+
 async function saveConversationAsProjectSource(
   threadId: string,
   projectId: string,
   title: string,
-): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
-  if (!messages) return;
+): Promise<SaveSourceOutcome> {
+  const messages = await loadConversationMessages(
+    threadId,
+    "No messages in this conversation to save.",
+  );
+  if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
     messages.map((msg) => ({
       role: String(msg.role ?? ""),
@@ -466,21 +480,36 @@ async function saveConversationAsProjectSource(
   );
   if (!markdown) {
     toast.info("No content to save.");
-    return;
+    return "skipped";
   }
-  await saveMarkdownAsProjectSource(projectId, markdown, title);
+  const saved = await saveMarkdownAsProjectSource(projectId, markdown, title, {
+    quiet: true,
+  });
+  return saved ? "saved" : "failed";
 }
 
 export async function saveChatItemAsProjectSource(
   item: { id: string; title: string; type: string },
   projectId: string,
 ): Promise<void> {
-  const ids =
-    item.type === "single"
-      ? [item.id]
-      : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-  for (const id of ids) {
-    await saveConversationAsProjectSource(id, projectId, item.title);
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  let saved = 0;
+  for (const plan of plans) {
+    const outcome = await saveConversationAsProjectSource(
+      plan.id,
+      projectId,
+      plan.title,
+    );
+    if (outcome === "failed") break;
+    if (outcome === "saved") saved += 1;
+  }
+  // One toast per click, not one per thread in the pair.
+  if (saved === 1) toast.success("Saved to project sources.");
+  else if (saved > 1) {
+    toast.success(`Saved ${saved} chats to project sources.`);
   }
 }
 

@@ -6273,7 +6273,9 @@ const AssistantActionBar: FC = () => {
                     return;
                   }
                   const state = aui.threadListItem().getState();
-                  const title = state.title ?? "reply";
+                  // The list item's title belongs to the whole chat, so mark the
+                  // reply apart or saving both lists two identical names.
+                  const title = state.title ? `${state.title} - reply` : "reply";
                   // activeProjectId can lag a thread switch while the stored
                   // thread loads; resolve the destination from this thread.
                   const remoteId =
