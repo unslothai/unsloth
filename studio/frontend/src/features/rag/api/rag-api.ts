@@ -20,6 +20,7 @@ import type {
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
+import { pollJobUntilTerminal } from "../lib/poll-job";
 import { noteRagAvailability, noteRagResponse } from "./rag-availability";
 
 const RAG_BASE = "/api/rag";
@@ -723,6 +724,14 @@ export async function deleteDocument(
 
 export function getJob(jobId: string, signal?: AbortSignal): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`, { signal });
+}
+
+/** Poll until a job reaches a terminal status, and return it. See poll-job.ts. */
+export function waitForJob(
+  jobId: string,
+  options: { timeoutMs?: number } = {},
+): Promise<IndexJob> {
+  return pollJobUntilTerminal(getJob, jobId, options);
 }
 
 /** Longest gap between frames before a stream is treated as buffered by a proxy. */

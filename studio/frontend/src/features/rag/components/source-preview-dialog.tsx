@@ -32,6 +32,7 @@ import {
   getDocumentContent,
   getDocumentFileUrl,
   updateDocumentContent,
+  waitForJob,
 } from "../api/rag-api";
 import type { DocumentContent } from "../types/rag";
 import { PdfPreview } from "./document-preview-sheet";
@@ -134,12 +135,22 @@ export function SourcePreviewDialog({
     if (!documentId || !dirty) return;
     setSaving(true);
     try {
-      await updateDocumentContent(documentId, text);
+      const { jobId } = await updateDocumentContent(documentId, text);
+      // The PUT only starts the re-index. Reporting success here would call a
+      // failed parse or embed a save: the replacement is dropped, the original
+      // stays, and the edit is silently lost. Wait for the job to settle.
+      const job = await waitForJob(jobId);
+      if (job.status !== "completed") {
+        throw new Error(job.error || "Re-indexing the edited source failed");
+      }
       onSaved();
       onClose();
     } catch (e) {
       // Keep the modal open with the typing intact so the edit can be retried.
       toast.error(e instanceof Error ? e.message : "Could not save this source");
+      // The failed attempt left a row behind and released the claim on this
+      // source, so resync the panel either way.
+      onSaved();
     } finally {
       setSaving(false);
     }

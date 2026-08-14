@@ -1186,22 +1186,38 @@ _PREVIEW_MODES = {
 # display and editing is refused, because saving a truncated body would silently
 # delete the tail of the file.
 _MAX_TEXT_EDIT_BYTES = 1024 * 1024
+# The same bound for text with no byte form of its own (a .docx extraction). One
+# character is at most four UTF-8 bytes, so this can never exceed the byte cap.
+_MAX_TEXT_EDIT_CHARS = _MAX_TEXT_EDIT_BYTES // 4
 
 
-def _document_text(stored_path: str, ext: str) -> str:
-    """The document's own text.
+def _document_text(stored_path: str, ext: str) -> tuple[str, bool]:
+    """The document's own text, and whether it is the whole of it verbatim.
 
-    A .docx has none on disk, so it goes back through the ingestion parser and
-    what the modal shows is exactly what was chunked and embedded.
+    ``False`` means the text on screen is not a faithful copy of the file, so
+    saving it back would destroy the part that did not survive the trip. Two ways
+    that happens: the body was cut off at the size cap, or a byte was not valid
+    UTF-8 and decoded to U+FFFD (saving would rewrite that byte as the encoding of
+    the replacement character, corrupting content the user never touched).
+
+    A .docx has no text form on disk, so it goes back through the ingestion parser
+    and what the modal shows is exactly what was chunked and embedded. That is
+    never editable, and is capped here because a small compressed file can extract
+    to many megabytes.
     """
     if ext == ".docx":
         from core.rag import parsers
-        return "\n".join(page.text for page in parsers.parse(stored_path))
+        text = "\n".join(page.text for page in parsers.parse(stored_path))
+        return text[:_MAX_TEXT_EDIT_CHARS], len(text) <= _MAX_TEXT_EDIT_CHARS
     with open(stored_path, "rb") as handle:
-        raw = handle.read(_MAX_TEXT_EDIT_BYTES)
-    # replace, not strict: a preview must never 500 on a stray byte, and the guard
-    # below makes the decoded text unsavable whenever it was cut short anyway.
-    return raw.decode("utf-8", errors = "replace")
+        # One byte past the cap distinguishes "exactly at the cap" from "longer".
+        raw = handle.read(_MAX_TEXT_EDIT_BYTES + 1)
+    complete = len(raw) <= _MAX_TEXT_EDIT_BYTES
+    raw = raw[:_MAX_TEXT_EDIT_BYTES]
+    # replace, not strict: a preview must never 500 on a stray byte. Whether the
+    # decode was lossy decides editability, not whether it succeeded.
+    text = raw.decode("utf-8", errors = "replace")
+    return text, complete and text.encode("utf-8") == raw
 
 
 @router.get("/documents/{document_id}/content")
@@ -1246,18 +1262,15 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
         raise HTTPException(status_code = 403, detail = "Forbidden")
 
     try:
-        out["text"] = _document_text(stored_path, ext)
-        # markdown and html both render from `text` itself, and .docx's extraction
-        # already is its text, so no second body is ever needed today. The field
-        # stays for a future type whose view differs from its source.
+        out["text"], faithful = _document_text(stored_path, ext)
     except Exception as exc:  # noqa: BLE001 - a broken file is a preview failure, not a 500
         logger.warning("failed to read document %s for preview", document_id, exc_info = True)
         raise HTTPException(
             status_code = 422, detail = f"Could not read this document ({exc})"
         ) from exc
 
-    size = _stored_size(stored_path) or 0
     if ext not in _EDITABLE_EXTS:
+        out["truncated"] = not faithful
         out["readOnlyReason"] = (
             "Word documents are shown as the text indexed and cannot be edited here."
         )
@@ -1270,15 +1283,66 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
         )
     elif doc.get("status") in ("pending", "running"):
         out["readOnlyReason"] = "This source is still indexing."
-    elif size > _MAX_TEXT_EDIT_BYTES:
+    elif not faithful:
+        # Either cut off at the cap or holding a byte that is not valid UTF-8.
+        # Saving back what is on screen would destroy whatever did not survive
+        # the trip, so it is shown and not editable.
         out["truncated"] = True
-        out["readOnlyReason"] = "This file is too large to edit here; showing the start of it."
+        out["readOnlyReason"] = (
+            "This file cannot be edited here: it is too large or is not valid UTF-8 text."
+        )
     else:
         out["editable"] = True
     return out
 
 
+def _claim_document_for_replacement(document_id: str) -> None:
+    """Mark a completed source as busy so only one edit of it can be in flight.
+
+    The UPDATE carries its own status precondition, so testing and claiming are a
+    single atomic statement: a second concurrent save matches no row and 409s
+    rather than starting a second replacement of the same document. "running" is
+    the existing busy status, so a claimed row already reads as indexing
+    everywhere else and needs no new column.
+    """
+    conn = _rag_connection()
+    try:
+        changed = conn.execute(
+            "UPDATE documents SET status='running' WHERE id=? AND status NOT IN "
+            "('pending','running')",
+            (document_id,),
+        ).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not changed:
+        raise HTTPException(status_code = 409, detail = "This source is already being saved or indexed")
+
+
+def _release_replacement_claim(document_id: str) -> None:
+    """Undo the claim when the replacement never started.
+
+    Best-effort: the alternative to a failed release is a source stuck reading as
+    indexing, which is worse than a logged warning.
+    """
+    try:
+        conn = _rag_connection()
+        try:
+            conn.execute(
+                "UPDATE documents SET status='completed' WHERE id=? AND status='running'",
+                (document_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - the caller is already raising
+        logger.warning("failed to release edit claim on %s", document_id, exc_info = True)
+
+
 class UpdateDocumentContentRequest(BaseModel):
+    # Characters, which bound the request cheaply; the byte length that actually
+    # governs what may be written is checked against the cap below, since one
+    # character can encode to four bytes.
     text: str = Field(max_length = _MAX_TEXT_EDIT_BYTES)
 
 
@@ -1325,29 +1389,53 @@ def update_document_content(
     if not _is_managed_preview_path(old_path):
         raise HTTPException(status_code = 403, detail = "Forbidden")
 
+    body = payload.text.encode("utf-8")
+    # max_length counts characters; this counts what actually lands on disk. A
+    # payload that passed the field check can still exceed the cap (one character
+    # encodes to up to four bytes), and saving it would produce a file the next
+    # GET has to truncate -- turning the source the user just saved read-only.
+    if len(body) > _MAX_TEXT_EDIT_BYTES:
+        raise HTTPException(
+            status_code = 413,
+            detail = f"Text exceeds the {_MAX_TEXT_EDIT_BYTES // 1024} KB edit limit.",
+        )
+
     scope = doc["scope"]
     _raise_if_scope_retired(scope, "The owner of this source is being deleted")
 
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     with open(stored_path, "wb") as handle:
-        handle.write(payload.text.encode("utf-8"))
+        handle.write(body)
     try:
         with folder_sync.scope_lock(scope):
             _raise_if_scope_retired(scope, "The owner of this source is being deleted")
             with _rag_unavailable_as_503(stored_path):
-                new_id, job_id = ingestion.start_ingestion(
-                    scope,
-                    doc.get("kb_id"),
-                    doc.get("thread_id"),
-                    # Same scope columns and same filename: the replacement is the
-                    # same source, so retrieval keeps finding it where it was.
-                    doc["filename"],
-                    stored_path,
-                    project_id = doc.get("project_id"),
-                    dedupe = False,
-                    replaces = (document_id, old_path),
-                )
+                # Claim the source before spawning anything. The status read above
+                # came from a closed connection, so two saves of the same document
+                # could both pass it, and each replacement would then retire the
+                # same old row -- leaving two copies of the source indexed. This
+                # marks it in the same transaction that checks it, so the second
+                # request loses the race and 409s. The claim is released either by
+                # the replacement retiring this row or by the rollback below.
+                _claim_document_for_replacement(document_id)
+                try:
+                    new_id, job_id = ingestion.start_ingestion(
+                        scope,
+                        doc.get("kb_id"),
+                        doc.get("thread_id"),
+                        # Same scope columns and same filename: the replacement is
+                        # the same source, so retrieval keeps finding it where it
+                        # was.
+                        doc["filename"],
+                        stored_path,
+                        project_id = doc.get("project_id"),
+                        dedupe = False,
+                        replaces = (document_id, old_path),
+                    )
+                except Exception:
+                    _release_replacement_claim(document_id)
+                    raise
     except Exception:
         _remove_stored_upload(stored_path)
         raise

@@ -438,6 +438,101 @@ def test_saving_over_the_size_cap_is_rejected(rag_home, stub_embeddings):
     assert res.status_code == 422
 
 
+def test_a_file_with_invalid_utf8_is_shown_but_not_editable(rag_home, stub_embeddings):
+    # Decoding with errors="replace" turns a stray byte into U+FFFD. Saving that
+    # back would rewrite the byte as the replacement character, corrupting content
+    # the user never touched, so the source is read-only.
+    from core.rag import ingestion, store
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    path = ensure_dir(rag_uploads_root()) / "latin.txt"
+    path.write_bytes(b"caf\xe9 latte was served\n")
+    doc_id, job_id = ingestion.start_ingestion(
+        store.project_scope(PROJECT_ID),
+        None,
+        None,
+        "latin.txt",
+        str(path),
+        project_id = PROJECT_ID,
+    )
+    _await_job(job_id)
+
+    body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
+    assert "latte was served" in body["text"], "the file should still preview"
+    assert body["editable"] is False
+    assert body["truncated"] is True
+    assert path.read_bytes().startswith(b"caf\xe9"), "the file itself is untouched"
+
+
+def test_valid_utf8_multibyte_text_stays_editable(rag_home, stub_embeddings):
+    # The guard above must not catch ordinary non-ASCII: a correctly encoded file
+    # round-trips exactly and stays editable.
+    _, doc_id, _ = _ingest("accents.md", "café, naïve, 日本語\n")
+    body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
+
+    assert body["editable"] is True
+    assert body["truncated"] is False
+    assert "日本語" in body["text"]
+
+
+def test_saving_is_capped_on_encoded_bytes_not_characters(rag_home, stub_embeddings):
+    # Pydantic's max_length counts characters. A CJK payload under that limit can
+    # still encode to more than the byte cap, and saving it would produce a file
+    # the next GET truncates -- turning the source read-only right after saving.
+    from routes.rag import _MAX_TEXT_EDIT_BYTES
+
+    _, doc_id, _ = _ingest("notes.md", "body\n")
+    oversized = "你" * (_MAX_TEXT_EDIT_BYTES // 3 + 1)  # 3 bytes each in UTF-8
+    assert len(oversized) <= _MAX_TEXT_EDIT_BYTES, "must pass the character check"
+    assert len(oversized.encode("utf-8")) > _MAX_TEXT_EDIT_BYTES
+
+    res = _client().put(f"/api/rag/documents/{doc_id}/content", json = {"text": oversized})
+    assert res.status_code == 413
+    assert _document_row(doc_id) is not None, "the original must survive a refused save"
+
+
+def test_a_second_concurrent_save_is_refused(rag_home, stub_embeddings):
+    """Two saves of one source would each retire the same old row, leaving both
+    replacements indexed. The first claims the document; the second loses."""
+    _, doc_id, _ = _ingest("notes.md", "original\n")
+    client = _client()
+
+    first = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "one\n"})
+    assert first.status_code == 200
+    # The claim is held until the replacement retires the row, so a save landing
+    # while the first is still in flight is refused rather than racing it.
+    second = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "two\n"})
+    assert second.status_code == 409
+
+    _await_job(first.json()["jobId"])
+    assert _document_row(doc_id) is None
+    assert _search(client, "one")
+    assert not _search(client, "two"), "the refused save must not have been indexed"
+
+
+def test_a_refused_start_releases_the_claim(rag_home, stub_embeddings, monkeypatch):
+    # If the replacement never starts, the source must not be left stuck reading
+    # as indexing -- that would make it permanently uneditable.
+    from core.rag import ingestion
+
+    _, doc_id, _ = _ingest("notes.md", "body\n")
+    client = _client()
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("no worker available")
+
+    monkeypatch.setattr(ingestion, "start_ingestion", refuse)
+    with pytest.raises(RuntimeError):
+        client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "edited\n"})
+        # Read the row before leaving the raising context: TestClient re-raises the
+        # worker error on exit, and asserting afterwards runs against a torn-down
+        # app rather than the state the release produced.
+    row = _document_row(doc_id)
+    assert (
+        row is not None and row["status"] == "completed"
+    ), "a replacement that never started must leave the source editable again"
+
+
 def test_replaces_requires_dedupe_off(rag_home, stub_embeddings):
     """The guard on the one new parameter: the dedupe branch owns `replaces`, and
     its early return would silently drop a caller-supplied value."""
