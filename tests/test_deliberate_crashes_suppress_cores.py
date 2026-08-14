@@ -53,10 +53,10 @@ _TEST_ROOTS = (
 # Substrings that mean "this code, or this string handed to a child interpreter,
 # deliberately takes a fatal signal that dumps core".
 _CRASH_MARKERS = (
-    "string_at(0)",          # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV
-    "os.abort()",            # SIGABRT
-    "raise_signal(",         # signal.raise_signal(signal.SIGSEGV) and friends
-    "_sigsegv(",             # faulthandler._sigsegv()
+    "string_at(0)",  # ctypes.string_at(0) -> strlen(NULL) -> SIGSEGV
+    "os.abort()",  # SIGABRT
+    "raise_signal(",  # signal.raise_signal(signal.SIGSEGV) and friends
+    "_sigsegv(",  # faulthandler._sigsegv()
 )
 
 # A kill aimed at self only dumps core for these. SIGKILL and SIGTERM do not.
