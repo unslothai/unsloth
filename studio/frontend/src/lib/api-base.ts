@@ -17,7 +17,7 @@ const isTauri = detectTauri()
 // proxies reach the backend over Node's HTTP client. Use same-origin relative
 // URLs there: direct WKWebView->backend requests can wedge indefinitely (the
 // webview holds the sockets open but never dispatches the requests).
-const tauriDevProxy = isTauri && import.meta.env.DEV
+const tauriDevProxy = isTauri && import.meta.env?.DEV
 
 // In Tauri the real port arrives asynchronously (preflight/server-port). A
 // fetch against the ':0' placeholder never settles in WKWebView (no error,
