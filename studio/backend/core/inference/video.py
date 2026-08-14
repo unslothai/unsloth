@@ -2750,7 +2750,16 @@ class VideoBackend:
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+            # Flagged, because zero here means "unknown", not "nothing to fetch": a caller that
+            # reads it as verified locality (media auto-switch) would allow the very download
+            # the inline fallback then performs.
+            return {
+                "entries": [],
+                "total_bytes": 0,
+                "required_bytes": 0,
+                "checkpoint_bytes": 0,
+                "plan_failed": True,
+            }
         for repo, where in located.items():
             # Files STRADDLING the two roots cannot be handed to from_pretrained as one snapshot:
             # _predownload_base returns no directory then and the assembly is pinned to

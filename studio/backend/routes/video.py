@@ -212,6 +212,7 @@ async def load_video_model_gated(
     )
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
     from core.inference.media_keepwarm import note_load_origin
+    from hub.utils.gguf import extract_quant_token
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
@@ -306,7 +307,12 @@ async def load_video_model_gated(
             status_dict = await asyncio.to_thread(_begin_load)
         # Keyed to the target: this load can still fail with the previous model resident, and
         # its origin must not be read off that model.
-        note_load_origin(VIDEO, request.model_path, user_action = user_initiated)
+        note_load_origin(
+            VIDEO,
+            request.model_path,
+            extract_quant_token(request.gguf_filename) if request.gguf_filename else None,
+            user_action = user_initiated,
+        )
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))

@@ -172,7 +172,9 @@ def test_a_standalone_gguf_resolves_to_its_directory(catalog, tmp_path):
 
     pick = mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK)
 
-    assert pick == mas.MediaModelPick("z-image", str(tmp_path), "z-image-Q4_K_M.gguf", "gguf")
+    assert pick == mas.MediaModelPick(
+        "z-image", str(tmp_path), "z-image-Q4_K_M.gguf", "gguf", quant = "Q4_K_M"
+    )
 
 
 def test_the_index_is_keyed_by_task(catalog, tmp_path):
@@ -257,7 +259,7 @@ def loads(monkeypatch, backend):
     async def _start(owner, pick, current_subject):
         started.append((owner, pick))
         backend.repo_id = pick.model_path
-        backend.gguf_variant = mas._pick_quant(pick)
+        backend.gguf_variant = pick.quant
         backend.phase = "ready"
         mk.note_load_origin(owner, pick.model_path, user_action = False)
 
@@ -624,6 +626,75 @@ def test_the_download_plan_asks_the_engine_that_will_load_the_pick(catalog, tmp_
 
     assert mas._missing_download_bytes(arb.DIFFUSION, pick) == 7
     assert asked == [pick.model_path]
+
+
+def test_two_bpw_builds_of_one_quant_are_not_confused(catalog, enabled, tmp_path, backend, loads):
+    # The backend's published token collapses IQ4_XS-3.53bpw and -3.97bpw to IQ4_XS, so a token
+    # comparison would report either as serving the other. The full lister label does not.
+    for bpw in ("3.53", "3.97"):
+        (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
+        catalog.append(
+            _info(
+                f"z-IQ4_XS-{bpw}bpw",
+                tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf",
+                task = mas.IMAGE_TASK,
+                model_format = "gguf",
+            )
+        )
+    backend.repo_id = str(tmp_path)
+    backend.gguf_variant = "IQ4_XS"
+
+    _switch("z-IQ4_XS-3.97bpw")
+
+    assert [pick.gguf_filename for _owner, pick in loads] == ["z-IQ4_XS-3.97bpw.gguf"]
+
+
+def test_an_unverifiable_download_plan_refuses_rather_than_loading(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # The video planner reports zero bytes when its own metadata call failed, because its normal
+    # caller falls back to an inline pull. Zero there is "unknown", not "nothing to fetch".
+    clip = tmp_path / "wan"
+    clip.mkdir()
+    catalog.append(_info("unsloth/Wan2.2", clip, task = mas.VIDEO_TASK))
+    monkeypatch.setattr(
+        backend, "download_plan", lambda model_path, **kw: {"total_bytes": 0, "plan_failed": True}
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("unsloth/Wan2.2", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert "Could not verify" in excinfo.value.detail
+    assert loads == []
+
+
+def test_an_exact_resident_match_does_not_need_the_index(catalog, enabled, backend, loads):
+    # A scan that failed caches an empty index for a few seconds; the model that is loaded and
+    # named exactly must stay servable through that window.
+    backend.repo_id = "black-forest-labs/FLUX.1-dev"
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert loads == []
+
+
+def test_a_slow_resolve_refuses_inside_the_budget(catalog, enabled, monkeypatch):
+    # The budget has to cover the scan and the plan, not just the drain and the load: either can
+    # outlive the response window on its own.
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.2)
+
+    def _slow(name, *, task):
+        time.sleep(1.0)
+        return None
+
+    monkeypatch.setattr(mas, "resolve_local_media_model", _slow)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail["error"]["code"] == "model_loading"
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

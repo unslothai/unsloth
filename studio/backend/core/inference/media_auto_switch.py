@@ -62,6 +62,14 @@ _LOADING_MSG = (
     "Loading '{model}'. It was not resident when this request arrived and is still coming up; "
     "retry shortly."
 )
+_SLOW_MSG = (
+    "Selecting the {kind} model took too long to answer inside this request. It is still "
+    "being prepared; retry shortly."
+)
+_UNVERIFIED_MSG = (
+    "Could not verify that '{model}' is fully downloaded, so it was not switched in. "
+    "Auto-switch never downloads; load it once from the {kind} page and retry."
+)
 _INCOMPLETE_MSG = (
     "'{model}' is not fully downloaded: about {gb:.1f} GB of its companion weights are missing. "
     "Auto-switch never downloads, so load it once from the {kind} page and retry."
@@ -78,6 +86,9 @@ class MediaModelPick:
     model_path: str
     gguf_filename: Optional[str] = None
     model_kind: Optional[str] = None
+    # The variant lister's full label, which distinguishes builds the backend's own quant token
+    # collapses (IQ4_XS-3.53bpw vs -3.97bpw, and unlabelled files that have no token at all).
+    quant: Optional[str] = None
 
 
 # ── resolving a name to a downloaded model ──────────────────────────
@@ -131,6 +142,14 @@ def _gguf_load_path(info, load_dir: Path) -> str:
     return str(load_dir)
 
 
+def _variant_label(filename: str) -> Optional[str]:
+    """The variant lister's label for a loose checkpoint, so its identity matches an indexed one."""
+    from utils.models.model_config import _extract_quant_label
+
+    label = _extract_quant_label(filename)
+    return label or None
+
+
 def _add_gguf_picks(
     index: dict[str, MediaModelPick], info, keys: tuple[str, ...], load_dir: Path
 ) -> bool:
@@ -145,7 +164,17 @@ def _add_gguf_picks(
     if load_dir.is_file():
         if load_dir.suffix.lower() != ".gguf":
             return False
-        _register(index, keys, MediaModelPick(keys[0], str(load_dir.parent), load_dir.name, "gguf"))
+        _register(
+            index,
+            keys,
+            MediaModelPick(
+                keys[0],
+                str(load_dir.parent),
+                load_dir.name,
+                "gguf",
+                quant = _variant_label(load_dir.name),
+            ),
+        )
         return True
     # Filenames come back relative to this directory, which is what the loader joins them onto.
     variants, _ = list_local_gguf_variants(str(load_dir))
@@ -158,10 +187,14 @@ def _add_gguf_picks(
         _register(
             index,
             [f"{key}:{quant}" for key in keys],
-            MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
+            MediaModelPick(keys[0], load_path, variant.filename, "gguf", quant = quant),
         )
     best = preferred_quant(list(by_quant)) or next(iter(by_quant))
-    _register(index, keys, MediaModelPick(keys[0], load_path, by_quant[best].filename, "gguf"))
+    _register(
+        index,
+        keys,
+        MediaModelPick(keys[0], load_path, by_quant[best].filename, "gguf", quant = best),
+    )
     return True
 
 
@@ -256,8 +289,12 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
 
     A GGUF also has to match on quant. Loose ``.gguf`` files in one scan folder share that
     folder as their ``model_path``, so the path alone would report a sibling as already
-    serving and generate on the wrong weights. The quant is the per-file identity the backend
-    publishes, and the same one media_keepwarm treats as part of the build.
+    serving and generate on the wrong weights.
+
+    Matched against the pick's full variant label, which the lister keeps distinct where the
+    backend's published token does not: two ``IQ4_XS`` builds differing only by bpw, and
+    unlabelled files with no token, both fail this comparison and reload rather than risk
+    serving one under the other's name.
     """
     if not status.get("loaded"):
         return False
@@ -270,21 +307,7 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
     if pick.model_kind != "gguf":
         return True
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
-    wanted_quant = _pick_quant(pick)
-    if wanted_quant is None:
-        # No quant label to compare (an unlabelled checkpoint): the path match is all there is.
-        return True
-    return loaded_quant == wanted_quant
-
-
-def _pick_quant(pick: MediaModelPick) -> Optional[str]:
-    """The quant label of a GGUF pick's checkpoint, lowercased, or None when it has none."""
-    from hub.utils.gguf import extract_quant_token
-
-    if not pick.gguf_filename:
-        return None
-    token = extract_quant_token(pick.gguf_filename)
-    return token.strip().lower() if token else None
+    return bool(loaded_quant) and loaded_quant == (pick.quant or "").strip().lower()
 
 
 def _backend_busy(backend: Any) -> bool:
@@ -337,6 +360,34 @@ async def _await_loaded(backend: Any, name: str, pick: MediaModelPick, deadline:
         await asyncio.sleep(_POLL_S)
 
 
+async def _bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
+    """Await *coro* within the switch budget, refusing rather than outliving the response window.
+
+    The worker thread behind a ``to_thread`` keeps running after this returns; what matters is
+    that the request stops waiting on it, since the caller's connection is the thing on a clock.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        coro.close()
+        raise _refuse(
+            _SLOW_MSG.format(kind = kind),
+            status_code = 503,
+            openai_errors = openai_errors,
+            code = "model_loading",
+            retry_after = _RETRY_AFTER_S,
+        )
+    try:
+        return await asyncio.wait_for(coro, timeout = remaining)
+    except asyncio.TimeoutError:
+        raise _refuse(
+            _SLOW_MSG.format(kind = kind),
+            status_code = 503,
+            openai_errors = openai_errors,
+            code = "model_loading",
+            retry_after = _RETRY_AFTER_S,
+        )
+
+
 def _refuse(
     message: str,
     *,
@@ -374,7 +425,7 @@ def _planner_for(owner: str, pick: MediaModelPick) -> Any:
     return engine_for(predict_engine(fam, model_kind = kind))
 
 
-def _missing_download_bytes(owner: str, pick: MediaModelPick) -> int:
+def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
     """Bytes this pick would still have to fetch, or 0 when nothing is missing.
 
     The resolver only indexes downloaded CHECKPOINTS, but a GGUF or single-file pick loads its
@@ -387,8 +438,10 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> int:
     the resident engine can be native sd.cpp while the target loads through diffusers, and its
     planner refuses the pick, which the catch below would read as nothing missing.
 
-    Returns 0 when the plan itself cannot be built: that is almost always an unreachable Hub,
-    where no download can happen either, and refusing a cached model over it would be worse.
+    Returns None when locality could not be established: the image planner raises, and the
+    video one returns zero bytes with ``plan_failed`` because its own caller falls back to an
+    inline pull. Either way zero is not evidence of a complete cache, and treating it as such
+    would allow exactly the download this exists to prevent, so the switch refuses instead.
     """
     try:
         planner = _planner_for(owner, pick)
@@ -399,8 +452,11 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> int:
         )
     except Exception as exc:  # noqa: BLE001 -- see the docstring
         logger.debug("media auto-switch: download plan for %s failed: %s", pick.model_id, exc)
-        return 0
-    return max(0, int((plan or {}).get("total_bytes") or 0))
+        return None
+    plan = plan or {}
+    if plan.get("plan_failed"):
+        return None
+    return max(0, int(plan.get("total_bytes") or 0))
 
 
 async def _start_load(owner: str, pick: MediaModelPick, current_subject: str) -> None:
@@ -449,11 +505,27 @@ async def maybe_auto_switch_media_model(
     if not get_media_auto_switch_enabled():
         return
 
+    # Started before resolution: the cold scan and the download plan are part of the wait the
+    # caller experiences, so a budget that began after them would not bound the response.
+    deadline = time.monotonic() + _SWITCH_BUDGET_S
     name = requested_model.strip()
     task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
     kind = "image" if owner == DIFFUSION else "video"
+
+    # An exact match on the resident model needs no discovery: it cannot be confused with
+    # another model, and a scan that failed or skipped an entry would otherwise 404 the very
+    # model that is loaded for as long as the empty index is cached.
+    resident = await asyncio.to_thread(_backend_for(owner).status)
+    if resident.get("loaded") and name.lower() == str(resident.get("repo_id") or "").lower():
+        return
+
     # Off the loop: a cold index walks the model roots and reads GGUF headers.
-    pick = await asyncio.to_thread(resolve_local_media_model, name, task = task)
+    pick = await _bounded(
+        asyncio.to_thread(resolve_local_media_model, name, task = task),
+        deadline,
+        kind = kind,
+        openai_errors = openai_errors,
+    )
     if pick is None:
         available = _format_available(await asyncio.to_thread(available_media_model_ids, task))
         raise _refuse(
@@ -464,19 +536,30 @@ async def maybe_auto_switch_media_model(
             code = "model_not_found",
         )
 
-    if _satisfied_by(await asyncio.to_thread(_backend_for(owner).status), name, pick):
+    if _satisfied_by(resident, name, pick):
         return
 
     from core.inference.media_keepwarm import admission_gate
 
-    deadline = time.monotonic() + _SWITCH_BUDGET_S
     with _note_waiter(owner):
         async with _switch_lock(owner):
             backend = _backend_for(owner)
             # Re-read under the lock: a concurrent request may have just loaded this model.
             if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                 return
-            missing = await asyncio.to_thread(_missing_download_bytes, owner, pick)
+            missing = await _bounded(
+                asyncio.to_thread(_missing_download_bytes, owner, pick),
+                deadline,
+                kind = kind,
+                openai_errors = openai_errors,
+            )
+            if missing is None:
+                raise _refuse(
+                    _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_not_downloaded",
+                )
             if missing:
                 raise _refuse(
                     _INCOMPLETE_MSG.format(model = pick.model_id, gb = missing / 1e9, kind = kind),
@@ -496,6 +579,10 @@ async def maybe_auto_switch_media_model(
             # a passing drain and the gate is tracked but has not marked the backend active
             # yet, so it would read as idle and be cancelled by the load's teardown.
             async with admission_gate(owner):
+                # Re-resolved under the gate: a concurrent load can activate the other image
+                # engine while this request drains, leaving `backend` pointing at the idle one
+                # and both checks passing against a backend nothing is using.
+                backend = _backend_for(owner)
                 # What the drain waited out may have been the very load this request wanted.
                 if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                     return

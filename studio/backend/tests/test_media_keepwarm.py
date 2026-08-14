@@ -377,7 +377,7 @@ def test_api_only_spares_a_model_the_user_loaded(media, store):
     # spared exactly as it was before media auto-switch existed.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = True)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
@@ -395,8 +395,8 @@ def test_api_only_still_frees_a_model_the_api_loaded(media, store):
     # is what the setting exists to collect.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", user_action = False)
-    mk.note_load_origin(arb.VIDEO, "unsloth/Wan2.2", user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = False)
+    mk.note_load_origin(arb.VIDEO, "unsloth/Wan2.2", None, user_action = True)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 1
@@ -409,8 +409,21 @@ def test_a_failed_api_load_does_not_unpin_the_resident_user_model(media, store):
     # pipeline the setting promises to keep.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", user_action = True)
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/Z-Image-Turbo", user_action = False)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/Z-Image-Turbo", None, user_action = False)
+    _step()
+    _step(*_BOTH)
+    assert media[arb.DIFFUSION].unloads == 0
+
+
+def test_a_failed_api_load_of_another_quant_does_not_unpin_the_user_build(media, store):
+    # Same repo, different quant: the path alone is not the build, so a failed API load of Q8
+    # would otherwise mark the user's resident Q4 as API-loaded and free it.
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
+    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
+    media[arb.DIFFUSION].build["gguf_variant"] = "Q4_K_M"
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", "Q4_K_M", user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", "Q8_0", user_action = False)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0

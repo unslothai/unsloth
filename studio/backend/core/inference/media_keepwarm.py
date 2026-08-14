@@ -95,20 +95,39 @@ _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
 # Per backend, not per engine object: a diffusers <-> sd.cpp switch replaces that object.
 # Keyed by the target a load was started for, since a load route records this the moment the
 # background load is accepted and that load can still fail with the previous model resident.
-_LOAD_ORIGINS: dict[str, tuple[str, bool]] = {}
+_LOAD_ORIGINS: dict[str, tuple[tuple[str, str], bool]] = {}
 _LOAD_ORIGINS_GUARD = threading.Lock()
 
 
-def note_load_origin(owner: str, target: Optional[str], *, user_action: bool) -> None:
+def _origin_key(target: Optional[str], variant: Optional[str]) -> tuple[str, str]:
+    """The build a provenance record answers for: the repo/path AND its GGUF variant.
+
+    The path alone is not the build: a user-loaded Q4 and an API load of Q8 from the same repo
+    share it, so a failed API load would mark the resident Q4 as API-loaded and free it.
+    """
+    return (str(target or "").strip().lower(), str(variant or "").strip().lower())
+
+
+def note_load_origin(
+    owner: str,
+    target: Optional[str],
+    variant: Optional[str] = None,
+    *,
+    user_action: bool,
+) -> None:
     """Record who asked for the model a load route is bringing up."""
     with _LOAD_ORIGINS_GUARD:
-        _LOAD_ORIGINS[owner] = (str(target or "").strip().lower(), user_action)
+        _LOAD_ORIGINS[owner] = (_origin_key(target, variant), user_action)
 
 
-def loaded_by_user_action(owner: str, resident: Optional[str] = None) -> bool:
+def loaded_by_user_action(
+    owner: str,
+    resident: Optional[str] = None,
+    variant: Optional[str] = None,
+) -> bool:
     """Whether the RESIDENT model was loaded from Studio rather than by an API request.
 
-    The record only answers for the target it was written against: a load that was accepted and
+    The record only answers for the build it was written against: a load that was accepted and
     then failed leaves the previous model resident, and reading its origin off the failed
     load would let the idle unload free a model the user had pinned. Anything unrecognised
     reads as user-loaded, which is the direction that spares a model.
@@ -117,8 +136,8 @@ def loaded_by_user_action(owner: str, resident: Optional[str] = None) -> bool:
         entry = _LOAD_ORIGINS.get(owner)
     if entry is None:
         return True
-    target, user_action = entry
-    if resident is not None and target and target != str(resident).strip().lower():
+    key, user_action = entry
+    if resident is not None and key[0] and key != _origin_key(resident, variant):
         return True
     return user_action
 
@@ -329,7 +348,7 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         if (
             ttl <= 0
             or not tracker.is_idle(ttl)
-            or _user_pinned(tracker.owner, status.get("repo_id"))
+            or _user_pinned(tracker.owner, status.get("repo_id"), status.get("gguf_variant"))
         ):
             return
         await asyncio.to_thread(backend.unload)
@@ -350,14 +369,14 @@ def _effective_ttl() -> float:
     return float(get_media_auto_unload_idle_seconds())
 
 
-def _user_pinned(owner: str, resident: Optional[str]) -> bool:
+def _user_pinned(owner: str, resident: Optional[str], variant: Optional[str]) -> bool:
     """Whether "only unload models loaded by the API" spares this backend's model.
 
     Read immediately before the teardown, like the TTL: the setting can be turned on
     while a step is running, and a model it now pins must not be freed by the rest of it.
     """
     from utils.openai_auto_switch_settings import get_auto_unload_api_only
-    return get_auto_unload_api_only() and loaded_by_user_action(owner, resident)
+    return get_auto_unload_api_only() and loaded_by_user_action(owner, resident, variant)
 
 
 async def idle_unload_step() -> None:
