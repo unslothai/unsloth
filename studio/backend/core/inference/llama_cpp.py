@@ -14325,7 +14325,12 @@ class LlamaCppBackend:
                     )
                 _metal_floor = self._metal_zero_ctx_floor(
                     effective_ctx,
-                    auto_fit,
+                    # Auto-layers earns its exemption by leaving the context to --fit,
+                    # so it only holds while --fit actually runs. Extras land after
+                    # Studio's own "--fit on" and win, and a "--fit off" there would
+                    # otherwise leave a command with no -c and no fitter, which is
+                    # llama.cpp's native context.
+                    auto_fit and fit_is_effectively_on(extra_args),
                     _caller_owns_budget,
                     self._context_length,
                     max_available_ctx,

@@ -332,6 +332,54 @@ class TestAutoLayers:
         assert _ctx_values(cmd)[-1] == "0"
 
 
+class TestAutoLayersWithTheFitterTurnedOff:
+    """The Auto-layers exemption is only as good as the fitter it defers to.
+
+    Extras land after Studio's own "--fit on" and win, so a pass-through
+    "--fit off" leaves a command carrying no -c and no fitter, which is
+    llama.cpp's native context and the over-commit this branch prevents.
+    """
+
+    AUTO_LAYERS = {"gpu_memory_mode": "manual", "gpu_layers": -1}
+
+    def test_the_floor_applies_once_fitting_is_off(self, tmp_path, monkeypatch):
+        cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "off"], **self.AUTO_LAYERS)
+        assert _ctx_values(cmd) == ["4096"]
+
+    def test_a_zero_override_alongside_it_is_still_dropped(self, tmp_path, monkeypatch):
+        cmd, _ = _launch(
+            tmp_path,
+            monkeypatch,
+            extra_args = ["--fit", "off", "-c", "0"],
+            **self.AUTO_LAYERS,
+        )
+        assert _ctx_values(cmd) == ["4096"]
+
+    def test_an_explicit_fit_on_keeps_the_exemption(self, tmp_path, monkeypatch):
+        cmd, _ = _launch(tmp_path, monkeypatch, extra_args = ["--fit", "on"], **self.AUTO_LAYERS)
+        assert _ctx_values(cmd) == []
+
+    def test_off_metal_nothing_is_touched(self, tmp_path, monkeypatch):
+        cmd, _ = _launch(
+            tmp_path,
+            monkeypatch,
+            extra_args = ["--fit", "off"],
+            metal = False,
+            **self.AUTO_LAYERS,
+        )
+        assert _ctx_values(cmd) == []
+
+    def test_a_caller_owned_budget_is_left_alone(self, tmp_path, monkeypatch):
+        cmd, _ = _launch(
+            tmp_path,
+            monkeypatch,
+            extra_args = ["--fit", "off"],
+            gpu_memory_mode = "manual",
+            gpu_layers = 20,
+        )
+        assert _ctx_values(cmd) == ["0"]
+
+
 class TestAnInheritedContextEnvironment:
     """LLAMA_ARG_CTX_SIZE runs -c's own handler, and env parses before argv.
 
