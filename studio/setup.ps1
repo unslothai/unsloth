@@ -1105,10 +1105,30 @@ function Invoke-BoundedPythonStdinProbe {
         $proc = [System.Diagnostics.Process]::Start($psi)
         $outTask = $proc.StandardOutput.ReadToEndAsync()
         $errTask = $proc.StandardError.ReadToEndAsync()
-        # python - drains stdin to EOF before running a line, and the readers above are
-        # already draining stdout/stderr, so this write cannot deadlock.
-        try { $proc.StandardInput.Write($Code) } finally { $proc.StandardInput.Close() }
-        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+        # The write itself is bounded: an interpreter wedged during startup -- the
+        # case this helper exists for -- never drains stdin, the probe is larger
+        # than a 4 KB pipe buffer (4099 bytes on a CRLF checkout), and a synchronous
+        # write would then block before WaitForExit ever started. Draining stdout
+        # and stderr above does not unblock stdin.
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Code)
+        $writeTask = $proc.StandardInput.BaseStream.WriteAsync($bytes, 0, $bytes.Length)
+        $writeDone = $false
+        $writeBroke = $false
+        try { $writeDone = $writeTask.Wait($TimeoutSec * 1000) } catch { $writeBroke = $true }
+        if (-not $writeDone -and -not $writeBroke) {
+            # Kill first: it breaks the pipe and unblocks the pending write, so the
+            # Close below cannot wedge behind it.
+            try { $proc.Kill() } catch {}
+            try { $proc.StandardInput.Close() } catch {}
+            $result.Error = "python did not accept the probe within $TimeoutSec seconds"
+            return $result
+        }
+        # A broken pipe means the child already exited; its exit code and stderr are
+        # the answer, so fall through to the wait either way once stdin is closed.
+        try { $proc.StandardInput.Close() } catch {}
+        $_waitLeft = [Math]::Max(1000, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        if (-not $proc.WaitForExit($_waitLeft)) {
             try { $proc.Kill() } catch {}
             # Synthesised, not read back: waiting on the reader tasks of a wedged child would
             # reintroduce the hang this helper exists to bound.
@@ -4813,7 +4833,10 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 # (direct_url.json dir_info.editable; a venv left editable by an earlier --local
 # run is supported state) records only its site-packages shims, which say nothing
 # about the checkout they point at, so it is validated through find_spec instead:
-# the editable finder resolves into the real tree.
+# the editable finder resolves into the real tree. Only top-level
+# resolution there: a checkout's nested files have no recorded inventory to
+# compare against, importing is off the table by design, and a development tree
+# is the user's own to edit.
 # only for a RECORD-less install, best effort, with PYTHONPATH and
 # working-directory entries dropped from sys.path first (python - leaves the
 # inherited cwd on sys.path; the shell probe's -I covers both).

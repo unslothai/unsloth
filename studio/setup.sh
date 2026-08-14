@@ -1834,7 +1834,10 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # (direct_url.json dir_info.editable; a venv left editable by an earlier --local
 # run is supported state) records only its site-packages shims, which say nothing
 # about the checkout they point at, so it is validated through find_spec instead:
-# the editable finder resolves into the real tree.
+# the editable finder resolves into the real tree. Only top-level
+# resolution there: a checkout's nested files have no recorded inventory to
+# compare against, importing is off the table by design, and a development tree
+# is the user's own to edit.
 # only for a RECORD-less install, best effort. The POSTVER= sentinel keeps a
 # printing sitecustomize or .pth hook out of the caller's exact compares: -I
 # implies -E/-P/-s only, so site hooks still run.
