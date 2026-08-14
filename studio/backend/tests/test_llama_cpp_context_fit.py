@@ -72,6 +72,7 @@ from core.inference.llama_cpp import (
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     classify_gpu_offload_lines,
+    parse_gpu_offload_counts,
 )
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
@@ -934,3 +935,39 @@ class TestAppleNoKvMetadataFloor:
             apple_budget_mib = 23_000,
         )
         assert plan["c_arg"] == 100_000  # explicit honored even without KV sizing
+
+
+class TestPartialOffloadIsReportable:
+    """The counts behind the boolean.
+
+    classify_gpu_offload_lines answers True for 12/60 and for 60/60 alike, which
+    is right for "did the GPU work at all" and is why a half-offloaded model was
+    indistinguishable from a fully offloaded one everywhere downstream.
+    """
+
+    def test_a_split_load_keeps_both_numbers(self):
+        assert parse_gpu_offload_counts(
+            ["load_tensors: offloaded 38/60 layers to GPU"]
+        ) == (38, 60)
+
+    def test_the_boolean_cannot_tell_these_apart(self):
+        split = ["load_tensors: offloaded 12/60 layers to GPU"]
+        whole = ["load_tensors: offloaded 60/60 layers to GPU"]
+        assert classify_gpu_offload_lines(split) is classify_gpu_offload_lines(whole) is True
+        assert parse_gpu_offload_counts(split) != parse_gpu_offload_counts(whole)
+
+    def test_the_main_model_wins_over_a_draft(self):
+        # A draft/MTP model logs its own much smaller line; reporting that one
+        # would tell the user about the wrong model. Same rule the classifier uses.
+        lines = [
+            "load_tensors: offloaded 3/3 layers to GPU",
+            "load_tensors: offloaded 12/60 layers to GPU",
+        ]
+        assert parse_gpu_offload_counts(lines) == (12, 60)
+
+    def test_no_counted_line_is_not_a_guess(self):
+        assert parse_gpu_offload_counts(["INFO starting server"]) is None
+        assert parse_gpu_offload_counts([]) is None
+
+    def test_a_zero_total_is_not_reportable(self):
+        assert parse_gpu_offload_counts(["offloaded 0/0 layers to GPU"]) is None

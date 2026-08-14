@@ -13,6 +13,7 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import { type OffloadCounts, isPartialOffload } from "../lib/partial-offload";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -826,6 +827,7 @@ export function useChatModelRuntime() {
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
+      let offloadCounts: OffloadCounts = {};
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1286,6 +1288,10 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
+            offloadCounts = {
+              offloaded: loadResponse.offloaded_layers,
+              total: loadResponse.offload_total_layers,
+            };
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
@@ -1907,13 +1913,22 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
+          // A split load is a success the user still needs told about: the layers
+          // llama.cpp left on the CPU are on the critical path for every token.
+          const partialOffload =
+            !cpuFallbackReason && isPartialOffload(offloadCounts);
           const loadedTitle = cpuFallbackReason
             ? `${toastDisplayName} loaded on CPU`
-            : `${toastDisplayName} loaded`;
+            : partialOffload
+              ? `${toastDisplayName} loaded, partly on CPU`
+              : `${toastDisplayName} loaded`;
           const loadedDescription = cpuFallbackReason
             ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-            : undefined;
-          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
+            : partialOffload
+              ? `${offloadCounts.offloaded} of ${offloadCounts.total} layers are on the GPU. The rest run on CPU, so generation will be slower. A smaller quantization would fit entirely on the GPU.`
+              : undefined;
+          const showLoadedToast =
+            cpuFallbackReason || partialOffload ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
               description: loadedDescription,

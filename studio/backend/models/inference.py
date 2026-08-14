@@ -703,6 +703,18 @@ class _InferenceRuntimeFields(BaseModel):
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
     )
+    offloaded_layers: Optional[int] = Field(
+        None,
+        description = (
+            "Layers llama.cpp actually placed on a GPU, when it reported the count. "
+            "In Auto mode the placement is llama.cpp's own (--fit on), so this is the "
+            "only account of what happened; gpu_layers above is the REQUEST."
+        ),
+    )
+    offload_total_layers: Optional[int] = Field(
+        None,
+        description = "Total layers in the model, alongside offloaded_layers.",
+    )
     cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
         None,
         description = (
