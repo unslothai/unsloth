@@ -48,6 +48,7 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend";
 import { MascotImg } from "@/components/mascot-img";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -5667,6 +5668,10 @@ const ForkCountBadge: FC = () => {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
+      if (isPlatformChatPersistenceEnabled()) {
+        if (!cancelled) setCount(0);
+        return;
+      }
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) {
         if (!cancelled) setCount(0);
@@ -5752,11 +5757,16 @@ const useForkMessageAction = () => {
 
 const ForkMessageButton: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
+  const platformPersistence = isPlatformChatPersistenceEnabled();
 
   return (
     <TooltipIconButton
-      tooltip="Fork from here"
-      disabled={forkDisabled}
+      tooltip={
+        platformPersistence
+          ? "Branching becomes available with Rag Platform completion."
+          : "Fork from here"
+      }
+      disabled={platformPersistence || forkDisabled}
       onClick={forkMessage}
     >
       <GitBranchIcon strokeWidth={1.75} className="size-icon" />
@@ -5862,7 +5872,11 @@ const DeleteMessageButton: FC = () => {
       });
     } catch (error) {
       console.error("Failed to delete message", error);
-      toast.error("Failed to delete message");
+      toast.error(
+        isPlatformChatPersistenceEnabled()
+          ? "Failed to delete conversation turn"
+          : "Failed to delete message",
+      );
     }
   };
 
@@ -5872,7 +5886,11 @@ const DeleteMessageButton: FC = () => {
 
   return (
     <TooltipIconButton
-      tooltip="Delete message"
+      tooltip={
+        isPlatformChatPersistenceEnabled()
+          ? "Delete conversation turn"
+          : "Delete message"
+      }
       disabled={isRunning}
       onClick={handleDelete}
       className="text-chat-icon-fg hover:text-destructive"
@@ -5923,7 +5941,7 @@ const EditAssistantMessageButton: FC = () => {
   const researchActive = useThreadResearchActive();
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
 
-  if (researchRunId) return null;
+  if (researchRunId || isPlatformChatPersistenceEnabled()) return null;
 
   return (
     <TooltipIconButton
@@ -6111,7 +6129,9 @@ const UserActionBar: FC = () => {
       className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
-      {!ownsResearchMessage && !researchActive && (
+      {!isPlatformChatPersistenceEnabled() &&
+        !ownsResearchMessage &&
+        !researchActive && (
         <ActionBarPrimitive.Edit asChild={true}>
           <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
             <HugeiconsIcon

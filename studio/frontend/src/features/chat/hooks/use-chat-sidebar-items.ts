@@ -105,6 +105,8 @@ export function useChatSidebarItems(options?: {
 }) {
   const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const enabled = options?.enabled ?? true;
   const requireMessages = options?.requireMessages ?? true;
 
@@ -133,6 +135,7 @@ export function useChatSidebarItems(options?: {
         if (cancelled || seq !== requestSeq) return;
         setAllThreads(threads);
         setLoaded(true);
+        setError(null);
         // Pre-cut legacy titles cannot grow with the sidebar. The repair reads
         // its own messages, as late as it can, not this list's.
         void repairLegacyChatTitles(threads).catch(() => undefined);
@@ -140,7 +143,14 @@ export function useChatSidebarItems(options?: {
         if (isExpectedBackgroundChatStorageError(error)) {
           return;
         }
-        if (!cancelled) throw error;
+        if (!cancelled) {
+          setError(
+            error instanceof Error
+              ? error
+              : new Error("Chats could not be loaded."),
+          );
+          setLoaded(true);
+        }
       }
     }
 
@@ -163,13 +173,20 @@ export function useChatSidebarItems(options?: {
       if (pendingTimer !== null) clearTimeout(pendingTimer);
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, load);
     };
-  }, [enabled, options?.projectId, requireMessages]);
+  }, [enabled, options?.projectId, reloadKey, requireMessages]);
 
   const items = groupThreads(allThreads ?? []);
   const archivedItems = groupThreads(allThreads ?? [], true);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
-  return { items, archivedItems, canCompare, loaded };
+  return {
+    items,
+    archivedItems,
+    canCompare,
+    loaded,
+    error,
+    retry: () => setReloadKey((key) => key + 1),
+  };
 }
 
 function cancelIfRunning(threadId: string): void {

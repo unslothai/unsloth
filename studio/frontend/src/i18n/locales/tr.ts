@@ -1043,7 +1043,7 @@ export const tr = {
         "Bu cihazda depolanan sohbet geçmişini ve yüklenen dosyaları yönetin.",
       archivedChats: "Arşivlenmiş sohbetler",
       archivedChatsDescription:
-        "Arşivlediğiniz sohbetleri görüntüleyin ve yönetin.",
+        "Bu cihazdaki yerel arşiv durumunu yönetin. Sohbet içeriği Rag Platform üzerinde kalır.",
       manageAction: "Yönet",
       exportArchivedChats: "Dışa aktar",
       exportingArchivedChats: "Dışa aktarılıyor...",
@@ -1053,7 +1053,7 @@ export const tr = {
       failedToExportArchivedChats: "Arşivlenmiş sohbetler dışa aktarılamadı",
       archiveAllChats: "Tüm sohbetleri arşivle",
       archiveAllChatsDescription:
-        "Son Kullanılanlar ve Projeler'deki her sohbeti arşive taşıyın.",
+        "Son Kullanılanlar ve Projeler'deki her sohbeti yalnızca bu cihazda gizleyin.",
       noChatsToArchive: "Arşivlenecek sohbet yok.",
       archiveAllAction: "Tümünü arşivle",
       archivingAction: "Arşivleniyor...",

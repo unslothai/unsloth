@@ -38,6 +38,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend";
 import {
   Dialog,
   DialogContent,
@@ -1608,13 +1609,24 @@ function ProjectLanding({
                             </span>
                           </DropdownMenuItem>
                           <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>
+                            <DropdownMenuSubTrigger
+                              disabled={isPlatformChatPersistenceEnabled()}
+                              title={
+                                isPlatformChatPersistenceEnabled()
+                                  ? "Rag Platform cannot move an existing chat between projects."
+                                  : undefined
+                              }
+                            >
                               <HugeiconsIcon
                                 icon={FolderExportIcon}
                                 strokeWidth={1.75}
                                 className="size-icon"
                               />
-                              <span>Move to project</span>
+                              <span>
+                                {isPlatformChatPersistenceEnabled()
+                                  ? "Move unavailable in Rag Platform"
+                                  : "Move to project"}
+                              </span>
                             </DropdownMenuSubTrigger>
                             <DropdownMenuSubContent className="unsloth-plus-menu w-52">
                               <DropdownMenuItem
@@ -1676,7 +1688,7 @@ function ProjectLanding({
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Archive</span>
+                            <span>Archive on this device</span>
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             variant="destructive"

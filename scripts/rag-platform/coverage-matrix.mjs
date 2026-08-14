@@ -635,6 +635,20 @@ const CLASS_RULES = [
       "Dataset-scoped search is a compatibility form of the same retrieval capability. Documents → Retrieval Playground uses canonical POST /retrieval because it supports explicit dataset_ids and document_ids; this alias is typed and contract-tested only.",
   },
 
+  // -- Phase 7 Chat/Session duplicate mutation contracts ------------------
+  {
+    id: "phase7-chat-full-replace-alias",
+    when: {
+      method: /^PUT$/,
+      path: /^\/api\/v1\/chats\/\{p\}$/,
+      runtimeEnabled: true,
+    },
+    class: API_ONLY,
+    consumer: "Chat API client",
+    justification:
+      "Full-replacement Chat mutation duplicates the user capability exposed by PATCH. Rag Platform UI uses PATCH so a rename or dataset-scope edit cannot accidentally reset prompt/model fields; the exact PUT contract remains typed and authenticated in tests without a second indistinguishable control.",
+  },
+
   // -- 8. Primary entity list + detail reads = dedicated screens -----------
   {
     id: "entity-screen",
@@ -1967,6 +1981,123 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
     typedService:
       "src/integrations/platform-backend/chunk-api.ts#updateDocumentChunkCompatibility",
     evidence: PHASE6_TEST_EVIDENCE,
+  },
+});
+
+const PHASE7_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+  "src/features/chat/api/platform-chat-adapter.test.ts",
+  "src/features/rag/components/dataset-scope-selector.test.tsx",
+  "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)",
+];
+
+Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
+  "python-api|GET /api/v1/chats": {
+    status: "implemented",
+    uiPath: "Sidebar → Recents / Projects",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#listPlatformChats,listAllPlatformChats",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/chats": {
+    status: "implemented",
+    uiPath:
+      "Sidebar / Projects → New project → Dataset scope → Create; New Chat → idempotent General",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#createPlatformChat",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "python-api|DELETE /api/v1/chats": {
+    status: "implemented",
+    uiPath: "Settings → Data → Delete all chats",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#deleteAllPlatformChats",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/chats/{p}": {
+    status: "implemented",
+    uiPath: "Projects → project → Sources / instructions",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#getPlatformChat",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|PATCH /api/v1/chats/{p}": {
+    status: "implemented",
+    uiPath:
+      "Projects → project menu → Rename; Project → Sources → Save scope",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#updatePlatformChat",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|PUT /api/v1/chats/{p}": {
+    status: "contract-verified",
+    uiPath: "— (full-replacement alias; UI uses safe partial PATCH)",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#replacePlatformChat",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/chats/{p}": {
+    status: "implemented",
+    uiPath: "Projects → project menu → Delete → confirmation",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#deletePlatformChat",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/chats/{p}/sessions": {
+    status: "implemented",
+    uiPath: "Sidebar → Recents; Projects → project → Chats",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#listPlatformSessions,listAllPlatformSessions",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/chats/{p}/sessions": {
+    status: "implemented",
+    uiPath: "Chat composer → first send → create Session",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#createPlatformSession",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/chats/{p}/sessions": {
+    status: "implemented",
+    uiPath: "Chat row menu → Delete → confirmation",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#deletePlatformSessions",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/chats/{p}/sessions/{p}": {
+    status: "implemented",
+    uiPath: "Sidebar / project chat row → open chat → message history",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#getPlatformSession",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|PATCH /api/v1/chats/{p}/sessions/{p}": {
+    status: "implemented",
+    uiPath: "Chat row menu → Rename",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#updatePlatformSession",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/chats/{p}/sessions/{p}/messages/{p}": {
+    status: "implemented",
+    uiPath: "Chat message action → Delete conversation turn",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#deletePlatformSessionMessage",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "python-api|PUT /api/v1/chats/{p}/sessions/{p}": {
+    status: "contract-verified",
+    uiPath: "— (deprecated alias; UI uses canonical PATCH)",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#updatePlatformSessionCompatibility",
+    evidence: PHASE7_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/sessions/related_questions": {
+    status: "contract-verified",
+    uiPath: "— (deprecated alias; canonical recommendation belongs to Faz 8)",
+    typedService:
+      "src/integrations/platform-backend/chat-api.ts#getPlatformRelatedQuestionsCompatibility",
+    evidence: PHASE7_TEST_EVIDENCE,
   },
 });
 

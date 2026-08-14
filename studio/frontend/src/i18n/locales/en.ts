@@ -1029,7 +1029,8 @@ export const en = {
       description:
         "Manage chat history and uploaded files stored on this device.",
       archivedChats: "Archived chats",
-      archivedChatsDescription: "View and manage chats you have archived.",
+      archivedChatsDescription:
+        "View and manage this device's local archive state. Chat content remains on Rag Platform.",
       manageAction: "Manage",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",
@@ -1039,7 +1040,7 @@ export const en = {
       failedToExportArchivedChats: "Failed to export archived chats",
       archiveAllChats: "Archive all chats",
       archiveAllChatsDescription:
-        "Move every chat in Recents and Projects to the archive.",
+        "Locally hide every chat in Recents and Projects on this device.",
       noChatsToArchive: "No chats to archive.",
       archiveAllAction: "Archive all",
       archivingAction: "Archiving...",

@@ -2,6 +2,7 @@
 
 
 import { authFetch } from "@/features/auth";
+import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
@@ -108,6 +109,10 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
+const pendingThreadCreateByLocalId = new Map<
+  string,
+  Promise<ThreadRecord>
+>();
 // Resolves to the thread id assigned when this message's chat was first persisted.
 const pendingRunStartReadyByMessageId = new Map<
   string,
@@ -610,6 +615,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     Array.isArray(m.content) && m.content.length > 0
       ? cloneContent(m.content)
       : [{ type: "text" as const, text: "" }];
+  const custom = (m.metadata as Record<string, unknown>) ?? {};
 
   if (m.role === "user") {
     return {
@@ -618,10 +624,9 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       role: "user" as const,
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       attachments: cloneAttachments(m.attachments),
-      metadata: { custom: {} },
+      metadata: { custom },
     };
   }
-  const custom = (m.metadata as Record<string, unknown>) ?? {};
   const savedTiming = custom.timing as
     | import("@assistant-ui/react").MessageTiming
     | undefined;
@@ -655,9 +660,9 @@ export async function ensureThreadRecord({
   modelType: ModelType;
   pairId?: string;
   projectId?: string | null;
-}): Promise<void> {
+}): Promise<ThreadRecord | undefined> {
   if (isChatThreadDeleted(threadId)) {
-    return;
+    return undefined;
   }
   // Snapshot the toggle SYNCHRONOUSLY, before the await below. This runs in
   // the same tick as the user's send, so it reliably captures the toggle's
@@ -669,20 +674,22 @@ export async function ensureThreadRecord({
   // history list entirely so a storage outage cannot block the first send.
   if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
     markThreadIncognito(threadId);
-    return;
+    return undefined;
   }
-  const existing = (await listStoredChatThreads({ includeArchived: true })).find(
-    (thread) => thread.id === threadId,
-  );
+  // Local assistant-ui ids cannot exist on Rag Platform (the server assigns
+  // Session ids), so avoid the all-Chats/all-Sessions N+1 lookup on first send.
+  const existing = isAssistantLocalThreadId(threadId)
+    ? undefined
+    : await getStoredChatThread(threadId);
   if (existing) {
-    return;
+    return existing;
   }
   // For non-local ids, keep the existing check first so an already-persisted
   // thread is never tagged -- that's what keeps a real thread saving normally
   // even if the toggle flips on while its run is still streaming.
   if (incognitoAtInit) {
     markThreadIncognito(threadId);
-    return;
+    return undefined;
   }
 
   const currentModelId = useChatRuntimeStore.getState().params.checkpoint ?? "";
@@ -698,7 +705,13 @@ export async function ensureThreadRecord({
   };
 
   try {
-    await saveStoredChatThread(record);
+    const pending = pendingThreadCreateByLocalId.get(threadId);
+    if (pending) return pending;
+    const creation = saveStoredChatThread(record).finally(() => {
+      pendingThreadCreateByLocalId.delete(threadId);
+    });
+    pendingThreadCreateByLocalId.set(threadId, creation);
+    return await creation;
   } catch (error) {
     // assistant-ui can issue overlapping first-message persistence calls. If
     // another call created the same thread while this one waited, treat init as
@@ -706,8 +719,9 @@ export async function ensureThreadRecord({
     const existingAfterRace = await listStoredChatThreads({
       includeArchived: true,
     }).catch(() => []);
-    if (existingAfterRace.some((thread) => thread.id === threadId)) {
-      return;
+    const raced = existingAfterRace.find((thread) => thread.id === threadId);
+    if (raced) {
+      return raced;
     }
     throw error;
   }
@@ -764,12 +778,18 @@ function createStudioDbAdapter(
     },
 
     async initialize(threadId: string) {
-      await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+      const stored = await ensureThreadRecord({
+        threadId,
+        modelType,
+        pairId,
+        projectId,
+      });
+      const remoteId = stored?.id ?? threadId;
       // A run already streaming on this thread filed its handles under "__default" because
       // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
       // id nothing is registered against.
-      useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
-      return { remoteId: threadId, externalId: undefined };
+      useChatRuntimeStore.getState().adoptDefaultThreadRun(remoteId);
+      return { remoteId, externalId: undefined };
     },
 
     async rename(remoteId: string, newTitle: string) {
@@ -1398,6 +1418,9 @@ function useStudioRuntimeAdapters(
               store.setActiveThreadId(remoteId);
             }
           }
+          // Rag Platform Session history is written by its completion
+          // contract. Do not shadow-write through Studio's legacy message API.
+          if (isPlatformChatPersistenceEnabled()) return;
           const thread = await getStoredChatThread(remoteId);
           await throwIfHistoryWasCleared(remoteId);
           if (thread) {
@@ -1798,6 +1821,7 @@ function ThreadBackendAutosave({
 
   const saveThread = useCallback(
     async (threadId: string): Promise<void> => {
+      if (isPlatformChatPersistenceEnabled()) return;
       const runtime = aui.threads().__internal_getAssistantRuntime?.();
       if (!runtime) {
         return;

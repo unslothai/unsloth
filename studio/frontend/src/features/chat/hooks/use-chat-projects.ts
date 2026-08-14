@@ -76,6 +76,8 @@ export function useChatProjects(): {
   projects: ProjectRecord[];
   isLoading: boolean;
   hasLoaded: boolean;
+  error: Error | null;
+  retry: () => void;
 } {
   const projects = useSyncExternalStore(
     subscribeToProjects,
@@ -84,6 +86,8 @@ export function useChatProjects(): {
   );
   const [isLoading, setIsLoading] = useState(!projectsLoaded);
   const [hasLoaded, setHasLoaded] = useState(projectsLoaded);
+  const [error, setError] = useState<Error | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,6 +97,15 @@ export function useChatProjects(): {
       if (!cancelled && !projectsLoaded) setIsLoading(true);
       try {
         await loadProjects(force, followUpIfPending);
+        if (!cancelled) setError(null);
+      } catch (cause) {
+        if (!cancelled) {
+          setError(
+            cause instanceof Error
+              ? cause
+              : new Error("Projects could not be loaded."),
+          );
+        }
       } finally {
         if (!cancelled) {
           setHasLoaded(true);
@@ -114,13 +127,22 @@ export function useChatProjects(): {
       cancelled = true;
       window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     };
-  }, []);
+  }, [reloadKey]);
 
-  return { projects, isLoading, hasLoaded };
+  return {
+    projects,
+    isLoading,
+    hasLoaded,
+    error,
+    retry: () => setReloadKey((key) => key + 1),
+  };
 }
 
-export async function createChatProject(name: string): Promise<ProjectRecord> {
-  return createStoredChatProject(name);
+export async function createChatProject(
+  name: string,
+  options: { datasetIds?: string[]; instructions?: string } = {},
+): Promise<ProjectRecord> {
+  return createStoredChatProject(name, options);
 }
 
 export async function renameChatProject(

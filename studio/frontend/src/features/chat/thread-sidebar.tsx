@@ -93,7 +93,7 @@ export function ThreadSidebar({
   onNewCompare: () => void;
   showCompare: boolean;
 }) {
-  const { items } = useChatSidebarItems();
+  const { items, error, retry } = useChatSidebarItems();
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const activeId =
     view.mode === "single"
@@ -183,6 +183,14 @@ export function ThreadSidebar({
         <span className="text-base font-semibold tracking-tight">Playground</span>
       </SidebarHeader>
       <SidebarContent>
+        {error ? (
+          <div className="mx-4 mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive" role="alert">
+            <p>{error.message}</p>
+            <button type="button" className="mt-1 underline" onClick={retry}>
+              Retry
+            </button>
+          </div>
+        ) : null}
         <SidebarGroup className="px-4 pt-1">
           <SidebarGroupContent>
             <SidebarMenu>

@@ -2,6 +2,23 @@
 
 
 import { BACKEND_UNREACHABLE_MESSAGE } from "@/features/auth";
+import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend";
+import {
+  buildPlatformChatExportForChat,
+  clearPlatformChatsForChat,
+  createPlatformProjectForChat,
+  createPlatformThreadForChat,
+  deletePlatformProjectForChat,
+  deletePlatformThreadsForChat,
+  getPlatformMessageForChat,
+  getPlatformProjectForChat,
+  getPlatformThreadForChat,
+  listPlatformMessagesForChat,
+  listPlatformProjectsForChat,
+  listPlatformThreadsForChat,
+  updatePlatformProjectForChat,
+  updatePlatformThreadForChat,
+} from "../api/platform-chat-adapter";
 import {
   buildBackendChatExport,
   clearBackendChats,
@@ -16,6 +33,7 @@ import {
   listChatMessages,
   listChatThreads,
   notifyChatHistoryUpdated,
+  notifyChatProjectsUpdated,
   recordChatImportLedger,
   saveChatProject,
   saveChatMessage,
@@ -450,6 +468,9 @@ export async function getStoredChatThread(
   // empty -- short-circuit it instead of doing a Dexie read + backend GET.
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
+  if (isPlatformChatPersistenceEnabled()) {
+    return (await getPlatformThreadForChat(threadId)) ?? undefined;
+  }
   const legacyThread = await db.threads.get(threadId);
   let backendThread: ThreadRecord | null;
   try {
@@ -476,6 +497,12 @@ export async function ensureStoredChatThread(
   // on every autosave (runStart/runEnd) and message append.
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
+  if (isPlatformChatPersistenceEnabled()) {
+    const existing = await getPlatformThreadForChat(threadId);
+    if (existing) return existing;
+    if (!fallback) return undefined;
+    return createPlatformThreadForChat(fallback);
+  }
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
@@ -498,6 +525,9 @@ export async function listStoredChatMessages(
 ): Promise<MessageRecord[]> {
   if (isThreadIncognito(threadId)) return [];
   if (isChatThreadDeleted(threadId)) return [];
+  if (isPlatformChatPersistenceEnabled()) {
+    return listPlatformMessagesForChat(threadId);
+  }
   const legacyMessages = await db.messages
     .where("threadId")
     .equals(threadId)
@@ -542,6 +572,9 @@ export async function getStoredChatMessage(
 ): Promise<MessageRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
+  if (isPlatformChatPersistenceEnabled()) {
+    return (await getPlatformMessageForChat(threadId, messageId)) ?? undefined;
+  }
   const legacyMessage = await db.messages.get(messageId);
   const matchingLegacyMessage =
     legacyMessage?.threadId === threadId ? legacyMessage : undefined;
@@ -569,6 +602,9 @@ export async function getStoredChatMessage(
 export async function listStoredChatThreads(
   args: ThreadListArgs = {},
 ): Promise<ThreadRecord[]> {
+  if (isPlatformChatPersistenceEnabled()) {
+    return listPlatformThreadsForChat(args);
+  }
   const legacyThreads = await listLegacyThreads(args);
   let backendThreads = await listChatThreads(args).catch((error) => {
     if (legacyThreads.length > 0) {
@@ -602,6 +638,11 @@ export async function listStoredChatThreads(
 export async function listStoredChatThreadsWithMessages(
   args: ThreadListArgs = {},
 ): Promise<ThreadRecord[]> {
+  if (isPlatformChatPersistenceEnabled()) {
+    // Rag Platform sessions are created with the Chat prologue, so every
+    // listed Session already has content. Avoid a second N-per-session read.
+    return listPlatformThreadsForChat(args);
+  }
   const threads = await listStoredChatThreads(args);
   if (threads.length === 0) return [];
   // One batched HTTP call instead of N. Per-thread legacy Dexie fallback
@@ -629,21 +670,37 @@ export async function listStoredChatThreadsWithMessages(
 export async function listStoredChatProjects(
   args: { includeArchived?: boolean } = {},
 ): Promise<ProjectRecord[]> {
+  if (isPlatformChatPersistenceEnabled()) {
+    return listPlatformProjectsForChat(args);
+  }
   return listChatProjects(args);
 }
 
 export async function getStoredChatProject(
   projectId: string,
 ): Promise<ProjectRecord | null> {
+  if (isPlatformChatPersistenceEnabled()) {
+    return getPlatformProjectForChat(projectId);
+  }
   return getChatProject(projectId);
 }
 
 export async function createStoredChatProject(
   name: string,
+  options: { datasetIds?: string[]; instructions?: string } = {},
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
     throw new Error("Project name is required.");
+  }
+  if (isPlatformChatPersistenceEnabled()) {
+    const project = await createPlatformProjectForChat({
+      name: trimmed,
+      datasetIds: options.datasetIds,
+      instructions: options.instructions,
+    });
+    notifyChatProjectsUpdated();
+    return project;
   }
   const now = Date.now();
   return saveChatProject({
@@ -660,6 +717,11 @@ export async function updateStoredChatProject(
   projectId: string,
   patch: Partial<ProjectRecord>,
 ): Promise<ProjectRecord> {
+  if (isPlatformChatPersistenceEnabled()) {
+    const project = await updatePlatformProjectForChat(projectId, patch);
+    notifyChatProjectsUpdated();
+    return project;
+  }
   return updateChatProject(projectId, {
     ...patch,
     updatedAt: patch.updatedAt ?? Date.now(),
@@ -670,6 +732,11 @@ export async function deleteStoredChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
 ): Promise<string[]> {
+  if (isPlatformChatPersistenceEnabled()) {
+    await deletePlatformProjectForChat(projectId);
+    notifyChatProjectsUpdated();
+    return [];
+  }
   return deleteChatProject(projectId, args);
 }
 
@@ -677,6 +744,11 @@ export async function moveStoredChatItemToProject(
   item: { type: "single" | "compare"; id: string },
   projectId: string | null,
 ): Promise<void> {
+  if (isPlatformChatPersistenceEnabled()) {
+    throw new Error(
+      "Rag Platform does not support moving an existing chat between projects.",
+    );
+  }
   const threadIds =
     item.type === "single"
       ? [item.id]
@@ -699,6 +771,11 @@ export async function saveStoredChatMessage(
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
+  if (isPlatformChatPersistenceEnabled()) {
+    throw new Error(
+      "Rag Platform Session messages are written only by the completion endpoint.",
+    );
+  }
   await ensureStoredChatThread(message.threadId);
   return saveChatMessage(message);
 }
@@ -710,6 +787,11 @@ export async function syncStoredChatMessages(
 ): Promise<MessageRecord[]> {
   if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
+  if (isPlatformChatPersistenceEnabled()) {
+    throw new Error(
+      "Rag Platform Session messages cannot be replaced by the client.",
+    );
+  }
   await ensureStoredChatThread(threadId);
   return syncChatMessages(threadId, messages, options);
 }
@@ -721,6 +803,11 @@ export async function saveStoredChatThread(
   if (isChatThreadDeleted(thread.id)) {
     throw new Error(`Thread ${thread.id} was deleted`);
   }
+  if (isPlatformChatPersistenceEnabled()) {
+    const created = await createPlatformThreadForChat(thread);
+    notifyChatHistoryUpdated();
+    return created;
+  }
   return saveChatThread(thread);
 }
 
@@ -729,6 +816,11 @@ export async function updateStoredChatThread(
   patch: Partial<ThreadRecord>,
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
+  if (isPlatformChatPersistenceEnabled()) {
+    const updated = await updatePlatformThreadForChat(threadId, patch);
+    notifyChatHistoryUpdated();
+    return updated ?? undefined;
+  }
   const thread = await ensureStoredChatThread(threadId);
   if (!thread) return undefined;
   return updateChatThread(threadId, patch);
@@ -744,6 +836,12 @@ export async function deleteStoredChatThreads(
   // that folder. Only the Dexie work below is skipped: it holds nothing.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (idsToDelete.length === 0) return [];
+  if (isPlatformChatPersistenceEnabled()) {
+    await deletePlatformThreadsForChat(ids);
+    markChatThreadsDeleted(ids);
+    notifyChatHistoryUpdated();
+    return [];
+  }
   const kept = await deleteChatThreads(idsToDelete, args);
   if (ids.length === 0) return kept;
   await db
@@ -770,6 +868,26 @@ export interface ClearStoredChatsResult {
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
+  if (isPlatformChatPersistenceEnabled()) {
+    const threads = await listPlatformThreadsForChat({ includeArchived: true });
+    await clearPlatformChatsForChat();
+    const ids = threads.map((thread) => thread.id);
+    await db
+      .transaction("rw", db.threads, db.messages, async () => {
+        await db.messages.clear();
+        await db.threads.clear();
+      })
+      .catch(() => undefined);
+    markChatThreadsDeleted(ids);
+    notifyChatHistoryUpdated();
+    return {
+      backend: "cleared",
+      legacy: "cleared",
+      deletedThreadIds: ids,
+      failedThreadIds: [],
+      sandboxesKept: [],
+    };
+  }
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
@@ -836,6 +954,9 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
 }
 
 export async function buildStoredChatExport(): Promise<ExportedChat> {
+  if (isPlatformChatPersistenceEnabled()) {
+    return buildPlatformChatExportForChat();
+  }
   await importLegacyChatsIfNeeded().catch(() => undefined);
   const [legacyThreads, legacyMessages] = await Promise.all([
     db.threads.toArray(),

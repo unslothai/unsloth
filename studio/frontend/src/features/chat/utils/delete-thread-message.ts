@@ -13,17 +13,22 @@
  * the path or API may change without a semver signal.
  */
 import { MessageRepository } from "@assistant-ui/core/internal";
+import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend";
 import type {
   CompleteAttachment,
   ExportedMessageRepository,
   ThreadMessage,
 } from "@assistant-ui/react";
-import { listChatMessages } from "../api/chat-api";
+import {
+  listChatMessages,
+  notifyChatHistoryUpdated,
+} from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   ensureStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
+import { deletePlatformMessageTurnForChat } from "../api/platform-chat-adapter";
 import {
   hasResearchMetadata,
   reconcileServerManagedMessages,
@@ -141,6 +146,31 @@ export async function deleteThreadMessage(args: {
   const target = exported.messages.find(
     ({ message }) => message.id === messageId,
   );
+  if (remoteId && isPlatformChatPersistenceEnabled()) {
+    await deletePlatformMessageTurnForChat(remoteId, messageId);
+    const platformMessageId = (
+      target?.message.metadata as
+        | { custom?: { platformMessageId?: unknown } }
+        | undefined
+    )?.custom?.platformMessageId;
+    const turnIds =
+      typeof platformMessageId === "string"
+        ? exported.messages
+            .filter(({ message }) => {
+              const custom = (
+                message.metadata as
+                  | { custom?: { platformMessageId?: unknown } }
+                  | undefined
+              )?.custom;
+              return custom?.platformMessageId === platformMessageId;
+            })
+            .map(({ message }) => message.id)
+        : [messageId];
+    for (const id of turnIds) repo.deleteMessage(id);
+    thread.import(repo.export());
+    notifyChatHistoryUpdated();
+    return;
+  }
   const assistantReplyIds =
     target?.message.role === "user"
       ? exported.messages

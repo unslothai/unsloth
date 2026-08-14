@@ -21,23 +21,23 @@
     "capability_lost": 9,
     "by_class": {
       "frontend-screen": 76,
-      "frontend-action": 365,
-      "api-only": 64,
+      "frontend-action": 364,
+      "api-only": 65,
       "external-callback": 13,
       "internal": 4,
       "unsupported": 299
     },
     "by_class_reachable": {
       "frontend-screen": 76,
-      "frontend-action": 365,
-      "api-only": 58,
+      "frontend-action": 364,
+      "api-only": 59,
       "external-callback": 13,
       "internal": 4
     },
     "by_status": {
-      "implemented": 70,
-      "contract-verified": 49,
-      "planned": 394,
+      "implemented": 82,
+      "contract-verified": 45,
+      "planned": 386,
       "runtime-disabled": 302,
       "not-proxied": 6
     },
@@ -9925,11 +9925,15 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Settings → Data → Delete all chats",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#deleteAllPlatformChats",
       "test_evidence": [
-        "`fixtures/cleanup.json` #cleanup.chat"
+        "`fixtures/cleanup.json` #cleanup.chat",
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -9989,11 +9993,15 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Sidebar → Recents / Projects",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#listPlatformChats,listAllPlatformChats",
       "test_evidence": [
-        "`fixtures/chat.json` #chat.list"
+        "`fixtures/chat.json` #chat.list",
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Primary entity list or detail read; a dedicated Rag Platform route renders it.",
       "is_alternate": false,
@@ -10053,12 +10061,16 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Sidebar / Projects → New project → Dataset scope → Create; New Chat → idempotent General",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#createPlatformChat",
       "test_evidence": [
         "`fixtures/chat.json` #chat.create_with_dataset",
-        "`fixtures/chat.json` #chat.create"
+        "`fixtures/chat.json` #chat.create",
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -10150,11 +10162,14 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Projects → project menu → Delete → confirmation",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#deletePlatformChat",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -10182,11 +10197,15 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Projects → project → Sources / instructions",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#getPlatformChat",
       "test_evidence": [
-        "`fixtures/chat.json` #chat.get"
+        "`fixtures/chat.json` #chat.get",
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Primary entity list or detail read; a dedicated Rag Platform route renders it.",
       "is_alternate": false,
@@ -10214,11 +10233,14 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Projects → project menu → Rename; Project → Sources → Save scope",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#updatePlatformChat",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -10239,20 +10261,23 @@
       "runtime": "enabled",
       "runtime_disabled_reason": null,
       "source": "internal/router/router.go:307",
-      "class": "frontend-action",
-      "class_rule": "go-ui-action",
+      "class": "api-only",
+      "class_rule": "phase7-chat-full-replace-alias",
       "target_phase": 7,
       "owner": "chat",
       "auth": "session",
       "auth_role": "tenant-user",
-      "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "consumer": "Chat API client",
+      "status": "contract-verified",
+      "ui_path": "— (full-replacement alias; UI uses safe partial PATCH)",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#replacePlatformChat",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
-      "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
+      "justification": "Full-replacement Chat mutation duplicates the user capability exposed by PATCH. Rag Platform UI uses PATCH so a rename or dataset-scope edit cannot accidentally reset prompt/model fields; the exact PUT contract remains typed and authenticated in tests without a second indistinguishable control.",
       "is_alternate": false,
       "replaced_by": null,
       "go_internal_only": false,
@@ -10278,11 +10303,14 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat row menu → Delete → confirmation",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#deletePlatformSessions",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -10310,11 +10338,15 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Sidebar → Recents; Projects → project → Chats",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#listPlatformSessions,listAllPlatformSessions",
       "test_evidence": [
-        "`fixtures/session.json` #session.list"
+        "`fixtures/session.json` #session.list",
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Nested collection or detail read that backs its own tab or panel inside the owning screen.",
       "is_alternate": false,
@@ -10342,11 +10374,15 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat composer → first send → create Session",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#createPlatformSession",
       "test_evidence": [
-        "`fixtures/session.json` #session.create"
+        "`fixtures/session.json` #session.create",
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -10374,11 +10410,15 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Sidebar / project chat row → open chat → message history",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#getPlatformSession",
       "test_evidence": [
-        "`fixtures/session.json` #session.get"
+        "`fixtures/session.json` #session.get",
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Nested collection or detail read that backs its own tab or panel inside the owning screen.",
       "is_alternate": false,
@@ -10406,11 +10446,14 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat row menu → Rename",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#updatePlatformSession",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -10438,11 +10481,14 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 7)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat message action → Delete conversation turn",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#deletePlatformSessionMessage",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -10822,11 +10868,14 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "legacy API client",
-      "status": "planned",
-      "ui_path": "—",
-      "typed_service": null,
+      "status": "contract-verified",
+      "ui_path": "— (deprecated alias; UI uses canonical PATCH)",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#updatePlatformSessionCompatibility",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,
@@ -22831,11 +22880,14 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "legacy API client",
-      "status": "planned",
-      "ui_path": "—",
-      "typed_service": null,
+      "status": "contract-verified",
+      "ui_path": "— (deprecated alias; canonical recommendation belongs to Faz 8)",
+      "typed_service": "src/integrations/platform-backend/chat-api.ts#getPlatformRelatedQuestionsCompatibility",
       "test_evidence": [
-        "pending (Faz 7)"
+        "src/integrations/platform-backend/__tests__/chat-api.test.ts",
+        "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/rag/components/dataset-scope-selector.test.tsx",
+        "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,

@@ -9,11 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  ProjectSourceDropzone,
-  type StagedSource,
-  uploadStagedSources,
-} from "@/features/rag/components/project-source-dropzone";
+import { DatasetScopeSelector } from "@/features/rag/components/dataset-scope-selector";
 import { toast } from "@/lib/toast";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -53,11 +49,8 @@ export function NewProjectDialog({
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState("");
-  const [staged, setStaged] = useState<StagedSource[]>([]);
+  const [datasetIds, setDatasetIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  // A desktop drop reaches `staged` only once its native registration settles.
-  // Creating before then would upload without the files the user just dropped.
-  const [stagingDrop, setStagingDrop] = useState(false);
   // Uploads outlive this component, so a slow one must not yank the user to the
   // new project after they have navigated away.
   const mounted = useRef(true);
@@ -74,8 +67,7 @@ export function NewProjectDialog({
 
   function reset() {
     setName("");
-    setStaged([]);
-    setStagingDrop(false);
+    setDatasetIds([]);
   }
 
   // Every close path routes through here: callers keep this mounted, so a draft
@@ -88,7 +80,7 @@ export function NewProjectDialog({
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed || busy || stagingDrop) return;
+    if (!trimmed || busy) return;
     setBusy(true);
     // Sidebar callers keep this mounted across routes, so unmounting alone
     // cannot tell whether the user has moved on during a slow upload.
@@ -112,9 +104,7 @@ export function NewProjectDialog({
           return;
         }
       }
-      const project = await createChatProject(trimmed);
-      // Upload before closing so the Sources panel lists them on first fetch.
-      await uploadStagedSources(project.id, staged);
+      const project = await createChatProject(trimmed, { datasetIds });
       if (!mounted.current) return;
       const stayedOnRoute = currentRoute() === origin;
       onOpenChange(false);
@@ -180,11 +170,10 @@ export function NewProjectDialog({
             className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-2.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
           />
         </div>
-        <ProjectSourceDropzone
-          staged={staged}
-          onChange={setStaged}
+        <DatasetScopeSelector
+          selectedIds={datasetIds}
+          onChange={setDatasetIds}
           disabled={busy}
-          onPendingChange={setStagingDrop}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button type="button" variant="ghost" disabled={busy} onClick={close}>
@@ -193,9 +182,9 @@ export function NewProjectDialog({
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim() || busy || stagingDrop}
+            disabled={!name.trim() || busy}
           >
-            {busy ? "Creating…" : stagingDrop ? "Adding sources…" : submitLabel}
+            {busy ? "Creating…" : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

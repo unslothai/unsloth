@@ -19,3 +19,5 @@ export * from "./document-api";
 export * from "./document-types";
 export * from "./chunk-api";
 export * from "./chunk-types";
+export * from "./chat-api";
+export * from "./chat-types";

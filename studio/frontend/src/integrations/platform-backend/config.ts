@@ -111,6 +111,20 @@ export function isPlatformModelToolsEnabled(
   );
 }
 
+/**
+ * Chat/session persistence is part of the native Rag Platform integration.
+ * It deliberately has no independent rollout flag: when the platform and its
+ * authenticated API are enabled, Chat and Session are the source of truth.
+ */
+export function isPlatformChatPersistenceEnabled(
+  env: PlatformBackendEnv = import.meta.env as PlatformBackendEnv,
+): boolean {
+  return (
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED)
+  );
+}
+
 function assertRelativeEndpoint(endpoint: string): string {
   const trimmed = endpoint.trim();
   if (!trimmed.startsWith("/") || trimmed.startsWith("//")) {

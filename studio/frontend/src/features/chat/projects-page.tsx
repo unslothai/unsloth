@@ -107,7 +107,7 @@ function formatModified(ts: number): string {
 
 export function ProjectsPage() {
   const navigate = useNavigate();
-  const { projects, hasLoaded } = useChatProjects();
+  const { projects, hasLoaded, error, retry } = useChatProjects();
 
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("activity");
@@ -476,6 +476,15 @@ export function ProjectsPage() {
               <span className="w-8 shrink-0" />
             </div>
           ))}
+        </div>
+      ) : error && projects.length === 0 ? (
+        <div className="mt-16 flex flex-col items-center justify-center gap-3 text-center">
+          <p className="text-sm text-destructive" role="alert">
+            {error.message}
+          </p>
+          <Button variant="outline" onClick={retry}>
+            Retry
+          </Button>
         </div>
       ) : visibleProjects.length === 0 ? (
         <div className="mt-16 flex flex-col items-center justify-center gap-2 text-center text-muted-foreground">

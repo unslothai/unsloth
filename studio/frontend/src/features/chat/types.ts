@@ -25,6 +25,10 @@ export interface ProjectRecord {
   archived: boolean;
   createdAt: number;
   updatedAt: number;
+  /** Rag Platform Chat dataset scope. Persisted by the backend. */
+  datasetIds?: string[];
+  /** Rag Platform Chat model binding when the backend exposes one. */
+  platformLlmId?: string | null;
 }
 
 export interface ThreadRecord {
