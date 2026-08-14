@@ -12346,6 +12346,13 @@ async def openai_chat_completions(
         if _m.role == "developer":
             _m.role = "system"
 
+    from core.unforgettable_host import handle_chat_completions, in_inner_generate, is_virtual_model
+
+    if is_virtual_model(payload.model) and not in_inner_generate():
+        return await handle_chat_completions(
+            payload, request, current_subject, openai_chat_completions
+        )
+
     if payload.logprobs:
         _raise_unsupported_openai_parameter(
             "logprobs", "logprobs is not supported for chat completions."
@@ -15839,6 +15846,10 @@ def _openai_model_objects() -> list[dict]:
             entry["native_context_length"] = _native_ctx
         models.append(entry)
 
+    from core.unforgettable_host import catalog_entry as _unforgettable_loaded_entry
+
+    models.append(_unforgettable_loaded_entry(_created))
+
     # Check Unsloth backend
     backend = get_inference_backend()
     if backend.active_model_name:
@@ -16015,6 +16026,11 @@ async def _openai_catalog_objects() -> list[dict]:
         if display:
             obj["display_name"] = display
         by_id[cid] = obj
+
+    from core.unforgettable_host import catalog_entry as _unforgettable_catalog_entry
+
+    virtual = _unforgettable_catalog_entry(_created)
+    by_id.setdefault(virtual["id"], virtual)
 
     return list(by_id.values())
 

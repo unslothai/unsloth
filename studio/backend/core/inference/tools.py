@@ -4530,7 +4530,9 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # Tools that are read-only regardless of their arguments, so auto mode never has
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
+_ALWAYS_SAFE_TOOLS = frozenset(
+    {"web_search", "search_knowledge_base", "memory_search", "memory_get"}
+)
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -9215,12 +9217,15 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     },
 }
 
+from unforgettable.tools.specs import MEMORY_TOOLS
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
+    *MEMORY_TOOLS,
 ]
 
 
@@ -9410,27 +9415,43 @@ def execute_tool(
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+
+    def _finish(result: str) -> str:
+        try:
+            from unforgettable.loop.runtime import note_tool_result
+
+            note_tool_result(name, arguments or {}, result)
+        except Exception:
+            pass
+        return result
+
+    if name.startswith("memory_") or name.startswith("memory."):
+        from unforgettable.tools.handlers import dispatch
+
+        return _finish(dispatch(name, arguments or {}))
     if name == "search_knowledge_base":
-        return _search_knowledge_base_with_budget(
-            arguments,
-            rag_scope,
-            effective_timeout,
-            cancel_event,
+        return _finish(
+            _search_knowledge_base_with_budget(
+                arguments,
+                rag_scope,
+                effective_timeout,
+                cancel_event,
+            )
         )
     if name == "render_html":
-        return _render_html_result(arguments)
+        return _finish(_render_html_result(arguments))
     if name.startswith(MCP_TOOL_PREFIX):
         try:
             _, server_id, tool_name = name.split("__", 2)
         except ValueError:
-            return f"Error: malformed MCP tool name '{name}'"
+            return _finish(f"Error: malformed MCP tool name '{name}'")
         server = mcp_servers_db.get_server(server_id)
         if not server:
-            return f"Error: MCP server '{server_id}' not found"
+            return _finish(f"Error: MCP server '{server_id}' not found")
         if not server.get("is_enabled"):
-            return f"Error: MCP server '{server_id}' is disabled"
+            return _finish(f"Error: MCP server '{server_id}' is disabled")
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
-            return f"Error: stdio MCP server '{server_id}' is disabled on this host"
+            return _finish(f"Error: stdio MCP server '{server_id}' is disabled on this host")
         # Persist a stateful stdio session only per conversation (thread_id).
         # session_id is the project-wide sandbox id, so scoping by it alone leaks
         # browser/DB/REPL state across conversations; fall back to one-shot. Tag +
@@ -9456,48 +9477,56 @@ def execute_tool(
                 and parse_server_headers(row) == headers
             )
 
-        return call_tool_sync(
-            url = url,
-            headers = headers,
-            name = tool_name,
-            args = arguments,
-            timeout = effective_timeout,
-            use_oauth = bool(server.get("use_oauth")),
-            cancel_event = cancel_event,
-            scope = mcp_scope,
-            config_check = _config_current,
+        return _finish(
+            call_tool_sync(
+                url = url,
+                headers = headers,
+                name = tool_name,
+                args = arguments,
+                timeout = effective_timeout,
+                use_oauth = bool(server.get("use_oauth")),
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                config_check = _config_current,
+            )
         )
     if name == "web_search":
-        return _web_search(
-            arguments.get("query", ""),
-            url = arguments.get("url"),
-            timeout = effective_timeout,
-            cancel_event = cancel_event,
-            website_policy = website_policy,
+        return _finish(
+            _web_search(
+                arguments.get("query", ""),
+                url = arguments.get("url"),
+                timeout = effective_timeout,
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+            )
         )
     # Both run with the session's sandbox as cwd, so a chat deleted mid-call
     # must not unlink it from under them.
     if name == "python":
         with _session_in_flight(session_id):
-            return _python_exec(
-                arguments.get("code", ""),
-                cancel_event,
-                effective_timeout,
-                session_id,
-                disable_sandbox = disable_sandbox,
-                output_callback = output_callback,
+            return _finish(
+                _python_exec(
+                    arguments.get("code", ""),
+                    cancel_event,
+                    effective_timeout,
+                    session_id,
+                    disable_sandbox = disable_sandbox,
+                    output_callback = output_callback,
+                )
             )
     if name == "terminal":
         with _session_in_flight(session_id):
-            return _bash_exec(
-                arguments.get("command", ""),
-                cancel_event,
-                effective_timeout,
-                session_id,
-                disable_sandbox = disable_sandbox,
-                output_callback = output_callback,
+            return _finish(
+                _bash_exec(
+                    arguments.get("command", ""),
+                    cancel_event,
+                    effective_timeout,
+                    session_id,
+                    disable_sandbox = disable_sandbox,
+                    output_callback = output_callback,
+                )
             )
-    return f"Unknown tool: {name}"
+    return _finish(f"Unknown tool: {name}")
 
 
 def _opt_int(v) -> int | None:

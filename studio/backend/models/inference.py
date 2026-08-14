@@ -1141,7 +1141,10 @@ class ChatCompletionRequest(BaseModel):
 
     model: str = Field(
         "default",
-        description = "Model identifier (informational; the active model is used)",
+        description = (
+            "Model identifier (informational; the active model is used). "
+            "Use 'unforgettable' or 'unforgettable/<base>' for the memory-aware episode loop."
+        ),
     )
     messages: list[ChatMessage] = Field(..., description = "Conversation messages")
     stream: bool = Field(
