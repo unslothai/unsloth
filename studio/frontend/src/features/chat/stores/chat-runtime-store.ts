@@ -1660,34 +1660,25 @@ function normalizeRememberedEntry(
   return normalized;
 }
 
-/** Keys a model-defaults update wrote before hydration, with the model they
- * describe. They lose to that model's own remembered entry, but they are more
- * specific than the global set, which belongs to whichever model was used last,
- * so a model with nothing remembered keeps the defaults it just loaded with. */
-let modelDefaultsBeforeHydration: {
-  checkpoint: string;
-  keys: Set<PersistedInferenceParamKey>;
-} | null = null;
+/** A model that took over from another one while the settings request was in
+ * flight. Its defaults lose to its own remembered entry, but they outrank the
+ * global set, which belongs to whichever model was used last. Not narrowed to
+ * the keys that moved: a default equal to the outgoing model's value is still
+ * this model's, and the global set is still the other model's. */
+let modelLoadedBeforeHydration: string | null = null;
 
 function noteModelDefaultsBeforeHydration(
   checkpoint: string,
-  changed: PersistedInferenceParams,
   replacedAnotherModel: boolean,
 ): void {
-  if (modelDefaultsBeforeHydration?.checkpoint !== checkpoint) {
-    // Only a model that replaced another one. The model already resident at
-    // startup is the one the saved global set describes, so its defaults must
-    // not stand in front of the settings the user saved for it.
-    if (!replacedAnotherModel) {
-      modelDefaultsBeforeHydration = null;
-      return;
-    }
-    modelDefaultsBeforeHydration = { checkpoint, keys: new Set() };
+  if (replacedAnotherModel) {
+    modelLoadedBeforeHydration = checkpoint;
+    return;
   }
-  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
-    if (changed[key] !== undefined) {
-      modelDefaultsBeforeHydration.keys.add(key);
-    }
+  // The model already resident at startup is the one the saved global set
+  // describes, so its defaults must not stand in front of it.
+  if (modelLoadedBeforeHydration !== checkpoint) {
+    modelLoadedBeforeHydration = null;
   }
 }
 
@@ -1701,17 +1692,15 @@ function getHydratedSettingsState(
   // A model loaded while this request was in flight has no entry to restore its
   // defaults from, so the global set would overwrite them with the last model's.
   const keepModelDefaults =
-    modelDefaultsBeforeHydration?.checkpoint === checkpoint &&
-    settings.inferenceParamsByModel?.[checkpoint] === undefined
-      ? modelDefaultsBeforeHydration.keys
-      : null;
-  modelDefaultsBeforeHydration = null;
+    modelLoadedBeforeHydration === checkpoint &&
+    settings.inferenceParamsByModel?.[checkpoint] === undefined;
+  modelLoadedBeforeHydration = null;
   const params = { ...state.params };
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const value = settings.inferenceParams?.[key];
     if (
       value !== undefined &&
-      !keepModelDefaults?.has(key) &&
+      !keepModelDefaults &&
       inferenceParamMutationVersions[key] === versions.inferenceParams[key]
     ) {
       setInferenceParam(params, key, value);
@@ -1767,6 +1756,15 @@ function getHydratedSettingsState(
       ) {
         setInferenceParam(replayed, key, value);
       }
+    }
+    // The same cap the load and status replays apply: a status that beat this
+    // response has already published the context the model actually loaded
+    // with, and a budget remembered from a larger one does not fit it.
+    if (
+      state.ggufContextLength !== null &&
+      replayed.maxTokens > state.ggufContextLength
+    ) {
+      replayed.maxTokens = state.ggufContextLength;
     }
     nextState.params = replayed;
   }
@@ -2063,7 +2061,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       } else if (fromModelDefaults && !state.settingsHydrated) {
         noteModelDefaultsBeforeHydration(
           nextParams.checkpoint,
-          changedParams,
           checkpointChanged && state.params.checkpoint !== "",
         );
       }

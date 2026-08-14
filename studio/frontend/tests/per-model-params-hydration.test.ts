@@ -348,6 +348,65 @@ test("a visible switch remembers the model being left", () => {
   );
 });
 
+// A default that happens to equal the outgoing model's value never moved, so it
+// was not covered. It is still this model's default, and the global set is
+// still the other model's.
+test("a default equal to the previous model's value is still kept", async () => {
+  settingsHttp.settings = {
+    inferenceParams: { temperature: 0.2 },
+    inferenceParamsByModel: {},
+  };
+  settingsHttp.hold();
+  useChatRuntimeStore.setState({
+    // Both models recommend 0.9, so the load moves nothing.
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: LLAMA,
+      temperature: 0.9,
+    },
+    paramsByModel: {},
+    settingsHydrated: false,
+  });
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  applyStatus(QWEN);
+
+  settingsHttp.release?.();
+  await hydrating;
+
+  assert.equal(
+    useChatRuntimeStore.getState().params.temperature,
+    0.9,
+    "the model's own default, not the other model's saved value",
+  );
+});
+
+// A status that beat the settings response has already published the context
+// the model loaded with, so the replay has to fit it too.
+test("the replay at hydration fits the context already published", async () => {
+  settingsHttp.settings = {
+    inferenceParams: {},
+    inferenceParamsByModel: { [QWEN]: { maxTokens: 131072 } },
+  };
+  settingsHttp.hold();
+  useChatRuntimeStore.setState({
+    params: {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: QWEN,
+      maxTokens: 8192,
+    },
+    paramsByModel: {},
+    // What the status published for the reduced context it loaded with.
+    ggufContextLength: 8192,
+    settingsHydrated: false,
+  });
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  settingsHttp.release?.();
+  await hydrating;
+
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
+
 // A model's defaults are not settings it was used with. Recording them makes
 // the next defaults hook replay them over itself: a fresh Qwen3 load applied
 // the load response, recorded it, and then the thinking-mode params were
