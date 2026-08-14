@@ -1886,6 +1886,10 @@ def _vkey(c):
     m = re.match(r'\d+(\.\d+)*', v)
     if not m:
         return (0, ([], -9))
+    nums = [int(n) for n in m.group(0).split('.')]
+    # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
+    while nums and nums[-1] == 0:
+        nums.pop()
     rest = v[m.end():].lower()
     if re.match(r'[-._]?dev', rest):
         rank = -3
@@ -1895,7 +1899,7 @@ def _vkey(c):
         rank = 1
     else:
         rank = 0
-    return (0, ([int(n) for n in m.group(0).split('.')], rank))
+    return (0, (nums, rank))
 if not cands:
     print('POSTVER=__MISSING__')
     sys.exit(0)
@@ -1926,9 +1930,15 @@ if not damaged:
     for f, key in rows:
         try:
             st = d.locate_file(f).stat()
-        except OSError:
+        except (FileNotFoundError, NotADirectoryError):
             damaged = True
             break
+        except OSError:
+            # EACCES/ESTALE/EIO say the file could not be READ, never that it is
+            # gone, and a reinstall instruction cannot fix that: skip the row (the
+            # same distinction the sidecar scanner draws; its consequence matches
+            # this probe's, unlike the CLI mirror's advisory print).
+            continue
         if not stat.S_ISREG(st.st_mode):
             damaged = True
             break
@@ -2136,7 +2146,11 @@ import re, sys
 def split(v):
     m = re.match(r'\d+(\.\d+)*', v)
     if not m: sys.exit(1)
-    return [int(x) for x in m.group(0).split('.')], v[m.end():].lower()
+    nums = [int(x) for x in m.group(0).split('.')]
+    # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
+    while nums and nums[-1] == 0:
+        nums.pop()
+    return nums, v[m.end():].lower()
 try:
     from packaging.version import Version
     ok = Version(sys.argv[1]) >= Version(sys.argv[2])
