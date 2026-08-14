@@ -8903,8 +8903,12 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
 # The whole text is read to find the match, so the cap is on the file.
 _EDIT_FILE_MAX_BYTES = _env_int("UNSLOTH_STUDIO_EDIT_FILE_MAX_BYTES", 16 * 1024 * 1024)
 
-# Bounded receipt: the point of the tool is not sending the file twice.
+# Bounded receipt: the point of the tool is not sending the file twice. Lines
+# alone are not a bound -- one line of minified JS or single-line JSON can be
+# the whole file -- so characters are capped per line and over the receipt.
 _EDIT_FILE_DIFF_LINES = 40
+_EDIT_FILE_DIFF_LINE_CHARS = 200
+_EDIT_FILE_DIFF_CHARS = 4000
 
 
 def _edit_file_resolve(
@@ -8922,7 +8926,11 @@ def _edit_file_resolve(
         return None, "Error: 'path' is required."
     workdir = _get_workdir(session_id)
     candidate = raw
-    if not disable_sandbox:
+    # An absolute path already inside the workdir is a real path, not a habit
+    # path. A project rooted under one of these prefixes (/workspace/repo) would
+    # otherwise have its own prefix stripped and be rejoined onto itself.
+    already_inside = os.path.isabs(raw) and not _is_outside_workdir(raw, workdir)
+    if not disable_sandbox and not already_inside:
         for prefix in _MISSING_PATH_PREFIXES:
             if candidate == prefix or candidate.startswith(prefix + "/"):
                 candidate = candidate[len(prefix) :].lstrip("/")
@@ -8971,12 +8979,26 @@ def _edit_file_decode(data: bytes, path: str) -> "tuple[str, str, str, str]":
     return text.replace("\r\n", "\n"), newline, bom, ""
 
 
-def _edit_file_write(path: str, text: str, newline: str, bom: str) -> str:
+def _edit_file_write(
+    path: str,
+    text: str,
+    newline: str,
+    bom: str,
+    *,
+    expect: "bytes | None" = None,
+    workdir: "str | None" = None,
+) -> str:
     """Write the new content, replacing the file atomically.
 
     Sibling temp file then rename: an interrupted write must not leave a source
     file half-replaced. The mode is carried over so an edit keeps the
     executable bit.
+
+    ``expect`` are the bytes the edit was computed from. They are compared again
+    here so a file another chat rewrote in the meantime is not silently reverted
+    to this call's stale copy. ``workdir`` re-checks containment immediately
+    before the rename, so a parent swapped for a symlink after the path was
+    resolved is caught rather than followed.
     """
     payload = (bom + text.replace("\n", newline)).encode("utf-8")
     directory = os.path.dirname(path) or "."
@@ -8993,6 +9015,23 @@ def _edit_file_write(path: str, text: str, newline: str, bom: str) -> str:
             shutil.copymode(path, tmp)
         except OSError:
             pass  # new file, or a mode we cannot read; the default is fine
+        if workdir is not None and _is_outside_workdir(path, workdir):
+            return (
+                f"Error: '{os.path.basename(path)}' moved outside the working "
+                "directory while the edit was being prepared; nothing was written."
+            )
+        if expect is not None:
+            try:
+                with open(path, "rb") as fh:
+                    current = fh.read(len(expect) + 1)
+            except OSError:
+                current = None
+            if current != expect:
+                return (
+                    f"Error: '{os.path.basename(path)}' changed while this edit "
+                    "was being prepared; nothing was written. Read it again and "
+                    "redo the edit against the current contents."
+                )
         os.replace(tmp, path)
         tmp = ""
     except OSError as exc:
@@ -9028,11 +9067,55 @@ def _edit_file_receipt(before: str, after: str, name: str, count: int) -> str:
     if len(diff) > _EDIT_FILE_DIFF_LINES:
         hidden = len(diff) - _EDIT_FILE_DIFF_LINES
         diff = diff[:_EDIT_FILE_DIFF_LINES] + [f"... ({hidden} more diff lines)"]
-    return head + "\n" + "\n".join(diff)
+    diff = [
+        line
+        if len(line) <= _EDIT_FILE_DIFF_LINE_CHARS
+        else f"{line[:_EDIT_FILE_DIFF_LINE_CHARS]}... (+{len(line) - _EDIT_FILE_DIFF_LINE_CHARS} chars)"
+        for line in diff
+    ]
+    body = "\n".join(diff)
+    if len(body) > _EDIT_FILE_DIFF_CHARS:
+        body = body[:_EDIT_FILE_DIFF_CHARS] + "\n... (receipt truncated)"
+    return head + "\n" + body
 
 
-def _edit_file_create(target: str, new: str, name: str, newline: str) -> str:
-    """Handle the empty-old_string case: create a file, never clobber one."""
+def _edit_file_replace_all(value: object) -> "bool | None":
+    """Read replace_all strictly; None means "not a boolean".
+
+    bool("false") is True, and models do emit the JSON string. Coercing it that
+    way turns the multi-match guard off and rewrites every occurrence, so the
+    two spellings a model actually produces are mapped and the rest refused.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes"):
+            return True
+        if lowered in ("false", "0", "no", ""):
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def _edit_file_create(
+    target: str,
+    new: str,
+    name: str,
+    newline: str,
+    workdir: "str | None" = None,
+) -> str:
+    """Handle the empty-old_string case: create a file, never clobber one.
+
+    A zero-byte file is writable here on purpose. Refusing every existing target
+    would strand the model: an empty old_string would be refused for existing,
+    and any other old_string cannot match an empty file, so nothing could ever
+    write to it. Nothing is lost either, since there are no contents, and the
+    mode is carried over by the write.
+    """
     if os.path.lexists(target):
         try:
             existing = os.path.getsize(target)
@@ -9044,7 +9127,7 @@ def _edit_file_create(target: str, new: str, name: str, newline: str) -> str:
                 "creates a new file; to change this one, pass the exact text to "
                 "replace."
             )
-    error = _edit_file_write(target, new, newline, "")
+    error = _edit_file_write(target, new, newline, "", workdir = workdir)
     if error:
         return error
     return f"Created {name} ({new.count(chr(10)) + 1} lines)"
@@ -9072,20 +9155,38 @@ def _edit_file(
     new = new.replace("\r\n", "\n")
     if old == new:
         return "Error: 'old_string' and 'new_string' are identical; nothing to change."
+    replace_all = _edit_file_replace_all(arguments.get("replace_all"))
+    if replace_all is None:
+        return "Error: 'replace_all' must be true or false."
     if not old:
-        return _edit_file_create(target, new, name, "\n")
+        return _edit_file_create(
+            target,
+            new,
+            name,
+            "\n",
+            workdir = None if disable_sandbox else _get_workdir(session_id),
+        )
     try:
-        if os.path.getsize(target) > _EDIT_FILE_MAX_BYTES:
-            return (
-                f"Error: '{name}' is larger than "
-                f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB; edit it with python instead."
-            )
-        with open(target, "rb") as fh:
-            data = fh.read()
+        st = os.stat(target)
     except FileNotFoundError:
         return f"Error: '{name}' does not exist. Pass an empty 'old_string' to create it."
-    except IsADirectoryError:
+    except OSError as exc:
+        return f"Error: cannot read '{name}': {exc}"
+    if os.path.isdir(target):
         return f"Error: '{name}' is a directory."
+    # A FIFO reads forever and a character device such as /dev/zero reads until
+    # memory runs out. Neither reports a useful st_size, and this path carries
+    # no timeout or cancel event, so the turn cannot be recovered.
+    if not S_ISREG(st.st_mode):
+        return f"Error: '{name}' is not a regular file."
+    if st.st_size > _EDIT_FILE_MAX_BYTES:
+        return (
+            f"Error: '{name}' is larger than "
+            f"{_EDIT_FILE_MAX_BYTES // (1024 * 1024)}MB; edit it with python instead."
+        )
+    try:
+        with open(target, "rb") as fh:
+            data = fh.read(_EDIT_FILE_MAX_BYTES + 1)
     except OSError as exc:
         return f"Error: cannot read '{name}': {exc}"
     before, newline, bom, error = _edit_file_decode(data, target)
@@ -9098,7 +9199,6 @@ def _edit_file(
             "file byte for byte, including indentation. Read the file and copy "
             "the text to replace out of it."
         )
-    replace_all = bool(arguments.get("replace_all"))
     if count > 1 and not replace_all:
         return (
             f"Error: 'old_string' matches {count} places in {name}. Include "
@@ -9106,7 +9206,14 @@ def _edit_file(
             f"change all {count}."
         )
     after = before.replace(old, new) if replace_all else before.replace(old, new, 1)
-    error = _edit_file_write(target, after, newline, bom)
+    error = _edit_file_write(
+        target,
+        after,
+        newline,
+        bom,
+        expect = data,
+        workdir = None if disable_sandbox else _get_workdir(session_id),
+    )
     if error:
         return error
     return _edit_file_receipt(before, after, name, count if replace_all else 1)

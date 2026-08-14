@@ -194,6 +194,100 @@ class TestPathContainment:
         assert _edit(path = "   ", old_string = "a", new_string = "b").startswith("Error:")
 
 
+class TestReviewFindings:
+    """Cases raised in review on the PR that added this tool."""
+
+    def test_a_long_line_does_not_blow_up_the_receipt(self, workdir):
+        # Minified JS or single-line JSON: capping diff LINES bounds nothing,
+        # since one line can be the whole file. Before the cap a 200KB file
+        # returned a 400KB receipt, i.e. twice what the tool set out to avoid.
+        target = workdir / "min.js"
+        target.write_text("var a=" + "x" * 200_000 + ";")
+        result = _edit(path = "min.js", old_string = "var a=", new_string = "var b=")
+        assert not result.startswith("Error:")
+        assert len(result) < 2000
+
+    def test_replace_all_as_the_string_false_does_not_replace_all(self, workdir):
+        # bool("false") is True, and models emit the JSON string. Coercing it
+        # turned the multi-match guard off and rewrote every occurrence.
+        target = workdir / "a.txt"
+        target.write_text("a\na\na\n")
+        result = _edit(path = "a.txt", old_string = "a", new_string = "b", replace_all = "false")
+        assert result.startswith("Error:")
+        assert target.read_text() == "a\na\na\n"
+
+    def test_replace_all_as_the_string_true_still_works(self, workdir):
+        target = workdir / "a.txt"
+        target.write_text("a\na\n")
+        _edit(path = "a.txt", old_string = "a", new_string = "b", replace_all = "true")
+        assert target.read_text() == "b\nb\n"
+
+    def test_an_unreadable_replace_all_is_refused(self, workdir):
+        target = workdir / "a.txt"
+        target.write_text("a\n")
+        result = _edit(path = "a.txt", old_string = "a", new_string = "b", replace_all = "maybe")
+        assert result.startswith("Error:")
+        assert target.read_text() == "a\n"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX FIFO")
+    def test_a_fifo_is_refused_rather_than_read(self, workdir):
+        # read() on a FIFO blocks forever, and this path carries no timeout or
+        # cancel event, so the turn could not be recovered.
+        os.mkfifo(workdir / "pipe")
+        assert _edit(path = "pipe", old_string = "a", new_string = "b").startswith("Error:")
+
+    def test_an_absolute_path_inside_a_workdir_under_a_habit_prefix(self, workdir, monkeypatch):
+        # A project rooted at /workspace/repo had its own prefix stripped and
+        # rejoined onto itself, resolving to /workspace/repo/repo/a.py.
+        monkeypatch.setattr(tools, "_MISSING_PATH_PREFIXES", (str(workdir.parent), "/mnt/data"))
+        (workdir / "a.py").write_text("x = 1\n")
+        result = _edit(path = str(workdir / "a.py"), old_string = "x = 1", new_string = "x = 2")
+        assert not result.startswith("Error:")
+        assert (workdir / "a.py").read_text() == "x = 2\n"
+
+    def test_a_habit_path_outside_the_workdir_still_remaps(self, workdir):
+        # The fix above must not switch off the remap it narrows.
+        result = _edit(path = "/mnt/data/out.txt", old_string = "", new_string = "hi\n")
+        assert not result.startswith("Error:")
+        assert (workdir / "out.txt").read_text() == "hi\n"
+
+    def test_a_concurrent_write_is_not_silently_reverted(self, workdir):
+        # Two chats sharing a project workspace: both read, both write, and the
+        # later os.replace used to discard the earlier edit without a word.
+        target = workdir / "s.py"
+        target.write_text("A = 1\nB = 2\n")
+        stale = target.read_bytes()
+        _edit(path = "s.py", old_string = "B = 2", new_string = "B = 99")
+        error = tools._edit_file_write(
+            str(target),
+            stale.decode().replace("A = 1", "A = 42"),
+            "\n",
+            "",
+            expect = stale,
+        )
+        assert error.startswith("Error:")
+        assert target.read_text() == "A = 1\nB = 99\n"
+
+    def test_containment_is_rechecked_at_write_time(self, workdir):
+        # The path is resolved, then the file is read and diffed before the
+        # rename. A parent swapped for a symlink inside that window would
+        # otherwise be followed.
+        outside = workdir.parent / "escaped.txt"
+        error = tools._edit_file_write(str(outside), "pwned", "\n", "", workdir = str(workdir))
+        assert error.startswith("Error:")
+        assert not outside.exists()
+
+    def test_an_empty_file_stays_writable(self, workdir):
+        # Refusing every existing target would strand the model here: an empty
+        # old_string would be refused, and no other old_string can match an
+        # empty file, so nothing could ever write to it.
+        target = workdir / "placeholder.py"
+        target.touch()
+        result = _edit(path = "placeholder.py", old_string = "", new_string = "x = 1\n")
+        assert not result.startswith("Error:")
+        assert target.read_text() == "x = 1\n"
+
+
 class TestRegistration:
     def test_the_tool_is_offered(self):
         assert EDIT_FILE_TOOL in ALL_TOOLS
