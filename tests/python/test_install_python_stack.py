@@ -568,6 +568,7 @@ class TestStrictPmPolicyOptOut:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
         monkeypatch.setattr(ips, "_UV_POLICY_PROJECTION", None)
+        monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", {})
 
     HOSTILE = dict(
         TestHardenedPipConfigRelaxation.HOSTILE,
@@ -818,6 +819,68 @@ class TestStrictPmPolicyOptOut:
                 assert env is not None and env["PIP_REQUIRE_HASHES"] == "0"
 
 
+class TestPipConfigPolicySurvivesThePin:
+    """A pinned command nulls PIP_CONFIG_FILE, and under the switch the policy in that
+    file has to survive it.
+
+    The operator's index lives in pip.conf beside their policy, and the pin has to win, so
+    the file goes. pip applies environment variables AFTER config files, which is the one
+    channel left for the half that is a security control rather than a mirror.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        monkeypatch.setattr(ips, "_UV_POLICY_PROJECTION", None)
+        monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", None)
+
+    def _pinned_env(self, pip_config: str, env: dict):
+        result = mock.Mock(returncode = 0, stdout = pip_config)
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            return ips._install_env_for_cmd(
+                ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+
+    def test_the_pinned_pip_command_keeps_a_pip_conf_policy(self):
+        env = self._pinned_env(
+            "global.require-hashes='true'\nglobal.only-binary=':all:'\n",
+            {"UNSLOTH_STRICT_PM_POLICY": "1"},
+        )
+        assert env["PIP_CONFIG_FILE"] == os.devnull, "the pin still overrides their index"
+        assert env["PIP_REQUIRE_HASHES"] == "1"
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+
+    def test_a_scoped_pip_conf_policy_keeps_its_scope(self):
+        env = self._pinned_env(
+            "global.only-binary='some-other-package'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+        )
+        assert env["PIP_ONLY_BINARY"] == "some-other-package"
+
+    def test_the_default_mode_still_drops_it(self):
+        """Without the switch this is the #8530 relaxation, and it stays: the pinned
+        specs carry no hashes, so honouring the file fails every torch repair."""
+        env = self._pinned_env("global.require-hashes='true'\n", {})
+        assert env["PIP_CONFIG_FILE"] == os.devnull
+        assert "PIP_REQUIRE_HASHES" not in env
+
+    def test_a_switched_off_pip_conf_policy_is_not_carried(self):
+        env = self._pinned_env(
+            "global.require-hashes='false'\n", {"UNSLOTH_STRICT_PM_POLICY": "1"}
+        )
+        assert "PIP_REQUIRE_HASHES" not in env
+
+    def test_their_own_variable_is_never_overwritten(self):
+        env = self._pinned_env(
+            "global.only-binary=':all:'\n",
+            {"UNSLOTH_STRICT_PM_POLICY": "1", "PIP_ONLY_BINARY": "numpy"},
+        )
+        assert env["PIP_ONLY_BINARY"] == "numpy"
+
+
 class TestTheStrictFallbackRefusesWhatPipCannotHonour:
     """pip_install() falls back to pip whenever uv fails, and pip has no --exclude-newer.
 
@@ -861,6 +924,45 @@ class TestTheStrictFallbackRefusesWhatPipCannotHonour:
     def test_the_default_mode_falls_back_as_before(self, monkeypatch):
         assert self._uv_fails(monkeypatch, {"UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"})
 
+    def _pip_is_the_only_backend(self, monkeypatch, env: dict):
+        """Drive pip_install with no uv at all; return whether pip ever ran."""
+        ran_pip: list[list[str]] = []
+        monkeypatch.setattr(ips, "USE_UV", False)
+        monkeypatch.setattr(ips, "VERBOSE", False)
+        monkeypatch.setattr(ips, "run", lambda label, cmd, **kw: ran_pip.append(cmd))
+        with mock.patch.dict(os.environ, env, clear = True):
+            ips.pip_install("deps", "numpy", constrain = False)
+        return ran_pip
+
+    def test_a_direct_pip_install_is_refused_too(self, monkeypatch):
+        """No uv failure announces this one: a host without uv, or a caller forcing pip,
+        reaches pip with the same policy pip cannot honour."""
+        with pytest.raises(SystemExit):
+            self._pip_is_the_only_backend(
+                monkeypatch,
+                {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"},
+            )
+
+    def test_a_direct_pip_install_runs_when_the_policy_translates(self, monkeypatch):
+        assert self._pip_is_the_only_backend(
+            monkeypatch, {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_NO_BUILD": "1"}
+        )
+
+    def test_an_optional_install_declines_rather_than_exits(self, monkeypatch):
+        """pip_install_try exists for installs with a follow-up, so it reports and
+        returns False instead of taking the whole install down."""
+        monkeypatch.setattr(ips, "USE_UV", False)
+        monkeypatch.setattr(ips, "VERBOSE", False)
+        monkeypatch.setattr(
+            ips.subprocess, "run", lambda *a, **kw: mock.Mock(returncode = 0, stdout = b"")
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"},
+            clear = True,
+        ):
+            assert ips.pip_install_try("optional", "numpy", constrain = False) is False
+
 
 class TestPmPolicyRelaxationIsReported:
     """A bypassed security control that nobody is told about is the actual finding.
@@ -883,8 +985,9 @@ class TestPmPolicyRelaxationIsReported:
 
     @pytest.fixture(autouse = True)
     def _rescan_uv_config(self, monkeypatch):
-        """The scan is memoized for the run, so each case has to start from unscanned."""
+        """The scans are memoized for the run, so each case starts from unscanned."""
         monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", None)
 
     @pytest.fixture(autouse = True)
     def _off_the_repo_cwd(self, tmp_path, monkeypatch):
@@ -970,6 +1073,28 @@ class TestPmPolicyRelaxationIsReported:
         monkeypatch.chdir(tmp_path)
         assert self._sources({"PIP_REQUIRE_HASHES": "1"}) == ["PIP_REQUIRE_HASHES"]
 
+    def test_the_pip_half_is_reported_once_a_uv_venv_has_pip(self, monkeypatch, capsys):
+        """`uv venv` creates no pip, so the pre-bootstrap report cannot read pip.conf, and
+        a policy living only there went unnamed while every pip install still relaxed it.
+        The second pass names it once pip exists."""
+        monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", {})
+        monkeypatch.setattr(ips, "_PIP_CONFIG_REACHED_PIP", False)
+        result = mock.Mock(returncode = 0, stdout = "global.require-hashes='true'\n")
+        with (
+            mock.patch.dict(os.environ, {}, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            ips._report_pm_policy_relaxation_once_pip_exists()
+        assert "global.require-hashes" in capsys.readouterr().out
+
+    def test_the_second_pass_is_silent_when_the_first_read_pip(self, monkeypatch, capsys):
+        """Otherwise a normal install prints the same line twice."""
+        monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", {})
+        monkeypatch.setattr(ips, "_PIP_CONFIG_REACHED_PIP", True)
+        with mock.patch.dict(os.environ, {}, clear = True):
+            ips._report_pm_policy_relaxation_once_pip_exists()
+        assert capsys.readouterr().out == ""
+
     def test_a_broken_pip_is_not_fatal(self):
         """Best effort: the report is one printed line, never a failed install."""
         with (
@@ -1051,6 +1176,45 @@ class TestUvConfigDiscoveryMatchesUv:
             (directory / "uv" / "uv.toml").write_text(policy + "\n", encoding = "utf-8")
         monkeypatch.setenv("XDG_CONFIG_DIRS", f"{first}{os.pathsep}{second}")
         assert self._keys() == ["uv.toml: require-hashes"]
+
+    def test_uv_no_config_means_there_is_no_config(self, tmp_path, monkeypatch):
+        """"--no-config: Avoid discovering configuration files". A policy uv is not
+        reading is not one to enforce, translate or report, and treating it as live fails
+        installs uv itself would have run."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.setenv("UV_NO_CONFIG", "1")
+        assert self._keys() == []
+
+    def test_an_explicit_config_file_survives_uv_no_config(self, tmp_path, monkeypatch):
+        """Measured on uv 0.10.7: with both set, the --config-file is still honoured (the
+        sdist install is refused by its no-build), so the pointer wins here too."""
+        cfg = tmp_path / "corp-uv.toml"
+        cfg.write_text("[pip]\nno-build = true\n", encoding = "utf-8")
+        monkeypatch.setenv("UV_NO_CONFIG", "1")
+        monkeypatch.setenv("UV_CONFIG_FILE", str(cfg))
+        assert self._keys() == ["corp-uv.toml: no-build"]
+
+    def test_a_higher_precedence_false_wins_over_a_lower_true(self, tmp_path, monkeypatch):
+        """uv reads the higher-priority value and ignores the rest, so a project
+        `no-build = false` above a user `no-build = true` is no policy at all. Recording
+        only truthy values and reading on turns that into a global binary-only install."""
+        user = tmp_path / "home" / ".config" / "uv"
+        user.mkdir(parents = True)
+        (user / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "uv.toml").write_text(
+            "no-build = false\nrequire-hashes = true\n", encoding = "utf-8"
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home" / ".config"))
+        monkeypatch.chdir(project)
+        assert self._keys() == ["uv.toml: require-hashes"]
+
+    def test_the_line_scanner_honours_the_same_precedence(self, tmp_path):
+        project, user = tmp_path / "a.toml", tmp_path / "b.toml"
+        project.write_text("no-build = false\n", encoding = "utf-8")
+        user.write_text("no-build = true\n", encoding = "utf-8")
+        assert ips._scan_uv_policy_config_by_line([project, user]) == []
 
     def test_a_uv_toml_ends_the_parent_walk(self, tmp_path, monkeypatch):
         """uv reads the nearest configuration file, not the union of the tree."""

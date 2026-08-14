@@ -52,6 +52,7 @@ def _load_real_index_env_scrub():
 
     ns: dict = {
         "os": _os,
+        "subprocess": subprocess,
         "sys": _sys,
         "tempfile": _tempfile,
         "Path": _Path,
@@ -85,6 +86,11 @@ def _load_real_index_env_scrub():
         ("def _uv_policy_as_pip_policy(", "\n\n\n", 0),
         ('_UV_POLICY_PROJECTION: "', "\n", 0),
         ("def _uv_policy_config_projection(", "\n\n\n", 0),
+        ('_PIP_CONFIG_POLICY: "', "\n", 0),
+        ("_PIP_CONFIG_REACHED_PIP = ", "\n", 0),
+        ("def _windows_hidden_subprocess_kwargs(", "\n\n\n", 0),
+        ("def _pip_config_policy(", "\n\n\n", 0),
+        ("def _pip_config_as_pip_env(", "\n\n\n", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):

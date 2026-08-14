@@ -4194,11 +4194,16 @@ def _uv_config_candidates() -> "list[Path]":
 
     Per uv's configuration-files documentation: the current directory then each parent,
     then the user directory, then the system one. UV_CONFIG_FILE (--config-file) replaces
-    every discovered file rather than adding to them, so it stands alone.
+    every discovered file rather than adding to them, so it stands alone, and it wins over
+    UV_NO_CONFIG: measured on uv 0.10.7, `UV_NO_CONFIG=1 UV_CONFIG_FILE=<policy>` still
+    honours the file. An operator who set only UV_NO_CONFIG has switched discovery off,
+    and a policy uv is not reading is not a policy to enforce, translate or report.
     """
     explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
     if explicit:
         return [Path(explicit)]
+    if _pm_policy_value_is_on(os.environ.get("UV_NO_CONFIG")):
+        return []
     candidates: "list[Path]" = []
     try:
         _here = Path.cwd()
@@ -4275,6 +4280,7 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
         return _scan_uv_policy_config_by_line(candidates)
 
     found: "list[tuple[str, str, object]]" = []
+    decided: "set[str]" = set()
     for path in dict.fromkeys(candidates):
         try:
             with path.open("rb") as handle:
@@ -4282,7 +4288,7 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
         except Exception:
             continue
         # A pyproject.toml only speaks for uv under [tool.uv]; anywhere else in that file
-        # "no-binary" belongs to somebody else's tool.
+        # "no-build" belongs to somebody else's tool.
         if path.name == "pyproject.toml":
             # `[tool]` + `uv = true` parses fine and hands back a bool, and this function
             # promises to cost at most a printed line, never an install.
@@ -4292,10 +4298,19 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
             continue
         _pip_table = document.get("pip")
         for key in _PM_POLICY_CONFIG_KEYS:
+            if key in decided:
+                continue
             for table in (document, _pip_table):
-                if isinstance(table, dict) and _pm_policy_value_is_on(table.get(key)):
+                if not isinstance(table, dict) or key not in table:
+                    continue
+                # The FIRST file to set a key settles it, however it set it: uv reads the
+                # higher-precedence value and ignores the rest, so a project
+                # `no-build = false` above a user `no-build = true` means no policy, not a
+                # policy to enforce.
+                decided.add(key)
+                if _pm_policy_value_is_on(table.get(key)):
                     found.append((path.name, key, table.get(key)))
-                    break
+                break
     return found
 
 
@@ -4307,12 +4322,14 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
     belonging to a different tool in the same pyproject must not be read as uv's.
     """
     found: "list[tuple[str, str, object]]" = []
+    decided: "set[str]" = set()
     for path in dict.fromkeys(candidates):
         try:
             text = path.read_text(encoding = "utf-8", errors = "replace")
         except OSError:
             continue
         section = ""
+        here: "set[str]" = set()
         for line in text.splitlines():
             stripped = _toml_line_value(line)
             if stripped.startswith("["):
@@ -4332,8 +4349,11 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
                 continue
             key = key.strip()
             value = _toml_line_value(value)
-            if key not in _PM_POLICY_CONFIG_KEYS:
+            if key not in _PM_POLICY_CONFIG_KEYS or key in decided:
                 continue
+            # Setting a key settles it for the lower-precedence files, whichever way it
+            # was set. Collected per file, since a file may set it below this line.
+            here.add(key)
             if key in _PM_POLICY_SCOPED_CONFIG_KEYS:
                 # `only-binary = []` reads as a non-empty string here, so the list is what
                 # decides: no names, no policy.
@@ -4342,7 +4362,77 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             elif not _pm_policy_value_is_on(value):
                 continue
             found.append((path.name, key, value))
+        decided |= here
     return found
+
+
+_PIP_CONFIG_POLICY: "dict[str, tuple[str, str]] | None" = None
+_PIP_CONFIG_REACHED_PIP = False
+
+
+def _pip_config_policy(refresh: bool = False) -> "dict[str, tuple[str, str]]":
+    """The policy pip's own config FILES set, as {key: (rendered name, value)}.
+
+    `pip config list` renders every file pip would load, including a PIP_CONFIG_FILE
+    override, which is why this asks pip instead of guessing paths. The `:env:` section is
+    dropped: those are the PIP_* variables, and they are read from the environment.
+
+    Best effort and non-fatal: a venv that has no pip yet (uv venvs have none) answers
+    empty, and _PIP_CONFIG_REACHED_PIP records that so the pip half can be asked again
+    once the bootstrap has run.
+    """
+    global _PIP_CONFIG_POLICY, _PIP_CONFIG_REACHED_PIP
+    if _PIP_CONFIG_POLICY is not None and not refresh:
+        return _PIP_CONFIG_POLICY
+    policy: "dict[str, tuple[str, str]]" = {}
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 30,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        result = None
+    reached = result is not None and result.returncode == 0
+    if reached and result.stdout:
+        for line in result.stdout.splitlines():
+            name, _sep, value = line.partition("=")
+            name = name.strip()
+            if name.startswith(":env:"):
+                continue
+            for key in _PM_POLICY_CONFIG_KEYS:
+                if not name.endswith(f".{key}") or key in policy:
+                    continue
+                # `require-hashes = false` is a policy switched off, not one to carry.
+                if _pm_policy_value_is_on(value):
+                    policy[key] = (name, value.strip().strip("\"\'"))
+                break
+    _PIP_CONFIG_POLICY = policy
+    _PIP_CONFIG_REACHED_PIP = reached
+    return policy
+
+
+def _pip_config_as_pip_env() -> "dict[str, str]":
+    """pip.conf's policy as PIP_* variables, for a pinned command that reads no pip.conf.
+
+    A pinned command points PIP_CONFIG_FILE at os.devnull, because the operator's index
+    lives in the same file as their policy and the pin has to win. Under the switch the
+    policy still has to survive that, and pip applies environment variables AFTER config
+    files, so this is the channel that is left. Their own explicit PIP_* is never
+    overwritten, and the no-binary family is never carried: it forces a source build.
+    """
+    if not _strict_pm_policy():
+        return {}
+    policy = _pip_config_policy()
+    translated: "dict[str, str]" = {}
+    if "require-hashes" in policy and not os.environ.get("PIP_REQUIRE_HASHES"):
+        translated["PIP_REQUIRE_HASHES"] = "1"
+    if "only-binary" in policy and not os.environ.get("PIP_ONLY_BINARY"):
+        translated["PIP_ONLY_BINARY"] = policy["only-binary"][1]
+    return translated
 
 
 def _hardened_pm_policy_sources() -> "list[str]":
@@ -4357,32 +4447,7 @@ def _hardened_pm_policy_sources() -> "list[str]":
         if _pm_policy_value_is_on(os.environ.get(name))
     ]
     found += [f"uv config {name}: {key}" for name, key, _value in _uv_policy_config()]
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "config", "list"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 30,
-            **_windows_hidden_subprocess_kwargs(),
-        )
-    except Exception:
-        return found
-    if result.returncode != 0 or not result.stdout:
-        return found
-    for line in result.stdout.splitlines():
-        key, _sep, value = line.partition("=")
-        key = key.strip()
-        # `pip config list` renders the PIP_* env vars as a `:env:` section; they are
-        # already named above, and naming them twice reads like two separate settings.
-        if key.startswith(":env:"):
-            continue
-        if not any(key.endswith(f".{policy}") for policy in _PM_POLICY_CONFIG_KEYS):
-            continue
-        # `require-hashes = false` is a policy switched off, not a policy to report.
-        if not _pm_policy_value_is_on(value):
-            continue
-        found.append(f"pip config {key}")
+    found += [f"pip config {name}" for name, _value in _pip_config_policy().values()]
     return found
 
 
@@ -4400,7 +4465,11 @@ def _report_pm_policy_relaxation() -> None:
             "be relaxed"
         )
         return
-    sources = _hardened_pm_policy_sources()
+    _note_pm_policy_sources(_hardened_pm_policy_sources())
+
+
+def _note_pm_policy_sources(sources: "list[str]") -> None:
+    """The one line the report prints, shared with the second pass below."""
     if not sources:
         return
     _note(
@@ -4410,6 +4479,20 @@ def _report_pm_policy_relaxation() -> None:
         f"hash-locked. Set {_STRICT_PM_POLICY_ENV_VAR}=1 to enforce your policy for the "
         "Python dependency install; the shell installers still pin their own torch index.",
         _cyan,
+    )
+
+
+def _report_pm_policy_relaxation_once_pip_exists() -> None:
+    """The pip half of the report, for a venv that had no pip when the first pass ran.
+
+    `uv venv` creates no pip, so on those the first pass cannot run `pip config list` and a
+    policy living only in pip.conf goes unnamed while the pip FALLBACK still relaxes it.
+    Silent when the first pass did reach pip, so the line is never printed twice.
+    """
+    if _strict_pm_policy() or _PIP_CONFIG_REACHED_PIP:
+        return
+    _note_pm_policy_sources(
+        [f"pip config {name}" for name, _value in _pip_config_policy(refresh = True).values()]
     )
 
 
@@ -4570,6 +4653,26 @@ def _uv_policy_cli_args() -> "list[str]":
     return args
 
 
+def _refuse_pip_under_untranslatable_policy(label: str) -> "list[str]":
+    """The blockers that stop pip running at all under the switch, printed if any.
+
+    pip has no --exclude-newer, so ANY pip install under an active exclude-newer does what
+    the policy forbids, whether pip is the fallback after uv failed or the only backend
+    there is (a caller forcing pip, or a host without uv). Strict mode promises the policy
+    verbatim, so this reports and the caller stops.
+    """
+    blockers = _untranslatable_strict_policy()
+    if blockers:
+        _step(
+            "error",
+            f"{label} needs pip, which cannot honour "
+            + ", ".join(blockers)
+            + f" under {_STRICT_PM_POLICY_ENV_VAR}=1",
+            _red,
+        )
+    return blockers
+
+
 def _untranslatable_strict_policy() -> "list[str]":
     """Active policy pip has no equivalent for, which is why the fallback must not run.
 
@@ -4632,6 +4735,9 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
             # the wrong policy rather than the wrong wheel.
             env["UV_CONFIG_FILE"] = str(_projection)
     env.update(_uv_policy_as_pip_policy())
+    # pip's own configuration decides last for a pip command: this is the file the
+    # PIP_CONFIG_FILE above just took away, and the operator wrote it for pip.
+    env.update(_pip_config_as_pip_env())
     return env
 
 
@@ -4657,6 +4763,10 @@ def pip_install_try(
         cmd = _build_uv_cmd(args) + constraint_args_uv
     else:
         cmd = _build_pip_cmd(args) + constraint_args_pip
+        # Optional install, so this reports and declines rather than exiting: pip cannot
+        # honour the policy, and doing it anyway is the bypass the switch exists to stop.
+        if _refuse_pip_under_untranslatable_policy(label):
+            return False
 
     if VERBOSE:
         _step(_LABEL, f"{label}...", _dim)
@@ -4737,24 +4847,20 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
-            # Under strict mode the fallback is only honest while pip can be told the same
-            # policy uv just enforced. pip has no --exclude-newer, so falling back there
-            # would install the very release uv refused.
-            _untranslatable = _untranslatable_strict_policy()
-            if _untranslatable:
-                _step(
-                    "error",
-                    f"{label} failed under {_STRICT_PM_POLICY_ENV_VAR}=1, and the pip "
-                    "fallback cannot honour " + ", ".join(_untranslatable) + "; "
-                    "not falling back",
-                    _red,
-                )
+            # The fallback is only honest while pip can be told the same policy uv just
+            # enforced, so an untranslatable one ends the install here rather than
+            # installing the very release uv refused.
+            if _refuse_pip_under_untranslatable_policy(label):
                 if result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 sys.exit(result.returncode)
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
+        # Same question when pip is the only backend there is, which no uv failure
+        # announces: a forced-pip caller, or a host where the bootstrap found no uv.
+        elif _refuse_pip_under_untranslatable_policy(label):
+            sys.exit(1)
 
         pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
         run(f"{label} (pip)" if USE_UV else label, pip_cmd)
@@ -4958,6 +5064,10 @@ def install_python_stack() -> int:
                 "Upgrading pip",
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
+
+    # There is a pip to ask now. On a uv venv there was none above, so a policy living
+    # only in pip.conf went unnamed while every pip install below still relaxes it.
+    _report_pm_policy_relaxation_once_pip_exists()
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
