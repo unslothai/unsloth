@@ -32,6 +32,11 @@ import {
   startupMessageFromLog,
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
+import {
+  clearServerStopIntent,
+  hasServerStopIntent,
+  markServerStopIntent,
+} from "./server-stop-intent";
 
 export type BackendStatus =
   | "checking"
@@ -64,10 +69,6 @@ interface DesktopPreflightResult {
 }
 
 const MANAGED_STARTUP_POLL_MS = 500;
-
-// sessionStorage outlives webview reloads but not the app process, so an
-// explicit stop holds across Reload while a fresh launch still auto-starts.
-const USER_STOPPED_KEY = "unsloth_server_user_stopped";
 
 type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
 type ManagedStartupResult =
@@ -240,7 +241,7 @@ export function useTauriBackend() {
     // Honor a persisted stop before preflight: the native command side-effects
     // (it can adopt a still-reaping backend, reset the intentional-stop flag,
     // and arm a watchdog that later fires server-crashed over this screen).
-    if (sessionStorage.getItem(USER_STOPPED_KEY)) {
+    if (hasServerStopIntent()) {
       setBackendStatus("stopped");
       return;
     }
@@ -307,12 +308,14 @@ export function useTauriBackend() {
   }
 
   async function startManagedServer() {
+    // Ahead of the re-entry guard: a start the user asked for retires the stop they
+    // asked for earlier, whether or not this particular call goes on to do the work.
+    clearServerStopIntent();
     // Prevent double-start race condition
     if (startingRef.current) {
       return;
     }
     startingRef.current = true;
-    sessionStorage.removeItem(USER_STOPPED_KEY);
     setStartupMessage(INITIAL_STARTUP_MESSAGE);
     portRef.current = null;
     startTimedOutRef.current = false;
@@ -392,18 +395,18 @@ export function useTauriBackend() {
       startingRef.current = false;
       setIsExternalServer(false);
       stopExternalServerPoll();
-      sessionStorage.setItem(USER_STOPPED_KEY, "1");
+      markServerStopIntent();
       setBackendStatus("stopped");
       return;
     }
     const { invoke } = await import("@tauri-apps/api/core");
     // Record intent before the await: reaping can block ~15s and a reload
     // mid-await would lose the marker. Roll back if the stop fails.
-    sessionStorage.setItem(USER_STOPPED_KEY, "1");
+    markServerStopIntent();
     try {
       await invoke("stop_server");
     } catch (e) {
-      sessionStorage.removeItem(USER_STOPPED_KEY);
+      clearServerStopIntent();
       throw e;
     }
     startingRef.current = false;
@@ -440,7 +443,7 @@ export function useTauriBackend() {
 
   const retry = useCallback(() => {
     clearAuthFailure();
-    sessionStorage.removeItem(USER_STOPPED_KEY);
+    clearServerStopIntent();
     setError(null);
     setLogs([]);
     startingRef.current = false;
