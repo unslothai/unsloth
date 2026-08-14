@@ -406,6 +406,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
 }
 
+# Provider types whose endpoint the user runs themselves; kept in sync with the frontend's
+# CUSTOM_PROVIDER_PRESETS plus the legacy "custom" type.
+SELF_HOSTED_PROVIDER_TYPES = frozenset({"vllm", "ollama", "llama_cpp", "custom"})
+
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     """Return the registry entry for a provider type, or None if unknown."""
@@ -416,6 +420,18 @@ def get_base_url(provider_type: str) -> str | None:
     """Return the default base URL for a provider type."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
+
+
+def provider_is_self_hosted(provider_type: str | None) -> bool:
+    """Whether the endpoint behind this provider type is the user's own server.
+
+    These four are the types the frontend's CUSTOM_PROVIDER_PRESETS creates, and they are the
+    only ones that reach a raw model with no vendor-side prompting in front of it. The hosted
+    APIs run their own system context, so Studio adding to it is redundant at best.
+    """
+    if not isinstance(provider_type, str):
+        return False
+    return provider_type in SELF_HOSTED_PROVIDER_TYPES
 
 
 def provider_runs_local_tools(provider_type: str | None) -> bool:

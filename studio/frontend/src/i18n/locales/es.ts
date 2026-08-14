@@ -994,6 +994,13 @@ export const es = {
         collapseByDefaultDescription:
           "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
       },
+      currentDate: {
+        label: "Indicar al modelo la fecha de hoy",
+        description:
+          "Añade la fecha actual al prompt para que la búsqueda web y Deep Research busquen fuentes recientes en lugar de asumir la fecha de corte del entrenamiento del modelo.",
+        loadError: "No se pudieron cargar los ajustes de fecha actual",
+        saveError: "No se pudieron actualizar los ajustes de fecha actual",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Contraer bloques HTML",

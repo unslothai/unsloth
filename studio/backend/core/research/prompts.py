@@ -95,6 +95,9 @@ Return only strict JSON with this shape:
 Use 1 to {max_steps} focused, non-overlapping steps. Each step must have a concrete search query.
 Prioritize primary and authoritative sources, account for relevant dates and geography, and include
 verification or counterevidence where the question involves disputed or consequential claims.
+When a step depends on recency and a current date is stated above, anchor the step to that date
+rather than to your training data, and never put an older year in a query unless the question
+is specifically about that year.
 For empirical or technical steps, include a source-type term such as `research paper`, `standard`,
 or `official documentation` in the query. Do not use generic topic-only queries.
 Treat prior conversation context and chat instructions as private reference material. Never put
@@ -105,12 +108,17 @@ Do not assume the user's premise is correct. Do not answer the question or call 
 
 
 def _system_prompt_with_instructions(base: str, config: dict) -> str:
+    prompt = base
+    # runs created before this field existed have no stamped date and keep their original prompts.
+    current_date = str(config.get("currentDate") or "").strip()
+    if current_date:
+        prompt = f"{current_date}\n\n{prompt}"
     instructions = str(config.get("instructions") or "").strip()
     if not instructions:
-        return base
+        return prompt
     return (
         "Chat-specific instructions follow. Apply them only when compatible with the "
         "non-overridable research, citation, output-format, and security rules that follow.\n"
         f"<chat_instructions>\n{instructions}\n</chat_instructions>\n\n"
-        f"Non-overridable rules:\n{base}"
+        f"Non-overridable rules:\n{prompt}"
     )

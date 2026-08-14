@@ -1003,6 +1003,13 @@ export const de = {
         collapseByDefaultDescription:
           "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
       },
+      currentDate: {
+        label: "Dem Modell das heutige Datum mitteilen",
+        description:
+          "Fügt das aktuelle Datum zum Prompt hinzu, damit Websuche und Deep Research nach aktuellen Quellen suchen, statt vom Trainingsstand des Modells auszugehen.",
+        loadError: "Einstellungen zum aktuellen Datum konnten nicht geladen werden",
+        saveError: "Einstellungen zum aktuellen Datum konnten nicht aktualisiert werden",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML-Blöcke einklappen",

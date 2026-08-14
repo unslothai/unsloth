@@ -3777,7 +3777,8 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
-    def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
+    def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
+        """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
 
         captured = {}
@@ -3800,6 +3801,8 @@ class TestGgufVisionToolRouting:
             generate_chat_completion = _generate,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        # Pinned, not left to the host's stored setting, so the assertion is the same everywhere.
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda: date_line)
 
         payload = ChatCompletionRequest(
             model = "default",
@@ -3813,9 +3816,21 @@ class TestGgufVisionToolRouting:
         self._drive(
             openai_chat_completions(payload, request = self._Request(), current_subject = "test")
         )
+        return captured["messages"]
 
-        assert captured["messages"] == [
+    def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
+        assert self._drive_standard_gguf(monkeypatch, "") == [
             {"role": "system", "content": "original system\n\ndeveloper rules"},
+            {"role": "user", "content": "hi"},
+        ]
+
+    def test_standard_gguf_prefixes_the_current_date(self, monkeypatch):
+        # Covers the wiring, not just the helper: a tool-less GGUF chat must carry the date.
+        assert self._drive_standard_gguf(monkeypatch, "The current date is 2026-08-15.") == [
+            {
+                "role": "system",
+                "content": "The current date is 2026-08-15.\n\noriginal system\n\ndeveloper rules",
+            },
             {"role": "user", "content": "hi"},
         ]
 

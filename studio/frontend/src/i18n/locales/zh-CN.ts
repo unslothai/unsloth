@@ -943,6 +943,13 @@ export const zhCN = {
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
       },
+      currentDate: {
+        label: "告诉模型今天的日期",
+        description:
+          "在提示词中加入当前日期，让联网搜索和 Deep Research 查找最新来源，而不是按模型训练数据的截止时间推断。",
+        loadError: "无法加载当前日期设置",
+        saveError: "无法更新当前日期设置",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "折叠 HTML 块",

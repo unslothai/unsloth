@@ -966,6 +966,13 @@ export const ko = {
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
       },
+      currentDate: {
+        label: "모델에 오늘 날짜 알려주기",
+        description:
+          "프롬프트에 현재 날짜를 추가해 웹 검색과 Deep Research가 모델의 학습 데이터 기준 시점을 가정하지 않고 최신 출처를 찾도록 합니다.",
+        loadError: "현재 날짜 설정을 불러오지 못했습니다",
+        saveError: "현재 날짜 설정을 업데이트하지 못했습니다",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML 블록 접기",

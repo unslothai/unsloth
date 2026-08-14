@@ -2374,6 +2374,7 @@ from core.inference.providers import (
     hosted_only_tools,
     LOCAL_STANDINS_FOR_HOSTED_TOOLS,
     provider_hosted_tools,
+    provider_is_self_hosted,
     provider_model_runs_local_tools,
     provider_runs_local_tools,
     validate_provider_base_url,
@@ -2392,7 +2393,11 @@ from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_h
 
 import io
 import base64
-from datetime import date as _date
+
+from utils.current_date_prompt_settings import (
+    CURRENT_DATE_PROMPT_PREFIX,
+    current_date_prompt_line,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -3283,12 +3288,8 @@ def _build_tool_action_nudge(
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
-    return (
-        f"The current date is {_date.today().isoformat()}. "
-        + _TOOL_BASE_NUDGE
-        + " "
-        + " ".join(tool_tip_parts)
-    )
+    # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
+    return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
 
 # Nudge appended when the RAG knowledge-base tool is active: ground answers in
@@ -3343,16 +3344,58 @@ async def _select_request_tools(
 
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
-    is active (search_knowledge_base present and a retrieval scope is set). The
-    date is prefixed when the tool nudge is empty (RAG-only tool set). Returns
-    ``nudge`` unchanged when RAG isn't active."""
+    is active (search_knowledge_base present and a retrieval scope is set).
+    Returns ``nudge`` unchanged when RAG isn't active."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
     if not nudge:
-        date_line = f"The current date is {_date.today().isoformat()}."
-        return date_line + " " + _RAG_GROUNDING_NUDGE
+        return _RAG_GROUNDING_NUDGE
     return nudge + " " + _RAG_GROUNDING_NUDGE
+
+
+def _states_a_date(text: str) -> bool:
+    """Whether a system prompt already names a date, whoever put it there.
+
+    Durable research stamps its own date at run creation and then posts the prompt back through
+    this route, so a second one would contradict the first once the run crosses midnight.
+    """
+    return CURRENT_DATE_PROMPT_PREFIX in text
+
+
+def _apply_current_date_prompt(system_prompt: str) -> str:
+    """Prefix the user's system prompt with today's date when the setting is on.
+
+    Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
+    as the last word to the model.
+    """
+    date_line = current_date_prompt_line()
+    if not date_line or _states_a_date(system_prompt):
+        return system_prompt
+    return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
+
+
+def _prepend_current_date_to_messages(messages: list[dict]) -> list[dict]:
+    """Apply the date to an already-built message list, for self-hosted providers Studio proxies to.
+
+    The local path prefixes ``system_prompt`` before the messages exist; an external payload is
+    assembled first, so the date goes onto its leading system turn instead. A non-string content
+    (multimodal) turn is skipped, matching _append_to_system_message.
+    """
+    date_line = current_date_prompt_line()
+    if not date_line:
+        return messages
+    copied = [dict(msg) for msg in messages]
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            if _states_a_date(content):
+                return messages
+            msg["content"] = date_line + "\n\n" + content.lstrip()
+            return copied
+    return [{"role": "system", "content": date_line}, *copied]
 
 
 # Strip leaked tool-call markup: every shared-parser format plus the leak shapes
@@ -12501,6 +12544,9 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
+    # Self-hosted endpoints only: the hosted APIs already state the date in their own context.
+    if provider_is_self_hosted(provider_type):
+        chat_messages = _prepend_current_date_to_messages(chat_messages)
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -13297,6 +13343,7 @@ async def openai_chat_completions(
             try:
                 audio_array = _decode_audio_base64(payload.audio_base64)
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+                system_prompt = _apply_current_date_prompt(system_prompt)
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
@@ -13623,6 +13670,8 @@ async def openai_chat_completions(
         system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
     else:
         system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+    # applied once so both backends inherit it, with or without tools, and never state it twice.
+    system_prompt = _apply_current_date_prompt(system_prompt)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -19334,6 +19383,9 @@ async def chat_count_tokens(
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = _extract_content_parts(payload.messages)
+    # the verbatim passthrough carries no date line, so counting one here would overcount it.
+    if not _takes_passthrough:
+        _system_prompt = _apply_current_date_prompt(_system_prompt)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
@@ -19523,6 +19575,9 @@ async def anthropic_count_tokens(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
+    # Mirrors /messages: a caller supplying its own tools is forwarded verbatim and gets no date.
+    if not openai_tools:
+        openai_messages = _prepend_current_date_to_messages(openai_messages)
 
     try:
         count = await asyncio.to_thread(
@@ -19787,6 +19842,11 @@ async def anthropic_messages(
         and len(openai_client_tools) > 0
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
+
+    # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
+    # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
+    if not client_tools:
+        openai_messages = _prepend_current_date_to_messages(openai_messages)
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
     # single tool_use block. Computed here so BOTH the client-tool passthrough

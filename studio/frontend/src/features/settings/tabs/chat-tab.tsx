@@ -21,8 +21,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import {
+  type CurrentDatePromptSettings,
+  loadCurrentDatePrompt,
+  updateCurrentDatePrompt,
+} from "../api/current-date-prompt";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
@@ -179,10 +184,54 @@ export function ChatTab() {
   const setCollapseThinkingByDefault = useChatPreferencesStore(
     (state) => state.setCollapseThinkingByDefault,
   );
+  const [currentDatePrompt, setCurrentDatePrompt] =
+    useState<CurrentDatePromptSettings | null>(null);
+  const [currentDatePromptError, setCurrentDatePromptError] = useState<
+    string | null
+  >(null);
+  const [isSavingCurrentDatePrompt, setIsSavingCurrentDatePrompt] =
+    useState(false);
 
   useEffect(() => {
     void hydratePersistedSettings();
   }, [hydratePersistedSettings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadCurrentDatePrompt()
+      .then((settings) => {
+        if (cancelled) return;
+        setCurrentDatePrompt(settings);
+        setCurrentDatePromptError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setCurrentDatePromptError(
+          error instanceof Error
+            ? error.message
+            : t("settings.chat.currentDate.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const saveCurrentDatePrompt = async (enabled: boolean) => {
+    setIsSavingCurrentDatePrompt(true);
+    setCurrentDatePromptError(null);
+    try {
+      setCurrentDatePrompt(await updateCurrentDatePrompt(enabled));
+    } catch (error) {
+      setCurrentDatePromptError(
+        error instanceof Error
+          ? error.message
+          : t("settings.chat.currentDate.saveError"),
+      );
+    } finally {
+      setIsSavingCurrentDatePrompt(false);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -242,6 +291,23 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.currentDate.label")}
+          description={t("settings.chat.currentDate.description")}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={currentDatePrompt?.enabled ?? false}
+              disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
+              onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
+            />
+            {currentDatePromptError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {currentDatePromptError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.thinking.collapseByDefault")}
           description={t("settings.chat.thinking.collapseByDefaultDescription")}

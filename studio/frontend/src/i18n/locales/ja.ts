@@ -956,6 +956,13 @@ export const ja = {
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
       },
+      currentDate: {
+        label: "今日の日付をモデルに伝える",
+        description:
+          "現在の日付をプロンプトに追加し、ウェブ検索や Deep Research がモデルの学習データの締め切りを前提とせず、最新の情報源を探すようにします。",
+        loadError: "現在の日付の設定を読み込めませんでした",
+        saveError: "現在の日付の設定を更新できませんでした",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTMLブロックを折りたたむ",
