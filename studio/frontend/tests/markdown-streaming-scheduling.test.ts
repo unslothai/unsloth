@@ -129,6 +129,11 @@ test("stream updates are paint-coalesced without a time or length throttle", () 
 
   assert.ok(hook.includes("requestAnimationFrame"));
   assert.ok(!hook.includes("setTimeout"));
+
+  // A running message can be replaced rather than appended to, as the audio
+  // path does when it swaps its placeholder for the player, so holding the last
+  // painted text has to be gated on the new text extending it.
+  assert.ok(hook.includes("text.startsWith(displayed.text)"));
 });
 
 test("streaming reparses only the active Markdown tail", () => {

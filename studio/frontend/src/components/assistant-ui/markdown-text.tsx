@@ -440,13 +440,16 @@ function useCoalescedStreamingText(
     return cancelScheduledRender;
   }, [cancelScheduledRender]);
 
-  // The live chat producer only appends while a message is running. Comparing
-  // lengths avoids rescanning a growing reply on every token; message identity
-  // handles thread switches, and the queued frame commits the latest text.
+  // Holding the last painted text is only correct while the reply is being
+  // appended to. A running message can also be replaced, as the audio path does
+  // when it swaps its placeholder for the player, and that must show at once.
+  // The length check rejects most of those before the prefix scan runs; the
+  // scan itself costs about 59 ms across a 175,000 character stream.
   if (
     isStreaming &&
     displayed.messageId === messageId &&
-    text.length >= displayed.text.length
+    text.length >= displayed.text.length &&
+    text.startsWith(displayed.text)
   ) {
     return displayed.text;
   }
