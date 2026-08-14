@@ -623,18 +623,28 @@ def _console_less_probe(path: Path) -> str:
 
 
 @lru_cache(maxsize = None)
-def _run_console_less(path: Path) -> tuple[int, bytes, str]:
-    """Spawn the probe the way install.rs spawns the installer, and read bytes."""
+def _run_console_less(
+    path: Path,
+    source: str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[int, bytes, str]:
+    """Spawn the probe the way install.rs spawns the installer, and read bytes.
+
+    `source` and `env` are for the VT parity case, which runs this file's own function
+    beside the one it replaced under the same environment.
+    """
     with tempfile.TemporaryDirectory() as workdir:
         # A file written here has no Zone.Identifier, so RemoteSigned admits it.
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
-        probe.write_bytes(_console_less_probe(path).replace("\n", "\r\n").encode("ascii"))
+        text = _console_less_probe(path) if source is None else source
+        probe.write_bytes(text.replace("\n", "\r\n").encode("ascii"))
         proc = subprocess.run(
             [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             creationflags = CREATE_NO_WINDOW,
             timeout = 180,
+            env = env,
         )
     return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", errors = "replace")
 
@@ -726,4 +736,69 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     assert "??" not in text, "the sloth was transcoded to '?' by a non-UTF-8 code page" + detail
     assert text.count(RULE_CHAR * 52) == 1, (
         f"expected one 52-char U+2500 rule, found {text.count(RULE_CHAR * 52)}" + detail
+    )
+
+
+# The fast path added so an install stops running the C# compiler for colour. Sliced back out
+# to reconstruct the function it replaced, so parity is measured against the real predecessor
+# rather than asserted about it.
+_VT_FAST_PATH = re.compile(
+    r"(?m)^[ \t]*try \{\n"
+    r"[ \t]*if \(\$env:WT_SESSION -and -not \$script:StudioStdoutRedirected `\n"
+    r"[ \t]*-and \$Host\.UI\.SupportsVirtualTerminal\) \{ return \$true \}\n"
+    r"[ \t]*\} catch \{\}\n"
+)
+
+
+def _probe_without_the_vt_fast_path(path: Path) -> str:
+    probe = _console_less_probe(path)
+    stripped, count = _VT_FAST_PATH.subn("", probe, count = 1)
+    assert count == 1, (
+        f"{path.name}: the VT fast path is not in the sliced probe in the shape this test "
+        f"removes, so nothing was being compared. Update _VT_FAST_PATH."
+    )
+    return stripped
+
+
+def _vt_verdict(err: str) -> str:
+    for line in err.splitlines():
+        if line.startswith("studio_vt_ok="):
+            return line.split("=", 1)[1].strip()
+    raise AssertionError(f"the probe printed no studio_vt_ok line:\n{err}")
+
+
+@windows_only
+@powershell_51_only
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("wt_session", ["", "1a2b3c4d-0000-0000-0000-000000000000"],
+                         ids = ["no-WT_SESSION", "WT_SESSION"])
+def test_vt_fast_path_decides_exactly_as_the_compile_did(path: Path, wt_session: str) -> None:
+    """Skipping csc.exe must not change one byte the user sees.
+
+    WT_SESSION set is the case that matters: it is inherited, so install.rs's spawn carries it
+    into a pipe. The fast path has to decline there exactly as the SetConsoleMode call did,
+    or the Studio log panel fills with escape sequences.
+    """
+    env = dict(os.environ)
+    env.pop("NO_COLOR", None)
+    if wt_session:
+        env["WT_SESSION"] = wt_session
+    else:
+        env.pop("WT_SESSION", None)
+
+    new_code, new_raw, new_err = _run_console_less(path, env = env)
+    old_code, old_raw, old_err = _run_console_less(
+        path, source = _probe_without_the_vt_fast_path(path), env = env
+    )
+    assert new_code == old_code == 0, (
+        f"probe exit codes {new_code} (with the fast path) and {old_code} (without)"
+        f"{_explain(path, new_code, new_raw, new_err)}"
+    )
+    assert _vt_verdict(new_err) == _vt_verdict(old_err), (
+        f"WT_SESSION={wt_session!r}: the fast path returned "
+        f"{_vt_verdict(new_err)} where the compile returned {_vt_verdict(old_err)}"
+    )
+    assert new_raw == old_raw, (
+        "the banner bytes moved. Same verdict in, same bytes out is the whole contract of "
+        "this change" + _explain(path, new_code, new_raw, new_err)
     )

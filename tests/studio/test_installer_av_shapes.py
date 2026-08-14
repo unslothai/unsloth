@@ -111,13 +111,18 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
 ALLOWED_PINVOKES = {
     # Canonicalising linked ancestors of security-relevant paths. No PS 5.1 equivalent:
     # ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
+    # Not skippable either: Get-StudioRuntimePathHash hashes this spelling byte for byte and
+    # Python derives the same mutex name from its own, so a GetFullPath fast path differing on
+    # case or an 8.3 name would let two installers each believe they hold the lock.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
-    # ANSI colour on legacy conhost.
+    # ANSI colour on legacy conhost only: under Windows Terminal the compile is skipped, see
+    # test_virtual_terminal_asks_the_host_before_compiling.
     "GetStdHandle",
     "GetConsoleMode",
     "SetConsoleMode",
-    # Per-item Explorer icon refresh; the global broadcast alone does not recover a stale .lnk.
+    # Per-item Explorer icon refresh; the global broadcast alone does not recover a stale .lnk,
+    # so ie4uinit.exe -show, which is that broadcast, is not a substitute. Standalone path only.
     "SHChangeNotify",
     # PID -> image path for the venv-holder check. Win32_Process answers the same question,
     # but test_windows_installer_concurrency_guard.py bans it and $process.Path there: the
@@ -145,6 +150,34 @@ def test_no_new_native_imports(name: str) -> None:
         f"{name} imports {sorted(unexpected)} from native code. Prefer a PowerShell or .NET "
         f"equivalent; if there genuinely is none, add it to ALLOWED_PINVOKES with the reason."
     )
+
+
+@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+def test_virtual_terminal_asks_the_host_before_compiling(name: str) -> None:
+    """Add-Type runs the C# compiler, so the free answer has to be tried first.
+
+    All three conjuncts are required. WT_SESSION is INHERITED, so install.rs's console-less
+    spawn carries it while writing to a pipe: without the redirect check the Studio log panel
+    renders raw escape sequences. And the capability property reports what the HOST can render,
+    not whether this buffer has the mode set, so it cannot decide alone either.
+    """
+    text = _text(name)
+    start = text.index("function Enable-StudioVirtualTerminal")
+    # The call, not the comment above it that explains why the call is skippable.
+    call = re.compile(r"(?m)^[ \t]*Add-Type\b").search(text, start)
+    assert call, f"{name} no longer compiles the console thunk; update this guard"
+    compile_at = call.start()
+    fast_path = text.index("$env:WT_SESSION", start)
+    assert fast_path < compile_at, (
+        f"{name} compiles C# for colour before asking the host: move the WT_SESSION check above "
+        f"Add-Type, or every install spawns csc.exe again."
+    )
+    guard = text[fast_path:compile_at]
+    for conjunct in ("-not $script:StudioStdoutRedirected", "$Host.UI.SupportsVirtualTerminal"):
+        assert conjunct in guard, (
+            f"{name} skips the compile without requiring `{conjunct}`, so it can claim VT on a "
+            f"stream that cannot render it"
+        )
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
