@@ -128,7 +128,10 @@ def test_the_base_cmd_list_still_leads_straight_into_the_context_flag():
             end_rel = line_start
             break
     assert end_rel > 0, "could not find end of cmd = [...] block"
-    after = rest[end_rel : end_rel + 1400]
+    # Wide enough to span the gated flags and their comments that now sit between
+    # the base list and -c; the point is that -c is still emitted here rather than
+    # somewhere else entirely.
+    after = rest[end_rel : end_rel + 2400]
     assert '"-c"' in after, (
         "-c must still be emitted near the base cmd list (omitted only in "
         "auto-fit, where --fit sizes context)."

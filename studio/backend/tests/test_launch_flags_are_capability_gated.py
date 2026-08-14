@@ -42,7 +42,12 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
 from core.inference import llama_cpp as llama_cpp_module  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-GATED = ("supports_no_context_shift", "supports_jinja", "flash_attn_takes_value")
+GATED = (
+    "supports_no_context_shift",
+    "supports_jinja",
+    "supports_flash_attn",
+    "flash_attn_takes_value",
+)
 
 # Help text as llama.cpp actually prints it: the declaration starts at column 0
 # and its description is padded to column 40 (common_arg::to_string).
@@ -63,6 +68,15 @@ OLD_HELP = (
     "\n"
     "-m,    --model FNAME                    model path\n"
     "-fa,   --flash-attn                     enable Flash Attention (default: disabled)\n"
+    "--no-context-shift                      disables context shift on infinite text\n"
+    "                                        generation\n"
+)
+# A build predating flash attention: the flag does not exist at all.
+NO_FLASH_ATTN_HELP = (
+    "usage: llama-server [options]\n"
+    "\n"
+    "-m,    --model FNAME                    model path\n"
+    "-c,    --ctx-size N                     size of the prompt context\n"
     "--no-context-shift                      disables context shift on infinite text\n"
     "                                        generation\n"
 )
@@ -137,6 +151,7 @@ class TestTheGatesFailOpen:
         [
             ("supports_no_context_shift", True),
             ("supports_jinja", True),
+            ("supports_flash_attn", True),
             ("flash_attn_takes_value", True),
         ],
     )
@@ -158,7 +173,24 @@ class TestASuccessfulProbeIsAuthoritative:
         caps = probe(tmp_path, monkeypatch, OLD_HELP)
         assert caps["supports_no_context_shift"] is True
         assert caps["supports_jinja"] is False
+        assert caps["supports_flash_attn"] is True
         assert caps["flash_attn_takes_value"] is False
+
+    def test_a_build_without_flash_attention_drops_the_flag_itself(self, tmp_path, monkeypatch):
+        """The value form is not the only way -fa breaks a launch.
+
+        llama.cpp gained flash attention in b2775; anything older has no flag to
+        emit, and emitting it is an immediate "invalid argument" exit. Gating the
+        value alone would still send the flag. There is no speed to protect here:
+        the build the probe just read has no flash attention at all.
+        """
+        caps = probe(tmp_path, monkeypatch, NO_FLASH_ATTN_HELP)
+        assert caps["supports_flash_attn"] is False
+        assert caps["supports_no_context_shift"] is True
+
+    def test_the_missing_flag_still_fails_open_on_a_failed_probe(self, tmp_path, monkeypatch):
+        caps = probe(tmp_path, monkeypatch, NO_FLASH_ATTN_HELP, returncode = 1)
+        assert caps["supports_flash_attn"] is True
 
     def test_help_on_stderr_reads_the_same(self, tmp_path, monkeypatch):
         caps = probe(tmp_path, monkeypatch, NEW_HELP, stream = "stderr")
@@ -188,14 +220,13 @@ class TestFlashAttentionValueForm:
     def test_it_fails_open_when_the_flag_is_not_mentioned(self, help_text):
         assert LlamaCppBackend._flash_attn_takes_value(help_text) is True
 
-    def test_the_flag_itself_is_always_emitted(self):
-        """Only the VALUE is conditional. Dropping -fa entirely would be a
-        silent performance regression rather than a startup failure, which is
-        the worse trade."""
+    def test_the_flag_and_its_value_are_gated_separately(self):
+        """Two independent answers, so a build that has the flag but not the
+        enum keeps flash attention, and one that has neither drops both."""
         src = inspect.getsource(LlamaCppBackend.load_model)
+        assert '_caps.get("supports_flash_attn", True)' in src
         assert 'cmd.append("--flash-attn")' in src
-        idx = src.find('cmd.append("--flash-attn")')
-        assert "if _caps" not in src[max(0, idx - 200) : idx].split("\n")[-1]
+        assert '_caps.get("flash_attn_takes_value", True)' in src
 
     def test_the_real_master_declaration_reads_as_the_value_form(self):
         assert LlamaCppBackend._flash_attn_takes_value(NEW_HELP) is True

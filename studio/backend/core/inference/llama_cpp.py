@@ -4865,6 +4865,7 @@ class LlamaCppBackend:
                 # only a build whose --help positively lacks one drops it.
                 "supports_no_context_shift": True,
                 "supports_jinja": True,
+                "supports_flash_attn": True,
                 "flash_attn_takes_value": True,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
@@ -4902,9 +4903,10 @@ class LlamaCppBackend:
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
-        # See the fallback dict: these three fail open.
+        # See the fallback dict: these fail open.
         supports_no_context_shift = True
         supports_jinja = True
+        supports_flash_attn = True
         flash_attn_takes_value = True
         supports_fit_ctx = False
         supports_fit_target = False
@@ -5050,6 +5052,10 @@ class LlamaCppBackend:
             if probe_ok and blocks:
                 supports_no_context_shift = _is_real("--no-context-shift")
                 supports_jinja = _is_real("--jinja")
+                # Two answers, not one: whether the flag exists, and whether its
+                # declaration takes a value. A build predating flash attention
+                # has neither, and emitting the flag there is an immediate exit.
+                supports_flash_attn = _is_real("--flash-attn")
                 flash_attn_takes_value = cls._flash_attn_takes_value(help_text)
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
@@ -5118,6 +5124,7 @@ class LlamaCppBackend:
             "supports_kv_unified": supports_kv_unified,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
+            "supports_flash_attn": supports_flash_attn,
             "flash_attn_takes_value": flash_attn_takes_value,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
@@ -12040,10 +12047,11 @@ class LlamaCppBackend:
             # clamp before an HF download, command build after), and with a 30s window a
             # later success would otherwise erase an earlier one that already degraded it.
             _launch_probe_inconclusive = False
-            # Set by the crash-recovery retries below. On a build whose flag takes
-            # no value the retry disables FA by dropping it, so the launched argv
-            # no longer says anything either way and the default has to.
-            _flash_attn_forced_off = False
+            # Set where flash attention ends up off with the argv unable to say
+            # so: a build that has no --flash-attn at all, and the crash-recovery
+            # retry on a build whose flag takes no value, which disables FA by
+            # dropping it. Either way the default below has to carry the answer.
+            _flash_attn_known_off = False
 
             def _launch_caps(bin_path):
                 nonlocal _launch_probe_inconclusive
@@ -14162,11 +14170,19 @@ class LlamaCppBackend:
                     "--parallel",
                     str(n_parallel),
                 ]
-                # Force flash attention for speed. Older builds take -fa as a
-                # bare boolean and read a following "on" as a stray positional.
-                cmd.append("--flash-attn")
-                if _caps.get("flash_attn_takes_value", True):
-                    cmd.append("on")
+                # Force flash attention for speed. Two separate answers: whether
+                # the build has the flag at all (predates flash attention, or a
+                # wrapper that never exposed it), and whether its declaration
+                # takes a value -- older builds take -fa as a bare boolean and
+                # read a following "on" as a stray positional.
+                if _caps.get("supports_flash_attn", True):
+                    cmd.append("--flash-attn")
+                    if _caps.get("flash_attn_takes_value", True):
+                        cmd.append("on")
+                else:
+                    # Only ever reached on an authoritative --help that has no
+                    # flash attention to lose, so there is no speed to give up.
+                    _flash_attn_known_off = True
                 # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
                 if _caps.get("supports_no_context_shift", True):
                     cmd.append("--no-context-shift")
@@ -15762,7 +15778,7 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
-                        _flash_attn_forced_off = True
+                        _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
@@ -15826,7 +15842,7 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
-                        _flash_attn_forced_off = True
+                        _flash_attn_known_off = True
                         cmd = _fa_cmd
                         healthy = (
                             _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
@@ -16074,7 +16090,7 @@ class LlamaCppBackend:
                 )
                 self._flash_attn_enabled = (
                     _flash_attn_enabled_from_args(
-                        _last_spawn_cmd, default = not _flash_attn_forced_off, env = env
+                        _last_spawn_cmd, default = not _flash_attn_known_off, env = env
                     )
                     and self._architecture != "grok"
                 )
