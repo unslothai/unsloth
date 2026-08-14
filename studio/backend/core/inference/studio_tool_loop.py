@@ -128,6 +128,7 @@ def _truncate_for_model(text: str, limit: int = _HOSTED_RESULT_MAX_CHARS) -> str
         return text
     return text[:limit] + f"\n... [truncated, {len(text) - limit} more characters]"
 
+
 # Consecutive turns that asked for a tool but ran none before the loop gives up.
 _MAX_FRUITLESS_TURNS = 2
 
