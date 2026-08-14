@@ -83,8 +83,8 @@ export async function fetchLoadExtraArgs(
   _loadId: string,
   _aliasId?: string | null,
   _variant?: string | null,
-): Promise<string[]> {
-  return [];
+): Promise<{ tokens: string[]; explicit: boolean }> {
+  return { tokens: [], explicit: false };
 }
 export function sanitizeStoredExtraArgs(
   tokens: readonly string[],

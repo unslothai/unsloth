@@ -184,6 +184,19 @@ test("a compare pane records what it launched with", () => {
   );
 });
 
+test("a stored empty list hydrates as a clear, not as nothing stored", () => {
+  // The settings page writes an explicit [] when the box is cleared for a quant
+  // whose bare-repository row still carries arguments: it is the tombstone that
+  // stops the server's lookup there. Read as an absence, all three hydrating
+  // callers left llamaExtraArgs undefined, omitted the field on /load, and the
+  // route carried the resident model's arguments over, the ones just cleared.
+  assert.match(OVERRIDES, /explicit: Array\.isArray\(tokens\)/);
+  assert.match(OVERRIDES, /return \{ tokens: \[\], explicit: false \};/);
+  assert.match(PANEL, /resolvedArgs\.explicit && local === undefined/);
+  assert.match(ADAPTER, /\} else if \(stored\.explicit\) \{/);
+  assert.match(COMPOSER, /\} else if \(resolvedArgs\.explicit\) \{/);
+});
+
 const CHAT_PAGE = readFileSync(
   path.join(HERE, "..", "src/features/chat/chat-page.tsx"),
   "utf8",

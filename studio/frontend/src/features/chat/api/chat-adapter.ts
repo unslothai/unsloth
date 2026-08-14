@@ -2761,11 +2761,16 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             candidate.id,
             candidate.ggufVariant ?? null,
           );
-          if (stored.length > 0) {
-            const cleaned = clean(stored);
+          if (stored.tokens.length > 0) {
+            const cleaned = clean(stored.tokens);
             if (cleaned.length > 0) {
               resolvedExtraArgs = cleaned;
             }
+          } else if (stored.explicit) {
+            // A row carrying an EMPTY list is a cleared box, not an absent one, and
+            // the difference decides what /load does: omitting the field lets it
+            // carry the resident model's arguments over, which is what was cleared.
+            resolvedExtraArgs = [];
           }
         } else if (resolvedExtraArgs !== null && resolvedExtraArgs.length > 0) {
           // The local copy gets the same treatment as the fetched one. It was

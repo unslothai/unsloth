@@ -1304,9 +1304,15 @@ export function SharedComposer({
                 sel.id,
                 sel.ggufVariant ?? null,
               );
-              const cleaned = clean(resolvedArgs);
+              const cleaned = clean(resolvedArgs.tokens);
               if (cleaned.length > 0) {
                 ownConfig.llamaExtraArgs = cleaned;
+              } else if (resolvedArgs.explicit) {
+                // An explicit empty row is a cleared box, and this pane has to send
+                // it as one: left undefined the field is omitted and /load carries
+                // the resident model's arguments into the comparison, so the panes
+                // would not be running the command they are compared on.
+                ownConfig.llamaExtraArgs = [];
               }
             } else if (local !== null && local.length > 0) {
               const cleaned = clean(local);

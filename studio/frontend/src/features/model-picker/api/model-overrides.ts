@@ -126,10 +126,32 @@ function foldOverrideKey(key: string): string {
   return id.startsWith("/") ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
 }
 
+/**
+ * The stored arguments, with "the row carried an empty list" kept apart from "no
+ * row carried the field at all".
+ *
+ * The distinction is what the settings page's tombstone is for: clearing the box
+ * for one quant saves an explicit [], and that is what stops the server's lookup
+ * before it reaches a legacy bare-repository row that still holds arguments.
+ * Collapsing the two left the panel with llamaExtraArgs undefined, its next Load
+ * omitted the field, and /load carried the resident model's arguments over: the
+ * very ones that had just been cleared.
+ */
+export type ResolvedExtraArgs = {
+  tokens: string[];
+  explicit: boolean;
+};
+
+/** The field as one entry stores it, empty list and absent field kept apart. */
+function resolvedFrom(entry: ApiModelOverride): ResolvedExtraArgs {
+  const tokens = entry.llama_extra_args;
+  return { tokens: tokens ?? [], explicit: Array.isArray(tokens) };
+}
+
 export function resolveStoredExtraArgs(
   overrides: ApiModelOverrides,
   keys: readonly string[],
-): string[] {
+): ResolvedExtraArgs {
   // Whole ENTRIES, in the order the backend tries them, stopping at the first one
   // that exists. The auto-switch loader breaks on the first non-empty override and
   // reads its fields from there, so falling through to a bare repo id because the
@@ -153,7 +175,7 @@ export function resolveStoredExtraArgs(
   for (const key of keys) {
     const exact = present(overrides[key]);
     if (exact) {
-      return exact.llama_extra_args ?? [];
+      return resolvedFrom(exact);
     }
     // Folding, by the same rule the backend resolves with: a POSIX path is
     // case-sensitive, so lowercasing one whole would hand /models/foo.gguf the
@@ -162,10 +184,10 @@ export function resolveStoredExtraArgs(
     // lowercases before storing.
     const match = folded.get(foldOverrideKey(key));
     if (match) {
-      return match.llama_extra_args ?? [];
+      return resolvedFrom(match);
     }
   }
-  return [];
+  return { tokens: [], explicit: false };
 }
 
 export async function fetchModelOverrides(): Promise<ApiModelOverrides> {
@@ -196,7 +218,7 @@ export async function fetchLoadExtraArgs(
   aliasId: string,
   ggufVariant?: string | null,
   fallbackKeys: readonly string[] = [],
-): Promise<string[]> {
+): Promise<ResolvedExtraArgs> {
   const query = new URLSearchParams({ model_id: loadId, alias_id: aliasId });
   if (ggufVariant) {
     query.set("gguf_variant", ggufVariant);
@@ -214,7 +236,10 @@ export async function fetchLoadExtraArgs(
     resolved_key?: string | null;
   };
   if (body.resolved !== undefined) {
-    return body.resolved?.llama_extra_args ?? [];
+    // An explicit empty list is a cleared box, not an absence, and the caller has
+    // to send it as one: omitting the field lets /load carry the resident model's
+    // arguments over, which is exactly what was cleared.
+    return resolvedFrom(body.resolved ?? {});
   }
   // A backend that predates the resolved field answers with the whole map, and the
   // caller has to say which keys to look under. Derived here when it did not: the

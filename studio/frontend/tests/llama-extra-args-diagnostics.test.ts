@@ -607,7 +607,7 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // And through the denylist first: hydrating makes the stored list an explicit
   // request, which /load validates strictly rather than dropping a newly denied
   // flag the way the carry-over paths do.
-  assert.match(body, /sanitizeStoredExtraArgs\( resolvedArgs,/);
+  assert.match(body, /sanitizeStoredExtraArgs\( resolvedArgs\.tokens,/);
   // Into the config, not only the textarea. The load sends what the config holds,
   // and the route's omission path inherits from a resident process rather than
   // from this stored override, so a box that filled without the config would show

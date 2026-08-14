@@ -6660,6 +6660,116 @@ def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
     return None
 
 
+def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
+    """The main GGUF on this disk for a config, or None while it is not downloaded.
+
+    The header answers questions the load would otherwise only answer by failing
+    (diffusion, embedding), but only once the file is here: a repo that has not been
+    fetched yet has nothing to read, and the callers all fall back to what they did
+    before rather than reaching for the network on a request path.
+    """
+    main = getattr(config, "gguf_file", None)
+    if main and Path(main).is_file():
+        return str(main)
+    repo = getattr(config, "gguf_hf_repo", None)
+    variant = getattr(config, "gguf_variant", None)
+    if repo and variant:
+        from hub.utils.gguf import resolve_local_gguf_path
+        main = resolve_local_gguf_path(repo, variant)
+        if main and Path(main).is_file():
+            return str(main)
+    return None
+
+
+def _is_embedding_gguf(config: ModelConfig) -> bool:
+    """Whether this GGUF's pooling type makes llama-server launch with --embedding.
+
+    False whenever the header cannot be read, which keeps every caller doing what it
+    did before the check existed: this only ever relaxes a refusal, and relaxing one
+    on a guess is how a load reaches the abort the refusal exists to prevent.
+    """
+    try:
+        main = _local_gguf_main_path(config)
+        if not main:
+            return False
+        probe = LlamaCppBackend()
+        probe._read_gguf_metadata(main)
+        return bool(probe.is_embedding_gguf)
+    except Exception as exc:
+        logger.debug("Could not identify embedding GGUF for the batch floor: %s", exc)
+        return False
+
+
+def _embedding_clamped_slots(
+    config: ModelConfig,
+    slots: int,
+    *,
+    extra_args: Optional[list[str]],
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    n_ctx: Optional[int],
+) -> int:
+    """Slots an embedding GGUF really serves, after the micro-batch clamp on load.
+
+    --embedding makes llama-server cap the batch at the micro-batch, and it aborts
+    when that is below the slot count, so load_model reduces the slots to it before
+    launching. The batch floor has to be judged against the reduced count or this
+    refuses a command the launcher would run: four slots with "-ub 2" and a
+    pass-through "--batch-size 2" launches at two slots, where two is the floor.
+
+    Only ever returns a count at or below the one asked for, and returns that one
+    unchanged for anything but a positively classified embedding GGUF.
+    """
+    if slots <= 1:
+        return max(1, slots)
+    if not _is_embedding_gguf(config):
+        return slots
+    from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
+    effective_ubatch = _extra_args_n_ubatch(
+        extra_args,
+        n_ctx = n_ctx if n_ctx and n_ctx > 0 else None,
+        n_batch = _emitted_n_batch(n_batch, slots),
+        n_ubatch = n_ubatch,
+    )
+    if effective_ubatch is None or effective_ubatch >= slots:
+        return slots
+    # max(): a degenerate "-b 0" resolves to 0, and --parallel 0 is rejected at arg
+    # parse, which is the same floor load_model applies.
+    return max(1, effective_ubatch)  # allow-slot-clamp: mirrors the load_model clamp
+
+
+def _batch_floor_survives_embedding_clamp(
+    config: ModelConfig,
+    extra_args: Optional[list[str]],
+    requested_slots: int,
+    request,
+    *,
+    diffusion_kind: Optional[bool] = None,
+) -> bool:
+    """Whether a batch the floor just refused is legal once the clamps are applied.
+
+    Both routes check the floor against the slots the launch serves, and for an
+    embedding GGUF that is smaller again than the kv-unified count: llama-server
+    caps the batch at the micro-batch under --embedding and aborts when that is
+    below the slots, so load_model reduces them first. Asked only after a refusal,
+    so the header read is paid on the way to a 400 rather than on every load.
+    """
+    from core.inference.llama_server_args import check_batch_floor
+    slots = _embedding_clamped_slots(
+        config,
+        _effective_parallel_slots(requested_slots, diffusion_kind = diffusion_kind),
+        extra_args = extra_args,
+        n_batch = getattr(request, "n_batch", None),
+        n_ubatch = getattr(request, "n_ubatch", None),
+        n_ctx = getattr(request, "max_seq_length", None),
+    )
+    try:
+        check_batch_floor(extra_args, slots)
+    except ValueError:
+        return False
+    return True
+
+
 def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     """Classify a GGUF as diffusion, normal, or unknown before loading."""
     identity = " ".join(
@@ -6669,16 +6779,10 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     name_says_diffusion = "diffusiongemma" in _re.sub(r"[^a-z0-9]+", "", identity)
 
     try:
-        main = getattr(config, "gguf_file", None)
-        if not (main and Path(main).is_file()):
-            repo = getattr(config, "gguf_hf_repo", None)
-            variant = getattr(config, "gguf_variant", None)
-            if repo and variant:
-                from hub.utils.gguf import resolve_local_gguf_path
-                main = resolve_local_gguf_path(repo, variant)
-        if main and Path(main).is_file():
+        main = _local_gguf_main_path(config)
+        if main:
             probe = LlamaCppBackend()
-            probe._read_gguf_metadata(str(main))
+            probe._read_gguf_metadata(main)
             if probe.is_diffusion:
                 return True
             if getattr(probe, "_architecture", None):
@@ -8210,7 +8314,18 @@ async def _load_model_impl(
                     _effective_parallel_slots(_n_parallel, diffusion_kind = placement.diffusion_kind),
                 )
             except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+                # An embedding GGUF comes down further still: --embedding caps the
+                # batch at the micro-batch, so load_model reduces the slots to it
+                # before launching. Read only now, because it costs a header read
+                # and it can only ever turn a refusal into an acceptance.
+                if not _batch_floor_survives_embedding_clamp(
+                    config,
+                    extra_llama_args,
+                    _n_parallel,
+                    request,
+                    diffusion_kind = placement.diffusion_kind,
+                ):
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
         if config.is_gguf:
@@ -8937,6 +9052,21 @@ async def validate_model(
             request, config, model_identifier, getattr(request, "llama_extra_args", None)
         )
 
+        # The caller's list is judged BEFORE anything rewrites it, exactly as /load
+        # judges the explicit list it was sent. Translating first let a list /load
+        # refuses pass here: "--gpu-layers=20" was parsed into the first-class field
+        # and stripped, so validate_extra_args never saw the attached spelling
+        # llama.cpp has no such flag for, and the switch was approved for a load that
+        # answers 400. A malformed value ("-ngl bad") raised out of the parser here
+        # too, which is a 500 where the same list is a 400 on the load.
+        if config.is_gguf and effective_extra_args:
+            from core.inference.llama_server_args import validate_extra_args
+
+            try:
+                validate_extra_args(effective_extra_args)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
         # Manual mode owns the offload flags, and /load translates an explicit -ngl
         # into the first-class field before it strips them. Doing that there and not
         # here made the two disagree about what will actually run: a diffusion GGUF
@@ -8944,6 +9074,7 @@ async def validate_model(
         # cannot compete with training for VRAM, and then launched twenty layers on
         # the GPU; the opposite pairing refused a load that only ever runs on the CPU.
         # Same translation, same strip, so the guard below judges the same command.
+        # After the validation above, so nothing here parses a token the load refuses.
         if getattr(request, "gpu_memory_mode", None) == "manual" and effective_extra_args:
             from core.inference.llama_server_args import (
                 parse_gpu_layers_override,
@@ -8986,21 +9117,31 @@ async def validate_model(
             # the preflight, the running model went away, and /load then answered
             # 400: a failed switch and a rollback instead of a refusal with nothing
             # disturbed.
-            from core.inference.llama_server_args import (
-                check_batch_floor,
-                validate_extra_args,
-            )
+            # Only the floor here: the list itself was judged above, before the manual
+            # translation could rewrite it, and re-validating the STRIPPED list would
+            # answer for a command neither route sends.
+            from core.inference.llama_server_args import check_batch_floor
+
+            _requested_slots = _resolve_parallel_slots(request, fastapi_request)
             try:
-                validate_extra_args(effective_extra_args)
                 check_batch_floor(
                     effective_extra_args,
                     _effective_parallel_slots(
-                        _resolve_parallel_slots(request, fastapi_request),
+                        _requested_slots,
                         diffusion_kind = placement.diffusion_kind,
                     ),
                 )
             except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+                # The same embedding clamp /load allows for, or this preflight
+                # refuses a command the load it gates would have launched.
+                if not _batch_floor_survives_embedding_clamp(
+                    config,
+                    effective_extra_args,
+                    _requested_slots,
+                    request,
+                    diffusion_kind = placement.diffusion_kind,
+                ):
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

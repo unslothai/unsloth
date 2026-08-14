@@ -31,7 +31,7 @@ test("an exact key wins", () => {
       { "unsloth/Model-GGUF:q4_k_m": { llama_extra_args: ARGS } },
       ["unsloth/Model-GGUF:q4_k_m"],
     ),
-    ARGS,
+    { tokens: ARGS, explicit: true },
   );
 });
 
@@ -43,7 +43,7 @@ test("a repo id and its quant fold by case", () => {
       { "unsloth/Model-GGUF:Q4_K_M": { llama_extra_args: ARGS } },
       ["unsloth/model-gguf:q4_k_m"],
     ),
-    ARGS,
+    { tokens: ARGS, explicit: true },
   );
 });
 
@@ -54,7 +54,7 @@ test("a POSIX path stays case-sensitive", () => {
     resolveStoredExtraArgs({ "/models/Foo.gguf": { llama_extra_args: ARGS } }, [
       "/models/foo.gguf",
     ]),
-    [],
+    { tokens: [], explicit: false },
   );
 });
 
@@ -64,7 +64,7 @@ test("a colon inside a POSIX filename is not a quant", () => {
       { "/models/foo:bar.gguf": { llama_extra_args: ARGS } },
       ["/models/foo:Bar.gguf"],
     ),
-    [],
+    { tokens: [], explicit: false },
   );
 });
 
@@ -74,7 +74,7 @@ test("a Windows path folds", () => {
       { "C:\\Models\\Foo.gguf": { llama_extra_args: ARGS } },
       ["c:\\models\\foo.gguf"],
     ),
-    ARGS,
+    { tokens: ARGS, explicit: true },
   );
 });
 
@@ -90,7 +90,7 @@ test("a separator and a trailing slash do not make a different key", () => {
       resolveStoredExtraArgs({ [key]: { llama_extra_args: ARGS } }, [
         "c:\\models\\foo.gguf",
       ]),
-      ARGS,
+      { tokens: ARGS, explicit: true },
       key,
     );
   }
@@ -104,7 +104,7 @@ test("a UNC share folds however it is spelled", () => {
       { "\\\\Server\\Share\\Foo.gguf": { llama_extra_args: ARGS } },
       ["//server/share/foo.gguf"],
     ),
-    ARGS,
+    { tokens: ARGS, explicit: true },
   );
 });
 
@@ -117,7 +117,7 @@ test("a WSL drive mount folds like the Windows volume it is", () => {
       { "/mnt/c/models/foo.gguf": { llama_extra_args: ARGS } },
       ["/mnt/C/Models/Foo.gguf"],
     ),
-    ARGS,
+    { tokens: ARGS, explicit: true },
   );
   // Not every /mnt path: /mnt/storage is an ordinary POSIX mount point.
   assert.deepEqual(
@@ -125,7 +125,7 @@ test("a WSL drive mount folds like the Windows volume it is", () => {
       { "/mnt/storage/models/foo.gguf": { llama_extra_args: ARGS } },
       ["/mnt/storage/models/Foo.gguf"],
     ),
-    [],
+    { tokens: [], explicit: false },
   );
 });
 
@@ -140,7 +140,7 @@ test("two keys that fold together resolve to nothing", () => {
       },
       ["unsloth/MODEL-gguf"],
     ),
-    [],
+    { tokens: [], explicit: false },
   );
 });
 
@@ -157,7 +157,7 @@ test("the first entry that exists is the one read, fields and all", () => {
       },
       ["unsloth/model-gguf:q4_k_m", "unsloth/model-gguf"],
     ),
-    [],
+    { tokens: [], explicit: false },
   );
 });
 
@@ -171,10 +171,41 @@ test("an empty entry is skipped rather than stopping the search", () => {
       },
       ["unsloth/model-gguf:q4_k_m", "unsloth/model-gguf"],
     ),
-    ARGS,
+    { tokens: ARGS, explicit: true },
   );
 });
 
 test("no row at all is no arguments, not an error", () => {
-  assert.deepEqual(resolveStoredExtraArgs({}, ["unsloth/model-gguf"]), []);
+  assert.deepEqual(resolveStoredExtraArgs({}, ["unsloth/model-gguf"]), {
+    tokens: [],
+    explicit: false,
+  });
+});
+
+test("a row that carries an empty list is explicit, not absent", () => {
+  // The tombstone the settings page writes when the box is cleared for a quant
+  // whose bare-repository row still holds arguments. Read as "nothing stored" the
+  // panel omits the field on Load, and /load carries the resident model's
+  // arguments over: the flags the user had just cleared come back.
+  assert.deepEqual(
+    resolveStoredExtraArgs(
+      {
+        "unsloth/model-gguf:q4_k_m": { llama_extra_args: [] },
+        "unsloth/model-gguf": { llama_extra_args: ARGS },
+      },
+      ["unsloth/model-gguf:q4_k_m", "unsloth/model-gguf"],
+    ),
+    { tokens: [], explicit: true },
+  );
+});
+
+test("a matched row with other fields but no arguments is not explicit", () => {
+  // It stopped the search, as the server's `if override: break` does, but it said
+  // nothing about arguments, so there is no clear to honour.
+  assert.deepEqual(
+    resolveStoredExtraArgs({ "unsloth/model-gguf": { max_seq_length: 4096 } }, [
+      "unsloth/model-gguf",
+    ]),
+    { tokens: [], explicit: false },
+  );
 });

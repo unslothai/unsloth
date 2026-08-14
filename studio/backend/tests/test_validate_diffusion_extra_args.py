@@ -97,6 +97,69 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
         )
 
 
+class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
+    """The manual translation reads -ngl out of the extras and strips it, so it has to
+    run AFTER the list has been validated: otherwise a spelling /load refuses is
+    parsed and removed before validation sees it, and the switch is approved for a
+    load that answers 400."""
+
+    def _validate(self, route, *, extra_args, manual = True):
+        request = ValidateModelRequest(
+            model_path = "someone/gguf",
+            llama_extra_args = extra_args,
+            **({"gpu_memory_mode": "manual", "gpu_layers": 0} if manual else {}),
+        )
+        config = SimpleNamespace(
+            identifier = "someone/gguf",
+            display_name = "gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = None,
+        )
+        with (
+            patch.object(
+                route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("someone/gguf", "someone/gguf", False),
+            ),
+            patch.object(route.ModelConfig, "from_identifier", return_value = config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = list(extra_args)),
+            patch.object(route, "_classify_diffusion_gguf", return_value = False),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value = True),
+            patch.object(route, "_guard_chat_load_against_training", new = lambda *a, **k: None),
+        ):
+            return asyncio.run(route.validate_model(request, current_subject = "test-user"))
+
+    def test_an_attached_offload_spelling_is_refused_not_translated(self):
+        # llama.cpp looks the whole token up in its option map, so "--gpu-layers=20"
+        # is an argument it has never heard of; /load refuses the list. Translating
+        # first read the 20, stripped the token, and approved the switch.
+        from fastapi import HTTPException
+
+        route = _load_route_module("inf_route_validate_order_1")
+        with self.assertRaises(HTTPException) as caught:
+            self._validate(route, extra_args = ["--gpu-layers=20"])
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("two separate arguments", str(caught.exception.detail))
+
+    def test_a_malformed_layer_count_is_a_refusal_not_a_crash(self):
+        # parse_gpu_layers_override raises on a non-integer, and it used to run
+        # before the try that turns a bad list into a 400, so this was a 500.
+        from fastapi import HTTPException
+
+        route = _load_route_module("inf_route_validate_order_2")
+        with self.assertRaises(HTTPException) as caught:
+            self._validate(route, extra_args = ["-ngl", "bad"])
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_a_well_formed_list_still_passes(self):
+        route = _load_route_module("inf_route_validate_order_3")
+        response = self._validate(route, extra_args = ["-ngl", "20"])
+        self.assertTrue(getattr(response, "valid", True))
+
+
 class TestValidateTranslatesManualNgl(unittest.TestCase):
     """Manual GPU memory owns the offload flags, and /load turns an explicit -ngl into
     the first-class field before stripping them. /validate has to do the same, or the
@@ -263,3 +326,96 @@ class TestValidateRefusesWhatLoadWouldRefuse(unittest.TestCase):
         route = _load_route_module("inf_route_validate_denies_3")
         resp = self._validate(route, extra_args = ["--numa", "distribute"], n_parallel = 4)
         self.assertTrue(resp.is_gguf)
+
+
+class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
+    """--embedding caps the batch at the micro-batch and llama-server aborts when that
+    is below the slot count, so load_model reduces the slots to it before launching.
+    A floor sized from the pre-clamp count refuses a command the launcher would run."""
+
+    def _clamped(self, route, *, is_embedding, extra_args, slots = 4, **kwargs):
+        config = SimpleNamespace(identifier = "someone/embed-gguf", gguf_file = None)
+        with patch.object(route, "_is_embedding_gguf", return_value = is_embedding):
+            return route._embedding_clamped_slots(
+                config,
+                slots,
+                extra_args = extra_args,
+                n_batch = kwargs.get("n_batch"),
+                n_ubatch = kwargs.get("n_ubatch"),
+                n_ctx = kwargs.get("n_ctx"),
+            )
+
+    def test_the_slots_follow_the_micro_batch_down(self):
+        route = _load_route_module("inf_route_embed_clamp_1")
+        self.assertEqual(
+            self._clamped(route, is_embedding = True, extra_args = ["-b", "2", "-ub", "2"]),
+            2,
+        )
+
+    def test_a_chat_gguf_keeps_the_slots_it_asked_for(self):
+        route = _load_route_module("inf_route_embed_clamp_2")
+        self.assertEqual(
+            self._clamped(route, is_embedding = False, extra_args = ["-b", "2", "-ub", "2"]),
+            4,
+        )
+
+    def test_defaults_clamp_nothing(self):
+        # Nothing overrides the batch, so the launch runs llama.cpp's own 2048 and the
+        # micro-batch is nowhere near the slot count.
+        route = _load_route_module("inf_route_embed_clamp_3")
+        self.assertEqual(
+            self._clamped(route, is_embedding = True, extra_args = ["--numa", "distribute"]),
+            4,
+        )
+
+    def test_the_clamp_floors_at_one_slot(self):
+        # "-b 0" resolves to a zero micro-batch, and --parallel 0 is rejected at arg
+        # parse, which is the floor load_model applies too.
+        route = _load_route_module("inf_route_embed_clamp_4")
+        self.assertEqual(
+            self._clamped(route, is_embedding = True, extra_args = ["-b", "0", "-ub", "0"]),
+            1,
+        )
+
+    def test_an_unreadable_header_leaves_the_refusal_alone(self):
+        # _is_embedding_gguf answers False for a GGUF that is not on this disk yet, so
+        # nothing is relaxed on a guess.
+        route = _load_route_module("inf_route_embed_clamp_5")
+        config = SimpleNamespace(identifier = "someone/gguf", gguf_file = None, gguf_hf_repo = None)
+        self.assertFalse(route._is_embedding_gguf(config))
+
+
+class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWouldRefuse):
+    """The preflight has to allow exactly what the load allows, or the picker refuses a
+    switch the load it gates would have completed."""
+
+    def test_an_embedding_gguf_may_batch_at_its_micro_batch(self):
+        route = _load_route_module("inf_route_validate_embed_1")
+        with patch.object(route, "_is_embedding_gguf", return_value = True):
+            resp = self._validate(
+                route,
+                extra_args = ["-b", "2", "-ub", "2"],
+                n_parallel = 4,
+            )
+        self.assertTrue(resp.is_gguf)
+
+    def test_a_chat_gguf_is_still_refused(self):
+        route = _load_route_module("inf_route_validate_embed_2")
+        with (
+            patch.object(route, "_is_embedding_gguf", return_value = False),
+            self.assertRaises(Exception) as caught,
+        ):
+            self._validate(route, extra_args = ["-b", "2", "-ub", "2"], n_parallel = 4)
+        self.assertEqual(getattr(caught.exception, "status_code", None), 400)
+        self.assertIn("aborts on --batch-size", str(caught.exception.detail))
+
+    def test_an_embedding_gguf_below_its_own_floor_is_still_refused(self):
+        # The clamp floors at one slot, and llama-server aborts on a batch of 1 at any
+        # slot count, so this is not a refusal the clamp may lift.
+        route = _load_route_module("inf_route_validate_embed_3")
+        with (
+            patch.object(route, "_is_embedding_gguf", return_value = True),
+            self.assertRaises(Exception) as caught,
+        ):
+            self._validate(route, extra_args = ["-b", "1", "-ub", "1"], n_parallel = 4)
+        self.assertEqual(getattr(caught.exception, "status_code", None), 400)

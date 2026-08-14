@@ -1818,7 +1818,7 @@ export function ModelConfigPage({
         // Without this, an install upgraded across a denylist change stops loading a
         // model that worked the day before.
         const stored = sanitizeStoredExtraArgs(
-          resolvedArgs,
+          resolvedArgs.tokens,
           managed?.managed ?? new Set<string>(),
           // The host's bounds, not the constants: a Windows server takes 24 KiB and
           // holds a quoted-command budget as well, so trimming to 32 KiB here sends a
@@ -1851,6 +1851,21 @@ export function ModelConfigPage({
           }
         }
         if (stored.length === 0) {
+          // An EXPLICIT empty row is a decision, not an absence: the settings page
+          // writes one when the box is cleared for a quant whose bare-repository
+          // row still carries arguments, and it is what stops the server's lookup
+          // there. Left undefined the panel omits the field on Load, and /load
+          // carries the resident model's arguments over: the very ones just
+          // cleared. Only when nothing was typed here in the meantime.
+          const local = configRef.current.llamaExtraArgs;
+          if (resolvedArgs.explicit && local === undefined) {
+            setExtraArgsLoadable(true);
+            setConfig((current) =>
+              current.llamaExtraArgs === undefined
+                ? { ...current, llamaExtraArgs: [] }
+                : current,
+            );
+          }
           return;
         }
         // Judged here as well as in the row: with Advanced collapsed the row never
