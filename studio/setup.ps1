@@ -6121,19 +6121,26 @@ if (-not $SkipPythonDeps) {
     # one more closes that argument early, leaving python a truncated program that
     # still parses, exits 0 and prints nothing.
     $_torchcodecProbe = @'
+import signal
+_alarm = getattr(signal, 'alarm', None)
+if _alarm is not None:
+    _alarm(60)
 try:
     import torchcodec  # noqa: F401
-except ModuleNotFoundError:
-    print('absent')
+except ModuleNotFoundError as e:
+    # Only torchcodec itself missing is absent. A transitive module raises the
+    # same class, and that install is present but damaged.
+    _missing = (getattr(e, 'name', '') or '').split('.')[0]
+    print('TORCHCODEC=' + ('absent' if _missing == 'torchcodec' else 'broken'))
 except Exception:
     import traceback
     # torchcodec folds every native load failure into one message naming
     # libtorchcodec, which lists FFmpeg, an ABI mismatch and another runtime
     # dependency together. This only separates that loader from an unrelated
     # import error; it does not pick between the causes it lists.
-    print('ffmpeg' if 'libtorchcodec' in traceback.format_exc() else 'broken')
+    print('TORCHCODEC=' + ('ffmpeg' if 'libtorchcodec' in traceback.format_exc() else 'broken'))
 else:
-    print('ok')
+    print('TORCHCODEC=ok')
 '@
     # The venv interpreter by path, not bare `python`. install.ps1 runs this script with
     # SKIP_STUDIO_BASE=1, which skips the base install that the other bare-`python` probes
@@ -6142,7 +6149,9 @@ else:
     $_torchcodecPy = Join-Path $VenvDir "Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $_torchcodecPy)) { $_torchcodecPy = "python" }
     $_torchcodecProbeResult = Invoke-BoundedPythonProbe -PythonExe $_torchcodecPy -Code $_torchcodecProbe -TimeoutSec 60
-    $torchcodecState = $_torchcodecProbeResult.Output.Trim()
+    # Line-anchored like the other probes: a torch import banner ahead of the answer
+    # would otherwise leave the state matching nothing at all.
+    $torchcodecState = if ($_torchcodecProbeResult.Output -match '(?m)^TORCHCODEC=(\S+)\s*$') { $Matches[1] } else { "" }
 
     if ($torchcodecState -eq "ffmpeg") {
         step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "Yellow"

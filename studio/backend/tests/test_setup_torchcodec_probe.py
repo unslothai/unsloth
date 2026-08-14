@@ -57,12 +57,18 @@ def _raising(exc: str) -> str:
 
 
 def _probe(preamble: str) -> str:
+    """The state the installers would read: the sentinel line, not all of stdout."""
     out = subprocess.run(
         ["python", "-c", preamble + _PROBE],
         capture_output = True,
         text = True,
     )
-    return out.stdout.strip()
+    states = [
+        line[len("TORCHCODEC=") :].strip()
+        for line in out.stdout.splitlines()
+        if line.startswith("TORCHCODEC=")
+    ]
+    return states[-1] if states else ""
 
 
 def _step_line(text: str, opening: str) -> str:
@@ -72,7 +78,8 @@ def _step_line(text: str, opening: str) -> str:
 
 def test_a_missing_torchcodec_reports_absent():
     # Nothing to say: absent says nothing about FFmpeg, and the soundfile path stands.
-    assert _probe(_raising("ModuleNotFoundError('no torchcodec')")) == "absent"
+    # `name` is set the way the import system sets it, since that is what the probe reads.
+    assert _probe(_raising("ModuleNotFoundError('no torchcodec', name = 'torchcodec')")) == "absent"
 
 
 def test_an_unloadable_torchcodec_is_distinguished_from_an_absent_one():
@@ -89,6 +96,23 @@ def test_an_unloadable_torchcodec_is_distinguished_from_an_absent_one():
         )
     )
     assert unloadable == "ffmpeg"
+
+
+def test_a_missing_transitive_module_is_not_read_as_an_absent_package():
+    # torchcodec is installed and importing it raises the same class an absent one
+    # would. Reporting that as absent leaves a damaged install with no warning.
+    assert _probe(_raising("ModuleNotFoundError('no numpy', name = 'numpy')")) == "broken"
+    # ...and the submodule form still belongs to torchcodec itself.
+    assert (
+        _probe(_raising("ModuleNotFoundError('gone', name = 'torchcodec.decoders')")) == "absent"
+    )
+
+
+def test_the_state_is_read_as_a_line_not_as_all_of_stdout():
+    # Importing torch can print to stdout, and a state read as the whole buffer then
+    # matches none of the arms, so setup silently drops the report.
+    noisy = "import sys; print('banner from a startup hook'); "
+    assert _probe(noisy + _raising("ModuleNotFoundError('no torchcodec', name = 'torchcodec')")) == "absent"
 
 
 def test_an_unrelated_import_failure_is_not_blamed_on_ffmpeg():
@@ -147,6 +171,19 @@ def test_the_shell_probe_is_bounded():
     assert "timeout 60 python -c" in after
     # ...and still runs where coreutils `timeout` is absent, as the GPU probes do.
     assert "command -v timeout" in after
+    # That fallback path is the one stock macOS takes, so the deadline has to live in
+    # the body too, exactly as the XPU probe in this same script carries it.
+    assert "_alarm(60)" in _shipped_sh_probe()
+
+
+@pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
+def test_both_installers_read_the_state_as_a_line(script):
+    # Anything on stdout ahead of the answer, a torch banner most likely, leaves a
+    # whole-buffer read matching no arm at all, and the report vanishes.
+    text = script.read_text(encoding = "utf-8")
+    probe = text.index("TORCHCODEC=")
+    after = text[probe : text.index('step "torchcodec"', probe)]
+    assert 's/^TORCHCODEC=//p' in after or "(?m)^TORCHCODEC=" in after
 
 
 def test_the_two_installers_ship_the_same_probe():
@@ -219,7 +256,7 @@ def test_the_powershell_probe_survives_its_own_quoting(tmp_path):
         text = True,
     )
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "ffmpeg", "the probe reached python but its body was cut short"
+    assert "TORCHCODEC=ffmpeg" in out.stdout, "the probe reached python but its body was cut short"
 
 
 def test_the_powershell_probe_runs_the_studio_interpreter():

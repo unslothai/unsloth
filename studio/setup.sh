@@ -3322,26 +3322,38 @@ fi
 # that sets it is the base install, which ends well above here.
 if [ "$_LLAMA_ONLY" != "1" ] && [ "${_SKIP_PYTHON_DEPS:-false}" != true ]; then
     # Importing torchcodec imports torch, so this is bounded like the XPU probe
-    # above: a wedged GPU runtime must not hang setup.
+    # above: a wedged GPU runtime must not hang setup. The in-body alarm carries
+    # that bound where coreutils timeout is absent, stock macOS most of all; the
+    # default SIGALRM action ends the process, which reads as the silent case.
+    # alarm is POSIX-only, and on Windows Invoke-BoundedPythonProbe is the bound.
     _TORCHCODEC_PROBE='
+import signal
+_alarm = getattr(signal, "alarm", None)
+if _alarm is not None:
+    _alarm(60)
 try:
     import torchcodec  # noqa: F401
-except ModuleNotFoundError:
-    print("absent")
+except ModuleNotFoundError as e:
+    # Only torchcodec itself missing is absent. A transitive module raises the
+    # same class, and that install is present but damaged.
+    _missing = (getattr(e, "name", "") or "").split(".")[0]
+    print("TORCHCODEC=" + ("absent" if _missing == "torchcodec" else "broken"))
 except Exception:
     import traceback
     # torchcodec folds every native load failure into one message naming
     # libtorchcodec, which lists FFmpeg, an ABI mismatch and another runtime
     # dependency together. This only separates that loader from an unrelated
     # import error; it does not pick between the causes it lists.
-    print("ffmpeg" if "libtorchcodec" in traceback.format_exc() else "broken")
+    print("TORCHCODEC=" + ("ffmpeg" if "libtorchcodec" in traceback.format_exc() else "broken"))
 else:
-    print("ok")
+    print("TORCHCODEC=ok")
 '
+    # The answer is read as its own line, like the other bounded probes: a torch
+    # import banner on stdout would otherwise never match any state below.
     if command -v timeout >/dev/null 2>&1; then
-        _TORCHCODEC_STATE="$(timeout 60 python -c "$_TORCHCODEC_PROBE" 2>/dev/null || true)"
+        _TORCHCODEC_STATE="$(timeout 60 python -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
     else
-        _TORCHCODEC_STATE="$(python -c "$_TORCHCODEC_PROBE" 2>/dev/null || true)"
+        _TORCHCODEC_STATE="$(python -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
     fi
 
     if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
