@@ -61,6 +61,7 @@ from core.inference.llama_server_args import (
     memory_state_satisfies_settings,
     fit_is_effectively_on,
     resolve_effective_memory_state,
+    scrub_denied_env,
     scrub_memory_env,
     parse_cache_override,
     parse_cache_override_per_axis,
@@ -484,6 +485,15 @@ _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 # loop). Structured delta.tool_calls are grammar-bounded by llama-server; text
 # parsed from content is not, so one runaway turn could fan out unbounded.
 _MAX_TOOL_CALLS_PER_TURN = 8
+# How far back the classifier looks for llama.cpp's argument-parsing error. It
+# prints one and exits, so it is always at the end; generous enough to survive a
+# usage hint printed after it, small enough that a 10 MB unterminated line (which
+# _drain_stdout keeps whole) stays cheap to scan.
+_FAILURE_SCAN_TAIL_CHARS = 64 * 1024
+# How much of a quoted fragment from the child's own output an error message carries.
+# Long enough for any real flag or reason, short enough that a wrapper printing
+# megabytes cannot make the API error unreadable.
+_FAILURE_QUOTE_CHARS = 200
 # Obligation phrasing INTENT_SIGNAL leaves alone ("I need to call ..."), paired with
 # an action verb. Sentence-anchored: mid-sentence the same words are prose that names
 # a tool ("The API I should invoke is foo() because ..."), and suppressing that loses
@@ -4932,6 +4942,8 @@ class LlamaCppBackend:
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
+                "flags": {},
+                "help_probe_ok": False,
             }
         try:
             binary_stat = Path(bin_path).stat()
@@ -4976,6 +4988,23 @@ class LlamaCppBackend:
         saw_spec_type = False
         probe_ok = False
         help_text = ""
+        # Every flag this build documents, with its help text. Pre-initialised for
+        # the same reason as the booleans above: a failed probe must fall back to
+        # "nothing known", not raise.
+        blocks: dict[str, str] = {}
+        # Same reason, and the reason it lives out here rather than beside the parse
+        # loop: a probe that times out leaves the loop unrun, and the catalogue below
+        # is still built. Reading an unset local there turned a slow binary into an
+        # UnboundLocalError instead of "nothing known about this build".
+        takes_value: dict[str, bool] = {}
+
+        def _is_real(flag: str) -> bool:
+            """True if the flag exists AND is not a removal stub."""
+            desc = blocks.get(flag)
+            if desc is None:
+                return False
+            return "argument has been removed" not in desc
+
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
             # Capability detection describes the binary, independently of the
@@ -5005,9 +5034,10 @@ class LlamaCppBackend:
             # Split into per-flag blocks (each --flag line + its indented
             # continuation), so the "argument has been removed" description
             # sits with its flag.
-            blocks: dict[str, str] = {}
             current_flags: list[str] = []
             current_desc: list[str] = []
+            # Flag -> whether its declaration shows a value placeholder.
+            current_takes_value = False
             for line in help_text.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("-") and not line.startswith(" "):
@@ -5016,8 +5046,32 @@ class LlamaCppBackend:
                         desc = " ".join(current_desc)
                         for f in current_flags:
                             blocks[f] = desc
+                            takes_value[f] = current_takes_value
                     current_flags = []
                     current_desc = [stripped]
+                    # Whether the flag takes a value at all, which is what tells
+                    # "--verbose foo" (a typo llama-server refuses) from "--numa
+                    # distribute". A placeholder follows its flag by a SINGLE space
+                    # ("--threads N"); the description sits in an aligned column two
+                    # or more spaces away. Only the yes/no is taken from this: how
+                    # many values, and of what shape, is not worth guessing at from
+                    # help text that wraps.
+                    current_takes_value = False
+                    _previous_end = None
+                    for _match in re.finditer(r"\S+", stripped):
+                        _token = _match.group()
+                        _flag_shaped = _token.startswith("-") and re.match(
+                            r"-{1,2}[A-Za-z][A-Za-z0-9_-]*,?$", _token
+                        )
+                        if _flag_shaped:
+                            _previous_end = _match.end()
+                            continue
+                        # The first token that is not an alias: a placeholder when it
+                        # is one space away, the description when it is further.
+                        current_takes_value = (
+                            _previous_end is not None and _match.start() - _previous_end == 1
+                        )
+                        break
                     # Extract long-form flag tokens from the DECLARATION
                     # prefix only (comma-separated aliases). Stop at the
                     # first non-flag token so flag references inside
@@ -5025,8 +5079,14 @@ class LlamaCppBackend:
                     for tok in re.split(r"[,\s]+", stripped):
                         if tok.startswith("--") and re.match(r"--[A-Za-z][A-Za-z0-9_-]*$", tok):
                             current_flags.append(tok)
+                        elif tok.startswith("-") and re.match(r"-[A-Za-z][A-Za-z0-9_-]*$", tok):
+                            # A short alias (-fa, -t, -ngl). Kept, not just skipped:
+                            # the catalogue is what the editor checks a typed flag
+                            # against, and -t is as valid as --threads, so dropping
+                            # it warned that a correct flag was unknown.
+                            current_flags.append(tok)
                         elif tok.startswith("-") and len(tok) > 1:
-                            # short alias like -fa; keep scanning aliases.
+                            # A value placeholder like -1; keep scanning aliases.
                             continue
                         else:
                             # First non-flag token marks end of decl.
@@ -5037,13 +5097,7 @@ class LlamaCppBackend:
                 desc = " ".join(current_desc)
                 for f in current_flags:
                     blocks[f] = desc
-
-            def _is_real(flag: str) -> bool:
-                """True if the flag exists AND is not a removal stub."""
-                desc = blocks.get(flag)
-                if desc is None:
-                    return False
-                return "argument has been removed" not in desc
+                    takes_value[f] = current_takes_value
 
             # MTP token from the full --spec-type help block (decl + indented
             # continuation). First-line-only probing missed builds putting the
@@ -5191,6 +5245,24 @@ class LlamaCppBackend:
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
+            # The whole parsed catalogue, not just the booleans above. The UI
+            # validates pass-through args against THIS build rather than a list
+            # bundled with Unsloth, since a custom or newer llama.cpp is exactly
+            # the case where a bundled list would be wrong. Removal stubs are
+            # excluded: a build that still lists --draft-max only to say the
+            # argument has been removed would otherwise read as supporting it,
+            # and the editor would stay quiet about a flag the load then refuses.
+            "flags": {flag: desc for flag, desc in blocks.items() if _is_real(flag)},
+            # The flags that take no value, so the editor can tell "--verbose foo"
+            # (a typo llama-server refuses) from "--numa distribute".
+            "switch_flags": sorted(
+                flag for flag, takes in takes_value.items() if not takes and _is_real(flag)
+            ),
+            # Whether --help actually succeeded. A run that exits nonzero after
+            # printing part of its help still leaves a non-empty catalogue, and a
+            # caller that equated "parsed something" with "read the whole thing"
+            # would call every flag past the failure point unknown.
+            "help_probe_ok": bool(probe_ok),
         }
         with cls._capability_cache_lock:
             published = cls._capability_cache.get(cache_key)
@@ -10777,6 +10849,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
         secrets: Sequence[Optional[str]] = (),
+        extra_args: Optional[Sequence[str]] = None,
     ) -> str:
         """Classify, then redact, whatever the classification quoted.
 
@@ -10800,6 +10873,7 @@ class LlamaCppBackend:
                 binary,
                 log_path,
                 secrets,
+                extra_args,
             ),
             secrets,
         )
@@ -10813,6 +10887,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
         secrets: Sequence[Optional[str]] = (),
+        extra_args: Optional[Sequence[str]] = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -10893,6 +10968,85 @@ class LlamaCppBackend:
                 "llama-server could not start: the executable was built for a "
                 "different CPU architecture than this Mac, so "
                 f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
+
+        # Argument parsing runs before the model is touched, so a rejected flag is
+        # never about the GGUF or memory. llama.cpp prints two shapes, and the
+        # difference matters to the reader: an unknown flag is a typo or a flag
+        # this build does not have, while a rejected VALUE is the right flag used
+        # wrongly. Both are otherwise diagnosed as an invalid GGUF or an OOM.
+        # Bounded, unlike the branches above, which have to see a dyld line whose
+        # library name can itself be the pathological part. llama.cpp prints an
+        # argument error and exits, so it is always at the end of the capture.
+        scan_tail = (output or "")[-_FAILURE_SCAN_TAIL_CHARS:]
+
+        def _short(value: str) -> str:
+            """A quoted fragment of the child's output, kept to a readable length.
+
+            The capture is a run of non-whitespace, and nothing stops a wrapper on
+            LLAMA_SERVER_PATH from printing 64 KiB of it, so this is the bound that
+            keeps an API error the size of an error rather than the size of the
+            capture. _STARTUP_TAIL_CHARS bounds the surrounding diagnostics; this
+            bounds the one piece interpolated straight from the child.
+            """
+            value = value.strip()
+            return (
+                value
+                if len(value) <= _FAILURE_QUOTE_CHARS
+                else (value[:_FAILURE_QUOTE_CHARS] + "...")
+            )
+
+        unknown_arg = re.search(r"error:\s*invalid argument:\s*(\S+)", scan_tail, re.IGNORECASE)
+        if unknown_arg:
+            # Both owners in one sentence, because nothing reaching here says which
+            # one it was: Unsloth emits its own flags conditionally on the capability
+            # probe, and a binary swapped underneath a cached probe rejects one of
+            # those just as readily as it rejects a typo from the box. Sending every
+            # reader to the extra arguments would point most of them at a box they
+            # never opened.
+            return (
+                f"llama-server does not recognise the argument "
+                f"'{_short(unknown_arg.group(1))}'. Check it in this model's extra "
+                f"arguments, or reinstall llama.cpp if you did not set it."
+            )
+
+        bad_arg_value = re.search(
+            r'error while handling argument "([^"]+)":\s*([^\r\n]*)',
+            scan_tail,
+            re.IGNORECASE,
+        )
+        if bad_arg_value:
+            _arg = _short(bad_arg_value.group(1))
+            _why = _short(bad_arg_value.group(2) or "")
+            # "stoi" is what llama.cpp surfaces when std::stoi throws on a value
+            # that is not a number; nobody outside the C++ standard library reads
+            # that as an error message.
+            if _why.lower() in {"stoi", "stof", "stod", "stoul", "stoll"}:
+                _why = "the value is not a number"
+            _tail = f": {_why}" if _why else ""
+            # Whose flag it is decides the advice. Studio emits its own options
+            # conditionally on the capability probe, so a build that reads
+            # "--flash-attn on" differently rejects a value the box never held, and
+            # sending that reader to edit their extra arguments points them at a
+            # setting they cannot use to fix it. Named here only when the extras
+            # really do carry the flag; an alias spelling falls back to the neutral
+            # wording rather than guessing.
+            _owned_by_user = False
+            if extra_args:
+                from core.inference.llama_server_args import _flag_name
+                _failed_flag = _flag_name(_arg)
+                _owned_by_user = _failed_flag is not None and any(
+                    _flag_name(str(token)) == _failed_flag for token in extra_args
+                )
+            if _owned_by_user:
+                return (
+                    f"llama-server rejected the value for '{_arg}'{_tail}. Fix it in "
+                    f"the extra arguments for this model."
+                )
+            return (
+                f"llama-server rejected the value for '{_arg}'{_tail}. Check it in "
+                f"this model's extra arguments, or reinstall llama.cpp if you did "
+                f"not set it."
             )
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
@@ -15464,6 +15618,15 @@ class LlamaCppBackend:
                         "Model Memory owns placement; dropped inherited %s",
                         ", ".join(_mem_scrubbed),
                     )
+                # Same reasoning one level up: a flag validate_extra_args refuses has
+                # an env twin llama.cpp reads before argv, so denying the token alone
+                # would leave the capability reachable and unrecorded.
+                _denied_scrubbed = scrub_denied_env(env)
+                if _denied_scrubbed:
+                    logger.info(
+                        "dropped inherited %s: managed by Unsloth Studio",
+                        ", ".join(_denied_scrubbed),
+                    )
                 # Record what the child will ACTUALLY run with (env defaults plus
                 # last-wins argv), not just what Unsloth emitted, so the reload
                 # hint also catches a user-supplied --mlock / --no-mmap.
@@ -16046,6 +16209,7 @@ class LlamaCppBackend:
                             binary,
                             self._llama_log_path,
                             (self._api_key,),
+                            self._extra_args,
                         )
                         self._cleanup_failed_cpu_fallback()
                         self._vram_fraction_pending = None
@@ -16638,6 +16802,7 @@ class LlamaCppBackend:
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
+                                    self._extra_args,
                                 )
                                 _raise_terminal_load_failure(
                                     self._mmproj_retry_failure_message(
@@ -16674,6 +16839,7 @@ class LlamaCppBackend:
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
+                                    self._extra_args,
                                 )
                             )
 

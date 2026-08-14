@@ -334,6 +334,15 @@ class ValidateModelRequest(BaseModel):
         None, description = "Frontend-visible signed native path grant"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server args the follow-up /load will send. Sized with, "
+            "not validated here: a --ctx-size or cache override changes the memory this "
+            "preflight estimates, so omitting it would approve a different command from "
+            "the one that runs."
+        ),
+    )
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
@@ -857,6 +866,17 @@ class _InferenceRuntimeFields(BaseModel):
             "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
     )
+    requested_llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server arguments the running load was INVOKED "
+            "with, or None for a non-GGUF load and for a load that passed none. "
+            "Published so a client that attached to an already-running server "
+            "(a fresh tab, or another browser) knows what it is running: without "
+            "it, a rollback after a failed switch restores the previous model "
+            "without the arguments it had."
+        ),
+    )
 
 
 class LoadResponse(_InferenceRuntimeFields):
@@ -908,6 +928,71 @@ class LoadProgressResponse(BaseModel):
         description = "Total bytes across all GGUF shards for the active model.",
     )
     fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
+
+
+class LlamaFlagCatalogResponse(BaseModel):
+    """Every llama-server flag THIS build documents, for validating pass-through args.
+
+    Read from the installed binary's ``--help`` rather than a list bundled with
+    Unsloth: a custom or newer llama.cpp is exactly the case where a bundled list
+    would reject a flag that works, or accept one that does not exist.
+    """
+
+    flags: dict[str, str] = Field(
+        default_factory = dict,
+        description = "Flag name -> its help text, e.g. {'--top-k': 'top-k sampling ...'}",
+    )
+    managed: list[str] = Field(
+        default_factory = list,
+        description = "Flags Unsloth Studio owns; validate_extra_args rejects these outright",
+    )
+    switch_flags: list[str] = Field(
+        default_factory = list,
+        description = (
+            "Flags this build documents as taking no value, so an editor can tell "
+            "'--verbose foo' (which llama-server refuses) from '--numa distribute'"
+        ),
+    )
+    max_bytes: int = Field(
+        0,
+        description = (
+            "Size limit validate_extra_args applies on THIS host; smaller on Windows, "
+            "where the whole command line shares one 32767-character budget"
+        ),
+    )
+    windows_command_budget: int = Field(
+        0,
+        description = (
+            "Characters the quoted command may take on Windows, or 0 elsewhere. An "
+            "editor mirrors it because the quoting can double a backslash-heavy value."
+        ),
+    )
+    default_parallel_slots: int = Field(
+        1,
+        description = (
+            "Serving slots a load gets when it names none, the server-wide "
+            "--parallel. An editor needs it to judge a pass-through --batch-size: "
+            "llama-server aborts on a batch below the slots it serves, and with the "
+            "Slots field blank this is the number the launch will use."
+        ),
+    )
+    parallel_slots_clamped: bool = Field(
+        False,
+        description = (
+            "True when this build serves ONE slot however many are asked for, because "
+            "it has no --kv-unified and load_model falls back. The default above is "
+            "already effective, but an EXPLICIT Slots value is not: without this an "
+            "editor sizes its batch floor from a count the launch will not use, and "
+            "refuses a --batch-size the backend accepts."
+        ),
+    )
+    probe_ok: bool = Field(
+        False,
+        description = (
+            "False when --help could not be read. `flags` is then empty and callers "
+            "must not report a flag as unknown, only as unverified."
+        ),
+    )
 
 
 class InferenceStatusResponse(_InferenceRuntimeFields):

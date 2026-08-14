@@ -3238,13 +3238,16 @@ export function ChatPage({
           const previousConfig = currentRuntimePerModelConfig({
             includeMaxSeqLength: true,
           });
-          const hasAppliedConfig = applyModelLoadConfigToRuntime(
-            rememberedConfigFor(selection),
-          );
+          const remembered = rememberedConfigFor(selection);
+          const hasAppliedConfig = applyModelLoadConfigToRuntime(remembered);
           await selectModelRef.current({
             ...selection,
             ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
             previousConfig,
+            // As on the Hub launch: the runtime mirror carries no launch flags, and
+            // the handoff arrives from training with another model resident (or
+            // none), so there is nothing for /load to inherit them from.
+            ...(remembered ? { config: remembered } : {}),
           });
         };
         if (targetLora) {
