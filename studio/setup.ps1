@@ -5730,9 +5730,23 @@ if ($_verifyUpdate) {
                     if ([version]$_postNum -gt [version]$_latestNum) {
                         $_updateOk = $true
                     } elseif ([version]$_postNum -eq [version]$_latestNum) {
-                        # equal numeric prefixes: a pre/dev suffix orders BELOW the final
-                        # release (1.0rc1 < 1.0), while .post and +local order at-or-above
-                        $_updateOk = -not ($PostVer -match '^[0-9.]+[-._]?(a|b|c|rc|alpha|beta|pre|preview|dev)')
+                        # equal numeric prefixes: pre/dev orders BELOW the final release
+                        # and post ABOVE it, on either side -- an announced 1.0.post1 is
+                        # not satisfied by an installed 1.0, and within a class the
+                        # trailing number decides
+                        $_sufRank = {
+                            param($_v)
+                            $_rest = ($_v -replace '^[0-9.]+', '').ToLower()
+                            $_n = 0
+                            if ($_rest -match '(\d+)') { $_n = [int]$Matches[1] }
+                            if ($_rest -match '^[-._]?dev') { return @(-3, $_n) }
+                            if ($_rest -match '^[-._]?(a|b|c|rc|alpha|beta|pre|preview)') { return @(-2, $_n) }
+                            if ($_rest -match '^[-._]?post') { return @(1, $_n) }
+                            return @(0, $_n)
+                        }
+                        $_pr = & $_sufRank $PostVer
+                        $_lr = & $_sufRank $LatestVer
+                        $_updateOk = ($_pr[0] -gt $_lr[0]) -or (($_pr[0] -eq $_lr[0]) -and ($_pr[1] -ge $_lr[1]))
                     }
                 } catch {}
             }

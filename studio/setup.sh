@@ -2157,9 +2157,17 @@ try:
 except Exception:
     a, ra = split(sys.argv[1])
     b, rb = split(sys.argv[2])
-    # equal numeric prefixes: a pre/dev suffix orders BELOW the final release
-    # (1.0rc1 < 1.0), while .post and +local order at-or-above it
-    ok = a > b or (a == b and not re.match(r'[-._]?(a|b|c|rc|alpha|beta|pre|preview|dev)', ra))
+    def rank(rest):
+        m = re.search(r'\d+', rest)
+        n = int(m.group(0)) if m else 0
+        if re.match(r'[-._]?dev', rest): return (-3, n)
+        if re.match(r'[-._]?(a|b|c|rc|alpha|beta|pre|preview)', rest): return (-2, n)
+        if re.match(r'[-._]?post', rest): return (1, n)
+        return (0, n)
+    # equal numeric prefixes: pre/dev orders BELOW the final release and post
+    # ABOVE it, on either side -- an announced 1.0.post1 is not satisfied by an
+    # installed 1.0, and within a class the trailing number decides
+    ok = a > b or (a == b and rank(ra) >= rank(rb))
 sys.exit(0 if ok else 1)
 " "$POST_VER" "$LATEST_VER" 2>/dev/null; then
             # newer than announced is fine (a release can land mid-update); PEP 440
