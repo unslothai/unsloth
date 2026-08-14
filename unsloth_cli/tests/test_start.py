@@ -4027,6 +4027,25 @@ def test_no_server_no_model_hints_model_flag(fake_studio, monkeypatch):
     assert "--model" in result.output
 
 
+@pytest.mark.parametrize("url", ["https://studio.example.com", "https://127.0.0.1:8888"])
+def test_no_server_at_configured_url_reports_it_unreachable(fake_studio, monkeypatch, url):
+    # Neither hint applies here: UNSLOTH_STUDIO_URL is already set, and --model never
+    # auto-starts a server for a base like this.
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", url)
+    started = {"called": False}
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda *a, **k: started.__setitem__("called", True)
+    )
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
+    assert result.exit_code == 1
+    assert f"No running Unsloth server found at {url}" in result.output
+    assert "reachable" in result.output
+    assert "point UNSLOTH_STUDIO_URL" not in result.output
+    assert "--model" not in result.output
+    assert started["called"] is False
+
+
 @pytest.mark.parametrize(
     "base, expected",
     [

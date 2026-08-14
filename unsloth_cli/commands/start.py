@@ -1238,13 +1238,8 @@ def _require_studio(
     # only for a plain-HTTP loopback target: never stand in for an explicit remote
     # UNSLOTH_STUDIO_URL, and never for an https:// one -- `unsloth run` serves plain
     # HTTP, so the health poll against https would spin until the startup timeout.
-    if (
-        serve
-        and launch
-        and model
-        and is_loopback_url(expected)
-        and urlparse(expected).scheme == "http"
-    ):
+    autostartable = is_loopback_url(expected) and urlparse(expected).scheme == "http"
+    if serve and launch and model and autostartable:
         # Normalize to the port unsloth run actually binds, so the health poll and the
         # returned base hit the same server we launch (not a portless :80).
         expected = _effective_base(expected)
@@ -1253,10 +1248,17 @@ def _require_studio(
         # picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back
         # when that exact quant is missing, which forcing a fixed variant here would break.
         return expected, _start_studio_server(expected, model, load, server_options)
-    model_hint = "" if model else " Pass --model to have it start one for you, or"
+    # Not auto-startable means the base came from UNSLOTH_STUDIO_URL, so telling the
+    # operator to set it is no help: it is already set and did not answer.
+    if not autostartable:
+        _fail(
+            f"No running Unsloth server found at {expected} (from UNSLOTH_STUDIO_URL). "
+            "Check that the server is running and that the URL is reachable."
+        )
+    hint = "Start" if model else "Pass --model to have it start one for you, or start"
     _fail(
-        f"No running Unsloth server found at {expected}.{model_hint} start one with "
-        "`unsloth studio`, or point UNSLOTH_STUDIO_URL at a remote server."
+        f"No running Unsloth server found at {expected}. {hint} one with `unsloth studio`, "
+        "or point UNSLOTH_STUDIO_URL at a remote server."
     )
 
 
