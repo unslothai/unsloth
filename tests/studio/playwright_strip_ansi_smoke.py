@@ -22,8 +22,10 @@ from _playwright_robust import (  # noqa: E402
 
 # 8000 collides with whatever else is on a shared box; sit by chat (5193) and research (5183).
 PORT = int(os.environ.get("SMOKE_PORT", "5203"))
+# Unset: start and stop our own server. Set: drive that one and leave it running.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
+OWNS_SERVER = not _EXTERNAL
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright-ansi-smoke"))
 SECTIONS = (
     "tool-result-output",
@@ -41,10 +43,13 @@ def info(msg: str) -> None:
 
 def main() -> None:
     ART.mkdir(parents = True, exist_ok = True)
-    info(f"starting vite dev server on port {PORT}")
-    vite = start_vite(PORT)
+    if OWNS_SERVER:
+        info(f"starting vite dev server on port {PORT}")
+    vite = start_vite(PORT) if OWNS_SERVER else None
     try:
-        wait_for_smoke_page(f"{BASE}/smoke-ansi.html", "smoke-ansi-main.tsx", proc = vite, info = info)
+        wait_for_smoke_page(
+            f"{BASE}/smoke-ansi.html", "smoke-ansi-main.tsx", proc = vite, info = info
+        )
 
         with sync_playwright() as playwright:
             browser_name = os.environ.get("PW_BROWSER", "chromium").lower()
@@ -69,7 +74,8 @@ def main() -> None:
             info("all production panes rendered clean text (no ANSI escapes)")
             browser.close()
     finally:
-        stop_process(vite)
+        if vite is not None:
+            stop_process(vite)
 
 
 if __name__ == "__main__":
