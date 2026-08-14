@@ -40,7 +40,11 @@ def _reset_torch_runtime_probe():
 _MARK = stack_mod._TORCH_PROBE_MARKER
 
 
-def _probe_result(fields = "2.9.1+cu128||12.8", returncode = 0, raw = None):
+def _probe_result(
+    fields = "2.9.1+cu128||12.8",
+    returncode = 0,
+    raw = None,
+):
     """A probe stdout carrying our marked line, plus whatever chatter is asked for."""
     return MagicMock(
         returncode = returncode,
