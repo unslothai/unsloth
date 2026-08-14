@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -1319,6 +1329,47 @@ function EmptyDetail({
   );
 }
 
+// Delete sits next to the draft controls in the master-detail layout, where it
+// was previously hidden while editing. Deleting a dirty entry destroys the
+// stored copy and the only copy of the unsaved draft at once, so that case asks
+// first and says what is being lost.
+function UnsavedDeleteConfirm({
+  open,
+  onOpenChange,
+  kind,
+  name,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  kind: "prompt" | "list";
+  name: string;
+  onConfirm: () => void;
+}): ReactElement {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Delete {kind} with unsaved changes
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            <span className="font-medium text-foreground">&quot;{name}&quot;</span> has
+            unsaved edits. Deleting discards the saved {kind} and those edits together.
+            This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onConfirm}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function PromptDetail({
   entry,
   draft,
@@ -1340,6 +1391,7 @@ function PromptDetail({
   const togglePinnedPrompt = usePlusMenuPrefsStore((s) => s.togglePinnedPrompt);
   const isPinned = pinnedPromptIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const name = draft?.name ?? entry.name;
   const text = draft?.text ?? entry.text;
@@ -1385,6 +1437,7 @@ function PromptDetail({
     : entry;
 
   return (
+    <>
     <div className="flex h-full min-h-0 flex-col gap-3">
       <input
         value={name}
@@ -1440,7 +1493,7 @@ function PromptDetail({
         </button>
         <button
           type="button"
-          onClick={handleDelete}
+          onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
           title="Delete"
         >
@@ -1467,6 +1520,17 @@ function PromptDetail({
         </Button>
       </div>
     </div>
+    <UnsavedDeleteConfirm
+      open={confirmingDelete}
+      onOpenChange={setConfirmingDelete}
+      kind="prompt"
+      name={name.trim() || "Untitled Prompt"}
+      onConfirm={() => {
+        setConfirmingDelete(false);
+        void handleDelete();
+      }}
+    />
+    </>
   );
 }
 
@@ -1559,6 +1623,7 @@ function PromptListDetail({
   const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
   const isPinned = pinnedListIds.includes(entry.id);
   const [preview, setPreview] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const name = draft?.name ?? entry.name;
   const items = draft?.items ?? entry.items;
@@ -1615,6 +1680,7 @@ function PromptListDetail({
     : entry;
 
   return (
+    <>
     <div className="flex h-full min-h-0 flex-col gap-3">
       <input
         value={name}
@@ -1676,7 +1742,7 @@ function PromptListDetail({
         </button>
         <button
           type="button"
-          onClick={handleDelete}
+          onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
           title="Delete"
         >
@@ -1705,6 +1771,17 @@ function PromptListDetail({
         )}
       </div>
     </div>
+    <UnsavedDeleteConfirm
+      open={confirmingDelete}
+      onOpenChange={setConfirmingDelete}
+      kind="list"
+      name={name.trim() || "Untitled List"}
+      onConfirm={() => {
+        setConfirmingDelete(false);
+        void handleDelete();
+      }}
+    />
+    </>
   );
 }
 
@@ -2142,13 +2219,16 @@ export function PromptStorageDialog({
               detail actions behind its overflow-hidden. max(0px,...) keeps the
               value legal when the viewport is shorter than the chrome. Below
               `sm` the rail stacks above the detail pane instead of squeezing
-              it, and that stacked rail row carries no fixed minimum: a hard one
-              would re-introduce the overflow the floor above just removed,
-              since the row plus the gap can exceed the whole floor on a short
-              viewport. */}
-          <div className="flex-1 min-h-[max(0px,min(420px,calc(94dvh_-_13rem)))] px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(0,30%)_minmax(0,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
+              it. Each pane keeps the minimum its own non-shrinking chrome needs
+              (rail: new button and count footer; detail: name field, metadata
+              and the action row) rather than being squeezed to nothing, and the
+              body scrolls when those minimums do not fit. Shrinking the tracks
+              alone was not enough -- the tracks got smaller but their contents
+              did not, so the chrome spilled into DialogContent's clipping
+              region instead. */}
+          <div className="flex-1 min-h-[max(0px,min(420px,calc(94dvh_-_13rem)))] overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(132px,30%)_minmax(272px,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
-            <div className="flex min-h-0 flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
+            <div className="flex min-h-[132px] flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2229,7 +2309,7 @@ export function PromptStorageDialog({
             </div>
 
             {/* */}
-            <div className="min-h-0 rounded-xl border border-border/60 bg-card p-4">
+            <div className="min-h-[272px] rounded-xl border border-border/60 bg-card p-4">
               {activeTab === "prompts" &&
                 (showNewPrompt ? (
                   <NewPromptForm
