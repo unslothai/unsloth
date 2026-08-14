@@ -387,20 +387,41 @@ class TestOverheadTotal:
             == draft_kv + 2 * base
         )
 
-    def test_separate_drafter_does_not_add_embedded_target_rollback_state(self, monkeypatch):
+    def test_a_separate_drafter_pays_the_same_target_rollback_state(self, monkeypatch):
+        # The rollback copies live in the TARGET context, and llama.cpp sizes them
+        # from --spec-draft-n-max for every draft-model type (need_n_rs_seq), so a
+        # sidecar drafter costs the Hybrid Mamba target exactly what an embedded
+        # head does. draft-simple is the one engaged mode that gets none, which is
+        # what the caller reports through target_rollback.
         b = _make_backend(n_layers = 65)
         b._ssm_state_size = 128
         b._ssm_group_count = 16
         b._ssm_conv_kernel = 4
         stub = _StubDrafter(kv_per_token = 2000)
         monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
+        base = b._mamba_recurrent_state_bytes(n_parallel = 4)
+        draft_kv = stub._estimate_kv_cache_bytes(4096, n_parallel = 4)
+        assert base > 0
 
-        assert b._estimate_mtp_overhead_bytes(
-            4096,
-            drafter_path = "/m/d.gguf",
-            spec_draft_n_max = 2,
-            n_parallel = 4,
-        ) == stub._estimate_kv_cache_bytes(4096, n_parallel = 4)
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+            )
+            == draft_kv + 2 * base
+        )
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                4096,
+                drafter_path = "/m/d.gguf",
+                spec_draft_n_max = 2,
+                n_parallel = 4,
+                target_rollback = False,
+            )
+            == draft_kv
+        )
 
 
 # ---------------------------------------------------------------------------

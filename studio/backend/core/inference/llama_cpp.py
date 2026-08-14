@@ -7798,6 +7798,7 @@ class LlamaCppBackend:
         draft_weights_bytes: int = 0,
         n_parallel: int = 1,
         mtp_keeps_target_ctx: bool = True,
+        target_rollback: bool = True,
         swa_full: bool = False,
         kv_unified: bool = True,
         n_ubatch: Optional[int] = None,
@@ -7811,7 +7812,10 @@ class LlamaCppBackend:
         ``draft_weights_bytes`` is the drafter file size (0 for embedded).
         ``mtp_keeps_target_ctx`` is True for MTP draft modes (which keep the
         duplicated target context) and False for separate-drafter spec modes
-        (draft-simple/draft-eagle3), which do not."""
+        (draft-simple/draft-eagle3), which do not. ``target_rollback`` is the
+        wider set: every draft-model type llama.cpp gives the target n_rs_seq for
+        (draft-mtp/eagle3/dflash/dspark), which is all of them but draft-simple.
+        Both default to charging, so an unsure caller over-reserves."""
         draft_kv = self._mtp_draft_kv_bytes(
             n_ctx,
             drafter_path = drafter_path,
@@ -7847,11 +7851,16 @@ class LlamaCppBackend:
                 flash_attn = flash_attn,
             )
         # Hybrid Mamba targets keep one recurrent state in the normal target
-        # context, counted by _estimate_kv_cache_bytes. MTP verification adds one
-        # rollback copy for every drafted token. This is the dominant hidden cost
-        # on Qwen3.5/3.8 at multiple parallel slots.
+        # context, counted by _estimate_kv_cache_bytes. Verification adds one
+        # rollback copy for every drafted token: llama.cpp gives the TARGET
+        # context n_rs_seq = --spec-draft-n-max for draft-mtp, draft-eagle3,
+        # draft-dflash and draft-dspark alike (common_params_speculative::
+        # need_n_rs_seq), so a separate drafter file pays it exactly like the
+        # embedded head -- ``target_rollback``, not ``drafter_path``, decides.
+        # draft-simple and the ngram types get 0 there. This is the dominant
+        # hidden cost on Qwen3.5/3.8 at multiple parallel slots.
         target_recurrent_copies = 0
-        if mtp_keeps_target_ctx and not drafter_path and spec_draft_n_max > 0:
+        if target_rollback and spec_draft_n_max > 0:
             base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
             target_recurrent_copies = base_recurrent * spec_draft_n_max
         if draft_kv is None:
@@ -13818,6 +13827,20 @@ class LlamaCppBackend:
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
+                    # The recurrent rollback copies are a WIDER set than that copy:
+                    # llama.cpp gives the target n_rs_seq for draft-mtp, draft-eagle3,
+                    # draft-dflash and draft-dspark, so DSpark/DFlash pay it too and a
+                    # separate drafter file pays it exactly like an embedded head.
+                    # draft-simple is the one engaged draft mode that does not.
+                    _target_rollback = bool(
+                        _auto_studio_mtp
+                        or _user_mtp_via_extras
+                        or (
+                            _user_draft_via_extras
+                            and "draft-eagle3"
+                            in _accumulated_spec_types(extra_args, env = _spec_env)
+                        )
+                    )
 
                     # Effective draft depth: extras win (last-wins at launch), else
                     # the field, else the platform default (2 GPU / 3 CPU).
@@ -13903,6 +13926,7 @@ class LlamaCppBackend:
                                 draft_weights_bytes = _mtp_draft_weights,
                                 n_parallel = n_parallel,
                                 mtp_keeps_target_ctx = _engaged_is_mtp,
+                                target_rollback = _target_rollback,
                                 swa_full = swa_full,
                                 kv_unified = planned_kv_unified,
                                 n_ubatch = _effective_ubatch,
@@ -13923,6 +13947,7 @@ class LlamaCppBackend:
                                 _w: int = _mtp_draft_weights,
                                 _np: int = n_parallel,
                                 _mtp: bool = _engaged_is_mtp,
+                                _rollback: bool = _target_rollback,
                                 _swa_full: bool = swa_full,
                                 _kv_unified: bool = planned_kv_unified,
                                 _n_ubatch: Optional[int] = _effective_ubatch,
@@ -13937,6 +13962,7 @@ class LlamaCppBackend:
                                     draft_weights_bytes = _w,
                                     n_parallel = _np,
                                     mtp_keeps_target_ctx = _mtp,
+                                    target_rollback = _rollback,
                                     swa_full = _swa_full,
                                     kv_unified = _kv_unified,
                                     n_ubatch = _n_ubatch,
