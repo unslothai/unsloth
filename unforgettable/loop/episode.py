@@ -39,7 +39,7 @@ from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
 from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import resolve_test_command
-from unforgettable.store.compile import format_standing, list_standing
+from unforgettable.store.compile import list_standing, pack_standing
 from unforgettable.store.records import (
     insert_inject_stats,
     insert_record,
@@ -138,18 +138,18 @@ def _inject_bundle(
     db_path: str,
 ) -> str:
     standing_rows = [] if skip_standing else list_standing(db_path)
-    compiled_ids = {row["id"] for row in standing_rows}
+    standing_text, kept_rows = pack_standing(standing_rows)
+    compiled_ids = {row["id"] for row in kept_rows}
     policy = RetrievePolicy(
         high_stakes=stakes == "high",
         exclude_ids=frozenset(compiled_ids),
     )
     retrieved = retrieve(query, policy=policy, db_path=db_path)
-    standing_text = format_standing(standing_rows)
     retrieve_text = format_inject(retrieved, policy=policy)
     inject = "\n\n".join(
         part for part in (_MEMORY_PREAMBLE, standing_text, retrieve_text) if part
     )
-    use_ids = [] if skip_standing else [row["id"] for row in standing_rows]
+    use_ids = [] if skip_standing else [row["id"] for row in kept_rows]
     use_ids.extend(row["id"] for row in retrieved)
     for record_id in use_ids:
         insert_retrieve_use(
@@ -165,7 +165,7 @@ def _inject_bundle(
         retrieve_chars=len(retrieve_text),
         trajectory_chars=0,
         total_chars=len(inject),
-        compiled_ids=",".join(row["id"] for row in standing_rows),
+        compiled_ids=",".join(row["id"] for row in kept_rows),
         retrieved_ids=",".join(row["id"] for row in retrieved),
         db_path=db_path,
     )

@@ -190,34 +190,59 @@ def _clip_text(text: str, limit: int) -> str:
     return text[: limit - len(_ELLIPSIS)] + _ELLIPSIS
 
 
-def _standing_section(rec: dict[str, Any]) -> str:
+def _section_parts(rec: dict[str, Any], *, body_chars: int) -> tuple[str, str, str]:
     rid = rec["id"]
-    title = rec.get("title") or ""
-    body = _clip_text((rec.get("body") or "").strip(), COMPILE_BODY_CHARS)
-    lines = [f"### [{rid[:8]}] {title}"]
+    heading = f"### [{rid[:8]}] {rec.get('title') or ''}"
+    body = _clip_text((rec.get("body") or "").strip(), body_chars)
+    return heading, body, f"Source: {rid}"
+
+
+def _join_section(heading: str, body: str, source: str) -> str:
+    lines = [heading]
     if body:
         lines.append(body)
     lines.append("")
-    lines.append(f"Source: {rid}")
+    lines.append(source)
     return "\n".join(lines)
+
+
+def _standing_section(rec: dict[str, Any]) -> str:
+    heading, body, source = _section_parts(rec, body_chars=COMPILE_BODY_CHARS)
+    return _join_section(heading, body, source)
+
+
+def pack_standing(
+    rows: list[dict[str, Any]], *, max_chars: int = STANDING_MAX_CHARS
+) -> tuple[str, list[dict[str, Any]]]:
+    if not rows:
+        return "", []
+    heading, _, source = _section_parts(rows[0], body_chars=COMPILE_BODY_CHARS)
+    leftover = max_chars - len(STANDING_HEADER) - 1
+    reserved = len(heading) + 2 + len(source)
+    if leftover > reserved:
+        body = _clip_text(
+            (rows[0].get("body") or "").strip(),
+            min(COMPILE_BODY_CHARS, leftover - reserved),
+        )
+    else:
+        body = ""
+    first = _join_section(heading, body, source)
+    blocks = [first]
+    kept = [rows[0]]
+    used = len(STANDING_HEADER) + 1 + len(first)
+    for rec in rows[1:]:
+        section = _standing_section(rec)
+        extra = 2 + len(section)
+        if used + extra > max_chars:
+            break
+        blocks.append(section)
+        kept.append(rec)
+        used += extra
+    return STANDING_HEADER + "\n" + "\n\n".join(blocks), kept
 
 
 def format_standing(
     rows: list[dict[str, Any]], *, max_chars: int = STANDING_MAX_CHARS
 ) -> str:
-    if not rows:
-        return ""
-    sections = [_standing_section(rec) for rec in rows]
-    first = sections[0]
-    leftover = max_chars - len(STANDING_HEADER) - 1
-    if leftover > 0 and len(first) > leftover:
-        first = _clip_text(first, leftover)
-    blocks = [first]
-    used = len(STANDING_HEADER) + 1 + len(first)
-    for section in sections[1:]:
-        extra = 2 + len(section)
-        if used + extra > max_chars:
-            break
-        blocks.append(section)
-        used += extra
-    return STANDING_HEADER + "\n" + "\n\n".join(blocks)
+    text, _ = pack_standing(rows, max_chars=max_chars)
+    return text

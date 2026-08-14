@@ -520,3 +520,27 @@ def list_inject_stats(*, limit: int = 20, db_path=None) -> list[dict[str, Any]]:
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def list_retrieve_uses(
+    *,
+    episode_id: Optional[str] = None,
+    limit: int = 50,
+    db_path=None,
+) -> list[dict[str, Any]]:
+    clauses = []
+    args: list[Any] = []
+    if episode_id:
+        clauses.append("episode_id = ?")
+        args.append(episode_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    args.append(limit)
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM retrieve_uses {where} ORDER BY created_at ASC, id ASC LIMIT ?",
+            args,
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        conn.close()

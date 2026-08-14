@@ -37,7 +37,9 @@ from unforgettable.store.compile import pin_compiled
 from unforgettable.store.records import (
     get_record,
     insert_record,
+    list_inject_stats,
     list_records,
+    list_retrieve_uses,
     list_rollouts,
 )
 from unforgettable.store.search import search_records
@@ -558,7 +560,7 @@ def test_episode_standing_excludes_from_retrieve(tmp_path: Path):
     )
     pin_compiled(rec["id"], explicit=True, db_path=tmp_path / "memory.db")
     host = FakeHost(tmp_path, [_ok("ok", "world")])
-    asyncio.run(
+    outcome = asyncio.run(
         run(
             host,
             EpisodeRequest(
@@ -572,6 +574,23 @@ def test_episode_standing_excludes_from_retrieve(tmp_path: Path):
     header = "Durable memories relevant to this task:"
     if header in system:
         assert rec["title"] not in system.split(header, 1)[1]
+    use_ids = {
+        row["record_id"]
+        for row in list_retrieve_uses(
+            episode_id=outcome.state.episode_id, db_path=host.db
+        )
+    }
+    assert rec["id"] in use_ids
+    stats = list_inject_stats(db_path=host.db)
+    assert len(stats) == 1
+    assert stats[0]["episode_id"] == outcome.state.episode_id
+    assert stats[0]["trajectory_chars"] == 0
+    assert stats[0]["total_chars"] == len(system)
+    assert rec["id"] in stats[0]["compiled_ids"].split(",")
+    retrieved_ids = [
+        part for part in stats[0]["retrieved_ids"].split(",") if part
+    ]
+    assert rec["id"] not in retrieved_ids
 
 
 def test_episode_skip_standing(tmp_path: Path):
@@ -584,7 +603,7 @@ def test_episode_skip_standing(tmp_path: Path):
     )
     pin_compiled(rec["id"], explicit=True, db_path=tmp_path / "memory.db")
     host = FakeHost(tmp_path, [_ok("ok", "world")])
-    asyncio.run(
+    outcome = asyncio.run(
         run(
             host,
             EpisodeRequest(
@@ -595,3 +614,58 @@ def test_episode_skip_standing(tmp_path: Path):
     )
     system = host.last_messages[0]["content"]
     assert "Standing procedures" not in system
+    uses = list_retrieve_uses(episode_id=outcome.state.episode_id, db_path=host.db)
+    use_ids = {row["record_id"] for row in uses}
+    assert rec["id"] in use_ids
+    stats = list_inject_stats(db_path=host.db)
+    assert len(stats) == 1
+    assert stats[0]["standing_chars"] == 0
+    assert stats[0]["trajectory_chars"] == 0
+    assert stats[0]["total_chars"] == len(system)
+    assert stats[0]["compiled_ids"] == ""
+    assert rec["id"] in stats[0]["retrieved_ids"].split(",")
+
+
+def test_episode_standing_overflow_still_retrieved(tmp_path: Path):
+    db = tmp_path / "memory.db"
+    older = insert_record(
+        kind="procedure",
+        title="Older compiled playbook",
+        body="O" * 800,
+        provenance="world",
+        db_path=db,
+    )
+    pin_compiled(older["id"], explicit=True, db_path=db)
+    newer = insert_record(
+        kind="procedure",
+        title="Newer compiled playbook",
+        body="N" * 800,
+        provenance="world",
+        db_path=db,
+    )
+    pin_compiled(newer["id"], explicit=True, db_path=db)
+    host = FakeHost(tmp_path, [_ok("ok", "world")])
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "compiled playbook"}]
+            ),
+        )
+    )
+    system = host.last_messages[0]["content"]
+    assert f"Source: {newer['id']}" in system
+    assert f"Source: {older['id']}" not in system
+    header = "Durable memories relevant to this task:"
+    assert header in system
+    after = system.split(header, 1)[1]
+    assert older["title"] in after
+    assert newer["title"] not in after
+    use_ids = {
+        row["record_id"]
+        for row in list_retrieve_uses(
+            episode_id=outcome.state.episode_id, db_path=host.db
+        )
+    }
+    assert newer["id"] in use_ids
+    assert older["id"] in use_ids

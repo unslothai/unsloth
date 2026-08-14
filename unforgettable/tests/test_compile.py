@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import pytest
 
+from unforgettable.agents.retriever import RetrievePolicy, retrieve
 from unforgettable.store.compile import (
     format_standing,
     get_compiled,
     list_standing,
+    pack_standing,
     pin_compiled,
     refresh_compiled,
 )
@@ -113,3 +115,35 @@ def test_standing_max_chars_keeps_first_section(db_path):
     assert len(full) > 200
     assert "###" in text
     assert rec["title"] in text
+    assert f"Source: {rec['id']}" in text
+
+
+def test_standing_overflow_stays_fts_eligible(db_path):
+    older = insert_record(
+        kind="procedure",
+        title="Older compiled playbook",
+        body="O" * 800,
+        provenance="world",
+        db_path=db_path,
+    )
+    pin_compiled(older["id"], explicit=True, db_path=db_path)
+    newer = insert_record(
+        kind="procedure",
+        title="Newer compiled playbook",
+        body="N" * 800,
+        provenance="world",
+        db_path=db_path,
+    )
+    pin_compiled(newer["id"], explicit=True, db_path=db_path)
+    text, kept = pack_standing(list_standing(db_path))
+    kept_ids = {row["id"] for row in kept}
+    assert newer["id"] in kept_ids
+    assert older["id"] not in kept_ids
+    assert f"Source: {newer['id']}" in text
+    assert older["title"] not in text
+    hits = retrieve(
+        older["title"],
+        policy=RetrievePolicy(exclude_ids=frozenset(kept_ids)),
+        db_path=db_path,
+    )
+    assert any(hit["id"] == older["id"] for hit in hits)
