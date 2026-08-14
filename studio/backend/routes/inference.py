@@ -6743,6 +6743,30 @@ def _resolve_parallel_slots(request, fastapi_request: Optional[Request]) -> int:
     return getattr(state, "llama_parallel_slots", 1)
 
 
+def _effective_parallel_slots(n_parallel: int, *, diffusion_kind: Optional[bool] = None) -> int:
+    """Slots the launch will actually serve, after the clamps load_model applies.
+
+    A build without --kv-unified splits the context window per slot, so load_model
+    falls back to one; the diffusion runner receives no --parallel at all. Anything
+    sized or refused against the asked-for count instead of this one is judging a
+    command that will not launch: the batch floor in particular would refuse
+    "--batch-size 2" against a four-slot default on a build that serves one.
+    """
+    if n_parallel <= 1:
+        return max(1, n_parallel)
+    if diffusion_kind is True:
+        return 1  # allow-slot-clamp: diffusion never receives --parallel
+    try:
+        caps = LlamaCppBackend.probe_server_capabilities()
+        if caps.get("found") and not caps.get("supports_kv_unified"):
+            return 1  # allow-slot-clamp: mirrors the load_model clamp
+    except Exception as exc:
+        # Unreadable capabilities are not a reason to refuse anything: keep the ask,
+        # which is what every other caller of the probe here does.
+        logger.warning("Could not probe llama-server slots: %s", exc)
+    return n_parallel
+
+
 async def _prepare_load_placement(
     config: ModelConfig,
     request: LoadRequest | ValidateModelRequest,
@@ -8040,7 +8064,16 @@ async def _load_model_impl(
             # has already unloaded the previous model.
             from core.inference.llama_server_args import check_batch_floor
             try:
-                check_batch_floor(extra_llama_args, _n_parallel)
+                check_batch_floor(
+                    extra_llama_args,
+                    # The count that will launch, not the one asked for: a build
+                    # without --kv-unified serves one slot however many were
+                    # requested, and refusing a batch of 2 against it is a 400 on a
+                    # command that would have run.
+                    _effective_parallel_slots(
+                        _n_parallel, diffusion_kind = placement.diffusion_kind
+                    ),
+                )
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
@@ -8783,6 +8816,30 @@ async def validate_model(
                 model_log_label,
             )
             effective_extra_args = []
+        if config.is_gguf and effective_extra_args:
+            # The same two checks /load runs, here because the picker treats a
+            # successful validate as permission to unload the model it is replacing.
+            # Without them a remembered list that this build no longer accepts (a
+            # flag denied since it was saved, a batch below the slot floor) passed
+            # the preflight, the running model went away, and /load then answered
+            # 400: a failed switch and a rollback instead of a refusal with nothing
+            # disturbed.
+            from core.inference.llama_server_args import (
+                check_batch_floor,
+                validate_extra_args,
+            )
+
+            try:
+                validate_extra_args(effective_extra_args)
+                check_batch_floor(
+                    effective_extra_args,
+                    _effective_parallel_slots(
+                        _resolve_parallel_slots(request, fastapi_request),
+                        diffusion_kind = placement.diffusion_kind,
+                    ),
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -9777,7 +9834,12 @@ async def get_llama_flags(
         # reads it. An editor cannot see this number, and llama-server aborts on a
         # batch below the slots it serves, so without it a pass-through -b 2 looks
         # fine here and takes down a launch that runs four slots.
-        "default_parallel_slots": _resolve_parallel_slots(_NoParallelRequest(), fastapi_request),
+        # The effective count, after the clamps the launch applies: a build without
+        # --kv-unified serves one slot however many are configured, and an editor
+        # sizing its batch floor from the raw default would refuse a batch that runs.
+        "default_parallel_slots": _effective_parallel_slots(
+            _resolve_parallel_slots(_NoParallelRequest(), fastapi_request)
+        ),
     }
 
     if managed_only:

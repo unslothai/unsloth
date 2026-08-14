@@ -99,3 +99,58 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestValidateRefusesWhatLoadWouldRefuse(unittest.TestCase):
+    """The picker unloads the running model once /validate approves the switch, so a
+    list /load would answer 400 on has to be refused here instead: a refusal leaves
+    the current model alone, a failed switch does not."""
+
+    def _validate(self, route, *, extra_args, n_parallel = None, diffusion_kind = False):
+        request = ValidateModelRequest(
+            model_path = "someone/gguf",
+            llama_extra_args = extra_args,
+            n_parallel = n_parallel,
+        )
+        config = SimpleNamespace(
+            identifier = "someone/gguf",
+            display_name = "gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = None,
+        )
+        with (
+            patch.object(
+                route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("someone/gguf", "someone/gguf", False),
+            ),
+            patch.object(route.ModelConfig, "from_identifier", return_value = config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = extra_args),
+            patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value = True),
+            patch.object(route, "_effective_parallel_slots", side_effect = lambda n, **_: n),
+            patch.object(route, "_guard_chat_load_against_training", new = lambda *a, **k: None),
+        ):
+            return asyncio.run(route.validate_model(request, current_subject = "test-user"))
+
+    def test_a_denied_flag_is_refused_before_the_switch(self):
+        route = _load_route_module("inf_route_validate_denies_1")
+        with self.assertRaises(Exception) as caught:
+            self._validate(route, extra_args = ["--agent"])
+        self.assertEqual(getattr(caught.exception, "status_code", None), 400)
+        self.assertIn("managed by Unsloth Studio", str(caught.exception.detail))
+
+    def test_a_batch_below_the_slot_floor_is_refused_before_the_switch(self):
+        route = _load_route_module("inf_route_validate_denies_2")
+        with self.assertRaises(Exception) as caught:
+            self._validate(route, extra_args = ["-b", "2"], n_parallel = 4)
+        self.assertEqual(getattr(caught.exception, "status_code", None), 400)
+        self.assertIn("aborts on --batch-size", str(caught.exception.detail))
+
+    def test_a_list_the_load_would_accept_still_passes(self):
+        route = _load_route_module("inf_route_validate_denies_3")
+        resp = self._validate(route, extra_args = ["--numa", "distribute"], n_parallel = 4)
+        self.assertTrue(resp.is_gguf)

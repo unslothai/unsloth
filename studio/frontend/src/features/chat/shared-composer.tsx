@@ -1584,6 +1584,13 @@ export function SharedComposer({
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          // What this pane's launch is running, for a later rollback: the status
+          // applier is held off for the whole load, so nothing else records it, and
+          // a switch straight after would snapshot the other model's list.
+          loadedLlamaExtraArgs:
+            resp.requested_llama_extra_args !== undefined
+              ? (resp.requested_llama_extra_args ?? [])
+              : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,

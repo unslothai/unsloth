@@ -144,3 +144,25 @@ test("the hidden hydration check knows the slot floor", () => {
   // reaches that 400.
   assert.match(PANEL, /batchFloor: Math\.max\(\s*\n?\s*2,\s*\n?\s*configRef\.current\.nParallel \?\? managed\?\.defaultParallelSlots/);
 });
+
+const ADAPTER_AUTOLOAD = ADAPTER;
+
+test("an auto-load records what it launched with", () => {
+  // The model-loading lease is held for the whole of this load, which is the guard
+  // that stops the status applier writing the baseline, so nothing else records it:
+  // an immediate switch would snapshot the previous model's list, and a failed
+  // switch would then restore this one with the wrong arguments.
+  assert.match(
+    ADAPTER_AUTOLOAD,
+    /loadedLlamaExtraArgs:\s*\n?\s*loadResp\.requested_llama_extra_args !== undefined/,
+  );
+  // And a non-GGUF load clears it rather than leaving a GGUF's list standing.
+  assert.match(ADAPTER_AUTOLOAD, /loadedLlamaExtraArgs: null,/);
+});
+
+test("a compare pane records what it launched with", () => {
+  assert.match(
+    COMPOSER,
+    /loadedLlamaExtraArgs:\s*\n?\s*resp\.requested_llama_extra_args !== undefined/,
+  );
+});

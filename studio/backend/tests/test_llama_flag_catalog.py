@@ -229,3 +229,43 @@ def test_the_denylist_can_be_read_without_probing(monkeypatch):
     assert result.flags == {}
     # Nothing was checked against a binary, so nothing may be called a typo.
     assert result.probe_ok is False
+
+
+def test_the_published_slot_default_is_the_effective_one(monkeypatch):
+    # A build without --kv-unified serves one slot however many are configured, and
+    # load_model clamps to that before launch. An editor sizing its batch floor from
+    # the raw default would refuse "--batch-size 2" against a command that runs it.
+    import routes.inference as inference_route
+
+    monkeypatch.setattr(
+        inference_route.LlamaCppBackend,
+        "probe_server_capabilities",
+        staticmethod(lambda *a, **k: {"found": True, "supports_kv_unified": False}),
+    )
+    assert inference_route._effective_parallel_slots(4) == 1
+    # With the flag the ask stands, and one slot is already the floor.
+    monkeypatch.setattr(
+        inference_route.LlamaCppBackend,
+        "probe_server_capabilities",
+        staticmethod(lambda *a, **k: {"found": True, "supports_kv_unified": True}),
+    )
+    assert inference_route._effective_parallel_slots(4) == 4
+    assert inference_route._effective_parallel_slots(1) == 1
+    # The diffusion runner receives no --parallel at all.
+    assert inference_route._effective_parallel_slots(4, diffusion_kind = True) == 1
+
+
+def test_an_unreadable_probe_keeps_the_asked_for_slot_count(monkeypatch):
+    # Refusing to answer is not a reason to clamp: every other caller of the probe
+    # here keeps the ask when it cannot be read.
+    import routes.inference as inference_route
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("no binary")
+
+    monkeypatch.setattr(
+        inference_route.LlamaCppBackend,
+        "probe_server_capabilities",
+        staticmethod(_boom),
+    )
+    assert inference_route._effective_parallel_slots(4) == 4

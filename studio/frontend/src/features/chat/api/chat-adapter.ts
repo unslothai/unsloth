@@ -3029,6 +3029,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          // What this launch is running, for a later rollback. The status applier
+          // cannot seed it: the model-loading lease is held for the whole of this
+          // load, which is exactly the guard that stops a mid-switch poll writing
+          // here. Without it an immediate switch snapshots the previous model's
+          // list, and a failed switch restores this one with the wrong arguments.
+          loadedLlamaExtraArgs:
+            loadResp.requested_llama_extra_args !== undefined
+              ? (loadResp.requested_llama_extra_args ?? [])
+              : (resolvedExtraArgs ?? null),
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           ...loadedGpuMemoryFields(loadResp),
@@ -3065,6 +3074,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: null,
           nUbatch: null,
           loadedNUbatch: null,
+          // Same reason, and the baseline has to be cleared rather than left: a
+          // rollback to THIS model must not resend a GGUF's arguments.
+          loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
