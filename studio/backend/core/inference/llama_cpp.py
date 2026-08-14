@@ -18241,35 +18241,37 @@ class LlamaCppBackend:
                 yield response, first_token_deadline
 
     @staticmethod
-    def _is_prompt_progress_only_chunk(chunk: str) -> bool:
-        """Return true when an SSE transport chunk contains prompt progress and no output."""
-        saw_progress = False
-        for line in chunk.splitlines():
-            if not line.startswith("data:"):
+    def _sse_event_has_generated_output(event: str) -> bool:
+        """Return true when a complete SSE event carries model-generated output."""
+        payload_lines = [
+            line[5:].lstrip()
+            for line in event.splitlines()
+            if line.startswith("data:")
+        ]
+        if not payload_lines:
+            return False
+        try:
+            data = json.loads("\n".join(payload_lines))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if data.get("type") == "diffusion_frame":
+            return True
+        choices = data.get("choices")
+        if not isinstance(choices, list):
+            return False
+        for choice in choices:
+            if not isinstance(choice, dict):
                 continue
-            payload = line[5:].strip()
-            if not payload:
-                continue
-            try:
-                data = json.loads(payload)
-            except (TypeError, json.JSONDecodeError):
-                return False
-            if not isinstance(data, dict) or not isinstance(data.get("prompt_progress"), dict):
-                return False
-            choices = data.get("choices")
-            if isinstance(choices, list):
-                for choice in choices:
-                    if not isinstance(choice, dict):
-                        continue
-                    if choice.get("finish_reason"):
-                        return False
-                    delta = choice.get("delta")
-                    if isinstance(delta, dict) and any(
-                        value not in (None, "", []) for key, value in delta.items() if key != "role"
-                    ):
-                        return False
-            saw_progress = True
-        return saw_progress
+            delta = choice.get("delta")
+            if isinstance(delta, dict) and any(
+                value not in (None, "", []) for key, value in delta.items() if key != "role"
+            ):
+                return True
+            if choice.get("text") not in (None, ""):
+                return True
+        return False
 
     @staticmethod
     def _iter_text_cancellable(
@@ -18284,6 +18286,7 @@ class LlamaCppBackend:
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
         last_chunk_at: Optional[float] = None
+        prefill_sse_buffer = ""
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
@@ -18295,7 +18298,17 @@ class LlamaCppBackend:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
                     LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
                 chunk = next(text_iter)
-                if chunk and not LlamaCppBackend._is_prompt_progress_only_chunk(chunk):
+                starts_output = last_chunk_at is not None
+                if chunk and last_chunk_at is None:
+                    prefill_sse_buffer += chunk
+                    while match := re.search(r"(?:\r\n|\r|\n){2}", prefill_sse_buffer):
+                        event = prefill_sse_buffer[: match.start()]
+                        prefill_sse_buffer = prefill_sse_buffer[match.end() :]
+                        if LlamaCppBackend._sse_event_has_generated_output(event):
+                            starts_output = True
+                            prefill_sse_buffer = ""
+                            break
+                if chunk and starts_output:
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,
