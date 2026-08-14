@@ -1793,6 +1793,48 @@ if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
+# Payload-presence probe, shared by the fast-path escape and the post-update check
+# (mirrors $_pkgProbeCode in setup.ps1). __MISSING__ only when the metadata
+# positively reports no such package or its payload is gone: a leftover dist-info
+# with the payload deleted still reports a version, so metadata only counts when
+# every recorded top-level module resolves to real files -- the wheel records
+# studio, unsloth and unsloth_cli, and a partial quarantine that leaves one behind
+# must still read as broken. An emptied package directory still answers find_spec
+# as a namespace package (origin None), so a top level whose recorded initializer
+# sits in RECORD must resolve with an origin; one recorded without an initializer
+# is namespace by design and keeps the bare spec test. RECORD is read as text, not
+# through d.files: 3.14+ filters d.files to files that exist, which would blind
+# both the initializer set and the no-top_level fallback to exactly the deletions
+# they look for. The POSTVER= sentinel keeps a printing sitecustomize or .pth
+# hook out of the caller's exact compares: -I implies -E/-P/-s only, so site
+# hooks still run.
+_PKG_PROBE_PY="
+import csv, importlib.util, sys
+from importlib.metadata import distribution, PackageNotFoundError
+from pathlib import PurePosixPath
+try:
+    d = distribution(sys.argv[1])
+except PackageNotFoundError:
+    print('POSTVER=__MISSING__')
+    sys.exit(0)
+tops = (d.read_text('top_level.txt') or '').split()
+rec = [PurePosixPath(r[0]) for r in csv.reader((d.read_text('RECORD') or '').splitlines()) if r and r[0]]
+# stem/suffix rather than the joined name: a bare filename literal inside an
+# installer reads as an invoked helper to the guard in
+# tests/test_installer_interactive_prompts.py, which resolves it against the
+# script's own directory and lands on the real package initializer.
+inits = set(f.parts[0] for f in rec if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py')
+def present(t):
+    s = importlib.util.find_spec(t)
+    return s is not None and (s.origin is not None or t not in inits)
+if tops:
+    broken = not all(present(t) for t in tops if t)
+else:
+    ftops = [f for f in rec if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py'] \
+        or [f for f in rec if len(f.parts) == 1 and str(f).endswith('.py')]
+    broken = bool(ftops) and not all(d.locate_file(f).exists() for f in ftops)
+print('POSTVER=' + ('__MISSING__' if broken else d.version))
+"
 # Never inherited from the caller's environment: the post-update check below keys on
 # these, and the block that assigns them is skipped in installer-driven/local/Colab
 # runs (mirrors $LatestVer = "" in setup.ps1).
@@ -1937,6 +1979,18 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # A quarantined payload leaves dist-info reporting current while the canonical
+        # import is gone; the metadata compare above cannot see that, so the fast path
+        # stands only after the payload probe answers. Substring match on the sentinel:
+        # a crashed or silent probe says nothing about the venv and leaves the fast
+        # path alone.
+        if [ "$_SKIP_PYTHON_DEPS" = true ]; then
+            case "$({ "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" 2>/dev/null || true; })" in
+                *"POSTVER=__MISSING__"*)
+                    substep "$_PKG_NAME metadata is current but its modules are missing -- forcing dependency pass to repair..."
+                    _SKIP_PYTHON_DEPS=false ;;
+            esac
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -1953,39 +2007,12 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     # any index.
     _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
     if [ "$_VERIFY_UPDATE" = true ]; then
-        # __MISSING__ only when the metadata positively reports no such package: a
-        # probe that merely crashed must not read as "not installed" and fail setup.
-        # -I so an inherited PYTHONPATH cannot satisfy the probe with same-name
-        # metadata from outside the managed venv
-        POST_VER=$("$VENV_DIR/bin/python" -I -c "
-import importlib.util, sys
-from importlib.metadata import distribution, PackageNotFoundError
-try:
-    d = distribution(sys.argv[1])
-except PackageNotFoundError:
-    print('__MISSING__')
-    sys.exit(0)
-# a leftover dist-info with the payload deleted still reports a version:
-# metadata only counts when every recorded top-level module is actually loadable
-# (find_spec locates without importing) -- the wheel records studio, unsloth and
-# unsloth_cli, and a partial quarantine that leaves one behind must still read as
-# broken. RECORD existence is the fallback for wheels without top_level.txt;
-# 3.14+ already filters d.files to what exists, so an empty ftops there falls
-# back to trusting the metadata.
-tops = (d.read_text('top_level.txt') or '').split()
-if tops:
-    broken = not all(importlib.util.find_spec(t) for t in tops if t)
-else:
-    files = d.files or []
-    # stem/suffix rather than the joined name: a bare filename literal inside an
-    # installer reads as an invoked helper to the guard in
-    # tests/test_installer_interactive_prompts.py, which resolves it against the
-    # script's own directory and lands on the real package initializer.
-    ftops = [f for f in files if len(f.parts) == 2 and f.stem == '__init__' and f.suffix == '.py'] \
-        or [f for f in files if len(f.parts) == 1 and str(f).endswith('.py')]
-    broken = bool(ftops) and not all(d.locate_file(f).exists() for f in ftops)
-print('__MISSING__' if broken else d.version)
-" "$_PKG_NAME" 2>/dev/null || echo "")
+        # See _PKG_PROBE_PY for what counts as missing: a probe that merely crashed
+        # must not read as "not installed" and fail setup. -I so an inherited
+        # PYTHONPATH cannot satisfy the probe with same-name metadata from outside
+        # the managed venv; sed extracts the sentinel line so a printing site hook
+        # cannot pollute the exact compares below.
+        POST_VER=$({ "$VENV_DIR/bin/python" -I -c "$_PKG_PROBE_PY" "$_PKG_NAME" 2>/dev/null || true; } | sed -n 's/^POSTVER=//p' | tail -n 1)
         _UPDATE_OK=false
         if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
             _UPDATE_OK=true
@@ -2069,24 +2096,38 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
             # check) and verify_install accepts a null recorded version, so the
             # marker must not survive: its presence means "install completed".
             _MANIFEST_STATE=$("$VENV_DIR/bin/python" -c "
-import sys, time
+import os, sys, time
 sys.path.insert(0, sys.argv[1])
+# quarantine can take studio/install_manifest.py too, and a missing helper must
+# not read as a missing manifest: the pass just wrote one. The file sits at a
+# fixed name under the venv (install_manifest.venv_root()/MANIFEST_NAME), so
+# fall back to handling it directly.
+mp = os.path.join(sys.prefix, 'unsloth_install_manifest.json')
 try:
     import install_manifest
 except Exception:
-    print('MANIFEST=gone')
-    sys.exit(0)
+    install_manifest = None
 ok = False
 for _ in range(3):
-    if install_manifest.remove_manifest():
-        ok = True
+    try:
+        if install_manifest is not None:
+            ok = bool(install_manifest.remove_manifest())
+        else:
+            if os.path.exists(mp):
+                os.remove(mp)
+            ok = True
+    except Exception:
+        ok = False
+    if ok:
         break
     time.sleep(0.2)
 if not ok:
     # deletion blocked (AV lock, read-only): write is a different access right
     # than delete on Windows, and a schema-busted manifest also reads incomplete
     try:
-        install_manifest.manifest_path().write_text('{\"schema\": -1}', encoding='utf-8')
+        target = install_manifest.manifest_path() if install_manifest is not None else mp
+        with open(target, 'w', encoding='utf-8') as fh:
+            fh.write('{\"schema\": -1}')
         ok = True
     except Exception:
         pass

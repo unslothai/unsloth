@@ -4771,6 +4771,30 @@ function Fast-Download {
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
+# Payload-presence probe, shared by the fast-path escape and the post-update check
+# (mirrors _PKG_PROBE_PY in setup.sh). POSTVER=__MISSING__ only when the metadata
+# positively reports no such package or its payload is gone: a leftover dist-info
+# with the payload deleted still reports a version, so metadata only counts when
+# every recorded top-level module resolves to real files -- the wheel records
+# studio, unsloth and unsloth_cli, and a partial quarantine that leaves one behind
+# must still read as broken. An emptied package directory still answers find_spec
+# as a namespace package (origin None), so a top level whose recorded initializer
+# sits in RECORD must resolve with an origin; one recorded without an initializer
+# is namespace by design and keeps the bare spec test. RECORD is read as text,
+# not through d.files: 3.14+ filters d.files to files that exist, which would
+# blind both the initializer set and the no-top_level fallback to exactly the
+# deletions they look for. Names are PEP 503-normalized on both sides, matching
+# importlib.metadata's own lookup; PYTHONPATH and working-directory entries are
+# dropped from sys.path so same-name metadata outside the managed environment
+# cannot satisfy the probe (python -c leaves the inherited cwd on sys.path; the
+# shell probe's -I covers both) -- except the interpreter's own site-packages,
+# which stays even when the caller launched from inside it or named it on
+# PYTHONPATH. The initializer is matched by stem and suffix rather than by its
+# joined name: a bare filename literal inside an installer reads as an invoked
+# helper to the guard in tests/test_installer_interactive_prompts.py, which
+# resolves it against the script's own directory and lands on the real package
+# initializer.
+$_pkgProbeCode = "import csv, os, site, sys; from pathlib import PurePosixPath; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _rec = [PurePosixPath(_r[0]) for _r in csv.reader((((_d.read_text('RECORD') if _d is not None else None) or '').splitlines())) if _r and _r[0]]; _inits = set(_f.parts[0] for _f in _rec if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'); _pres = lambda _t: (lambda _s: _s is not None and (_s.origin is not None or _t not in _inits))(importlib.util.find_spec(_t)); _ftops = [_f for _f in _rec if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'] or [_f for _f in _rec if len(_f.parts) == 1 and str(_f).endswith('.py')]; _broken = (not all(_pres(_t) for _t in _tl if _t)) if _tl else (bool(_ftops) and not all(_d.locate_file(_f).exists() for _f in _ftops)); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
 $SkipPythonDeps = $false
 $LatestVer = ""
 # True only when the version-check gate ran: the post-update probe must stay off in
@@ -4900,6 +4924,17 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
                     substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
                     $SkipPythonDeps = $false
                 }
+            }
+        }
+        # A quarantined payload leaves dist-info reporting current while the canonical
+        # import is gone; the metadata compare above cannot see that, so the fast path
+        # stands only after the payload probe answers. A crashed or silent probe says
+        # nothing about the venv and leaves the fast path alone.
+        if ($SkipPythonDeps) {
+            $_fastProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_pkgProbeCode
+            if ($_fastProbe.Ok -and $_fastProbe.Output -match '(?m)^POSTVER=__MISSING__\s*$') {
+                substep "$_PkgName metadata is current but its modules are missing -- forcing dependency pass to repair..." "Cyan"
+                $SkipPythonDeps = $false
             }
         }
     } elseif ($InstalledVer -and $LatestVer) {
@@ -5499,23 +5534,9 @@ if ($stackExit -ne 0) {
 # below still runs: a pass that leaves nothing installed is broken on any index.
 $_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$env:UV_INDEX_URL$env:UV_EXTRA_INDEX_URL$env:UV_FIND_LINKS$env:UV_DEFAULT_INDEX$env:UV_INDEX"
 if ($_verifyUpdate) {
-    # __MISSING__ only when the metadata positively reports no such package: a probe
-    # that merely crashed must not read as "not installed" and fail setup. Names are
-    # PEP 503-normalized on both sides, matching importlib.metadata's own lookup, and
-    # PYTHONPATH and working-directory entries are dropped from sys.path so same-name
-    # metadata outside the managed environment cannot satisfy the probe (python -c
-    # leaves the inherited cwd on sys.path; the shell probe's -I covers both) --
-    # except the interpreter's own site-packages, which stays even when the caller
-    # launched from inside it or named it on PYTHONPATH. Metadata only counts when
-    # every recorded top-level module exists on disk: a leftover dist-info with the
-    # payload deleted still reports a version, and the wheel records studio, unsloth
-    # and unsloth_cli, so a partial quarantine that leaves one behind must still
-    # read as broken. The initializer is matched by stem and
-    # suffix rather than by its joined name: a bare filename literal inside an
-    # installer reads as an invoked helper to the guard in
-    # tests/test_installer_interactive_prompts.py, which resolves it against the
-    # script's own directory and lands on the real package initializer.
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _files = (_d.files if _d is not None else None) or []; _ftops = [_f for _f in _files if len(_f.parts) == 2 and _f.stem == '__init__' and _f.suffix == '.py'] or [_f for _f in _files if len(_f.parts) == 1 and str(_f).endswith('.py')]; _broken = (not all(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else (bool(_ftops) and not all(_d.locate_file(_f).exists() for _f in _ftops)); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
+    # See $_pkgProbeCode for what counts as missing: a probe that merely crashed must
+    # not read as "not installed" and fail setup.
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_pkgProbeCode
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
     if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {
@@ -5633,24 +5654,38 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
         $_manifestState = ""
         try {
             $_manifestState = (& python -c "
-import json, sys, time
+import json, os, sys, time
 sys.path.insert(0, sys.argv[1])
+# quarantine can take studio/install_manifest.py too, and a missing helper must
+# not read as a missing manifest: the pass just wrote one. The file sits at a
+# fixed name under the venv (install_manifest.venv_root()/MANIFEST_NAME), so
+# fall back to handling it directly.
+mp = os.path.join(sys.prefix, 'unsloth_install_manifest.json')
 try:
     import install_manifest
 except Exception:
-    print('MANIFEST=gone')
-    sys.exit(0)
+    install_manifest = None
 ok = False
 for _ in range(3):
-    if install_manifest.remove_manifest():
-        ok = True
+    try:
+        if install_manifest is not None:
+            ok = bool(install_manifest.remove_manifest())
+        else:
+            if os.path.exists(mp):
+                os.remove(mp)
+            ok = True
+    except Exception:
+        ok = False
+    if ok:
         break
     time.sleep(0.2)
 if not ok:
     # deletion blocked (AV lock, read-only): write is a different access right
     # than delete on Windows, and a schema-busted manifest also reads incomplete
     try:
-        install_manifest.manifest_path().write_text(json.dumps({'schema': -1}), encoding='utf-8')
+        target = install_manifest.manifest_path() if install_manifest is not None else mp
+        with open(target, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps({'schema': -1}))
         ok = True
     except Exception:
         pass
