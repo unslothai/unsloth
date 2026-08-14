@@ -386,9 +386,9 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert any("me/k-1" in c for c in _deletions(tmp_path)), (
-        f"{signame} left the kernel behind; it would bill to its ceiling"
-    )
+    assert any(
+        "me/k-1" in c for c in _deletions(tmp_path)
+    ), f"{signame} left the kernel behind; it would bill to its ceiling"
     # And the registry agrees, so no later sweep chases a kernel that is gone.
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
 
@@ -404,9 +404,9 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert proc.returncode == -signal.SIGTERM, (
-        f"expected death by SIGTERM, got returncode {proc.returncode}"
-    )
+    assert (
+        proc.returncode == -signal.SIGTERM
+    ), f"expected death by SIGTERM, got returncode {proc.returncode}"
 
 
 def test_an_unhandled_exception_still_deletes(tmp_path):
@@ -585,9 +585,9 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
         if proc.poll() is None:
             proc.kill()
     deleted = _deletions(tmp_path)
-    assert any("me/k-1" in c for c in deleted), (
-        "the kernel pushed before the signal was left running"
-    )
-    assert any("me/k-2" in c for c in deleted), (
-        "the slug the in-flight push had already filed was left running"
-    )
+    assert any(
+        "me/k-1" in c for c in deleted
+    ), "the kernel pushed before the signal was left running"
+    assert any(
+        "me/k-2" in c for c in deleted
+    ), "the slug the in-flight push had already filed was left running"
