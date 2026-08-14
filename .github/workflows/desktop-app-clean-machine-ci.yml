@@ -656,10 +656,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11}
-          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland}
-          - {label: debian-12, image: 'debian:12', display_backend: x11}
-          - {label: fedora-44, image: 'fedora:44', display_backend: x11}
+          - {label: ubuntu-22.04, image: 'ubuntu:22.04', display_backend: x11, install_gles: true}
+          - {label: ubuntu-22.04-no-gles, image: 'ubuntu:22.04', display_backend: x11, install_gles: false}
+          - {label: ubuntu-24.04-wayland, image: 'ubuntu:24.04', display_backend: wayland, install_gles: true}
+          - {label: debian-12, image: 'debian:12', display_backend: x11, install_gles: true}
+          - {label: fedora-44, image: 'fedora:44', display_backend: x11, install_gles: true}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -672,8 +673,11 @@ jobs:
           if command -v apt-get >/dev/null 2>&1; then
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              ca-certificates python3 xvfb xauth binutils libgles2 libgl1 libegl1 libgbm1 \
+              ca-certificates python3 xvfb xauth binutils libgl1 libegl1 libgbm1 \
               libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+            if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libgles2
+            fi
             if [[ "${{ matrix.display_backend }}" == "wayland" ]]; then
               DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends weston
             fi
@@ -681,10 +685,19 @@ jobs:
               grep -Ei 'webkit|javascriptcore|appindicator|libgtk-3' || true)"
           else
             dnf install -y -q ca-certificates python3 binutils xorg-x11-server-Xvfb xorg-x11-xauth \
-              mesa-libGLES mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
+              mesa-libEGL mesa-libgbm mesa-dri-drivers mesa-libGL \
               libwayland-client libnghttp2 harfbuzz fontconfig fribidi procps-ng findutils
+            if [[ "${{ matrix.install_gles }}" == "true" ]]; then
+              dnf install -y -q mesa-libGLES
+            fi
             forbidden="$(rpm -qa | grep -Ei 'webkit|javascriptcore|appindicator|gtk3' || true)"
           fi
+          if [[ "${{ matrix.install_gles }}" == "false" ]] && \
+             ldconfig -p | grep -q 'libGLESv2\.so\.2'; then
+            echo "::error::no-GLES portability lane unexpectedly provides libGLESv2.so.2"
+            exit 1
+          fi
+
           if [ -n "$forbidden" ]; then
             echo "::error::portability image unexpectedly contains a host desktop runtime"
             printf '%s\n' "$forbidden"

@@ -106,6 +106,14 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     assert "APPIMAGE_DISPLAY_BACKEND" in source
     assert "wayland" in source
 
+    no_gles = next(
+        lane
+        for lane in job["strategy"]["matrix"]["include"]
+        if lane["label"] == "ubuntu-22.04-no-gles"
+    )
+    assert no_gles["install_gles"] is False
+    assert "libGLESv2.so.2" in source
+
     linux_source = yaml.safe_dump(workflow["jobs"]["linux"])
     webdriver_source = yaml.safe_dump(workflow["jobs"]["appimage-model-download"])
     for package in (
