@@ -41,10 +41,13 @@ def _load_real_index_env_scrub():
     than stubbed -- a hand-written copy here would agree with a broken original forever.
     """
     import os as _os
+    import sys as _sys
+    from pathlib import Path as _Path
 
     src = STACK.read_text(encoding = "utf-8")
-    ns: dict = {"os": _os}
+    ns: dict = {"os": _os, "sys": _sys, "Path": _Path}
     for anchor, end, keep in (
+        ("IS_WINDOWS = ", "\n", 0),
         ("_UV_INDEX_ENV_VARS = (", "\n)\n", 2),
         # _install_env_for_cmd calls all of these, and they resolve from this namespace
         # at CALL time, so omitting any one only shows up as a NameError once a test
@@ -54,8 +57,19 @@ def _load_real_index_env_scrub():
         ("_PM_POLICY_FORCED_SOURCE_ENV_VARS = (", "\n)\n", 2),
         ("_PM_POLICY_RELAXED_ENV_VARS = (", "\n)\n", 2),
         ("def _relaxed_pip_policy_env(", "\n\n\n", 0),
+        ("_PM_POLICY_CONFIG_KEYS = (", "\n)\n", 2),
+        ("_PM_POLICY_SCOPED_CONFIG_KEYS = ", "\n", 0),
+        ("_PM_POLICY_DISABLED_VALUES = ", "\n", 0),
         ("def _pm_policy_value_is_on(", "\n\n\n", 0),
+        ("def _pm_policy_config_names(", "\n\n\n", 0),
+        ('_UV_POLICY_CONFIG: "', "\n", 0),
+        ("def _uv_policy_config(", "\n\n\n", 0),
+        ("def _uv_config_candidates(", "\n\n\n", 0),
+        ("def _scan_uv_policy_config(", "\n\n\n", 0),
+        ("def _scan_uv_policy_config_by_line(", "\n\n\n", 0),
+        ("def _uv_policy_settings(", "\n\n\n", 0),
         ("def _uv_policy_as_pip_policy(", "\n\n\n", 0),
+        ("def _uv_policy_as_uv_env(", "\n\n\n", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
     ):

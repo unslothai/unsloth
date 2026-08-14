@@ -20,6 +20,16 @@ sys.path.insert(0, str(STUDIO_DIR))
 import install_python_stack as ips
 
 
+@pytest.fixture(autouse = True)
+def _default_pm_policy_mode(monkeypatch):
+    """Most of this file asserts the DEFAULT contract, so strict mode has to be opted in.
+
+    Inherited from the shell it would flip that contract underneath every case here, and
+    a suite whose result depends on the operator's own environment tests nothing.
+    """
+    monkeypatch.delenv(ips._STRICT_PM_POLICY_ENV_VAR, raising = False)
+
+
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
 
@@ -653,6 +663,79 @@ class TestStrictPmPolicyOptOut:
         with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
             assert ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"]) is None
 
+    def test_a_pinned_uv_command_carries_the_file_policy_as_uv_flags(
+        self, tmp_path, monkeypatch
+    ):
+        """UV_NO_CONFIG=1 is what keeps a uv.toml INDEX from outranking the CLI pin, and it
+        takes that file's POLICY down with it. Translating only to PIP_* leaves the uv
+        command that actually runs under no build restriction at all, so an sdist-only
+        mirror builds from source in the mode that promised the policy verbatim.
+
+        uv documents --no-config as disabling config DISCOVERY, and environment settings as
+        taking precedence over persistent configuration, so the flags survive the switch.
+        """
+        (tmp_path / "uv.toml").write_text(
+            "no-build = true\nrequire-hashes = true\nexclude-newer = '2026-01-01'\n",
+            encoding = "utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["UV_NO_CONFIG"] == "1", "the pin still outranks the file's index"
+        assert env["UV_NO_BUILD"] == "1"
+        assert env["UV_REQUIRE_HASHES"] == "true"
+        assert env["UV_EXCLUDE_NEWER"] == "2026-01-01"
+
+    def test_the_default_mode_carries_no_file_policy_into_a_pinned_command(
+        self, tmp_path, monkeypatch
+    ):
+        """The translation is the switch's job. Without it a torch repair on a hardened
+        host fails exactly as #8530 did."""
+        (tmp_path / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {}, clear = True):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert "UV_NO_BUILD" not in env and "PIP_ONLY_BINARY" not in env
+
+    def test_a_package_scoped_policy_translates_at_its_own_scope(self, tmp_path, monkeypatch):
+        """`no-build-package = ["some-other-package"]` is a policy about that package.
+        Widening it to :all: fails Studio's four wheel-less requirements over a setting
+        that never covered them."""
+        (tmp_path / "uv.toml").write_text(
+            'no-build-package = ["some-other-package"]\n', encoding = "utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        # pip's format control is comma-separated, uv's variable is space-delimited.
+        assert env["PIP_ONLY_BINARY"] == "some-other-package"
+        assert env["UV_NO_BUILD_PACKAGE"] == "some-other-package"
+        assert "UV_NO_BUILD" not in env
+
+    def test_an_empty_package_list_translates_to_nothing(self, tmp_path, monkeypatch):
+        (tmp_path / "uv.toml").write_text("no-build-package = []\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            assert ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"]) is None
+
+    def test_an_all_scoped_policy_still_translates_globally(self, tmp_path, monkeypatch):
+        (tmp_path / "uv.toml").write_text("[pip]\nonly-binary = [':all:']\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+
     def test_the_source_build_exemptions_are_dropped(self):
         """--no-binary for the four wheel-less names IS the no-build override, so it
         cannot survive the switch that turns overriding off."""
@@ -670,6 +753,50 @@ class TestStrictPmPolicyOptOut:
                 ]
                 env = ips._install_env_for_cmd(["python", "-m", "pip", "install", "x"])
                 assert env is not None and env["PIP_REQUIRE_HASHES"] == "0"
+
+
+class TestTheStrictFallbackRefusesWhatPipCannotHonour:
+    """pip_install() falls back to pip whenever uv fails, and pip has no --exclude-newer.
+
+    So the one case the fallback must not take is uv refusing a release published past the
+    operator's cutoff: pip would install precisely that release. Strict mode promises the
+    policy verbatim, which makes a failed install the honest answer.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _no_ambient_uv_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+
+    def _uv_fails(self, monkeypatch, env: dict):
+        """Drive pip_install with uv present and failing; return whether pip ever ran."""
+        ran_pip: list[list[str]] = []
+        monkeypatch.setattr(ips, "USE_UV", True)
+        monkeypatch.setattr(ips, "VERBOSE", False)
+        monkeypatch.setattr(ips, "run", lambda label, cmd, **kw: ran_pip.append(cmd))
+        monkeypatch.setattr(
+            ips.subprocess, "run", lambda *a, **kw: mock.Mock(returncode = 1, stdout = b"")
+        )
+        with mock.patch.dict(os.environ, env, clear = True):
+            ips.pip_install("deps", "numpy", constrain = False)
+        return ran_pip
+
+    def test_exclude_newer_stops_the_fallback(self, monkeypatch):
+        with pytest.raises(SystemExit):
+            self._uv_fails(
+                monkeypatch,
+                {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"},
+            )
+
+    def test_a_translatable_policy_still_falls_back(self, monkeypatch):
+        """no-build and require-hashes DO have pip equivalents, so the fallback keeps
+        working under them: refusing it there would fail installs for no gain."""
+        assert self._uv_fails(
+            monkeypatch, {"UNSLOTH_STRICT_PM_POLICY": "1", "UV_NO_BUILD": "1"}
+        ), "a policy pip can be told must not cost the fallback"
+
+    def test_the_default_mode_falls_back_as_before(self, monkeypatch):
+        assert self._uv_fails(monkeypatch, {"UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"})
 
 
 class TestPmPolicyRelaxationIsReported:
@@ -762,9 +889,9 @@ class TestPmPolicyRelaxationIsReported:
         assert self._sources({}) == ["uv config pyproject.toml: require-hashes"]
 
     def test_a_pyproject_without_a_uv_table_is_not_ours(self, tmp_path, monkeypatch):
-        """A no-binary under somebody else's tool is somebody else's setting."""
+        """A no-build under somebody else's tool is somebody else's setting."""
         (tmp_path / "pyproject.toml").write_text(
-            "[tool.someoneelse]\nno-binary = true\n", encoding = "utf-8"
+            "[tool.someoneelse]\nno-build = true\n", encoding = "utf-8"
         )
         monkeypatch.chdir(tmp_path)
         assert self._sources({}) == []
@@ -787,6 +914,105 @@ class TestPmPolicyRelaxationIsReported:
             mock.patch.object(ips.subprocess, "run", side_effect = OSError("no pip")),
         ):
             assert ips._hardened_pm_policy_sources() == ["PIP_REQUIRE_HASHES"]
+
+    def test_a_force_source_key_is_not_offered_the_switch(self, tmp_path):
+        """no-binary is the mirror image of the reported keys: it FORCES a source build,
+        every pinned command drops it whatever the switch says, and an unpinned command
+        inherits it untouched. Nothing overrides it, so "set the switch to enforce your
+        policy" would promise an enforcement that cannot happen."""
+        (tmp_path / "uv.toml").write_text("no-binary = true\n", encoding = "utf-8")
+        assert self._sources({}, pip_config = "global.no-binary='openai-whisper'\n") == []
+
+
+class TestUvConfigDiscoveryMatchesUv:
+    """Where the scan looks, and what it reads once it gets there.
+
+    This stopped being a question about a printed line when strict mode started
+    translating the answer into policy for pip and for a pinned uv command: a file uv
+    ignores, or a key belonging to another tool, now fails an install rather than adding
+    a word to a note.
+    """
+
+    @pytest.fixture(autouse = True)
+    def _rescan_uv_config(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ips, "_UV_POLICY_CONFIG", None)
+
+    def _keys(self) -> list[str]:
+        return [f"{name}: {key}" for name, key, _value in ips._scan_uv_policy_config()]
+
+    def test_an_adjacent_uv_toml_beats_the_pyproject(self, tmp_path):
+        """"uv.toml files take precedence over pyproject.toml files, so if both are
+        present in a directory, configuration will be read from uv.toml". Reading the
+        losing file too turns a [tool.uv] table uv ignores into enforced policy."""
+        (tmp_path / "uv.toml").write_text("require-hashes = true\n", encoding = "utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.uv.pip]\nno-build = true\n", encoding = "utf-8"
+        )
+        assert self._keys() == ["uv.toml: require-hashes"]
+
+    def test_a_uv_toml_ends_the_parent_walk(self, tmp_path, monkeypatch):
+        """uv reads the nearest configuration file, not the union of the tree."""
+        (tmp_path / "uv.toml").write_text("require-hashes = true\n", encoding = "utf-8")
+        nested = tmp_path / "project"
+        nested.mkdir()
+        (nested / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.chdir(nested)
+        assert self._keys() == ["uv.toml: no-build"]
+
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "XDG is the Unix system-config path")
+    def test_the_system_config_can_live_under_xdg_config_dirs(self, tmp_path, monkeypatch):
+        """"If multiple system-level configuration files are found, e.g. at both
+        /etc/uv/uv.toml and $XDG_CONFIG_DIRS/uv/uv.toml, only the first-discovered file
+        will be used, with XDG taking priority." A managed fleet is exactly where the
+        policy lives outside /etc, and missing it means a silent note and an untranslated
+        policy."""
+        corp = tmp_path / "corp"
+        (corp / "uv").mkdir(parents = True)
+        (corp / "uv" / "uv.toml").write_text("no-build = true\n", encoding = "utf-8")
+        monkeypatch.setenv("XDG_CONFIG_DIRS", str(corp))
+        assert self._keys() == ["uv.toml: no-build"]
+
+    def test_an_empty_package_list_is_not_a_policy(self, tmp_path):
+        """`no-build-package = []` covers no package at all. Read as a policy in force it
+        becomes a global build ban, which fails the wheel-less requirements over a setting
+        that restricted nothing."""
+        (tmp_path / "uv.toml").write_text("no-build-package = []\n", encoding = "utf-8")
+        assert self._keys() == []
+
+    def test_the_package_list_survives_the_scan(self, tmp_path):
+        (tmp_path / "uv.toml").write_text(
+            'no-build-package = ["some-other-package"]\n', encoding = "utf-8"
+        )
+        assert ips._scan_uv_policy_config() == [
+            ("uv.toml", "no-build-package", ["some-other-package"])
+        ]
+
+    def test_the_line_scanner_stays_inside_the_uv_table(self, tmp_path):
+        """The 3.9/3.10 fallback has no tomllib, so it tracks sections by hand. Without
+        that, any [tool.*] table's no-build in a pyproject that happens to mention
+        [tool.uv] anywhere reads as uv's own."""
+        path = tmp_path / "pyproject.toml"
+        path.write_text(
+            "[tool.uv]\nlink-mode = 'copy'\n\n[tool.someoneelse]\nno-build = true\n",
+            encoding = "utf-8",
+        )
+        assert ips._scan_uv_policy_config_by_line([path]) == []
+
+    def test_the_line_scanner_reads_the_uv_table(self, tmp_path):
+        path = tmp_path / "pyproject.toml"
+        path.write_text(
+            "[tool.uv.pip]\nno-build = true\n\n[tool.someoneelse]\nrequire-hashes = true\n",
+            encoding = "utf-8",
+        )
+        assert ips._scan_uv_policy_config_by_line([path]) == [
+            ("pyproject.toml", "no-build", "true")
+        ]
+
+    def test_the_line_scanner_skips_a_uv_toml_subtable_that_is_not_pip(self, tmp_path):
+        path = tmp_path / "uv.toml"
+        path.write_text("[[index]]\nname = 'corp'\n\n[pip]\nno-build = true\n", encoding = "utf-8")
+        assert ips._scan_uv_policy_config_by_line([path]) == [("uv.toml", "no-build", "true")]
 
 
 class TestProgressLineNotes:

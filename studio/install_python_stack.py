@@ -4066,15 +4066,22 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
 # actually override something the operator set, rather than being the no-ops they are on
 # an unconfigured host. `pip config list` renders every file pip would load (including a
 # PIP_CONFIG_FILE override), which is why this asks pip instead of guessing paths.
+#
+# The no-binary family is absent for the same reason it is absent from
+# _PM_POLICY_REPORTED_ENV_VARS: those keys FORCE a source build, every pinned command
+# drops them whatever the switch says, and an unpinned command inherits them untouched.
+# Nothing overrides them that the switch could restore, so naming them under "set the
+# switch to enforce your policy" would promise an enforcement that cannot happen.
 _PM_POLICY_CONFIG_KEYS = (
     "require-hashes",
     "only-binary",
-    "no-binary",
-    "no-binary-package",
     "no-build",
     "no-build-package",
     "exclude-newer",
 )
+
+# The subset that names packages rather than switching a policy on globally.
+_PM_POLICY_SCOPED_CONFIG_KEYS = ("only-binary", "no-build-package")
 
 # Every policy this module overrides somewhere, which is what the report has to name.
 # Wider than _PM_POLICY_RELAXED_ENV_VARS because the package-scoped --no-binary in
@@ -4101,15 +4108,39 @@ def _pm_policy_value_is_on(value: "object") -> bool:
         return False
     if value is True:
         return True
+    if isinstance(value, (list, tuple, set)):
+        # `no-build-package = []` is a policy that covers no package at all, and reading
+        # it as one in force turns an empty list into a global build ban.
+        return bool(value)
     text = str(value).strip().strip("\"'").lower()
     return text not in _PM_POLICY_DISABLED_VALUES
 
 
-_UV_POLICY_CONFIG: "list[tuple[str, str]] | None" = None
+def _pm_policy_config_names(value: "object") -> "list[str]":
+    """The package names a scoped policy value covers, from TOML list or raw text.
+
+    `:all:` comes back as itself: it is pip/uv's own spelling of "every package", and the
+    callers key off it to widen the translation rather than name a package called ":all:".
+    """
+    if value is True:
+        return [":all:"]
+    if isinstance(value, (list, tuple, set)):
+        items: "list[object]" = list(value)
+    else:
+        items = str(value).strip().strip("[]").replace(",", " ").split()
+    names: "list[str]" = []
+    for item in items:
+        name = str(item).strip().strip("\"'").strip()
+        if name:
+            names.append(name)
+    return names
 
 
-def _uv_policy_config() -> "list[tuple[str, str]]":
-    """The (file, key) policy uv's own config files carry, scanned once per run."""
+_UV_POLICY_CONFIG: "list[tuple[str, str, object]] | None" = None
+
+
+def _uv_policy_config() -> "list[tuple[str, str, object]]":
+    """The (file, key, value) policy uv's own config files carry, scanned once per run."""
     global _UV_POLICY_CONFIG
     if _UV_POLICY_CONFIG is None:
         _UV_POLICY_CONFIG = _scan_uv_policy_config()
@@ -4133,10 +4164,18 @@ def _uv_config_candidates() -> "list[Path]":
         _here = None
     if _here is not None:
         for directory in (_here, *_here.parents):
-            # uv.toml wins over the pyproject in the same directory, and the walk keeps
-            # going only while neither carries a [tool.uv] table, which is close enough
-            # for a report: naming one file too many costs a word in a printed line.
-            candidates.append(directory / "uv.toml")
+            # "uv.toml files take precedence over pyproject.toml files, so if both are
+            # present in a directory, configuration will be read from uv.toml". Reading
+            # the losing pyproject too would let a [tool.uv] table uv ignores become a
+            # policy strict mode enforces, so the directory's uv.toml ends the walk.
+            _uv_toml = directory / "uv.toml"
+            try:
+                _wins = _uv_toml.is_file()
+            except OSError:
+                _wins = False
+            if _wins:
+                candidates.append(_uv_toml)
+                break
             candidates.append(directory / "pyproject.toml")
     if IS_WINDOWS:
         for _var in ("APPDATA", "PROGRAMDATA"):
@@ -4155,11 +4194,19 @@ def _uv_config_candidates() -> "list[Path]":
                 _user_config = None
         if _user_config is not None:
             candidates.append(_user_config / "uv" / "uv.toml")
+        # "If multiple system-level configuration files are found, e.g. at both
+        # /etc/uv/uv.toml and $XDG_CONFIG_DIRS/uv/uv.toml, only the first-discovered file
+        # will be used, with XDG taking priority", so the XDG directories go first. A
+        # managed fleet is exactly where the policy lives outside /etc.
+        for _dir in os.environ.get("XDG_CONFIG_DIRS", "").split(os.pathsep):
+            _dir = _dir.strip()
+            if _dir:
+                candidates.append(Path(_dir) / "uv" / "uv.toml")
         candidates.append(Path("/etc/uv/uv.toml"))
     return candidates
 
 
-def _scan_uv_policy_config() -> "list[tuple[str, str]]":
+def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
     """Policy keys set in uv's config files, which pip knows nothing about.
 
     #8530 is the reason this exists rather than being left to the pip half: that user's
@@ -4172,7 +4219,7 @@ def _scan_uv_policy_config() -> "list[tuple[str, str]]":
     except ImportError:  # 3.10 has no tomllib, and uv config is not worth a dependency
         return _scan_uv_policy_config_by_line(candidates)
 
-    found: "list[tuple[str, str]]" = []
+    found: "list[tuple[str, str, object]]" = []
     for path in dict.fromkeys(candidates):
         try:
             with path.open("rb") as handle:
@@ -4192,32 +4239,56 @@ def _scan_uv_policy_config() -> "list[tuple[str, str]]":
         for key in _PM_POLICY_CONFIG_KEYS:
             for table in (document, _pip_table):
                 if isinstance(table, dict) and _pm_policy_value_is_on(table.get(key)):
-                    found.append((path.name, key))
+                    found.append((path.name, key, table.get(key)))
                     break
     return found
 
 
-def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str, str]]":
+def _scan_uv_policy_config_by_line(
+    candidates: "list[Path]",
+) -> "list[tuple[str, str, object]]":
     """The 3.10 fallback: look for `key = value` without parsing TOML properly.
 
-    Only ever feeds a printed line, so a false positive costs a sentence and a false
-    negative costs the sentence not being printed.
+    Sections are tracked because the answer is no longer only a printed line: strict mode
+    translates it into policy for pip and for a pinned uv command, so `no-build = true`
+    belonging to a different tool in the same pyproject must not be read as uv's.
     """
-    found: "list[tuple[str, str]]" = []
+    found: "list[tuple[str, str, object]]" = []
     for path in dict.fromkeys(candidates):
         try:
             text = path.read_text(encoding = "utf-8", errors = "replace")
         except OSError:
             continue
-        if path.name == "pyproject.toml" and "[tool.uv" not in text:
-            continue
+        section = ""
         for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("["):
+                section = stripped.strip("[]").strip().strip("\"'")
+                continue
+            # In a pyproject only [tool.uv] and its subtables speak for uv. In a uv.toml
+            # the whole file does, but its policy keys live at the top level or in [pip];
+            # anything else there (an [[index]] entry, say) is a different setting.
+            if path.name == "pyproject.toml":
+                in_scope = section == "tool.uv" or section.startswith("tool.uv.")
+            else:
+                in_scope = section in ("", "pip")
+            if not in_scope:
+                continue
             key, sep, value = line.partition("=")
             if not sep:
                 continue
             key = key.strip()
-            if key in _PM_POLICY_CONFIG_KEYS and _pm_policy_value_is_on(value):
-                found.append((path.name, key))
+            value = value.strip()
+            if key not in _PM_POLICY_CONFIG_KEYS:
+                continue
+            if key in _PM_POLICY_SCOPED_CONFIG_KEYS:
+                # `only-binary = []` reads as a non-empty string here, so the list is what
+                # decides: no names, no policy.
+                if not _pm_policy_config_names(value):
+                    continue
+            elif not _pm_policy_value_is_on(value):
+                continue
+            found.append((path.name, key, value))
     return found
 
 
@@ -4232,7 +4303,7 @@ def _hardened_pm_policy_sources() -> "list[str]":
         for name in _PM_POLICY_REPORTED_ENV_VARS
         if _pm_policy_value_is_on(os.environ.get(name))
     ]
-    found += [f"uv config {name}: {key}" for name, key in _uv_policy_config()]
+    found += [f"uv config {name}: {key}" for name, key, _value in _uv_policy_config()]
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
@@ -4289,38 +4360,112 @@ def _report_pm_policy_relaxation() -> None:
     )
 
 
+def _uv_policy_settings() -> "dict[str, object]":
+    """The build and integrity policy uv is under, from its environment and its files.
+
+    One reader for two translations: pip's, for the fallback uv's own variables never
+    reach, and uv's own, for a pinned command that reads no config file. Reading the FILES
+    matters because a uv.toml is where #8530's policy lived, and uv honours both.
+
+    Scope is carried rather than flattened. `no-build-package = ["foo"]` is a policy about
+    foo, and widening it to every package fails installs the operator never restricted.
+    """
+    no_build_all = _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD"))
+    packages: "list[str]" = []
+    # uv documents UV_NO_BUILD_PACKAGE as a space-delimited list.
+    packages += _pm_policy_config_names(os.environ.get("UV_NO_BUILD_PACKAGE", ""))
+    require_hashes = _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES"))
+    exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
+    if not _pm_policy_value_is_on(exclude_newer):
+        exclude_newer = ""
+    for _name, key, value in _uv_policy_config():
+        if key == "require-hashes":
+            require_hashes = True
+        elif key == "exclude-newer":
+            exclude_newer = exclude_newer or str(value).strip().strip("\"'")
+        elif key == "no-build":
+            no_build_all = True
+        else:  # only-binary / no-build-package, both package-scoped lists
+            names = _pm_policy_config_names(value)
+            if ":all:" in names:
+                no_build_all = True
+            else:
+                packages += names
+    if no_build_all:
+        packages = []
+    return {
+        "no_build_all": no_build_all,
+        "no_build_packages": sorted(dict.fromkeys(packages)),
+        "require_hashes": require_hashes,
+        "exclude_newer": exclude_newer,
+    }
+
+
 def _uv_policy_as_pip_policy() -> "dict[str, str]":
-    """The pip equivalents of the uv-only policy vars, for strict mode's pip FALLBACK.
+    """The pip equivalents of the uv-only policy, for strict mode's pip FALLBACK.
 
     pip_install() falls back to pip whenever uv fails, including when uv failed BECAUSE of
-    the operator's policy, and pip reads none of the UV_* variables. Without this the
-    fallback performs exactly the source or unhashed install uv had just refused.
+    the operator's policy, and pip reads none of the UV_* variables or uv's config files.
+    Without this the fallback performs exactly the source or unhashed install uv refused.
 
-    The policy is read from uv's config FILES as well as its environment, because a
-    uv.toml is where #8530's lived and uv honours both; a translation that read only the
-    environment would let the fallback build exactly what the file had just stopped.
-
-    Only restrict-direction controls translate. UV_NO_BUILD_PACKAGE is left alone rather
-    than guessed at (pip's list syntax is not uv's, and a wrong translation is worse than
-    none), and the no-binary family is never translated: those FORCE a source build, so
-    carrying them across would be the opposite of preserving the policy. An explicit PIP_*
-    setting is the operator's own and is never overwritten.
+    Only restrict-direction controls translate, and only at the scope they were set: a
+    package-scoped no-build becomes pip's package-scoped --only-binary rather than
+    :all:. The no-binary family is never translated, because those FORCE a source build
+    and carrying them across would be the opposite of preserving the policy. An explicit
+    PIP_* setting is the operator's own and is never overwritten.
     """
     if not _strict_pm_policy():
         return {}
-    _keys = {key for _name, key in _uv_policy_config()}
-    _no_build = _pm_policy_value_is_on(os.environ.get("UV_NO_BUILD")) or bool(
-        _keys & {"no-build", "no-build-package", "only-binary"}
-    )
-    _require_hashes = (
-        _pm_policy_value_is_on(os.environ.get("UV_REQUIRE_HASHES")) or "require-hashes" in _keys
-    )
+    settings = _uv_policy_settings()
     translated: "dict[str, str]" = {}
-    if _no_build and not os.environ.get("PIP_ONLY_BINARY"):
-        translated["PIP_ONLY_BINARY"] = ":all:"
-    if _require_hashes and not os.environ.get("PIP_REQUIRE_HASHES"):
+    if not os.environ.get("PIP_ONLY_BINARY"):
+        if settings["no_build_all"]:
+            translated["PIP_ONLY_BINARY"] = ":all:"
+        elif settings["no_build_packages"]:
+            # pip's format control takes a comma-separated package list.
+            translated["PIP_ONLY_BINARY"] = ",".join(settings["no_build_packages"])
+    if settings["require_hashes"] and not os.environ.get("PIP_REQUIRE_HASHES"):
         translated["PIP_REQUIRE_HASHES"] = "1"
     return translated
+
+
+def _uv_policy_as_uv_env() -> "dict[str, str]":
+    """The same policy in uv's OWN variables, for the one command that reads no config.
+
+    A pinned command runs with UV_NO_CONFIG=1, because a uv.toml index outranks the CLI
+    pin and would install the wrong torch. That switch takes the operator's policy down
+    with their index, so under strict mode the policy travels as environment variables
+    instead: uv documents --no-config as disabling config DISCOVERY, and settings from
+    environment variables take precedence over persistent configuration either way.
+
+    Environment policy is already inherited by these commands, so only what was read from
+    a FILE is added here, and an explicit UV_* setting is never overwritten.
+    """
+    if not _strict_pm_policy():
+        return {}
+    settings = _uv_policy_settings()
+    translated: "dict[str, str]" = {}
+    if settings["no_build_all"] and not os.environ.get("UV_NO_BUILD"):
+        translated["UV_NO_BUILD"] = "1"
+    elif settings["no_build_packages"] and not os.environ.get("UV_NO_BUILD_PACKAGE"):
+        translated["UV_NO_BUILD_PACKAGE"] = " ".join(settings["no_build_packages"])
+    if settings["require_hashes"] and not os.environ.get("UV_REQUIRE_HASHES"):
+        translated["UV_REQUIRE_HASHES"] = "true"
+    if settings["exclude_newer"] and not os.environ.get("UV_EXCLUDE_NEWER"):
+        translated["UV_EXCLUDE_NEWER"] = str(settings["exclude_newer"])
+    return translated
+
+
+def _untranslatable_strict_policy() -> "list[str]":
+    """Active policy pip has no equivalent for, which is why the fallback must not run.
+
+    pip has no --exclude-newer, so falling back to pip after uv refused a release
+    published past the operator's cutoff installs precisely what the policy stopped.
+    Strict mode promises the policy verbatim, so the fallback is refused instead.
+    """
+    if not _strict_pm_policy():
+        return []
+    return ["exclude-newer"] if _uv_policy_settings()["exclude_newer"] else []
 
 
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
@@ -4336,8 +4481,9 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the package-scoped --no-binary in _sdist_only_build_args() instead.
 
     UNSLOTH_STRICT_PM_POLICY=1 drops the relaxations: hash mode is left alone, the policy
-    env vars survive a pinned command, and the uv-only ones are translated for the pip
-    fallback that would otherwise undo them.
+    env vars survive a pinned command, and a policy read from uv's config files is
+    translated into both uv's own variables (the file itself is out of reach here) and
+    pip's (for the fallback that would otherwise undo them).
 
     What strict does NOT do is let a config FILE reach a pinned command. Config discovery
     carries the operator's index as well as their policy, and a uv.toml index outranks the
@@ -4363,6 +4509,7 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
             env.pop(name, None)
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
+    env.update(_uv_policy_as_uv_env())
     env.update(_uv_policy_as_pip_policy())
     return env
 
@@ -4469,6 +4616,21 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
+            # Under strict mode the fallback is only honest while pip can be told the same
+            # policy uv just enforced. pip has no --exclude-newer, so falling back there
+            # would install the very release uv refused.
+            _untranslatable = _untranslatable_strict_policy()
+            if _untranslatable:
+                _step(
+                    "error",
+                    f"{label} failed under {_STRICT_PM_POLICY_ENV_VAR}=1, and the pip "
+                    "fallback cannot honour " + ", ".join(_untranslatable) + "; "
+                    "not falling back",
+                    _red,
+                )
+                if result.stdout:
+                    _safe_print(_redact_install_output(result.stdout))
+                sys.exit(result.returncode)
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
