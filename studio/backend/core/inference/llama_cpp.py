@@ -14143,6 +14143,12 @@ class LlamaCppBackend:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
                 auto_fit = gpu_memory_mode == "manual" and gpu_layers < 0
+                # What the user actually asked for, kept whole. The strip below is a
+                # launch decision, and _requested_extra_args is the comparator side
+                # that a later Apply is matched against: storing the stripped list
+                # there made an unchanged request look different from itself, so
+                # every Apply reloaded the model.
+                _extra_args_as_requested = list(extra_args) if extra_args is not None else None
                 if self._metal_drops_zero_ctx_override(ctx_override, auto_fit, gpu_memory_mode):
                     extra_args = strip_context_only(extra_args)
                     logger.warning(
@@ -14158,7 +14164,15 @@ class LlamaCppBackend:
                 )
                 if _metal_floor:
                     effective_ctx = _metal_floor
-                    max_available_ctx = max(max_available_ctx or 0, effective_ctx)
+                    # Replace, do not max(). On the exception path max_available_ctx
+                    # still holds the native length its initialiser put there, and no
+                    # cap ever ran to say that length fits. Keeping the larger of the
+                    # two publishes native as max_context_length, which the UI reads
+                    # as "the largest context that fits" and uses for its warning
+                    # threshold, so the same failure this floor prevents gets
+                    # advertised as safe. The floor is already bounded by any real
+                    # ceiling the cap did compute.
+                    max_available_ctx = _metal_floor
                     logger.warning(
                         "No GPU is enumerated on Metal and the context cap did not "
                         f"run, so starting at {effective_ctx} rather than the model's "
@@ -16095,10 +16109,18 @@ class LlamaCppBackend:
                         else list(extra_args)
                     )
                     # Device-stripped the same way, so both comparator sides share a rule.
+                    # _extra_args_as_requested, not extra_args: the Metal zero-context
+                    # strip is a launch decision and must not rewrite what the user is
+                    # recorded as having asked for, or the next identical Apply
+                    # compares unequal and reloads.
                     _pv_requested = (
                         _pv_suppressed_spec_extra_args
                         if _pv_suppressed_spec_extra_args is not None
-                        else extra_args
+                        else (
+                            _extra_args_as_requested
+                            if _extra_args_as_requested is not None
+                            else extra_args
+                        )
                     )
                     self._requested_extra_args = (
                         self._strip_device_extra_args(_pv_requested)

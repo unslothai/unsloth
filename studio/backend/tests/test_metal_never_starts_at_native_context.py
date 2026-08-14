@@ -281,3 +281,57 @@ def test_the_emission_guard_is_still_in_place():
     guard = src.rfind("elif not auto_fit:", 0, zero)
     assert guard != -1 and zero - guard < 120
     assert "_metal_zero_ctx_floor(" in src
+
+
+class TestTheAdvertisedCeilingMatchesWhatWeLaunch:
+    """max_context_length must not outlive the cap that never ran.
+
+    On the exception path max_available_ctx still holds the native length its
+    initialiser put there, and nothing has said that length fits. Publishing it
+    as max_context_length makes the UI call it the largest context that fits and
+    use it for the warning threshold, so the same over-commit this floor exists
+    to prevent gets advertised as safe.
+    """
+
+    NATIVE = 262144
+
+    def test_the_native_length_is_not_advertised_after_the_floor(self, on_metal):
+        floor = _floor(0, False, "auto", self.NATIVE, self.NATIVE)
+        assert floor == 4096
+        # What load_model now publishes: the floor itself, not max(ceiling, floor).
+        assert floor < self.NATIVE
+
+    def test_a_real_ceiling_below_the_floor_still_wins(self, on_metal):
+        """The cap did run and its KV answer is smaller, so keep the smaller."""
+        assert _floor(0, False, "auto", self.NATIVE, 3000) == 3000
+
+    def test_the_published_ceiling_is_never_above_what_we_launch(self, on_metal):
+        for max_avail in (None, 3000, 4096, self.NATIVE):
+            floor = _floor(0, False, "auto", self.NATIVE, max_avail)
+            assert floor <= (max_avail or 4096)
+            assert floor <= 4096
+
+
+class TestTheStripDoesNotRewriteWhatWasRequested:
+    """The zero-context strip is a launch decision, not a record of the ask.
+
+    _requested_extra_args is the comparator side a later Apply is matched
+    against, so storing the stripped list there made an unchanged request
+    compare unequal to itself and reload the model on every Apply.
+    """
+
+    def test_the_strip_removes_only_the_context_pair(self):
+        from core.inference.llama_cpp import strip_context_only
+        user = ["--threads", "8", "-c", "0", "--mlock"]
+        assert strip_context_only(list(user)) == ["--threads", "8", "--mlock"]
+
+    def test_load_model_keeps_a_pre_strip_copy(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_extra_args_as_requested" in src
+        # The copy is taken before the strip, not after.
+        copy_at = src.find("_extra_args_as_requested = (")
+        strip_at = src.find("extra_args = strip_context_only(extra_args)")
+        assert copy_at != -1 and strip_at != -1 and copy_at < strip_at
