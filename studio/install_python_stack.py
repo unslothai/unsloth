@@ -4044,9 +4044,22 @@ _PM_POLICY_RELAXED_ENV_VARS = (
 )
 
 
+def _is_uv_cmd(cmd: "list[str]") -> bool:
+    """True when this is uv, by the program's NAME rather than the literal "uv".
+
+    `uv pip install` reads "pip" in its own argv, so a uv invoked by absolute path (an
+    installed-into-the-venv uv, a PATH-less environment) would otherwise be mistaken for
+    pip and refused, or handed pip's relaxations.
+    """
+    if not cmd:
+        return False
+    program = os.path.basename(cmd[0]).lower()
+    return program in ("uv", "uv.exe")
+
+
 def _is_pip_fetch_cmd(cmd: "list[str]") -> bool:
     """True for a pip command that FETCHES something, which is what a policy binds."""
-    if cmd[:1] == ["uv"]:
+    if _is_uv_cmd(cmd):
         return False
     return "pip" in cmd and any(arg in ("install", "download", "wheel") for arg in cmd)
 
@@ -4064,7 +4077,7 @@ def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
     once uv had failed. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
     overrides it while pip.conf's index-url, trusted-host, cert and proxy stay in force.
     """
-    if cmd[:1] == ["uv"] or not any(arg in ("install", "download") for arg in cmd):
+    if _is_uv_cmd(cmd) or not any(arg in ("install", "download") for arg in cmd):
         return {}
     if _strict_pm_policy():
         return {}
@@ -4092,6 +4105,9 @@ _PM_POLICY_CONFIG_KEYS = (
 
 # The subset that names packages rather than switching a policy on globally.
 _PM_POLICY_SCOPED_CONFIG_KEYS = ("only-binary", "no-build-package", "exclude-newer-package")
+
+# The scoped key whose value is a package -> date MAPPING rather than a list of names.
+_PM_POLICY_MAPPING_CONFIG_KEYS = ("exclude-newer-package",)
 
 # Every policy this module overrides somewhere, which is what the report has to name.
 # Wider than _PM_POLICY_RELAXED_ENV_VARS because the package-scoped --no-binary in
@@ -4444,7 +4460,12 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             # Setting a key settles it for the lower-precedence files, whichever way it
             # was set. Collected per file, since a file may set it below this line.
             here.add(key)
-            if key in _PM_POLICY_SCOPED_CONFIG_KEYS:
+            if key in _PM_POLICY_MAPPING_CONFIG_KEYS:
+                # `exclude-newer-package = {}` reads as the token "{}" here, so the table
+                # is what decides: no packages, no cutoff.
+                if not value.strip().strip("{}").strip():
+                    continue
+            elif key in _PM_POLICY_SCOPED_CONFIG_KEYS:
                 # `only-binary = []` reads as a non-empty string here, so the list is what
                 # decides: no names and no reset left standing, no policy.
                 if not any(_pm_policy_scope(_pm_policy_config_names(value))):
@@ -4612,7 +4633,12 @@ def _report_pm_policy_relaxation_once_pip_exists() -> None:
     policy living only in pip.conf goes unnamed while the pip FALLBACK still relaxes it.
     Silent when the first pass did reach pip, so the line is never printed twice.
     """
-    if _strict_pm_policy() or _PIP_CONFIG_REACHED_PIP:
+    if _PIP_CONFIG_REACHED_PIP:
+        return
+    # The REFRESH is not the note: strict mode prints nothing here, but the pinned
+    # commands below translate this policy, and an empty cache reads as no policy at all.
+    if _strict_pm_policy():
+        _pip_config_policy(refresh = True)
         return
     _note_pm_policy_sources(
         [
@@ -4640,7 +4666,15 @@ def _uv_policy_settings() -> "dict[str, object]":
     exclude_newer = os.environ.get("UV_EXCLUDE_NEWER", "").strip()
     if not _pm_policy_value_is_on(exclude_newer):
         exclude_newer = ""
-    scoped_cutoff = False
+    # uv's pip interface does not read UV_EXCLUDE_NEWER_PACKAGE (measured on 0.12.1: the
+    # package installs anyway), so the operator's intent is carried on the command line
+    # by _uv_policy_cli_args() and counted here as a cutoff pip cannot honour.
+    cutoff_packages = [
+        spec
+        for spec in os.environ.get("UV_EXCLUDE_NEWER_PACKAGE", "").replace(",", " ").split()
+        if "=" in spec
+    ]
+    scoped_cutoff = bool(cutoff_packages)
     for _name, key, value in _uv_policy_config():
         if key == "require-hashes":
             require_hashes = True
@@ -4661,6 +4695,7 @@ def _uv_policy_settings() -> "dict[str, object]":
         "require_hashes": require_hashes,
         "exclude_newer": exclude_newer,
         "scoped_cutoff": scoped_cutoff,
+        "cutoff_packages": cutoff_packages,
     }
 
 
@@ -4812,9 +4847,11 @@ def _uv_policy_cli_args() -> "list[str]":
     if not _strict_pm_policy():
         return []
     settings = _uv_policy_settings()
-    if settings["no_build_all"]:
-        return ["--no-build"]
     args: "list[str]" = []
+    for spec in settings["cutoff_packages"]:
+        args += ["--exclude-newer-package", spec]
+    if settings["no_build_all"]:
+        return args + ["--no-build"]
     for name in settings["no_build_packages"]:
         # --only-binary, not --no-build-package: uv's pip interface does not take the
         # latter (uv 0.12.1 exits 2, "unexpected argument"), and the former is how that

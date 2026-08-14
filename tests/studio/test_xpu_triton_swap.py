@@ -85,6 +85,7 @@ def _load_real_index_env_scrub():
         ("def _strict_pm_policy(", "\n\n\n", 0),
         ("_PM_POLICY_FORCED_SOURCE_ENV_VARS = (", "\n)\n", 2),
         ("_PM_POLICY_RELAXED_ENV_VARS = (", "\n)\n", 2),
+        ("def _is_uv_cmd(", "\n\n\n", 0),
         ("def _is_pip_fetch_cmd(", "\n\n\n", 0),
         ("def _refuse_pip_under_untranslatable_policy(", "\n\n\n", 0),
         ("def _untranslatable_strict_policy(", "\n\n\n", 0),

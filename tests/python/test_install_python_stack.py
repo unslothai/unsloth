@@ -836,6 +836,46 @@ class TestStrictPmPolicyOptOut:
         # there ("unexpected argument", uv 0.12.1), which would fail every install.
         assert cmd[-2:] == ["--only-binary", "some-other-package"]
 
+    def test_a_per_package_cutoff_goes_on_the_uv_command(self):
+        """uv's pip interface does not read UV_EXCLUDE_NEWER_PACKAGE (measured on 0.12.1:
+        the package installs anyway), while --exclude-newer-package does filter it. So the
+        operator's intent travels on the command, as the build policy does."""
+        with mock.patch.dict(
+            os.environ,
+            {
+                "UNSLOTH_STRICT_PM_POLICY": "1",
+                "UV_EXCLUDE_NEWER_PACKAGE": "six=2015-01-01T00:00:00Z",
+            },
+            clear = True,
+        ):
+            cmd = ips._build_uv_cmd(("six",))
+        assert cmd[-2:] == ["--exclude-newer-package", "six=2015-01-01T00:00:00Z"]
+
+    def test_uv_is_recognised_by_program_name_not_by_the_literal_uv(self):
+        """`uv pip install` has "pip" in its own argv, so a uv invoked by absolute path
+        would be mistaken for pip: refused under a cutoff uv itself honours, and handed
+        pip's relaxations otherwise. Found by running the live proof against a uv that was
+        not on PATH."""
+        # The Windows spelling is os.path.basename's business, so this checks the
+        # name forms rather than a backslash path that only splits on Windows.
+        for program in ("uv", "/opt/tools/uv", "uv.exe"):
+            cmd = [program, "pip", "install", "six"]
+            assert ips._is_uv_cmd(cmd), program
+            assert not ips._is_pip_fetch_cmd(cmd), program
+        assert ips._is_pip_fetch_cmd(["python", "-m", "pip", "install", "six"])
+
+    def test_a_per_package_cutoff_in_the_environment_stops_pip(self):
+        """pip has no equivalent, so the paths pip would take are refused."""
+        with mock.patch.dict(
+            os.environ,
+            {
+                "UNSLOTH_STRICT_PM_POLICY": "1",
+                "UV_EXCLUDE_NEWER_PACKAGE": "six=2015-01-01T00:00:00Z",
+            },
+            clear = True,
+        ):
+            assert ips._untranslatable_strict_policy() == ["exclude-newer-package"]
+
     def test_the_default_uv_command_is_unchanged(self):
         """Everything here is opt-in: without the switch the command is byte-identical."""
         with mock.patch.dict(os.environ, {"UV_NO_BUILD": "1"}, clear = True):
@@ -1221,6 +1261,23 @@ class TestPmPolicyRelaxationIsReported:
             ips._report_pm_policy_relaxation_once_pip_exists()
         assert "global.require-hashes" in capsys.readouterr().out
 
+    def test_the_second_pass_still_refreshes_under_the_switch(self, monkeypatch, capsys):
+        """Strict mode prints nothing here, but the pinned commands translate this policy
+        and an empty cache reads as no policy at all: a uv venv has no pip for the first
+        pass, so without the refresh a pip.conf-only policy is bypassed by the switch."""
+        monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", {})
+        monkeypatch.setattr(ips, "_PIP_CONFIG_REACHED_PIP", False)
+        result = mock.Mock(returncode = 0, stdout = "global.require-hashes='true'\n")
+        with (
+            mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True),
+            mock.patch.object(ips.subprocess, "run", return_value = result),
+        ):
+            ips._report_pm_policy_relaxation_once_pip_exists()
+            assert capsys.readouterr().out == "", "the switch prints its own note instead"
+            assert ips._pip_config_policy() == {
+                ("global", "require-hashes"): ("global.require-hashes", "true")
+            }
+
     def test_the_second_pass_is_silent_when_the_first_read_pip(self, monkeypatch, capsys):
         """Otherwise a normal install prints the same line twice."""
         monkeypatch.setattr(ips, "_PIP_CONFIG_POLICY", {})
@@ -1337,6 +1394,23 @@ class TestUvConfigDiscoveryMatchesUv:
         (nested / "pyproject.toml").write_text("this is not toml [[[\n", encoding = "utf-8")
         monkeypatch.chdir(nested)
         assert self._keys() == ["uv.toml: no-build"]
+
+    def test_an_empty_cutoff_map_is_not_a_policy(self, tmp_path):
+        """`exclude-newer-package = {}` restricts no package, and reading it as live makes
+        the switch refuse every pip path over a setting that covers nothing."""
+        path = tmp_path / "uv.toml"
+        path.write_text("[pip]\nexclude-newer-package = {}\n", encoding = "utf-8")
+        assert ips._scan_uv_policy_config_by_line([path]) == []
+
+    def test_a_populated_cutoff_map_is_a_policy(self, tmp_path):
+        path = tmp_path / "uv.toml"
+        path.write_text(
+            '[pip]\nexclude-newer-package = { six = "2015-01-01T00:00:00Z" }\n',
+            encoding = "utf-8",
+        )
+        assert [key for _n, key, _v in ips._scan_uv_policy_config_by_line([path])] == [
+            "exclude-newer-package"
+        ]
 
     def test_a_dotted_key_is_the_table_it_names(self, tmp_path):
         """`pip.no-build = true` is TOML's dotted spelling of `[pip] no-build`, and uv
