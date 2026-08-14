@@ -212,6 +212,12 @@ export function SortablePromptItems({
 
   const handlePointerDown = useCallback(
     (uid: string, e: React.PointerEvent<HTMLButtonElement>) => {
+      // Primary button only. A right- or middle-press would otherwise start a
+      // drag that the zero-buttons recovery cannot end (buttons reads 2 or 4),
+      // so opening a context menu over a grip could reorder the list. Touch and
+      // pen contacts report button 0, so they still drag; isPrimary keeps a
+      // second finger from starting a competing drag.
+      if (e.button !== 0 || !e.isPrimary) return;
       // Deliberately no setPointerCapture here. Reordering makes React move the
       // row's DOM node (insertBefore detaches and reattaches it), and detaching
       // a node implicitly releases its pointer capture -- so a captured grip

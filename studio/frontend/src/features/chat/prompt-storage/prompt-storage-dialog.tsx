@@ -1371,6 +1371,13 @@ function PromptDetail({
     onRefresh();
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
+  // Export what the pane is showing. With unsaved edits the saved entry and the
+  // draft differ, and exporting the former writes a file that silently does not
+  // match what is on screen. Normalised the same way saving would.
+  const exportValue: PromptEntry = dirty
+    ? { ...entry, name: name.trim() || "Untitled Prompt", text: text.trim() }
+    : entry;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <input
@@ -1419,7 +1426,7 @@ function PromptDetail({
         </button>
         <button
           type="button"
-          onClick={() => onExport(entry)}
+          onClick={() => onExport(exportValue)}
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
@@ -1577,6 +1584,15 @@ function PromptListDetail({
     onRefresh();
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
+  // See PromptDetail: export the visible draft, not the last saved copy.
+  const exportValue: PromptListEntry = dirty
+    ? {
+        ...entry,
+        name: name.trim() || "Untitled List",
+        items: items.filter((t) => t.trim()),
+      }
+    : entry;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       <input
@@ -1631,7 +1647,7 @@ function PromptListDetail({
         </button>
         <button
           type="button"
-          onClick={() => onExport(entry)}
+          onClick={() => onExport(exportValue)}
           className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
