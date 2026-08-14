@@ -718,3 +718,63 @@ test("a folder mutation takes the gate before its request", () => {
   assert.match(hook, /watchStartedJob\(created\.job\.id\);\s*return created;/);
   assert.match(hook, /watchStartedJob\(started\.job\.id\);\s*return started;/);
 });
+
+// A folder sync outlives the tab that started it. After a reload the watcher is
+// gone, and the backend scans the folder before writing any rows, so the
+// composer's own list is legitimately empty. Only the Sources panel lists
+// linked folders, and a project opens on Chats, so the composer has to ask.
+test("a project composer picks up a folder sync already running", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    api,
+    /export async function reconcileProjectFolderJobs\(\s*projectId: string,\s*\): Promise<void>/,
+  );
+  assert.match(
+    api,
+    /if \(folder\.activeJobId\) \{\s*watchProjectFolderJob\(projectId, folder\.activeJobId\);/,
+  );
+  // Asked once per project, and a failed look does not count as an answer.
+  assert.match(
+    api,
+    /if \(reconciledFolderProjects\.has\(projectId\)\) return;\s*reconciledFolderProjects\.add\(projectId\);/,
+  );
+  assert.match(api, /reconciledFolderProjects\.delete\(projectId\);/);
+
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /void reconcileProjectFolderJobs\(workScopeId\);/);
+});
+
+// A queued prompt waiting on a project source outlives the bar that watched it.
+// isIndexing() only answers while that bar is mounted and current, and project
+// sources are retrieved whatever the Docs pill says, so the queue has to ask
+// for the project itself rather than reading the thread scope alone.
+test("a background prompt queue checks the project it will send to", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  // The thread-scope check no longer returns early past the project one.
+  assert.doesNotMatch(
+    thread,
+    /if \(!item\.target\.usesThreadDocuments\) \{\s*return false;/,
+  );
+  assert.match(thread, /const projectId = await resolveProjectId\(threadId\);/);
+  // Work in flight counts as well as rows: an upload has no row until it lands.
+  assert.match(
+    thread,
+    /if \(projectWorkCount\(projectId\) > 0\) \{\s*return true;/,
+  );
+  assert.match(
+    thread,
+    /const projectDocuments = await listProjectDocuments\(projectId\);\s*return projectDocuments\.some\(indexingDocument\);/,
+  );
+});

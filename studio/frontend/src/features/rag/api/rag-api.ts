@@ -537,6 +537,38 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
   })();
 }
 
+/** Projects whose folder jobs this tab has already gone looking for. A reload
+ * is the only thing that loses them, and every project composer mounting would
+ * otherwise list the folders again. */
+const reconciledFolderProjects = new Set<string>();
+
+/**
+ * Pick up folder syncs already running on a project. Their watchers live in the
+ * tab that started them, so a reload, or the tab closing, leaves a durable job
+ * scanning with nothing counting it. The backend scans before it writes any
+ * rows, so the composer's own list cannot see it either and the gate would open
+ * on an empty list. Only the Sources panel lists linked folders, and a project
+ * opens on Chats, so the composer has to ask.
+ */
+export async function reconcileProjectFolderJobs(
+  projectId: string,
+): Promise<void> {
+  if (reconciledFolderProjects.has(projectId)) return;
+  reconciledFolderProjects.add(projectId);
+  try {
+    const folders = await listLinkedFolders({ type: "project", id: projectId });
+    for (const folder of folders) {
+      if (folder.activeJobId) {
+        watchProjectFolderJob(projectId, folder.activeJobId);
+      }
+    }
+  } catch {
+    // RAG unavailable or a transient failure. Allow another look rather than
+    // recording a project as reconciled on an answer that never came.
+    reconciledFolderProjects.delete(projectId);
+  }
+}
+
 export async function listLinkedFolders(
   scope?: LinkedFolderScope,
 ): Promise<LinkedFolder[]> {

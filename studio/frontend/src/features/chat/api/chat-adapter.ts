@@ -1783,7 +1783,7 @@ function rememberComposerProjectForRun(
   }
 }
 
-async function resolveProjectId(
+export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | null> {

@@ -71,6 +71,7 @@ import {
 } from "@/features/chat/api/chat-api";
 import {
   findLatestUserAudioBase64,
+  resolveProjectId,
   sentAudioNames,
 } from "@/features/chat/api/chat-adapter";
 import {
@@ -172,7 +173,11 @@ import {
   dictationSendBlocked,
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
-import { listThreadDocuments } from "@/features/rag/api/rag-api";
+import {
+  listProjectDocuments,
+  listThreadDocuments,
+  projectWorkCount,
+} from "@/features/rag/api/rag-api";
 import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -460,22 +465,37 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   schedulePromptQueueTargetStatePoll(run);
 }
 
+const indexingDocument = (doc: { status: string }) =>
+  doc.status === "pending" || doc.status === "running";
+
 async function targetHasIndexingDocuments(item: PromptQueueItem) {
   if (item.target.isIndexing()) {
     return true;
-  }
-  if (!item.target.usesThreadDocuments) {
-    return false;
   }
   const threadId = item.target.getDocumentThreadId();
   if (!threadId) {
     return false;
   }
   try {
-    const documents = await listThreadDocuments(threadId);
-    return documents.some(
-      (doc) => doc.status === "pending" || doc.status === "running",
-    );
+    if (item.target.usesThreadDocuments) {
+      const documents = await listThreadDocuments(threadId);
+      if (documents.some(indexingDocument)) {
+        return true;
+      }
+    }
+    // The chat's project sources are retrieved whatever the Docs pill says
+    // (chat-adapter's rag_scope), and isIndexing() above only answers while the
+    // bar that watches them is mounted and current. A queue waiting in the
+    // background has neither, so ask for the project directly.
+    const projectId = await resolveProjectId(threadId);
+    if (!projectId) {
+      return false;
+    }
+    if (projectWorkCount(projectId) > 0) {
+      return true;
+    }
+    const projectDocuments = await listProjectDocuments(projectId);
+    return projectDocuments.some(indexingDocument);
   } catch {
     // A failed status probe cannot prove that this thread's documents are
     // ready. Keep the queued send pending and retry instead of dispatching

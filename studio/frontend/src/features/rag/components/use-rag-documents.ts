@@ -11,6 +11,7 @@ import {
   getJob,
   noteProjectWork,
   projectWorkCount,
+  reconcileProjectFolderJobs,
   streamJobEvents,
   subscribeProjectSourcesBroadcast,
   uploadKnowledgeBaseDocument,
@@ -337,6 +338,9 @@ export function useRagDocuments(
     }
     const read = () => setWorkElsewhere(projectWorkCount(workScopeId));
     read();
+    // A sync already running on this project has no watcher here after a
+    // reload, and its rows do not exist yet, so nothing else would gate on it.
+    void reconcileProjectFolderJobs(workScopeId);
     // Work in another tab arrives over the same channel.
     subscribeProjectSourcesBroadcast();
     window.addEventListener(PROJECT_WORK_CHANGED_EVENT, read);
