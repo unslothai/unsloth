@@ -926,9 +926,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         placement = self.route._LoadPlacement(None, None, False, False)
 
         with self.assertRaisesRegex(HTTPException, "merged checkpoint"):
-            asyncio.run(
-                self.route._preflight_native_audio_placement(config, request, placement)
-            )
+            asyncio.run(self.route._preflight_native_audio_placement(config, request, placement))
 
     def test_minimax_rejects_cpu_and_rocm_hosts(self):
         with self.assertRaisesRegex(HTTPException, "NVIDIA CUDA"):

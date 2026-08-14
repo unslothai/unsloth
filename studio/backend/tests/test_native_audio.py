@@ -292,12 +292,8 @@ def test_higgs_tts3_codec_failure_prevents_loaded_state(monkeypatch):
         sys.modules,
         "transformers",
         SimpleNamespace(
-            AutoModelForCausalLM = SimpleNamespace(
-                from_pretrained = lambda *_args, **_kwargs: Model()
-            ),
-            AutoTokenizer = SimpleNamespace(
-                from_pretrained = lambda *_args, **_kwargs: object()
-            ),
+            AutoModelForCausalLM = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: Model()),
+            AutoTokenizer = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: object()),
         ),
     )
     backend = NativeAudioBackend.__new__(NativeAudioBackend)

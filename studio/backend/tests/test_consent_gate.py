@@ -656,7 +656,15 @@ class TestStructuredFindingsForDialog:
         # The scan route pins one combined fingerprint over adapter + base, so adapter code is reviewed and approvable too.
         assert "preflight_remote_code_consent_for_targets" in src
 
-    def _run_scan_route(self, monkeypatch, *, adapter, base, in_cache, seen_targets = None):
+    def _run_scan_route(
+        self,
+        monkeypatch,
+        *,
+        adapter,
+        base,
+        in_cache,
+        seen_targets = None,
+    ):
         """Call scan_model_remote_code with all network/cache deps stubbed; in_cache(repo)
         decides whether a repo pre-existed in cache (so it is not reported scan-created)."""
         import asyncio

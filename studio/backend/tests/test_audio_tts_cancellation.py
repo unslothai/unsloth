@@ -86,9 +86,7 @@ def test_minimax_missing_description_is_a_client_error_before_generation(monkeyp
 
     class _Backend:
         active_model_name = "MiniMaxAI/MiniMax-Music3"
-        models = {
-            active_model_name: {"is_audio": True, "audio_type": "minimax_music3"}
-        }
+        models = {active_model_name: {"is_audio": True, "audio_type": "minimax_music3"}}
 
         def generate_audio_response(self, **kwargs):
             generated.append(kwargs)
@@ -108,9 +106,7 @@ def test_minimax_missing_description_is_a_client_error_before_generation(monkeyp
 
     with pytest.raises(inference_route.HTTPException) as excinfo:
         asyncio.run(
-            inference_route._generate_tts_wav(
-                "lyrics", payload, request = None, current_subject = "t"
-            )
+            inference_route._generate_tts_wav("lyrics", payload, request = None, current_subject = "t")
         )
 
     assert excinfo.value.status_code == 400
