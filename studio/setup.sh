@@ -1822,41 +1822,41 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # launchers themselves and this probe's finding fails setup rather than printing
 # advice. RECORD is read as text, not through d.files: 3.14+ filters d.files to
 # files that exist, which is blind to exactly these deletions. find_spec remains
+# Rows, the truncation check and the reported version come only from the SELECTED
+# distribution: an interrupted upgrade can leave a second dist-info for the same
+# name, and the stale RECORD from the other one must not damage a complete
+# install -- the newest by numeric version is selected. An editable install
+# (direct_url.json dir_info.editable; a venv left editable by an earlier --local
+# run is supported state) records only its site-packages shims, which say nothing
+# about the checkout they point at, so it is validated through find_spec instead:
+# the editable finder resolves into the real tree.
 # only for a RECORD-less install, best effort. The POSTVER= sentinel keeps a
 # printing sitecustomize or .pth hook out of the caller's exact compares: -I
 # implies -E/-P/-s only, so site hooks still run.
 _PKG_PROBE_PY="
-import csv, importlib.metadata, importlib.util, os, re, stat, sys, sysconfig
+import csv, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
 from pathlib import PurePosixPath
 _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
 _shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
 _rewritten = frozenset(('package-lock.json',))
-d = None
-d_rec = False
-selfrec = False
 owners = {}
-rows = []
+cands = []
 for x in importlib.metadata.distributions(path=_paths):
     try:
         name = x.metadata['Name']
     except Exception:
         continue
-    mine = _norm(name) == _norm(sys.argv[1])
-    if mine and d is None:
-        d = x
     try:
         record = x.read_text('RECORD') or ''
     except Exception:
         record = ''
-    if mine and record:
-        d_rec = True
+    if _norm(name) == _norm(sys.argv[1]):
+        cands.append((x, record))
     for r in csv.reader(record.splitlines()):
         rel = r[0] if r else ''
         if not rel or rel.endswith('/'):
             continue
-        if mine and rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
-            selfrec = True
         if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
             continue
         f = PurePosixPath(rel.replace(chr(92), '/'))
@@ -1864,17 +1864,35 @@ for x in importlib.metadata.distributions(path=_paths):
             continue
         key = os.path.normcase(str(x.locate_file(f)))
         owners[key] = owners.get(key, 0) + 1
-        if len(f.parts) > 1 and f.parts[0] in _shared:
-            continue
-        if mine:
-            rows.append((f, (r[2] if len(r) > 2 else '').strip(), key))
-if d is None:
+def _vkey(c):
+    m = re.match(r'\d+(\.\d+)*', c[0].version or '')
+    return [int(n) for n in m.group(0).split('.')] if m else []
+if not cands:
     print('POSTVER=__MISSING__')
     sys.exit(0)
-# a RECORD that does not list itself is a truncated RECORD: installers write the
-# self-entry last, so an interrupted write cuts it off, and the surviving prefix
-# would otherwise validate only the files it still names
-damaged = d_rec and not selfrec
+d, d_record = max(cands, key=_vkey)
+try:
+    _edit = bool(json.loads(d.read_text('direct_url.json') or '{}').get('dir_info', {}).get('editable'))
+except Exception:
+    _edit = False
+rows = []
+selfrec = False
+if not _edit:
+    for r in csv.reader(d_record.splitlines()):
+        rel = r[0] if r else ''
+        if not rel or rel.endswith('/'):
+            continue
+        if rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
+            selfrec = True
+        if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+            continue
+        f = PurePosixPath(rel.replace(chr(92), '/'))
+        if f.is_absolute() or '..' in f.parts:
+            continue
+        if len(f.parts) > 1 and f.parts[0] in _shared:
+            continue
+        rows.append((f, (r[2] if len(r) > 2 else '').strip(), os.path.normcase(str(d.locate_file(f)))))
+damaged = bool(d_record) and not _edit and not selfrec
 if not damaged:
     for f, sz, key in rows:
         try:
