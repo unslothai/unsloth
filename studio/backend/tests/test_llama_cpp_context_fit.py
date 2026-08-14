@@ -946,9 +946,7 @@ class TestPartialOffloadIsReportable:
     """
 
     def test_a_split_load_keeps_both_numbers(self):
-        assert parse_gpu_offload_counts(
-            ["load_tensors: offloaded 38/60 layers to GPU"]
-        ) == (38, 60)
+        assert parse_gpu_offload_counts(["load_tensors: offloaded 38/60 layers to GPU"]) == (38, 60)
 
     def test_the_boolean_cannot_tell_these_apart(self):
         split = ["load_tensors: offloaded 12/60 layers to GPU"]
