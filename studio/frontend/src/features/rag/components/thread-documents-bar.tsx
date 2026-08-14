@@ -149,6 +149,9 @@ function useThreadProjectId(threadId: string | null): string | null {
     projectId: string | null;
   } | null>(null);
 
+  // activeProjectId is a trigger, not the answer: moving the open chat to another
+  // project updates its row and this value without changing the thread id, so the
+  // lookup has to run again and re-read the row.
   useEffect(() => {
     if (!threadId || isThreadIncognito(threadId)) {
       return;
@@ -177,7 +180,7 @@ function useThreadProjectId(threadId: string | null): string | null {
     return () => {
       cancelled = true;
     };
-  }, [threadId]);
+  }, [threadId, activeProjectId]);
 
   // A chat with no id yet is the one being composed, so it belongs to whatever
   // project the composer is in.

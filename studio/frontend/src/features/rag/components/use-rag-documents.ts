@@ -5,6 +5,7 @@ import { consumeNativePathToken } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  PROJECT_SOURCES_CHANGED_EVENT,
   deleteDocument,
   getJob,
   streamJobEvents,
@@ -284,6 +285,22 @@ export function useRagDocuments(
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey, hasIndexing]);
+
+  // A project's sources are shown by two independent instances (the composer's
+  // bar and the Sources panel), so each has to pick up the other's mutations.
+  const projectScopeId = scope?.type === "project" ? scope.projectId : null;
+  useEffect(() => {
+    if (!projectScopeId) return;
+    const onChanged = (event: Event) => {
+      const changed = (event as CustomEvent<{ projectId?: string }>).detail
+        ?.projectId;
+      if (changed === projectScopeId) void refresh({ quiet: true });
+    };
+    window.addEventListener(PROJECT_SOURCES_CHANGED_EVENT, onChanged);
+    return () =>
+      window.removeEventListener(PROJECT_SOURCES_CHANGED_EVENT, onChanged);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectScopeId]);
 
   // POST one file, then swap its optimistic chip (`tempId`) to the real id; drop
   // the chip if the backend deduped. `seenIds` holds ids present/added this batch.

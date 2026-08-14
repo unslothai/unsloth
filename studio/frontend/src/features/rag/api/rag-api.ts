@@ -219,8 +219,17 @@ export async function projectHasSources(projectId: string): Promise<boolean> {
   }
 }
 
+/** Fired on every project-source mutation. The composer's documents bar and the
+ * project's Sources panel are separate hook instances over the same scope, so
+ * without this a file added in one stays invisible to the other. */
+export const PROJECT_SOURCES_CHANGED_EVENT = "unsloth-project-sources-changed";
+
 export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(PROJECT_SOURCES_CHANGED_EVENT, { detail: { projectId } }),
+  );
 }
 
 export async function listLinkedFolders(

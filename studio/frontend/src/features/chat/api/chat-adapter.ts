@@ -1770,6 +1770,10 @@ async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | null> {
+  // Read before the await: a send survives navigation, so consulting the store
+  // after the lookup could hand this request whichever project the user moved
+  // to in the meantime.
+  const composerProjectId = useChatRuntimeStore.getState().activeProjectId;
   if (threadId) {
     let thread: ThreadRecord | undefined;
     try {
@@ -1790,11 +1794,7 @@ async function resolveProjectId(
       return null;
     }
   }
-  const projectId = useChatRuntimeStore.getState().activeProjectId;
-  if (!projectId) {
-    return null;
-  }
-  return projectId;
+  return composerProjectId ?? null;
 }
 
 async function resolveSandboxSessionId(
