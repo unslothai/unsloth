@@ -1192,7 +1192,57 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     # http://127.0.0.1:PORT" into "listening on https://...".
     "LLAMA_ARG_SSL_KEY_FILE",
     "LLAMA_ARG_SSL_CERT_FILE",
+    # The rest of the twins its --help documents for a denied flag, enumerated from
+    # the bundled b10342 help rather than picked one at a time: every "(env: NAME)"
+    # whose option this module refuses. Studio emits most of these itself and argv
+    # wins over the environment, so removing them changes nothing in the ordinary
+    # case; they are here for the paths where it does not, and so a flag denied in
+    # the box is not reachable through the environment instead. The mapping below
+    # records which flag each one belongs to, since the name does not always say
+    # (LLAMA_ARG_STATIC_PATH is --path).
+    "LLAMA_ARG_MODEL",
+    "LLAMA_ARG_MODEL_URL",
+    "LLAMA_ARG_DOCKER_REPO",
+    "LLAMA_ARG_HF_REPO",
+    "LLAMA_ARG_HF_FILE",
+    "LLAMA_ARG_MMPROJ",
+    "LLAMA_ARG_MMPROJ_URL",
+    "LLAMA_ARG_ALIAS",
+    "LLAMA_ARG_HOST",
+    "LLAMA_ARG_PORT",
+    "LLAMA_ARG_REUSE_PORT",
+    "LLAMA_ARG_N_PARALLEL",
+    "LLAMA_ARG_POOLING",
+    "LLAMA_ARG_EMBEDDINGS",
+    "LLAMA_ARG_RERANKING",
+    # The web UI and its MCP proxy, which upstream marks as not for untrusted
+    # environments, and the directory the child serves files from.
+    "LLAMA_ARG_UI",
+    "LLAMA_ARG_UI_CONFIG",
+    "LLAMA_ARG_UI_CONFIG_FILE",
+    "LLAMA_ARG_UI_MCP_PROXY",
+    "LLAMA_ARG_STATIC_PATH",
+    # The multi-model server mode: a child holding its own model directory, preset
+    # and autoload policy is not the single model Studio launched and accounts for.
+    "LLAMA_ARG_MODELS_DIR",
+    "LLAMA_ARG_MODELS_PRESET",
+    "LLAMA_ARG_MODELS_MAX",
+    "LLAMA_ARG_MODELS_AUTOLOAD",
 )
+
+# Which flag each twin belongs to, for the drift test. Derived by name for most of
+# them, but not all: LLAMA_ARG_STATIC_PATH is --path, LLAMA_API_KEY is --api-key, and
+# a rename upstream would otherwise leave a variable here guarding nothing.
+DENIED_ENV_TWIN_FLAGS: dict[str, str] = {
+    "LLAMA_ARG_STATIC_PATH": "--path",
+    "LLAMA_API_KEY": "--api-key",
+    "LLAMA_ARG_API_KEY": "--api-key",
+    "LLAMA_ARG_N_PARALLEL": "--parallel",
+    "LLAMA_ARG_EMBEDDINGS": "--embeddings",
+    "LLAMA_ARG_RERANKING": "--reranking",
+    "LLAMA_ARG_UI_CONFIG_FILE": "--ui-config-file",
+    "LLAMA_ARG_MODELS_AUTOLOAD": "--models-autoload",
+}
 
 
 def scrub_denied_env(env: dict) -> list[str]:

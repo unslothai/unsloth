@@ -101,7 +101,14 @@ export function invalidateLlamaFlagCatalog(): void {
   // Dropped as well as cleared: a request already on the wire answers for the
   // binary that has just been replaced.
   inFlightCatalog = null;
-  // Not the denylist: that is Unsloth's own list and no binary changes it.
+  // The managed answer too. Its denylist is Unsloth's own and no binary changes it,
+  // but it carries defaultParallelSlots beside it, and that is the EFFECTIVE count:
+  // a build without --kv-unified serves one slot however many are configured. A tab
+  // that had already fetched it went on sizing the hidden hydration check's batch
+  // floor from the previous backend, letting "--batch-size 2" through on a build
+  // that now serves four slots, or refusing it after a clamp to one.
+  cachedManaged = null;
+  inFlightManaged = null;
   for (const listener of catalogListeners) {
     listener();
   }

@@ -1268,3 +1268,23 @@ test("the attached spelling is refused wherever it is judged", () => {
     ["--override-kv", "a=int:2"],
   );
 });
+
+test("the managed answer is invalidated with the catalogue", () => {
+  const flagsApi = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/api/llama-flags.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  // Its denylist is Unsloth's own, but it carries defaultParallelSlots beside it and
+  // that is the EFFECTIVE count: a build without --kv-unified serves one slot however
+  // many are configured. Updating llama.cpp from the banner left a tab that had
+  // already fetched it sizing the hidden hydration check's batch floor from the
+  // previous backend, so "--batch-size 2" passed on a build now serving four slots.
+  assert.match(flagsApi, /cachedManaged = null; inFlightManaged = null;/);
+  // The dynamic limits are what make it stale, so they have to be in that answer.
+  assert.match(flagsApi, /defaultParallelSlots: number;/);
+});

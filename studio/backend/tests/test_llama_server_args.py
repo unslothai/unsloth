@@ -1087,5 +1087,41 @@ def test_every_denied_env_var_names_a_denied_flag():
     # changed between releases.
     for name in _lsa.DENIED_ENV_VARS:
         stem = name.removeprefix("LLAMA_ARG_").removeprefix("LLAMA_")
-        flag = "--" + stem.lower().replace("_", "-")
+        flag = _lsa.DENIED_ENV_TWIN_FLAGS.get(name) or "--" + stem.lower().replace("_", "-")
         assert is_managed_flag(flag), f"{name} has no denied flag ({flag})"
+
+
+def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
+    # The list was enumerated from the bundled b10342 --help rather than guessed:
+    # every "(env: NAME)" whose option this module refuses. Recorded here as the
+    # pairs that mattered, so a name dropped from the denylist, or a twin dropped
+    # from the scrub, is a red test rather than a back door found later.
+    #
+    # llama.cpp applies the environment BEFORE argv, so the ones Studio always emits
+    # are overridden anyway; the rest are the reason this exists.
+    for env_var, flag in (
+        ("LLAMA_ARG_UI_MCP_PROXY", "--ui-mcp-proxy"),
+        ("LLAMA_ARG_UI", "--ui"),
+        ("LLAMA_ARG_STATIC_PATH", "--path"),
+        ("LLAMA_ARG_MODELS_DIR", "--models-dir"),
+        ("LLAMA_ARG_MODELS_AUTOLOAD", "--models-autoload"),
+        ("LLAMA_ARG_EMBEDDINGS", "--embeddings"),
+        ("LLAMA_ARG_RERANKING", "--reranking"),
+        ("LLAMA_ARG_MODEL", "--model"),
+        ("LLAMA_ARG_HF_REPO", "--hf-repo"),
+        ("LLAMA_ARG_HOST", "--host"),
+        ("LLAMA_ARG_PORT", "--port"),
+        ("LLAMA_ARG_N_PARALLEL", "--parallel"),
+        ("LLAMA_ARG_SSL_KEY_FILE", "--ssl-key-file"),
+        ("LLAMA_ARG_SSL_CERT_FILE", "--ssl-cert-file"),
+    ):
+        assert is_managed_flag(flag), flag
+        assert env_var in _lsa.DENIED_ENV_VARS, env_var
+    env = {name: "1" for name in _lsa.DENIED_ENV_VARS}
+    env["PATH"] = "/usr/bin"
+    # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
+    # Studio's own downloads use, not a llama-server behaviour switch, and the child
+    # is always given a local -m path rather than a repo to fetch.
+    assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
+    _lsa.scrub_denied_env(env)
+    assert env == {"PATH": "/usr/bin"}

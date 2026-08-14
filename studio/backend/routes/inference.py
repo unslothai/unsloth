@@ -9795,6 +9795,22 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
     return supports_mtp, freshness
 
 
+async def _effective_default_slots(fastapi_request) -> int:
+    """The default slot count a load would really serve, without blocking the loop.
+
+    _effective_parallel_slots asks the binary whether it supports --kv-unified, and on
+    a cold cache that is `llama-server --help` with a ten second timeout. Called inline
+    it stalled every other request on the first open of the panel after an update, and
+    on the managed-only answer too, which is the one path that exists to avoid waiting
+    for a probe. The settings read stays here: it is a row in SQLite, and a single slot
+    needs no probe to know it cannot be clamped below one.
+    """
+    requested = _resolve_parallel_slots(_NoParallelRequest(), fastapi_request)
+    if requested <= 1:
+        return requested
+    return await asyncio.to_thread(_effective_parallel_slots, requested)
+
+
 @router.get("/llama-flags", response_model = LlamaFlagCatalogResponse)
 async def get_llama_flags(
     fastapi_request: Request = None,
@@ -9834,9 +9850,7 @@ async def get_llama_flags(
         # The effective count, after the clamps the launch applies: a build without
         # --kv-unified serves one slot however many are configured, and an editor
         # sizing its batch floor from the raw default would refuse a batch that runs.
-        "default_parallel_slots": _effective_parallel_slots(
-            _resolve_parallel_slots(_NoParallelRequest(), fastapi_request)
-        ),
+        "default_parallel_slots": await _effective_default_slots(fastapi_request),
     }
 
     if managed_only:
