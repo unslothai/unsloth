@@ -1063,7 +1063,4 @@ def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
     )
     _run(transport)
 
-    assert [call["arguments"] for call in executed] == [
-        {"query": "first"},
-        {"query": "second"},
-    ]
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
