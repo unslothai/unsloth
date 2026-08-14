@@ -30,14 +30,14 @@ let apiBaseReadyPromise = Promise.resolve()
 // it instead, wording the reason so classifyFetchError reads it as backend-down.
 const API_BASE_READY_TIMEOUT_MS = 60_000
 
-if (isTauri && !tauriDevProxy) {
-  // never connects; real port arrives via server-port
-  apiBase = 'http://127.0.0.1:0'
+function armApiBaseReady(): void {
   apiBaseReadyPromise = new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("The backend isn't running yet.")),
-      API_BASE_READY_TIMEOUT_MS,
-    )
+    const timer = setTimeout(() => {
+      // Cleared so setApiBase can tell a timed-out wait from a live one: this
+      // promise is now permanently rejected and cannot be resolved later.
+      resolveApiBaseReady = null
+      reject(new Error("The backend isn't running yet."))
+    }, API_BASE_READY_TIMEOUT_MS)
     // Browsers ignore this; under node it keeps the timer from holding the
     // process open for a full minute after the tests finish.
     ;(timer as unknown as { unref?: () => void }).unref?.()
@@ -49,6 +49,12 @@ if (isTauri && !tauriDevProxy) {
   // An unhandled rejection before the first awaiter would surface as a console
   // error; the awaiters below still see it.
   apiBaseReadyPromise.catch(() => undefined)
+}
+
+if (isTauri && !tauriDevProxy) {
+  // never connects; real port arrives via server-port
+  apiBase = 'http://127.0.0.1:0'
+  armApiBaseReady()
 }
 
 const initialApiBase = apiBase
@@ -63,8 +69,17 @@ export function setApiBase(port: number) {
   if (!tauriDevProxy || port !== 8888) {
     apiBase = `http://127.0.0.1:${port}`
   }
-  resolveApiBaseReady?.()
-  resolveApiBaseReady = null
+  if (resolveApiBaseReady) {
+    resolveApiBaseReady()
+    resolveApiBaseReady = null
+    return
+  }
+  // The wait already timed out, leaving a permanently rejected promise that
+  // every later authFetch would keep failing against. A port arriving now means
+  // the backend came up late, so hand callers a settled one instead.
+  if (isTauri && !tauriDevProxy) {
+    apiBaseReadyPromise = Promise.resolve()
+  }
 }
 
 export function apiBaseReady(): Promise<void> {
