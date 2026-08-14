@@ -10,7 +10,7 @@ registerBundlerResolver();
 
 // Installed before the import so the store hydrates from it and its writes land
 // somewhere the persistence cases below can read back.
-const { store: storageStore } = installLocalStorageFake();
+const { store: storageStore, fireWindowEvent } = installLocalStorageFake();
 
 const { pinKey, usePinnedModelsStore } = await import(
   "../src/features/model-picker/components/model-selector/pinned-models.ts"
@@ -26,6 +26,25 @@ function setPinned(pinned: string[]) {
 function storedPinned(): string[] | null {
   const raw = storageStore.get(STORAGE_KEY);
   return raw ? JSON.parse(raw) : null;
+}
+
+/**
+ * Another Studio window rewriting the pin list: the record changes underneath
+ * this window and a "storage" event follows, which is the only way the list can
+ * change without this window's store doing it. Goes through the real listener,
+ * so what the store learns is exactly what a second window would teach it.
+ */
+function externalWrite(pinned: string[], key: string | null = STORAGE_KEY) {
+  storageStore.set(STORAGE_KEY, JSON.stringify(pinned));
+  if (fireWindowEvent("storage", { key }) !== 1) {
+    // Otherwise every case below would pass by doing nothing at all.
+    throw new Error("the store did not subscribe to storage on construction");
+  }
+}
+
+/** Forget the record without touching the store, so a later write is visible. */
+function forgetStoredWrites() {
+  storageStore.delete(STORAGE_KEY);
 }
 
 test("movePinned moves a key before a later key", () => {
@@ -281,16 +300,21 @@ test("outside a drag session movePinned still persists on every call", () => {
   assert.deepEqual(storedPinned(), ["b", "a", "c"]);
 });
 
+// --- another window writing mid-drag ---------------------------------------
+// pinned-models installs a window "storage" listener that replaces the list
+// wholesale, so a second Studio window can rewrite the order underneath a drag
+// that is still in flight. A snapshot taken before that write no longer
+// describes what is in localStorage, so restoring it would put this window out
+// of step with the record and the next write from here would clobber the other
+// window's change. Whenever a storage event lands mid-drag the order it
+// installed is what the session falls back to, whatever it did to the keys.
+
 test("a pin added in another window mid-drag survives a cancel", () => {
-  // pinned-models installs a window "storage" listener that replaces the list
-  // wholesale. If that lands mid-drag the snapshot no longer describes the same
-  // set of pins, and restoring it would resurrect a pin the user just removed
-  // or drop one they just added. The newer list wins instead.
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
   store.movePinned("a", "c");
-  usePinnedModelsStore.setState({ pinned: ["b", "c", "a", "new"] });
+  externalWrite(["b", "c", "a", "new"]);
   store.endPinnedDrag(false);
   assert.deepEqual(usePinnedModelsStore.getState().pinned, [
     "b",
@@ -298,15 +322,149 @@ test("a pin added in another window mid-drag survives a cancel", () => {
     "a",
     "new",
   ]);
+  assert.deepEqual(storedPinned(), ["b", "c", "a", "new"], "and no write back");
 });
 
-test("a cancel rolls back even when a same-set write landed mid-drag", () => {
-  // Same keys, different order: that is a pure reorder, so the rollback is safe
-  // and the drag the user abandoned leaves nothing behind.
+test("a pin removed in another window mid-drag stays removed after a cancel", () => {
+  // The mirror image: rolling the snapshot back would resurrect "b".
   setPinned(["a", "b", "c"]);
   const store = usePinnedModelsStore.getState();
   store.beginPinnedDrag();
   store.movePinned("a", "c");
+  externalWrite(["c", "a"]);
+  store.endPinnedDrag(false);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "a"]);
+  assert.deepEqual(storedPinned(), ["c", "a"]);
+});
+
+test("a reorder in another window mid-drag survives a cancel", () => {
+  // Same keys, different order. The pre-drag snapshot is just as stale here as
+  // it is when the key set changed: localStorage holds the other window's
+  // order, so restoring the snapshot would leave this window disagreeing with
+  // the record while writing nothing to say so.
+  setPinned(["a", "b", "c"]);
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  store.movePinned("a", "c");
+  externalWrite(["c", "b", "a"]);
+  assert.deepEqual(
+    usePinnedModelsStore.getState().pinned,
+    ["c", "b", "a"],
+    "the storage listener replaces the list mid-drag",
+  );
+  store.endPinnedDrag(false);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "b", "a"]);
+  assert.deepEqual(storedPinned(), ["c", "b", "a"], "and no write back");
+});
+
+test("a cancel after another window reordered cannot clobber it on the next pin", () => {
+  // Why the case above matters: nothing is lost at the moment of the rollback,
+  // since a cancel writes nothing. The damage lands on the next write from this
+  // window, which persists the whole list.
+  setPinned(["a", "b", "c"]);
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  store.movePinned("a", "c");
+  externalWrite(["c", "b", "a"]);
+  store.endPinnedDrag(false);
+  usePinnedModelsStore.getState().togglePinned("d");
+  assert.deepEqual(storedPinned(), ["d", "c", "b", "a"]);
+});
+
+test("a drag cancelled after another window wrote drops its own preview too", () => {
+  // The moves made after the storage event are still just a preview, and the
+  // user abandoned them. Falling back to the order the other window installed
+  // discards them without writing anything.
+  setPinned(["a", "b", "c"]);
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  externalWrite(["c", "b", "a"]);
+  store.movePinned("c", "a");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["b", "a", "c"]);
+  store.endPinnedDrag(false);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "b", "a"]);
+  assert.deepEqual(storedPinned(), ["c", "b", "a"]);
+});
+
+test("a drop after another window wrote mid-drag commits what is on screen", () => {
+  // A drop is the user saying they meant it, so the last writer wins, but it
+  // wins on top of the other window's list rather than the stale snapshot.
+  setPinned(["a", "b", "c"]);
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  store.movePinned("a", "b");
+  externalWrite(["c", "b", "a", "new"]);
+  store.movePinned("new", "c");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "new",
+    "c",
+    "b",
+    "a",
+  ]);
+  store.endPinnedDrag(true);
+  assert.deepEqual(storedPinned(), ["new", "c", "b", "a"]);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "new",
+    "c",
+    "b",
+    "a",
+  ]);
+});
+
+test("a drop that only re-applies another window's order writes nothing", () => {
+  // The storage event already put that order in localStorage. "Nothing moved"
+  // is measured against it, not against the snapshot from before it landed.
+  setPinned(["a", "b", "c"]);
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  store.movePinned("a", "c");
+  externalWrite(["c", "b", "a"]);
+  forgetStoredWrites();
+  store.endPinnedDrag(true);
+  assert.equal(storedPinned(), null, "no redundant write");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "b", "a"]);
+});
+
+test("a storage event for another key does not look like a cross-window pin write", () => {
+  setPinned(["a", "b", "c"]);
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  store.movePinned("a", "c");
+  fireWindowEvent("storage", { key: "unsloth_something_else" });
+  assert.deepEqual(
+    usePinnedModelsStore.getState().pinned,
+    ["b", "c", "a"],
+    "the listener ignores it",
+  );
   store.endPinnedDrag(false);
   assert.deepEqual(usePinnedModelsStore.getState().pinned, ["a", "b", "c"]);
+});
+
+test("a cross-window write is only remembered for the drag it landed in", () => {
+  // The next drag starts from a clean session, so an ordinary cancel after one
+  // that saw a storage event still rolls back.
+  setPinned(["a", "b", "c"]);
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  externalWrite(["c", "b", "a"]);
+  store.endPinnedDrag(false);
+  storageStore.clear();
+
+  store.beginPinnedDrag();
+  store.movePinned("c", "a");
+  store.endPinnedDrag(false);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "b", "a"]);
+  assert.equal(storedPinned(), null);
+});
+
+test("a storage event with no drag in flight just replaces the list", () => {
+  setPinned(["a", "b", "c"]);
+  externalWrite(["c", "a", "b"]);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "a", "b"]);
+  // And it becomes the order the next drag snapshots and rolls back to.
+  const store = usePinnedModelsStore.getState();
+  store.beginPinnedDrag();
+  store.movePinned("c", "b");
+  store.endPinnedDrag(false);
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["c", "a", "b"]);
 });
