@@ -100,9 +100,7 @@ def test_own_process_group_refuses_group_one(monkeypatch):
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
 def test_posix_terminate_sends_nothing_for_init(recorded_signals):
     pl._posix_terminate(1, timeout = 0.01)
-    assert recorded_signals == [], (
-        "killpg(1, sig) is kill(-1, sig): every process the user owns"
-    )
+    assert recorded_signals == [], "killpg(1, sig) is kill(-1, sig): every process the user owns"
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -155,9 +153,9 @@ def test_poisoned_record_is_dropped_not_retried(tmp_path, monkeypatch, recorded_
 
     assert recorded_signals == [], "the sweep must not signal init"
     assert reaped == [], "nothing was reaped, so nothing may be reported as reaped"
-    assert not record.exists(), (
-        "a poisoned record must be unlinked, or every launch retries it forever"
-    )
+    assert (
+        not record.exists()
+    ), "a poisoned record must be unlinked, or every launch retries it forever"
 
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX signalling path")
@@ -186,6 +184,6 @@ def test_valid_record_still_reaps(tmp_path, monkeypatch, recorded_signals):
     reaped = pl.reap_recorded_children(timeout = 0.01)
 
     assert 424242 in reaped
-    assert any(pid == 424242 for _call, pid, _sig in recorded_signals), (
-        "a genuine orphan must still be signalled"
-    )
+    assert any(
+        pid == 424242 for _call, pid, _sig in recorded_signals
+    ), "a genuine orphan must still be signalled"

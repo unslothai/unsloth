@@ -65,11 +65,8 @@ def _signalable(pid: object) -> bool:
     `bool` is excluded explicitly: it is an `int` subclass, so True would
     otherwise read as pid 1.
     """
-    return (
-        isinstance(pid, int)
-        and not isinstance(pid, bool)
-        and pid >= _LOWEST_SIGNALABLE_PID
-    )
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid >= _LOWEST_SIGNALABLE_PID
+
 
 _lock = threading.Lock()
 _spawner_lock = threading.Lock()
