@@ -9,16 +9,24 @@ import { isTauri } from "@/lib/api-base";
 import { fetchPillSettings, syncNativePillConfig } from "./api";
 import { isMacPlatform } from "@/lib/pill-native";
 
-// server-port re-announcements can arrive in bursts; one sync per window.
-let lastSyncStartedAt = 0;
+// server-port re-announcements can arrive in bursts; one sync per window. The
+// throttle keys on the last SUCCESS, not the last attempt: a failed startup
+// sync used to bank 30s of silence and swallow the retry the port triggers,
+// leaving the hotkey stale for the window's lifetime.
+let lastSyncSucceededAt = 0;
+let syncInFlight = false;
 
 async function syncConfigToNative(): Promise<void> {
-  if (Date.now() - lastSyncStartedAt < 30_000) return;
-  lastSyncStartedAt = Date.now();
+  if (syncInFlight) return;
+  if (lastSyncSucceededAt && Date.now() - lastSyncSucceededAt < 30_000) return;
+  syncInFlight = true;
   try {
     await syncNativePillConfig(await fetchPillSettings());
+    lastSyncSucceededAt = Date.now();
   } catch {
-    // Backend not up yet or signed out; the next sync trigger retries.
+    // Backend not up yet or signed out; the next sync trigger really does retry.
+  } finally {
+    syncInFlight = false;
   }
 }
 
