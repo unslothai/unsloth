@@ -11,6 +11,7 @@ up to nine independent 90s timeouts. These tests pin the shared-probe contract: 
 subprocess per run, invalidated whenever pip changes what is installed.
 """
 
+import ast
 import importlib.util
 import os
 import subprocess
@@ -191,6 +192,114 @@ class TestMemoization:
             second = stack_mod._probe_torch_runtime()
         assert mock_run.call_count == 1
         assert second[2] == "2.10.0+rocm7.1"
+
+    def test_pip_install_try_invalidates_the_cache(self):
+        """The other installer. It puts the Windows AMD ROCm trio on disk, so a memo it
+        does not clear can answer for the build it just replaced."""
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
+            assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cu128"
+
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            assert stack_mod.pip_install_try("ROCm torch (Windows)", "torch") is True
+
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
+        with patch.object(stack_mod.subprocess, "run", return_value = out) as mock_run:
+            assert stack_mod._probe_torch_runtime()[2] == "2.10.0+rocm7.1"
+        assert mock_run.call_count == 1
+
+    def test_the_torchao_probe_sees_the_reinstalled_torch(self):
+        """The consumer that would actually read a stale answer. _select_torchao_spec
+        reads _probe_installed_torch_version() between the two repair points, so a memo
+        surviving the reinstall pins torchao against the torch that was just replaced.
+        """
+        with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()):
+            assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
+
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            assert stack_mod.pip_install_try("ROCm torch (Windows)", "torch") is True
+
+        out = _probe_result("2.10.0+rocm7.1|7.1.12345|")
+        with patch.object(stack_mod.subprocess, "run", return_value = out):
+            assert stack_mod._probe_installed_torch_version() == "2.10.0+rocm7.1"
+
+    @pytest.mark.parametrize("installer", ["pip_install", "pip_install_try"])
+    def test_a_real_reinstall_is_really_reclassified(self, tmp_path, installer):
+        """The mocked versions above prove the memo was dropped. This proves the answer
+        that replaces it comes from the venv as it is NOW: two real torch packages, a
+        real probe subprocess either side of a real call into the installer.
+        """
+
+        def _torch(where, version):
+            pkg = where / "torch"
+            pkg.mkdir(parents = True)
+            (pkg / "__init__.py").write_text(
+                "from . import version\nfrom .version import __version__\n", encoding = "utf-8"
+            )
+            (pkg / "version.py").write_text(
+                f"__version__ = '{version}'\nhip = None\ncuda = None\n", encoding = "utf-8"
+            )
+            return where
+
+        before = _torch(tmp_path / "before", "2.9.1+cpu")
+        after = _torch(tmp_path / "after", "2.10.0+cu128")
+
+        with patch.dict(os.environ, {"PYTHONPATH": str(before)}):
+            assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
+        # Still the remembered answer while nothing has installed anything.
+        with patch.dict(os.environ, {"PYTHONPATH": str(after)}):
+            assert stack_mod._probe_torch_runtime()[2] == "2.9.1+cpu"
+
+        with (
+            patch.object(stack_mod, "USE_UV", False),
+            patch.object(stack_mod, "CONSTRAINTS", Path("/nonexistent/constraints.txt")),
+            patch.object(
+                stack_mod.subprocess, "run", return_value = MagicMock(returncode = 0, stdout = b"")
+            ),
+        ):
+            getattr(stack_mod, installer)("torch repair", "torch")
+
+        with patch.dict(os.environ, {"PYTHONPATH": str(after)}):
+            assert stack_mod._probe_torch_runtime()[2] == "2.10.0+cu128"
+
+    def test_every_installer_entry_point_invalidates(self):
+        """Read from the module rather than listed here, so a third installer helper
+        cannot be added without either invalidating or failing this.
+
+        The two that exist route through _build_pip_cmd / _build_uv_cmd, which is what
+        makes a function an installer rather than a probe.
+        """
+        tree = ast.parse(Path(stack_mod.__file__).read_text(encoding = "utf-8"))
+        installers = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            called = {
+                sub.func.id
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+            }
+            if called & {"_build_pip_cmd", "_build_uv_cmd"}:
+                installers[node.name] = called
+        assert set(installers) == {"pip_install", "pip_install_try"}, (
+            f"a new installer entry point appeared: {sorted(installers)}. It has to drop "
+            "the torch classification too, or it will answer for the build it replaced"
+        )
+        for name, called in installers.items():
+            assert "_invalidate_torch_runtime_probe" in called, (
+                f"{name}() installs packages without dropping the memoized torch " "classification"
+            )
 
     def test_explicit_invalidation_forces_a_reprobe(self):
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
