@@ -371,17 +371,20 @@ class TestCompatibilityRoutersAreGated:
         the hub router it aliases."""
         source = (_BACKEND / "routes" / "datasets.py").read_text(encoding = "utf-8")
         assert "require_datasets_http" in TestOnlyDatasetRoutesAreGated._decorator(
-            source, "/check-format")
+            source, "/check-format"
+        )
 
-    @pytest.mark.parametrize("path", ['"/upload"', '"/local"', '"/download-progress"',
-                                      '"/ai-assist-mapping"'])
+    @pytest.mark.parametrize(
+        "path", ['"/upload"', '"/local"', '"/download-progress"', '"/ai-assist-mapping"']
+    )
     def test_the_legacy_alias_leaves_the_rest_open(self, path):
         source = (_BACKEND / "routes" / "datasets.py").read_text(encoding = "utf-8")
         decorator = TestOnlyDatasetRoutesAreGated._decorator(source, path.strip('"'))
         assert "require_datasets_http" not in decorator, path
 
-    @pytest.mark.parametrize("path", ['"/seed/inspect"', '"/seed/inspect-upload"', '"/jobs"',
-                                      '"/jobs/{job_id}/dataset"'])
+    @pytest.mark.parametrize(
+        "path", ['"/seed/inspect"', '"/seed/inspect-upload"', '"/jobs"', '"/jobs/{job_id}/dataset"']
+    )
     def test_data_recipe_gates_the_routes_that_load_data(self, path):
         """Per route since the blanket mount went: these three reach load_dataset or
         pandas, while the seed-file deletes only unlink under the upload root."""
@@ -671,7 +674,8 @@ class TestTheCapabilityIsPublishedAndActedOn:
         """Disabling a sidebar row is not a guard: a bookmark or a reload still lands
         on a page whose every call answers 503."""
         source = (_BACKEND.parent / "frontend" / "src" / "app" / "routes" / "__root.tsx").read_text(
-            encoding = "utf-8")
+            encoding = "utf-8"
+        )
         assert '["/studio", "/data-recipes"]' in source
         index = source.index("needsDatasets(location.pathname)")
         assert "!unmeasured && !datasetsAvailable" in source[index - 120 : index]
@@ -679,8 +683,9 @@ class TestTheCapabilityIsPublishedAndActedOn:
     def test_the_recovery_poll_treats_missing_datasets_as_unsettled(self):
         """Off ARM64 the host is not chat-only, so `!chatOnly` alone settled it and the
         rows stayed disabled until a reload after the 503's own advice was followed."""
-        source = (_BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx").read_text(
-            encoding = "utf-8")
+        source = (
+            _BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx"
+        ).read_text(encoding = "utf-8")
         index = source.index("const selfHealSettled =")
         assert "!datasetsMissing &&" in source[index : index + 200]
         # And in the dependency array, or the effect keeps a stale reading of it.
@@ -690,8 +695,9 @@ class TestTheCapabilityIsPublishedAndActedOn:
     def test_the_recipes_hint_prefers_the_dataset_detail(self):
         """chatOnlyDetail is null on a host that merely lost the library, and the
         fallback text is the ARM64 remedy -- advice for a machine they are not at."""
-        source = (_BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx").read_text(
-            encoding = "utf-8")
+        source = (
+            _BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx"
+        ).read_text(encoding = "utf-8")
         assert "const recipesDetail = datasetsDetail ?? chatOnlyDetail;" in source
 
     def test_winget_rechecks_for_an_x64_python_by_path(self):
