@@ -85,13 +85,19 @@ def test_trailing_slash_and_whitespace_are_normalized():
 
 def test_no_dns_lookup_for_shipped_providers_or_ip_literals(monkeypatch):
     """The common path stays resolver-free: shipped hosts and IP literals."""
-    def _fail(*args, **kwargs):
-        raise AssertionError("validation must not resolve DNS for these")
+    # Recorded rather than raised: the lookup runs on a worker thread, where an
+    # exception is swallowed into a warning and would never fail this test.
+    calls = []
 
-    monkeypatch.setattr(socket, "getaddrinfo", _fail)
+    def _record(host, port, *args, **kwargs):
+        calls.append(host)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", _record)
     assert validate_provider_base_url("https://api.openai.com/v1") == "https://api.openai.com/v1"
     assert validate_provider_base_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
     assert validate_provider_base_url("http://[fd00:ec2::255]/v1") == "http://[fd00:ec2::255]/v1"
+    assert calls == []
 
 
 @pytest.mark.parametrize(
