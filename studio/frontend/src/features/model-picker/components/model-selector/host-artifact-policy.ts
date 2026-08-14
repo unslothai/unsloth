@@ -28,14 +28,20 @@ export function classifyHost({
   deviceBackend?: string | null;
   budgetKnown?: boolean;
 }): HostClass {
-  // Mac outranks the backend string. Apple GPUs report as available and Studio may name the
-  // backend mlx or cpu depending on what torch found, but no Mac can place a Modular Diffusers
-  // workflow: it needs mem_get_info, which torch.mps does not expose. video.py refuses the load.
-  if (deviceType === "mac") return "gguf-only";
   const backend = (deviceBackend ?? "").trim().toLowerCase();
+  // A resolved accelerated backend outranks the OS, because no Mac reports one: on macOS the
+  // backend resolves to mps, mlx or cpu. deviceType can still be the BROWSER's platform -- it
+  // falls back to detectLocalPlatform() until an authenticated reply carries device_type
+  // (config/env.ts) -- so a Mac browser driving a remote CUDA server would otherwise classify
+  // that Linux host as gguf-only.
+  if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) return "accelerated";
+  // Mac outranks the rest of the backend string. Apple GPUs report as available and Studio may
+  // name the backend mlx or cpu depending on what torch found, but no Mac can place a Modular
+  // Diffusers workflow: it needs mem_get_info, which torch.mps does not expose, and video.py
+  // refuses the load.
+  if (deviceType === "mac") return "gguf-only";
   if (!(backend && budgetKnown)) return "unknown";
   if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
-  if (ACCELERATED_BACKENDS.has(backend)) return "accelerated";
   // An unrecognised backend is a new accelerator, not a CPU. Show what we show today.
   return "unknown";
 }
