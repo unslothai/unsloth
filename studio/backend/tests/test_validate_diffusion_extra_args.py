@@ -97,6 +97,103 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
         )
 
 
+class TestValidateTranslatesManualNgl(unittest.TestCase):
+    """Manual GPU memory owns the offload flags, and /load turns an explicit -ngl into
+    the first-class field before stripping them. /validate has to do the same, or the
+    call that APPROVES the switch is judging a different command than the one that runs:
+    gpu_layers 0 with "-ngl 20" was approved as a load that places nothing on any device
+    and cannot compete with training for VRAM, and then launched twenty layers on it."""
+
+    def _validate(self, route, *, gpu_layers, extra_args, diffusion_kind = True):
+        seen: list = []
+
+        def _capture(_config, request, **kwargs):
+            seen.append((request.gpu_layers, kwargs.get("llama_extra_args")))
+
+        request = ValidateModelRequest(
+            model_path = "someone/diffusion-gguf",
+            llama_extra_args = extra_args,
+            gpu_memory_mode = "manual",
+            gpu_layers = gpu_layers,
+        )
+        config = SimpleNamespace(
+            identifier = "someone/diffusion-gguf",
+            display_name = "diffusion-gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = None,
+        )
+        with (
+            patch.object(
+                route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("someone/diffusion-gguf", "someone/diffusion-gguf", False),
+            ),
+            patch.object(route.ModelConfig, "from_identifier", return_value = config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = list(extra_args)),
+            patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value = True),
+            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+        ):
+            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+        return seen
+
+    def test_an_explicit_layer_count_reaches_the_guard(self):
+        route = _load_route_module("inf_route_manual_ngl_1")
+        seen = self._validate(route, gpu_layers = 0, extra_args = ["-ngl", "20"])
+        # The layer count the load will really run, and the raw flag stripped out of
+        # the list exactly as /load strips it once it owns the field.
+        self.assertEqual(seen, [(20, [])])
+
+    def test_a_zero_layer_override_is_read_the_same_way(self):
+        # The inverse pairing: asked for 20, overridden to 0. Judged as the CPU-only
+        # load it is, rather than refused for VRAM it never takes.
+        route = _load_route_module("inf_route_manual_ngl_2")
+        seen = self._validate(route, gpu_layers = 20, extra_args = ["-ngl", "0"])
+        self.assertEqual(seen, [(0, [])])
+
+    def test_auto_mode_leaves_the_flag_alone(self):
+        # Only manual mode owns these. In Auto the flag is a pass-through the loader
+        # honours, so translating it here would invent a first-class value /load never set.
+        route = _load_route_module("inf_route_manual_ngl_3")
+        seen: list = []
+
+        def _capture(_config, request, **kwargs):
+            seen.append((request.gpu_layers, kwargs.get("llama_extra_args")))
+
+        request = ValidateModelRequest(
+            model_path = "someone/gguf",
+            llama_extra_args = ["-ngl", "20"],
+        )
+        config = SimpleNamespace(
+            identifier = "someone/gguf",
+            display_name = "gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = None,
+        )
+        with (
+            patch.object(
+                route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("someone/gguf", "someone/gguf", False),
+            ),
+            patch.object(route.ModelConfig, "from_identifier", return_value = config),
+            patch.object(
+                route, "_resolve_inherited_extra_args", return_value = ["-ngl", "20"]
+            ),
+            patch.object(route, "_classify_diffusion_gguf", return_value = False),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value = True),
+            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+        ):
+            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+        self.assertEqual(seen, [(request.gpu_layers, ["-ngl", "20"])])
+
+
 if __name__ == "__main__":
     unittest.main()
 

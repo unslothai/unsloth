@@ -129,6 +129,13 @@ export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
   if (cachedCatalog) {
     return Promise.resolve(cachedCatalog);
   }
+  // Read before the request goes out, and checked before its answer is published,
+  // exactly as the full catalogue does. The denylist in this answer is Unsloth's own
+  // and no binary changes it, but defaultParallelSlots beside it is the EFFECTIVE
+  // count, which depends on the probed binary: a request already on the wire when
+  // llama.cpp is replaced would otherwise repopulate the cache the invalidation had
+  // just cleared, and keep the old build's slot floor for the rest of the session.
+  const generation = catalogGeneration;
   inFlightManaged ??= (async () => {
     try {
       const res = await authFetch(
@@ -140,7 +147,7 @@ export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
       const body = (await res.json()) as ApiLlamaFlagCatalog;
       // An older backend answers the route without the parameter and returns its
       // full catalogue, which carries the same list.
-      cachedManaged = {
+      const managed: LlamaManagedFlags = {
         managed: new Set(body.managed ?? []),
         maxBytes: body.max_bytes ?? 0,
         windowsCommandBudget: body.windows_command_budget ?? 0,
@@ -148,11 +155,21 @@ export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
         // leaves the editor's own hard floor of 2 in charge.
         defaultParallelSlots: body.default_parallel_slots ?? 0,
       };
+      if (generation !== catalogGeneration) {
+        // The binary changed while this was in flight: answer "cannot verify"
+        // rather than the old build's limits, and cache nothing.
+        return null;
+      }
+      cachedManaged = managed;
       return cachedManaged;
     } catch {
       return null;
     } finally {
-      inFlightManaged = null;
+      // Only if it is still ours: an invalidation may have cleared it already, and
+      // a later call may have started its own.
+      if (generation === catalogGeneration) {
+        inFlightManaged = null;
+      }
     }
   })();
   return inFlightManaged;

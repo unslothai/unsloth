@@ -91,6 +91,17 @@ export type ExtraArgsParse = {
   tokens: string[];
   /** Set when a quote is left open, so the row can say so instead of silently dropping it. */
   unterminatedQuote: '"' | "'" | null;
+  /**
+   * Indices of tokens the user QUOTED, which argv cannot record.
+   *
+   * `--chat-template '- hello'` is one option and its value, but the quotes are gone
+   * by the time it is a token list, and "- hello" is flag-shaped, so the row called
+   * the option's value missing and disabled Load over a list the backend accepts and
+   * llama.cpp reads correctly (it takes the next argv element whatever it starts
+   * with). Only the editor can tell the two apart, and only while the text is still
+   * text, so the marks are recorded here and used by the diagnostics.
+   */
+  quotedIndices: ReadonlySet<number>;
 };
 
 /**
@@ -443,8 +454,11 @@ export function dropManagedExtraArgs(
  */
 export function parseExtraArgs(input: string): ExtraArgsParse {
   const tokens: string[] = [];
+  const quotedIndices = new Set<number>();
   let current = "";
   let started = false;
+  // Whether any part of the token being built came from inside quotes.
+  let currentQuoted = false;
   let quote: '"' | "'" | null = null;
 
   for (let i = 0; i < input.length; i += 1) {
@@ -455,9 +469,13 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
       (ch === " " || ch === "\t" || ch === "\n" || ch === "\r")
     ) {
       if (started) {
+        if (currentQuoted) {
+          quotedIndices.add(tokens.length);
+        }
         tokens.push(current);
         current = "";
         started = false;
+        currentQuoted = false;
       }
       continue;
     }
@@ -491,6 +509,7 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
       quote = ch;
       // An empty quoted string is still a token: --grammar '' means something.
       started = true;
+      currentQuoted = true;
       continue;
     }
 
@@ -504,9 +523,12 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
   }
 
   if (started) {
+    if (currentQuoted) {
+      quotedIndices.add(tokens.length);
+    }
     tokens.push(current);
   }
-  return { tokens, unterminatedQuote: quote };
+  return { tokens, unterminatedQuote: quote, quotedIndices };
 }
 
 /**
@@ -788,7 +810,14 @@ export function diagnoseExtraArgs(
   const keepResident = context.keepResident ?? false;
   const noRamReserve = context.noRamReserve ?? false;
   const out: ExtraArgsDiagnostic[] = [];
-  const { tokens, unterminatedQuote } = parseExtraArgs(input);
+  const { tokens, unterminatedQuote, quotedIndices } = parseExtraArgs(input);
+  // Tokens the walk below consumed as somebody's value. A quoted token in value
+  // POSITION is a value whatever it starts with: llama.cpp takes the next argv
+  // element for a value-taking option without looking at it, and the backend
+  // forwards the list verbatim, so "--chat-template '- hello'" works. Position
+  // matters as much as the quotes: a user who quotes out of habit ("--top-k" 20)
+  // still wrote a flag, and reading that as a value would refuse a list that runs.
+  const valueIndices = new Set<number>();
 
   if (unterminatedQuote) {
     out.push({
@@ -872,8 +901,9 @@ export function diagnoseExtraArgs(
       owedValues.push(owner);
     }
   };
-  for (const token of tokens) {
-    const flag = extraArgFlagName(token);
+  for (const [index, token] of tokens.entries()) {
+    const quotedValue = pendingValues > 0 && quotedIndices.has(index);
+    const flag = quotedValue ? null : extraArgFlagName(token);
     if (flag === null) {
       if (pendingValues <= 0) {
         out.push({
@@ -882,6 +912,7 @@ export function diagnoseExtraArgs(
         });
         break;
       }
+      valueIndices.add(index);
       pendingValues -= 1;
       if (pendingValues <= 0) {
         pendingOwner = null;
@@ -924,7 +955,9 @@ export function diagnoseExtraArgs(
   const memoryStripped: [string, string][] = [];
   const reportedValues = new Set<string>();
   for (const [index, token] of tokens.entries()) {
-    const flag = extraArgFlagName(token);
+    // Judged the same way the walk above judged it, or a quoted value that begins
+    // with a hyphen would be reported here as a flag this build has never heard of.
+    const flag = valueIndices.has(index) ? null : extraArgFlagName(token);
     if (flag === null) {
       continue;
     }
@@ -940,7 +973,9 @@ export function diagnoseExtraArgs(
       const missing =
         value === undefined ||
         value === "" ||
-        (!attached && extraArgFlagName(value) !== null);
+        (!attached &&
+          !valueIndices.has(index + 1) &&
+          extraArgFlagName(value) !== null);
       const minimum = INTEGER_VALUE_MINIMUM[flag];
       const numeric = INTEGER_VALUE_FLAGS.has(flag);
       let message: string | null = null;

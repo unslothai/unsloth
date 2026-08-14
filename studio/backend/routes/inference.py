@@ -8935,6 +8935,33 @@ async def validate_model(
             request, config, model_identifier, getattr(request, "llama_extra_args", None)
         )
 
+        # Manual mode owns the offload flags, and /load translates an explicit -ngl
+        # into the first-class field before it strips them. Doing that there and not
+        # here made the two disagree about what will actually run: a diffusion GGUF
+        # asked with gpu_layers 0 and "-ngl 20" was approved as a zero-layer load that
+        # cannot compete with training for VRAM, and then launched twenty layers on
+        # the GPU; the opposite pairing refused a load that only ever runs on the CPU.
+        # Same translation, same strip, so the guard below judges the same command.
+        if getattr(request, "gpu_memory_mode", None) == "manual" and effective_extra_args:
+            from core.inference.llama_server_args import (
+                parse_gpu_layers_override,
+                strip_shadowing_flags,
+            )
+
+            _validate_ngl_override = parse_gpu_layers_override(effective_extra_args)
+            if _validate_ngl_override is not None:
+                request = request.model_copy(update = {"gpu_layers": _validate_ngl_override})
+            effective_extra_args = strip_shadowing_flags(
+                effective_extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_tensor_split = _should_strip_tensor_split(request),
+                strip_offload = True,
+            )
+
         # Apply the same placement policy as /load before the frontend unloads
         # the current model.
         placement = await _prepare_load_placement(config, request, effective_extra_args)

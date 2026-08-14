@@ -10,6 +10,7 @@ import {
   diagnoseExtraArgs,
   dropManagedExtraArgs,
   extraArgsAreLoadable,
+  parseExtraArgs,
   sanitizeStoredExtraArgs,
 } from "../src/features/model-picker/model-config/llama-extra-args.ts";
 
@@ -1320,5 +1321,77 @@ test("a flag quoted with stray spaces is refused, not silently sent", () => {
   assert.deepEqual(
     sanitizeStoredExtraArgs(["--grammar", "root ::= x "], managed),
     ["--grammar", "root ::= x "],
+  );
+});
+
+test("a quoted value that begins with a hyphen is a value, not a flag", () => {
+  // parseExtraArgs takes the quotes off, and "- hello" is flag-shaped, so the row
+  // called --chat-template's value missing and disabled Load over a list the backend
+  // accepts and llama.cpp reads correctly: it takes the next argv element for a
+  // value-taking option without looking at what it starts with.
+  // A control owns --chat-template, so the note about who wins stays; what must not
+  // be here is an error saying the value is missing.
+  for (const text of ["--chat-template '- hello'", '--chat-template "- hello"']) {
+    assert.ok(
+      diagnoseExtraArgs(text, CATALOG).every((d) => d.level !== "error"),
+      text,
+    );
+  }
+  // The quoted token is not reported as an unknown flag either.
+  assert.ok(
+    diagnoseExtraArgs("--grammar '-x'", CATALOG).every(
+      (d) => !d.message.includes("-x"),
+    ),
+  );
+  // Position matters as much as the quotes: quoting a FLAG out of habit still reads
+  // as a flag, or a list that runs would be refused.
+  assert.ok(
+    diagnoseExtraArgs('"--top-k" 20', CATALOG).every((d) => d.level !== "error"),
+  );
+  assert.ok(
+    diagnoseExtraArgs("'--numa'", CATALOG).some(
+      (d) => d.level === "error" && d.message.includes("needs a value"),
+    ),
+  );
+  // With no option in front of it there is nothing for it to be the value OF, so it
+  // is judged as written: flag-shaped, unknown to this build, warned about and still
+  // passed. The same answer the backend gives, which reads it as a flag too.
+  const orphan = diagnoseExtraArgs("'- hello'", CATALOG);
+  assert.ok(orphan.every((d) => d.level !== "error"));
+  assert.ok(orphan.some((d) => d.level === "warning"));
+  // The tokeniser records which tokens were quoted; the token list itself is
+  // unchanged, since argv has no room for that distinction.
+  const parsed = parseExtraArgs("--chat-template '- hello'");
+  assert.deepEqual(parsed.tokens, ["--chat-template", "- hello"]);
+  assert.deepEqual([...parsed.quotedIndices], [1]);
+});
+
+test("a managed answer from the previous binary is never published", () => {
+  const flagsApi = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/api/llama-flags.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  // Clearing the cache is not enough on its own: a managed request already on the
+  // wire when llama.cpp is replaced would resolve afterwards and put the old
+  // build's defaultParallelSlots back, where it would stay for the session. The
+  // full catalogue has read its generation before the request and checked it
+  // before publishing since the start; this path now does the same, including the
+  // finally, which used to clear a newer request's in-flight promise.
+  assert.match(
+    flagsApi,
+    /const generation = catalogGeneration; inFlightManaged \?\?=/,
+  );
+  assert.match(
+    flagsApi,
+    /if \(generation !== catalogGeneration\) \{ .*return null; \} cachedManaged = managed;/,
+  );
+  assert.match(
+    flagsApi,
+    /if \(generation === catalogGeneration\) \{ inFlightManaged = null; \}/,
   );
 });
