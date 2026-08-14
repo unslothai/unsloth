@@ -20,7 +20,7 @@ BLOCK = re.compile(r"^def _vkey\(c\):\n(?:[ \t].*\n|\n)*", re.MULTILINE)
 
 
 def _extract(path):
-    m = BLOCK.search(path.read_text(encoding="utf-8"))
+    m = BLOCK.search(path.read_text(encoding = "utf-8"))
     assert m, f"_vkey is gone from {path.name}"
     return m.group(0)
 
@@ -68,7 +68,7 @@ def test_suffix_number_breaks_the_tie_between_duplicate_metadata():
     assert key("1.0.post1") != key("1.0.post2")
     # max() keeps the first maximal element, so a tie let enumeration order decide.
     for order in (["1.0.post1", "1.0.post2"], ["1.0.post2", "1.0.post1"]):
-        assert max(order, key=key) == "1.0.post2"
+        assert max(order, key = key) == "1.0.post2"
 
 
 def test_fallback_orders_every_pep440_stage():
