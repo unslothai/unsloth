@@ -1334,7 +1334,7 @@ function PromptDetail({
   onUse: (text: string) => void;
   onExport: (entry: PromptEntry) => void;
   onRefresh: () => void;
-  onDeleted: () => void;
+  onDeleted: (deletedId: string) => void;
 }): ReactElement {
   const pinnedPromptIds = usePlusMenuPrefsStore((s) => s.pinnedPromptIds);
   const togglePinnedPrompt = usePlusMenuPrefsStore((s) => s.togglePinnedPrompt);
@@ -1370,7 +1370,10 @@ function PromptDetail({
   const handleDelete = useCallback(async () => {
     await deletePromptEntry(entry.id);
     onDraftChange(undefined);
-    onDeleted();
+    // The id goes up so the parent can clear the selection only if this row is
+    // still the selected one: the request is awaited, and a click on another
+    // row while it was in flight would otherwise be undone here.
+    onDeleted(entry.id);
     onRefresh();
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
@@ -1550,7 +1553,7 @@ function PromptListDetail({
   onRunList?: (items: string[]) => void;
   onExport: (entry: PromptListEntry) => void;
   onRefresh: () => void;
-  onDeleted: () => void;
+  onDeleted: (deletedId: string) => void;
 }): ReactElement {
   const pinnedListIds = usePlusMenuPrefsStore((s) => s.pinnedListIds);
   const togglePinnedList = usePlusMenuPrefsStore((s) => s.togglePinnedList);
@@ -1591,7 +1594,8 @@ function PromptListDetail({
   const handleDelete = useCallback(async () => {
     await deletePromptList(entry.id);
     onDraftChange(undefined);
-    onDeleted();
+    // See PromptDetail: only the parent knows whether this row is still current.
+    onDeleted(entry.id);
     onRefresh();
   }, [entry.id, onDraftChange, onDeleted, onRefresh]);
 
@@ -2138,8 +2142,11 @@ export function PromptStorageDialog({
               detail actions behind its overflow-hidden. max(0px,...) keeps the
               value legal when the viewport is shorter than the chrome. Below
               `sm` the rail stacks above the detail pane instead of squeezing
-              it. */}
-          <div className="flex-1 min-h-[max(0px,min(420px,calc(94dvh_-_13rem)))] px-4 sm:px-6 pb-6 grid gap-4 grid-cols-1 grid-rows-[minmax(96px,30%)_minmax(0,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
+              it, and that stacked rail row carries no fixed minimum: a hard one
+              would re-introduce the overflow the floor above just removed,
+              since the row plus the gap can exceed the whole floor on a short
+              viewport. */}
+          <div className="flex-1 min-h-[max(0px,min(420px,calc(94dvh_-_13rem)))] px-4 sm:px-6 pb-4 sm:pb-6 grid gap-2 sm:gap-4 grid-cols-1 grid-rows-[minmax(0,30%)_minmax(0,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] sm:grid-rows-1 lg:grid-cols-[248px_minmax(0,1fr)]">
             {/* */}
             <div className="flex min-h-0 flex-col gap-2 rounded-xl border border-border/50 bg-muted/20 p-2">
               <button
@@ -2244,7 +2251,9 @@ export function PromptStorageDialog({
                     onUse={handleUsePrompt}
                     onExport={(e) => setExportCtx({ kind: "prompt", entry: e })}
                     onRefresh={refreshEntries}
-                    onDeleted={() => setSelectedPromptId(null)}
+                    onDeleted={(deletedId) =>
+                      setSelectedPromptId((prev) => (prev === deletedId ? null : prev))
+                    }
                   />
                 ) : (
                   <EmptyDetail
@@ -2276,7 +2285,9 @@ export function PromptStorageDialog({
                     onRunList={onRunList}
                     onExport={(e) => setExportCtx({ kind: "list", entry: e })}
                     onRefresh={refreshLists}
-                    onDeleted={() => setSelectedListId(null)}
+                    onDeleted={(deletedId) =>
+                      setSelectedListId((prev) => (prev === deletedId ? null : prev))
+                    }
                   />
                 ) : (
                   <EmptyDetail

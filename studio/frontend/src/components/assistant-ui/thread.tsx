@@ -4761,10 +4761,14 @@ const ComposerToolsMenu: FC<{
 
   // Shared by the storage dialog's Run button and the bookmarked lists in the
   // "+" menu, so both entry points queue a list the same way.
+  // `fromDialog` tracks where the run was launched: queue setup is async, and on
+  // abort the storage dialog should only come back if that is where the user
+  // was. Reopening it for a run started from the "+" submenu would throw a
+  // modal over a chat the user never opened it from.
   const runPromptList = useCallback(
-    (items: string[]) => {
+    (items: string[], fromDialog = false) => {
       const started = startQueue(items, undefined, () => {
-        setPromptStorageOpen(true);
+        if (fromDialog) setPromptStorageOpen(true);
         toast.info("Saved list was not queued", {
           description: "The chat changed before the queue was ready. Try again.",
         });
@@ -4970,7 +4974,7 @@ const ComposerToolsMenu: FC<{
       onUse={(text) => {
         aui.composer().setText(text);
       }}
-      onRunList={runPromptList}
+      onRunList={(items) => runPromptList(items, true)}
     />
     <DropdownMenu
       onOpenChange={(open) => {
