@@ -59,7 +59,19 @@ type LoRAInfo = {
 
 type CachedGgufEntry = {
   repo_id?: string;
+  load_id?: string | null;
+  task?: string | null;
 };
+
+// Same rule isChattableCachedRepo applies for chat. The picker routes these
+// rows to the Images/Video page on click; the ask bar loads in the background
+// with no routing step, so a diffusion row would load a media runtime and then
+// be asked to chat.
+const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
+  "text-to-image",
+  "text-to-video",
+  "image-diffusion-unsupported",
+]);
 
 export async function fetchPillModelOptions(): Promise<PillModelOption[]> {
   const options: PillModelOption[] = [];
@@ -85,8 +97,15 @@ export async function fetchPillModelOptions(): Promise<PillModelOption[]> {
     if (response.ok) {
       const body = (await response.json()) as { cached: CachedGgufEntry[] };
       for (const entry of body.cached) {
-        if (entry.repo_id) {
-          options.push({ id: entry.repo_id, label: entry.repo_id, source: "cached" });
+        if (entry.repo_id && !IMAGE_OR_VIDEO_TASKS.has(entry.task ?? "")) {
+          options.push({
+            // load_id is set only when the repo id resolves nowhere (a repo
+            // outside the active hub cache), so load the snapshot it names
+            // while still listing the row under its repo id.
+            id: entry.load_id || entry.repo_id,
+            label: entry.repo_id,
+            source: "cached",
+          });
         }
       }
     }
