@@ -5,6 +5,10 @@
 ``config.EMBED_BACKEND`` (``auto`` picks by hardware): ``sentence-transformers``
 (torch) or ``llama-server`` (GGUF, no torch).
 
+Either way the embedder stays off the GPU unless asked: this one runs in the backend
+process, where a CUDA context outlives every unload, and the other runs in a child.
+See ``_device``.
+
 Backends produce different vectors, so switching requires rebuilding the index. We
 degrade to llama.cpp rather than crash when ST breaks on a machine: an init-time
 probe falls back before any vector is produced (so spaces can't mix), and a
@@ -43,6 +47,11 @@ _lock = threading.Lock()
 _compute_lock = threading.Lock()
 _model = None
 _name: str | None = None
+# The backend that served this thread's most recent encode. The process embedder can
+# swap between an encode returning and the caller asking what produced the vectors,
+# and the answer has to be the backend that was actually used. See
+# ``encode_with_identity``.
+_served_by = threading.local()
 
 
 # Unsloth device -> torch device string. Apple has no torch device -> CPU.
@@ -50,6 +59,31 @@ _TORCH_DEVICE = {DeviceType.CUDA: "cuda", DeviceType.XPU: "xpu"}
 
 
 def _device() -> str:
+    """Torch device for the in-process embedder. CPU unless asked otherwise.
+
+    Defaulting a GPU machine to CPU is deliberate. This embedder runs inside the
+    backend process, and the first CUDA allocation there creates a primary context
+    that is never returned while the process lives: measured at 712 MiB on a B200,
+    against 74 MiB for bge-small's own weights. So ingesting one document used to
+    cost most of a gigabyte of VRAM for the rest of the session, on a machine where
+    the user had loaded no model at all, and no amount of unloading gets it back --
+    ``del model; torch.cuda.empty_cache()`` returns none of it.
+
+    The trade is real but small at the sizes this runs at. bge-small is a 33M parameter
+    BERT: on the same host, one 128-token chunk takes 18.7ms on CPU against 5.2ms on
+    CUDA, which is noise next to parsing and chunking the document it came from. Bulk
+    indexing is where it shows, at batch 64: 445 chunks/s on CPU against 3174/s on CUDA.
+    ``RAG_EMBED_DEVICE=gpu`` opts back in for a large corpus.
+
+    This reads the same setting as the llama-server backend but resolves ``auto``
+    differently, which is intended: that backend offloads inside its own subprocess,
+    where the context dies with the child and costs the backend nothing.
+    """
+    if config.embed_device_preference() != "gpu":
+        return "cpu"
+    # Still a table lookup, so asking for a GPU on a host without one, or on Apple
+    # where this backend has no torch device, lands on CPU rather than on a device
+    # string torch cannot open.
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
@@ -375,8 +409,8 @@ def _st_accepts_local_files_only(st_cls) -> bool:
 
 
 def _get(model_name: str | None = None):
-    """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
-    for a ~1.5x speedup at negligible accuracy loss."""
+    """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
+    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
     global _model, _name
     name = model_name or config.effective_embedding_model()
     # Capture offline state once so the gate and the load agree (no window where the gate is
@@ -386,7 +420,6 @@ def _get(model_name: str | None = None):
         if _model is None or _name != name:
             # Probe before loading sentence-transformers on the selected device.
             device = _load_device()
-            degraded_to_cpu = device == "cpu" and _device() != "cpu"
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
             from utils.hf_cache_settings import active_hf_hub_cache
@@ -396,7 +429,13 @@ def _get(model_name: str | None = None):
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                model_kwargs = dtype_kwargs("float32" if degraded_to_cpu else "float16"),
+                # Keyed on the device we actually load on, not on whether we degraded
+                # onto it. fp16 BERT on CPU is slow where it works at all, and several
+                # ops raise "not implemented for 'Half'" -- which _SentenceTransformers
+                # Backend.encode() catches and answers by swapping the whole process to
+                # llama-server, so getting this wrong fails as a silent backend change
+                # rather than as an error.
+                model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
             )
             load_target = name
             if local_only:
@@ -506,6 +545,7 @@ class _SentenceTransformersBackend:
             fallback = _switch_to_llama_fallback(st_err)
             if fallback is None:
                 raise
+            _served_by.backend = fallback
             return fallback.encode(texts, model_name = model_name, normalize = normalize)
 
     def token_counter(self, *, model_name = None):
@@ -668,6 +708,55 @@ def active_backend_is_llama() -> bool:
         return False
 
 
+def _identity(is_llama: bool, name: str) -> str:
+    if is_llama:
+        return config.embedding_identity(
+            "llama-server", name, gguf_repo = config.gguf_repo_for_embedding_model(name)
+        )
+    return config.embedding_identity("sentence-transformers", name)
+
+
+def embedding_identity(model_name: str | None = None) -> str:
+    """Identity of the vectors this process produces right now.
+
+    Recorded on every document, because the model name alone does not name the
+    embedding space: llama-server ignores the name and embeds through the GGUF
+    companion with its own pooling, and this process can switch to it at runtime. Two
+    spaces under one label is an index that answers with the wrong documents and says
+    nothing about it."""
+    return _identity(active_backend_is_llama(), model_name or config.effective_embedding_model())
+
+
+def _is_llama_backend(backend) -> bool:
+    """Whether a concrete backend object embeds through llama-server."""
+    try:
+        from .embed_llama_server import LlamaServerBackend
+    except Exception:  # noqa: BLE001 - llama plumbing import must never block
+        return False
+    return isinstance(backend, LlamaServerBackend)
+
+
+def encode_with_identity(
+    texts: list[str],
+    *,
+    model_name: str | None = None,
+    normalize: bool = True,
+):
+    """``(vectors, identity)``, the identity taken from the encode that produced them.
+
+    Not from the process embedder read afterwards: a concurrent ST encode failure
+    swaps that between the two, so the vectors would be labelled with a space they
+    were never in, and a query then searches (or a document is stored against) the
+    wrong half of the index."""
+    _served_by.backend = None
+    vectors = encode(texts, model_name = model_name, normalize = normalize)
+    served = getattr(_served_by, "backend", None)
+    name = model_name or config.effective_embedding_model()
+    if served is None:  # a stubbed encode never reached a backend
+        return vectors, embedding_identity(name)
+    return vectors, _identity(_is_llama_backend(served), name)
+
+
 def warm(model_name: str | None = None) -> None:
     """Eagerly load the embedder so the first real request isn't slow."""
     _get_backend().warm(model_name = model_name)
@@ -680,7 +769,9 @@ def encode(
     normalize: bool = True,
 ):
     """Embed texts into an (N, dim) float32 numpy array."""
-    return _get_backend().encode(texts, model_name = model_name, normalize = normalize)
+    backend = _get_backend()
+    _served_by.backend = backend
+    return backend.encode(texts, model_name = model_name, normalize = normalize)
 
 
 def dim(model_name: str | None = None) -> int:

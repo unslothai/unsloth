@@ -788,7 +788,7 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "slots": [{"id": 0, "filename": saved.name}],
     }
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False, 0)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
@@ -813,7 +813,7 @@ def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
     }
     kw._kv_resume = manifest
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False, 0)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
     monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
@@ -5450,11 +5450,21 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl, api_only = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl, api_only, media_idle = settings.set_openai_auto_switch(
+        False, None, False
+    )
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
+    assert settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # nor the media TTL
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv, auto_dl, api_only) == (False, 600, False, False, False)
+    assert (enabled, idle, keep_kv, auto_dl, api_only, media_idle) == (
+        False,
+        600,
+        False,
+        False,
+        False,
+        0,
+    )
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
@@ -5502,6 +5512,61 @@ def test_setter_rejects_idle_below_floor(monkeypatch):
     assert settings.set_openai_auto_switch(True, 0)[1] == 0
     assert settings.set_openai_auto_switch(True, 60)[1] == 60
     assert settings.set_openai_auto_switch(True, 3600)[1] == 3600
+
+
+def test_media_idle_setting_roundtrip_and_default(monkeypatch):
+    # The image/video TTL is persisted on its own key, in the same write as the rest
+    # of the section, and starts off: a chat TTL alone must not evict a pipeline.
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
+
+    assert settings.set_openai_auto_switch(True, 300)[5] == 0
+    assert settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY not in store
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    assert settings.get_auto_unload_idle_seconds() == 300
+
+    assert settings.set_openai_auto_switch(True, 300, None, None, None, 600)[5] == 600
+    assert store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] == 600
+    assert settings.get_media_auto_unload_idle_seconds() == 600
+    assert settings.get_stored_media_auto_unload_idle_seconds() == 600
+    # None leaves the stored value untouched, and the floor is the chat one.
+    assert settings.set_openai_auto_switch(False, None)[5] == 600
+    with pytest.raises(ValueError, match = "at least 60"):
+        settings.set_openai_auto_switch(True, None, None, None, None, 30)
+    assert settings.set_openai_auto_switch(True, None, None, None, None, 0)[5] == 0
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+
+
+def test_settings_route_reports_the_media_idle_ttl(monkeypatch):
+    import routes.settings as settings_route
+
+    monkeypatch.setattr(settings_route, "get_stored_media_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings_route, "get_media_auto_unload_idle_seconds", lambda: 600)
+    resp = settings_route.get_openai_auto_switch("tester")
+    assert resp.media_auto_unload_idle_seconds == 600
+    assert resp.media_idle_unload_active is True
+    # Vetoed (residency, or API-loaded only): the saved number stays, the flag drops,
+    # so the UI can say the unload is paused rather than silently doing nothing.
+    monkeypatch.setattr(settings_route, "get_media_auto_unload_idle_seconds", lambda: 0)
+    resp = settings_route.get_openai_auto_switch("tester")
+    assert resp.media_auto_unload_idle_seconds == 600
+    assert resp.media_idle_unload_active is False
+
+
+def test_put_route_rejects_media_idle_below_floor():
+    import routes.settings as settings_route
+    from fastapi import HTTPException
+
+    payload = settings_route.OpenAIAutoSwitchPayload(
+        enabled = True, media_auto_unload_idle_seconds = 30
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch(payload, "tester")
+    assert excinfo.value.status_code == 400
 
 
 def test_put_route_rejects_idle_below_floor():
