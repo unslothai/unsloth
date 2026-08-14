@@ -1365,6 +1365,15 @@ type ChatRuntimeStore = {
   nBatch: number | null;
   /** batch size the last successful load sent (null = default) */
   loadedNBatch: number | null;
+  /**
+   * Pass-through llama-server arguments the resident model is running, as far as
+   * this client knows (null = none, or never told). Kept so a rollback after a
+   * failed switch can put the previous model back with them: by then the target
+   * load has already replaced the backend's inheritance source, so omitting the
+   * field on that rollback reads as a cross-model pickup and restores the model
+   * without the arguments it was running.
+   */
+  loadedLlamaExtraArgs: string[] | null;
   /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
   nUbatch: number | null;
   /** micro-batch size the last successful load sent (null = default) */
@@ -2020,6 +2029,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedNParallel: null,
   nBatch: null,
   loadedNBatch: null,
+  loadedLlamaExtraArgs: null,
   nUbatch: null,
   loadedNUbatch: null,
   tensorParallel: false,
@@ -2512,6 +2522,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedNParallel: null,
       nBatch: null,
       loadedNBatch: null,
+      loadedLlamaExtraArgs: null,
       nUbatch: null,
       loadedNUbatch: null,
       tensorParallel: false,

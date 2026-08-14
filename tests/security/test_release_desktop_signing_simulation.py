@@ -199,7 +199,7 @@ def test_every_signing_cli_step_stays_windows_only():
 
 def test_other_platform_integrity_paths_are_untouched():
     names = [s.get("name") for s in workflow()["jobs"]["build"]["steps"]]
-    assert "Pin complete AppImage toolchain" in names
+    assert "Pin thin AppImage toolchain" in names
     assert "Import Apple certificate" in names
 
 
