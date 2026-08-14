@@ -192,6 +192,7 @@ def run_stt_worker(
     cmd_queue,
     resp_queue,
     cancel_event,
+    ready_event = None,
     config: Optional[dict] = None,
 ) -> None:
     """Child entrypoint: hold one Whisper model and answer transcription commands.
@@ -199,7 +200,7 @@ def run_stt_worker(
     Returning ends the process, which is the only way to give the CUDA context
     back, so a failed load and an unload both exit rather than idle.
 
-    Answers "ready" before touching a command, which is what tells the parent a
+    Sets ready_event before touching a command, which is what tells the parent a
     fresh interpreter came up here.
     """
     import os
@@ -221,7 +222,14 @@ def run_stt_worker(
     # with a positive status there exactly as a child that never bootstrapped
     # does. Reading that crash as a host that cannot spawn moves the same
     # crashing load into the backend, which the backend does not survive.
-    _send(resp_queue, {"type": "ready"})
+    #
+    # An Event, not a queue message. Queue.put only hands the object to a feeder
+    # thread, so a child that faults before that thread drains the buffer never
+    # delivers it: measured here, the load command is already queued when the
+    # child reaches get(), and the queued word was lost in 17 of 20 runs. Event
+    # is a shared-memory semaphore, set the moment it returns, and lost in 0.
+    if ready_event is not None:
+        ready_event.set()
 
     engine = None
     while True:
@@ -318,9 +326,10 @@ class WhisperWorker:
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
-        # Whether the child ever answered. Its first word is the "ready"
-        # handshake, sent before any model work, so this separates a host that
+        # Set by the child before any model work, so this separates a host that
         # cannot bring a child up from a child that failed at something.
+        self._ready_event = None
+        # Whether the child ever answered a command.
         self._answered = False
         self.device: Optional[str] = None
         # Read by the sidecar the way it read the model's, so an English-only
@@ -351,6 +360,7 @@ class WhisperWorker:
                 self._cmd_queue = _CTX.Queue()
                 self._resp_queue = _CTX.Queue()
                 self._cancel_event = _CTX.Event()
+                self._ready_event = _CTX.Event()
                 self._process = _CTX.Process(
                     # The shared shim binds the child to this process's lifetime and
                     # applies the Hub cache environment before any import.
@@ -360,6 +370,7 @@ class WhisperWorker:
                         "cmd_queue": self._cmd_queue,
                         "resp_queue": self._resp_queue,
                         "cancel_event": self._cancel_event,
+                        "ready_event": self._ready_event,
                         "config": {},
                     },
                     daemon = True,
@@ -433,8 +444,8 @@ class WhisperWorker:
         which the caller answers by loading in process, not by trying the same
         thing again on another device.
 
-        The child says "ready" before it touches a command, so a positive
-        exitcode with nothing said at all is a child that never got that far.
+        The child sets ready_event before it touches a command, so a positive
+        exitcode with the event never set is a child that never got that far.
         The handshake is what makes this safe on Windows, where there are no
         signals and a native fault surfaces as a positive status
         (STATUS_ACCESS_VIOLATION reads as 3221225477) rather than the negative
@@ -445,6 +456,9 @@ class WhisperWorker:
         error.
         """
         if self._answered or not isinstance(exc, SttWorkerError):
+            return False
+        ready = self._ready_event
+        if ready is not None and ready.is_set():
             return False
         process = self._process
         if process is None or process.is_alive():

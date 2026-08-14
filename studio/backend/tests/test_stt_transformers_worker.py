@@ -283,12 +283,14 @@ def _run_child(
         monkeypatch.setattr(worker_module, "transcribe_window", transcribe)
     for command in commands:
         cmd_queue.put(command)
+    ready_event = threading.Event()
     thread = threading.Thread(
         target = worker_module.run_stt_worker,
         kwargs = {
             "cmd_queue": cmd_queue,
             "resp_queue": resp_queue,
             "cancel_event": cancel_event,
+            "ready_event": ready_event,
             "config": {},
         },
         daemon = True,
@@ -296,11 +298,11 @@ def _run_child(
     thread.start()
     thread.join(timeout = 10)
     assert thread.is_alive() is False
+    assert ready_event.is_set() is True
     responses = []
     while not resp_queue.empty():
         responses.append(resp_queue.get_nowait())
-    assert responses and responses[0] == {"type": "ready"}
-    return responses[1:], cancel_event
+    return responses, cancel_event
 
 
 def test_child_reports_the_loaded_model_then_transcribes_then_exits(monkeypatch):
@@ -863,16 +865,10 @@ class _NativeCrashContext:
         return threading.Event()
 
     def Process(self, **kwargs):
-        cmd_queue, resp_queue = self._queues[0], self._queues[1]
-        process = _NativeCrashProcess(
-            {
-                "cmd_queue": cmd_queue,
-                "resp_queue": resp_queue,
-                "cancel_event": threading.Event(),
-                "config": {},
-            },
-            self._faulted,
-        )
+        # Forward what start() actually passed, ready_event included. Rebuilding
+        # the kwargs here would drop it, and the child's readiness is the whole
+        # signal this test turns on.
+        process = _NativeCrashProcess(dict(kwargs.get("kwargs") or {}), self._faulted)
         self._process = process
         return process
 
@@ -946,14 +942,16 @@ def test_the_child_says_it_is_ready_before_it_touches_a_command(monkeypatch):
     cmd_queue.put(
         {"type": "load", "snapshot_path": "/cached/model", "device": "cpu", "dtype": "float32"}
     )
+    ready_event = threading.Event()
     worker_module.run_stt_worker(
         cmd_queue = cmd_queue,
         resp_queue = resp_queue,
         cancel_event = threading.Event(),
+        ready_event = ready_event,
         config = {},
     )
 
-    assert resp_queue.get_nowait() == {"type": "ready"}
+    assert ready_event.is_set() is True
     assert resp_queue.get_nowait()["kind"] == "RuntimeError"
 
 
@@ -968,3 +966,47 @@ def test_the_in_process_fallback_reports_the_checkpoint_language_support(monkeyp
     assert engine.generation_config.is_multilingual is False
     engine.close()
     assert engine.is_alive() is False
+
+
+class _LosesTheReadyMessage(queue.Queue):
+    """A response queue that drops the ready word, as a real one does.
+
+    multiprocessing.Queue.put only hands the object to a feeder thread. A child
+    that faults before that thread drains the buffer delivers nothing, and the
+    load command is already queued when the child reaches get(), so it faults
+    almost immediately: measured at 17 losses in 20 runs, against 0 for an
+    Event. A thread queue.Queue delivers in the caller, which is why a queued
+    handshake looks sound in tests and is not.
+    """
+
+    def put(self, item, *args, **kwargs):
+        if isinstance(item, dict) and item.get("type") == "ready":
+            return
+        return super().put(item, *args, **kwargs)
+
+
+class _LossyNativeCrashContext(_NativeCrashContext):
+    def Queue(self):
+        made = _LosesTheReadyMessage()
+        self._queues.append(made)
+        return made
+
+
+def test_a_crashed_child_whose_ready_word_was_lost_is_still_not_read_as_a_bad_host(monkeypatch):
+    # The child came up and faulted in the native load, but its queued ready
+    # never reached the backend. Classifying that as a host that cannot spawn
+    # sends the same crashing load into the backend, which does not survive it.
+    faulted = threading.Event()
+    forever = threading.Event()
+    monkeypatch.setattr(worker_module, "_CTX", _LossyNativeCrashContext(faulted))
+    _fault_in_the_native_load(monkeypatch, faulted, forever)
+
+    handle = WhisperWorker()
+    try:
+        with pytest.raises(SttWorkerError) as caught:
+            handle.start("/cached/model", "cpu", "float32")
+    finally:
+        forever.set()
+
+    assert faulted.is_set()
+    assert isinstance(caught.value, worker_module.SttWorkerSpawnError) is False
