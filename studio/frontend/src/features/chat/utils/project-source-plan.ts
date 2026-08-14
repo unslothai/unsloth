@@ -21,15 +21,17 @@ function modelLabel(thread: ProjectSourceThread): string | undefined {
 }
 
 /**
- * What tells two halves apart once their model labels do not. The LoRA compare
- * runs one checkpoint with the adapter off and on, so both threads record the
- * same modelId and only modelType differs; the same happens when the two panes
- * of a general compare answered on the same checkpoint. Name the halves as the
- * compare header does ("Base Model" / "Fine-tuned"), else by position.
+ * Which half of a compare this is. listStoredChatThreads sorts by updatedAt, so
+ * arrival order is whichever half answered last: naming by index alone would
+ * swap the two names between saves of one pair. modelType carries the pane, so
+ * only a thread missing it falls back to position. The LoRA compare gets the
+ * words the compare header uses, since "base" beats "1" in a filename.
  */
-function sideLabel(thread: ProjectSourceThread, index: number): string {
+function paneLabel(thread: ProjectSourceThread, index: number): string {
   if (thread.modelType === "base") return "base";
   if (thread.modelType === "lora") return "fine-tuned";
+  if (thread.modelType === "model1") return "1";
+  if (thread.modelType === "model2") return "2";
   return String(index + 1);
 }
 
@@ -49,16 +51,15 @@ export function planChatItemSources(
   }
   const named = threads.map((thread, index) => ({
     thread,
-    index,
-    label: modelLabel(thread) ?? String(index + 1),
+    label: modelLabel(thread) ?? paneLabel(thread, index),
+    side: paneLabel(thread, index),
   }));
   const uses = new Map<string, number>();
   for (const { label } of named) uses.set(label, (uses.get(label) ?? 0) + 1);
-  return named.map(({ thread, index, label }) => {
+  return named.map(({ thread, label, side }) => {
     // Only a colliding half carries a side, so two different models keep the
     // plain "<title> - <model>" name.
-    const side =
-      (uses.get(label) ?? 0) > 1 ? ` - ${sideLabel(thread, index)}` : "";
-    return { id: thread.id, title: `${item.title} - ${label}${side}` };
+    const suffix = (uses.get(label) ?? 0) > 1 ? ` - ${side}` : "";
+    return { id: thread.id, title: `${item.title} - ${label}${suffix}` };
   });
 }

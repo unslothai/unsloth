@@ -70,6 +70,41 @@ test("two panes on the same checkpoint fall back to their position", () => {
   assert.equal(new Set(plans.map((plan) => plan.title)).size, 2);
 });
 
+test("a pane keeps its number whichever half answered last", () => {
+  // listStoredChatThreads sorts by updatedAt, so the pane that finished last
+  // arrives first. Numbering by arrival would label model2's source "- 1" and
+  // swap the two names between saves of the same pair.
+  const panes = [
+    { id: "t1", modelId: "unsloth/Qwen3-8B-GGUF:Q4_K_M", modelType: "model1" },
+    { id: "t2", modelId: "unsloth/Qwen3-8B-GGUF:Q8_0", modelType: "model2" },
+  ];
+  const item = { id: "p1", title: "Fix my regex", type: "pair" };
+  const byId = (plans: { id: string; title: string }[]) =>
+    Object.fromEntries(plans.map((plan) => [plan.id, plan.title]));
+  assert.deepEqual(byId(planChatItemSources(item, [...panes].reverse())), {
+    t1: "Fix my regex - Qwen3-8B-GGUF - 1",
+    t2: "Fix my regex - Qwen3-8B-GGUF - 2",
+  });
+  assert.deepEqual(
+    byId(planChatItemSources(item, panes)),
+    byId(planChatItemSources(item, [...panes].reverse())),
+  );
+});
+
+test("a LoRA pair keeps its naming when the model name is what collides", () => {
+  const halves = [
+    { id: "t1", modelType: "base" },
+    { id: "t2", modelType: "lora" },
+  ];
+  const item = { id: "p1", title: "Fix my regex", type: "pair" };
+  // No modelId at all: the label itself falls back to the pane, which must not
+  // move with arrival order either.
+  assert.deepEqual(planChatItemSources(item, [...halves].reverse()), [
+    { id: "t2", title: "Fix my regex - fine-tuned" },
+    { id: "t1", title: "Fix my regex - base" },
+  ]);
+});
+
 test("a pair with one surviving half keeps the plain title", () => {
   assert.deepEqual(
     planChatItemSources({ id: "p1", title: "Fix my regex", type: "pair" }, [

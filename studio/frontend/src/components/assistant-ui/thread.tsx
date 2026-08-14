@@ -108,6 +108,8 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
+import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
+import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   incompleteLabel,
@@ -6267,7 +6269,14 @@ const AssistantActionBar: FC = () => {
             {activeProjectId && (
               <ActionBarMorePrimitive.Item
                 onSelect={() => {
-                  const text = aui.message().getCopyText();
+                  // Not getCopyText: it joins text parts alone, so a reply's
+                  // reasoning, tool calls and citations would be dropped and a
+                  // tool-only reply would read as empty. Same conversion the
+                  // whole-chat save runs.
+                  const text = replySourceMarkdown(
+                    aui.message().getState().content,
+                    toolResultModelText,
+                  );
                   if (!text.trim()) {
                     toast.info("No content to save.");
                     return;

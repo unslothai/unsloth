@@ -76,7 +76,10 @@ test("the thread id is resolved before the menu can close", () => {
 // an item that can only refuse itself.
 test("the item is only rendered while a project is selected", () => {
   const marker = src.indexOf("Save to project sources");
-  const before = src.slice(Math.max(0, marker - 2200), marker);
+  // From the item's own opening tag, so the window cannot miss the guard by
+  // being outgrown by the handler.
+  const open = src.lastIndexOf("<ActionBarMorePrimitive.Item", marker);
+  const before = src.slice(Math.max(0, open - 200), open);
   assert.match(
     before,
     /\{activeProjectId && \(/,
