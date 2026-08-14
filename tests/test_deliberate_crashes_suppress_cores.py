@@ -83,8 +83,7 @@ _SIGNAL_ARG_INDEX = {"raise_signal": 0, "kill": 1}
 # A signal aimed at self dumps core only for these. SIGKILL, SIGTERM and SIGINT do not,
 # which is why SIGKILL is the recommended way to make a child vanish.
 _FATAL_SIGNALS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP", "SIGQUIT")
-# SIGQUIT SIGILL SIGTRAP SIGABRT SIGBUS SIGFPE SIGSEGV: the Linux signals whose
-# default action is "terminate and dump core".
+# Linux dump-core defaults: 3 QUIT, 4 ILL, 5 TRAP, 6 ABRT, 7 BUS, 8 FPE, 11 SEGV.
 _FATAL_SIGNAL_NUMBERS = {3, 4, 5, 6, 7, 8, 11}
 
 # Whole names only: a variable merely spelled `SIGQUIT_HANDLER` names no signal.
@@ -238,7 +237,7 @@ def _iter_executable(scope, enter_classes = True):
     already run, so a helper that suppresses cores blessed a crash it never covered.
     """
     for child in ast.iter_child_nodes(scope):
-        # Not a class body: that one runs the moment the class is defined.
+        # Not a class body: it runs the moment the class is defined.
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
         if not enter_classes and isinstance(child, ast.ClassDef):
@@ -456,10 +455,8 @@ def _clears_dumpable_before(scope, position, inherited = False) -> bool:
     anywhere in the scope blessed a child that still dumps.
     """
     writes = sorted(w for w in _dumpable_writes(scope) if w[0] < position)
-    # A branch that may not run cannot be relied on to have restored dumping, and the
-    # recommended suppression is itself platform-guarded, so only a write that
-    # certainly executes decides. A conditional clear still counts, since
-    # `if sys.platform == "linux": prctl(4, 0, ...)` is the documented shape.
+    # Only a write that certainly runs decides: a conditional restore may never run.
+    # A conditional clear still counts: platform-guarded prctl is the documented shape.
     certain = [w for w in writes if w[2]]
     if certain:
         return certain[-1][1] == 0
@@ -576,8 +573,7 @@ def _nested_scripts(tree):
         scope = owner.get(id(node), tree)
         if _called_name(node) in _NESTED_EXEC:
             argument = node.args[0] if node.args else None
-            # Bindings in effect AT the exec, so a name reused afterwards for
-            # something else is not what gets analysed.
+            # Bindings AT the exec, so a name reused afterwards is not what runs.
             env = _bindings_before(tree, scope, _position(node))
             payload, _ids = _fold(argument, env) if argument is not None else (None, set())
             if payload is not None:
@@ -889,7 +885,7 @@ _FIXTURES = {
     # Six the guard still gets wrong, each verified against the current file.
     "sigquit_is_a_core_dumping_signal": (
         "import signal\ndef child():\n    signal.raise_signal(3)\n",
-        True,  # SIGQUIT's default action is terminate and dump
+        True,  # SIGQUIT dumps core by default
     ),
     "class_body_runs_with_its_enclosing_scope": (
         "import ctypes\n"
@@ -930,7 +926,7 @@ _FIXTURES = {
         "from os import abort\n"
         "class C:\n    abort = lambda: None\n"
         "abort()\n",
-        True,  # a class attribute is C.abort, and the module name still crashes
+        True,  # that binds C.abort; the module name still crashes
     ),
     "restore_inside_a_branch_that_may_not_run": (
         "import ctypes\n"
