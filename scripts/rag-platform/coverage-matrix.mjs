@@ -184,6 +184,9 @@ const PHASE_OVERRIDES = [
   [/^\/api\/v1\/system\/(variables|environments|oceanbase)/, 14],
   [/^\/api\/v1\/system\/config\/log/, 14],
   // datasets is split across five phases by the plan §4 rows.
+  [/^\/api\/v1\/datasets\/\{p\}\/documents\/\{p\}\/(chunks|structure\/graph)/, 6],
+  [/^\/api\/v1\/datasets\/\{p\}\/documents\/\{p\}\/metadata\/config$/, 10],
+  [/^\/api\/v1\/datasets\/\{p\}\/documents\/(metadatas|batch-update-status)$/, 10],
   [/^\/api\/v1\/datasets\/\{p\}\/documents/, 5],
   [/^\/api\/v1\/datasets\/\{p\}\/(chunks|search)/, 6],
   [/^\/api\/v1\/datasets\/search$/, 10],
@@ -551,6 +554,43 @@ const CLASS_RULES = [
     consumer: FRONTEND,
     justification:
       "Registration, session bootstrap and profile/default-model mutation, invoked from the auth and settings screens rather than rendering a page of their own.",
+  },
+
+  // -- Phase 5 document protocol/compatibility surfaces -------------------
+  {
+    id: "phase5-generic-create-api-only",
+    when: { method: /^POST$/, path: /^\/api\/v1\/documents$/ },
+    class: API_ONLY,
+    consumer: "trusted document-service client",
+    justification:
+      "The low-level create contract requires an explicit created_by principal and does not accept file bytes. The product upload path is dataset-scoped POST /datasets/{id}/documents; exposing caller-supplied ownership in the UI would violate the Phase 5 ownership boundary. Exact request/response and auth tests retain this service contract.",
+  },
+  {
+    id: "phase5-ingestion-task-protocol",
+    when: { path: /^\/api\/v1\/datasets\/ingestion\/tasks$/ },
+    class: API_ONLY,
+    consumer: "ingestion worker / trusted API client",
+    justification:
+      "The v0.26.4 GET handler requires a JSON body, which browser Fetch forbids, while dataset document stop is safely available through POST /datasets/{id}/documents/stop. Task list/stop/remove remain typed protocol contracts and are not duplicated as unsafe browser controls.",
+  },
+  {
+    id: "phase5-task-cancel-protocol",
+    when: { path: /^\/api\/v1\/tasks\/\{p\}(\/cancel)?$/ },
+    class: API_ONLY,
+    consumer: "task-aware API client",
+    justification:
+      "Generic ingest returns only a boolean and no task id, so the document UI cannot safely invent a task identity. The exact PATCH stop and POST cancel contracts are typed and tested for clients that already possess an authorized task id.",
+  },
+  {
+    id: "phase5-dataset-document-download",
+    when: {
+      method: /^GET$/,
+      path: /^\/api\/v1\/datasets\/\{p\}\/documents\/\{p\}$/,
+    },
+    class: ACTION,
+    consumer: FRONTEND,
+    justification:
+      "Binary attachment action in Documents → Dataset documents. Metadata comes from the collection response; the authenticated Blob is never placed in persistent storage and its object URL is revoked after use.",
   },
 
   // -- 8. Primary entity list + detail reads = dedicated screens -----------
@@ -1515,6 +1555,258 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
 });
 
+const PHASE5_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/document-api.test.ts",
+  "src/features/documents/use-document-library.test.tsx",
+];
+
+Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
+  "go-api|GET /api/v1/datasets/{p}/documents": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Dataset documents → document table",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#listDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/datasets/{p}/documents": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → dropzone / Dosya seç",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#uploadDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/datasets/{p}/documents": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → dropzone / Dosya seç",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#uploadDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/datasets/{p}/documents/{p}": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → document row → İndir",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#downloadDatasetDocument",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|PATCH /api/v1/datasets/{p}/documents/{p}": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → document row → Yeniden adlandır",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#updateDatasetDocument",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/datasets/{p}/documents/parse": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → İşle / Yeniden işle",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#parseDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/datasets/{p}/documents/parse": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → İşle / Yeniden işle",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#parseDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/datasets/{p}/documents/stop": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → running document → Durdur",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#stopDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|DELETE /api/v1/datasets/{p}/documents": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → document selection → Sil → confirm",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#deleteDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|GET /api/v1/documents/{p}/preview": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → document name / Önizle",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#fetchDocumentPreview",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/documents/images/{p}": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Medya → authorized thumbnail image",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#fetchDocumentImage",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|GET /api/v1/thumbnails": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → document row → Medya",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#listDocumentThumbnails",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/documents/artifact/{p}": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Medya → artifact filename → Artifact aç",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#fetchDocumentArtifact",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/documents/upload": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Genel belgeler → Bağımsız dosya inceleme",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#inspectDocumentUploads",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/documents/{p}": {
+    status: "runtime-disabled",
+    uiPath: "Sidebar → Documents → Genel belgeler → explicit security-disabled notice",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#getGenericDocument",
+    evidence: [
+      "docs/rag-platform/runtime-disabled.md (Phase 5 functional security gap)",
+      "src/features/documents/document-library-page.tsx (disabled-state UI)",
+      ...PHASE5_TEST_EVIDENCE,
+    ],
+  },
+  "go-api|PUT /api/v1/documents/{p}": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Kaydet",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#updateGenericDocument",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/documents/{p}": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Sil",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#deleteGenericDocument",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/documents/ingest": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Ingest",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#ingestGenericDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/documents": {
+    status: "runtime-disabled",
+    uiPath: "Sidebar → Documents → Genel belgeler → explicit runtime-disabled notice",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#listGenericDocuments",
+    evidence: [
+      "docs/rag-platform/runtime-disabled.md (Phase 5 functional runtime gap)",
+      "src/features/documents/document-library-page.tsx (disabled-state UI)",
+    ],
+  },
+  "go-api|POST /api/v1/documents": {
+    status: "contract-verified",
+    uiPath: "— (trusted service contract; caller-supplied created_by is not exposed)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#createGenericDocument",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/datasets/ingestion/tasks": {
+    status: "runtime-disabled",
+    uiPath: "— (browser GET-body contract is unusable; dataset stop route is used)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#listDatasetIngestionTasks",
+    evidence: [
+      "docs/rag-platform/runtime-disabled.md (Phase 5 functional runtime gap)",
+      ...PHASE5_TEST_EVIDENCE,
+    ],
+  },
+  "go-api|PUT /api/v1/datasets/ingestion/tasks": {
+    status: "contract-verified",
+    uiPath: "— (trusted task-aware client)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#stopDatasetIngestionTasks",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/datasets/ingestion/tasks": {
+    status: "contract-verified",
+    uiPath: "— (trusted task-aware client)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#removeDatasetIngestionTasks",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/tasks/{p}/cancel": {
+    status: "contract-verified",
+    uiPath: "— (generic ingest returns no task id)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#cancelPlatformTask",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|PATCH /api/v1/tasks/{p}": {
+    status: "contract-verified",
+    uiPath: "— (generic ingest returns no task id)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#stopPlatformTask",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|PUT /api/v1/datasets/{p}/documents/{p}": {
+    status: "contract-verified",
+    uiPath: "— (legacy update alias; UI uses canonical PATCH)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#updateDatasetDocument",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/document/delete_meta": {
+    status: "contract-verified",
+    uiPath: "— (Go-internal metadata compatibility contract)",
+    typedService: null,
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/document/list": {
+    status: "contract-verified",
+    uiPath: "— (legacy flat-list alias; UI uses dataset-scoped list)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#listDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/document/metadata/summary": {
+    status: "contract-verified",
+    uiPath: "— (metadata belongs to Phase 10)",
+    typedService: null,
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/document/set_meta": {
+    status: "contract-verified",
+    uiPath: "— (metadata belongs to Phase 10)",
+    typedService: null,
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|GET /api/v1/document/download/{p}": {
+    status: "contract-verified",
+    uiPath: "— (deprecated attachment alias; UI uses dataset download)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#downloadDatasetDocument",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|GET /api/v1/document/get/{p}": {
+    status: "contract-verified",
+    uiPath: "— (deprecated preview alias; UI uses /documents/{id}/preview)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#fetchDocumentPreview",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|GET /v1/document/download/{p}": {
+    status: "contract-verified",
+    uiPath: "— (deprecated attachment alias)",
+    typedService: null,
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "python-api|POST /v1/document/upload_info": {
+    status: "contract-verified",
+    uiPath: "— (legacy alias; UI uses /api/v1/documents/upload)",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#inspectDocumentUploads",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+});
+
 /**
  * Per-route findings verified against the running backend that a reader of the
  * row needs in order to trust it. Keyed by canonical `METHOD path`.
@@ -1539,7 +1831,39 @@ const ROUTE_FINDINGS = {
     "`dataset_api.delete_knowledge_graph`, which the route module does not define " +
     "(the implementation lives at `api/apps/services/dataset_api_service.py:537`), " +
     "so every call raises AttributeError before any ownership check. Use the " +
-    "forward route `DELETE /api/v1/datasets/{dataset_id}/index?type=graph`.",
+      "forward route `DELETE /api/v1/datasets/{dataset_id}/index?type=graph`.",
+  "GET /api/v1/documents":
+    "Phase 5 functional runtime gap: the active v0.26.4 Go route reuses ListDocuments, " +
+    "which reads c.Param(\"dataset_id\") on the flat /documents group and therefore " +
+    "runs dataset ownership against an empty id. Hybrid routes the request to 9384; " +
+    "the UI renders an explicit runtime-disabled notice instead of an empty list.",
+  "GET /api/v1/documents/{p}":
+    "Phase 5 functional security gap: the active v0.26.4 Go handler authenticates " +
+    "the session but discards the principal and returns GetDocumentByID directly, " +
+    "without dataset ownership/Accessible verification. The typed contract is kept " +
+    "under tests, but the frontend does not expose the unsafe read action and renders " +
+    "an explicit runtime-disabled explanation. PUT and DELETE independently enforce " +
+    "dataset ownership before mutation.",
+  "GET /api/v1/datasets/ingestion/tasks":
+    "Phase 5 functional runtime gap: the active v0.26.4 handler calls ShouldBindJSON " +
+    "for dataset_id on a GET request. Browser Fetch rejects GET bodies, and the handler " +
+    "does not read the query parameter. The UI polls dataset document state and uses the " +
+    "reachable Python POST /datasets/{dataset_id}/documents/stop contract instead.",
+  "GET /api/v1/documents/images/{p}":
+    "The active image handler authenticates but does not independently repeat document " +
+    "ownership lookup. The UI only derives image ids from the authenticated thumbnail " +
+    "response and never accepts an arbitrary image id; this residual backend limitation " +
+    "is recorded in the Phase 5 result report.",
+  "POST /api/v1/datasets/{p}/documents":
+    "The active Go v0.26.4 upload is runtime-incompatible with the deployed SQL " +
+    "schema because it inserts document.meta_fields. The generated hybrid proxy " +
+    "uses the ownership-checked Python equivalent on 9380; live PDF/TXT/DOCX " +
+    "multi-upload passed through that canonical target. The Go implementation is " +
+    "classified as a runtime-disabled alternate.",
+  "POST /api/v1/datasets/{p}/documents/parse":
+    "The generated runtime override selects Python 9380 so canonical document_ids " +
+    "jobs are consumed by the deployed Python task executor. The Go alternate is " +
+    "runtime-disabled for this deployment; live PDF/TXT/DOCX tasks reached 100%.",
 };
 
 function collectFixtureEvidence() {

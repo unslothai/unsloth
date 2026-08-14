@@ -36,6 +36,21 @@ result report.
 
 11 route(s) are separate forward-source cases: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, and are absent from deployed `v0.26.4`. Nine auth handlers return `CodeNotImplemented`; the two pipeline catalog handlers are implemented but absent from the pinned runtime. Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The auth UI uses live channels without a false captcha/OTP step, while the pipeline selector shows an explicit runtime-disabled reason.
 
+## Phase 5 functional runtime gaps (reachable route, unusable browser contract)
+
+These two routes are reachable at the proxy and therefore are not included in the
+runtime-disabled total above, but their active v0.26.4 handler contract cannot
+complete the user-facing browser operation. They are explicitly classified
+`runtime-disabled` in the endpoint coverage matrix rather than presented as empty UI.
+
+| Route | Source evidence | Proxy evidence | Smoke / product result |
+| --- | --- | --- | --- |
+| `GET /api/v1/documents` | `internal/router/router.go:291` binds the flat route to `ListDocuments`; `internal/handler/document.go:520` reads the absent `dataset_id` path param and runs dataset ownership against it. | Generated hybrid map sends GET `/api/v1/documents` to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. The authenticated handler is source-provably unable to supply a flat collection; the UI shows `runtime-disabled` and uses dataset-scoped listing. |
+| `GET /api/v1/documents/{id}` | `internal/handler/document.go:116-143` authenticates but discards the user and returns `GetDocumentByID` without `datasetService.Accessible`; neighboring PUT/DELETE handlers do perform that ownership check. | Generated hybrid map sends GET `/api/v1/documents/{id}` to Go `9384`. | The unsafe metadata read is not exposed in the frontend; the General documents tab shows a security-specific `runtime-disabled` notice while ownership-checked PUT/DELETE remain available. |
+| `POST /api/v1/datasets/{id}/documents` (Go alternate) | Active Go v0.26.4 upload inserts the historical SQL document shape including `meta_fields`; the deployed DB/Python model uses the dedicated metadata service and has no such column. | Explicit generated runtime override sends the canonical upload to Python `9380`; Go remains a disabled alternate. | Live PDF/TXT/DOCX probe first failed on Go with MySQL 1054, then passed as a three-file upload on Python after nginx reload. |
+| `POST /api/v1/datasets/{id}/documents/parse` (Go alternate) | Go v0.26.4 accepts legacy `{dataset_id, documents}` and publishes to its ingestor path, while the active parsing worker consumes Python task-executor jobs. | Explicit generated runtime override sends canonical `{document_ids}` parsing to Python `9380`; Go remains a disabled alternate. | Initial Go submission remained queued; the Python route produced observable progress and terminal 100% for PDF/TXT/DOCX. |
+| `GET /api/v1/datasets/ingestion/tasks` | `internal/handler/document.go:1460` calls `ShouldBindJSON` for `dataset_id` on GET and never reads the query string. Browser Fetch forbids GET request bodies. | Generated hybrid map sends the route to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. Browser contract test uses no GET body; document polling plus Python `POST /datasets/{id}/documents/stop` is the safe product path. |
+
 ## Capability lost — no reachable route serves this method and path
 
 Compared after canonicalising parameter syntax (`<id>`, `:id`, `*path` all
@@ -150,7 +165,9 @@ serving implementation shown below keeps the surface available.
 | DELETE | `/api/v1/datasets/:dataset_id/chunks` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/chunks`) | `internal/router/router.go:381` |
 | GET | `/api/v1/datasets/:dataset_id/commits/diff` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits/diff`) | `internal/router/router.go:453` |
 | DELETE | `/api/v1/datasets/:dataset_id/documents` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/documents`) | `internal/router/router.go:366` |
+| POST | `/api/v1/datasets/:dataset_id/documents` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/documents`) | `internal/router/router.go:363` |
 | PATCH | `/api/v1/datasets/:dataset_id/documents/metadatas` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/documents/metadatas`) | `internal/router/router.go:385` |
+| POST | `/api/v1/datasets/:dataset_id/documents/parse` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/documents/parse`) | `internal/router/router.go:375` |
 | DELETE | `/api/v1/datasets/:dataset_id/index` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/index`) | `internal/router/router.go:342` |
 | GET | `/api/v1/datasets/:dataset_id/ingestions/summary` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/ingestions/summary`) | `internal/router/router.go:353` |
 | DELETE | `/api/v1/datasets/:dataset_id/tags` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/tags`) | `internal/router/router.go:336` |
@@ -159,7 +176,6 @@ serving implementation shown below keeps the surface available.
 | DELETE | `/api/v1/datasets/<dataset_id>/<index_type>` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/:index_type`) | `api/apps/restful_apis/dataset_api.py:854` |
 | POST | `/api/v1/datasets/<dataset_id>/chunks` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/chunks`) | `api/apps/restful_apis/chunk_api.py:183` |
 | GET | `/api/v1/datasets/<dataset_id>/documents` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents`) | `api/apps/restful_apis/document_api.py:703` |
-| POST | `/api/v1/datasets/<dataset_id>/documents` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents`) | `api/apps/restful_apis/document_api.py:427` |
 | GET | `/api/v1/datasets/<dataset_id>/documents/<document_id>` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents/:document_id`) | `api/apps/restful_apis/document_api.py:2089` |
 | PATCH | `/api/v1/datasets/<dataset_id>/documents/<document_id>` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents/:document_id`) | `api/apps/restful_apis/document_api.py:170` |
 | DELETE | `/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents/:document_id/chunks`) | `api/apps/restful_apis/chunk_api.py:931` |
@@ -170,7 +186,6 @@ serving implementation shown below keeps the surface available.
 | PATCH | `/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks/<chunk_id>` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents/:document_id/chunks/:chunk_id`) | `api/apps/restful_apis/chunk_api.py:984` |
 | PUT | `/api/v1/datasets/<dataset_id>/documents/<document_id>/metadata/config` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents/:document_id/metadata/config`) | `api/apps/restful_apis/document_api.py:1193` |
 | POST | `/api/v1/datasets/<dataset_id>/documents/batch-update-status` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents/batch-update-status`) | `api/apps/restful_apis/document_api.py:1924` |
-| POST | `/api/v1/datasets/<dataset_id>/documents/parse` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/documents/parse`) | `api/apps/restful_apis/document_api.py:1508` |
 | POST | `/api/v1/datasets/<dataset_id>/embedding` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/embedding`) | `api/apps/restful_apis/dataset_api.py:881` |
 | POST | `/api/v1/datasets/<dataset_id>/embedding/check` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/embedding/check`) | `api/apps/restful_apis/dataset_api.py:896` |
 | GET | `/api/v1/datasets/<dataset_id>/graph` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/graph`) | `api/apps/restful_apis/dataset_api.py:537` |
@@ -192,7 +207,7 @@ serving implementation shown below keeps the surface available.
 | GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits/:commit_id/files`) | `api/apps/restful_apis/file_commit_api.py:249` |
 | GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits/:commit_id/files/:file_id/content`) | `api/apps/restful_apis/file_commit_api.py:328` |
 | GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/tree` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits/:commit_id/tree`) | `api/apps/restful_apis/file_commit_api.py:312` |
-| GET | `/api/v1/documents/<doc_id>/preview` | python-api@9380 | go-api (`/api/v1/documents/:id/preview`) | `api/apps/restful_apis/document_api.py:2045` |
+| GET | `/api/v1/documents/:id/preview` | go-api@9384 | python-api (`/api/v1/documents/<doc_id>/preview`) | `internal/router/router.go:214` |
 | GET | `/api/v1/documents/<document_id>` | python-api@9380 | go-api (`/api/v1/documents/:id`) | `api/apps/restful_apis/document_api.py:2151` |
 | GET | `/api/v1/documents/artifact/<filename>` | python-api@9380 | go-api (`/api/v1/documents/artifact/:filename`) | `api/apps/restful_apis/document_api.py:1871` |
 | GET | `/api/v1/documents/images/<image_id>` | python-api@9380 | go-api (`/api/v1/documents/images/:image_id`) | `api/apps/restful_apis/document_api.py:1782` |

@@ -398,20 +398,6 @@ const MAPPINGS = {
     phase: 5,
   },
 
-  // --- parse lifecycle: jobs have no platform resource (Faz 5) ----------
-  "GET /api/rag/jobs/{p}": {
-    to: "GET /api/v1/datasets/<dataset_id>/documents/<document_id>",
-    transform:
-      "The platform has no job resource. Parse progress lives on the document, so a job id must become a document reference and the job read becomes a document poll.",
-    phase: 5,
-  },
-  "GET /api/rag/jobs/{p}/events": {
-    to: null,
-    transform:
-      "No SSE parse-event stream: `documents/parse` returns immediately and progress is polled. The event-stream consumer becomes a poller — a behaviour change to record in Faz 5.",
-    phase: 5,
-  },
-
   // Retrieval (`POST /api/v1/retrieval`) has no row: Studio never calls a
   // standalone search endpoint. Retrieval reaches the backend only inside a
   // completion, so it enters through the completions row in Faz 8 and is

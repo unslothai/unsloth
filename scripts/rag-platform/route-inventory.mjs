@@ -1119,6 +1119,27 @@ function renderRuntimeDisabled(data) {
     );
   }
   lines.push("");
+  lines.push("## Phase 5 functional runtime gaps (reachable route, unusable browser contract)");
+  lines.push("");
+  lines.push(
+    "These two routes are reachable at the proxy and therefore are not included in the",
+    "runtime-disabled total above, but their active v0.26.4 handler contract cannot",
+    "complete the user-facing browser operation. They are explicitly classified",
+    "`runtime-disabled` in the endpoint coverage matrix rather than presented as empty UI.",
+  );
+  lines.push("");
+  lines.push("| Route | Source evidence | Proxy evidence | Smoke / product result |");
+  lines.push("| --- | --- | --- | --- |");
+  lines.push(
+    "| `GET /api/v1/documents` | `internal/router/router.go:291` binds the flat route to `ListDocuments`; `internal/handler/document.go:520` reads the absent `dataset_id` path param and runs dataset ownership against it. | Generated hybrid map sends GET `/api/v1/documents` to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. The authenticated handler is source-provably unable to supply a flat collection; the UI shows `runtime-disabled` and uses dataset-scoped listing. |",
+    "| `GET /api/v1/documents/{id}` | `internal/handler/document.go:116-143` authenticates but discards the user and returns `GetDocumentByID` without `datasetService.Accessible`; neighboring PUT/DELETE handlers do perform that ownership check. | Generated hybrid map sends GET `/api/v1/documents/{id}` to Go `9384`. | The unsafe metadata read is not exposed in the frontend; the General documents tab shows a security-specific `runtime-disabled` notice while ownership-checked PUT/DELETE remain available. |",
+    "| `POST /api/v1/datasets/{id}/documents` (Go alternate) | Active Go v0.26.4 upload inserts the historical SQL document shape including `meta_fields`; the deployed DB/Python model uses the dedicated metadata service and has no such column. | Explicit generated runtime override sends the canonical upload to Python `9380`; Go remains a disabled alternate. | Live PDF/TXT/DOCX probe first failed on Go with MySQL 1054, then passed as a three-file upload on Python after nginx reload. |",
+    "| `POST /api/v1/datasets/{id}/documents/parse` (Go alternate) | Go v0.26.4 accepts legacy `{dataset_id, documents}` and publishes to its ingestor path, while the active parsing worker consumes Python task-executor jobs. | Explicit generated runtime override sends canonical `{document_ids}` parsing to Python `9380`; Go remains a disabled alternate. | Initial Go submission remained queued; the Python route produced observable progress and terminal 100% for PDF/TXT/DOCX. |",
+  );
+  lines.push(
+    "| `GET /api/v1/datasets/ingestion/tasks` | `internal/handler/document.go:1460` calls `ShouldBindJSON` for `dataset_id` on GET and never reads the query string. Browser Fetch forbids GET request bodies. | Generated hybrid map sends the route to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. Browser contract test uses no GET body; document polling plus Python `POST /datasets/{id}/documents/stop` is the safe product path. |",
+  );
+  lines.push("");
   lines.push("## Capability lost — no reachable route serves this method and path");
   lines.push("");
   lines.push(

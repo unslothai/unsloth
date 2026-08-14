@@ -139,7 +139,7 @@ export const en = {
       compare: "Compare",
       search: "Search",
       projects: "Projects",
-      hub: "Model hub",
+      hub: "Documents",
       train: "Train",
       recipes: "Recipes",
       images: "Images",

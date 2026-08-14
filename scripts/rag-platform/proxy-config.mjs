@@ -111,6 +111,36 @@ const runtimeOverrides = [
     path: "/api/v1/providers/:provider/instances/:instance/models/*model",
     port: 9380,
   },
+  // The pinned Go preview handler authenticates the caller but does not scope
+  // the document lookup to that user. Python's matching contract calls
+  // DocumentService.accessible before reading object storage, so session-auth
+  // previews use that implementation until the owned Go image includes the
+  // ownership gate.
+  {
+    method: "GET",
+    path: "/api/v1/documents/:id/preview",
+    port: 9380,
+  },
+  // The pinned Go upload handler inserts the historical SQL document shape,
+  // including document.meta_fields. The active database and Python document
+  // model store metadata in the dedicated metadata service and do not contain
+  // that column. Python's equivalent upload route preserves dataset ownership,
+  // multipart partial-success semantics and object-storage cleanup without the
+  // incompatible column, so it is the active Phase 5 upload implementation.
+  {
+    method: "POST",
+    path: "/api/v1/datasets/:dataset_id/documents",
+    port: 9380,
+  },
+  // The Go v0.26.4 parser accepts legacy {dataset_id, documents} but publishes
+  // to the Go ingestor stream, while the deployed Python task executor is the
+  // active parser worker. Route the canonical parse contract to Python so the
+  // accepted jobs are actually consumed and observable through document run.
+  {
+    method: "POST",
+    path: "/api/v1/datasets/:dataset_id/documents/parse",
+    port: 9380,
+  },
 ].map((route) => ({ ...route, regex: routeRegex(route.path) }));
 
 const lines = [

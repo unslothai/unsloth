@@ -6,8 +6,6 @@ import { consumeNativePathToken } from "@/features/native-intents";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteDocument,
-  getJob,
-  streamJobEvents,
   uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
@@ -103,11 +101,11 @@ export function useRagDocuments(
     [],
   );
 
-  const trackJob = useCallback(
-    (jobId: string, documentId: string, filename: string) => {
-      if (trackedJobs.current.has(jobId)) return;
+  const trackDocument = useCallback(
+    (trackingId: string, documentId: string, filename: string) => {
+      if (trackedJobs.current.has(trackingId)) return;
       const controller = new AbortController();
-      trackedJobs.current.set(jobId, controller);
+      trackedJobs.current.set(trackingId, controller);
 
       const finish = (
         status: DocumentStatus,
@@ -131,64 +129,66 @@ export function useRagDocuments(
             ...(numChunks != null ? { numChunks } : {}),
           });
         }
-        trackedJobs.current.delete(jobId);
+        trackedJobs.current.delete(trackingId);
       };
 
       (async () => {
         try {
-          for await (const ev of streamJobEvents(jobId, controller.signal)) {
-            if (ev.type === "progress") {
-              patchDoc(documentId, {
-                status: "running",
-                progress: ev.progress ?? null,
+          let delayMs = 1_500;
+          while (!controller.signal.aborted) {
+            if (document.visibilityState === "hidden") {
+              await new Promise<void>((resolve) => {
+                const onVisibility = () => {
+                  if (document.visibilityState !== "visible") return;
+                  document.removeEventListener("visibilitychange", onVisibility);
+                  resolve();
+                };
+                document.addEventListener("visibilitychange", onVisibility);
+                controller.signal.addEventListener(
+                  "abort",
+                  () => {
+                    document.removeEventListener("visibilitychange", onVisibility);
+                    resolve();
+                  },
+                  { once: true },
+                );
               });
-            } else if (ev.type === "complete") {
-              finish("completed", null, ev.num_chunks);
-              return;
-            } else if (ev.type === "error") {
-              finish("failed", ev.error ?? "Indexing failed");
+            }
+            if (controller.signal.aborted) return;
+            const row = (await lister()).find((item) => item.id === documentId);
+            if (row?.status === "completed") {
+              finish("completed", null, row.numChunks);
               return;
             }
+            if (row?.status === "failed") {
+              finish("failed", row.error ?? "Indexing failed");
+              return;
+            }
+            if (row) {
+              patchDoc(documentId, {
+                ...row,
+                status: row.status === "running" ? "running" : "pending",
+              });
+            }
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, delayMs);
+              controller.signal.addEventListener(
+                "abort",
+                () => {
+                  clearTimeout(timer);
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+            delayMs = Math.min(15_000, delayMs * 2);
           }
-          // Stream ended with no terminal frame: reconcile.
-          const job = await getJob(jobId);
-          finish(
-            job.status === "completed"
-              ? "completed"
-              : job.status === "failed"
-                ? "failed"
-                : "completed",
-            job.error,
-            job.numChunks,
-          );
         } catch {
-          if (controller.signal.aborted) {
-            trackedJobs.current.delete(jobId);
-            return;
-          }
-          // SSE unavailable: poll to a terminal state.
-          try {
-            for (let i = 0; i < 600; i++) {
-              if (controller.signal.aborted) break;
-              const job = await getJob(jobId);
-              if (job.status === "completed")
-                return finish("completed", null, job.numChunks);
-              if (job.status === "failed") {
-                return finish("failed", job.error ?? "Indexing failed");
-              }
-              patchDoc(documentId, {
-                status: job.status === "running" ? "running" : "pending",
-                progress: job.progress ?? null,
-              });
-              await new Promise((r) => setTimeout(r, 1500));
-            }
-          } catch {
-            trackedJobs.current.delete(jobId);
-          }
+          if (!controller.signal.aborted) trackedJobs.current.delete(trackingId);
         }
       })();
     },
-    [patchDoc],
+    [lister, patchDoc],
   );
 
   const refresh = useCallback(
@@ -326,7 +326,7 @@ export function useRagDocuments(
               : row,
           ),
         );
-        trackJob(result.jobId, result.documentId, result.filename || name);
+        trackDocument(result.jobId, result.documentId, result.filename || name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Drop the chip rather than show "Failed"; warn via toast.
@@ -334,7 +334,7 @@ export function useRagDocuments(
         toast.error(`Couldn't upload ${name}`, { description: message });
       }
     },
-    [trackJob],
+    [trackDocument],
   );
 
   // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of

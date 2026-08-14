@@ -74,6 +74,18 @@
         "upstream": "127.0.0.1:9380"
       },
       {
+        "match": "GET ~ ^/api/v1/documents/[^/]+/preview/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "POST ~ ^/api/v1/datasets/[^/]+/documents/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "POST ~ ^/api/v1/datasets/[^/]+/documents/parse/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/users/[^/]+/providers/[^/]+/instances/[^/]+/models/?$",
         "upstream": "127.0.0.1:9383"
       },
@@ -8825,12 +8837,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/documents/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/datasets/<dataset_id>/documents",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -9034,12 +9051,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/documents/parse/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/datasets/<dataset_id>/documents/parse",
+        "service": "python-api"
+      }
     },
     {
       "method": "POST",
@@ -9618,17 +9640,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/documents/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/datasets/:dataset_id/documents",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -9945,17 +9962,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/documents/parse/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/datasets/:dataset_id/documents/parse",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "POST",
@@ -11092,12 +11104,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/documents/[^/]+/preview/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/documents/<doc_id>/preview",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -11109,17 +11126,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/documents/[^/]+/preview/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/documents/:id/preview",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",

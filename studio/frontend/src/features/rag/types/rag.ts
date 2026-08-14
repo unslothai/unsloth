@@ -43,27 +43,6 @@ export interface DocumentUploadResult {
   filename: string;
 }
 
-export type JobStatus = "pending" | "running" | "completed" | "failed";
-
-export interface IndexJob {
-  id: string;
-  documentId: string;
-  status: JobStatus;
-  stage?: string | null;
-  progress?: number | null;
-  error?: string | null;
-  numChunks?: number | null;
-}
-
-/** One SSE frame from /jobs/{jobId}/events. */
-export interface JobEvent {
-  type: "progress" | "complete" | "error";
-  stage?: string | null;
-  progress?: number | null;
-  error?: string | null;
-  num_chunks?: number | null;
-}
-
 /** Coords 0..1, top-left origin. */
 export interface PdfRegion {
   pageIndex: number;

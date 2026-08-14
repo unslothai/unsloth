@@ -15,3 +15,5 @@ export * from "./model-types";
 export * from "./model-readiness";
 export * from "./dataset-api";
 export * from "./dataset-types";
+export * from "./document-api";
+export * from "./document-types";

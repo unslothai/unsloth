@@ -136,7 +136,7 @@ export const tr = {
       compare: "Karşılaştır",
       search: "Ara",
       projects: "Projeler",
-      hub: "Model merkezi",
+      hub: "Belgeler",
       train: "Eğitim",
       recipes: "Tarifler",
       images: "Resimler",

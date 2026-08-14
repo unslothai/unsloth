@@ -81,6 +81,9 @@ function backendErrorMessage(body: unknown, status: number): string {
   ) {
     return body.message;
   }
+  if (status === 413) {
+    return "Dosya Rag Platform yükleme sınırını aşıyor (en fazla 128 MB).";
+  }
   return status >= 500
     ? "Rag Platform şu anda isteği tamamlayamıyor."
     : "Rag Platform isteği reddetti.";
