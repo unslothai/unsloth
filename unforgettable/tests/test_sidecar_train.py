@@ -154,19 +154,12 @@ def test_unsloth_backend_preference_raises_before_import(tmp_path):
 
 def test_train_pack_preference_writes_pairs_jsonl(db_path):
     report = _voted_pack(db_path, 4)
-    insert_rollout(
-        episode_id="ep-pref",
-        contact="world",
-        outcome="pass",
-        summary="works in world",
-        db_path=db_path,
-    )
     insert_record(
         kind="error_fix",
         title="Error then fix",
         body="Tried: broke in world\nThen: fixed in world",
         provenance="mixed",
-        source_episode_id="ep-pref",
+        source_episode_id="ep-0",
         db_path=db_path,
     )
     result = train_pack(
@@ -187,11 +180,38 @@ def test_train_pack_preference_writes_pairs_jsonl(db_path):
     pair = json.loads(lines[0])
     assert pair["chosen"] == "Tried: broke in world\nThen: fixed in world"
     assert pair["rejected"] == "broke in world"
-    assert pair["episode_id"] == "ep-pref"
+    assert pair["episode_id"] == "ep-0"
     row = get_adapter(result.adapter_id, db_path=db_path)
     assert row is not None
     assert row["status"] == "shadow"
     assert row["recipe"] == "preference"
+
+
+def test_train_pack_preference_skips_unpacked_episode(db_path):
+    report = _voted_pack(db_path, 4)
+    insert_rollout(
+        episode_id="ep-holdout",
+        contact="world",
+        outcome="pass",
+        summary="works in world",
+        db_path=db_path,
+    )
+    insert_record(
+        kind="error_fix",
+        title="Error then fix",
+        body="Tried: broke in world\nThen: fixed in world",
+        provenance="mixed",
+        source_episode_id="ep-holdout",
+        db_path=db_path,
+    )
+    with pytest.raises(ValueError, match="preference pairs"):
+        train_pack(
+            report.pack_id,
+            backend=FakeTrainBackend(),
+            base_model="fake",
+            recipe="preference",
+            db_path=db_path,
+        )
 
 
 def test_train_pack_preference_without_pairs_raises(db_path):

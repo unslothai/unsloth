@@ -49,10 +49,10 @@ def test_write_search_get_supersede_deprecate(db_path):
         dispatch(
             "memory_write",
             {
-                "kind": "directive",
+                "kind": "claim",
                 "title": "Always cite ids",
                 "body": "Ground answers in returned memory ids.",
-                "provenance": "human",
+                "provenance": "world",
             },
             db_path=db_path,
         )
@@ -86,10 +86,10 @@ def test_write_logs_admission_record_id(db_path):
         dispatch(
             "memory_write",
             {
-                "kind": "directive",
+                "kind": "claim",
                 "title": "Cite ids",
                 "body": "Always cite memory ids.",
-                "provenance": "human",
+                "provenance": "world",
             },
             db_path=db_path,
         )
@@ -125,17 +125,24 @@ def test_supersede_proposed_stays_proposed(db_path):
 
 
 def test_write_unknown_namespace_is_error(db_path):
-    result = dispatch(
-        "memory_write",
-        {
-            "kind": "claim",
-            "title": "X",
-            "body": "y",
-            "provenance": "human",
-            "namespace": "missing-ns",
-        },
-        db_path=db_path,
+    from unforgettable.loop.runtime import bind_episode, reset_episode
+
+    tokens, _ = bind_episode(
+        db_path=str(db_path), episode_id="ep-ns", namespace="missing-ns"
     )
+    try:
+        result = dispatch(
+            "memory_write",
+            {
+                "kind": "claim",
+                "title": "X",
+                "body": "y",
+                "provenance": "world",
+            },
+            db_path=db_path,
+        )
+    finally:
+        reset_episode(tokens)
     assert result.startswith("Error:")
 
 
@@ -284,20 +291,29 @@ def test_memory_compile_wet_without_id_runs_maybe_compile(db_path):
     assert rec["id"] in payload["pinned"]
 
 
-def test_memory_compile_wet_with_id_pins_explicit(db_path):
+def test_memory_compile_wet_with_id_requires_hits(db_path):
     rec = _trusted_procedure(db_path)
-    payload = json.loads(
+    payload = dispatch(
+        "memory_compile",
+        {"id": rec["id"], "dry_run": False},
+        db_path=db_path,
+    )
+    assert payload.startswith("Error:")
+    assert get_compiled(rec["id"], db_path=db_path) is None
+    _world_pass_use(rec["id"], "ep-1", db_path)
+    _world_pass_use(rec["id"], "ep-2", db_path)
+    written = json.loads(
         dispatch(
             "memory_compile",
             {"id": rec["id"], "dry_run": False},
             db_path=db_path,
         )
     )
-    assert payload["dry_run"] is False
+    assert written["dry_run"] is False
     row = get_compiled(rec["id"], db_path=db_path)
     assert row is not None
-    assert row["explicit"] == 1
-    assert payload["pinned"] == rec["id"]
+    assert not row["explicit"]
+    assert written["pinned"] == rec["id"]
 
 
 def test_memory_compile_cannot_unpin(db_path):

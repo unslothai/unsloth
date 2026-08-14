@@ -28,9 +28,13 @@ def is_virtual_model(model: str | None) -> bool:
 
 def inner_model_id(model: str | None) -> str:
     """Strip the virtual alias so the inner wheel uses a real model id."""
-    if not model or model == VIRTUAL_MODEL_ID:
+    if not model:
         return "default"
-    if model.startswith(VIRTUAL_MODEL_PREFIX):
-        rest = model[len(VIRTUAL_MODEL_PREFIX) :]
-        return rest or "default"
-    return model
+    current = model
+    while True:
+        if current == VIRTUAL_MODEL_ID:
+            return "default"
+        if current.startswith(VIRTUAL_MODEL_PREFIX):
+            current = current[len(VIRTUAL_MODEL_PREFIX) :] or "default"
+            continue
+        return current

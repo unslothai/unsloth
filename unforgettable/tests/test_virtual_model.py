@@ -22,4 +22,6 @@ def test_virtual_model_ids():
     assert not is_virtual_model(None)
     assert inner_model_id("unforgettable") == "default"
     assert inner_model_id("unforgettable/my-gguf") == "my-gguf"
+    assert inner_model_id("unforgettable/unforgettable") == "default"
+    assert inner_model_id("unforgettable/unforgettable/qwen") == "qwen"
     assert inner_model_id("other") == "other"

@@ -168,7 +168,7 @@ def test_naive_from_episode_still_runs(tmp_path: Path):
     _run_extract(host)
     fixes = list_records(kinds=["error_fix"], db_path=host.db)
     assert len(fixes) == 1
-    assert fixes[0]["title"] == "Error then fix"
+    assert fixes[0]["title"].startswith("Error then fix")
     assert fixes[0]["status"] == "proposed"
     infer = _infer_rows(host.db)
     assert len(infer) == 2

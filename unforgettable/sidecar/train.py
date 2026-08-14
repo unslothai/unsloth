@@ -339,7 +339,12 @@ def train_pack(
             f"need at least {PACK_MIN_TRAIN} train items, got {len(train_items)}"
         )
     if recipe == RECIPE_PREFERENCE:
-        examples = preference_pairs(db_path=db_path)
+        train_eps = {
+            item.get("episode_id")
+            for item in train_items
+            if item.get("episode_id")
+        }
+        examples = preference_pairs(db_path=db_path, train_episode_ids=train_eps)
         if not examples:
             raise ValueError(NO_PREFERENCE_PAIRS)
     else:

@@ -24,6 +24,9 @@ from unforgettable.constants import (
     DEFAULT_NAMESPACE_NAME,
     KINDS,
     PROVENANCES,
+    RECORD_BODY_CHARS,
+    RECORD_TITLE_CHARS,
+    ROLLOUT_SUMMARY_CHARS,
     STATUSES,
 )
 
@@ -36,6 +39,13 @@ ROLLOUT_OUTCOMES = frozenset({"pass", "fail"})
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _clip(text: str, limit: int) -> str:
+    body = "" if text is None else str(text)
+    if limit <= 0 or len(body) <= limit:
+        return body
+    return body[:limit]
 
 
 def _row_to_dict(row) -> dict[str, Any]:
@@ -111,6 +121,8 @@ def insert_record(
         raise ValueError(f"unknown status: {status}")
     if provenance not in PROVENANCES:
         raise ValueError(f"unknown provenance: {provenance}")
+    title = _clip(title, RECORD_TITLE_CHARS)
+    body = _clip(body, RECORD_BODY_CHARS)
     ensure_default_namespace(db_path=db_path)
     ns = namespace_id or DEFAULT_NAMESPACE_ID
     if get_namespace(ns, db_path=db_path) is None:
@@ -216,6 +228,7 @@ def supersede_record(
     source_episode_id: Optional[str] = None,
     status: str = "active",
     new_id: Optional[str] = None,
+    contact_tag: Optional[str] = None,
     db_path=None,
 ) -> dict[str, Any]:
     old = get_record(record_id, db_path=db_path)
@@ -228,7 +241,8 @@ def supersede_record(
         raise ValueError(f"unknown provenance: {new_prov}")
     rid = new_id or str(uuid.uuid4())
     now = _now()
-    new_title = title if title is not None else old["title"]
+    new_title = _clip(title if title is not None else old["title"], RECORD_TITLE_CHARS)
+    body = _clip(body, RECORD_BODY_CHARS)
     conn = get_connection(db_path)
     try:
         conn.execute(
@@ -254,7 +268,7 @@ def supersede_record(
                 old.get("confidence"),
                 record_id,
                 source_episode_id or old.get("source_episode_id"),
-                new_prov,
+                contact_tag if contact_tag is not None else new_prov,
                 now,
                 now,
             ),
@@ -395,6 +409,7 @@ def insert_rollout(
         raise ValueError(f"unknown rollout contact: {contact}")
     if outcome not in ROLLOUT_OUTCOMES:
         raise ValueError(f"unknown rollout outcome: {outcome}")
+    summary = _clip(summary, ROLLOUT_SUMMARY_CHARS)
     rid = rollout_id or str(uuid.uuid4())
     now = _now()
     conn = get_connection(db_path)

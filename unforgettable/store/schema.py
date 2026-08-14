@@ -19,8 +19,19 @@ from __future__ import annotations
 import sqlite3
 
 
+def _require_fts5(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _unforgettable_fts5_probe USING fts5(x)")
+        conn.execute("DROP TABLE IF EXISTS _unforgettable_fts5_probe")
+    except sqlite3.OperationalError as exc:
+        raise RuntimeError(
+            "SQLite is missing FTS5. Unforgettable needs a CPython build with FTS5."
+        ) from exc
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
+    _require_fts5(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS namespaces (

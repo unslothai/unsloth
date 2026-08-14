@@ -220,6 +220,34 @@ def test_include_sim_true_drops_without_world_pass(db_path):
     assert (rec["id"], "sim vote without world-pass") in report.dropped
 
 
+def test_rejected_twin_note_does_not_veto_sim_vote(db_path):
+    rec = _procedure(
+        title="How we rehearse",
+        body="run the clone tests",
+        db_path=db_path,
+    )
+    _sim_pass_use(rec["id"], "ep-rejected-twin", db_path)
+    insert_rollout(
+        episode_id="ep-rejected-twin",
+        contact="world",
+        outcome="pass",
+        summary="world also passed",
+        db_path=db_path,
+    )
+    insert_record(
+        kind="twin_note",
+        title="Twin: world vs sim",
+        body="operator rejected this",
+        provenance="mixed",
+        status="rejected",
+        source_episode_id="ep-rejected-twin",
+        db_path=db_path,
+    )
+    report = pack_from_admitted_b(include_sim=True, db_path=db_path)
+    assert report.n_train == 1
+    assert rec["id"] not in dict(report.dropped)
+
+
 def test_include_sim_true_drops_twin_note(db_path):
     rec = _procedure(
         title="How we rehearse",

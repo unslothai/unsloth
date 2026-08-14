@@ -57,7 +57,7 @@ Inner      Host.generate        one tool-loop pass in the active rim sandbox
 
 - World session: host-reported (`payload.session_id` / `project-<id>` / thread sandbox).
 - Sim session: `sim-{episode[:8]}-{n}` (Studio) or `sim-{episode}-{n}` (FakeHost). Must not equal world and must not start with `project-`.
-- Clone: `rims.clone.clone_tree` (`copytree`, skip `.unsloth_sandbox` / remap json / `*.deleting-*`, refuse same resolved path).
+- Clone: `rims.clone.clone_tree` (`copytree` with `symlinks=True`, skip `.unsloth_sandbox` / remap json / `*.deleting-*`, refuse same resolved path and dest-inside-source).
 - Shared action interface: `Host.run_action(session_id, "python"|"terminal", …)` — same tools, different cwd.
 
 Default act path (`MemoryWheels` §6, `decide()` at `throne/policy.py:83`):
@@ -76,18 +76,27 @@ Statuses: `active`, `superseded`, `deprecated`, `proposed`, `rejected`.
 
 Provenance (trust, lower weight first at retrieve): `world` 0, `mixed` 1, `human` 2, `sim` 3, `infer` 4.
 
-`admit()` total order is locked (`agents/admissions.py:45-60`):
+`admit()` total order is locked (`agents/admissions.py:46-67`):
 
-1. namespace deny → rejected
+1. namespace deny → rejected (**no row is inserted**)
 2. namespace propose → proposed
 3. `force_proposed_reason` (gate contradiction) → proposed
 4. `bookkeeping` (deterministic twin_note, episode row) → active
 5. sim claim **or** sim procedure → proposed
 6. not explicit (extract) → proposed
-7. `infer` and kind ≠ directive → proposed
-8. else → active
+7. `infer` (including directives) → proposed
+8. `directive` unless provenance is `human` → proposed
+9. else → active
 
-Do not reorder this without a new phase lock. Operator promote is CLI `admit`.
+Do not reorder this without a new phase lock. Operator promote is CLI `admit` (proposed/deprecated only unless `--force`).
+
+Tool writes are further coerced before `admit()` (`tools/handlers.py`):
+
+- `human` → `infer` (tools cannot self-certify a person)
+- sim contact + claimed `world` → `sim`
+- `kind=episode` is refused (the runner owns episode rows)
+- `memory_supersede` cannot promote a proposed/rejected row to active
+- unbound `dispatch` (no episode db) errors; it does not create `~/.unforgettable/memory.db`
 
 ### 1.6 What later phases parked
 
@@ -150,7 +159,7 @@ Optional (`getattr` skip):
 |------|----------------|
 | `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, enabled-tool union |
 | `studio/backend/routes/inference.py` | If `is_virtual_model(model)` and not `in_inner_generate()` → `handle_chat_completions`; catalog entry |
-| `studio/backend/core/inference/tools.py` | `*MEMORY_TOOLS` + `*CONTACT_TOOLS` on `ALL_TOOLS`; `execute_tool` dispatches `memory_*` / `rims_*` to Apache `dispatch` |
+| `studio/backend/core/inference/tools.py` | `*MEMORY_TOOLS` + `*CONTACT_TOOLS` on `ALL_TOOLS` (inner generate only; `_select_request_tools` strips them when `not in_inner_generate()`); `execute_tool` dispatches `memory_*` / `rims_*` to Apache `dispatch` |
 | `studio/backend/core/inference/tool_stream_exec.py` | Copies ContextVars into the tool worker so episode bind survives the thread |
 | `studio/backend/models/inference.py` | Documents virtual model id + Unforgettable extra fields |
 
@@ -186,7 +195,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 |------|-------------|
 | `__init__.py` | Version `0.1.0`; `VIRTUAL_MODEL_ID`, `is_virtual_model`, `inner_model_id` |
 | `__main__.py` | `python -m unforgettable` → `cli.main` |
-| `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback |
+| `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback. `compact` and `pack` preview unless `--apply`. |
 | `constants.py` | Kinds, statuses, provenances, namespace defaults, `PROVENANCE_WEIGHT` |
 | `host.py` | `Host` protocol, `GenerateRequest` / `GenerateResult` / `ToolTrace`, run-action constants |
 | `LICENSE` | Apache 2.0 text |
@@ -284,7 +293,7 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 
 `records` is the soul of B (Phase 1). Later phases add tables with `CREATE TABLE IF NOT EXISTS` — no `ALTER` on `records` except additive missing columns (`schema.py:161`). FTS5 (`record_fts`) indexes title+body; `record_id` is stored UNINDEXED and maintained in Python (`records._rewrite_fts`).
 
-Supersede (`records.supersede_record`, `store/records.py:210`) marks the old row superseded and inserts the successor **in one connection**. Handlers run `review_write` + `admit` first and pass the resulting status (`tools/handlers.py` `_supersede`). A proposed sim claim cannot be laundered to active by superseding.
+Supersede (`records.supersede_record`, `store/records.py`) marks the old row superseded and inserts the successor **in one connection**. Handlers run `review_write` + `admit` first and pass the resulting status (`tools/handlers.py` `_supersede`). A proposed row cannot be laundered to active by superseding, even with a more trusted provenance. Rejected rows cannot be superseded. Title/body are clipped to `RECORD_TITLE_CHARS` / `RECORD_BODY_CHARS`.
 
 `set_record_status` to `active` strips trailing `[deprecated] …` suffixes so CLI `admit` after compact does not re-inject the scar.
 
@@ -300,6 +309,40 @@ Compiled form is **membership + live format**, not a stored skill blob (`store/c
 
 On `ENTER_SIM` / `RETRY_WORLD` the bundle is rebuilt (sim retrieve turns off the high-stakes provenance filter and prefers sim/mixed lessons). `CONTINUE_SIM` does not FTS again; it does refresh the repaired-plan suffix.
 
+### 4.2.1 Data path (context → B → C)
+
+```
+generate / tool result
+    │
+    ├─ note_tool_result (A traces; memory_* skipped by eyes)
+    ├─ note_success / note_failure  → first line, EVENT_SUMMARY_CHARS
+    │
+    ├─ memory_write / memory_supersede
+    │     coerce provenance → review_write → admit → insert (or refuse)
+    │
+    └─ _extract at episode end
+          from_episode (proposed error_fix from fail→success grades)
+          from_drift   (active twin_note if sim ok + later world fail)
+          llm_extract  (proposed infer; no args in the prompt; no directive/episode)
+          episode_summary (active bookkeeping pointer; last 200 user chars)
+          rollouts     (last event per contact; summary clipped)
+          maybe_compile (needs 2 world-retrieve + world-pass hits)
+
+CLI admit (proposed/deprecated → active)
+    │
+    ▼
+pack_from_admitted_b
+    active procedure/error_fix + world|mixed|human
+    + (compiled membership OR world-pass retrieve vote)
+    include_sim votes need same-episode world/pass and no *active* twin_note
+    gold = title → body (PACK_BODY_CHARS); never episode rows
+    │
+    ▼
+train_pack (train role only) → eval holdout vs base → promote
+```
+
+Chat completions and tool argument blobs are not training gold. Preference pairs are taken only from pack **train** episode ids.
+
 ### 4.3 Episode loop
 
 `run()` (`loop/episode.py`) is the middle wheel:
@@ -308,7 +351,7 @@ On `ENTER_SIM` / `RETRY_WORLD` the bundle is rebuilt (sim retrieve turns off the
 2. Resolve optional `adapter_id` → `adapter_path` + train-source exclude set (`_resolve_attached_adapter`). Missing/discarded adapter is ignored.
 3. First-turn `_rebuild(contact="world")`.
 4. Before the first world generate: closed user-phrase list (`that failed`, …) can enter sim with zero world generates.
-5. `host.generate` in the active session. `_pass_failure` skips `memory_*`, treats `rims_enter_sim` as fail-wins, then `inspect_tool_result` (traceback, `Error:`, Studio sentinels, runner fingerprints, exit-code).
+5. `host.generate` in the active session. `_pass_failure` skips `memory_*`, treats `rims_enter_sim` as fail-wins, then `inspect_tool_result` (traceback, `Error:`, Studio sentinels, runner fingerprints, exit-code). Success/failure events keep a clipped first line (`EVENT_SUMMARY_CHARS`), never the raw completion.
 6. In sim, if a test command is known and `run_action` exists, **grade wins** over “I fixed it” (`_maybe_run_sim_tests` + `grade_run_action`).
 7. `decide` then optional `confirm` (`_confirm_retry_world`).
 8. `ENTER_SIM`: `create_sim_session`, `track_sim`, refuse bad ids, `clone_tree`, resolve test command, rebuild inject, optional diagnostic `run_action` (does not burn a sim turn).
@@ -317,7 +360,7 @@ On `ENTER_SIM` / `RETRY_WORLD` the bundle is rebuilt (sim retrieve turns off the
 11. Optional ≤3 `Probe:` runs on a **fresh** clone of current world.
 12. `finally`: remove every created sim except the kept one; `reset_episode`.
 
-`llm_extract` (`extractor.py:169`) is bounded: last 24 non-memory traces / 8k chars, max 8 drafts, forced `provenance=infer`, parse-fail → `[]`. Forbidden kinds: `directive`, `episode`. Skip when fewer than two non-memory traces and no failure events.
+`llm_extract` (`extractor.py`) is bounded: last 24 non-memory traces / 8k chars, max 8 drafts, forced `provenance=infer`, parse-fail → `[]`. Each trace is `name` + clipped result — **not** tool arguments. Forbidden kinds: `directive`, `episode`. Skip when fewer than two non-memory traces and no failure events.
 
 ### 4.4 Eyes and throne
 
@@ -329,9 +372,9 @@ On `ENTER_SIM` / `RETRY_WORLD` the bundle is rebuilt (sim retrieve turns off the
 
 ### 4.5 Sidecar C
 
-`pack_from_admitted_b` (`sidecar/pack.py`): only active `procedure`/`error_fix` with trusted provenance; probes and `test command` dropped; traces **vote** (and hold out by episode); they do not donate episode text. `include_sim` default false; sim/pass votes only with world/pass and no twin_note. Sim rows never become assistant gold.
+`pack_from_admitted_b` (`sidecar/pack.py`): only active `procedure`/`error_fix` with trusted provenance; probes and `test command` dropped; traces **vote** (and hold out by episode); they do not donate episode text. Compiled membership is also a vote (operator `compile` or auto-pin after two world-pass hits). `include_sim` default false; sim/pass votes only with world/pass and no **active** twin_note. Sim rows never become assistant gold. Empty candidate sets are not persisted. `pack_is_retrieval_heavy` counts compiled rows without refreshing/unpinning them.
 
-`train_pack` refuses fewer than `PACK_MIN_TRAIN` (4) train items. Fake backend writes `adapter_config.json` + `fake_gold.json`. Unsloth backend lazy-imports, refuses `UNSLOTH_ENABLE_FULL_FINETUNING=1` and `full_finetuning=True`, writes a LoRA dir. Preference recipe: Fake writes `pairs.jsonl`; Unsloth DPO is not wired (`NotImplementedError`).
+`train_pack` refuses fewer than `PACK_MIN_TRAIN` (4) train items. Fake backend writes `adapter_config.json` + `fake_gold.json`. Unsloth backend lazy-imports, refuses `UNSLOTH_ENABLE_FULL_FINETUNING=1` and `full_finetuning=True`, writes a LoRA dir. Preference recipe: Fake writes `pairs.jsonl` from `preference_pairs(..., train_episode_ids=)` — only episodes that appear on **train** pack items. Unsloth DPO is not wired (`NotImplementedError`).
 
 `eval_adapter`: holdout title-only complete vs gold. Empty completions on both sides (`adapter_lean == base_lean == 0`) **fail**. CLI `eval` selects Fake vs Unsloth from `adapters.backend` and passes `base_model` into `UnslothTrainBackend.complete` (load base, then PEFT adapter).
 
@@ -341,7 +384,7 @@ Live Studio inject does **not** shrink on promote alone. Shrink + `GenerateReque
 
 ### 4.6 ContextVars and Studio threads
 
-`bind_episode` sets `_db_path`, `_episode_id`, `_namespace`, `_traces`, `_contact`. `execute_tool` calls `note_tool_result` and `dispatch` (which reads `current_db_path()`). Studio’s inner loop runs tools in `stream_tool_execution` on a worker thread (`studio/backend/core/inference/tool_stream_exec.py`). That thread is started with `contextvars.copy_context().run` so the bind survives. A raw `threading.Thread` would write to `~/.unforgettable/memory.db` and leave `_pass_failure` blind. Apache `tests/test_runtime_context.py` locks both behaviors.
+`bind_episode` sets `_db_path`, `_episode_id`, `_namespace`, `_traces`, `_contact`. `execute_tool` calls `note_tool_result` and `dispatch` (which reads `current_db_path()`). Unbound `dispatch` returns an error instead of creating `~/.unforgettable/memory.db`. Studio’s inner loop runs tools in `stream_tool_execution` on a worker thread (`studio/backend/core/inference/tool_stream_exec.py`). That thread is started with `contextvars.copy_context().run` so the bind survives. `StudioHost.run_action` wraps `asyncio.to_thread` in `copy_context()` as well (needed on Python 3.9–3.10). Apache `tests/test_runtime_context.py` locks copy vs raw thread. Memory/rims tools are stripped from ordinary Studio chat (`_select_request_tools` when `not in_inner_generate()`). Non-stream confirm cannot show a card and therefore escalates if confirm is required.
 
 `StudioHost.run_action` uses `asyncio.to_thread` (copies context). Extract uses `complete`, not `generate`, so it cannot re-enter the act/sim loop.
 
@@ -349,12 +392,12 @@ Live Studio inject does **not** shrink on promote alone. Shrink + `GenerateReque
 
 ## 5. Automated tests
 
-Apache suite: **205** tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`.
+Apache suite: **221** tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`.
 
 | File | What it locks |
 |------|----------------|
 | `test_import_hygiene.py` | No `studio` imports; sidecar import does not load `unsloth`/`torch`; no module-level Unsloth in sidecar except indented `train.py` |
-| `test_virtual_model.py` | `unforgettable` / `unforgettable/<id>` alias strip |
+| `test_virtual_model.py` | `unforgettable` / `unforgettable/<id>` alias strip; nested `unforgettable/unforgettable` |
 | `test_store.py` | Schema CRUD, supersede history, deprecate hidden from search, world > infer rank |
 | `test_admissions.py` | Locked `admit()` order including bookkeeping vs force_proposed vs sim procedure |
 | `test_gate.py` | Contradiction `review_write`, conflicting write stays proposed, admissions log |
@@ -365,15 +408,16 @@ Apache suite: **205** tests under `unforgettable/tests/`, no GPU, tmp SQLite + t
 | `test_extract.py` | LLM drafts proposed infer, parse-fail, provenance overwrite, skip without `complete` |
 | `test_eyes.py` | Runner fingerprints vs “failed to import”, enter_sim, user phrases, Studio sentinels |
 | `test_rims_action.py` | Detector order, resolve requested vs procedure vs tree |
-| `test_rims_throne.py` | Clone ignore list, same-path refuse, `decide()` fail→sim→retry, confirm matrix |
+| `test_rims_throne.py` | Clone ignore list, same-path refuse, dest-inside-src refuse, symlink copy, `decide()` fail→sim→retry, confirm matrix |
 | `test_probes.py` | Prefix identity, CLI `--run`, episode cap 3, skip without sim/`run_action` |
-| `test_tools.py` | Tool names, CRUD, admit log id, supersede stays proposed, compact/compile dry-run defaults |
-| `test_cli.py` | Subcommands, `--db`, compact/pack dry-run help, fake train, honest eval, promote/rollback |
+| `test_tools.py` | Tool names, CRUD, admit log id, supersede stays proposed, compact/compile dry-run defaults, compile-with-id needs hits |
+| `test_cli.py` | Subcommands, `--db`, compact/pack `--apply`, admit `--force`, fake train, honest eval, promote/rollback |
 | `test_episode.py` | Happy path + drift + enter_sim + user phrase + harness + timeout + confirm + standing + re-retrieve + compile + adapter shrink; FakeHost |
 | `test_stream_forward.py` | `on_chunk` forwarded into `GenerateRequest` |
 | `test_runtime_context.py` | `copy_context` carries db + traces; raw thread does not |
-| `test_sidecar_pack.py` | Drop reasons, no episode gold, sim vote matrix, holdout-by-episode, preference pairs |
-| `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl |
+| `test_sidecar_pack.py` | Drop reasons, no episode gold, sim vote matrix, rejected twin_note is not a veto, holdout-by-episode, preference pairs |
+| `test_remember_path.py` | Unbound dispatch, no human/episode from tools, sim cannot mint world, supersede does not promote, generate-text clip |
+| `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl, unpacked episode is not preference gold |
 | `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails |
 | `test_sidecar_adapters.py` | Promote gate, one promoted, rollback keeps files, probe-fail refuse |
 
@@ -433,7 +477,7 @@ python -m pytest unforgettable/tests -q --tb=short
 python -m pytest unforgettable/tests/test_episode.py -q
 ```
 
-Expect **205 passed**. Runtime is a few seconds on a laptop.
+Expect **221 passed**. Runtime is a few seconds on a laptop.
 
 If the environment has no `pytest` in the project venv:
 
@@ -464,7 +508,7 @@ If collection fails on missing Studio extras, install Studio’s backend require
 
 ```bash
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" pack --dry-run
-python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" pack
+python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" pack --apply
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" train --backend unsloth --base <hf-or-local-id>
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" eval <adapter-id>
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id>
@@ -476,7 +520,7 @@ python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id
 
 - `unforgettable` imports with no Studio on `sys.path`.
 - `import unforgettable.sidecar` does not import `unsloth` or `torch`.
-- `pytest unforgettable/tests` 205 passed.
+- `pytest unforgettable/tests` 221 passed.
 - FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
 - FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
 - Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.

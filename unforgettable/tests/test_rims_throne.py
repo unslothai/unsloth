@@ -55,6 +55,29 @@ def test_clone_tree_same_path_raises(tmp_path: Path):
         clone_tree(src, src / ".")
 
 
+def test_clone_tree_refuses_dest_inside_source(tmp_path: Path):
+    src = tmp_path / "world"
+    src.mkdir()
+    (src / "main.py").write_text("print(1)\n")
+    with pytest.raises(ValueError, match="into itself"):
+        clone_tree(src, src / "nested-sim")
+
+
+def test_clone_tree_copies_symlinks_without_following(tmp_path: Path):
+    src = tmp_path / "world"
+    dst = tmp_path / "sim"
+    outside = tmp_path / "secret"
+    outside.write_text("do-not-copy-bytes\n")
+    src.mkdir()
+    (src / "link").symlink_to(outside)
+    clone_tree(src, dst)
+    copied = dst / "link"
+    assert copied.is_symlink()
+    assert copied.readlink() == outside
+    outside.write_text("changed\n")
+    assert copied.read_text() == "changed\n"
+
+
 def test_eyes_detect_traceback_and_exit_code():
     assert inspect_tool_result("python", "Traceback (most recent call last):\nValueError")
     assert inspect_tool_result("terminal", "exit code 1\n")

@@ -36,8 +36,9 @@ def admit(
     db_path=None,
     bookkeeping: bool = False,
     force_proposed_reason: str | None = None,
+    persist_log: bool = True,
 ) -> AdmissionDecision:
-    """Decide status before insert. Logs every decision."""
+    """Decide status before insert. Logs every decision unless persist_log is false."""
     ensure_default_namespace(db_path=db_path)
     ns = get_namespace(namespace_id, db_path=db_path)
     mode = (ns or {}).get("admission") or "auto"
@@ -56,15 +57,20 @@ def admit(
         )
     elif not explicit:
         decision = AdmissionDecision("proposed", "auto-extract is proposed until eyes confirm")
-    elif provenance == "infer" and kind != "directive":
+    elif provenance == "infer":
         decision = AdmissionDecision("proposed", "infer provenance stays proposed")
+    elif kind == "directive" and provenance != "human":
+        decision = AdmissionDecision(
+            "proposed", "directives stay proposed until a human admits them"
+        )
     else:
         decision = AdmissionDecision("active", "explicit write admitted")
 
-    log_admission(
-        record_id=record_id,
-        decision=decision.status,
-        reason=decision.reason,
-        db_path=db_path,
-    )
+    if persist_log:
+        log_admission(
+            record_id=record_id,
+            decision=decision.status,
+            reason=decision.reason,
+            db_path=db_path,
+        )
     return decision

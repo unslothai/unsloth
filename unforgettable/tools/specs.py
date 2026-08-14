@@ -44,7 +44,11 @@ MEMORY_WRITE = {
                 "body": {"type": "string"},
                 "provenance": {
                     "type": "string",
-                    "enum": ["world", "sim", "mixed", "human", "infer"],
+                    "enum": ["world", "sim", "mixed", "infer"],
+                    "description": (
+                        "Where this was observed. Tools cannot claim human; "
+                        "the runner treats that as infer. Sim contact cannot claim world."
+                    ),
                 },
                 "namespace": {"type": "string"},
             },

@@ -26,7 +26,6 @@ from typing import Any, Optional
 from unforgettable.eyes.probes import is_probe_title
 from unforgettable.rims.detect import TEST_COMMAND_TITLE
 from unforgettable.sidecar.format import PACK_BODY_CHARS, format_sft_item
-from unforgettable.store.compile import list_compiled
 from unforgettable.store.db import get_connection
 from unforgettable.store.records import list_inject_stats, list_records, list_rollouts
 from unforgettable.store.titles import normalize_title
@@ -108,7 +107,8 @@ def is_pack_record(rec: dict) -> bool:
 
 
 def pack_is_retrieval_heavy(db_path=None) -> bool:
-    if len(list_compiled(db_path=db_path)) >= DISTILL_MIN_COMPILED:
+    # Count compiled rows only. list_compiled() refreshes/unpins membership.
+    if len(_compiled_ids(db_path=db_path)) >= DISTILL_MIN_COMPILED:
         return True
     world_rows = [
         row
@@ -155,7 +155,7 @@ def _pass_episodes(rollouts: list[dict[str, Any]], contact: str) -> set[str]:
 
 def _twin_note_episodes(*, db_path=None) -> set[str]:
     eps: set[str] = set()
-    for rec in list_records(kinds=["twin_note"], db_path=db_path):
+    for rec in list_records(kinds=["twin_note"], statuses=["active"], db_path=db_path):
         eid = rec.get("source_episode_id")
         if eid:
             eps.add(eid)
@@ -327,7 +327,8 @@ def pack_from_admitted_b(
     _assign_roles(candidates)
     n_train = sum(1 for c in candidates if c.role == ROLE_TRAIN)
     n_holdout = sum(1 for c in candidates if c.role == ROLE_HOLDOUT)
-    pack_id = None if dry_run else str(uuid.uuid4())
+    persist = (not dry_run) and bool(candidates)
+    pack_id = str(uuid.uuid4()) if persist else None
     report = PackReport(
         pack_id=pack_id,
         n_train=n_train,
@@ -336,7 +337,7 @@ def pack_from_admitted_b(
         include_sim=include_sim,
         dry_run=dry_run,
     )
-    if not dry_run:
+    if persist:
         _persist(pack_id, report, candidates, db_path=db_path)
     return report
 

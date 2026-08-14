@@ -58,7 +58,7 @@ def test_admit_after_compact_strips_deprecate_suffix(db_path):
         provenance="infer",
         db_path=db_path,
     )
-    assert main(["compact", "--db", str(db_path)]) == 0
+    assert main(["compact", "--apply", "--db", str(db_path)]) == 0
     infer = None
     from unforgettable.store.records import list_records
 
@@ -87,6 +87,19 @@ def test_admit_flips_proposed_to_active(db_path):
     assert get_record(rec["id"], db_path=db_path)["status"] == "active"
 
 
+def test_admit_active_without_force_exits_2(db_path, capsys):
+    rec = insert_record(
+        kind="claim",
+        title="Already in",
+        body="stays",
+        provenance="world",
+        db_path=db_path,
+    )
+    assert main(["admit", rec["id"], "--db", str(db_path)]) == 2
+    assert "use --force" in capsys.readouterr().err
+    assert main(["admit", rec["id"], "--force", "--db", str(db_path)]) == 0
+
+
 def test_unknown_id_exits_2(db_path):
     assert main(["get", "missing-id", "--db", str(db_path)]) == 2
     assert main(["admit", "missing-id", "--db", str(db_path)]) == 2
@@ -103,7 +116,8 @@ def test_compact_help_warns_dry_run(capsys):
     out = re.sub(r"\s+", " ", capsys.readouterr().out)
     assert COMPACT_FIRST_DRY_RUN_HELP in out
     assert "$STUDIO_HOME/memory/memory.db" in out
-    assert "compact --dry-run" in out
+    assert "--dry-run" in out
+    assert "--apply" in out
 
 
 def test_compact_dry_run_prints_report(db_path, capsys):
@@ -342,7 +356,7 @@ def test_packs_lists_wet_pack(db_path, capsys):
         summary="ok",
         db_path=db_path,
     )
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     packed = json.loads(capsys.readouterr().out)
     assert packed["n_train"] == 1
     assert packed["pack_id"]
@@ -366,6 +380,7 @@ def test_pack_and_packs_help_include_db(capsys):
         if cmd == "pack":
             assert PACK_FIRST_DRY_RUN_HELP in out
             assert "--dry-run" in out
+            assert "--apply" in out
 
 
 def _voted_procedures(db_path, n: int = 4) -> None:
@@ -394,7 +409,7 @@ def _voted_procedures(db_path, n: int = 4) -> None:
 
 def test_train_fake_exits_0_and_adapters_lists_shadow(db_path, capsys):
     _voted_procedures(db_path)
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     packed = json.loads(capsys.readouterr().out)
     assert packed["n_train"] >= 4
     assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
@@ -431,7 +446,7 @@ def test_train_help_names_public_unsloth_apis(capsys):
 
 def test_promote_without_force_exits_2(db_path, capsys):
     _voted_procedures(db_path)
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     capsys.readouterr()
     assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
     trained = json.loads(capsys.readouterr().out)
@@ -441,6 +456,9 @@ def test_promote_without_force_exits_2(db_path, capsys):
 
 
 def test_train_unknown_pack_exits_2(db_path, capsys):
+    from unforgettable.store.records import ensure_default_namespace
+
+    ensure_default_namespace(db_path=db_path)
     assert (
         main(
             [
@@ -462,7 +480,7 @@ def test_train_unknown_pack_exits_2(db_path, capsys):
 
 def test_rollback_works(db_path, capsys):
     _voted_procedures(db_path)
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     capsys.readouterr()
     assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
     trained = json.loads(capsys.readouterr().out)
@@ -496,7 +514,7 @@ def test_train_adapters_rollback_promote_help_include_db(capsys):
 def test_eval_without_holdout_gold_exits_1(db_path, capsys, monkeypatch):
     monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
     _voted_procedures(db_path, n=5)
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     capsys.readouterr()
     assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
     trained = json.loads(capsys.readouterr().out)
@@ -509,7 +527,7 @@ def test_eval_without_holdout_gold_exits_1(db_path, capsys, monkeypatch):
 def test_eval_then_promote_without_force(db_path, capsys, monkeypatch):
     monkeypatch.setattr("unforgettable.sidecar.pack.HOLDOUT_MIN_EPISODES", 1)
     _voted_procedures(db_path, n=5)
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     packed = json.loads(capsys.readouterr().out)
     assert packed["n_holdout"] >= 1
     assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
@@ -553,7 +571,7 @@ def test_train_default_recipe_is_distill_when_heavy(db_path, capsys):
         retrieved_ids="",
         db_path=db_path,
     )
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     capsys.readouterr()
     assert main(["train", "--backend", "fake", "--db", str(db_path)]) == 0
     trained = json.loads(capsys.readouterr().out)
@@ -573,7 +591,7 @@ def test_train_honors_explicit_recipe_when_heavy(db_path, capsys):
         retrieved_ids="",
         db_path=db_path,
     )
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     capsys.readouterr()
     assert main(
         ["train", "--backend", "fake", "--recipe", "sft", "--db", str(db_path)]
@@ -584,7 +602,7 @@ def test_train_honors_explicit_recipe_when_heavy(db_path, capsys):
 
 def test_train_preference_without_pairs_exits_2(db_path, capsys):
     _voted_procedures(db_path)
-    assert main(["pack", "--db", str(db_path)]) == 0
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
     capsys.readouterr()
     assert (
         main(

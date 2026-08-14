@@ -17,9 +17,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from unforgettable.constants import DEFAULT_NAMESPACE_ID
+from unforgettable.constants import DEFAULT_NAMESPACE_ID, EVENT_SUMMARY_CHARS
 from unforgettable.host import OnChunk, ToolTrace
 from unforgettable.rims.types import ContactMode
+
+
+def _clip_event_summary(summary: str, limit: int = EVENT_SUMMARY_CHARS) -> str:
+    text = (summary or "").strip()
+    if not text:
+        return ""
+    line = text.splitlines()[0].strip()
+    if len(line) <= limit:
+        return line
+    return line[:limit].rstrip() + "..."
 
 
 @dataclass
@@ -81,6 +91,7 @@ class EpisodeState:
         self.contact = "world"
 
     def note_failure(self, summary: str, contact: str) -> None:
+        summary = _clip_event_summary(summary)
         if contact == "world":
             self.had_world_failure = True
         self.last_fail_summary = summary or self.last_fail_summary
@@ -91,6 +102,7 @@ class EpisodeState:
         )
 
     def note_success(self, summary: str, contact: str) -> None:
+        summary = _clip_event_summary(summary)
         if self.had_world_failure or any(
             ev.get("kind") == "failure" for ev in self.trace_events
         ):

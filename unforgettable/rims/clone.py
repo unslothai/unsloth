@@ -32,11 +32,28 @@ def _ignore(directory: str, names: list[str]) -> set[str]:
 
 def clone_tree(src: str | Path, dst: str | Path) -> Path:
     source = Path(src).resolve()
-    dest = Path(dst).resolve()
+    dest = Path(dst)
+    if dest.exists() or dest.is_symlink():
+        dest = dest.resolve()
+    else:
+        dest = dest.expanduser()
+        if dest.parent.exists() or dest.parent.is_symlink():
+            dest = dest.parent.resolve() / dest.name
+        else:
+            dest = dest.resolve()
     if source == dest:
         raise ValueError("clone_tree refuses to copy a tree onto itself")
+    try:
+        dest.relative_to(source)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("clone_tree refuses to copy a tree into itself")
     if not source.is_dir():
         raise FileNotFoundError(f"world sandbox missing: {source}")
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, dest, dirs_exist_ok=True, ignore=_ignore)
+    # Copy symlink nodes; do not dereference a world link into ~/.ssh or /etc.
+    shutil.copytree(
+        source, dest, dirs_exist_ok=True, ignore=_ignore, symlinks=True
+    )
     return dest

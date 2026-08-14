@@ -49,6 +49,7 @@ from unforgettable.store.records import (
     insert_retrieve_use,
     insert_rollout,
     list_records,
+    log_admission,
 )
 from unforgettable.store.trajectories import format_trajectories, retrieve_trajectories
 from unforgettable.throne.policy import Action, decide, policy_from_request
@@ -466,9 +467,23 @@ def _write_draft(
         record_id=rid,
         bookkeeping=bool(draft.get("bookkeeping")),
         force_proposed_reason=review_reason or None,
+        persist_log=False,
         db_path=db_path,
     )
-    return insert_record(
+    if decision.status == "rejected":
+        log_admission(
+            record_id=rid,
+            decision=decision.status,
+            reason=decision.reason,
+            db_path=db_path,
+        )
+        return {
+            "id": rid,
+            "kind": draft["kind"],
+            "status": decision.status,
+            "title": draft["title"],
+        }
+    rec = insert_record(
         kind=draft["kind"],
         title=draft["title"],
         body=draft["body"],
@@ -476,10 +491,17 @@ def _write_draft(
         status=decision.status,
         namespace_id=namespace,
         source_episode_id=state.episode_id,
-        contact_tag=draft["provenance"],
+        contact_tag=state.contact,
         record_id=rid,
         db_path=db_path,
     )
+    log_admission(
+        record_id=rec["id"],
+        decision=decision.status,
+        reason=decision.reason,
+        db_path=db_path,
+    )
+    return rec
 
 
 def _write_rollouts(state: EpisodeState, *, source_record_id: str, db_path: str) -> None:

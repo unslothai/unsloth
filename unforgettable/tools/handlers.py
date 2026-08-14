@@ -18,11 +18,24 @@ import json
 import uuid
 from typing import Any, Optional
 
-from unforgettable.agents.admissions import admit
-from unforgettable.agents.retriever import DEFAULT_MAX_RECORDS, DEFAULT_RETRIEVE_KINDS
-from unforgettable.constants import DEFAULT_NAMESPACE_ID
+from unforgettable.agents.admissions import AdmissionDecision, admit
+from unforgettable.agents.retriever import (
+    DEFAULT_MAX_RECORDS,
+    DEFAULT_RETRIEVE_KINDS,
+    DEFAULT_SNIPPET_CHARS,
+)
+from unforgettable.constants import (
+    DEFAULT_NAMESPACE_ID,
+    SEARCH_TOP_K_MAX,
+    TOOL_WRITE_KINDS,
+)
 from unforgettable.eyes.gate import review_write
-from unforgettable.loop.runtime import current_db_path, current_episode_id, current_namespace
+from unforgettable.loop.runtime import (
+    current_contact,
+    current_db_path,
+    current_episode_id,
+    current_namespace,
+)
 from unforgettable.store.compact import CompactReport, run_compact
 from unforgettable.store.compile import (
     get_compiled,
@@ -36,15 +49,47 @@ from unforgettable.store.records import (
     get_record,
     insert_record,
     list_records,
+    log_admission,
     supersede_record,
 )
 from unforgettable.store.search import search_records
 
 
+UNBOUND_DB_ERROR = "Error: no memory database bound for this episode"
+TOOL_HUMAN_PROVENANCE = "infer"
+EPISODE_KIND_REFUSED = "Error: episode rows are owned by the runner"
+REJECTED_SUPERSEDE_ERROR = "Error: cannot supersede a rejected record"
+NAMESPACE_DENY_ERROR = "Error: namespace denies writes"
+
+
+def _bound_db_path(db_path) -> Optional[Any]:
+    if db_path is not None:
+        return db_path
+    return current_db_path()
+
+
+def _coerce_tool_provenance(claimed: str) -> str:
+    """Tools cannot self-certify human, and sim contact cannot mint world."""
+    provenance = str(claimed or "")
+    if provenance == "human":
+        return TOOL_HUMAN_PROVENANCE
+    if current_contact() == "sim" and provenance == "world":
+        return "sim"
+    return provenance
+
+
+def _tool_namespace() -> str:
+    return current_namespace() or DEFAULT_NAMESPACE_ID
+
+
 def dispatch(name: str, arguments: dict[str, Any] | None, *, db_path=None) -> str:
     args = arguments or {}
-    path = db_path if db_path is not None else current_db_path()
-    name = name.replace(".", "_")
+    name = (name or "").replace(".", "_")
+    if name == "rims_enter_sim":
+        return "enter_sim requested"
+    path = _bound_db_path(db_path)
+    if path is None:
+        return UNBOUND_DB_ERROR
     if name == "memory_write":
         return _write(args, db_path=path)
     if name == "memory_search":
@@ -59,8 +104,6 @@ def dispatch(name: str, arguments: dict[str, Any] | None, *, db_path=None) -> st
         return _compact(args, db_path=path)
     if name == "memory_compile":
         return _compile(args, db_path=path)
-    if name == "rims_enter_sim":
-        return "enter_sim requested"
     return f"Error: unknown memory tool '{name}'"
 
 
@@ -69,10 +112,14 @@ def _write(args: dict[str, Any], *, db_path) -> str:
         kind = str(args["kind"])
         title = str(args["title"])
         body = str(args["body"])
-        provenance = str(args["provenance"])
+        provenance = _coerce_tool_provenance(str(args["provenance"]))
     except KeyError as exc:
         return f"Error: missing field {exc}"
-    namespace = str(args.get("namespace") or current_namespace() or DEFAULT_NAMESPACE_ID)
+    if kind == "episode":
+        return EPISODE_KIND_REFUSED
+    if kind not in TOOL_WRITE_KINDS:
+        return f"Error: unknown kind {kind!r}"
+    namespace = _tool_namespace()
     review_reason = review_write(
         kind=kind,
         title=title,
@@ -89,7 +136,16 @@ def _write(args: dict[str, Any], *, db_path) -> str:
         record_id=rid,
         db_path=db_path,
         force_proposed_reason=review_reason or None,
+        persist_log=False,
     )
+    if decision.status == "rejected":
+        log_admission(
+            record_id=rid,
+            decision=decision.status,
+            reason=decision.reason,
+            db_path=db_path,
+        )
+        return NAMESPACE_DENY_ERROR
     try:
         rec = insert_record(
             kind=kind,
@@ -99,12 +155,18 @@ def _write(args: dict[str, Any], *, db_path) -> str:
             status=decision.status,
             namespace_id=namespace,
             source_episode_id=current_episode_id(),
-            contact_tag=provenance,
+            contact_tag=current_contact(),
             record_id=rid,
             db_path=db_path,
         )
     except ValueError as exc:
         return f"Error: {exc}"
+    log_admission(
+        record_id=rec["id"],
+        decision=decision.status,
+        reason=decision.reason,
+        db_path=db_path,
+    )
     return json.dumps(
         {"id": rec["id"], "status": rec["status"], "admission": decision.reason},
         indent=2,
@@ -115,23 +177,29 @@ def _search(args: dict[str, Any], *, db_path) -> str:
     query = str(args.get("query") or "").strip()
     if not query:
         return "Error: query is empty."
-    top_k = int(args.get("top_k") or DEFAULT_MAX_RECORDS)
-    kinds = DEFAULT_RETRIEVE_KINDS
+    try:
+        top_k = int(args.get("top_k") or DEFAULT_MAX_RECORDS)
+    except (TypeError, ValueError):
+        top_k = DEFAULT_MAX_RECORDS
+    top_k = max(1, min(top_k, SEARCH_TOP_K_MAX))
+    kinds = list(DEFAULT_RETRIEVE_KINDS)
     raw_kinds = args.get("kinds")
     if isinstance(raw_kinds, (list, tuple)):
         kinds = [str(part).strip() for part in raw_kinds if str(part).strip()]
     elif raw_kinds:
         kinds = [part.strip() for part in str(raw_kinds).split(",") if part.strip()]
+    kinds = [kind for kind in kinds if kind != "episode"]
+    if not kinds:
+        kinds = list(DEFAULT_RETRIEVE_KINDS)
     provenances = None
     if args.get("provenance"):
         provenances = [str(args["provenance"])]
-    namespace = current_namespace() or None
     hits = search_records(
         query,
         top_k=top_k,
         kinds=kinds,
         provenances=provenances,
-        namespace_id=namespace if namespace != DEFAULT_NAMESPACE_ID else None,
+        namespace_id=_tool_namespace(),
         db_path=db_path,
     )
     if not hits:
@@ -144,7 +212,7 @@ def _search(args: dict[str, Any], *, db_path) -> str:
                 "title": h["title"],
                 "provenance": h["provenance"],
                 "status": h["status"],
-                "body": h["body"],
+                "body": (h.get("body") or "")[:DEFAULT_SNIPPET_CHARS],
             }
             for h in hits
         ],
@@ -168,12 +236,14 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
     old = get_record(rid, db_path=db_path)
     if old is None:
         return f"Error: no record {rid}"
+    if old["status"] == "rejected":
+        return REJECTED_SUPERSEDE_ERROR
     new_title = args.get("title")
     if new_title is None:
         new_title = old["title"]
     else:
         new_title = str(new_title)
-    new_prov = str(args.get("provenance") or old["provenance"])
+    new_prov = _coerce_tool_provenance(str(args.get("provenance") or old["provenance"]))
     review_reason = review_write(
         kind=old["kind"],
         title=new_title,
@@ -182,15 +252,27 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
         db_path=db_path,
     )
     new_id = str(uuid.uuid4())
+    # Supersede corrects; it must not promote a proposed extract to active.
     decision = admit(
         kind=old["kind"],
         provenance=new_prov,
-        explicit=True,
+        explicit=old["status"] == "active",
         namespace_id=old["namespace_id"],
         record_id=new_id,
         db_path=db_path,
         force_proposed_reason=review_reason or None,
+        persist_log=False,
     )
+    if old["status"] != "active" and decision.status == "active":
+        decision = AdmissionDecision("proposed", "supersede does not promote")
+    if decision.status == "rejected":
+        log_admission(
+            record_id=new_id,
+            decision=decision.status,
+            reason=decision.reason,
+            db_path=db_path,
+        )
+        return NAMESPACE_DENY_ERROR
     try:
         rec = supersede_record(
             rid,
@@ -200,10 +282,17 @@ def _supersede(args: dict[str, Any], *, db_path) -> str:
             source_episode_id=current_episode_id(),
             status=decision.status,
             new_id=new_id,
+            contact_tag=current_contact(),
             db_path=db_path,
         )
     except (KeyError, ValueError) as exc:
         return f"Error: {exc}"
+    log_admission(
+        record_id=rec["id"],
+        decision=decision.status,
+        reason=decision.reason,
+        db_path=db_path,
+    )
     return json.dumps(
         {
             "id": rec["id"],
@@ -279,7 +368,8 @@ def _compile_one(rid: str, *, dry_run: bool, db_path) -> str:
         return f"Error: no record {rid}"
     hits = procedure_hits(rid, db_path=db_path)
     existing = get_compiled(rid, db_path=db_path)
-    eligible = is_compile_candidate(rec, hits=hits, explicit=True)
+    # Tools cannot skip the two world-pass hit rule; operator CLI still can.
+    eligible = is_compile_candidate(rec, hits=hits, explicit=False)
     if dry_run:
         return json.dumps(
             {
@@ -293,7 +383,7 @@ def _compile_one(rid: str, *, dry_run: bool, db_path) -> str:
             indent=2,
         )
     try:
-        row = pin_compiled(rid, explicit=True, db_path=db_path)
+        row = pin_compiled(rid, explicit=False, db_path=db_path)
     except ValueError as exc:
         return f"Error: {exc}"
     return json.dumps(

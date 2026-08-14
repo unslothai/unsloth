@@ -71,9 +71,15 @@ def _should_llm_extract(state: "EpisodeState") -> bool:
     return any(event.get("kind") == "failure" for event in state.trace_events)
 
 
+EXTRACT_RESULT_CHARS = 240
+
+
 def _render_trace(trace: ToolTrace) -> str:
-    args = json.dumps(trace.arguments, default=str, ensure_ascii=False)
-    return f"{trace.name} {args} {trace.result}"
+    # Name + clipped result only. Arguments often hold secrets / env dumps.
+    result = (trace.result or "").replace("\n", " ").strip()
+    if len(result) > EXTRACT_RESULT_CHARS:
+        result = result[:EXTRACT_RESULT_CHARS].rstrip() + "..."
+    return f"{trace.name} {result}".strip()
 
 
 def _windowed_trace_text(traces: list[ToolTrace]) -> str:
@@ -237,11 +243,12 @@ def from_episode(state: "EpisodeState") -> list[dict[str, Any]]:
         provenance = "mixed"
     else:
         provenance = fail_contact
-    title = "Error then fix"
+    fail_summary = (fail.get("summary") or "failed action").strip()
+    title = f"Error then fix: {fail_summary}"[:EXTRACT_TITLE_CAP]
     body = (
-        f"Tried: {fail.get('summary') or 'failed action'}\n"
+        f"Tried: {fail_summary}\n"
         f"Then: {success.get('summary') or 'later succeeded'}"
-    )
+    )[:EXTRACT_BODY_CAP]
     return [
         {
             "kind": "error_fix",

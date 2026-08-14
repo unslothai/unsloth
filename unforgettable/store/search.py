@@ -17,7 +17,11 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable, Optional
 
-from unforgettable.constants import ACTIVE_RETRIEVE_STATUSES, PROVENANCE_WEIGHT
+from unforgettable.constants import (
+    ACTIVE_RETRIEVE_STATUSES,
+    PROVENANCE_WEIGHT,
+    SEARCH_FTS_SCAN_CAP,
+)
 
 from .db import get_connection
 from .records import get_record
@@ -85,9 +89,11 @@ def search_records(
     wanted_prov = set(provenances) if provenances is not None else None
     conn = get_connection(db_path)
     try:
+        scan_cap = min(max(int(top_k) * 8, int(top_k)), SEARCH_FTS_SCAN_CAP)
         rows = conn.execute(
-            "SELECT record_id, rank FROM record_fts WHERE record_fts MATCH ? ORDER BY rank",
-            (match,),
+            "SELECT record_id, rank FROM record_fts WHERE record_fts MATCH ? "
+            "ORDER BY rank LIMIT ?",
+            (match, scan_cap),
         ).fetchall()
     finally:
         conn.close()

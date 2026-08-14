@@ -21,7 +21,7 @@ Default motion (the “act path”):
 1. Act in the **world** (the project sandbox).
 2. On a recognized failure, clone the tree into a **sim** and rehearse (run tests when a command is known).
 3. Retry the world with a repaired-plan note. Confirm-before-retry is available; it is off unless stakes are high or permission mode is `ask`.
-4. Write lessons through admission. Extract stays **proposed** until you `admit` it. Explicit `memory_write` can stick immediately.
+4. Write lessons through admission. Extract stays **proposed** until you `admit` it. Explicit `memory_write` of a trusted world/mixed fact can stick immediately; tools cannot claim `human`, sim contact cannot claim `world`, and directives stay proposed until you admit them.
 
 World remains the judge of record. Sim-only dynamics are not auto-promoted to world truth.
 
@@ -61,7 +61,7 @@ Optional extras on the same request (also first-class fields on Studio’s chat 
 | `adapter_id` | Attach a trained sidecar adapter and shrink standing playbooks it already learned |
 | `skip_standing` | Skip compiled standing inject |
 
-The inner model can call memory tools. Durable facts must go through those tools — chat history is not B.
+The inner model can call memory tools. Durable facts must go through those tools — chat history is not B, and a successful generate is stored as a short grade, not the full completion.
 
 | Tool | Role |
 |------|------|
@@ -89,8 +89,8 @@ python -m unforgettable get <id>
 python -m unforgettable admissions --limit 50
 python -m unforgettable admit <id>          # promote a proposed extract
 python -m unforgettable reject <id>
-python -m unforgettable compact --dry-run   # first compact on a live db
-python -m unforgettable compact
+python -m unforgettable compact             # preview (default)
+python -m unforgettable compact --apply     # mutate
 python -m unforgettable compiled
 python -m unforgettable load                # standing / retrieve / traj chars
 python -m unforgettable rollouts --contact sim
@@ -105,7 +105,7 @@ Packs are built from **admitted** `procedure` / `error_fix` bodies. Episode tran
 
 ```bash
 python -m unforgettable pack --dry-run
-python -m unforgettable pack
+python -m unforgettable pack --apply
 python -m unforgettable train --backend fake          # CI / wiring
 python -m unforgettable train --backend unsloth --base <model>
 python -m unforgettable eval <adapter-id>

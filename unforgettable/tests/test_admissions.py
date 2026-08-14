@@ -100,3 +100,27 @@ def test_sim_procedure_not_auto_promoted(db_path):
     ensure_default_namespace(db_path=db_path)
     decision = admit(kind="procedure", provenance="sim", explicit=True, db_path=db_path)
     assert decision.status == "proposed"
+
+
+def test_infer_directive_stays_proposed(db_path):
+    ensure_default_namespace(db_path=db_path)
+    decision = admit(
+        kind="directive", provenance="infer", explicit=True, db_path=db_path
+    )
+    assert decision.status == "proposed"
+
+
+def test_world_directive_stays_proposed(db_path):
+    ensure_default_namespace(db_path=db_path)
+    decision = admit(
+        kind="directive", provenance="world", explicit=True, db_path=db_path
+    )
+    assert decision.status == "proposed"
+
+
+def test_human_directive_is_admitted(db_path):
+    ensure_default_namespace(db_path=db_path)
+    decision = admit(
+        kind="directive", provenance="human", explicit=True, db_path=db_path
+    )
+    assert decision.status == "active"

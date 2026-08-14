@@ -25,7 +25,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from unforgettable.constants import KINDS, STATUSES
+from unforgettable.agents.retriever import DEFAULT_RETRIEVE_KINDS
+from unforgettable.constants import ADMIT_FROM_STATUSES, KINDS, STATUSES
 from unforgettable.eyes.gate import contradictions
 from unforgettable.eyes.probes import list_probes, run_probes
 from unforgettable.store.compact import run_compact
@@ -76,6 +77,11 @@ UNSLOTH_BASE_REQUIRED = "--base is required when --backend is unsloth"
 CLI_ADMIT_REASON = "cli admit"
 CLI_REJECT_REASON = "cli reject"
 UNKNOWN_ID_EXIT = 2
+APPLY_CONFLICT_EXIT = 2
+MISSING_DB_EXIT = 2
+ADMIT_STATUS_REFUSED = "admit refused: status is {status} (use --force)"
+APPLY_CONFLICT = "cannot combine --apply and --dry-run"
+MISSING_DB = "memory.db not found: {path}"
 STATUS_ALL = "all"
 
 STUDIO_DB_HELP = (
@@ -83,10 +89,10 @@ STUDIO_DB_HELP = (
     f"(or set {DB_ENV_NAME})."
 )
 COMPACT_FIRST_DRY_RUN_HELP = (
-    "First compact on an existing $STUDIO_HOME/memory/memory.db should be "
-    "compact --dry-run."
+    "compact previews by default; compact --apply mutates "
+    "$STUDIO_HOME/memory/memory.db."
 )
-PACK_FIRST_DRY_RUN_HELP = "First pack is inspectable with --dry-run."
+PACK_FIRST_DRY_RUN_HELP = "pack previews by default; pack --apply inserts."
 
 
 def resolve_db_path(explicit: str | None) -> Path:
@@ -187,10 +193,13 @@ def _cmd_path(_args: argparse.Namespace, db_path: Path) -> int:
 
 
 def _cmd_search(args: argparse.Namespace, db_path: Path) -> int:
+    kinds = _kind_filter(args.kind)
+    if kinds is None:
+        kinds = list(DEFAULT_RETRIEVE_KINDS)
     hits = search_records(
         args.query,
         top_k=args.top,
-        kinds=_kind_filter(args.kind),
+        kinds=kinds,
         statuses=_search_statuses(args.status),
         db_path=db_path,
     )
@@ -247,6 +256,15 @@ def _cmd_contradictions(_args: argparse.Namespace, db_path: Path) -> int:
 
 
 def _cmd_admit(args: argparse.Namespace, db_path: Path) -> int:
+    existing = get_record(args.id, db_path=db_path)
+    if existing is None:
+        return _unknown_id(args.id)
+    if not args.force and existing["status"] not in ADMIT_FROM_STATUSES:
+        print(
+            ADMIT_STATUS_REFUSED.format(status=existing["status"]),
+            file=sys.stderr,
+        )
+        return UNKNOWN_ID_EXIT
     try:
         rec = set_record_status(
             args.id, "active", reason=CLI_ADMIT_REASON, db_path=db_path
@@ -267,8 +285,20 @@ def _cmd_reject(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _dry_run_from_apply(args: argparse.Namespace) -> bool | None:
+    apply = bool(getattr(args, "apply", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    if apply and dry_run:
+        return None
+    return not apply
+
+
 def _cmd_compact(args: argparse.Namespace, db_path: Path) -> int:
-    report = run_compact(db_path, dry_run=args.dry_run)
+    dry_run = _dry_run_from_apply(args)
+    if dry_run is None:
+        print(APPLY_CONFLICT, file=sys.stderr)
+        return APPLY_CONFLICT_EXIT
+    report = run_compact(db_path, dry_run=dry_run)
     _print_json(asdict(report))
     return 0
 
@@ -347,9 +377,15 @@ def _csv_count(value: str | None) -> int:
 
 
 def _cmd_pack(args: argparse.Namespace, db_path: Path) -> int:
+    dry_run = _dry_run_from_apply(args)
+    if dry_run is None:
+        print(APPLY_CONFLICT, file=sys.stderr)
+        return APPLY_CONFLICT_EXIT
+    if not dry_run:
+        print(f"using {db_path}", file=sys.stderr)
     report = pack_from_admitted_b(
         include_sim=args.include_sim,
-        dry_run=args.dry_run,
+        dry_run=dry_run,
         db_path=db_path,
     )
     _print_json(asdict(report))
@@ -386,6 +422,7 @@ def _clip_adapter_path(path: str) -> str:
 
 
 def _cmd_train(args: argparse.Namespace, db_path: Path) -> int:
+    print(f"using {db_path}", file=sys.stderr)
     backend_name = args.backend or _default_train_backend()
     if backend_name == "unsloth":
         if not (args.base or "").strip():
@@ -551,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     search_p = sub.add_parser(
         "search",
-        help="FTS search. Every kind unless --kind is set (includes episode).",
+        help="FTS search. Default kinds exclude episode (pass --kind episode).",
     )
     _add_db_flag(search_p)
     search_p.add_argument("query")
@@ -593,9 +630,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_db_flag(contra_p)
     contra_p.set_defaults(func=_cmd_contradictions)
 
-    admit_p = sub.add_parser("admit", help="Promote a record to active.")
+    admit_p = sub.add_parser("admit", help="Promote a proposed or deprecated record to active.")
     _add_db_flag(admit_p)
     admit_p.add_argument("id")
+    admit_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow admit from rejected, superseded, or already-active.",
+    )
     admit_p.set_defaults(func=_cmd_admit)
 
     reject_p = sub.add_parser("reject", help="Reject a record.")
@@ -606,10 +648,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     compact_p = sub.add_parser(
         "compact",
-        help="Hygiene pass (wet). " + COMPACT_FIRST_DRY_RUN_HELP,
+        help="Hygiene pass (preview). Pass --apply to mutate. "
+        + COMPACT_FIRST_DRY_RUN_HELP,
         description=(
             "Drop old empty proposed rows, deprecate duplicate notebook titles, "
-            "and fold long superseded chains. Mutates unless --dry-run. "
+            "and fold long superseded chains. Preview unless --apply. "
             + COMPACT_FIRST_DRY_RUN_HELP
         ),
         epilog=COMPACT_FIRST_DRY_RUN_HELP,
@@ -619,9 +662,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help=(
-            "Preview without mutating. "
+            "Preview without mutating (default). "
             + COMPACT_FIRST_DRY_RUN_HELP
         ),
+    )
+    compact_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Mutate memory.db. Refused when combined with --dry-run.",
     )
     compact_p.set_defaults(func=_cmd_compact)
 
@@ -693,10 +741,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     pack_p = sub.add_parser(
         "pack",
-        help="Build a PEFT pack from admitted B (wet). " + PACK_FIRST_DRY_RUN_HELP,
+        help="Build a PEFT pack from admitted B (preview). Pass --apply to insert. "
+        + PACK_FIRST_DRY_RUN_HELP,
         description=(
             "Pack admitted procedure/error_fix bodies. World-pass traces vote; "
-            "they are not text sources. Mutates unless --dry-run. "
+            "they are not text sources. Preview unless --apply. "
             + PACK_FIRST_DRY_RUN_HELP
         ),
         epilog=PACK_FIRST_DRY_RUN_HELP,
@@ -705,7 +754,12 @@ def build_parser() -> argparse.ArgumentParser:
     pack_p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview without inserting. " + PACK_FIRST_DRY_RUN_HELP,
+        help="Preview without inserting (default). " + PACK_FIRST_DRY_RUN_HELP,
+    )
+    pack_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Insert a pack. Refused when combined with --dry-run.",
     )
     pack_p.add_argument(
         "--include-sim",
@@ -799,8 +853,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_NEED_EXISTING_DB = frozenset({"pack", "train", "eval", "promote", "rollback"})
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     db_path = resolve_db_path(args.db)
+    needs_file = args.command in _NEED_EXISTING_DB or (
+        args.command == "compact" and bool(getattr(args, "apply", False))
+    )
+    if needs_file and not db_path.expanduser().is_file():
+        print(MISSING_DB.format(path=db_path), file=sys.stderr)
+        return MISSING_DB_EXIT
     return args.func(args, db_path)
