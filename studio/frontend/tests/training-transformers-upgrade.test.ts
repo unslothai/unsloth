@@ -79,7 +79,7 @@ test("declining the install abandons the start instead of spawning a doomed run"
   assert.equal(outcome.forces16Bit, false);
   // The worker's own wording, so the message names the real cause.
   assert.match(String(outcome.error), /is not supported yet/);
-  assert.match(String(outcome.error), new RegExp(MODEL.replace(/\//g, "\\/")));
+  assert.ok(String(outcome.error).includes(MODEL));
 });
 
 test("a model shipping its own code keeps the custom-code way out", async () => {
