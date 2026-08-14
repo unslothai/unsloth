@@ -5111,6 +5111,11 @@ export function createOpenAIStreamAdapter(
                     // non-streaming client-tool passthrough retry, which this
                     // streaming server-side loop does not perform.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // This branch runs the tools here, so say so by name:
+                    // enabled_tools ["web_search"] is byte-identical to what an
+                    // older bundle sent meaning hosted search, so without this
+                    // flag Search silently stayed hosted.
+                    run_tools_locally: true,
                     ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
                     ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
                     ...(ragEnabled || projectRagEnabled

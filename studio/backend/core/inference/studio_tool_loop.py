@@ -21,6 +21,26 @@ bounded buffer the client-tool passthrough uses: only a trailing partial-signal
 window or a suspected tool block is ever withheld, and a block that cannot
 become a declared call flushes verbatim. Nothing here invents a cap on how much
 model output may be held.
+
+Origins. This file is assembled out of four contributor PRs rather than written
+from scratch, and the squash merge of #8665 did not carry their authorship, so
+it is recorded here:
+
+* #8626 (khalidejaz) -- the registry capability and the hidden-entry exposure,
+  including the ``provider_runs_local_tools()`` name ``providers.py`` still
+  uses.
+* #8630 (mahiatlinux) -- most of the loop internals below: the user-turn append,
+  the tool-stream advance and drain, usage merging, the approval flush delay,
+  the budget-exhausted nudge, and the streamed tool-name rule that llama-server
+  forced. Also the browser testing against a control worktree that caught a
+  truncated turn discarding a healed call along with the text describing it.
+* #7805 (Etherll) -- the hosted-provider reach.
+* #7330 (Souravrajvi0) -- the original OpenAI-compatible framing.
+
+Two ideas from those PRs were deliberately not taken, which is worth knowing
+before anyone re-derives them: the per-connection opt-in from #8630 and the
+``studio_tool_execution`` column from #7805. #8665 shipped a static disclosure
+instead, while widening the capability from four self-hosted types to thirteen.
 """
 
 from __future__ import annotations
