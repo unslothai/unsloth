@@ -138,7 +138,12 @@ def _load_route_module(name: str, relative_path: str):
     return module
 
 
-def _run_route_load(route, request, *, args_origin = None):
+def _run_route_load(
+    route,
+    request,
+    *,
+    args_origin = None,
+):
     fastapi_request = SimpleNamespace(
         app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
     )
@@ -716,9 +721,7 @@ class TestLoadHubDownloadExclusion:
             ),
             patch.object(route, "_active_gguf_intent", return_value = object()),
         ):
-            result = _run_route_load(
-                route, request, args_origin = route.LlamaArgsOrigin.UI_REQUEST
-            )
+            result = _run_route_load(route, request, args_origin = route.LlamaArgsOrigin.UI_REQUEST)
 
         assert result is response
 

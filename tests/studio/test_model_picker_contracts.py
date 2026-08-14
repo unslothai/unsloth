@@ -1974,9 +1974,7 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     # The backend applies the same model's override by the same alias, which is why the
     # echo the adoption gate compares against carries the saved count at all.
     route = _read_backend("routes/inference.py")
-    overrides = route.split("def _fresh_load_kwargs()", 1)[1].split(
-        "# First admission check", 1
-    )[0]
+    overrides = route.split("def _fresh_load_kwargs()", 1)[1].split("# First admission check", 1)[0]
     assert "override_id = override_id," in overrides
     assert "file_variant = file_variant," in overrides
     assert "override_id," in overrides

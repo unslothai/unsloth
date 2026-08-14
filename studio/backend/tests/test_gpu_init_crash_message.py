@@ -1395,9 +1395,7 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
         SimpleNamespace(from_identifier = lambda **_kwargs: config),
     )
     monkeypatch.setattr(route, "_hf_offline_if_unreachable_for", lambda *_args: nullcontext())
-    monkeypatch.setattr(
-        route, "_resolve_inherited_extra_args", lambda *_args, **_kwargs: None
-    )
+    monkeypatch.setattr(route, "_resolve_inherited_extra_args", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(route, "_prepare_load_placement", _prepare_load_placement)
     monkeypatch.setattr(route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent)
     monkeypatch.setattr(route, "_guard_chat_load_against_training", lambda *_args, **_kwargs: None)
