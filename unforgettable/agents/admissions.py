@@ -1,0 +1,62 @@
+# Copyright 2026-present the Unforgettable contributors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from unforgettable.constants import DEFAULT_NAMESPACE_ID
+from unforgettable.store.records import ensure_default_namespace, get_namespace, log_admission
+
+
+@dataclass(frozen=True)
+class AdmissionDecision:
+    status: str
+    reason: str
+
+
+def admit(
+    *,
+    kind: str,
+    provenance: str,
+    explicit: bool,
+    namespace_id: str = DEFAULT_NAMESPACE_ID,
+    record_id: str | None = None,
+    db_path=None,
+) -> AdmissionDecision:
+    """Decide status before insert. Logs every decision."""
+    ensure_default_namespace(db_path=db_path)
+    ns = get_namespace(namespace_id, db_path=db_path)
+    mode = (ns or {}).get("admission") or "auto"
+
+    if mode == "deny":
+        decision = AdmissionDecision("rejected", "namespace denies writes")
+    elif mode == "propose":
+        decision = AdmissionDecision("proposed", "namespace is propose-only")
+    elif kind == "claim" and provenance == "sim":
+        decision = AdmissionDecision("proposed", "sim-only claims are not auto-promoted")
+    elif not explicit:
+        decision = AdmissionDecision("proposed", "auto-extract is proposed until eyes confirm")
+    elif provenance == "infer" and kind != "directive":
+        decision = AdmissionDecision("proposed", "infer provenance stays proposed")
+    else:
+        decision = AdmissionDecision("active", "explicit write admitted")
+
+    log_admission(
+        record_id=record_id,
+        decision=decision.status,
+        reason=decision.reason,
+        db_path=db_path,
+    )
+    return decision

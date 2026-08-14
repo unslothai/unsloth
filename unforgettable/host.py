@@ -1,0 +1,69 @@
+# Copyright 2026-present the Unforgettable contributors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Host protocol: the only contract a UI / Studio adapter must implement."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Optional, Protocol
+
+
+OnChunk = Callable[[bytes], Awaitable[None] | None]
+
+
+@dataclass
+class GenerateRequest:
+    """Narrow DTO. Not a Studio ChatCompletionRequest."""
+
+    messages: list[dict[str, Any]]
+    session_id: str
+    thread_id: Optional[str] = None
+    stream: bool = True
+    extra_tools: list[dict[str, Any]] = field(default_factory=list)
+    inner_model: Optional[str] = None
+    permission_mode: Optional[str] = None
+    on_chunk: Optional[OnChunk] = None
+
+
+@dataclass
+class ToolTrace:
+    name: str
+    arguments: dict[str, Any]
+    result: str
+    contact: str  # world | sim
+
+
+@dataclass
+class GenerateResult:
+    text: str
+    tool_traces: list[ToolTrace] = field(default_factory=list)
+    finished: bool = True
+
+
+class Host(Protocol):
+    def memory_db_path(self) -> Path: ...
+
+    def world_session_id(self, request: Any) -> str: ...
+
+    def create_sim_session(self, episode_id: str) -> str: ...
+
+    def sandbox_path(self, session_id: str) -> Path: ...
+
+    def remove_sim_session(self, session_id: str) -> None: ...
+
+    async def generate(self, req: GenerateRequest) -> GenerateResult:
+        """Run one inner-wheel pass. session_id selects the active rim sandbox."""
+        ...

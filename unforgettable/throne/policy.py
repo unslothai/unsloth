@@ -1,0 +1,62 @@
+# Copyright 2026-present the Unforgettable contributors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""MemoryWheels §6 default act/sim policy."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from unforgettable.loop.context import EpisodeState
+
+
+class Action:
+    WORLD_ACT = "world_act"
+    ENTER_SIM = "enter_sim"
+    CONTINUE_SIM = "continue_sim"
+    RETRY_WORLD = "retry_world"
+    ESCALATE = "escalate"
+    FINISH = "finish"
+
+
+@dataclass(frozen=True)
+class Policy:
+    max_clones: int = 1
+    max_sim_turns: int = 8
+
+
+def default_policy() -> Policy:
+    return Policy()
+
+
+def decide(event: str, state: "EpisodeState", policy: Policy | None = None) -> str:
+    """event: failure | success | finished."""
+    pol = policy or default_policy()
+    mode = state.contact
+    if event == "finished":
+        return Action.FINISH
+    if event == "success":
+        if mode == "sim" and state.had_world_failure:
+            return Action.RETRY_WORLD
+        return Action.FINISH
+    # failure
+    if mode == "world":
+        if state.clone_count >= pol.max_clones:
+            return Action.ESCALATE
+        return Action.ENTER_SIM
+    if state.sim_turns >= pol.max_sim_turns:
+        return Action.ESCALATE
+    return Action.CONTINUE_SIM

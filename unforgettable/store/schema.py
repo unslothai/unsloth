@@ -1,0 +1,85 @@
+# Copyright 2026-present the Unforgettable contributors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""B-store schema. Vec0 is reserved for later; FTS5 is required."""
+
+from __future__ import annotations
+
+import sqlite3
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS namespaces (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            admission TEXT NOT NULL DEFAULT 'auto',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS records (
+            id TEXT NOT NULL PRIMARY KEY,
+            namespace_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            provenance TEXT NOT NULL,
+            confidence REAL,
+            supersedes_id TEXT,
+            source_episode_id TEXT,
+            contact_tag TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (namespace_id) REFERENCES namespaces(id),
+            FOREIGN KEY (supersedes_id) REFERENCES records(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_records_namespace ON records(namespace_id);
+        CREATE INDEX IF NOT EXISTS idx_records_status ON records(status);
+        CREATE INDEX IF NOT EXISTS idx_records_kind ON records(kind);
+        CREATE INDEX IF NOT EXISTS idx_records_provenance ON records(provenance);
+
+        CREATE TABLE IF NOT EXISTS admissions_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_id TEXT,
+            decision TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        -- FTS5 over title+body. record_id is stored so we can join back.
+        -- sqlite-vec / a records_vec table is a later addition, not a Phase 1 dep.
+        CREATE VIRTUAL TABLE IF NOT EXISTS record_fts USING fts5(
+            title,
+            body,
+            record_id UNINDEXED
+        );
+        """
+    )
+    _add_missing_columns(conn)
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(records)")}
+    extras = {
+        "confidence": "REAL",
+        "supersedes_id": "TEXT",
+        "source_episode_id": "TEXT",
+        "contact_tag": "TEXT",
+    }
+    for name, decl in extras.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE records ADD COLUMN {name} {decl}")
