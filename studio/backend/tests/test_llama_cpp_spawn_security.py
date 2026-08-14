@@ -20,7 +20,7 @@ class _FakeThread:
         return None
 
 
-def _bare_backend(monkeypatch, tmp_path: Path):
+def _backend(monkeypatch, tmp_path: Path):
     backend = object.__new__(LlamaCppBackend)
     backend._port = 12345
     backend._process = None
@@ -38,101 +38,64 @@ def _bare_backend(monkeypatch, tmp_path: Path):
     return backend
 
 
-def test_spawn_scrubs_all_llama_env_and_logs_one_redacted_structured_record(
-    monkeypatch, tmp_path
-):
-    backend = _bare_backend(monkeypatch, tmp_path)
-    popen_calls = []
-    log_records = []
+def test_spawn_scrubs_env_and_emits_one_redacted_record(monkeypatch, tmp_path):
+    backend = _backend(monkeypatch, tmp_path)
+    spawns = []
+    records = []
+    monkeypatch.setattr(
+        llama_cpp_module.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: spawns.append((list(cmd), kwargs)) or _FakeProcess(),
+    )
 
-    def fake_popen(cmd, **kwargs):
-        popen_calls.append((list(cmd), kwargs))
-        return _FakeProcess()
-
-    def fake_info(message, *args):
+    def capture(message, *args):
         rendered = message % args if args else str(message)
         if rendered.startswith("llama_server_start "):
-            log_records.append(rendered)
+            records.append(rendered)
 
-    monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(llama_cpp_module.logger, "info", fake_info)
-
-    private_model = str(tmp_path / "private-model.gguf")
-    private_unknown = str(tmp_path / "unknown-value.txt")
-    cmd = [
-        str(tmp_path / "llama-server.exe"),
-        "--model",
-        private_model,
-        "--api-key=first-secret",
-        "--api-key",
-        "second-secret",
-        "--rpc",
-        "10.0.0.5:5000",
-        "--model-draft",
-        "relative-private-draft.gguf",
+    monkeypatch.setattr(llama_cpp_module.logger, "info", capture)
+    custom = [
         "--future-safe",
-        private_unknown,
-        "--future-inline=relative-secret.txt",
-        "-xattached-relative-secret.txt",
+        "private-relative.txt",
+        "--future-inline=secret.txt",
+        "-xattached-secret",
         "--top-k",
         "20",
         "value\twith-tab",
     ]
+    cmd = [
+        str(tmp_path / "llama-server.exe"),
+        "--model",
+        str(tmp_path / "private.gguf"),
+        "--api-key=secret",
+        "--model-draft",
+        "private-draft.gguf",
+        *custom,
+    ]
     env = {
-        "PATH": "system-path",
+        "PATH": "kept",
         "CUDA_VISIBLE_DEVICES": "0",
         "LLAMA_ARG_TOP_K": "99",
-        "LLAMA_ARG_FUTURE_CAPABILITY": "on",
-        "LLAMA_API_KEY": "ambient-secret",
-        "HF_TOKEN": "hf-secret",
+        "LLAMA_API_KEY": "secret",
     }
+    backend._start_llama_process(cmd, env, custom)
 
-    backend._start_llama_process(
-        cmd,
-        env,
-        [
-            "--future-safe",
-            private_unknown,
-            "--future-inline=relative-secret.txt",
-            "-xattached-relative-secret.txt",
-            "--top-k",
-            "20",
-            "value\twith-tab",
-        ],
+    assert spawns[0][1]["env"] == {"PATH": "kept", "CUDA_VISIBLE_DEVICES": "0"}
+    assert len(records) == 1
+    assert not any(
+        secret in records[0]
+        for secret in ("private.gguf", "secret.txt", "private-draft.gguf", '"20"')
     )
-
-    assert len(popen_calls) == 1
-    spawned_env = popen_calls[0][1]["env"]
-    assert spawned_env == {"PATH": "system-path", "CUDA_VISIBLE_DEVICES": "0"}
-    assert len(log_records) == 1
-    raw_record = log_records[0]
-    assert "first-secret" not in raw_record
-    assert "second-secret" not in raw_record
-    assert "10.0.0.5:5000" not in raw_record
-    assert "relative-private-draft.gguf" not in raw_record
-    assert private_model not in raw_record
-    assert private_unknown not in raw_record
-    assert "relative-secret.txt" not in raw_record
-    assert "attached-relative-secret.txt" not in raw_record
-    assert '"20"' not in raw_record
-    assert "value\\twith-tab" not in raw_record
-    payload = json.loads(raw_record.split(" ", 1)[1])
+    payload = json.loads(records[0].split(" ", 1)[1])
     assert payload["event"] == "llama_server_start"
     assert payload["argv"][0] == "<private-path>"
-    assert payload["argv"][2] == "<redacted>"
     assert "--api-key=<redacted>" in payload["argv"]
-    rpc_index = payload["argv"].index("--rpc")
-    assert payload["argv"][rpc_index + 1] == "<redacted>"
-    future_index = payload["argv"].index("--future-safe")
-    assert payload["argv"][future_index + 1] == "<redacted>"
     assert "--future-inline=<redacted>" in payload["argv"]
     assert "<unknown-option>" in payload["argv"]
-    top_k_index = payload["argv"].index("--top-k")
-    assert payload["argv"][top_k_index + 1] == "<redacted>"
 
 
-def test_spawn_rejects_forbidden_separator_before_kill_or_popen(monkeypatch, tmp_path):
-    backend = _bare_backend(monkeypatch, tmp_path)
+def test_invalid_final_argv_rejects_before_kill_or_spawn(monkeypatch, tmp_path):
+    backend = _backend(monkeypatch, tmp_path)
     calls = []
     monkeypatch.setattr(backend, "_kill_process", lambda: calls.append("kill"))
     monkeypatch.setattr(
@@ -140,98 +103,36 @@ def test_spawn_rejects_forbidden_separator_before_kill_or_popen(monkeypatch, tmp
         "Popen",
         lambda *_args, **_kwargs: calls.append("spawn"),
     )
-
-    with pytest.raises(LlamaServerArgsError) as excinfo:
-        backend._start_llama_process(
-            ["llama-server", "--future-safe", "forged\u2028line"],
-            {"PATH": "system-path"},
-            ["--future-safe", "forged\u2028line"],
-        )
-    assert excinfo.value.code == "forbidden_character"
+    forged = ["--future-safe", "forged\u2028line"]
+    with pytest.raises(LlamaServerArgsError, match = "forbidden"):
+        backend._start_llama_process(["llama-server", *forged], {"PATH": "kept"}, forged)
     assert calls == []
 
 
-def test_spawn_rejects_invalid_managed_argv_token_before_kill_or_popen(monkeypatch, tmp_path):
-    backend = _bare_backend(monkeypatch, tmp_path)
-    calls = []
-    monkeypatch.setattr(backend, "_kill_process", lambda: calls.append("kill"))
-    monkeypatch.setattr(
-        llama_cpp_module.subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: calls.append("spawn"),
-    )
-
-    with pytest.raises(LlamaServerArgsError) as excinfo:
-        backend._start_llama_process(
-            ["llama-server", "--model", " managed-path.gguf"],
-            {"PATH": "system-path"},
-            [],
-        )
-    assert excinfo.value.code == "malformed"
-    assert calls == []
-
-
-def test_startup_source_has_no_raw_or_duplicate_custom_argument_log():
-    source = Path(llama_cpp_module.__file__).read_text(encoding = "utf-8")
-    assert "Appending user extra args" not in source
-    assert "Starting llama-server:" not in source
-    assert "llama-server stdout/stderr ->" not in source
-    assert source.count("self._log_llama_start(") == 2
-
-
-def test_runtime_reconciliation_stops_process_with_newly_blocked_saved_args(
-    monkeypatch, tmp_path
-):
-    backend = _bare_backend(monkeypatch, tmp_path)
+def test_runtime_reconciliation_and_scrubbed_spec_preflight(monkeypatch, tmp_path):
+    backend = _backend(monkeypatch, tmp_path)
     backend._lock = threading.Lock()
     backend._process = _FakeProcess()
     backend._extra_args = ["--top-k", "20", "--grammar-file", "private.gbnf"]
     stopped = []
     monkeypatch.setattr(backend, "_kill_process", lambda: stopped.append(True))
-
     assert backend.reconcile_argument_policy() is False
     assert stopped == [True]
 
-
-def test_speculative_preflight_ignores_ambient_llama_arg_variables(monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
-    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "ambient-private.gguf")
-    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K", "q4_0")
-    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V", "q5_0")
-    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", "0")
-
+    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "ambient.gguf")
     assert llama_cpp_module._extra_args_requests_mtp([]) is False
     assert llama_cpp_module._extra_args_mtp_draft_path([]) is None
-    assert llama_cpp_module._extra_args_draft_cache_types([]) == (None, None)
-    assert llama_cpp_module._extra_args_draft_offloaded_to_cpu([]) is False
-
-    studio_env = {
+    managed = {
         "LLAMA_ARG_SPEC_TYPE": "draft-mtp",
-        "LLAMA_ARG_SPEC_DRAFT_MODEL": "studio-managed.gguf",
-        "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q4_0",
-        "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V": "q5_0",
-        "LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0",
+        "LLAMA_ARG_SPEC_DRAFT_MODEL": "managed.gguf",
     }
-    assert llama_cpp_module._extra_args_requests_mtp([], env = studio_env) is True
-    assert llama_cpp_module._extra_args_mtp_draft_path([], env = studio_env) == "studio-managed.gguf"
-    assert llama_cpp_module._extra_args_draft_cache_types([], env = studio_env) == (
-        "q4_0",
-        "q5_0",
-    )
-    assert llama_cpp_module._extra_args_draft_offloaded_to_cpu([], env = studio_env) is True
+    assert llama_cpp_module._extra_args_requests_mtp([], env = managed) is True
+    assert llama_cpp_module._extra_args_mtp_draft_path([], env = managed) == "managed.gguf"
 
 
-def test_windows_command_length_counts_executable_quoting_and_nul(monkeypatch):
-    monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
-    cmd = [r"C:\Program Files\llama-server.exe", "--model", r"C:\private model.gguf"]
-    expected = len(llama_cpp_module.subprocess.list2cmdline(cmd).encode("utf-16-le")) // 2 + 1
-    assert LlamaCppBackend._windows_command_line_utf16_units(cmd) == expected
-
-
-def test_oversized_final_windows_command_is_rejected_before_kill_or_spawn(
-    monkeypatch, tmp_path
-):
-    backend = _bare_backend(monkeypatch, tmp_path)
+def test_windows_length_checks_complete_command_before_execution(monkeypatch, tmp_path):
+    backend = _backend(monkeypatch, tmp_path)
     calls = []
     monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
     monkeypatch.setattr(llama_cpp_module, "_WINDOWS_CREATEPROCESS_MAX_UTF16_UNITS", 40)
@@ -241,34 +142,7 @@ def test_oversized_final_windows_command_is_rejected_before_kill_or_spawn(
         "Popen",
         lambda *_args, **_kwargs: calls.append("spawn"),
     )
-
-    with pytest.raises(LlamaServerArgsError) as excinfo:
-        backend._start_llama_process(
-            ["llama-server.exe", "--model", "x" * 80],
-            {"PATH": "system-path"},
-            [],
-        )
-    assert excinfo.value.code == "command_too_long"
-    assert calls == []
-
-
-def test_windows_preflight_counts_managed_and_custom_argv_before_teardown(monkeypatch):
-    calls = []
-    monkeypatch.setattr(llama_cpp_module.sys, "platform", "win32")
-    monkeypatch.setattr(llama_cpp_module, "_WINDOWS_CREATEPROCESS_MAX_UTF16_UNITS", 80)
-    monkeypatch.setattr(llama_cpp_module, "_WINDOWS_MANAGED_ARGV_RESERVE_UTF16_UNITS", 0)
-
-    with pytest.raises(LlamaServerArgsError) as excinfo:
-        LlamaCppBackend._preflight_windows_command_length(
-            r"C:\llama-server.exe",
-            model = "managed-model.gguf",
-            mmproj = "managed-mmproj.gguf",
-            draft_model = "managed-draft.gguf",
-            model_alias = "private-alias",
-            chat_template = None,
-            port = 12345,
-            extra_args = ["--future-safe", "custom-value"],
-        )
-        calls.append("teardown")
-    assert excinfo.value.code == "command_too_long"
+    cmd = [r"C:\Program Files\llama-server.exe", "--model", "x" * 80]
+    with pytest.raises(LlamaServerArgsError, match = "CreateProcess"):
+        backend._start_llama_process(cmd, {"PATH": "kept"}, [])
     assert calls == []

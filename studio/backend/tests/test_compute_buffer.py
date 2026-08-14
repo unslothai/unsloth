@@ -663,7 +663,8 @@ class TestPipelineParallelPredicate:
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "iftensor_parallelandtp_gpus:" in compact
-        assert "extra_args=strip_split_mode_only(" in compact
+        assert "elsestrip_split_mode_only(_restored_extras)" in compact
+        assert "_restore_after_tensor_downgrade()" in compact
         assert "elifgpusandself._can_estimate_kv()andeffective_ctx>0:" in compact
 
     def test_env_split_mode_is_ignored(self):

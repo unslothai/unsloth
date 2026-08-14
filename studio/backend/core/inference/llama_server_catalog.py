@@ -26,6 +26,7 @@ from core.inference.llama_server_args import (
     managed_flag_groups,
     managed_flags,
     overlaps_studio_control,
+    safe_flag_category,
     safe_flag_policy,
     scrub_llama_server_env,
 )
@@ -74,7 +75,11 @@ class LlamaServerArgument:
             "deprecated": self.deprecated,
             "managed_by_studio": is_managed_flag(self.name),
             "overlaps_studio_control": overlaps_studio_control(self.name),
-            "policy_category": policy.category if policy is not None else "Unclassified",
+            "policy_category": (
+                policy.category
+                if policy is not None
+                else safe_flag_category(self.name) or "Unclassified"
+            ),
             "value_arity": (
                 policy.value_arity
                 if policy is not None

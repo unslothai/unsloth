@@ -563,6 +563,17 @@ def test_known_safe_missing_value_uses_typed_malformed_error():
     assert "requires a value" in str(excinfo.value)
 
 
+def test_every_known_safe_flag_has_a_user_facing_category():
+    assert all(
+        policy.category and policy.category != "Unclassified"
+        for policy in _lsa.KNOWN_SAFE_FLAG_POLICIES
+    )
+    override = safe_flag_policy("-ot")
+    assert override is not None
+    assert override.canonical == "--override-tensor"
+    assert override.category == "Compute/placement"
+
+
 @pytest.mark.parametrize(
     "policy,spelling",
     [

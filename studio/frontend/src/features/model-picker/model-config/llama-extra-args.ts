@@ -765,23 +765,35 @@ export function completeLlamaExtraArgs(
     .filter((argument) => !argument.managed_by_studio)
     .map((argument, order) => {
       const names = [argument.name, ...argument.aliases];
-      const normalized = names.map(normalizedSearchName);
-      const exact = normalized.some((name) => name === query);
-      const prefix = normalized.some((name) => name.startsWith(query));
-      const contains = normalized.some((name) => name.includes(query));
+      const matches = names.map((name, nameOrder) => {
+        const normalized = normalizedSearchName(name);
+        const rank =
+          normalized === query
+            ? 0
+            : normalized.startsWith(query)
+              ? 1
+              : normalized.includes(query)
+                ? 2
+                : 3;
+        return { name, nameOrder, rank };
+      });
+      const best = matches.sort(
+        (a, b) => a.rank - b.rank || a.nameOrder - b.nameOrder,
+      )[0];
       return {
         argument,
         order,
-        rank: exact ? 0 : prefix ? 1 : contains ? 2 : 3,
+        rank: best.rank,
+        spelling: best.name,
       };
     })
     .filter(({ rank }) => rank < 3)
     .sort((a, b) => a.rank - b.rank || a.order - b.order)
     .slice(0, 8);
-  return ranked.map(({ argument }) => ({
+  return ranked.map(({ argument, spelling }) => ({
     kind: "flag",
-    insertText: argument.name,
-    label: argument.name,
+    insertText: spelling,
+    label: spelling,
     argument,
     replaceStart: span.start,
     replaceEnd: span.end,

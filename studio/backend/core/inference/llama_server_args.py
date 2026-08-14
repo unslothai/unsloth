@@ -59,11 +59,55 @@ def _safe(
     canonical: str,
     *aliases: str,
     value_arity: int = 1,
-    category: str = "Unclassified",
+    category: str,
 ) -> LlamaServerFlagPolicy:
     """Describe a documented pass-through flag whose syntax is unambiguous."""
 
     return LlamaServerFlagPolicy(canonical, aliases, value_arity, category)
+
+
+def _safe_compute(
+    canonical: str, *aliases: str, value_arity: int = 1
+) -> LlamaServerFlagPolicy:
+    return _safe(
+        canonical,
+        *aliases,
+        value_arity = value_arity,
+        category = "Compute/placement",
+    )
+
+
+def _safe_sampling(
+    canonical: str, *aliases: str, value_arity: int = 1
+) -> LlamaServerFlagPolicy:
+    return _safe(
+        canonical,
+        *aliases,
+        value_arity = value_arity,
+        category = "Sampling/decoding",
+    )
+
+
+def _safe_speculative(
+    canonical: str, *aliases: str, value_arity: int = 1
+) -> LlamaServerFlagPolicy:
+    return _safe(
+        canonical,
+        *aliases,
+        value_arity = value_arity,
+        category = "Speculative decoding",
+    )
+
+
+def _safe_runtime(
+    canonical: str, *aliases: str, value_arity: int = 1
+) -> LlamaServerFlagPolicy:
+    return _safe(
+        canonical,
+        *aliases,
+        value_arity = value_arity,
+        category = "Runtime/decoding",
+    )
 
 
 # Checked against the installed llama-server help (b10360 at implementation
@@ -169,80 +213,80 @@ BLOCKED_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
 # Optional-value switches such as ``--flash-attn [on|off|auto]`` and ordinary
 # booleans are deliberately absent. Unknown future flags remain pass-through.
 KNOWN_SAFE_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
-    _safe("--threads", "-t"),
-    _safe("--threads-batch", "-tb"),
-    _safe("--cpu-mask", "-C"),
-    _safe("--cpu-range", "-Cr"),
-    _safe("--cpu-strict"),
-    _safe("--prio"),
-    _safe("--poll"),
-    _safe("--cpu-mask-batch", "-Cb"),
-    _safe("--cpu-range-batch", "-Crb"),
-    _safe("--cpu-strict-batch"),
-    _safe("--prio-batch"),
-    _safe("--poll-batch"),
-    _safe("--ctx-size", "-c"),
-    _safe("--predict", "-n", "--n-predict"),
-    _safe("--batch-size", "-b"),
-    _safe("--ubatch-size", "-ub"),
-    _safe("--keep"),
-    _safe("--rope-scaling"),
-    _safe("--rope-scale"),
-    _safe("--rope-freq-base"),
-    _safe("--rope-freq-scale"),
-    _safe("--yarn-orig-ctx"),
-    _safe("--yarn-ext-factor"),
-    _safe("--yarn-attn-factor"),
-    _safe("--yarn-beta-slow"),
-    _safe("--yarn-beta-fast"),
-    _safe("--cache-type-k", "-ctk"),
-    _safe("--cache-type-v", "-ctv"),
-    _safe("--defrag-thold", "-dt"),
-    _safe("--load-mode", "-lm"),
-    _safe("--numa"),
-    _safe("--device", "-dev"),
-    _safe("--override-tensor", "-ot"),
-    _safe("--n-cpu-moe", "-ncmoe"),
-    _safe("--gpu-layers", "-ngl", "--n-gpu-layers"),
-    _safe("--split-mode", "-sm"),
-    _safe("--tensor-split", "-ts"),
-    _safe("--main-gpu", "-mg"),
-    _safe("--fit-target", "-fitt"),
-    _safe("--fit-ctx", "-fitc"),
-    _safe("--override-kv"),
-    _safe("--verbosity", "-lv", "--log-verbosity"),
-    _safe("--spec-draft-type-k", "-ctkd", "--cache-type-k-draft"),
-    _safe("--spec-draft-type-v", "-ctvd", "--cache-type-v-draft"),
-    _safe("--samplers"),
-    _safe("--seed", "-s"),
-    _safe("--sampler-seq", "--sampling-seq"),
-    _safe("--temp", "--temperature"),
-    _safe("--top-k"),
-    _safe("--top-p"),
-    _safe("--min-p"),
-    _safe("--top-nsigma", "--top-n-sigma"),
-    _safe("--xtc-probability"),
-    _safe("--xtc-threshold"),
-    _safe("--typical", "--typical-p"),
-    _safe("--repeat-last-n"),
-    _safe("--repeat-penalty"),
-    _safe("--presence-penalty"),
-    _safe("--frequency-penalty"),
-    _safe("--dry-multiplier"),
-    _safe("--dry-base"),
-    _safe("--dry-allowed-length"),
-    _safe("--dry-penalty-last-n"),
-    _safe("--dry-sequence-breaker"),
-    _safe("--adaptive-target"),
-    _safe("--adaptive-decay"),
-    _safe("--dynatemp-range"),
-    _safe("--dynatemp-exp"),
-    _safe("--mirostat"),
-    _safe("--mirostat-lr"),
-    _safe("--mirostat-ent"),
-    _safe("--logit-bias", "-l"),
-    _safe("--grammar"),
-    _safe("--json-schema", "-j"),
+    _safe_compute("--threads", "-t"),
+    _safe_compute("--threads-batch", "-tb"),
+    _safe_compute("--cpu-mask", "-C"),
+    _safe_compute("--cpu-range", "-Cr"),
+    _safe_compute("--cpu-strict"),
+    _safe_compute("--prio"),
+    _safe_compute("--poll"),
+    _safe_compute("--cpu-mask-batch", "-Cb"),
+    _safe_compute("--cpu-range-batch", "-Crb"),
+    _safe_compute("--cpu-strict-batch"),
+    _safe_compute("--prio-batch"),
+    _safe_compute("--poll-batch"),
+    _safe_compute("--ctx-size", "-c"),
+    _safe_compute("--predict", "-n", "--n-predict"),
+    _safe_compute("--batch-size", "-b"),
+    _safe_compute("--ubatch-size", "-ub"),
+    _safe_compute("--keep"),
+    _safe_compute("--rope-scaling"),
+    _safe_compute("--rope-scale"),
+    _safe_compute("--rope-freq-base"),
+    _safe_compute("--rope-freq-scale"),
+    _safe_compute("--yarn-orig-ctx"),
+    _safe_compute("--yarn-ext-factor"),
+    _safe_compute("--yarn-attn-factor"),
+    _safe_compute("--yarn-beta-slow"),
+    _safe_compute("--yarn-beta-fast"),
+    _safe_compute("--cache-type-k", "-ctk"),
+    _safe_compute("--cache-type-v", "-ctv"),
+    _safe_compute("--defrag-thold", "-dt"),
+    _safe_compute("--load-mode", "-lm"),
+    _safe_compute("--numa"),
+    _safe_compute("--device", "-dev"),
+    _safe_compute("--override-tensor", "-ot"),
+    _safe_compute("--n-cpu-moe", "-ncmoe"),
+    _safe_compute("--gpu-layers", "-ngl", "--n-gpu-layers"),
+    _safe_compute("--split-mode", "-sm"),
+    _safe_compute("--tensor-split", "-ts"),
+    _safe_compute("--main-gpu", "-mg"),
+    _safe_compute("--fit-target", "-fitt"),
+    _safe_compute("--fit-ctx", "-fitc"),
+    _safe_compute("--override-kv"),
+    _safe_runtime("--verbosity", "-lv", "--log-verbosity"),
+    _safe_speculative("--spec-draft-type-k", "-ctkd", "--cache-type-k-draft"),
+    _safe_speculative("--spec-draft-type-v", "-ctvd", "--cache-type-v-draft"),
+    _safe_sampling("--samplers"),
+    _safe_sampling("--seed", "-s"),
+    _safe_sampling("--sampler-seq", "--sampling-seq"),
+    _safe_sampling("--temp", "--temperature"),
+    _safe_sampling("--top-k"),
+    _safe_sampling("--top-p"),
+    _safe_sampling("--min-p"),
+    _safe_sampling("--top-nsigma", "--top-n-sigma"),
+    _safe_sampling("--xtc-probability"),
+    _safe_sampling("--xtc-threshold"),
+    _safe_sampling("--typical", "--typical-p"),
+    _safe_sampling("--repeat-last-n"),
+    _safe_sampling("--repeat-penalty"),
+    _safe_sampling("--presence-penalty"),
+    _safe_sampling("--frequency-penalty"),
+    _safe_sampling("--dry-multiplier"),
+    _safe_sampling("--dry-base"),
+    _safe_sampling("--dry-allowed-length"),
+    _safe_sampling("--dry-penalty-last-n"),
+    _safe_sampling("--dry-sequence-breaker"),
+    _safe_sampling("--adaptive-target"),
+    _safe_sampling("--adaptive-decay"),
+    _safe_sampling("--dynatemp-range"),
+    _safe_sampling("--dynatemp-exp"),
+    _safe_sampling("--mirostat"),
+    _safe_sampling("--mirostat-lr"),
+    _safe_sampling("--mirostat-ent"),
+    _safe_sampling("--logit-bias", "-l"),
+    _safe_runtime("--grammar"),
+    _safe_runtime("--json-schema", "-j"),
     # PR #8702 compatibility: an explicitly supplied local drafter remains a
     # pass-through choice. Keep it typed so missing values fail before launch,
     # and classified so its path can still be redacted from startup logs.
@@ -252,53 +296,126 @@ KNOWN_SAFE_FLAG_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
         "--model-draft",
         category = "Filesystem read",
     ),
-    _safe("--spec-draft-threads", "-td", "--threads-draft"),
-    _safe("--spec-draft-threads-batch", "-tbd", "--threads-batch-draft"),
-    _safe("--spec-draft-cpu-mask", "-Cd", "--cpu-mask-draft"),
-    _safe("--spec-draft-cpu-range", "-Crd", "--cpu-range-draft"),
-    _safe("--spec-draft-cpu-strict", "--cpu-strict-draft"),
-    _safe("--spec-draft-prio", "--prio-draft"),
-    _safe("--spec-draft-poll", "--poll-draft"),
-    _safe("--spec-draft-cpu-mask-batch", "-Cbd", "--cpu-mask-batch-draft"),
-    _safe("--spec-draft-cpu-strict-batch", "--cpu-strict-batch-draft"),
-    _safe("--spec-draft-prio-batch", "--prio-batch-draft"),
-    _safe("--spec-draft-poll-batch", "--poll-batch-draft"),
-    _safe("--spec-draft-override-tensor", "-otd", "--override-tensor-draft"),
-    _safe("--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"),
-    _safe("--spec-draft-n-max"),
-    _safe("--spec-draft-n-min"),
-    _safe("--spec-draft-p-split", "--draft-p-split"),
-    _safe("--spec-draft-p-min", "--draft-p-min"),
-    _safe("--spec-draft-device", "-devd", "--device-draft"),
-    _safe("--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"),
-    _safe("--spec-type"),
-    _safe("--spec-ngram-mod-n-min"),
-    _safe("--spec-ngram-mod-n-max"),
-    _safe("--spec-ngram-mod-n-match"),
-    _safe("--spec-ngram-simple-size-n"),
-    _safe("--spec-ngram-simple-size-m"),
-    _safe("--spec-ngram-simple-min-hits"),
-    _safe("--spec-ngram-map-k-size-n"),
-    _safe("--spec-ngram-map-k-size-m"),
-    _safe("--spec-ngram-map-k-min-hits"),
-    _safe("--spec-ngram-map-k4v-size-n"),
-    _safe("--spec-ngram-map-k4v-size-m"),
-    _safe("--spec-ngram-map-k4v-min-hits"),
-    _safe("--ctx-checkpoints", "-ctxcp", "--swa-checkpoints"),
-    _safe("--checkpoint-min-step", "-cms"),
-    _safe("--cache-ram", "-cram"),
-    _safe("--reverse-prompt", "-r"),
-    _safe("--image-min-tokens"),
-    _safe("--image-max-tokens"),
-    _safe("--mtmd-batch-max-tokens"),
-    _safe("--embd-normalize"),
-    _safe("--chat-template-kwargs"),
-    _safe("--cache-reuse"),
-    _safe("--reasoning-format"),
-    _safe("--reasoning-budget"),
-    _safe("--reasoning-budget-message"),
-    _safe("--chat-template"),
-    _safe("--slot-prompt-similarity", "-sps"),
+    _safe_speculative("--spec-draft-threads", "-td", "--threads-draft"),
+    _safe_speculative("--spec-draft-threads-batch", "-tbd", "--threads-batch-draft"),
+    _safe_speculative("--spec-draft-cpu-mask", "-Cd", "--cpu-mask-draft"),
+    _safe_speculative("--spec-draft-cpu-range", "-Crd", "--cpu-range-draft"),
+    _safe_speculative("--spec-draft-cpu-strict", "--cpu-strict-draft"),
+    _safe_speculative("--spec-draft-prio", "--prio-draft"),
+    _safe_speculative("--spec-draft-poll", "--poll-draft"),
+    _safe_speculative("--spec-draft-cpu-mask-batch", "-Cbd", "--cpu-mask-batch-draft"),
+    _safe_speculative("--spec-draft-cpu-strict-batch", "--cpu-strict-batch-draft"),
+    _safe_speculative("--spec-draft-prio-batch", "--prio-batch-draft"),
+    _safe_speculative("--spec-draft-poll-batch", "--poll-batch-draft"),
+    _safe_speculative("--spec-draft-override-tensor", "-otd", "--override-tensor-draft"),
+    _safe_speculative("--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"),
+    _safe_speculative("--spec-draft-n-max"),
+    _safe_speculative("--spec-draft-n-min"),
+    _safe_speculative("--spec-draft-p-split", "--draft-p-split"),
+    _safe_speculative("--spec-draft-p-min", "--draft-p-min"),
+    _safe_speculative("--spec-draft-device", "-devd", "--device-draft"),
+    _safe_speculative("--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"),
+    _safe_speculative("--spec-type"),
+    _safe_speculative("--spec-ngram-mod-n-min"),
+    _safe_speculative("--spec-ngram-mod-n-max"),
+    _safe_speculative("--spec-ngram-mod-n-match"),
+    _safe_speculative("--spec-ngram-simple-size-n"),
+    _safe_speculative("--spec-ngram-simple-size-m"),
+    _safe_speculative("--spec-ngram-simple-min-hits"),
+    _safe_speculative("--spec-ngram-map-k-size-n"),
+    _safe_speculative("--spec-ngram-map-k-size-m"),
+    _safe_speculative("--spec-ngram-map-k-min-hits"),
+    _safe_speculative("--spec-ngram-map-k4v-size-n"),
+    _safe_speculative("--spec-ngram-map-k4v-size-m"),
+    _safe_speculative("--spec-ngram-map-k4v-min-hits"),
+    _safe_compute("--ctx-checkpoints", "-ctxcp", "--swa-checkpoints"),
+    _safe_compute("--checkpoint-min-step", "-cms"),
+    _safe_compute("--cache-ram", "-cram"),
+    _safe_runtime("--reverse-prompt", "-r"),
+    _safe_runtime("--image-min-tokens"),
+    _safe_runtime("--image-max-tokens"),
+    _safe_runtime("--mtmd-batch-max-tokens"),
+    _safe_runtime("--embd-normalize"),
+    _safe_runtime("--chat-template-kwargs"),
+    _safe_compute("--cache-reuse"),
+    _safe_runtime("--reasoning-format"),
+    _safe_runtime("--reasoning-budget"),
+    _safe_runtime("--reasoning-budget-message"),
+    _safe_runtime("--chat-template"),
+    _safe_runtime("--slot-prompt-similarity", "-sps"),
+)
+
+# Current documented switches which take no value, or accept an optional value.
+# They remain outside KNOWN_SAFE_FLAG_POLICIES so required-value validation and
+# the help-derived optional-value metadata stay unchanged. This inventory exists
+# to classify known options in the Studio catalog; future options still display
+# as Unclassified until reviewed.
+KNOWN_SAFE_SWITCH_POLICIES: tuple[LlamaServerFlagPolicy, ...] = (
+    _safe_compute("--swa-full", value_arity = 0),
+    _safe_compute("--flash-attn", "-fa", value_arity = 0),
+    _safe_compute("--perf", "--no-perf", value_arity = 0),
+    _safe_runtime("--escape", "-e", "--no-escape", value_arity = 0),
+    _safe_compute(
+        "--kv-offload", "-kvo", "-nkvo", "--no-kv-offload", value_arity = 0
+    ),
+    _safe_compute("--repack", "-nr", "--no-repack", value_arity = 0),
+    _safe_compute("--no-host", value_arity = 0),
+    _safe_compute("--mlock", value_arity = 0),
+    _safe_compute("--mmap", "--no-mmap", "-no-mmap", value_arity = 0),
+    _safe_compute(
+        "--direct-io",
+        "-dio",
+        "-ndio",
+        "--no-direct-io",
+        value_arity = 0,
+    ),
+    _safe_compute("--cpu-moe", "-cmoe", value_arity = 0),
+    _safe_compute("--fit", "-fit", value_arity = 0),
+    _safe_compute("--check-tensors", value_arity = 0),
+    _safe_compute("--op-offload", "--no-op-offload", value_arity = 0),
+    _safe_runtime("--log-colors", value_arity = 0),
+    _safe_runtime("--verbose", "-v", "--log-verbose", value_arity = 0),
+    _safe_runtime("--offline", value_arity = 0),
+    _safe_runtime("--log-prefix", "--no-log-prefix", value_arity = 0),
+    _safe_runtime("--log-timestamps", "--no-log-timestamps", value_arity = 0),
+    _safe_sampling("--ignore-eos", value_arity = 0),
+    _safe_sampling("--backend-sampling", "-bs", value_arity = 0),
+    _safe_speculative(
+        "--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft", value_arity = 0
+    ),
+    _safe_speculative(
+        "--spec-draft-backend-sampling",
+        "--no-spec-draft-backend-sampling",
+        value_arity = 0,
+    ),
+    _safe_speculative("--spec-ngram-", value_arity = 0),
+    _safe_compute(
+        "--kv-unified", "-kvu", "-no-kvu", "--no-kv-unified", value_arity = 0
+    ),
+    _safe_compute(
+        "--cache-idle-slots", "--no-cache-idle-slots", value_arity = 0
+    ),
+    _safe_compute("--context-shift", "--no-context-shift", value_arity = 0),
+    _safe_runtime("--special", "-sp", value_arity = 0),
+    _safe_compute("--warmup", "--no-warmup", value_arity = 0),
+    _safe_runtime("--spm-infill", value_arity = 0),
+    _safe_compute(
+        "--cont-batching", "-cb", "-nocb", "--no-cont-batching", value_arity = 0
+    ),
+    _safe_compute("--mmproj-offload", "--no-mmproj-offload", value_arity = 0),
+    _safe_compute("--cache-prompt", "--no-cache-prompt", value_arity = 0),
+    _safe_runtime("--jinja", "--no-jinja", value_arity = 0),
+    _safe_runtime("--reasoning", "-rea", value_arity = 0),
+    _safe_runtime(
+        "--reasoning-preserve", "--no-reasoning-preserve", value_arity = 0
+    ),
+    _safe_runtime(
+        "--skip-chat-parsing", "--no-skip-chat-parsing", value_arity = 0
+    ),
+    _safe_runtime(
+        "--prefill-assistant", "--no-prefill-assistant", value_arity = 0
+    ),
+    _safe_speculative("--spec-default", value_arity = 0),
 )
 
 _POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
@@ -309,6 +426,11 @@ _POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
 _SAFE_POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
     spelling: policy
     for policy in KNOWN_SAFE_FLAG_POLICIES
+    for spelling in policy.spellings
+}
+_SAFE_SWITCH_POLICY_BY_SPELLING: dict[str, LlamaServerFlagPolicy] = {
+    spelling: policy
+    for policy in KNOWN_SAFE_SWITCH_POLICIES
     for spelling in policy.spellings
 }
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = tuple(
@@ -347,6 +469,7 @@ _DECLARED_SAFE_SHORT_ALIASES: frozenset[str] = frozenset(
 _DECLARED_EXACT_SPELLINGS: frozenset[str] = frozenset(
     set(_POLICY_BY_SPELLING)
     | set(_SAFE_POLICY_BY_SPELLING)
+    | set(_SAFE_SWITCH_POLICY_BY_SPELLING)
     | set(_DECLARED_SAFE_SHORT_ALIASES)
 )
 _ATTACHED_SHORT_SPELLINGS: tuple[str, ...] = tuple(
@@ -456,6 +579,18 @@ def safe_flag_policy(flag: str) -> Optional[LlamaServerFlagPolicy]:
 
     normalised = _flag_name(flag)
     return _SAFE_POLICY_BY_SPELLING.get(normalised) if normalised is not None else None
+
+
+def safe_flag_category(flag: str) -> Optional[str]:
+    """User-facing category for a reviewed pass-through option."""
+
+    normalised = _flag_name(flag)
+    if normalised is None:
+        return None
+    policy = _SAFE_POLICY_BY_SPELLING.get(normalised)
+    if policy is None:
+        policy = _SAFE_SWITCH_POLICY_BY_SPELLING.get(normalised)
+    return policy.category if policy is not None else None
 
 
 def _attached_short_value(token: str, flag: Optional[str]) -> Optional[str]:

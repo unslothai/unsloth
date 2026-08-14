@@ -71,6 +71,9 @@ export function LlamaExtraArgsEditor({
   const [completions, setCompletions] = useState<LlamaExtraArgsCompletion[]>(
     [],
   );
+  const [completionSide, setCompletionSide] = useState<"top" | "bottom">(
+    "bottom",
+  );
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -152,6 +155,14 @@ export function LlamaExtraArgsEditor({
     const next = catalog
       ? completeLlamaExtraArgs(nextDraft, caret, catalog)
       : [];
+    if (next.length > 0 && completions.length === 0) {
+      const rect = inputRef.current?.getBoundingClientRect();
+      if (rect) {
+        const spaceAbove = rect.top;
+        const spaceBelow = window.innerHeight - rect.bottom;
+        setCompletionSide(spaceBelow >= spaceAbove ? "bottom" : "top");
+      }
+    }
     setCompletions(next);
     setSelected(0);
   };
@@ -386,8 +397,9 @@ export function LlamaExtraArgsEditor({
               </PopoverAnchor>
               <PopoverContent
                 align="start"
-                side="bottom"
+                side={completionSide}
                 sideOffset={4}
+                avoidCollisions={false}
                 onOpenAutoFocus={(event) => event.preventDefault()}
                 onCloseAutoFocus={(event) => event.preventDefault()}
                 className="menu-soft-surface w-[min(18rem,calc(100vw-2rem))] gap-0 border-0 p-1 ring-0"
@@ -501,9 +513,11 @@ export function LlamaExtraArgsEditor({
               </ul>
             </details>
           ) : null}
-          <p className="text-ui-10 leading-snug text-muted-foreground">
-            Studio ignores inherited LLAMA_ARG_* environment variables. Use Run
-            Settings or custom arguments for permitted options.
+          <p
+            title="Inherited LLAMA_ARG_* environment variables are ignored."
+            className="truncate text-ui-10 text-muted-foreground"
+          >
+            LLAMA_ARG_* env vars are ignored.
           </p>
         </div>
       </CollapsibleContent>
