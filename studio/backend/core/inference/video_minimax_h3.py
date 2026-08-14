@@ -722,10 +722,7 @@ def h3_component_source() -> str:
         return H3_COMPONENT_REPO
     try:
         from .diffusion_families import cache_holds_files
-
-        cached = cache_holds_files(
-            H3_LEGACY_COMPONENT_REPO, (H3_VIDEO_VAE, H3_AUDIO_VAE)
-        )
+        cached = cache_holds_files(H3_LEGACY_COMPONENT_REPO, (H3_VIDEO_VAE, H3_AUDIO_VAE))
     except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
         cached = False
     return H3_LEGACY_COMPONENT_REPO if cached else H3_COMPONENT_REPO
