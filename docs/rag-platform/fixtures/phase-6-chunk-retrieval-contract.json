@@ -1,0 +1,85 @@
+{
+  "generated_by": "Phase 6 source-verified contract suite",
+  "verified_against": {
+    "backend_ref": "v0.26.4",
+    "runtime_image": "rag-platform-backend:0.26.4",
+    "proxy_scheme": "hybrid",
+    "note": "Synthetic, secret-free success envelopes used by MSW contract tests; active target and request fields were read from backend source. Live unauthenticated reachability is recorded separately in the Phase 6 report."
+  },
+  "redaction": {
+    "policy": "No account data, credentials, tokens, provider keys or captured content are present.",
+    "placeholders": ["<dataset_id>", "<document_id>", "<chunk_id>"]
+  },
+  "interactions": [
+    {
+      "name": "phase6.chunk.list.canonical",
+      "request": { "method": "GET", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks?page=1&page_size=50", "body": null },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "chunks": [], "doc": {}, "total": 0 } } }
+    },
+    {
+      "name": "phase6.chunk.create",
+      "request": { "method": "POST", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks", "body": { "content": "Synthetic contract content", "important_keywords": ["contract"], "questions": ["What is covered?"] } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "chunk": { "id": "<chunk_id>", "content": "Synthetic contract content", "document_id": "<document_id>", "dataset_id": "<dataset_id>" } } } }
+    },
+    {
+      "name": "phase6.chunk.detail",
+      "request": { "method": "GET", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks/<chunk_id>", "body": null },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "id": "<chunk_id>", "content": "Synthetic contract content" } } }
+    },
+    {
+      "name": "phase6.chunk.update",
+      "request": { "method": "PATCH", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks/<chunk_id>", "body": { "content": "Updated contract content", "available": true } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": true } }
+    },
+    {
+      "name": "phase6.chunk.switch",
+      "request": { "method": "PATCH", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks", "body": { "chunk_ids": ["<chunk_id>"], "available": false } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": true } }
+    },
+    {
+      "name": "phase6.chunk.delete",
+      "request": { "method": "DELETE", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks", "body": { "chunk_ids": ["<chunk_id>"] } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": true } }
+    },
+    {
+      "name": "phase6.retrieval.search",
+      "request": { "method": "POST", "path": "/api/v1/retrieval", "body": { "question": "What is covered?", "dataset_ids": ["<dataset_id>"], "document_ids": ["<document_id>"], "page": 1, "page_size": 10, "top_k": 10, "similarity_threshold": 0.2, "vector_similarity_weight": 0.3, "highlight": true } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "total": 0, "chunks": [], "doc_aggs": [] } } }
+    },
+    {
+      "name": "phase6.structure.list",
+      "request": { "method": "GET", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/structure/graph", "body": null },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "templates": [] } } }
+    },
+    {
+      "name": "phase6.structure.delete",
+      "request": { "method": "DELETE", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/structure/graph", "body": { "template_id": "timeline-1" } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "deleted": 0 } } }
+    },
+    {
+      "name": "phase6.compat.chunk-list",
+      "request": { "method": "POST", "path": "/api/v1/chunk/list", "body": { "dataset_id": "<dataset_id>", "doc_id": "<document_id>", "page": 1, "size": 50 } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "chunks": [], "doc": {}, "total": 0 } } }
+    },
+    {
+      "name": "phase6.compat.chunk-update-put",
+      "request": { "method": "PUT", "path": "/api/v1/datasets/<dataset_id>/documents/<document_id>/chunks/<chunk_id>", "body": { "content": "Compatibility content" } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": true } }
+    },
+    {
+      "name": "phase6.compat.parse",
+      "request": { "method": "POST", "path": "/api/v1/datasets/<dataset_id>/chunks", "body": { "document_ids": ["<document_id>"] } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": true } }
+    },
+    {
+      "name": "phase6.compat.stop",
+      "request": { "method": "DELETE", "path": "/api/v1/datasets/<dataset_id>/chunks", "body": { "document_ids": ["<document_id>"] } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": true } }
+    },
+    {
+      "name": "phase6.compat.dataset-search",
+      "request": { "method": "POST", "path": "/api/v1/datasets/<dataset_id>/search", "body": { "question": "What is covered?", "page": 1, "size": 10, "doc_ids": ["<document_id>"], "top_k": 10, "similarity_threshold": 0.2, "vector_similarity_weight": 0.3 } },
+      "response": { "http_status": 200, "body": { "code": 0, "data": { "total": 0, "chunks": [], "doc_aggs": [] } } }
+    }
+  ]
+}

@@ -398,10 +398,10 @@ const MAPPINGS = {
     phase: 5,
   },
 
-  // Retrieval (`POST /api/v1/retrieval`) has no row: Studio never calls a
-  // standalone search endpoint. Retrieval reaches the backend only inside a
-  // completion, so it enters through the completions row in Faz 8 and is
-  // exercised by the retrieval contract fixture rather than by a UI call site.
+  // Retrieval (`POST /api/v1/retrieval`) has no legacy-left-side row because
+  // Studio had no standalone search endpoint to migrate. Faz 6 adds it as a
+  // new typed Rag Platform action under Documents → Retrieval; its source/body
+  // mapping is recorded in the endpoint coverage matrix and Phase 6 tests.
 
   // --- threads -> sessions, projects -> chats (Faz 7) -------------------
   "GET /api/chat/threads": {

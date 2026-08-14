@@ -69,6 +69,7 @@ describe("Phase 5 authenticated asset dialog", () => {
       <DocumentAssetDialog
         document={documentRow}
         mode="preview"
+        targetPage={7}
         open
         onOpenChange={() => undefined}
       />,
@@ -77,7 +78,7 @@ describe("Phase 5 authenticated asset dialog", () => {
     await waitFor(() =>
       expect(screen.getByTitle("guide.pdf önizlemesi")).toHaveAttribute(
         "src",
-        "blob:phase5-preview",
+        "blob:phase5-preview#page=7",
       ),
     );
     expect(mocks.preview).toHaveBeenCalledWith("doc-1", expect.any(AbortSignal));

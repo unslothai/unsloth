@@ -29,6 +29,7 @@ interface DocumentAssetDialogProps {
   document: PlatformDocument | null;
   mode: AssetMode;
   open: boolean;
+  targetPage?: number | null;
   onOpenChange: (open: boolean) => void;
 }
 
@@ -53,7 +54,15 @@ function triggerDownload(asset: PlatformAsset, name: string) {
   URL.revokeObjectURL(url);
 }
 
-function AssetPreview({ asset, name }: { asset: PlatformAsset; name: string }) {
+function AssetPreview({
+  asset,
+  name,
+  targetPage,
+}: {
+  asset: PlatformAsset;
+  name: string;
+  targetPage?: number | null;
+}) {
   const url = useMemo(() => assetUrl(asset), [asset]);
   const [text, setText] = useState<string | null>(null);
   const normalizedType = asset.contentType.split(";", 1)[0]?.toLowerCase() ?? "";
@@ -84,7 +93,8 @@ function AssetPreview({ asset, name }: { asset: PlatformAsset; name: string }) {
     );
   }
   if (normalizedType === "application/pdf" && url) {
-    return <iframe title={`${name} önizlemesi`} src={url} className="h-[62vh] w-full rounded-2xl border" />;
+    const source = targetPage ? `${url}#page=${targetPage}` : url;
+    return <iframe title={`${name} önizlemesi`} src={source} className="h-[62vh] w-full rounded-2xl border" />;
   }
   if (normalizedType.startsWith("text/")) {
     return (
@@ -169,6 +179,7 @@ export function DocumentAssetDialog({
   document,
   mode,
   open,
+  targetPage,
   onOpenChange,
 }: DocumentAssetDialogProps) {
   const [asset, setAsset] = useState<PlatformAsset | null>(null);
@@ -281,7 +292,10 @@ export function DocumentAssetDialog({
             <DialogTitle>{mode === "preview" ? "Belge önizlemesi" : "Belge medyası"}</DialogTitle>
             {document?.suffix ? <Badge variant="outline">{document.suffix.toUpperCase()}</Badge> : null}
           </div>
-          <DialogDescription>{document?.name ?? "Belge"}</DialogDescription>
+          <DialogDescription>
+            {document?.name ?? "Belge"}
+            {targetPage ? ` · Sayfa ${targetPage}` : ""}
+          </DialogDescription>
         </DialogHeader>
 
         {mode === "media" ? (
@@ -315,7 +329,11 @@ export function DocumentAssetDialog({
             }}>Yeniden dene</Button>
           </div>
         ) : mode === "preview" && asset ? (
-          <AssetPreview asset={asset} name={document?.name ?? "document"} />
+          <AssetPreview
+            asset={asset}
+            name={document?.name ?? "document"}
+            targetPage={targetPage}
+          />
         ) : mode === "media" && mediaAsset ? (
           <div className="space-y-3">
             <AssetPreview asset={mediaAsset} name={artifact ? artifactName : `${document?.name ?? "Belge"} küçük resmi`} />

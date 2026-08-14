@@ -17,3 +17,5 @@ export * from "./dataset-api";
 export * from "./dataset-types";
 export * from "./document-api";
 export * from "./document-types";
+export * from "./chunk-api";
+export * from "./chunk-types";

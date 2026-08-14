@@ -593,6 +593,48 @@ const CLASS_RULES = [
       "Binary attachment action in Documents → Dataset documents. Metadata comes from the collection response; the authenticated Blob is never placed in persistent storage and its object URL is revoked after use.",
   },
 
+  // -- Phase 6 chunk/retrieval compatibility and internal surfaces ---------
+  {
+    id: "phase6-chunk-legacy-list",
+    when: { method: /^POST$/, path: /^\/api\/v1\/chunk\/list$/ },
+    class: API_ONLY,
+    consumer: "legacy chunk API client",
+    justification:
+      "Active POST-with-body compatibility list. Documents → Chunks uses the canonical dataset/document-scoped GET route; the exact legacy body remains typed and contract-tested without a duplicate UI state machine.",
+  },
+  {
+    id: "phase6-chunk-internal-update",
+    when: { method: /^POST$/, path: /^\/api\/v1\/chunk\/update$/ },
+    class: INTERNAL,
+    consumer: "Go internal client only",
+    justification:
+      "The route registration explicitly marks this endpoint internal-only. Its handler reads dataset_id and document_id from path parameters that the flat route does not define, so the browser UI never calls it; source, auth and negative-export evidence retain the boundary.",
+  },
+  {
+    id: "phase6-legacy-parse-stop-alias",
+    when: {
+      method: /^(POST|DELETE)$/,
+      path: /^\/api\/v1\/datasets\/\{p\}\/chunks$/,
+      runtimeEnabled: true,
+    },
+    class: API_ONLY,
+    consumer: "legacy ingestion client",
+    justification:
+      "Legacy parse/stop aliases for dataset documents. Documents already exposes the canonical /documents/parse and /documents/stop actions from Phase 5; the exact aliases remain typed and contract-tested without adding indistinguishable controls.",
+  },
+  {
+    id: "phase6-dataset-search-alias",
+    when: {
+      method: /^POST$/,
+      path: /^\/api\/v1\/datasets\/\{p\}\/search$/,
+      runtimeEnabled: true,
+    },
+    class: API_ONLY,
+    consumer: "dataset-scoped retrieval API client",
+    justification:
+      "Dataset-scoped search is a compatibility form of the same retrieval capability. Documents → Retrieval Playground uses canonical POST /retrieval because it supports explicit dataset_ids and document_ids; this alias is typed and contract-tested only.",
+  },
+
   // -- 8. Primary entity list + detail reads = dedicated screens -----------
   {
     id: "entity-screen",
@@ -1807,6 +1849,127 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
 });
 
+const PHASE6_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/chunk-api.test.ts",
+  "src/features/documents/dataset-quality-workspace.test.tsx",
+  "src/features/documents/document-library-page.test.tsx",
+  "src/features/documents/document-asset-dialog.test.tsx",
+];
+const PHASE6_CHUNK_UI =
+  "Sidebar → Documents → Dataset belgeleri → Chunks";
+const PHASE6_RETRIEVAL_UI =
+  "Sidebar → Documents → Dataset belgeleri → Retrieval";
+
+Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
+  "go-api|GET /api/v1/datasets/{p}/documents/{p}/chunks": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → paginated/virtualized list`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#listDocumentChunks",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/datasets/{p}/documents/{p}/chunks": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → Yeni chunk → Kaydet`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#createDocumentChunk",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|PATCH /api/v1/datasets/{p}/documents/{p}/chunks": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → selection → Etkinleştir/Kapat`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#setDocumentChunksEnabled",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/datasets/{p}/documents/{p}/chunks": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → selection → Sil → confirmation`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#deleteDocumentChunks",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/datasets/{p}/documents/{p}/chunks/{p}": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → chunk → Düzenle`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#getDocumentChunk",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|PATCH /api/v1/datasets/{p}/documents/{p}/chunks/{p}": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → chunk → Düzenle → Kaydet`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#updateDocumentChunk",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/retrieval": {
+    status: "implemented",
+    uiPath: `${PHASE6_RETRIEVAL_UI} → Retrieval çalıştır`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#retrievePlatformChunks",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "python-api|GET /api/v1/datasets/{p}/documents/{p}/structure/graph": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → Yapı grafiği`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#getDocumentStructureGraph",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "python-api|DELETE /api/v1/datasets/{p}/documents/{p}/structure/graph": {
+    status: "implemented",
+    uiPath: `${PHASE6_CHUNK_UI} → Yapı grafiği → Grafiği sil → confirmation`,
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#deleteDocumentStructureGraph",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/chunk/list": {
+    status: "contract-verified",
+    uiPath: "— (legacy list alias; UI uses canonical scoped GET)",
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#listDocumentChunksCompatibility",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/chunk/update": {
+    status: "contract-verified",
+    uiPath: "— (Go internal-only route; no browser export)",
+    typedService: null,
+    evidence: [
+      "docs/rag-platform/route-inventory.md (upstream internal-only note)",
+      ...PHASE6_TEST_EVIDENCE,
+    ],
+  },
+  "go-api|POST /api/v1/datasets/{p}/chunks": {
+    status: "contract-verified",
+    uiPath: "— (legacy parse alias; UI uses /documents/parse)",
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#parseDatasetChunksCompatibility",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "python-api|DELETE /api/v1/datasets/{p}/chunks": {
+    status: "contract-verified",
+    uiPath: "— (legacy stop alias; UI uses /documents/stop)",
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#stopDatasetChunksCompatibility",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/datasets/{p}/search": {
+    status: "contract-verified",
+    uiPath: "— (dataset-scoped alias; UI uses canonical /retrieval)",
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#searchDatasetChunksCompatibility",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+  "python-api|PUT /api/v1/datasets/{p}/documents/{p}/chunks/{p}": {
+    status: "contract-verified",
+    uiPath: "— (backward-compat alias; UI uses canonical PATCH)",
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#updateDocumentChunkCompatibility",
+    evidence: PHASE6_TEST_EVIDENCE,
+  },
+});
+
 /**
  * Per-route findings verified against the running backend that a reader of the
  * row needs in order to trust it. Keyed by canonical `METHOD path`.
@@ -1864,6 +2027,11 @@ const ROUTE_FINDINGS = {
     "The generated runtime override selects Python 9380 so canonical document_ids " +
     "jobs are consumed by the deployed Python task executor. The Go alternate is " +
     "runtime-disabled for this deployment; live PDF/TXT/DOCX tasks reached 100%.",
+  "POST /api/v1/chunk/update":
+    "The active v0.26.4 router labels this route `Internal API only for GO`. " +
+    "Its flat registration supplies no dataset_id/document_id path parameters, " +
+    "while the handler requires both before mutation. Phase 6 intentionally has " +
+    "no browser service export; the canonical scoped PATCH route is the product action.",
 };
 
 function collectFixtureEvidence() {

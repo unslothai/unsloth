@@ -61,6 +61,8 @@ import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 import {
   Ban,
+  Binary,
+  Blocks,
   CircleAlert,
   ChevronLeft,
   ChevronRight,
@@ -88,9 +90,14 @@ import {
   DocumentAssetDialog,
   DocumentInlinePreview,
 } from "./document-asset-dialog";
+import {
+  DatasetQualityWorkspace,
+  type DatasetQualityMode,
+} from "./dataset-quality-workspace";
 import { useDocumentLibrary } from "./use-document-library";
 
 type DocumentTab = "dataset" | "generic";
+type DatasetView = "documents" | DatasetQualityMode;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -198,6 +205,53 @@ function DocumentScopeToggle({
       >
         Genel belgeler
       </button>
+    </div>
+  );
+}
+
+function DatasetWorkspaceToggle({
+  value,
+  onChange,
+}: {
+  value: DatasetView;
+  onChange: (value: DatasetView) => void;
+}) {
+  const items: Array<{
+    value: DatasetView;
+    label: string;
+    icon: typeof FileText;
+  }> = [
+    { value: "documents", label: "Belgeler", icon: FileText },
+    { value: "chunks", label: "Chunks", icon: Blocks },
+    { value: "retrieval", label: "Retrieval", icon: Binary },
+  ];
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Dataset çalışma alanı"
+      className="field-soft flex h-9 shrink-0 items-center rounded-full p-1"
+    >
+      {items.map((item) => {
+        const Icon = item.icon;
+        return (
+          <button
+            key={item.value}
+            type="button"
+            role="radio"
+            aria-checked={value === item.value}
+            onClick={() => onChange(item.value)}
+            className={cn(
+              "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-ui-12p5 transition-colors",
+              value === item.value
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Icon className="size-3.5" />
+            {item.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1051,6 +1105,7 @@ export function DocumentLibraryPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const library = useDocumentLibrary();
   const [activeTab, setActiveTab] = useState<DocumentTab>("dataset");
+  const [datasetView, setDatasetView] = useState<DatasetView>("documents");
   const [layoutMode, setLayoutMode] = useState<AllModelsView>("split");
   const [focusedDocumentId, setFocusedDocumentId] = useState<string | null>(
     null,
@@ -1065,6 +1120,7 @@ export function DocumentLibraryPage() {
   );
   const [assetMode, setAssetMode] = useState<"preview" | "media">("preview");
   const [assetOpen, setAssetOpen] = useState(false);
+  const [assetTargetPage, setAssetTargetPage] = useState<number | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -1116,9 +1172,14 @@ export function DocumentLibraryPage() {
     }
   };
 
-  const openAsset = (document: PlatformDocument, mode: "preview" | "media") => {
+  const openAsset = (
+    document: PlatformDocument,
+    mode: "preview" | "media",
+    targetPage: number | null = null,
+  ) => {
     setAssetDocument(document);
     setAssetMode(mode);
+    setAssetTargetPage(targetPage);
     setAssetOpen(true);
   };
 
@@ -1321,66 +1382,78 @@ export function DocumentLibraryPage() {
 
             {activeTab === "dataset" ? (
               <>
-                <div className="relative min-w-0 flex-1 lg:min-w-[220px]">
-                  <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    type="search"
-                    name="document-search"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={query}
-                    onChange={(event) => {
-                      setQuery(event.target.value);
-                      setSelected(new Set());
-                    }}
-                    placeholder="Belgelerde ara"
-                    disabled={!library.datasetId}
-                    className="field-soft h-9 rounded-full border-0 pl-10 pr-4 text-sm shadow-none focus-visible:ring-0"
-                  />
-                </div>
+                <DatasetWorkspaceToggle
+                  value={datasetView}
+                  onChange={setDatasetView}
+                />
+                {datasetView === "documents" ? (
+                  <div className="relative min-w-0 flex-1 lg:min-w-[220px]">
+                    <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      type="search"
+                      name="document-search"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={query}
+                      onChange={(event) => {
+                        setQuery(event.target.value);
+                        setSelected(new Set());
+                      }}
+                      placeholder="Belgelerde ara"
+                      disabled={!library.datasetId}
+                      className="field-soft h-9 rounded-full border-0 pl-10 pr-4 text-sm shadow-none focus-visible:ring-0"
+                    />
+                  </div>
+                ) : (
+                  <div className="min-w-0 flex-1" />
+                )}
 
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={autoParse}
-                  title="Yüklemeden sonra otomatik işle"
-                  onClick={() => setAutoParse((current) => !current)}
-                  className="field-soft inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  <span
-                    className={cn(
-                      "flex size-5 items-center justify-center rounded-full transition-colors",
-                      autoParse
-                        ? "bg-status-success/15 text-status-success"
-                        : "bg-foreground/[0.06]",
-                    )}
+                {datasetView === "documents" ? (
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={autoParse}
+                    title="Yüklemeden sonra otomatik işle"
+                    onClick={() => setAutoParse((current) => !current)}
+                    className="field-soft inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    <FileCheck2 className="size-3" strokeWidth={1.9} />
-                  </span>
-                  Otomatik işle
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "size-1.5 rounded-full",
-                      autoParse
-                        ? "bg-status-success"
-                        : "bg-muted-foreground/35",
+                    <span
+                      className={cn(
+                        "flex size-5 items-center justify-center rounded-full transition-colors",
+                        autoParse
+                          ? "bg-status-success/15 text-status-success"
+                          : "bg-foreground/[0.06]",
+                      )}
+                    >
+                      <FileCheck2 className="size-3" strokeWidth={1.9} />
+                    </span>
+                    Otomatik işle
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        autoParse
+                          ? "bg-status-success"
+                          : "bg-muted-foreground/35",
+                      )}
+                    />
+                  </button>
+                ) : null}
+                {datasetView === "documents" ? (
+                  <Button
+                    size="sm"
+                    className="h-9 shrink-0 rounded-full px-3.5"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!library.datasetId || library.mutating}
+                  >
+                    {library.mutating ? (
+                      <Spinner className="size-4" />
+                    ) : (
+                      <UploadCloud />
                     )}
-                  />
-                </button>
-                <Button
-                  size="sm"
-                  className="h-9 shrink-0 rounded-full px-3.5"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={!library.datasetId || library.mutating}
-                >
-                  {library.mutating ? (
-                    <Spinner className="size-4" />
-                  ) : (
-                    <UploadCloud />
-                  )}
-                  Dosya seç
-                </Button>
+                    Dosya seç
+                  </Button>
+                ) : null}
                 <input
                   ref={fileInputRef}
                   className="hidden"
@@ -1400,7 +1473,8 @@ export function DocumentLibraryPage() {
           value="dataset"
           className="relative mt-0 min-h-0 flex-1 overflow-hidden"
         >
-          <section
+          {datasetView === "documents" ? (
+            <section
             className="relative flex h-full min-h-0 flex-col overflow-hidden"
             onDragEnter={(event) => {
               event.preventDefault();
@@ -1790,7 +1864,19 @@ export function DocumentLibraryPage() {
                 </div>
               ) : null}
             </div>
-          </section>
+            </section>
+          ) : (
+            <DatasetQualityWorkspace
+              mode={datasetView}
+              datasetId={library.datasetId}
+              datasetName={library.selectedDataset?.name ?? ""}
+              documents={library.documents}
+              preferredDocumentId={focusedDocument?.id}
+              onPreview={(document, pageNumber) =>
+                openAsset(document, "preview", pageNumber)
+              }
+            />
+          )}
         </TabsContent>
 
         <TabsContent
@@ -1807,6 +1893,7 @@ export function DocumentLibraryPage() {
         document={assetDocument}
         mode={assetMode}
         open={assetOpen}
+        targetPage={assetTargetPage}
         onOpenChange={setAssetOpen}
       />
       <AlertDialog

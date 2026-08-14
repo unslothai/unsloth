@@ -17,6 +17,12 @@ vi.mock("./document-asset-dialog", () => ({
   ),
 }));
 
+vi.mock("./dataset-quality-workspace", () => ({
+  DatasetQualityWorkspace: ({ mode }: { mode: string }) => (
+    <div>Kalite çalışma alanı: {mode}</div>
+  ),
+}));
+
 import { DocumentLibraryPage } from "./document-library-page";
 
 function renderPage() {
@@ -197,5 +203,30 @@ describe("Document Library Hub layouts", () => {
       within(scope).getByRole("radio", { name: "Genel belgeler" }),
     );
     expect(screen.getByText("Bağımsız dosya inceleme")).toBeInTheDocument();
+  });
+
+  it("opens chunk and retrieval tools inside the Documents dataset scope", () => {
+    renderPage();
+    const workspace = screen.getByRole("radiogroup", {
+      name: "Dataset çalışma alanı",
+    });
+
+    fireEvent.click(within(workspace).getByRole("radio", { name: "Chunks" }));
+    expect(
+      screen.getByText("Kalite çalışma alanı: chunks"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("Belgelerde ara"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      within(workspace).getByRole("radio", { name: "Retrieval" }),
+    );
+    expect(
+      screen.getByText("Kalite çalışma alanı: retrieval"),
+    ).toBeInTheDocument();
+    expect(
+      within(workspace).getByRole("radio", { name: "Retrieval" }),
+    ).toHaveAttribute("aria-checked", "true");
   });
 });
