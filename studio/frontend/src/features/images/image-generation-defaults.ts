@@ -47,9 +47,7 @@ export function defaultsFor(
   if (matched) return { steps: matched.steps, guidance: matched.guidance };
   if (familyOverride && familyOverride !== "auto") {
     const fam = familyOverride.toLowerCase();
-    const famMatch = MODEL_DEFAULTS.find(
-      (entry) => fam.includes(entry.match) || entry.match.includes(fam),
-    );
+    const famMatch = MODEL_DEFAULTS.find((entry) => fam.includes(entry.match));
     if (famMatch) return { steps: famMatch.steps, guidance: famMatch.guidance };
   }
   return DEFAULT_GEN;

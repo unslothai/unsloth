@@ -35,6 +35,36 @@ test("keeps the existing family defaults and fallback", () => {
   });
 });
 
+test("matches family overrides to family defaults without selecting more-specific variants", () => {
+  // krea-2 must hit Krea 2 Turbo (8/0), not krea-2-raw (52/3.5)
+  assert.deepEqual(defaultsFor("", "krea-2"), {
+    steps: 8,
+    guidance: 0,
+  });
+  // flux.2-klein must hit distilled Klein (4/1), not flux.2-klein-base (50/4)
+  assert.deepEqual(defaultsFor("", "flux.2-klein"), {
+    steps: 4,
+    guidance: 1,
+  });
+  // specific variant override still works if explicitly passed
+  assert.deepEqual(defaultsFor("", "krea-2-raw"), {
+    steps: 52,
+    guidance: 3.5,
+  });
+  assert.deepEqual(defaultsFor("", "flux.2-klein-base"), {
+    steps: 50,
+    guidance: 4,
+  });
+  assert.deepEqual(defaultsFor("", "flux.1-kontext"), {
+    steps: 28,
+    guidance: 2.5,
+  });
+  assert.deepEqual(defaultsFor("", "flux.1"), {
+    steps: 28,
+    guidance: 3.5,
+  });
+});
+
 test("routed image picks apply and transactionally roll back model defaults", () => {
   const source = readFileSync(
     new URL("../src/features/images/images-page.tsx", import.meta.url),

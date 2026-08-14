@@ -2153,9 +2153,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           return;
         }
         setStatusIfNewest(ticket, loaded);
-        const d = defaultsFor(loaded.base_repo ?? loaded.repo_id ?? "", loaded.family);
-        setSteps(d.steps);
-        setGuidance(d.guidance);
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
