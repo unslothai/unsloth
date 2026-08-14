@@ -626,9 +626,7 @@ class NativeAudioBackend:
             return output_path.read_bytes(), sample_rate
 
     @staticmethod
-    def _generate_higgs_tts3(
-        entry, text, temperature, top_p, top_k, max_new_tokens, cancel_event
-    ):
+    def _generate_higgs_tts3(entry, text, temperature, top_p, top_k, max_new_tokens, cancel_event):
         from core.inference.chat_template_helpers import neutralize_tts_prompt_text
 
         text = neutralize_tts_prompt_text(text, "higgs_tts3")

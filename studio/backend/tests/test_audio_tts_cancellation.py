@@ -144,9 +144,7 @@ def test_higgs_scene_instructions_are_included_in_context_guard(monkeypatch):
 
     with pytest.raises(inference_route.HTTPException) as excinfo:
         asyncio.run(
-            inference_route._generate_tts_wav(
-                "hello", payload, request = None, current_subject = "t"
-            )
+            inference_route._generate_tts_wav("hello", payload, request = None, current_subject = "t")
         )
 
     assert excinfo.value.status_code == 400
@@ -184,9 +182,7 @@ def test_higgs_scene_instructions_reduce_the_generation_budget(monkeypatch):
     )
 
     asyncio.run(
-        inference_route._generate_tts_wav(
-            "hello", payload, request = None, current_subject = "t"
-        )
+        inference_route._generate_tts_wav("hello", payload, request = None, current_subject = "t")
     )
 
     expected = (
