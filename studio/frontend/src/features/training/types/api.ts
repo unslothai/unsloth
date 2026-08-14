@@ -47,6 +47,17 @@ export interface TrainingStartRequest {
   warmup_ratio: number | null;
   max_steps: number | null;
   save_steps: number;
+  checkpoint_backup?: {
+    enabled: boolean;
+    provider: "huggingface";
+    repo_id: string | null;
+    private: boolean;
+    interval_steps: number;
+    strategy: "latest";
+    keep_remote: number;
+    upload_on_stop: boolean;
+    upload_on_complete: boolean;
+  } | null;
   eval_steps: number;
   weight_decay: number;
   max_grad_norm?: number | null;
