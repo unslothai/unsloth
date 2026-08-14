@@ -7,22 +7,22 @@ from __future__ import annotations
 
 import os
 
-import signal
-import subprocess
 import sys
-import threading
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import chromium_launch_args  # noqa: E402
+from _playwright_robust import (  # noqa: E402
+    chromium_launch_args,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
-FRONTEND = Path(__file__).resolve().parents[2] / "studio" / "frontend"
-BASE = os.environ.get("SMOKE_BASE_URL", "http://127.0.0.1:8000")
+# 8000 collides with whatever else is on a shared box; sit by chat (5193) and research (5183).
+PORT = int(os.environ.get("SMOKE_PORT", "5203"))
+BASE = os.environ.get("SMOKE_BASE_URL", f"http://127.0.0.1:{PORT}")
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright-ansi-smoke"))
 SECTIONS = (
     "tool-result-output",
@@ -38,86 +38,12 @@ def info(msg: str) -> None:
     print(f"[ansi-smoke] {msg}", flush = True)
 
 
-def wait_for_vite(timeout_s: float = 120.0) -> None:
-    url = f"{BASE}/smoke-ansi.html"
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout = 2) as response:
-                if response.status == 200:
-                    return
-        except (urllib.error.URLError, TimeoutError):
-            pass
-        time.sleep(0.5)
-    raise RuntimeError(f"vite dev server did not become ready at {url}")
-
-
-def drain_process_output(proc: subprocess.Popen[str]) -> None:
-    if proc.stdout is not None:
-        for _ in proc.stdout:
-            pass
-
-
-def start_vite() -> subprocess.Popen[str]:
-    process_group = (
-        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt"
-        else {"start_new_session": True}
-    )
-    proc = subprocess.Popen(
-        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
-        cwd = FRONTEND,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        **process_group,
-    )
-    threading.Thread(target = drain_process_output, args = (proc,), daemon = True).start()
-    return proc
-
-
-def stop_process(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
-        return
-
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T"],
-            check = False,
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        )
-    else:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-
-    try:
-        proc.wait(timeout = 10)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                check = False,
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-            )
-        else:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        proc.wait(timeout = 10)
-
-
 def main() -> None:
     ART.mkdir(parents = True, exist_ok = True)
-    info(f"starting vite dev server in {FRONTEND}")
-    vite = start_vite()
+    info(f"starting vite dev server on port {PORT}")
+    vite = start_vite(PORT)
     try:
-        wait_for_vite()
-        info(f"vite ready at {BASE}")
+        wait_for_smoke_page(f"{BASE}/smoke-ansi.html", "smoke-ansi-main.tsx", info = info)
 
         with sync_playwright() as playwright:
             browser_name = os.environ.get("PW_BROWSER", "chromium").lower()

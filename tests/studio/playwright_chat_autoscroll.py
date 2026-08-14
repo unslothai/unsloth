@@ -26,8 +26,10 @@ not the WebKitGTK webview the desktop app embeds, so what transfers is the work,
 absolute timings.
 
 Run:
-    cd studio/frontend && npx vite --port 5193 &
-    SMOKE_BASE_URL=http://127.0.0.1:5193 python tests/studio/playwright_chat_autoscroll.py
+    python tests/studio/playwright_chat_autoscroll.py
+
+It starts and stops its own vite dev server. Point it at one you already have with
+SMOKE_BASE_URL, or move the port it picks with SMOKE_PORT.
 """
 
 from __future__ import annotations
@@ -41,9 +43,18 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import chromium_launch_args  # noqa: E402
+from _playwright_robust import (  # noqa: E402
+    chromium_launch_args,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
-BASE = os.environ.get("SMOKE_BASE_URL", "http://127.0.0.1:5193")
+PORT = int(os.environ.get("SMOKE_PORT", "5193"))
+# Set SMOKE_BASE_URL to point at a server you already have; otherwise this file starts and
+# stops its own, so `python tests/studio/playwright_chat_autoscroll.py` is the whole command.
+BASE = os.environ.get("SMOKE_BASE_URL", f"http://127.0.0.1:{PORT}")
+OWNS_SERVER = "SMOKE_BASE_URL" not in os.environ
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-chat-autoscroll"))
 OUT.mkdir(parents = True, exist_ok = True)
@@ -137,13 +148,14 @@ def run() -> dict:
         page.wait_for_timeout(800)
         results["seeded"] = page.evaluate("window.__autoscroll.metrics()")
 
-        # 1. Streaming.
+        # 1. Streaming. Clock and counter start and stop together inside the page, so they
+        # bracket one interval; split across round trips they do not, and the rate drifts.
         before = metrics(cdp)
-        stream_started = page.evaluate("performance.now()")
-        page.evaluate(
-            """async ([count, gap]) => {
+        streamed = page.evaluate(
+            """async ([count, gap, tailMs]) => {
                 window.__longTasks.length = 0;
                 window.__rafCount = 0;
+                const started = performance.now();
                 for (let i = 0; i < count; i += 1) {
                     window.__autoscroll.token("token " + i + " ");
                     // A finished message every 20 tokens, so childList mutations are in the mix
@@ -151,17 +163,19 @@ def run() -> dict:
                     if (i > 0 && i % 20 === 0) window.__autoscroll.block();
                     await new Promise((r) => setTimeout(r, gap));
                 }
+                // The tail is part of the measurement: re-arming after the last token is the
+                // failure mode, so count those frames rather than stopping the clock early.
+                await new Promise((r) => setTimeout(r, tailMs));
+                return { wallMs: performance.now() - started, rafCallbacks: window.__rafCount };
             }""",
-            [TOKEN_COUNT, TOKEN_GAP_MS],
+            [TOKEN_COUNT, TOKEN_GAP_MS, 1200],
         )
-        page.wait_for_timeout(1200)
-        stream_window_ms = page.evaluate("started => performance.now() - started", stream_started)
         after = metrics(cdp)
         long_tasks = page.evaluate("window.__longTasks")
         results["stream"] = {
             "tokens": TOKEN_COUNT,
-            "wall_ms": round(stream_window_ms, 1),
-            "raf_callbacks": page.evaluate("window.__rafCount"),
+            "wall_ms": round(streamed["wallMs"], 1),
+            "raf_callbacks": streamed["rafCallbacks"],
             "long_tasks": len(long_tasks),
             "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
             "layout_count": delta(before, after, "LayoutCount"),
@@ -247,7 +261,17 @@ def run() -> dict:
 
 
 def main() -> int:
-    results = run()
+    vite = None
+    if OWNS_SERVER:
+        info(f"starting vite dev server on port {PORT}")
+        vite = start_vite(PORT)
+    try:
+        wait_for_smoke_page(f"{BASE}/smoke-autoscroll.html", "smoke-autoscroll-main.tsx", info = info)
+        results = run()
+    finally:
+        if vite is not None:
+            stop_process(vite)
+            info("vite stopped")
     stream_seconds = max(0.001, results["stream"]["wall_ms"] / 1000)
     raf_rate = results["stream"]["raf_callbacks"] / stream_seconds
     results["stream"]["raf_per_second"] = round(raf_rate, 1)

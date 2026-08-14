@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -17,6 +19,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
+
+FRONTEND = Path(__file__).resolve().parents[2] / "studio" / "frontend"
 
 # Chromium launch args.
 # Throttling flags stop Chromium deprioritising CPU/timers when it thinks the
@@ -100,6 +104,105 @@ def install_view_transition_killer(ctx: Any) -> None:
 # On the macos-14 free runner /api/health can return 200 while /api/auth still
 # 503s (auth DB mid-migration); this in-script probe catches that gap before a
 # 60s change-password timeout.
+
+
+# The smoke pages are dev-server-only (no rollupOptions.input, so `vite build` emits
+# index.html alone). Each harness owns its server: a backgrounded `npm run dev &` puts the
+# npm WRAPPER in $!, so killing that orphans the node child holding the port and stdout.
+# Hence the process group, the stdout drain, and the SIGTERM-then-SIGKILL teardown below.
+
+
+def drain_process_output(proc: subprocess.Popen[str]) -> None:
+    if proc.stdout is not None:
+        for _ in proc.stdout:
+            pass
+
+
+def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
+    """Start `vite dev` on `port` in its own process group, with stdout drained."""
+    process_group = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
+    proc = subprocess.Popen(
+        ["npm", "run", "dev", "--", "--host", host, "--port", str(port), "--strictPort"],
+        cwd = FRONTEND,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+        **process_group,
+    )
+    threading.Thread(target = drain_process_output, args = (proc,), daemon = True).start()
+    return proc
+
+
+def stop_process(proc: subprocess.Popen[str]) -> None:
+    """SIGTERM the process group, escalating to SIGKILL if it does not go."""
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T"],
+            check = False,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+        )
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+    try:
+        proc.wait(timeout = 10)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check = False,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+            )
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.wait(timeout = 10)
+
+
+def wait_for_smoke_page(
+    url: str,
+    entry: str,
+    *,
+    timeout_s: float = 120.0,
+    info: Callable[[str], None] | None = None,
+) -> None:
+    """Block until `url` serves a page that really references `entry`.
+
+    Vite's SPA fallback answers 200 with index.html for any path it cannot resolve, so a
+    deleted smoke page still looks healthy. Match the module specifier, not the status.
+    """
+    deadline = time.monotonic() + timeout_s
+    last = "no response"
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout = 3.0) as r:
+                body = r.read().decode("utf-8", errors = "replace")
+                if r.status == 200 and entry in body:
+                    if info is not None:
+                        info(f"{url} ready (serves {entry})")
+                    return
+                last = (
+                    f"status={r.status}, {entry} "
+                    f"{'present' if entry in body else 'MISSING (SPA fallback?)'}"
+                )
+        except Exception as exc:
+            last = f"{type(exc).__name__}: {exc}"
+        time.sleep(0.5)
+    raise RuntimeError(f"vite did not serve {url} referencing {entry} within {timeout_s}s ({last})")
 
 
 def _http_get_status_and_body(url: str, timeout: float) -> tuple[int, dict | None]:

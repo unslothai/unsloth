@@ -28,5 +28,10 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "smoke-autoscroll-main.tsx", "smoke-research-main.tsx"]
+  "include": [
+    "src",
+    "smoke-ansi-main.tsx",
+    "smoke-autoscroll-main.tsx",
+    "smoke-research-main.tsx"
+  ]
 }

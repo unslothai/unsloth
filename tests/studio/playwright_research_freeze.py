@@ -18,8 +18,10 @@ MarkdownPreview against the real store, so nothing here is a mock of the code un
 against a vite dev server; no backend, no auth, no GPU.
 
 Run:
-    cd studio/frontend && npx vite --port 5183 &
-    SMOKE_BASE_URL=http://127.0.0.1:5183 python tests/studio/playwright_research_freeze.py
+    python tests/studio/playwright_research_freeze.py
+
+It starts and stops its own vite dev server. Point it at one you already have with
+SMOKE_BASE_URL, or move the port it picks with SMOKE_PORT.
 """
 
 from __future__ import annotations
@@ -33,9 +35,18 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import chromium_launch_args  # noqa: E402
+from _playwright_robust import (  # noqa: E402
+    chromium_launch_args,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
-BASE = os.environ.get("SMOKE_BASE_URL", "http://127.0.0.1:5183")
+PORT = int(os.environ.get("SMOKE_PORT", "5183"))
+# Set SMOKE_BASE_URL to point at a server you already have; otherwise this file starts and
+# stops its own, so `python tests/studio/playwright_research_freeze.py` is the whole command.
+BASE = os.environ.get("SMOKE_BASE_URL", f"http://127.0.0.1:{PORT}")
+OWNS_SERVER = "SMOKE_BASE_URL" not in os.environ
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-research-freeze"))
 OUT.mkdir(parents = True, exist_ok = True)
@@ -55,8 +66,11 @@ MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "45"))
 # of slack covers a settle check landing just inside the window; more means a loop that never let
 # go, which is what left the reporter's window unresponsive.
 MAX_IDLE_RAF_PER_2S = int(os.environ.get("SMOKE_MAX_IDLE_RAF", "4"))
-# A timer queued before publishing measures how long report work keeps input off the main thread.
-REPORT_INPUT_DELAY_BUDGET_MS = int(os.environ.get("SMOKE_REPORT_INPUT_BUDGET_MS", "500"))
+# Longest the report work keeps the main thread from servicing a timer. A stall detector,
+# not Event Timing input delay: nothing here reads an input timestamp. Measured 131.9ms on
+# one box and 342-416ms on a loaded one, so 500 left just 1.2x; 1000 keeps ~2.4x and still
+# fails ten times the report size (1518ms at SMOKE_REPORT_SECTIONS=400).
+MAIN_THREAD_STALL_BUDGET_MS = int(os.environ.get("SMOKE_REPORT_STALL_BUDGET_MS", "1000"))
 
 # A real deep research run's size, with the three costliest things to render: fenced code (shiki),
 # a table, and display math (KaTeX).
@@ -227,29 +241,44 @@ def run() -> dict:
         report = build_report(int(os.environ.get("SMOKE_REPORT_SECTIONS", "40")))
         before = metrics(cdp)
         page.evaluate("window.__longTasks.length = 0")
+        clicks_before_report = page.evaluate("window.__research.clicks()")
+        # The probe deliberately does not click: a synthetic element.click() skips hit testing,
+        # so it lands even with `body { pointer-events: none }` stranded, the freeze under test.
         page.evaluate(
             """md => {
-                window.__reportInputDelayMs = 0;
+                window.__reportStallMs = 0;
                 let previous = performance.now();
                 const probe = () => {
                     const now = performance.now();
-                    window.__reportInputDelayMs = Math.max(
-                        window.__reportInputDelayMs,
+                    window.__reportStallMs = Math.max(
+                        window.__reportStallMs,
                         now - previous,
                     );
                     previous = now;
-                    window.__reportInputProbe = setTimeout(probe, 16);
+                    window.__reportStallProbe = setTimeout(probe, 16);
                 };
-                window.__reportInputProbe = setTimeout(() => {
-                    document.querySelector('[data-smoke="click-probe"]').click();
-                    probe();
-                }, 16);
+                window.__reportStallProbe = setTimeout(probe, 16);
                 window.__research.publishReport(md);
             }""",
             report,
         )
+        # A real input event during the parse: hit-tested, so a stranded modal layer fails it.
+        # If the main thread is blocked this lands late, but it must land.
+        # Record a blocked click as a verdict; raising would lose every other measurement.
+        try:
+            page.click('[data-smoke="click-probe"]', timeout = 10_000)
+            report_click_landed = True
+        except Exception as exc:
+            report_click_landed = False
+            info(f"the click during the report parse never became actionable: {exc!r}")
         page.wait_for_timeout(3000)
-        page.evaluate("clearTimeout(window.__reportInputProbe)")
+        # Disarm only after the window closes, so a stall at its very end is still sampled.
+        page.evaluate(
+            """() => {
+                clearTimeout(window.__reportStallProbe);
+                window.__reportStallMs = Math.max(window.__reportStallMs, 0);
+            }"""
+        )
         after = metrics(cdp)
         long_tasks = page.evaluate("window.__longTasks")
         results["report"] = {
@@ -257,8 +286,9 @@ def run() -> dict:
             "long_tasks": len(long_tasks),
             "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
             "task_ms": round(delta(before, after, "TaskDuration") * 1000, 1),
-            "input_delay_ms": round(page.evaluate("window.__reportInputDelayMs"), 1),
-            "clicks_registered": page.evaluate("window.__research.clicks()"),
+            "main_thread_stall_ms": round(page.evaluate("window.__reportStallMs"), 1),
+            "clicks_registered": page.evaluate("window.__research.clicks()") - clicks_before_report,
+            "click_landed": report_click_landed,
             "rendered": page.evaluate(
                 "() => Boolean(document.querySelector('[data-smoke=\\\"report\\\"] h1'))"
             ),
@@ -339,7 +369,17 @@ def run() -> dict:
 
 
 def main() -> int:
-    results = run()
+    vite = None
+    if OWNS_SERVER:
+        info(f"starting vite dev server on port {PORT}")
+        vite = start_vite(PORT)
+    try:
+        wait_for_smoke_page(f"{BASE}/smoke-research.html", "smoke-research-main.tsx", info = info)
+        results = run()
+    finally:
+        if vite is not None:
+            stop_process(vite)
+            info("vite stopped")
     out = OUT / f"{LABEL}.json"
     out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
     info(json.dumps(results, indent = 2))
@@ -387,13 +427,24 @@ def main() -> int:
         failures.append("the report never rendered")
     # The modal checks below compare click counts against a baseline, so they still pass if this
     # one was swallowed. Responsiveness during the report parse is the reported symptom; assert it.
+    # Hit-tested, so a stranded `body { pointer-events: none }` fails here; a synthetic
+    # element.click() would land straight on the handler and pass on that same tree.
+    if not results["report"]["click_landed"]:
+        failures.append(
+            "a real click during the report parse never became actionable; the window was "
+            "not taking input"
+        )
     if results["report"]["clicks_registered"] < 1:
         failures.append("the click during the report parse never reached its handler")
-    if results["report"]["input_delay_ms"] > REPORT_INPUT_DELAY_BUDGET_MS:
+    if results["report"]["main_thread_stall_ms"] > MAIN_THREAD_STALL_BUDGET_MS:
         failures.append(
-            f"report rendering delayed input by {results['report']['input_delay_ms']}ms, over the "
-            f"{REPORT_INPUT_DELAY_BUDGET_MS}ms budget"
+            f"report rendering stalled the main thread for "
+            f"{results['report']['main_thread_stall_ms']}ms, over the "
+            f"{MAIN_THREAD_STALL_BUDGET_MS}ms budget"
         )
+    # Zero means the probe never took a second sample: the budget above measured nothing.
+    if results["report"]["main_thread_stall_ms"] <= 0:
+        failures.append("the stall probe recorded no samples; the budget above measured nothing")
     detach = results["detach"]
     if not detach["overflowing"]:
         failures.append("the activity list never overflowed; the detach checks proved nothing")

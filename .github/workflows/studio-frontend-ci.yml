@@ -21,6 +21,9 @@ on:
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
+      # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_autoscroll_harness_contract.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
@@ -42,7 +45,8 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Two browser smokes (~50s) plus the Chromium install now sit inside this.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: studio/frontend
@@ -163,16 +167,15 @@ jobs:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
 
-      - name: Browser smoke for research autoscroll
+      # Each harness owns its vite dev server, like the ANSI smoke above. Starting one here
+      # would background npm, so $! is the wrapper and killing it orphans the node child.
+      - name: Browser smoke for chat autoscroll
         working-directory: ${{ github.workspace }}
-        run: |
-          npm --prefix studio/frontend run dev -- --host 127.0.0.1 --port 5183 --strictPort &
-          VITE_PID=$!
-          trap 'kill "$VITE_PID" 2>/dev/null || true' EXIT
-          curl --retry 60 --retry-delay 1 --retry-connrefused --fail --silent \
-            http://127.0.0.1:5183/smoke-research.html >/dev/null
-          SMOKE_BASE_URL=http://127.0.0.1:5183 python3 tests/studio/playwright_chat_autoscroll.py
-          SMOKE_BASE_URL=http://127.0.0.1:5183 python3 tests/studio/playwright_research_freeze.py
+        run: python3 tests/studio/playwright_chat_autoscroll.py
+
+      - name: Browser smoke for research freeze
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_research_freeze.py
 
       - name: Build
         run: npm run build
