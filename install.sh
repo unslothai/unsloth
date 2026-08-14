@@ -703,13 +703,16 @@ _resolve_studio_destinations
 # for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+
+# Reject an unsupported --python/UNSLOTH_PYTHON, ahead of every install step and of
+# the venv replacement that would otherwise act on it. Above the rollback block, not
+# inside it: tests/sh/test_install_rollback_lifecycle.sh extracts that block verbatim
+# and runs it under dash, where a call to a function defined elsewhere is a 127.
+_gate_python_request
+
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
-
-# Reject an unsupported --python/UNSLOTH_PYTHON, ahead of every install step and of
-# the venv replacement that would otherwise act on it.
-_gate_python_request
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
