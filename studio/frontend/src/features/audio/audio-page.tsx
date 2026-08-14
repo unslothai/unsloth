@@ -74,6 +74,7 @@ import {
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
@@ -295,6 +296,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     repoId: string;
     ggufFilename?: string | null;
     loadId?: string | null;
+    audioType?: string | null;
   } | null>(null);
   const ttsStatusRefreshGeneration = useRef(0);
   const ttsLoadGeneration = useRef(0);
@@ -691,12 +693,18 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // display repo id instead failed offline, or re-downloaded into the active cache.
       // Chat threads the same field (chat-page.tsx).
       loadId?: string | null,
+      audioType?: string | null,
     ) => {
       // A routed pick that arrives while a previous load is still tearing down would
       // otherwise be dropped here, and the route effect has already cleared ?model=, so
       // nothing retries it. Remembered and replayed from the finally below instead.
       if (ttsLoadInFlight.current) {
-        pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
+        pendingRoutedTtsPick.current = {
+          repoId,
+          ggufFilename,
+          loadId,
+          audioType,
+        };
         return;
       }
       const generation = ++ttsLoadGeneration.current;
@@ -731,7 +739,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             load_in_4bit: false,
             is_lora: false,
             gguf_variant: ggufFilename ?? null,
-            trust_remote_code: audioModelRequiresRemoteCode(repoId),
+            trust_remote_code: audioModelRequiresRemoteCode(repoId, audioType),
           },
           {
             signal: controller.signal,
@@ -786,7 +794,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const queued = pendingRoutedTtsPick.current;
     if (!queued) return;
     pendingRoutedTtsPick.current = null;
-    void loadTtsModelRef.current(queued.repoId, queued.ggufFilename, queued.loadId);
+    void loadTtsModelRef.current(
+      queued.repoId,
+      queued.ggufFilename,
+      queued.loadId,
+      queued.audioType,
+    );
   }, []);
   const invalidatePendingStagedTts = useCallback(() => {
     stagedTtsGeneration.current += 1;
@@ -922,7 +935,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // may keep downloading globally, but its old completion cannot load here.
       invalidatePendingStagedTts();
       stageTtsDownload([]);
-      void loadTtsModelRef.current(repoId, ggufFilename, meta.loadId);
+      void loadTtsModelRef.current(
+        repoId,
+        ggufFilename,
+        meta.loadId,
+        meta.audioType,
+      );
     },
     [invalidatePendingStagedTts, stageTtsDownload],
   );
@@ -1117,15 +1135,28 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const handleModelSelect = useCallback(
     async (id: string, meta: ModelSelectorChangeMeta) => {
       if (busyRef.current !== null) return;
+      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or
+      // every community ASR repo would load into the TTS slot.
+      const task = resolveAudioPickTask(audioTaskFor(id), meta.pipelineTag);
+      const musicPick =
+        task !== "stt" && isMusicGenerationModel(id, meta.audioType);
+      const selectionGeneration = ++ttsPickGeneration.current;
+      if (musicPick) {
+        const system = await fetchSystemInfo();
+        if (selectionGeneration !== ttsPickGeneration.current) return;
+        if (system?.device_backend !== "cuda") {
+          toast.error(
+            `${id} requires a verified NVIDIA CUDA GPU for local generation.`,
+            { duration: 7000 },
+          );
+          return;
+        }
+      }
       // Selecting a different artifact while recording is a lifecycle change
       // even when it stays in Transcribe mode; never let the old capture submit
       // against a sidecar that this pick is replacing.
       stopAndDiscardRecording();
       deferredSttLoad.current = null;
-      const selectionGeneration = ++ttsPickGeneration.current;
-      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or
-      // every community ASR repo would load into the TTS slot.
-      const task = resolveAudioPickTask(audioTaskFor(id), meta.pipelineTag);
       if (task === "stt") {
         // An STT pick owns Transcribe: it runs on the sidecar, not the main slot.
         if (!transitionMode("transcribe")) return;
@@ -1157,7 +1188,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       );
       const ggufSibling = isGguf ? null : ggufSiblingFor(id);
       const nativeRuntime =
-        usesNativeAudioRuntime(id) && !isMusicGenerationModel(id);
+        usesNativeAudioRuntime(id, meta.audioType) && !musicPick;
       const macAction = macTtsPickAction({
         isMac,
         isGguf,
@@ -1166,7 +1197,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       });
       if (macAction === "reject") {
         toast.error(
-          isMusicGenerationModel(id)
+          musicPick
             ? `${id} currently requires an NVIDIA CUDA GPU and cannot run locally on this Mac.`
             : `${id} has no runnable GGUF TTS build. MLX cannot generate text-to-speech from its safetensors checkpoint on this Mac.`,
           { duration: 7000 },
@@ -1409,7 +1440,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     generateAbort.current = controller;
     try {
       const generated = await generateAudio(text, {
-        ...(temperatureEdited ? { temperature } : {}),
+        ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
         max_tokens: maxTokens,
         ...(musicGeneration && instructions
           ? { audio_instructions: instructions }
@@ -2016,16 +2047,22 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 <AdvancedDisclosure
                   open={advancedOpen}
                   onOpenChange={setAdvancedOpen}
-                  description="Generation sampling. Changes apply to the next audio clip."
+                  description={
+                    musicGeneration
+                      ? "Generation length. Changes apply to the next audio clip."
+                      : "Generation sampling. Changes apply to the next audio clip."
+                  }
                 >
-                  <ParamSlider
-                    label="Temperature"
-                    value={temperature}
-                    min={0}
-                    max={1.5}
-                    step={0.05}
-                    onChange={handleTemperatureChange}
-                  />
+                  {!musicGeneration ? (
+                    <ParamSlider
+                      label="Temperature"
+                      value={temperature}
+                      min={0}
+                      max={1.5}
+                      step={0.05}
+                      onChange={handleTemperatureChange}
+                    />
+                  ) : null}
                   <ParamSlider
                     label="Max tokens"
                     value={maxTokens}

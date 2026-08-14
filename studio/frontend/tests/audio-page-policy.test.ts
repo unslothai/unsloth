@@ -30,6 +30,17 @@ const chatApiSource = readFileSync(
   new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
   "utf8",
 );
+const audioCatalogSource = readFileSync(
+  new URL("../src/features/audio/catalog.ts", import.meta.url),
+  "utf8",
+);
+const modelPickerSource = readFileSync(
+  new URL(
+    "../src/features/model-picker/components/model-selector/pickers.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
@@ -151,6 +162,44 @@ test("hidden MiniMax instructions are not sent to speech models", () => {
   assert.match(
     audioPageSource,
     /musicGeneration && instructions[\s\S]*audio_instructions: instructions/,
+  );
+});
+
+test("local native audio architecture metadata drives runtime and consent", () => {
+  assert.match(modelPickerSource, /audioType: adapter\.audioType \?\? null/);
+  assert.match(audioPageSource, /usesNativeAudioRuntime\(id, meta\.audioType\)/);
+  assert.match(
+    audioPageSource,
+    /audioModelRequiresRemoteCode\(repoId, audioType\)/,
+  );
+  for (const audioType of [
+    "higgs_tts2",
+    "moss_tts_local",
+    "moss_tts_nano",
+    "higgs_tts3",
+    "minimax_music3",
+  ]) {
+    assert.match(audioCatalogSource, new RegExp(`"${audioType}"`));
+  }
+});
+
+test("MiniMax is rejected before model selection mutates page lifecycle", () => {
+  const musicPick = audioPageSource.indexOf("const musicPick =");
+  const hardwareCheck = audioPageSource.indexOf("await fetchSystemInfo()", musicPick);
+  const stopRecording = audioPageSource.indexOf("stopAndDiscardRecording();", musicPick);
+  assert.ok(musicPick >= 0 && hardwareCheck > musicPick);
+  assert.ok(stopRecording > hardwareCheck);
+  assert.match(audioPageSource, /system\?\.device_backend !== "cuda"/);
+});
+
+test("MiniMax hides and omits the unsupported temperature control", () => {
+  assert.match(
+    audioPageSource,
+    /!musicGeneration && temperatureEdited \? \{ temperature \} : \{\}/,
+  );
+  assert.match(
+    audioPageSource,
+    /!musicGeneration \? \([\s\S]*label="Temperature"[\s\S]*\) : null/,
   );
 });
 

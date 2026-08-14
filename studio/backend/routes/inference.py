@@ -6858,6 +6858,57 @@ async def _prepare_load_placement(
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
+async def _preflight_native_audio_placement(
+    config: ModelConfig,
+    request: LoadRequest | ValidateModelRequest,
+    placement: _LoadPlacement,
+) -> _LoadPlacement:
+    """Resolve native-audio placement before a resident model can be evicted."""
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    audio_type = getattr(config, "audio_type", None)
+    if audio_type not in NATIVE_AUDIO_TYPES:
+        return placement
+
+    def _resolve() -> Optional[List[int]]:
+        import utils.hardware as hardware
+
+        device = hardware.get_device()
+        if audio_type == "minimax_music3":
+            if device != hardware.DeviceType.CUDA or hardware.IS_ROCM:
+                raise ValueError(
+                    "MiniMax Music 3 requires an NVIDIA CUDA GPU in its official "
+                    "local runtime."
+                )
+            if sys.version_info < (3, 10):
+                raise ValueError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")
+        if device not in (hardware.DeviceType.CUDA, hardware.DeviceType.XPU):
+            if placement.requested_gpu_ids:
+                raise ValueError(
+                    "Native audio GPU selection is only supported on CUDA and Intel XPU."
+                )
+            return None
+        resolved, _metadata = hardware.prepare_gpu_selection(
+            placement.requested_gpu_ids,
+            model_name = config.identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = False,
+            max_seq_length = request.max_seq_length,
+        )
+        if resolved and len(resolved) > 1:
+            raise ValueError(
+                "Native audio models currently require one GPU. Select a single GPU; "
+                "multi-GPU sharding is not supported yet."
+            )
+        return resolved
+
+    try:
+        resolved = await asyncio.to_thread(_resolve)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return placement._replace(resolved_gpu_ids = resolved)
+
+
 def _inherited_batch_flags_stripped(request) -> bool:
     """Whether inheriting the resident extras drops a -b / -ub a set field supersedes.
 
@@ -8201,6 +8252,8 @@ async def _load_model_impl(
                     "architectures)"
                 )
 
+        placement = await _preflight_native_audio_placement(config, request, placement)
+
         # Apply the training coexistence policy before the unload step below
         # frees the resident model. Off-loop and guarded: the guard does sync HF work.
         await asyncio.to_thread(
@@ -8482,7 +8535,11 @@ async def _load_model_impl(
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            gpu_ids = placement.requested_gpu_ids,
+            gpu_ids = (
+                placement.resolved_gpu_ids
+                if placement.resolved_gpu_ids is not None
+                else placement.requested_gpu_ids
+            ),
             subject = current_subject,
             mlx_kv_bits = request.mlx_kv_bits,
             chat_template_override = request.chat_template_override,
@@ -8847,6 +8904,7 @@ async def validate_model(
         # the current model.
         placement = await _prepare_load_placement(config, request, effective_extra_args)
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        placement = await _preflight_native_audio_placement(config, request, placement)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.

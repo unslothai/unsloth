@@ -1339,22 +1339,19 @@ def _detect_audio_from_config(
 ) -> Optional[str]:
     """Detect native audio architectures whose tokenizer has no codec markers.
 
-    Curated remote IDs are handled before this helper. Here only a local
-    ``config.json`` is read, so capability detection never adds a Hub request or
-    fetches weights. A failed read deliberately falls through to the established
-    tokenizer detector so its definitive/transient semantics stay unchanged.
+    Curated remote IDs are handled before this helper. Here only bounded local
+    metadata is read, so capability detection never adds a Hub request or fetches
+    weights. A failed read deliberately falls through to the established tokenizer
+    detector so its definitive/transient semantics stay unchanged.
     """
     try:
         del hf_token, local_files_only, revision
         if not is_local_path(model_name):
             return None
         local_path = Path(normalize_path(model_name)).expanduser()
-        if local_path.is_file():
-            local_path = local_path.parent
-        config_path = local_path / "config.json"
+        from core.inference.native_audio import native_audio_type_from_local_path
 
-        raw_config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
-        return _AUDIO_MODEL_TYPES.get(str(raw_config.get("model_type") or "").lower())
+        return native_audio_type_from_local_path(str(local_path))
     except Exception as exc:
         logger.debug("Could not read audio model_type for '%s': %s", model_name, exc)
         return None

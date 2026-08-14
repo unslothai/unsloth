@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import json
+import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +19,10 @@ from core.inference.native_audio import (
     MOSS_NANO_CODEC_REPO,
     NativeAudioBackend,
     is_native_audio_model,
+    native_audio_type_from_local_path,
     native_audio_security_targets,
 )
+from utils.models.model_config import _detect_audio_from_config
 
 
 @pytest.mark.parametrize(
@@ -32,6 +37,27 @@ from core.inference.native_audio import (
 )
 def test_curated_repo_uses_native_audio_worker(repo):
     assert is_native_audio_model(repo)
+
+
+def test_local_minimax_modular_index_is_detected_without_config(tmp_path):
+    (tmp_path / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+
+    assert native_audio_type_from_local_path(str(tmp_path)) == "minimax_music3"
+    assert is_native_audio_model(str(tmp_path))
+    assert _detect_audio_from_config(str(tmp_path)) == "minimax_music3"
+
+    (tmp_path / "modular_model_index.json").write_text(
+        json.dumps({"_class_name": "UnrelatedPipeline"}), encoding = "utf-8"
+    )
+    assert native_audio_type_from_local_path(str(tmp_path)) is None
 
 
 @pytest.mark.parametrize(
@@ -58,6 +84,44 @@ def _backend(audio_type: str, **entry):
         }
     }
     return backend
+
+
+def test_native_audio_dtype_tracks_accelerator_bf16_support(monkeypatch):
+    backend = _backend("higgs_tts2")
+    backend.device = "cuda"
+
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5))
+    assert backend._dtype() is torch.float16
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (8, 0))
+    assert backend._dtype() is torch.bfloat16
+
+    monkeypatch.setattr(torch.version, "hip", "6.0", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    assert backend._dtype() is torch.float16
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+    assert backend._dtype() is torch.bfloat16
+
+
+def test_native_audio_context_uses_text_config_and_requested_cap():
+    config = SimpleNamespace(
+        max_position_embeddings = 8192,
+        text_config = SimpleNamespace(max_position_embeddings = 4096),
+    )
+    entry = {"model": SimpleNamespace(config = config)}
+
+    assert NativeAudioBackend._context_length(entry, 2048, "higgs_tts2") == 2048
+    assert NativeAudioBackend._context_length(entry, 8192, "higgs_tts2") == 4096
+    assert NativeAudioBackend._context_length(entry, 8192, "minimax_music3") == 0
+
+    moss_entry = {
+        "model": SimpleNamespace(
+            config = SimpleNamespace(
+                language_config = SimpleNamespace(max_position_embeddings = 32768)
+            )
+        )
+    }
+    assert NativeAudioBackend._context_length(moss_entry, 0, "moss_tts_local") == 32768
 
 
 def test_higgs_tts2_follows_chat_template_and_decode_contract():
@@ -122,6 +186,54 @@ def test_remote_code_audio_requires_explicit_consent_before_loading():
     )
     assert backend.load_model(config, trust_remote_code = True)
     assert seen == {"source": config.identifier, "trust": True}
+
+
+def test_native_audio_rejects_multi_gpu_before_loader_runs():
+    backend = NativeAudioBackend.__new__(NativeAudioBackend)
+    backend.device = "cuda"
+    backend.models = {}
+    backend.active_model_name = None
+    backend.loading_models = set()
+    backend._load_higgs_tts2 = lambda *_args: pytest.fail("loader must not run")
+    config = SimpleNamespace(
+        identifier = "bosonai/higgs-tts-2-3b-base",
+        path = None,
+        audio_type = "higgs_tts2",
+    )
+
+    with pytest.raises(RuntimeError, match = "single selected GPU"):
+        backend.load_model(config, gpu_ids = [0, 1])
+
+
+def test_minimax_component_load_receives_hub_token(monkeypatch):
+    seen = {}
+
+    class Pipeline:
+        sampling_rate = 44100
+
+        def load_components(self, **kwargs):
+            seen["components"] = kwargs
+
+        def to(self, device):
+            seen["device"] = device
+
+    class ModularPipeline:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            seen["source"] = source
+            seen["index"] = kwargs
+            return Pipeline()
+
+    monkeypatch.setitem(
+        sys.modules, "diffusers", SimpleNamespace(ModularPipeline = ModularPipeline)
+    )
+    backend = _backend("minimax_music3")
+    entry = {}
+    backend._load_minimax_music3(entry, "MiniMaxAI/MiniMax-Music3", "secret")
+
+    assert seen["index"]["token"] == "secret"
+    assert seen["components"]["token"] == "secret"
+    assert seen["device"] == "cpu"
 
 
 def test_moss_local_uses_generation_messages_and_stereo_decode():
@@ -265,6 +377,78 @@ def test_minimax_music3_omits_generator_without_a_seed():
 
     assert seen["audio_duration"] == 30.0
     assert "generator" not in seen
+
+
+def test_minimax_music3_cancellation_checks_autoregressive_forwards():
+    cancelled = threading.Event()
+    removed = []
+
+    class Handle:
+        def remove(self):
+            removed.append(True)
+
+    class LanguageModelCore:
+        hook = None
+
+        def register_forward_pre_hook(self, hook):
+            self.hook = hook
+            return Handle()
+
+    class LanguageModel:
+        model = LanguageModelCore()
+
+    class Pipeline:
+        language_model = LanguageModel()
+
+        def __call__(self, **_kwargs):
+            self.language_model.model.hook(self.language_model.model, ())
+            cancelled.set()
+            self.language_model.model.hook(self.language_model.model, ())
+            pytest.fail("cancelled autoregressive generation must stop before audio")
+
+    backend = _backend("minimax_music3", pipeline = Pipeline(), sample_rate = 44100)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate_audio_response(
+            "lyrics",
+            instructions = "description",
+            cancel_event = cancelled,
+        )
+    assert removed == [True]
+    assert backend.active_model_name == "test/model"
+
+
+def test_minimax_music3_cancellation_checks_denoising_forwards():
+    cancelled = threading.Event()
+    removed = []
+
+    class Handle:
+        def remove(self):
+            removed.append(True)
+
+    class Transformer:
+        hook = None
+
+        def register_forward_pre_hook(self, hook):
+            self.hook = hook
+            return Handle()
+
+    class Pipeline:
+        transformer = Transformer()
+
+        def __call__(self, **_kwargs):
+            self.transformer.hook(self.transformer, ())
+            cancelled.set()
+            self.transformer.hook(self.transformer, ())
+            pytest.fail("cancelled denoising must stop before audio")
+
+    backend = _backend("minimax_music3", pipeline = Pipeline(), sample_rate = 44100)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate_audio_response(
+            "lyrics",
+            instructions = "description",
+            cancel_event = cancelled,
+        )
+    assert removed == [True]
 
 
 def test_minimax_music3_requires_a_separate_music_description():

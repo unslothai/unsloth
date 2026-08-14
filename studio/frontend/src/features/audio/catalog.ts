@@ -39,21 +39,49 @@ const REMOTE_CODE_TTS_REPOS = new Set([
 ]);
 
 const MUSIC_GENERATION_REPOS = new Set(["minimaxai/minimax-music3"]);
+const NATIVE_TTS_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
+const REMOTE_CODE_TTS_AUDIO_TYPES = new Set([
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+]);
 
 const normalizedRepoId = (repoId: string): string =>
   repoId.trim().toLowerCase();
 
-export function usesNativeAudioRuntime(repoId: string): boolean {
-  return NATIVE_TTS_REPOS.has(normalizedRepoId(repoId));
+export function usesNativeAudioRuntime(
+  repoId: string,
+  audioType?: string | null,
+): boolean {
+  return (
+    NATIVE_TTS_REPOS.has(normalizedRepoId(repoId)) ||
+    Boolean(audioType && NATIVE_TTS_AUDIO_TYPES.has(audioType))
+  );
 }
 
-export function audioModelRequiresRemoteCode(repoId: string): boolean {
-  return REMOTE_CODE_TTS_REPOS.has(normalizedRepoId(repoId));
+export function audioModelRequiresRemoteCode(
+  repoId: string,
+  audioType?: string | null,
+): boolean {
+  return (
+    REMOTE_CODE_TTS_REPOS.has(normalizedRepoId(repoId)) ||
+    Boolean(audioType && REMOTE_CODE_TTS_AUDIO_TYPES.has(audioType))
+  );
 }
 
-export function isMusicGenerationModel(repoId?: string | null): boolean {
+export function isMusicGenerationModel(
+  repoId?: string | null,
+  audioType?: string | null,
+): boolean {
   return Boolean(
-    repoId && MUSIC_GENERATION_REPOS.has(normalizedRepoId(repoId)),
+    audioType === "minimax_music3" ||
+      (repoId && MUSIC_GENERATION_REPOS.has(normalizedRepoId(repoId))),
   );
 }
 

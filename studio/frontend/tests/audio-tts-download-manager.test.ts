@@ -31,7 +31,7 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
     source,
     // meta.loadId is the load target for a row cached in a non-active HF cache; sending
     // the display repo id instead failed offline or re-downloaded into the active cache.
-    /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\(repoId, ggufFilename, meta\.loadId\)/,
+    /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\([\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*meta\.loadId,[\s\S]*meta\.audioType/,
   );
   assert.match(source, /if \(busyRef\.current !== null\) return;/);
   assert.match(
@@ -43,7 +43,7 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
   // cleared ?model=, so nothing retried it.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}/,
+    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{[\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*loadId,[\s\S]*audioType,[\s\S]*\};\s*return;\s*\}/,
   );
   assert.match(
     source,

@@ -6512,6 +6512,7 @@ function FineTunedRows({
           isDownloaded: true,
           isGguf: false,
           pipelineTag: audioPipelineTagFor(adapter.audioType, true),
+          audioType: adapter.audioType ?? null,
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);

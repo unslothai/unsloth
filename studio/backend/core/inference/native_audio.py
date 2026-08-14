@@ -63,27 +63,64 @@ NATIVE_AUDIO_COMPANION_REPOS = {
     "higgs_tts3": (HIGGS_TTS3_CODEC_REPO,),
 }
 
+_MINIMAX_MODULAR_CLASSES = (
+    "MiniMaxMusic3ModularPipeline",
+    "MiniMaxMusic3Blocks",
+)
+
+
+def _read_local_audio_metadata(path: Path, filename: str) -> dict[str, Any]:
+    metadata_path = path / filename
+    if not metadata_path.is_file():
+        return {}
+    with metadata_path.open("rb") as handle:
+        raw = handle.read(1_000_001)
+    if len(raw) > 1_000_000:
+        return {}
+    value = json.loads(raw.decode("utf-8-sig"))
+    return value if isinstance(value, dict) else {}
+
+
+def native_audio_type_from_local_path(model_name: str) -> Optional[str]:
+    """Recognize a local native-audio checkpoint from bounded metadata files."""
+    normalized = str(model_name or "").strip()
+    if not normalized:
+        return None
+    try:
+        path = Path(normalized).expanduser()
+        if path.is_file():
+            path = path.parent
+        config = _read_local_audio_metadata(path, "config.json")
+        audio_type = NATIVE_AUDIO_MODEL_TYPES.get(
+            str(config.get("model_type") or "").lower()
+        )
+        if audio_type:
+            return audio_type
+        modular_index = _read_local_audio_metadata(path, "modular_model_index.json")
+        classes = (
+            modular_index.get("_class_name"),
+            modular_index.get("_blocks_class_name"),
+        )
+        if classes == _MINIMAX_MODULAR_CLASSES:
+            return "minimax_music3"
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return None
+
 
 def _native_audio_type(model_name: str) -> Optional[str]:
     normalized = str(model_name or "").strip()
     curated = NATIVE_AUDIO_MODEL_IDS.get(normalized.lower())
     if curated:
         return curated
-    try:
-        path = Path(normalized).expanduser()
-        if path.is_file():
-            path = path.parent
-        config = json.loads((path / "config.json").read_text(encoding = "utf-8-sig"))
-        return NATIVE_AUDIO_MODEL_TYPES.get(str(config.get("model_type") or "").lower())
-    except Exception:
-        return None
+    return native_audio_type_from_local_path(normalized)
 
 
 def is_native_audio_model(model_name: str) -> bool:
     """Whether ``model_name`` belongs in the portable native-audio worker.
 
     Curated Hub IDs are answered without network access. Local checkpoints are
-    recognized from their small ``config.json``; model weights are not opened.
+    recognized from small metadata files; model weights are not opened.
     """
     return _native_audio_type(model_name) is not None
 
@@ -173,11 +210,65 @@ class NativeAudioBackend:
     def _dtype(self):
         import torch
 
-        if self.device in ("cuda", "xpu"):
-            return torch.bfloat16
+        if self.device == "cuda":
+            if getattr(torch.version, "hip", None):
+                supports_bf16 = torch.cuda.is_bf16_supported()
+            else:
+                try:
+                    major, _minor = torch.cuda.get_device_capability()
+                    supports_bf16 = major >= 8 and torch.cuda.is_bf16_supported()
+                except Exception:
+                    supports_bf16 = False
+            return torch.bfloat16 if supports_bf16 else torch.float16
+        if self.device == "xpu":
+            supports_bf16 = getattr(torch.xpu, "is_bf16_supported", None)
+            return torch.bfloat16 if supports_bf16 is None or supports_bf16() else torch.float16
         if self.device == "mps":
             return torch.float16
         return torch.float32
+
+    @staticmethod
+    def _context_length(
+        entry: dict[str, Any], requested: int, audio_type: str
+    ) -> int:
+        if audio_type == "minimax_music3":
+            return 0
+        model = entry.get("model")
+        config = getattr(model, "config", None)
+        detected = 0
+        nested_configs = (
+            getattr(config, "language_config", None),
+            getattr(config, "qwen3_config", None),
+            getattr(config, "text_config", None),
+        )
+        for candidate in (*nested_configs, config):
+            if candidate is None:
+                continue
+            for name in (
+                "max_position_embeddings",
+                "max_sequence_length",
+                "max_seq_length",
+                "n_positions",
+                "seq_length",
+            ):
+                try:
+                    raw_value = (
+                        candidate.get(name, 0)
+                        if isinstance(candidate, dict)
+                        else getattr(candidate, name, 0)
+                    )
+                    value = int(raw_value or 0)
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    detected = value
+                    break
+            if detected:
+                break
+        requested = max(0, int(requested or 0))
+        if detected and requested:
+            return min(detected, requested)
+        return detected or requested
 
     def _move(self, model):
         model = model.to(self.device)
@@ -195,7 +286,7 @@ class NativeAudioBackend:
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
     ) -> bool:
-        del max_seq_length, dtype, load_in_4bit, gpu_ids
+        del dtype, load_in_4bit
         model_name = config.identifier
         audio_type = config.audio_type
         if audio_type not in NATIVE_AUDIO_TYPES:
@@ -204,6 +295,11 @@ class NativeAudioBackend:
             raise RuntimeError(
                 f"Model '{model_name}' requires trust_remote_code=True before its custom "
                 "Transformers classes can be loaded."
+            )
+        if gpu_ids is not None and len(gpu_ids) > 1:
+            raise RuntimeError(
+                "Native audio models currently require a single selected GPU; "
+                "multi-GPU sharding is not supported yet."
             )
         if audio_type == "minimax_music3" and self.device != "cuda":
             raise RuntimeError(
@@ -244,6 +340,10 @@ class NativeAudioBackend:
                 self._load_higgs_tts3(entry, source, hf_token, trust_remote_code)
             elif audio_type == "minimax_music3":
                 self._load_minimax_music3(entry, source, hf_token)
+
+            entry["context_length"] = self._context_length(
+                entry, max_seq_length, audio_type
+            )
 
             self.models[model_name] = entry
             self.active_model_name = model_name
@@ -335,8 +435,9 @@ class NativeAudioBackend:
     ) -> None:
         from diffusers import ModularPipeline
 
-        pipeline = ModularPipeline.from_pretrained(source, **self._token_kwargs(hf_token))
-        pipeline.load_components(dtype = self._dtype())
+        token_kwargs = self._token_kwargs(hf_token)
+        pipeline = ModularPipeline.from_pretrained(source, **token_kwargs)
+        pipeline.load_components(dtype = self._dtype(), **token_kwargs)
         pipeline.to(self.device)
         entry.update(pipeline = pipeline, sample_rate = int(pipeline.sampling_rate))
 
@@ -411,6 +512,7 @@ class NativeAudioBackend:
                 instructions,
                 max_new_tokens,
                 seed,
+                cancel_event,
             )
         else:
             raise RuntimeError(f"Unsupported native audio architecture: {audio_type}")
@@ -539,7 +641,9 @@ class NativeAudioBackend:
         )
         return audio, entry["sample_rate"]
 
-    def _generate_minimax_music3(self, entry, lyrics, instructions, max_new_tokens, seed):
+    def _generate_minimax_music3(
+        self, entry, lyrics, instructions, max_new_tokens, seed, cancel_event
+    ):
         import torch
 
         prompt = str(instructions or "").strip()
@@ -557,7 +661,34 @@ class NativeAudioBackend:
         )
         if generator is not None:
             pipeline_kwargs["generator"] = generator
-        audio = entry["pipeline"](**pipeline_kwargs)[0]
+        pipeline = entry["pipeline"]
+        cancel_hooks = []
+        if cancel_event is not None:
+            language_model = getattr(pipeline, "language_model", None)
+            targets = (
+                getattr(language_model, "model", None),
+                getattr(pipeline, "rvq_depth_decoder", None),
+                getattr(pipeline, "condition_encoder", None),
+                getattr(pipeline, "transformer", None),
+                getattr(pipeline, "vocoder", None),
+            )
+            seen_targets = set()
+            for target in targets:
+                if id(target) in seen_targets or not hasattr(
+                    target, "register_forward_pre_hook"
+                ):
+                    continue
+                seen_targets.add(id(target))
+                cancel_hooks.append(
+                    target.register_forward_pre_hook(
+                        lambda _module, _args: _raise_if_cancelled(cancel_event)
+                    )
+                )
+        try:
+            audio = pipeline(**pipeline_kwargs)[0]
+        finally:
+            for cancel_hook in cancel_hooks:
+                cancel_hook.remove()
         return audio, entry["sample_rate"]
 
     def unload_model(self, model_name: str) -> bool:
