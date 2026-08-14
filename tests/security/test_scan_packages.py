@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -4178,3 +4179,122 @@ def test_a_renamed_module_loader_is_followed_through_a_copy():
         )
         == []
     ), "a copy of something that is not a loader must stay clean"
+
+
+# `exec` in mathematical bold: the compiler NFKC-normalizes the NAME token to
+# `exec` before it resolves it, so this calls the builtin.
+_BOLD_EXEC = "".join(chr(c) for c in (0x1D41E, 0x1D431, 0x1D41E, 0x1D41C))
+
+
+def test_a_decorated_spelling_of_the_builtin_is_still_a_call_to_it():
+    # `𝐞𝐱𝐞𝐜(marshal.loads(BLOB))` runs the builtin, but neither ASCII word is in
+    # the source - so the substring test in front of the tokenize pass returned
+    # before anything could normalize the token, and the payload kept the
+    # non-blocking MEDIUM while the enforced HIGH gate saw no exec/eval at all.
+    assert unicodedata.normalize("NFKC", _BOLD_EXEC) == "exec"
+    for call in (
+        f"{_BOLD_EXEC}(marshal.loads(BLOB))",
+        "ｅｖａｌ(marshal.loads(BLOB))",  # fullwidth `eval`
+        f"b.{_BOLD_EXEC}(marshal.loads(BLOB))",  # through a plain module alias
+    ):
+        assert _high(
+            f"import builtins as b\n{_OBFUSCATION}{call}\n"
+        ), f"a decorated builtin must still be read as one: {call}"
+
+    # Admitted by the characters, not by "this file is not ASCII": prose in
+    # another alphabet folds into none of `exec`/`eval`, so the ordinary file
+    # keeps the substring test it has always had.
+    assert not sp._folds_to_exec_eval("# ordinary prose, plus 你好\n")
+    assert sp._folds_to_exec_eval(f"{_BOLD_EXEC}(payload)\n")
+
+    # And reading a decorated file invents nothing: a decorated method name on
+    # an ordinary object is not the builtin.
+    assert (
+        _high(f"{_OBFUSCATION}model = load_model()\nmodel.{_BOLD_EXEC}(x)\n", "pkg/_infer.py") == []
+    ), "a decorated attribute of something that is not the module must stay clean"
+
+
+def test_a_star_import_of_importlib_binds_the_loader():
+    # `from importlib import *` binds every name in the module's `__all__`, and
+    # `import_module` is one of them - so `import_module(n).exec(...)` under it
+    # reaches the builtin exactly as the explicit import does. Only an explicit
+    # `import_module` was recorded, so the star spelling was demoted to MEDIUM.
+    assert "import_module" in importlib.__all__
+    for call in (
+        "import_module(name).exec(marshal.loads(BLOB))",
+        "b = import_module('builtins')\nb.exec(marshal.loads(BLOB))",
+    ):
+        assert _high(
+            f"from importlib import *\n{_OBFUSCATION}{call}\n"
+        ), f"a star-imported loader must still be a loader: {call}"
+
+    # The star still has to be importlib's: a file that star-imports something
+    # else and calls its own `import_module` is ordinary code.
+    assert (
+        _high(
+            f"from os.path import *\n{_OBFUSCATION}b = import_module(name)\nb.eval()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a star import of another module binds no loader"
+
+
+def test_a_copy_written_above_its_import_is_still_the_module():
+    # A function body reads its names when it is called, so it sees what the
+    # module binds BELOW it: `def f(): c = b` above `import builtins as b`
+    # copies the module and `c.exec(marshal.loads(BLOB))` runs the builtin. The
+    # collecting pass reads the file in source order, so `c` was never recorded
+    # and the payload kept the non-blocking MEDIUM.
+    for body, call, tail in (
+        ("c = b", "c.exec(marshal.loads(BLOB))", "import builtins as b"),
+        ("c = b\nd = c", "d.exec(marshal.loads(BLOB))", "import builtins as b"),
+        # The same rename one step earlier: a copy of the LOADER, which only
+        # becomes one when the import below the body names it.
+        (
+            "copy = import_module",
+            "copy(name).exec(marshal.loads(BLOB))",
+            "from importlib import import_module",
+        ),
+    ):
+        indented = "\n".join("    " + line for line in body.splitlines())
+        payload = f"{_OBFUSCATION}def f():\n{indented}\n    {call}\n{tail}\n"
+        assert _high(payload), f"a deferred copy must be resolved:\n{payload}"
+
+    # The copy still has to be of an alias: a name the file never binds to the
+    # module leaves the call an ordinary one.
+    assert (
+        _high(
+            f"{_OBFUSCATION}def f():\n    c = b\n    c.eval()\nimport builtins\nb = load_model()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a copy of a name that is not the module must stay clean"
+
+
+def test_a_walrus_in_a_scope_of_its_own_does_not_cancel_the_alias():
+    # A lambda body binds its own local, and a generator expression binds the
+    # containing scope only when it is iterated - so neither changes the outer
+    # `b`, and cancelling the alias there dropped a real
+    # `b.exec(marshal.loads(BLOB))` to the non-blocking MEDIUM.
+    for nested in (
+        "f = lambda: (b := model)",
+        "g = ((b := y) for y in items)",
+        "n = sum((b := y) for y in items)",
+    ):
+        assert _high(
+            f"import builtins as b\n{_OBFUSCATION}{nested}\n{_ALIAS_CALL}"
+        ), f"a walrus in a scope of its own must not cancel the alias: {nested}"
+
+    # A comprehension runs where it is written and PEP 572 puts its walrus in
+    # the containing scope, so that one still cancels - as does a lambda
+    # DEFAULT, which is evaluated in the enclosing scope too.
+    for cancels in (
+        "xs = [(b := y) for y in items]",
+        "xs = {(b := y) for y in items}",
+        "xs = [f((b := y)) for y in items]",
+        "f = lambda x = (b := model): x",
+    ):
+        assert (
+            _high(f"import builtins as b\n{_OBFUSCATION}{cancels}\n{_ALIAS_CALL}", "pkg/_infer.py")
+            == []
+        ), f"a walrus that really rebinds must still cancel the alias: {cancels}"

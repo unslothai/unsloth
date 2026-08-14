@@ -155,6 +155,10 @@ _BUILTINS_LEN = len("builtins")
 # The letters a decorated spelling of `builtins` has to fold into, so a
 # non-ASCII character that reaches none of them cannot be part of one.
 _BUILTINS_CHARS = frozenset("builtins")
+# The same, for the two builtin names themselves: a decorated `exec` spells no
+# ASCII word either, and the substring test in front of the tokenize pass is
+# what the call has to get past.
+_EXEC_EVAL_CHARS = frozenset("execval")
 # The loader calls a receiver can be: `__import__(...)` is a builtin and
 # `import_module(...)` needs only `from importlib import import_module`.
 # `__import__` is a builtin, so it means the loader in any file without being
@@ -163,6 +167,10 @@ _BUILTINS_CHARS = frozenset("builtins")
 # Trusting the bare name made `import_module(name).eval(x)` HIGH in any file that
 # defines or imports an unrelated function of that name.
 _DEFAULT_LOADER_FUNCS = frozenset(("__import__",))
+# How many `c = b` copies of a not-yet-known name one member may leave for the
+# resolving pass. A real file has a handful; the cap is what keeps a 64 MiB
+# member of them from being held in memory.
+_DEFERRED_COPY_CAP = 4096
 _OPENERS = frozenset(("(", "[", "{"))
 _CLOSERS = frozenset((")", "]", "}"))
 _COMPARISON_OPS = frozenset(("==", "!=", "<=", ">="))
@@ -299,6 +307,16 @@ def _ident(name: str) -> str:
     return name if name.isascii() else unicodedata.normalize("NFKC", name)
 
 
+def _folds_to(text: str, chars: frozenset) -> bool:
+    """Whether a non-ASCII character of `text` NFKC-folds into `chars`."""
+    if text.isascii():
+        return False
+    return any(
+        not ch.isascii() and not chars.isdisjoint(unicodedata.normalize("NFKC", ch))
+        for ch in set(text)
+    )
+
+
 def _folds_to_builtins(text: str) -> bool:
     """Whether `text` may spell `builtins` in a decorated alphabet.
 
@@ -315,12 +333,22 @@ def _folds_to_builtins(text: str) -> bool:
     decorated name, so a file whose only non-ASCII text is prose still skips the
     pass; ASCII files answer with the flag on the string object.
     """
-    if text.isascii():
-        return False
-    return any(
-        not ch.isascii() and not _BUILTINS_CHARS.isdisjoint(unicodedata.normalize("NFKC", ch))
-        for ch in set(text)
-    )
+    return _folds_to(text, _BUILTINS_CHARS)
+
+
+def _folds_to_exec_eval(text: str) -> bool:
+    """Whether `text` may spell `exec` or `eval` in a decorated alphabet.
+
+    `\U0001d41e\U0001d431\U0001d41e\U0001d41c(marshal.loads(BLOB))` calls the
+    builtin - PEP 3131 normalizes the NAME to `exec` before it is resolved -
+    while neither ASCII word appears in the source. The substring test that
+    keeps the tokenize pass off ordinary files read that as "nothing to
+    adjudicate", so the payload never reached the pass that normalizes tokens
+    and the enforced HIGH gate saw no exec/eval at all.
+
+    Answered from the DISTINCT characters, like `_folds_to_builtins`.
+    """
+    return _folds_to(text, _EXEC_EVAL_CHARS)
 
 
 def _mentions_name(text: str, names) -> bool:
@@ -643,7 +671,16 @@ def _collect_import_bindings(
                 items = items[1:-1] if items[-1].string == ")" else items[1:]
             for part in _split_top(items):
                 names = [t for t in part if t.type == tokenize.NAME]
-                if not names or names[0].string != "import_module":
+                if not names:
+                    # `from importlib import *` binds every name in the
+                    # module's `__all__`, and `import_module` is one of them -
+                    # so the star is the loader import written without its
+                    # name, and `import_module(n).exec(...)` under it reaches
+                    # the builtin exactly as the explicit spelling does.
+                    if any(t.type == tokenize.OP and t.string == "*" for t in part):
+                        loaders.funcs.add("import_module")
+                    continue
+                if names[0].string != "import_module":
                     continue
                 as_at = _name_index(part, "as")
                 if as_at is not None and as_at + 1 < len(part):
@@ -1144,6 +1181,59 @@ def _copied_alias(stmt: list) -> "str | None":
     return value[0].string
 
 
+def _deferred_copy(stmt: list) -> "tuple | None":
+    """`(targets, source)` for a `c = b` whose source is not an alias yet.
+
+    A function body runs when it is called, so it sees the names the module
+    binds BELOW it: `def f(): c = b` above `import builtins as b` copies the
+    module, and `c.exec(marshal.loads(BLOB))` in there runs the builtin. The
+    collecting pass reads the file in source order, so at `c = b` there is
+    nothing yet to copy; recording the pair lets the caller resolve it once the
+    whole file has been read.
+    """
+    source = _copied_alias(stmt)
+    if source is None:
+        return None
+    names = []
+    for group in _split_top(stmt, "=")[:-1]:
+        colon_at = _name_index_op(group, ":")  # annotated target: `c: Any = b`
+        if colon_at is not None:
+            group = group[:colon_at]
+        name, from_sequence = _unwrapped_target(group)
+        if name is None or from_sequence:
+            return None
+        names.append(name)
+    return (names, source) if names else None
+
+
+def _resolve_deferred_copies(deferred: list, modules: set, loaders: _Loaders) -> set:
+    """The names in `deferred` that a later import made copies of an alias.
+
+    Run to a fixed point, since a copy may itself be copied: `c = b` then
+    `d = c` above `import builtins as b` leaves both the module. The list is
+    the file's plain name-to-name assignments, so each round is cheap and the
+    number of rounds is bounded by its length.
+    """
+    resolved: set = set()
+    changed = True
+    while changed:
+        changed = False
+        for names, source in deferred:
+            in_modules = source in modules
+            in_loaders = source in loaders.funcs
+            if not in_modules and not in_loaders:
+                continue
+            for name in names:
+                if in_modules and name not in modules:
+                    modules.add(name)
+                    resolved.add(name)
+                    changed = True
+                if in_loaders and name not in loaders.funcs:
+                    loaders.funcs.add(name)
+                    changed = True
+    return resolved
+
+
 def _walrus_bindings(
     stmt: list,
     loaders: _Loaders,
@@ -1376,6 +1466,9 @@ def _collect_rebindings(
     # each separator, because a short-circuit operator only guards the operand
     # written to its right.
     skippable = [False]
+    # The walruses written in a scope of their own, derived once and only for a
+    # statement that holds one at all.
+    nested: "set | None" = None
     for j, tok in enumerate(stmt):
         if tok.type == tokenize.OP:
             text = tok.string
@@ -1390,7 +1483,10 @@ def _collect_rebindings(
                     skippable[depth] = False
             elif text == ":=":
                 if j and stmt[j - 1].type == tokenize.NAME and not any(skippable[: depth + 1]):
-                    rebound.add(stmt[j - 1].string)
+                    if nested is None:
+                        nested = _nested_walrus(stmt)
+                    if j not in nested:
+                        rebound.add(stmt[j - 1].string)
             continue
         if tok.type != tokenize.NAME:
             continue
@@ -1624,6 +1720,55 @@ def _lambda_body_end(stmt: list, colon: int) -> int:
         end = k
         k += 1
     return end
+
+
+def _nested_walrus(stmt: list) -> set:
+    """The indices of the `:=` tokens that cannot rebind the enclosing name.
+
+    Two shapes, both of which left `import builtins as b` cancelled by an
+    assignment that never touches its `b`:
+
+    - a lambda body: `f = lambda: (b := model)` binds the lambda's own local,
+      so the outer name is still the module below it.
+    - a generator expression: PEP 572 puts the target in the containing scope,
+      but only when the generator is iterated - `g = (b := x for x in xs)`
+      that nobody consumes rebinds nothing. A list, set or dict comprehension
+      runs where it is written, so its walrus is an ordinary rebinding and is
+      NOT included here.
+    """
+    bodies: list = []
+    for j, tok in enumerate(stmt):
+        if tok.type == tokenize.NAME and tok.string == "lambda":
+            colon = _lambda_params(stmt, j, frozenset())[1]
+            if colon > 0:
+                bodies.append((colon, _lambda_body_end(stmt, colon)))
+    stack: list = []
+    # The bracket each `for` is written directly inside. A `(` holding one is a
+    # generator expression; a parenthesized `for` statement does not exist.
+    comprehensions: set = set()
+    walruses: list = []
+    for j, tok in enumerate(stmt):
+        if tok.type == tokenize.OP:
+            if tok.string in _OPENERS:
+                stack.append(j)
+            elif tok.string in _CLOSERS:
+                if stack:
+                    stack.pop()
+            elif tok.string == ":=":
+                walruses.append((j, tuple(stack)))
+        elif tok.type == tokenize.NAME and tok.string == "for" and stack:
+            comprehensions.add(stack[-1])
+    out: set = set()
+    for j, opened in walruses:
+        if any(start < j <= end for start, end in bodies):
+            out.add(j)
+            continue
+        for opener in reversed(opened):
+            if opener in comprehensions:
+                if stmt[opener].string == "(":
+                    out.add(j)
+                break
+    return out
 
 
 def _self_assigned(stmt: list) -> "set | None":
@@ -2960,8 +3105,16 @@ class _ExecEvalMatcher:
         # tokenizer for the files that have nothing to adjudicate. A function
         # alias (`from builtins import exec as run`) spells neither at the call
         # site, so those names have to be part of the test or `run(payload)`
-        # never reaches the tokenizer at all.
-        if "exec" not in text and "eval" not in text and not _mentions_name(text, self.funcs):
+        # never reaches the tokenizer at all. A decorated spelling of the
+        # builtin (`\U0001d41e\U0001d431\U0001d41e\U0001d41c(...)`) resolves to
+        # `exec` without either word appearing, and only the tokenize pass
+        # normalizes it, so it has to get past this test too.
+        if (
+            "exec" not in text
+            and "eval" not in text
+            and not _mentions_name(text, self.funcs)
+            and not _folds_to_exec_eval(text)
+        ):
             return []
         failed: list = []
         offsets = _Offsets(text)
@@ -3094,8 +3247,10 @@ class _ExecEvalPattern:
         # that file has to be read too - but only when it also holds a call to
         # reach through the alias, since `_scan` returns nothing without one.
         # A decorated identifier spells it without the word appearing either,
-        # which is what `_folds_to_builtins` catches.
-        if ("exec" in content or "eval" in content) and (
+        # which is what `_folds_to_builtins` catches - and the same goes for the
+        # attribute the call names, so `b.\U0001d41e\U0001d431\U0001d41e\U0001d41c(...)`
+        # under a plain `import builtins as b` still binds its alias here.
+        if ("exec" in content or "eval" in content or _folds_to_exec_eval(content)) and (
             "builtins" in content
             # A file that imports `import_module` binds a loader, and
             # `import_module(n).exec(...)` reaches the builtin without the word
@@ -3111,6 +3266,11 @@ class _ExecEvalPattern:
             # bound this way is left visible everywhere rather than confined to
             # some function that happens to import it too.
             by_value: set = set()
+            # The plain name-to-name copies whose source is not an alias yet.
+            # A deferred body reads its names when it is called, so a copy
+            # written above the import that names it still copies the module.
+            # Capped, since a hostile member is allowed to be 64 MiB of them.
+            deferred: list = []
             for stmt in _statements(content, failed):
                 head = stmt[0]
                 if head.type == tokenize.NAME and head.string in ("import", "from"):
@@ -3131,6 +3291,12 @@ class _ExecEvalPattern:
                     if parked:
                         by_value.update(parked)
                         modules.update(parked)
+                    elif len(deferred) < _DEFERRED_COPY_CAP:
+                        copy = _deferred_copy(stmt)
+                        if copy is not None:
+                            deferred.append(copy)
+            if deferred:
+                by_value |= _resolve_deferred_copies(deferred, modules, loaders)
             modules |= by_value
             if failed:
                 re_modules, re_funcs = _regex_bindings(content)
