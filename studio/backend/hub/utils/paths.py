@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from loggers import get_logger
+from utils.paths.output_storage import resolve_configured_outputs_root
 
 logger = get_logger(__name__)
 
@@ -75,7 +76,7 @@ def recipe_datasets_root() -> Path:
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return resolve_configured_outputs_root(default = studio_root() / "outputs")
 
 
 def exports_root() -> Path:

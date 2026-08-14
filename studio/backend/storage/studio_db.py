@@ -1001,6 +1001,8 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
+    from storage.db_snapshot import restore_snapshot_if_needed
+    restore_snapshot_if_needed(db_path)
     conn = sqlite3.connect(str(db_path), timeout = busy_timeout_seconds)
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
@@ -1064,6 +1066,8 @@ def create_run(
             if claimed.rowcount != 1:
                 raise RuntimeError("Resume source is no longer available")
         conn.commit()
+        from storage.db_snapshot import request_snapshot
+        request_snapshot(studio_db_path())
     finally:
         conn.close()
 
@@ -1146,6 +1150,8 @@ def finish_run(
             ),
         )
         conn.commit()
+        from storage.db_snapshot import request_snapshot
+        request_snapshot(studio_db_path())
     finally:
         conn.close()
 
@@ -1212,6 +1218,8 @@ def update_run_output_dir(id: str, output_dir: Optional[str]) -> None:
             (output_dir, id),
         )
         conn.commit()
+        from storage.db_snapshot import request_snapshot
+        request_snapshot(studio_db_path())
     finally:
         conn.close()
 
@@ -1455,6 +1463,8 @@ def delete_run(id: str) -> None:
             )
         conn.execute("DELETE FROM training_runs WHERE id = ?", (id,))
         conn.commit()
+        from storage.db_snapshot import request_snapshot
+        request_snapshot(studio_db_path())
     except Exception:
         conn.rollback()
         raise

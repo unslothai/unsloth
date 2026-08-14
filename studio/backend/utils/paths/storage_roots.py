@@ -10,6 +10,8 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 
+from .output_storage import resolve_configured_outputs_root
+
 
 def _infer_studio_home_from_venv() -> Path | None:
     """Return parent of sys.prefix as STUDIO_HOME when running from an
@@ -88,7 +90,7 @@ def recipe_datasets_root() -> Path:
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return resolve_configured_outputs_root(default = studio_root() / "outputs")
 
 
 def exports_root() -> Path:
