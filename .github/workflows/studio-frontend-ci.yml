@@ -156,20 +156,19 @@ jobs:
         run: npm test
 
 
-      # No browser and no npm: pure stdlib, so it runs before the Chromium install and fails
-      # fast. Covers the Windows teardown branch, which no runner here ever executes.
-      - name: Dev-server lifecycle tests
-        working-directory: ${{ github.workspace }}
-        run: |
-          python3 -m pip install --quiet pytest
-          python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
-            tests/studio/test_autoscroll_harness_contract.py -q
-
       - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
         run: |
-          python3 -m pip install 'playwright>=1.45,<2'
+          python3 -m pip install 'playwright>=1.45,<2' pytest
           python3 -m playwright install --with-deps chromium
+
+      # Cheap and browserless, but it imports the harnesses, which import playwright, so it has
+      # to sit after the install. Covers the Windows teardown branch no runner here executes.
+      - name: Dev-server lifecycle tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
+            tests/studio/test_autoscroll_harness_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
