@@ -3205,6 +3205,98 @@ def estimate_required_model_memory_gb(
     return required_gb, metadata
 
 
+# A concrete per-device gfx arch, matching the llama.cpp gate's rule: "gfx" then
+# digits with the optional trailing hex letter real parts carry (gfx90a, gfx90c).
+# Deliberately excludes generic code objects (gfx11-generic) and family labels
+# (gfx110X), which no device reports as its own arch.
+_CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
+
+
+def rocm_gpu_ids_without_torch_kernels() -> set[int]:
+    """PHYSICAL ids of visible ROCm GPUs the installed torch wheel has no kernels for.
+
+    The ROCm wheel is built for a fixed arch set, reported by
+    ``torch.cuda.get_arch_list()``. A device outside it dies at model load with
+    ``hipErrorInvalidKernelFile`` ("CUDA error: invalid kernel file"), which is
+    what an iGPU does when ``device_map="balanced"`` shards layers onto it.
+
+    Compares what the device PRESENTS against what the wheel was BUILT for, in
+    that direction on purpose: under ``HSA_OVERRIDE_GFX_VERSION`` an unsupported
+    card presents a supported arch, and that override is the standard workaround
+    for exactly this problem, so it must keep working. Same rule the llama.cpp
+    arch gate follows (#7624).
+
+    Fails open (empty set) on every uncertainty: a non-ROCm host, an unreadable
+    or non-concrete arch list, a UUID/MIG mask whose ordinals cannot be named
+    back to physical ids, a device whose arch cannot be read, and a filter that
+    would drop every device it could read. Never raises.
+    """
+    try:
+        import torch
+
+        if not (
+            getattr(torch.version, "hip", None) is not None
+            or "rocm" in getattr(torch, "__version__", "").lower()
+        ):
+            return set()
+        if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+            return set()
+
+        supported = {
+            token
+            for token in (
+                str(arch).split(":")[0].strip().lower()
+                for arch in (torch.cuda.get_arch_list() or ())
+            )
+            if _CONCRETE_GFX_ARCH.match(token)
+        }
+        if not supported:
+            return set()
+
+        # Physical ids behind the active mask; None means UUID/MIG entries, where
+        # an ordinal cannot be named back to a device, so nothing may be pinned.
+        physical_ids = _get_parent_visible_gpu_spec()["numeric_ids"]
+        if physical_ids is None:
+            return set()
+
+        unsupported: set[int] = set()
+        readable = 0
+        for ordinal in range(torch.cuda.device_count()):
+            try:
+                props = torch.cuda.get_device_properties(ordinal)
+            except Exception:
+                continue
+            # The four spellings AMD SDK / Radeon wheels use between them; the
+            # canonical one alone leaves the map empty on that wheel class.
+            arch = ""
+            for attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+                arch = (getattr(props, attr, "") or "").split(":")[0].strip().lower()
+                if arch:
+                    break
+            if not arch:
+                continue
+            readable += 1
+            if arch not in supported:
+                unsupported.add(
+                    physical_ids[ordinal] if ordinal < len(physical_ids) else ordinal
+                )
+
+        # Every readable device outside the list means the wheel does not cover
+        # this host at all. Dropping them would leave the caller no GPU and send
+        # a working setup to CPU, so keep the pre-gate behaviour instead.
+        if readable and len(unsupported) >= readable:
+            logger.warning(
+                "The installed PyTorch build has no kernels for any GPU on this host "
+                "(built for %s); leaving device selection alone.",
+                sorted(supported),
+            )
+            return set()
+        return unsupported
+    except Exception as e:
+        logger.debug("torch arch coverage probe failed: %s", e)
+        return set()
+
+
 def auto_select_gpu_ids(
     model_name: str,
     *,
@@ -3248,16 +3340,33 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = None
         return None, metadata
 
+    # Devices the installed torch wheel has no kernels for. Dropped before the
+    # free-memory rank AND before every fallback below, because those return the
+    # whole visible set: on a mixed host that hands device_map="balanced" an
+    # iGPU the wheel cannot run, and the load dies with hipErrorInvalidKernelFile
+    # rather than falling back. Empty on any uncertainty, so a host this cannot
+    # answer for keeps its previous selection exactly.
+    _uncovered = rocm_gpu_ids_without_torch_kernels()
+    if _uncovered:
+        logger.warning(
+            "Excluding GPU(s) %s from automatic selection: the installed PyTorch "
+            "build has no kernels for their architecture.",
+            sorted(_uncovered),
+        )
+
+    def _covered(ids):
+        return [gpu_id for gpu_id in ids if gpu_id not in _uncovered]
+
     if required_gb is None:
         # Can't estimate size -- use all visible GPUs rather than risk one too small.
-        parent_ids = get_parent_visible_gpu_ids()
+        parent_ids = _covered(get_parent_visible_gpu_ids())
         metadata["selection_mode"] = "fallback_all"
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
     utilization = get_visible_gpu_utilization()
-    devices = utilization.get("devices", [])
-    parent_ids = get_parent_visible_gpu_ids()
+    devices = [d for d in utilization.get("devices", []) if d.get("index") not in _uncovered]
+    parent_ids = _covered(get_parent_visible_gpu_ids())
 
     if not devices:
         metadata["selection_mode"] = "fallback_all"
