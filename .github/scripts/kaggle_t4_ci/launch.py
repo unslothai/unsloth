@@ -66,6 +66,13 @@ import urllib.request
 import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# What Kaggle says when a kernel is not there. Defined next to the gate's
+# survey, which has to tell a deleted kernel from an unreadable one for the
+# same reason cleanup does. See _already_gone.
+from gate import GONE_MARKERS  # noqa: E402
+
 API_ROOT = "https://www.kaggle.com/api/v1"
 RESULT_PREFIX = "T4_SMOKE_REPORT "
 OUTPUT_SUFFIX = "_output.ipynb"
@@ -345,6 +352,17 @@ def push(
         shutil.rmtree(workdir, ignore_errors = True)
 
 
+def _already_gone(text: str) -> bool:
+    """Is this failed delete Kaggle saying the kernel is not there?
+
+    The gate's vocabulary, imported rather than copied: the two files ask the
+    same question of the same account through the same client, and a second
+    list would drift out of agreement with the first without either being wrong
+    on its own.
+    """
+    return any(marker in text.lower() for marker in GONE_MARKERS)
+
+
 def delete_kernel(slug: str) -> bool:
     """Delete one kernel, and answer whether Kaggle actually deleted it.
 
@@ -361,8 +379,24 @@ def delete_kernel(slug: str) -> bool:
     scripts that pick up on error codes can tell when there was a failure", and
     0 once the kernel is gone.
 
-    Returns True only on a confirmed deletion. A slug this refuses needs a
-    human, which is what the caller's warning is for.
+    NOT FOUND IS THE OTHER CONFIRMED ANSWER, and it is a common one here rather
+    than an edge case: most of the slugs release() reconciles are earlier push
+    attempts, which usually created nothing at all, and one that a retry's
+    _discard() did delete is asked about a second time. Kaggle answering "this
+    kernel is not there" settles the only question cleanup asks -- is the slot
+    still billing -- so retrying it three times and then naming it in a
+    "may still be running, delete them by hand" warning spends the deletion
+    window on absent kernels, ahead of the live one, and points a human at a
+    slug that does not exist. The gate reads a 404 the same way and for the
+    same reason, so it reads it through the same GONE_MARKERS; the client
+    surfaces one as `404 Client Error: Not Found for url: ...` on stderr with
+    exit 1 (requests' raise_for_status, via kagglesdk's response handler).
+
+    Every OTHER nonzero exit keeps its retries: a 5xx, a reset connection or an
+    argparse refusal says nothing about the kernel.
+
+    Returns True only on a confirmed deletion or a confirmed absence. A slug
+    this refuses needs a human, which is what the caller's warning is for.
     """
     for attempt in range(DELETE_ATTEMPTS):
         try:
@@ -378,6 +412,9 @@ def delete_kernel(slug: str) -> bool:
             if proc.returncode == 0:
                 return True
             detail = " ".join(f"{proc.stdout} {proc.stderr}".split())
+            if _already_gone(detail):
+                _log(f"delete {slug}: Kaggle says it is not there, so the slot is free")
+                return True
             _log(f"delete {slug} exited {proc.returncode}: {detail[:200]}")
         if attempt + 1 < DELETE_ATTEMPTS:
             time.sleep(DELETE_BACKOFF_SEC * (2**attempt))

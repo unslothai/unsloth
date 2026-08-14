@@ -30,6 +30,7 @@ sys.path.insert(0, str(SMOKE_DIR))
 sys.path.insert(0, str(CI_DIR))
 
 import build_kernel  # noqa: E402
+import gate  # noqa: E402
 import launch  # noqa: E402
 from legs import LEGS  # noqa: E402
 
@@ -969,6 +970,79 @@ def test_a_delete_that_never_ran_is_not_a_deletion(monkeypatch, tmp_path):
     _code, result = _drive_one_kernel(monkeypatch, tmp_path, fake_run)
     assert result["kernels"][0]["released"] is False
     assert result["unreleased"] == ["someuser/unsloth-t4-ci-abcd"]
+
+
+def test_a_kernel_kaggle_says_is_not_there_is_a_freed_slot_not_a_leak(
+    monkeypatch, tmp_path, capsys
+):
+    """Most slugs release() reconciles were never accepted, or already went.
+
+    push() files a fresh slug per attempt and keeps every one, and a retry's
+    _discard() deletes the previous attempt without recording that it worked,
+    so reconciliation asks Kaggle a second time about a kernel that is gone.
+    Reading that as a failed cleanup spends DELETE_ATTEMPTS on an absent kernel
+    -- ahead of the accepted one, which is the only one still billing -- and
+    then tells a human to go and delete a slug that does not exist.
+
+    The stderr below is what the pinned client prints for a 404: kagglesdk
+    calls `raise_for_status`, and cli.py prints the HTTPError and exits 1.
+    """
+    fake_run, calls = _refusing_run(
+        1,
+        "404 Client Error: Not Found for url: "
+        "https://api.kaggle.com/v1/kernels.KernelsApiService/DeleteKernel",
+    )
+    _code, result = _drive_one_kernel(monkeypatch, tmp_path, fake_run)
+
+    assert calls == ["someuser/unsloth-t4-ci-abcd"], "an absent kernel was asked about again"
+    entry = result["kernels"][0]
+    assert entry["released"] is True
+    assert entry["released_slugs"] == ["someuser/unsloth-t4-ci-abcd"]
+    assert result["unreleased"] == []
+    assert "::warning title=Kaggle kernels may still be running::" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("marker", list(gate.GONE_MARKERS))
+def test_cleanup_reads_a_missing_kernel_in_the_gate_s_words(monkeypatch, marker):
+    """One vocabulary, taken FROM the gate rather than copied beside it.
+
+    Both files ask the same account the same question through the same client:
+    the gate to tell a deleted kernel from an unreadable one before it spends
+    quota, cleanup to tell a freed slot from one still billing. A second list
+    would drift out of agreement with the first without either being wrong on
+    its own, so this parametrises over the gate's own tuple.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append([str(c) for c in cmd])
+        return types.SimpleNamespace(returncode = 1, stdout = "", stderr = f"delete refused: {marker}")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
+
+    assert launch.delete_kernel("someuser/gone") is True
+    assert len(calls) == 1, calls
+
+
+def test_a_nonzero_delete_that_is_not_a_missing_kernel_still_retries(monkeypatch):
+    """The other half of the same branch.
+
+    A 5xx, a reset connection or an argparse refusal says nothing about whether
+    the kernel is up, so trusting the exit code alone would turn a transient
+    into a silently abandoned session.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append([str(c) for c in cmd])
+        return types.SimpleNamespace(returncode = 1, stdout = "", stderr = "503 Service Unavailable")
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
+
+    assert launch.delete_kernel("someuser/maybe-live") is False
+    assert len(calls) == launch.DELETE_ATTEMPTS
 
 
 def test_a_payload_that_cannot_see_its_gpu_reports_instead_of_vanishing(tmp_path, monkeypatch):
