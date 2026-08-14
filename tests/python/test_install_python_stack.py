@@ -881,7 +881,9 @@ class TestStrictPmPolicyOptOut:
         on a torch repair, and uv's pip interface ignores UV_NO_BUILD, so the flag is how
         that promise is kept. An sdist-only custom mirror then fails loudly."""
         with mock.patch.dict(os.environ, {"UV_NO_BUILD": "1"}, clear = True):
-            cmd = ips._build_uv_cmd(("torch", "--index-url", "https://download.pytorch.org/whl/cu128"))
+            cmd = ips._build_uv_cmd(
+                ("torch", "--index-url", "https://download.pytorch.org/whl/cu128")
+            )
         assert "--no-build" in cmd
 
     def test_an_ordinary_install_does_not_get_it_without_the_switch(self):

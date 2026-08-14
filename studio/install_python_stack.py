@@ -4222,9 +4222,7 @@ def _pyproject_speaks_for_uv(path: "Path") -> bool:
         return False
     # A scalar `uv = false` is not an options table: uv warns and keeps walking (on 0.12.1
     # an ancestor no-build still refuses the sdist), so neither does this stop there.
-    return isinstance(document.get("tool"), dict) and isinstance(
-        document["tool"].get("uv"), dict
-    )
+    return isinstance(document.get("tool"), dict) and isinstance(document["tool"].get("uv"), dict)
 
 
 def _toml_line_value(raw: str) -> str:
