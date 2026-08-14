@@ -53,7 +53,7 @@ interface ModelRowMenuPin {
 interface ModelRowMenuUpdate {
   title: string;
   description: ReactNode;
-  /** Repo + variant the update targets (see ModelUpdateAction). */
+  /** Repo + variant the update targets. */
   repoId: string;
   variant?: string | null;
   disabled?: boolean;
@@ -116,8 +116,7 @@ export function ModelRowMenu({
   );
   const [updateOpen, setUpdateOpen] = useState(false);
 
-  // Refresh the caller when this repo+variant's managed update completes
-  // (mirrors ModelUpdateAction).
+  // Refresh the caller when this repo+variant's managed update completes.
   const onUpdatedRef = useRef(update?.onUpdated);
   useEffect(() => {
     onUpdatedRef.current = update?.onUpdated;

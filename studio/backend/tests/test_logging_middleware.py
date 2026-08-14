@@ -72,7 +72,7 @@ def test_excluded_asset_success_skips_log(logs):
     async def send(message):
         pass
 
-    for path in ("/assets/index.css", "/huggingface.svg", "/font.woff2"):
+    for path in ("/assets/index.css", "/icon.svg", "/font.woff2"):
         _run(LoggingMiddleware(app)(_http_scope(path), _noop_receive, send))
 
     assert logs.events == []

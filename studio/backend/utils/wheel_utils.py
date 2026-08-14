@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -25,48 +24,11 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
 
 
-@functools.lru_cache(maxsize = 1)
-def has_blackwell_gpu() -> bool:
-    """Return True if any visible NVIDIA GPU has compute capability >= 10.0 (Blackwell).
-
-    Cached for the process lifetime; tests mocking nvidia-smi must call
-    ``has_blackwell_gpu.cache_clear()`` first.
-    """
-    # Detection disabled for now: Dao-AILab ships Blackwell (sm_100+) flash-attn
-    # wheels and url_exists() already gates resolution, so we no longer skip
-    # flash-attn on Blackwell. The nvidia-smi probe below is kept for possible
-    # future arch-based gating; drop this early return to re-enable it.
-    return False
-    exe = shutil.which("nvidia-smi")
-    if not exe:
-        return False
-    try:
-        result = subprocess.run(
-            [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            env = child_env_without_native_path_secret(),
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode != 0:
-        return False
-    for line in result.stdout.splitlines():
-        cap = line.strip()
-        if not cap:
-            continue
-        major_part = cap.split(".", 1)[0]
-        try:
-            major = int(major_part)
-        except ValueError:
-            continue
-        if major >= 10:
-            return True
-    return False
+# No arch gate here, deliberately. has_blackwell_gpu() skipped flash-attn when upstream
+# published no sm_100+ wheels (#5420), then became the bug once it did, denying B200 hosts
+# a working wheel (#6961). An arch gate encodes a snapshot of what upstream ships and goes
+# stale silently both ways; the callers' post-install import check catches a wheel that
+# will not load whatever the cause.
 
 
 def wheel_platform_tag() -> str | None:

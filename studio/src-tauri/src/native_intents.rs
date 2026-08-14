@@ -113,6 +113,10 @@ pub struct NativeIntakeState {
     lease_secret: Vec<u8>,
 }
 
+/// Per process, and deliberately not persisted: a key on disk outlives every
+/// backend restart, and spent nonces are only remembered in memory, so a
+/// consumed lease could be replayed against a replacement inside the TTL. The
+/// adopted-survivor case is answered by `native_path_leases_usable` instead.
 pub fn new_native_intake_state() -> NativeIntakeState {
     NativeIntakeState {
         inner: Mutex::new(NativeIntakeInner::default()),
@@ -581,7 +585,7 @@ pub fn reveal_path_token(
         }
     }
     let target = reveal_target(&entry.canonical_path);
-    open::that_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
+    crate::process::open_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
 }
 
 #[tauri::command]
@@ -592,7 +596,7 @@ pub fn open_path_token(
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Open)?;
-    open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
+    crate::process::open_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
 // Covers the largest client-side limit (audio, 25 MB).
@@ -742,11 +746,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "unsloth-native-intents-{name}-{}-{nanos}",
-            std::process::id()
-        ))
+        crate::native_path_policy::scratch_root().join(format!("unsloth-native-intents-{name}-{}-{nanos}", std::process::id()))
     }
+
 
     fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
         let state = new_native_intake_state();

@@ -33,7 +33,10 @@ import {
   downloadArchivedChatExport,
   downloadChatExport,
   exportFineTuneJsonl,
-  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  fileImportSource,
+  type ImportSource,
   offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -65,11 +68,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
+import { ArchivedMediaView } from "../components/archived-media-dialog";
 import { ManageChatsView } from "../components/manage-chats-view";
-import {
-  createFineTuneRecipeFromChats,
-  loadFineTuneDatasetInTrainTab,
-} from "../components/finetune-recipe";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
@@ -82,12 +82,17 @@ import {
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
 
+// Which subpage an "open the archive" request lands on.
+const SUBPAGE_FOR_SHELF = {
+  chats: "archived",
+  images: "archived-images",
+  videos: "archived-videos",
+} as const;
+
 export function DataTab() {
   const t = useT();
   const navigate = useNavigate();
-  const archivedChatsRequested = useSettingsDialogStore(
-    (s) => s.archivedChatsRequested,
-  );
+  const archivedRequested = useSettingsDialogStore((s) => s.archivedRequested);
   const consumeArchivedChatsRequest = useSettingsDialogStore(
     (s) => s.consumeArchivedChatsRequest,
   );
@@ -95,8 +100,8 @@ export function DataTab() {
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
-    "main" | "manage" | "archived" | "files"
-  >(archivedChatsRequested ? "archived" : "main");
+    "main" | "manage" | "archived" | "archived-images" | "archived-videos" | "files"
+  >(archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main");
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
@@ -132,17 +137,17 @@ export function DataTab() {
   // Requests can arrive after Data is already mounted (for example from the
   // archive-all toast), so always switch before consuming the flag.
   useEffect(() => {
-    if (!archivedChatsRequested) return;
+    if (!archivedRequested) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setSubpage("archived");
+      setSubpage(SUBPAGE_FOR_SHELF[archivedRequested]);
       consumeArchivedChatsRequest();
     });
     return () => {
       cancelled = true;
     };
-  }, [archivedChatsRequested, consumeArchivedChatsRequest]);
+  }, [archivedRequested, consumeArchivedChatsRequest]);
 
   useEffect(() => {
     if (!ragAvailabilityUnknown) return;
@@ -229,21 +234,59 @@ export function DataTab() {
   };
 
   const importInputRef = useRef<HTMLInputElement>(null);
-  const handleImport = async (file: File) => {
+  const [importing, setImporting] = useState(false);
+  const handleImport = async (source: ImportSource) => {
+    setImporting(true);
+    // A years-long export is minutes of writes, so the toast counts up rather
+    // than leaving the window looking hung.
+    const toastId = toast.loading(
+      t("settings.chat.importingChats", { count: 0, percent: 0 }),
+    );
     try {
-      const imported = await importConversationsFromFile(file, null);
+      const { imported, failed } = await importConversationsFromSource(
+        source,
+        null,
+        {
+          onProgress: ({ imported: done, bytesRead, totalBytes }) => {
+            const percent = totalBytes
+              ? Math.min(100, Math.round((bytesRead / totalBytes) * 100))
+              : 0;
+            toast.loading(
+              t("settings.chat.importingChats", { count: done, percent }),
+              { id: toastId },
+            );
+          },
+        },
+      );
+      if (imported === 0 && failed === 0) {
+        toast.info(t("settings.chat.importNoConversations"), { id: toastId });
+        return;
+      }
       if (imported === 0) {
-        toast.info(t("settings.chat.importNoConversations"));
-      } else {
-        toast.success(
-          imported === 1
+        // Nothing was created, so however the count is phrased this is a failure.
+        toast.error(t("settings.chat.importFailed"), {
+          id: toastId,
+          description: t("settings.chat.importedChatCountPartial", { count: 0, failed }),
+        });
+        return;
+      }
+      toast.success(
+        failed > 0
+          ? t("settings.chat.importedChatCountPartial", { count: imported, failed })
+          : imported === 1
             ? t("settings.chat.importedOneChat")
             : t("settings.chat.importedChatCount", { count: imported }),
-        );
-        setCount(await countAllChats().catch(() => count));
-      }
-    } catch {
-      toast.error(t("settings.chat.importFailed"));
+        { id: toastId },
+      );
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        id: toastId,
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setImporting(false);
+      // Chats saved before a failed read still changed the count.
+      setCount(await countAllChats().catch(() => count));
     }
   };
 
@@ -257,7 +300,7 @@ export function DataTab() {
       if (!selected) {
         return;
       }
-      await handleImport(new File([selected.content], selected.name));
+      await handleImport(nativeImportSource(selected));
     } catch (error) {
       toast.error(t("settings.chat.importFailed"), {
         description: error instanceof Error ? error.message : String(error),
@@ -306,6 +349,10 @@ export function DataTab() {
   const handleOpenInRecipes = async () => {
     setOpeningRecipe(true);
     try {
+      // Recipe Studio and its database are not needed unless this action runs.
+      const { createFineTuneRecipeFromChats } = await import(
+        "../components/finetune-recipe"
+      );
       const recipeId = await createFineTuneRecipeFromChats(fineTuneFormat);
       if (!recipeId) return;
       useSettingsDialogStore.getState().closeDialog();
@@ -322,6 +369,13 @@ export function DataTab() {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
+      // Same deferred module as above. The training store and datasets-api it also
+      // pulls stay eager either way, since __root.tsx imports the @/features/training
+      // barrel that re-exports both; Recipe Studio is what actually leaves the
+      // startup bundle.
+      const { loadFineTuneDatasetInTrainTab } = await import(
+        "../components/finetune-recipe"
+      );
       const loaded = await loadFineTuneDatasetInTrainTab(fineTuneFormat);
       if (!loaded) return;
       useSettingsDialogStore.getState().closeDialog();
@@ -490,6 +544,46 @@ export function DataTab() {
     );
   }
 
+  if (subpage === "archived-images" || subpage === "archived-videos") {
+    const isImages = subpage === "archived-images";
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={t("settings.data.backToData")}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {isImages
+              ? t("settings.data.archivedImages")
+              : t("settings.data.archivedVideos")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {isImages
+              ? t("settings.data.archivedImagesDescription")
+              : t("settings.data.archivedVideosDescription")}
+          </p>
+        </div>
+        {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
+            instance, and a showMore still awaiting the old shelf appends its rows to the new one,
+            which then drives restore and delete through the wrong media API. */}
+        <ArchivedMediaView
+          key={subpage}
+          kind={isImages ? "images" : "videos"}
+        />
+      </div>
+    );
+  }
+
   if (subpage === "files") {
     return (
       <div className="flex flex-col gap-6">
@@ -614,6 +708,32 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => setSubpage("archived")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.archivedImages")}
+          description={t("settings.data.archivedImagesDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("archived-images")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.archivedVideos")}
+          description={t("settings.data.archivedVideosDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("archived-videos")}
           >
             {t("settings.data.manageAction")}
           </Button>
@@ -753,19 +873,26 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => void handleImportClick()}
+            // A second pick mid-import would interleave two streams into one
+            // history, and on desktop it retires the running import's handle.
+            disabled={importing}
           >
-            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            {importing ? (
+              <Spinner className="size-3.5 mr-1.5" />
+            ) : (
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            )}
             {t("settings.chat.importChatsAction")}
           </Button>
           <input
             ref={importInputRef}
             type="file"
-            accept=".jsonl,.ndjson,.csv"
+            accept=".json,.jsonl,.ndjson,.csv"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = "";
-              if (file) void handleImport(file);
+              if (file) void handleImport(fileImportSource(file));
             }}
           />
         </SettingsRow>

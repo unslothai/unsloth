@@ -31,6 +31,7 @@ from auth.authentication import get_current_subject
 from loggers import get_logger
 from models.inference import (
     DiffusionDownloadPlanResponse,
+    GalleryFlagsPatch,
     GalleryVideo,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
@@ -44,6 +45,12 @@ from models.inference import (
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+def _selected_gpu_ordinal(gpu_ids, *, allow_ranking: bool = True):
+    """The images route's resolver, shared so both media routes apply one rule."""
+    from routes.inference import _selected_gpu_ordinal as _resolve
+    return _resolve(gpu_ids, allow_ranking = allow_ranking)
 
 
 def _training_is_active() -> bool:
@@ -131,7 +138,16 @@ async def video_download_plan(
         # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
         # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
         # plan runs before the load's training guard can refuse. Staging needs no GPU.
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
+        # Ranking opens a CUDA context per candidate, which the training guard exists to prevent,
+        # so the RANKING waits until training is known idle. Validating and translating the ids
+        # does not, so that happens either way: a plan that skipped it accepted a GPU the load
+        # would refuse and sized its file set for the wrong card. ONE resolution, reused by
+        # preflight and plan.
+        gpu_ordinal = None
+        training = fam is not None and await asyncio.to_thread(_training_is_active)
+        if fam is not None:
+            gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids, allow_ranking = not training)
+        if fam is not None and not training:
             await asyncio.to_thread(
                 assert_video_precision_available,
                 fam,
@@ -139,10 +155,13 @@ async def video_download_plan(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
                 memory_mode = request.memory_mode,
+                # Judged on the card this pick would load on, as the loader does.
+                gpu_ordinal = gpu_ordinal,
             )
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
+            gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
             base_repo = request.base_repo,
             family_override = request.family_override,
@@ -173,7 +192,10 @@ async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.diffusion import resolve_local_single_file
-    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
     from core.inference.video import (
         assert_video_precision_available,
@@ -214,6 +236,10 @@ async def load_video_model(
         # arbiter lock BEFORE the register callback -- so a refusal raised there arrives having
         # already taken the GPU away from the model it was meant to preserve. `auto` is never
         # refused, so a caller that left the precision to the backend cannot reach this.
+        # Ahead of the precision gate, which has to judge the card this pick would load on.
+        # Refused here too, before anything is evicted or staged; begin_load re-checks, but only
+        # after the arbiter has taken the GPU.
+        gpu_ordinal = await _selected_gpu_ordinal(request.gpu_ids)
         await asyncio.to_thread(
             assert_video_precision_available,
             fam,
@@ -223,6 +249,7 @@ async def load_video_model(
             # The memory request settles the offload policy for balanced/low_vram before
             # anything is measured, and an offloaded DiT or encoder skips the torchao build.
             memory_mode = request.memory_mode,
+            gpu_ordinal = gpu_ordinal,
         )
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
@@ -244,6 +271,10 @@ async def load_video_model(
                 text_encoder_quant = request.text_encoder_quant,
                 model_kind = kind,
                 h3_task = request.h3_task,
+                gpu_ids = request.gpu_ids,
+                # The winner this route already ranked and preflighted, so the load cannot pick a
+                # different card from free VRAM that has moved since.
+                gpu_ordinal = gpu_ordinal,
             )
 
         if device != "cpu":
@@ -374,6 +405,7 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
 async def list_gallery_videos(
     limit: int = 50,
     offset: int = 0,
+    archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import video_gallery
@@ -391,7 +423,11 @@ async def list_gallery_videos(
 
     # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(
-        video_gallery.list_videos, limit + 1, offset, valid = _valid_gallery_video
+        video_gallery.list_videos,
+        limit + 1,
+        offset,
+        valid = _valid_gallery_video,
+        archived = archived,
     )
     has_more = len(records) > limit
     videos = [GalleryVideo(**r) for r in records[:limit]]
@@ -539,6 +575,33 @@ def _forget_terminal_video(video_id: Optional[str]) -> None:
         logger.debug(f"Could not clear the terminal video record for {video_id!r}: {e}")
 
 
+@router.patch("/video/gallery/{video_id}", response_model = GalleryVideo)
+async def update_gallery_video_flags(
+    video_id: str,
+    patch: GalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Pin/unpin or archive/restore one clip. Omitted fields are left alone."""
+    from core.inference import video_gallery
+
+    try:
+        record = await asyncio.to_thread(
+            video_gallery.set_flags, video_id, pinned = patch.pinned, archived = patch.archived
+        )
+    except OSError as exc:
+        # The client already applied this optimistically, so a silent miss would look like it stuck
+        # and then quietly undo on reload.
+        logger.warning("video_gallery.set_flags_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the change to this video.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    # Archiving takes the clip off the strip, so the completed-job record must go with it: the page
+    # merges that snapshot on mount, which would keep resurrecting the clip it just archived.
+    if patch.archived:
+        _forget_terminal_video(video_id)
+    return GalleryVideo(**record)
+
+
 @router.delete("/video/gallery/{video_id}")
 async def delete_gallery_video(video_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
@@ -553,8 +616,18 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
 @router.delete("/video/gallery")
 async def clear_gallery_videos(current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
+    from core.inference.gallery_flags import FlagsUnavailable
 
-    removed = await asyncio.to_thread(video_gallery.clear)
+    try:
+        removed = await asyncio.to_thread(video_gallery.clear)
+    except FlagsUnavailable as exc:
+        # Refuse rather than delete the archive we cannot prove is archived.
+        logger.warning("video_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the gallery's pin/archive data, so clearing was stopped to "
+            "avoid deleting archived videos.",
+        )
     # Clear-all takes the terminal record's clip with it whatever its id.
     _forget_terminal_video(None)
     return {"removed": removed}

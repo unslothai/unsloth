@@ -214,6 +214,10 @@ export async function getActiveGenerations(): Promise<ActiveGenerationsResponse>
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: {
+    signal?: AbortSignal;
+    onRequestStart?: () => void;
+  },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   // Tagged so auto-load can tell a user cancellation from a backend rejection.
@@ -221,6 +225,9 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
+  if (options?.signal?.aborted)
+    throw options.signal.reason ?? new DOMException("Aborted", "AbortError");
+  options?.onRequestStart?.();
   // Announced after the token prompt, so a cancelled load never shows a row.
   // The indicator otherwise had nothing to show until its next 5s poll, while
   // the toast reported the load immediately.
@@ -234,6 +241,7 @@ export async function loadModel(
         native_path_lease: payload.nativePathLease ?? null,
         nativePathLease: undefined,
       }),
+      signal: options?.signal,
     });
     return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
   });
@@ -250,6 +258,8 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
 }): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
@@ -446,6 +456,8 @@ export interface DownloadProgressResponse {
    * nothing is in flight.
    */
   completed_bytes: number;
+  /** True once the backend verified a usable snapshot on disk; `progress` is capped at 0.99 until then. */
+  complete_on_disk: boolean;
   expected_bytes: number;
   progress: number;
   /**
@@ -552,6 +564,8 @@ export interface CachedModelRepo {
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
   capabilities?: CachedRepoCapabilities | null;
+  tags?: string[];
+  library_name?: string | null;
 }
 
 export async function listCachedModels(

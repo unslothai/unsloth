@@ -219,8 +219,42 @@ export async function projectHasSources(projectId: string): Promise<boolean> {
   }
 }
 
+export const PROJECT_SOURCES_UPDATED_EVENT = "unsloth-project-sources-updated";
+
 export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
+}
+
+/** Invalidate, and tell a mounted sources list its documents changed. Kept apart
+ * from invalidateProjectSources because callers invalidate the probe *before*
+ * their own mutation too, and refetching at that point would resurrect a row the
+ * panel has already dropped optimistically. */
+export function announceProjectSourcesUpdated(projectId: string): void {
+  projectSourcesCache.delete(projectId);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(PROJECT_SOURCES_UPDATED_EVENT, { detail: { projectId } }),
+  );
+}
+
+/** Run `onUpdated` whenever this project's sources change somewhere else in the
+ * app. Returns the unsubscribe, so a component can hand it straight back from an
+ * effect. Lives here rather than inline in the panel so the filtering and the
+ * teardown are testable without a DOM. */
+export function subscribeProjectSourcesUpdated(
+  projectId: string,
+  onUpdated: () => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const listener = (event: Event) => {
+    const detail = (event as CustomEvent<{ projectId?: string }>).detail;
+    // Another project's save must not refetch this one's list.
+    if (detail?.projectId === projectId) onUpdated();
+  };
+  window.addEventListener(PROJECT_SOURCES_UPDATED_EVENT, listener);
+  return () => {
+    window.removeEventListener(PROJECT_SOURCES_UPDATED_EVENT, listener);
+  };
 }
 
 export async function listLinkedFolders(

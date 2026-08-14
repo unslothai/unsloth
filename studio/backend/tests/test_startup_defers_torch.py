@@ -79,6 +79,8 @@ def test_import_main_does_not_import_torch():
         "utils.datasets.raw_text",
         "core.inference.orchestrator",
         "routes.models",
+        "utils.hf_xet_fallback",
+        "core.rag.embeddings",
     ],
 )
 def test_module_import_does_not_pull_torch(module_path: str):
@@ -202,60 +204,22 @@ def test_warm_starts_once_and_honours_the_kill_switch(monkeypatch):
     assert status["stages"]["noop"]["ok"] is True
 
 
-def test_the_warm_covers_every_package_import_main_used_to_pull():
-    """Deferring an import only moves its cost if something still pays it. One stage per
-    package `import main` used to leave in sys.modules; dropping one fails no other test,
-    it silently moves that import onto the first request."""
+def test_the_warm_keeps_optional_gpu_consumers_cold():
+    """Startup prepares hardware and metadata, but first-use integrations stay lazy."""
     from utils import torch_warmup
-    assert [name for name, _ in torch_warmup._STAGES] == [
+
+    stage_names = [name for name, _ in torch_warmup._STAGES]
+    assert stage_names == [
         "hardware",  # torch, via utils.hardware
-        # Not a package import: builds the orchestrator singleton, whose constructor
-        # waits on the detection a first request would otherwise pay for. Right after
-        # hardware so it reuses this thread's.
+        # Builds the metadata-only orchestrator after hardware detection.
         "inference_backend",
-        "transformers",  # via model_config's registry read
-        "datasets",  # via utils/datasets/raw_text.py
-        "unsloth_zoo",  # via orchestrator's utils.hf_xet_fallback import
+        "transformers",  # model_config registry read
+        "datasets",  # raw-text dataset helpers
     ]
-
-
-def test_the_unsloth_zoo_stage_goes_through_the_shim(monkeypatch):
-    """The warm must reproduce the eager import, not just import the package. The edge it
-    replaces was orchestrator.py's ``from utils.hf_xet_fallback import DownloadStallError``,
-    and the shim retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 when unsloth_zoo's GPU init
-    raises. A bare ``import unsloth_zoo`` skips that retry and fails where startup
-    succeeded."""
-    import builtins
-    import importlib
-
-    from utils import torch_warmup
-
-    # Through sys.modules: another test re-imports the shim and leaves the package
-    # attribute pointing elsewhere. import_module resolves it the way the code does.
-    hf_xet_fallback = importlib.import_module("utils.hf_xet_fallback")
-
-    monkeypatch.setattr(torch_warmup, "_torch_installed", lambda: True)
-    calls = []
-    monkeypatch.setattr(hf_xet_fallback, "_load_shared", lambda: (calls.append(1), True)[1])
-
-    real_import = builtins.__import__
-
-    def no_bare_zoo(name, *args, **kwargs):
-        assert name != "unsloth_zoo", (
-            "the warm imported unsloth_zoo directly; it must go through "
-            "utils.hf_xet_fallback so the UNSLOTH_ZOO_DISABLE_GPU_INIT retry runs"
-        )
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", no_bare_zoo)
-    torch_warmup._warm_unsloth_zoo()
-    assert calls == [1]
-
-    # A shim that could not load leaves the watchdog degraded; that has to surface as a
-    # failed stage rather than a silent success.
-    monkeypatch.setattr(hf_xet_fallback, "_load_shared", lambda: False)
-    with pytest.raises(RuntimeError, match = "unsloth_zoo unavailable"):
-        torch_warmup._warm_unsloth_zoo()
+    assert "unsloth_zoo" not in stage_names
+    assert not hasattr(
+        torch_warmup, "_warm_unsloth_zoo"
+    ), "the optional Hub/Xet integration must be loaded by a real download, not startup"
 
 
 def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, caplog):

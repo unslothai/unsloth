@@ -17,8 +17,10 @@ export const fr = {
     searchAriaLabel: "Rechercher des {noun}",
     modelSourceAriaLabel: "Source du modèle",
     hubSectionAriaLabel: "Section du Hub",
-    pickModelFile: "Choisir un fichier de modèle sur le disque",
-    ejectLoadedModel: "Éjecter le modèle chargé",
+    modelDropped: "N'est plus proposé",
+    modelDroppedByProvider: "{provider} · n'est plus proposé",
+    modelDisabled: "Non activé",
+    modelDisabledByProvider: "{provider} · non activé",
     multipleMatches:
       "Plusieurs {noun} correspondent. Choisissez-en un dans la liste.",
     rateLimitedTitle: "Limite de requêtes Hugging Face atteinte",
@@ -86,6 +88,7 @@ export const fr = {
       recipes: "Recettes",
       images: "Images",
       video: "Vidéo",
+      audio: "Audio",
       trainChecking: "Vérification de la prise en charge de l'entraînement sur cette machine...",
       videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
@@ -155,7 +158,32 @@ export const fr = {
       about: "À propos",
       data: "Données",
       agents: "Agents",
+      debugging: "Journaux",
       voice: "Voix",
+    },
+    debugging: {
+      logSection: "Fichier journal",
+      source: "Fichier journal",
+      sourceHint: "Les exécuteurs de modèles écrivent leurs propres journaux : un chargement ou une génération en échec y est donc souvent expliqué plutôt que dans le journal du serveur.",
+      path: "Emplacement",
+      pathCopy: "Copier le chemin",
+      refreshSection: "Actualisation",
+      mode: "Mode",
+      modeLive: "En direct",
+      modeInterval: "Toutes les 3 secondes",
+      modeManual: "Manuel",
+      refreshNow: "Actualiser maintenant",
+      privacyNote: "Les identifiants sont masqués dans cette vue. Dans le fichier sur le disque, ils ne le sont pas.",
+      copyVisible: "Copier le journal visible",
+      empty: "Rien n'a encore été consigné.",
+      disabled: "La journalisation dans un fichier est désactivée (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Aucun fichier journal n'a été trouvé.",
+      unreadable: "Le fichier journal n'a pas pu être lu.",
+      timeout: "La demande du journal a expire. Le serveur est peut-etre injoignable.",
+      droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
+      morePending: "D'autres lignes sont encore en cours de lecture ; elles arriveront au prochain rafraichissement.",
+      staleSession: "La journalisation dans un fichier est desactivee : il s'agit d'une session anterieure, qui ne sera pas mise a jour.",
+      keywords: "debogage deboguer journal journaux log logs erreur erreurs plantage trace diagnostic depannage debug",
     },
     voice: {
       title: "Voix",
@@ -377,6 +405,14 @@ export const fr = {
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
         idleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique, en secondes",
+        mediaIdleUnload:
+          "Déchargement automatique en cas d’inactivité pour l’image et la vidéo",
+        mediaIdleUnloadDescription:
+          "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. Réglage distinct : celui du dessus ne concerne que le modèle de discussion. 0 les maintient chargés ; le minimum est 60.",
+        mediaIdleSecondsAriaLabel:
+          "Délai d’inactivité avant le déchargement automatique de l’image et de la vidéo, en secondes",
+        mediaIdlePaused:
+          "En pause tant que « Conserver le modèle dans la mémoire du GPU » ou « Décharger uniquement les modèles chargés par l'API » est activé.",
         idleNeedsEnable:
           "Activez d’abord « Changer de modèle par requête ».",
         idleActiveViaEnv: "Actif via UNSLOTH_MODEL_IDLE_TTL.",
@@ -392,6 +428,9 @@ export const fr = {
           "Conserver le contexte de la discussion après un déchargement en cas d'inactivité",
         keepKvDescription:
           "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+        apiOnly: "Décharger uniquement les modèles chargés par l'API",
+        apiOnlyDescription:
+          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Studio et ne libère que ceux chargés par une requête API.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
@@ -427,16 +466,17 @@ export const fr = {
         launchAtLogin: "Lancer Unsloth à la connexion",
         launchAtLoginDescription:
           "Démarre Unsloth en arrière-plan lorsque vous vous connectez. Il reste dans la barre de menus ou la zone de notification jusqu'à ce que vous l'ouvriez.",
+
+        closeToTray: "Fermer dans la zone de notification",
+        closeToTrayDescription:
+          "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
+        closeToTraySaveError:
+          "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
-      gettingStarted: "Prise en main",
-      startOnboarding: "Démarrer la prise en main",
-      startOnboardingDescription:
-        "Rouvrir l'assistant de configuration sans modifier votre compte.",
-      startOnboardingAction: "Démarrer la prise en main",
       uploads: {
         sectionTitle: "Téléversements",
         maxUploadSize: "Limite de téléversement du jeu de données d'entraînement",
@@ -737,6 +777,39 @@ export const fr = {
         free: "Disponible : {value}",
         total: "{value} au total",
       },
+      llamaBackend: {
+        title: "Moteur d'inférence GGUF",
+        label: "Backend de calcul",
+        description: "Le backend utilisé par llama.cpp pour exécuter les modèles GGUF.",
+        runningOn: "llama.cpp fonctionne actuellement sur {backend}.",
+        hint: "Installe la version de llama.cpp pour ce backend et la conserve lors des mises à jour. Utile si le choix automatique plante ou si votre pilote GPU ne le prend pas en charge. Seuls les backends disposant d'une version pour cette machine sont proposés ; l'entraînement n'est pas affecté.",
+        autoWith: "Automatique ({backend})",
+        apply: "Appliquer",
+        applying: "Installation...",
+        applyHint: "Télécharge la nouvelle version et redémarre llama.cpp. Un modèle chargé sera déchargé.",
+        applyHintWithSize: "Télécharge {size} et redémarre llama.cpp. Un modèle chargé sera déchargé.",
+        switchedTo: "llama.cpp fonctionne maintenant sur {backend}.",
+        switchFailed: "Impossible de changer le backend llama.cpp.",
+        switchInterrupted: "Le changement a été interrompu avant d’être terminé.",
+        envLocked: "Fixé à {backend} par la variable d'environnement UNSLOTH_LLAMA_CPP_BACKEND, qui prévaut sur ce réglage.",
+        backends: {
+          auto: "Automatique",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Aucune installation llama.cpp gérée n'a été trouvée, il n'y a donc pas de backend à changer.",
+          localLink: "llama.cpp est un dossier local que vous avez lié vous-même ; Unsloth ne le remplacera pas.",
+          sourceBuild: "Ce llama.cpp a été compilé depuis les sources, son backend ne peut pas être changé ici.",
+          unresolved: "Impossible de vérifier les backends disponibles. Vérifiez votre connexion et réessayez.",
+        },
+        // Non affiché : termes supplémentaires pour la recherche dans les réglages.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inférence cuda rocm hip vulkan metal cpu gpu accélérateur prebuilt changer moteur",
+      },
       modelMemory: {
         title: "Mémoire du modèle",
         keepResident: "Conserver le modèle dans la mémoire du GPU",
@@ -922,6 +995,11 @@ export const fr = {
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
+      thinking: {
+        collapseByDefault: "Replier la réflexion par défaut",
+        collapseByDefaultDescription:
+          "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Réduire les blocs HTML",
@@ -950,11 +1028,13 @@ export const fr = {
       exportPerChatSuffix: "(par discussion)",
       importChats: "Importer des discussions",
       importChatsDescription:
-        "Importer un export JSONL, NDJSON ou CSV dans Récents.",
+        "Importez un export Open WebUI, JSONL, NDJSON ou CSV dans Récents.",
       importChatsAction: "Importer",
       importNoConversations: "Aucune conversation trouvée dans le fichier.",
       importedOneChat: "1 conversation importée dans Récents.",
       importedChatCount: "{count} conversations importées dans Récents.",
+      importingChats: "Import des discussions : {count} jusqu'ici ({percent}%)...",
+      importedChatCountPartial: "{count} conversations importées dans Récents ; {failed} n'ont pas pu être enregistrées.",
       importFailed: "Échec de l'importation.",
       clearHistory: "Effacer l'historique des discussions",
       clearHistoryDescription:
@@ -1004,6 +1084,10 @@ export const fr = {
       archivedChats: "Discussions archivées",
       archivedChatsDescription:
         "Consultez et gérez les discussions que vous avez archivées.",
+      archivedImages: "Images archivées",
+      archivedImagesDescription: "Consultez et gérez les images que vous avez archivées.",
+      archivedVideos: "Vidéos archivées",
+      archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
       manageAction: "Gérer",
       manageChats: "Gérer les discussions",
       manageChatsDescription:
@@ -1234,25 +1318,8 @@ export const fr = {
       modelTooltip: "Le modèle de base que vous souhaitez affiner.",
       methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
       datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
-      hfTokenLabel: "Jeton Hugging Face",
       hfTokenDescription:
         "Nécessaire pour les modèles et jeux de données restreints ou privés.",
-      hfTokenGet: "Obtenir un jeton",
-      hfTokenChecking: "Vérification du jeton…",
-      modelPickerDescription:
-        "Recherchez sur Hugging Face ou choisissez un modèle entraînable déjà présent sur cet appareil.",
-      trainingMethod: "Méthode d'entraînement",
-      trainingMethodDescription: "Choisissez comment affiner {model}",
-      trainingMethodTooltip:
-        "QLoRA utilise une quantification 4 bits pour réduire au minimum l'utilisation de la VRAM. LoRA utilise des poids 16 bits, tandis que l'affinage complet met à jour tous les poids.",
-      datasetPickerDescription:
-        "Recherchez sur Hugging Face ou choisissez un jeu de données déjà présent sur cet appareil.",
-      uploadDataset: "Téléverser un jeu de données",
-      uploadDatasetDescription:
-        "Prend en charge CSV, JSONL, JSON et Parquet.",
-      chooseFile: "Choisir un fichier",
-      format: "Format",
-      autoDetect: "Détection automatique",
       uploadLocalLabel: "Ou téléverser un fichier local",
       sourceBrowse: "Parcourir",
       releaseToUpload: "Relâchez pour téléverser",
@@ -1307,6 +1374,12 @@ export const fr = {
         "Ce jeu de données n'est pas encore sur cet appareil. Il sera téléchargé automatiquement au démarrage de l'entraînement.",
       noticeDatasetPartial:
         "L'entraînement terminera le téléchargement partiel du jeu de données avant de le lire.",
+      noticeTransformersUpgrade:
+        "Aucune version installée de transformers ne prend encore en charge cette architecture. Au démarrage, l'installation de transformers {version} sera proposée d'abord.",
+      noticeSixteenBitOnly:
+        "Cette architecture s'entraîne en LoRA 16 bits : le 4 bits n'est pas disponible, donc l'exécution demande beaucoup plus de VRAM que QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installer cette version au lieu de conserver le code propre au modèle fait passer cette exécution en LoRA 16 bits, qui demande beaucoup plus de VRAM que QLoRA.",
       advancedSettings: "Paramètres avancés",
       defaultAdvancedSettings: "Valeurs par défaut",
       nonDefaultAdvancedSettings: "{count} non standard",
@@ -1422,24 +1495,6 @@ export const fr = {
     loadingRuntime: "Chargement de l'environnement d'entraînement...",
     checkingSupport: "Vérification de la prise en charge de l'entraînement sur cette machine...",
     backToHistory: "Retour à l'historique",
-    sections: {
-      model: "Modèle",
-      dataset: "Jeu de données",
-      params: "Paramètres",
-      training: "Entraînement",
-      charts: "Graphiques",
-      progress: "Progression de l'entraînement",
-    },
-    configure: {
-      title: "Configurer",
-      description:
-        "Choisissez un modèle, un jeu de données et les paramètres d'entraînement.",
-      startTraining: "Démarrer l'entraînement",
-      starting: "Démarrage...",
-      loadingModel: "Chargement du modèle...",
-      checkingDataset: "Vérification du jeu de données...",
-      trainingConfig: "Configuration d'entraînement",
-    },
     dataset: {
       selectors: {
         subset: "Sous-ensemble",
@@ -1464,7 +1519,6 @@ export const fr = {
         manualTooLong: "Utilisez au maximum 128 caractères.",
         manualInvalid: "Cette valeur contient des caractères non pris en charge.",
       },
-      source: "Source du jeu de données",
       sourceAriaLabel: "Source du jeu de données",
       localDataset: "Jeu de données local",
       localDatasetRows: " / {count} lignes",
@@ -1481,8 +1535,6 @@ export const fr = {
       fileTooLarge: "Fichier trop volumineux",
       fileTooLargeDescription:
         "{file} fait {size}. Les téléversements d’entraînement sont limités à {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · jusqu’à {limit} ; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "Ce fichier doit d’abord être converti",
         genericFile: "Ce fichier",
@@ -1572,7 +1624,6 @@ export const fr = {
       uploadOneFileAtATime: "Téléversez un fichier à la fois",
       uploadSingleFileDescription:
         "Le téléversement du jeu de données d'entraînement accepte un seul fichier.",
-      preview: "Aperçu du jeu de données",
       previewLoadingHuggingFace:
         "Récupération de l’aperçu du jeu de données depuis Hugging Face...",
       previewLoading: "Chargement de l’aperçu...",
@@ -1594,8 +1645,6 @@ export const fr = {
         requiredDescription:
           "Attribuez des rôles aux colonnes à l’aide des menus des en-têtes. Attribuez au minimum {required}.",
       },
-      split: "Split",
-      subset: "Sous-ensemble",
       s3: {
         title: "Configuration S3",
         description:
@@ -1606,21 +1655,11 @@ export const fr = {
         regionPlaceholder: "us-east-1",
         prefix: "Préfixe de chemin",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip:
-          "Chemin facultatif dans le bucket vers vos fichiers de jeu de données",
         accessKeyId: "ID de clé d'accès",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Clé d'accès secrète",
         secretAccessKeyPlaceholder: "Votre clé d'accès secrète AWS",
         useIamRole: "Utiliser un rôle IAM",
-        useIamRoleTooltip:
-          "Utiliser les identifiants d'un rôle IAM au lieu de clés d'accès (recommandé pour EC2/SageMaker)",
-        testConnection: "Tester la connexion",
-        connectionSuccess: "Connexion au bucket S3 réussie",
-        connectionFailed: "Échec de la connexion au bucket S3",
-        comingSoon: "Intégration S3 bientôt disponible",
-        comingSoonDescription:
-          "Le chargement de jeux de données S3 nécessite boto3. Cette fonctionnalité est en cours de développement.",
       },
     },
     params: {
@@ -1814,7 +1853,6 @@ export const fr = {
     },
     history: {
       title: "Historique",
-      emptyTitle: "Aucun entraînement pour le moment",
       emptyDescription:
         "Aucun entraînement pour le moment. Démarrez votre premier entraînement dans l'onglet Configurer.",
       loadError: "Échec du chargement des entraînements",
@@ -1843,9 +1881,6 @@ export const fr = {
         "L'exécution a été supprimée, mais ses fichiers n'ont pas pu être effacés.",
       deleteArtifactsRetainedError:
         "Les fichiers d’adaptateur n’ont pas pu être supprimés. L’entraînement a donc été conservé dans l’historique.",
-      runCount: "{count} entraînements",
-      oneRun: "1 entraînement",
-      resume: "Reprendre",
       resumeTraining: "Reprendre l'entraînement",
       resuming: "Reprise...",
       deleteRun: "Supprimer l'entraînement",
@@ -1983,9 +2018,6 @@ export const fr = {
       dataset: "Jeu de données",
       datasetStreaming: "Jeu de données : streaming (pas de téléchargement complet)",
       modelWeights: "Poids du modèle",
-    },
-    tour: {
-      guidedTour: "Visite guidée",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
