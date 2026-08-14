@@ -269,6 +269,9 @@ class _Turn:
 
     by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
     order: list[Any] = field(default_factory = list)
+    # call key each delta index maps to: the index itself until a second call
+    # forks off it, then (index, call_id).
+    open_key_by_index: dict[int, Any] = field(default_factory = dict)
     last_index: int | None = None
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
@@ -288,15 +291,19 @@ class _Turn:
                 # continue the call that is already open instead.
                 index = self.last_index if self.last_index is not None else len(self.order)
             call_id = raw_call.get("id")
-            key: Any = index
+            # continue whichever call owns this index now: index restarts at 0
+            # for every tool round, so after a fork the bare argument fragments
+            # belong to the newer call.
+            key: Any = self.open_key_by_index.get(index, index)
             if isinstance(call_id, str) and call_id:
-                open_id = self.by_index.get(index, {}).get("id")
+                open_id = self.by_index.get(key, {}).get("id")
                 if open_id and open_id != call_id:
                     # Two distinct calls reported at the same index. Merging them
                     # concatenates their argument JSON into one unparseable blob
                     # and loses an intent, so key the second on its own id.
                     key = (index, call_id)
             self.last_index = index
+            self.open_key_by_index[index] = key
             if key not in self.by_index:
                 self.by_index[key] = {
                     "id": "",
