@@ -23,6 +23,9 @@ from typing import Any, Awaitable, Callable, Optional, Protocol
 
 OnChunk = Callable[[bytes], Awaitable[None] | None]
 
+# One-shot extract completion cap. Not the user's generate budget.
+EXTRACT_MAX_TOKENS = 800
+
 
 @dataclass
 class GenerateRequest:
@@ -66,4 +69,14 @@ class Host(Protocol):
 
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         """Run one inner-wheel pass. session_id selects the active rim sandbox."""
+        ...
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int = EXTRACT_MAX_TOKENS,
+    ) -> str:
+        """One-shot text completion. No tools, no memory inject, no act/sim.
+        Used by llm_extract. Must not re-enter episode.run."""
         ...

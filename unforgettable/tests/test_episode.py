@@ -18,7 +18,7 @@ import asyncio
 from pathlib import Path
 
 from unforgettable.agents.extractor import EPISODE_TITLE_ID_CHARS, TWIN_NOTE_TITLE
-from unforgettable.host import GenerateRequest, GenerateResult, ToolTrace
+from unforgettable.host import EXTRACT_MAX_TOKENS, GenerateRequest, GenerateResult, ToolTrace
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run
 from unforgettable.store.records import (
@@ -29,8 +29,6 @@ from unforgettable.store.records import (
 )
 from unforgettable.store.search import search_records
 from unforgettable.throne.policy import Action
-
-COMPLETE_MAX_TOKENS = 800
 
 
 class FakeHost:
@@ -73,7 +71,7 @@ class FakeHost:
             raise AssertionError("unexpected extra generate")
         return self._results.pop(0)
 
-    async def complete(self, messages, *, max_tokens=COMPLETE_MAX_TOKENS) -> str:
+    async def complete(self, messages, *, max_tokens=EXTRACT_MAX_TOKENS) -> str:
         return ""
 
 

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from unforgettable import VIRTUAL_MODEL_ID, inner_model_id, is_virtual_model
-from unforgettable.host import GenerateRequest, GenerateResult, Host
+from unforgettable.host import EXTRACT_MAX_TOKENS, GenerateRequest, GenerateResult, Host
 from unforgettable.loop.context import EpisodeRequest
 from unforgettable.loop.episode import run as run_episode
 from unforgettable.loop.runtime import current_traces
@@ -378,6 +378,25 @@ class StudioHost:
         else:
             text = _choice_text(_response_payload(resp))
         return GenerateResult(text = text, tool_traces = current_traces()[before:])
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int = EXTRACT_MAX_TOKENS,
+    ) -> str:
+        payload = self.payload.model_copy(deep = True)
+        payload.model = self.inner_model or "default"
+        payload.stream = False
+        payload.enable_tools = False
+        payload.max_tokens = max_tokens
+        payload.messages = _as_chat_messages(messages)
+        token = _INNER.set(True)
+        try:
+            resp = await self.inner(payload, self.request, self.current_subject)
+        finally:
+            _INNER.reset(token)
+        return _choice_text(_response_payload(resp))
 
 
 async def handle_chat_completions(payload, request, current_subject: str, inner: Callable):

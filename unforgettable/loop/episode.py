@@ -147,11 +147,12 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 continue
             break
 
-        error_fix_id = _extract(
+        error_fix_id = await _extract(
             state,
             db_path,
             last_user=last_user_text(request.messages),
             actions=actions,
+            host=host,
         )
         return EpisodeOutcome(
             text=text, state=state, error_fix_id=error_fix_id, actions=actions
@@ -218,16 +219,19 @@ def _write_rollouts(state: EpisodeState, *, source_record_id: str, db_path: str)
         )
 
 
-def _extract(
+async def _extract(
     state: EpisodeState,
     db_path: str,
     *,
     last_user: str,
     actions: list[str],
+    host: Host,
 ) -> Optional[str]:
     drafts = list(from_episode(state))
     drafts.extend(from_drift(state))
-    drafts.extend(llm_extract(state))
+    complete = getattr(host, "complete", None)
+    if complete is not None:
+        drafts.extend(await llm_extract(state, host))
     written_id = None
     draft_ids: list[str] = []
     for draft in drafts:
