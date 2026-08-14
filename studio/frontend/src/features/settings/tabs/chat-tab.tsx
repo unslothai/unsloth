@@ -124,6 +124,12 @@ export function ChatTab() {
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const rememberParamsPerModel = useChatRuntimeStore(
+    (state) => state.rememberParamsPerModel,
+  );
+  const setRememberParamsPerModel = useChatRuntimeStore(
+    (state) => state.setRememberParamsPerModel,
+  );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
@@ -274,6 +280,15 @@ export function ChatTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.rememberParamsPerModel")}
+          description={t("settings.chat.rememberParamsPerModelDescription")}
+        >
+          <Switch
+            checked={rememberParamsPerModel}
+            onCheckedChange={setRememberParamsPerModel}
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.profile.greetingSloth")}
