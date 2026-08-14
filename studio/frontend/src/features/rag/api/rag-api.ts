@@ -226,7 +226,7 @@ export const PROJECT_SOURCES_CHANGED_EVENT = "unsloth-project-sources-changed";
 
 export function invalidateProjectSources(projectId: string): void {
   publishProjectSourcesChanged(projectId);
-  getProjectChannel()?.postMessage({ projectId });
+  getProjectChannel()?.postMessage({ kind: "sources", projectId });
 }
 
 function publishProjectSourcesChanged(projectId: string): void {
@@ -256,10 +256,19 @@ function getProjectChannel(): BroadcastChannel | null {
   }
   projectChannel = new BroadcastChannel(PROJECT_SOURCES_CHANGED_EVENT);
   projectChannel.onmessage = (event: MessageEvent) => {
-    const projectId = (event.data as { projectId?: string } | null)?.projectId;
-    if (projectId) {
-      publishProjectSourcesChanged(projectId);
+    const message = event.data as {
+      kind?: string;
+      projectId?: string;
+      delta?: number;
+    } | null;
+    if (!message?.projectId) {
+      return;
     }
+    if (message.kind === "work") {
+      noteRemoteProjectWork(message.projectId, message.delta ?? 0);
+      return;
+    }
+    publishProjectSourcesChanged(message.projectId);
   };
   return projectChannel;
 }
@@ -288,6 +297,11 @@ export function noteProjectWork(projectId: string, delta: number): void {
   } else {
     projectWorkInFlight.delete(projectId);
   }
+  getProjectChannel()?.postMessage({ kind: "work", projectId, delta });
+  publishProjectWorkChanged(projectId);
+}
+
+function publishProjectWorkChanged(projectId: string): void {
   if (typeof window === "undefined") {
     return;
   }
@@ -296,8 +310,50 @@ export function noteProjectWork(projectId: string, delta: number): void {
   );
 }
 
+/**
+ * Work another tab reports, with a deadline. The tab that started it is the
+ * only one that can report the end, and it may be closed or reloaded first, so
+ * a count taken on its word alone could gate this project for the session. The
+ * deadline caps that at a couple of minutes; a job outliving it falls back to
+ * the rows the list refresh brings, which is where the gate started.
+ */
+const REMOTE_WORK_TTL_MS = 120_000;
+const remoteProjectWork = new Map<string, { count: number; until: number }>();
+const remoteWorkTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function noteRemoteProjectWork(projectId: string, delta: number): void {
+  const entry = remoteProjectWork.get(projectId) ?? { count: 0, until: 0 };
+  const count = Math.max(0, entry.count + delta);
+  const timer = remoteWorkTimers.get(projectId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    remoteWorkTimers.delete(projectId);
+  }
+  if (count === 0) {
+    remoteProjectWork.delete(projectId);
+  } else {
+    remoteProjectWork.set(projectId, {
+      count,
+      until: Date.now() + REMOTE_WORK_TTL_MS,
+    });
+    // Re-publish when it lapses, so a listener re-reads instead of holding a
+    // count nothing will come back to clear. One timer per project: a chatty
+    // tab renews the deadline, it does not stack another wake-up on it.
+    remoteWorkTimers.set(
+      projectId,
+      setTimeout(() => {
+        remoteWorkTimers.delete(projectId);
+        publishProjectWorkChanged(projectId);
+      }, REMOTE_WORK_TTL_MS),
+    );
+  }
+  publishProjectWorkChanged(projectId);
+}
+
 export function projectWorkCount(projectId: string): number {
-  return projectWorkInFlight.get(projectId) ?? 0;
+  const remote = remoteProjectWork.get(projectId);
+  const remoteCount = remote && remote.until > Date.now() ? remote.count : 0;
+  return (projectWorkInFlight.get(projectId) ?? 0) + remoteCount;
 }
 
 const watchedFolderJobs = new Set<string>();

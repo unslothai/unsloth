@@ -290,7 +290,15 @@ test("an invalidation crosses tabs", () => {
     new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
     "utf8",
   );
-  assert.match(api, /getProjectChannel\(\)\?\.postMessage\(\{ projectId \}\)/);
+  assert.match(
+    api,
+    /getProjectChannel\(\)\?\.postMessage\(\{ kind: "sources", projectId \}\)/,
+  );
+  // Work in flight crosses too, or the other tab stays sendable through it.
+  assert.match(
+    api,
+    /getProjectChannel\(\)\?\.postMessage\(\{ kind: "work", projectId, delta \}\)/,
+  );
   assert.match(api, /new BroadcastChannel\(PROJECT_SOURCES_CHANGED_EVENT\)/);
   const hook = readFileSync(
     new URL(
@@ -300,4 +308,111 @@ test("an invalidation crosses tabs", () => {
     "utf8",
   );
   assert.match(hook, /subscribeProjectSourcesBroadcast\(\);/);
+});
+
+// The tab that started the work is the only one that can report it finished,
+// and it may be closed or reloaded first. A count taken on its word alone would
+// gate the project for the session, so what it reports lapses.
+test("work reported by another tab lapses", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(api, /const REMOTE_WORK_TTL_MS = 120_000;/);
+  assert.match(api, /until: Date\.now\(\) \+ REMOTE_WORK_TTL_MS/);
+  // Local and remote add up; a remote count past its deadline is dropped.
+  assert.match(
+    api,
+    /remote && remote\.until > Date\.now\(\) \? remote\.count : 0;\s*return \(projectWorkInFlight\.get\(projectId\) \?\? 0\) \+ remoteCount;/,
+  );
+  // One pending wake-up per project, however chatty the other tab is.
+  assert.match(api, /clearTimeout\(timer\)/);
+
+  const TTL = 120_000;
+  const remote = new Map<string, { count: number; until: number }>();
+  let now = 1_000;
+  const note = (projectId: string, delta: number) => {
+    const entry = remote.get(projectId) ?? { count: 0, until: 0 };
+    const count = Math.max(0, entry.count + delta);
+    if (count === 0) {
+      remote.delete(projectId);
+    } else {
+      remote.set(projectId, { count, until: now + TTL });
+    }
+  };
+  const counted = (projectId: string) => {
+    const entry = remote.get(projectId);
+    return entry && entry.until > now ? entry.count : 0;
+  };
+
+  note("proj-1", 1);
+  assert.equal(counted("proj-1"), 1, "the other tab's upload gates this one");
+
+  note("proj-1", -1);
+  assert.equal(counted("proj-1"), 0, "and releases when it says so");
+
+  // The other tab goes away mid-upload and never reports the end.
+  note("proj-1", 1);
+  assert.equal(counted("proj-1"), 1);
+  now += TTL + 1;
+  assert.equal(counted("proj-1"), 0, "the gate does not outlive the tab");
+});
+
+// Two uploads overlapping in the other tab: the first to finish must not
+// release the gate the second is still holding.
+test("overlapping remote work is counted, not flagged", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(api, /const count = Math\.max\(0, entry\.count \+ delta\);/);
+
+  const remote = new Map<string, { count: number; until: number }>();
+  const note = (projectId: string, delta: number) => {
+    const entry = remote.get(projectId) ?? { count: 0, until: 0 };
+    const count = Math.max(0, entry.count + delta);
+    if (count === 0) {
+      remote.delete(projectId);
+    } else {
+      remote.set(projectId, { count, until: Date.now() + 120_000 });
+    }
+  };
+
+  note("proj-1", 1);
+  note("proj-1", 1);
+  note("proj-1", -1);
+  assert.equal(remote.get("proj-1")?.count, 1, "one still running");
+  note("proj-1", -1);
+  assert.equal(remote.has("proj-1"), false);
+});
+
+// The composer says the source is gone the moment it is clicked, but it is
+// still there until the DELETE returns, and the sources probe is only
+// invalidated after that.
+test("a project delete is work on the project", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /noteProjectWork\(removingProjectId, 1\)/);
+  assert.match(hook, /noteProjectWork\(removingProjectId, -1\)/);
+});
+
+// A superseded request clearing the flag would report the list as known while
+// the request that will publish is still out.
+test("the newest request owns the loading flag", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    hook,
+    /if \(refreshSeq\.current === requestId\) \{\s*refreshInFlight\.current = false;\s*setLoading\(false\);/,
+  );
 });

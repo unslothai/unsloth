@@ -257,10 +257,13 @@ export function useRagDocuments(
           });
         }
       } finally {
+        // Whoever is newest clears it. A superseded request clearing it would
+        // report the list as known while the one that will publish is still
+        // out, and the composer gates sends on that.
         if (refreshSeq.current === requestId) {
           refreshInFlight.current = false;
+          setLoading(false);
         }
-        if (!opts?.quiet) setLoading(false);
       }
     },
     [scopeKey, lister],
@@ -317,6 +320,8 @@ export function useRagDocuments(
     }
     const read = () => setWorkElsewhere(projectWorkCount(workScopeId));
     read();
+    // Work in another tab arrives over the same channel.
+    subscribeProjectSourcesBroadcast();
     window.addEventListener(PROJECT_WORK_CHANGED_EVENT, read);
     return () => window.removeEventListener(PROJECT_WORK_CHANGED_EVENT, read);
   }, [workScopeId]);
@@ -527,6 +532,14 @@ export function useRagDocuments(
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
+      // The chip goes at once but the source is still there until the DELETE
+      // returns, and the sources probe is only invalidated after it does, so a
+      // send in between can still retrieve what the composer says is gone.
+      const removingProjectId =
+        scope?.type === "project" ? scope.projectId : null;
+      if (removingProjectId) {
+        noteProjectWork(removingProjectId, 1);
+      }
       try {
         await deleteDocument(
           documentId,
@@ -538,6 +551,10 @@ export function useRagDocuments(
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        if (removingProjectId) {
+          noteProjectWork(removingProjectId, -1);
+        }
       }
     },
     [documents, scope],
