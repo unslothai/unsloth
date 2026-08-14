@@ -4277,6 +4277,38 @@ def _toml_line_value(raw: str) -> str:
     return raw.strip()
 
 
+def _toml_inline_mapping(raw: str) -> "dict[str, str]":
+    """`{ pkg = "2015-01-01" }` as a dict, for the 3.9/3.10 scanner that has no tomllib.
+
+    An exclude-newer value is a date, a timestamp or a duration, none of which carry a
+    comma or a brace, so splitting on commas is enough here. A piece that does not read as
+    `name = value` is dropped rather than guessed at.
+    """
+    text = _toml_line_value(raw).strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return {}
+    table: "dict[str, str]" = {}
+    for piece in text[1:-1].split(","):
+        name, sep, when = piece.partition("=")
+        name = name.strip().strip("\"'")
+        when = _toml_line_value(when).strip().strip("\"'")
+        if sep and name and when:
+            table[name] = when
+    return table
+
+
+def _uv_config_section_in_scope(file_name: str, section: str) -> bool:
+    """Does this table of this file carry uv's own settings?
+
+    In a pyproject only [tool.uv] and its subtables speak for uv. In a uv.toml the whole
+    file does, but its policy keys live at the top level or in [pip]; anything else there
+    (an [[index]] entry, say) is a different setting.
+    """
+    if file_name == "pyproject.toml":
+        return section == "tool.uv" or section.startswith("tool.uv.")
+    return section in ("", "pip")
+
+
 def _pm_policy_scope(names: "list[str]") -> "tuple[bool, list[str]]":
     """A format-control list read the way pip and uv read it: in order, with resets.
 
@@ -4425,11 +4457,22 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
             # way it set it: uv reads the higher-precedence value and ignores the rest, so
             # a project `no-build = false` above a user `no-build = true` is no policy.
             _set_here = False
+            _merged: "dict[object, object]" = {}
             for table in (_pip_table, document):
                 if not isinstance(table, dict) or key not in table:
                     continue
                 _set_here = True
                 _value = table.get(key)
+                if key in _PM_POLICY_MAPPING_CONFIG_KEYS and isinstance(_value, dict):
+                    # The two halves of a per-package mapping COMPOSE as well: measured on
+                    # uv 0.12.1, a root `exclude-newer-package` still filters its package
+                    # with a different one set under [pip], so taking the first table alone
+                    # would drop half the operator's cutoffs. [pip] is the more specific of
+                    # the two and wins a package both name (measured the same way), which
+                    # is what visiting it first and keeping its value gives.
+                    for _pkg, _when in _value.items():
+                        _merged.setdefault(_pkg, _when)
+                    continue
                 _live = (
                     any(_pm_policy_scope(_pm_policy_config_names(_value)))
                     if key in _PM_POLICY_SCOPED_CONFIG_KEYS and not isinstance(_value, dict)
@@ -4438,6 +4481,8 @@ def _scan_uv_policy_config() -> "list[tuple[str, str, object]]":
                 if _live:
                     found.append((path.name, key, _value))
                     break
+            if _merged:
+                found.append((path.name, key, _merged))
             if _set_here:
                 decided.add(key)
     return found
@@ -4460,6 +4505,12 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
         section = ""
         here: "set[str]" = set()
         pending = ""
+        # Per-package cutoffs are collected across the file rather than emitted line by
+        # line: uv composes the root and the [pip] mapping, so one of them alone is only
+        # half the operator's policy.
+        mappings: "dict[str, dict[str, str]]" = {}
+        mapping_section = ""
+        mapping_wins = False
         for raw in text.splitlines():
             # A list can span lines, and reading only the first leaves `only-binary = [`,
             # which parses as no packages and so as no policy at all. Glue the rest on
@@ -4473,11 +4524,29 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             stripped = _toml_line_value(line)
             if not pending and stripped.startswith("[") and "=" not in stripped:
                 section = _toml_table_name(stripped)
+                # `[pip.exclude-newer-package]` is a valid spelling of the mapping (uv
+                # 0.12.1 honours it), and the keys under it are package names rather than
+                # policy keys, so the HEADER is what names the policy there.
+                _parent, _dot, _last = section.rpartition(".")
+                if _last in _PM_POLICY_MAPPING_CONFIG_KEYS and _uv_config_section_in_scope(
+                    path.name, _parent
+                ):
+                    mapping_section = _last
+                    mapping_wins = _parent.rpartition(".")[2] == "pip"
+                else:
+                    mapping_section = ""
                 continue
             key, sep, value = line.partition("=")
             if not sep:
                 continue
             key = key.strip().strip("\"'")
+            if mapping_section:
+                _when = _toml_line_value(value).strip().strip("\"'")
+                if key and _when and mapping_section not in decided:
+                    _table = mappings.setdefault(mapping_section, {})
+                    if mapping_wins or key not in _table:
+                        _table[key] = _when
+                continue
             # `pip.no-build = true` is TOML's dotted spelling of `[pip] no-build`, and uv
             # reads it that way. The prefix names the table for THIS line only, so it
             # cannot leak into the next one the way a header does.
@@ -4486,14 +4555,7 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
                 prefix, _dot, key = key.rpartition(".")
                 prefix = prefix.strip().strip("\"'")
                 line_section = f"{section}.{prefix}" if section else prefix
-            # In a pyproject only [tool.uv] and its subtables speak for uv. In a uv.toml
-            # the whole file does, but its policy keys live at the top level or in [pip];
-            # anything else there (an [[index]] entry, say) is a different setting.
-            if path.name == "pyproject.toml":
-                in_scope = line_section == "tool.uv" or line_section.startswith("tool.uv.")
-            else:
-                in_scope = line_section in ("", "pip")
-            if not in_scope:
+            if not _uv_config_section_in_scope(path.name, line_section):
                 continue
             value = _toml_line_value(value)
             if key not in _PM_POLICY_CONFIG_KEYS or key in decided:
@@ -4502,11 +4564,16 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             # was set. Collected per file, since a file may set it below this line.
             here.add(key)
             if key in _PM_POLICY_MAPPING_CONFIG_KEYS:
-                # `exclude-newer-package = {}` reads as the token "{}" here, so the table
-                # is what decides: no packages, no cutoff.
-                if not value.strip().strip("{}").strip():
-                    continue
-            elif key in _PM_POLICY_SCOPED_CONFIG_KEYS:
+                # `exclude-newer-package = {}` carries no package and so no cutoff, and the
+                # root and [pip] spellings compose, so the pairs are collected and emitted
+                # once for the whole file below rather than the first one standing for it.
+                _table = mappings.setdefault(key, {})
+                _pip_half = line_section.rpartition(".")[2] == "pip"
+                for _pkg, _when in _toml_inline_mapping(value).items():
+                    if _pip_half or _pkg not in _table:
+                        _table[_pkg] = _when
+                continue
+            if key in _PM_POLICY_SCOPED_CONFIG_KEYS:
                 # `only-binary = []` reads as a non-empty string here, so the list is what
                 # decides: no names and no reset left standing, no policy.
                 if not any(_pm_policy_scope(_pm_policy_config_names(value))):
@@ -4514,6 +4581,10 @@ def _scan_uv_policy_config_by_line(candidates: "list[Path]") -> "list[tuple[str,
             elif not _pm_policy_value_is_on(value):
                 continue
             found.append((path.name, key, value))
+        for _key, _table in mappings.items():
+            here.add(_key)
+            if _table and _key not in decided:
+                found.append((path.name, _key, _table))
         decided |= here
     return found
 
@@ -4732,11 +4803,16 @@ def _uv_policy_settings() -> "dict[str, object]":
     # uv's pip interface does not read UV_EXCLUDE_NEWER_PACKAGE (measured on 0.12.1: the
     # package installs anyway), so the operator's intent is carried on the command line
     # by _uv_policy_cli_args() and counted here as a cutoff pip cannot honour.
-    cutoff_packages = [
-        spec
-        for spec in os.environ.get("UV_EXCLUDE_NEWER_PACKAGE", "").replace(",", " ").split()
-        if "=" in spec
-    ]
+    cutoff_packages: "list[str]" = []
+    for _token in os.environ.get("UV_EXCLUDE_NEWER_PACKAGE", "").replace(",", " ").split():
+        if "=" in _token:
+            cutoff_packages.append(_token)
+        elif cutoff_packages:
+            # uv takes a friendly duration as well as a date ("six=24 hours"), so a
+            # whitespace split alone would hand it `six=24`, which it rejects outright
+            # (measured on 0.12.1: exit 2, "could not be parsed as a valid exclude-newer
+            # value"). A piece with no `=` continues the spec before it.
+            cutoff_packages[-1] += " " + _token
     scoped_cutoff = bool(cutoff_packages)
     for _name, key, value in _uv_policy_config():
         if key == "require-hashes":

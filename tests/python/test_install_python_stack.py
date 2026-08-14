@@ -851,6 +851,27 @@ class TestStrictPmPolicyOptOut:
             cmd = ips._build_uv_cmd(("six",))
         assert cmd[-2:] == ["--exclude-newer-package", "six=2015-01-01T00:00:00Z"]
 
+    def test_a_friendly_duration_cutoff_keeps_its_space(self):
+        """uv takes a duration as well as a date, and `six=24 hours` has a space in it.
+        Splitting the variable on whitespace alone hands uv `six=24`, which it rejects
+        outright (measured on 0.12.1: exit 2, "could not be parsed as a valid
+        exclude-newer value"), so every pinned install fails over the operator's policy."""
+        with mock.patch.dict(
+            os.environ,
+            {
+                "UNSLOTH_STRICT_PM_POLICY": "1",
+                "UV_EXCLUDE_NEWER_PACKAGE": "six=24 hours,docopt=2015-01-01T00:00:00Z",
+            },
+            clear = True,
+        ):
+            cmd = ips._build_uv_cmd(("six",))
+        assert cmd[-4:] == [
+            "--exclude-newer-package",
+            "six=24 hours",
+            "--exclude-newer-package",
+            "docopt=2015-01-01T00:00:00Z",
+        ]
+
     def test_uv_is_recognised_by_program_name_not_by_the_literal_uv(self):
         """`uv pip install` has "pip" in its own argv, so a uv invoked by absolute path
         would be mistaken for pip: refused under a cutoff uv itself honours, and handed
@@ -1554,6 +1575,80 @@ class TestUvConfigDiscoveryMatchesUv:
         )
         assert [key for _n, key, _v in ips._scan_uv_policy_config_by_line([path])] == [
             "exclude-newer-package"
+        ]
+
+    def test_both_cutoff_maps_reach_the_projection(self, tmp_path):
+        """The same merge through whichever scanner this runtime uses, and out the other
+        end into the file the pinned command reads: dropping half the mapping there is a
+        cutoff uv was enforcing and the pinned install no longer is."""
+        (tmp_path / "uv.toml").write_text(
+            'exclude-newer-package = { six = "2015-01-01T00:00:00Z" }\n'
+            '[pip]\nexclude-newer-package = { docopt = "2016-01-01T00:00:00Z" }\n',
+            encoding = "utf-8",
+        )
+        assert [(key, value) for _n, key, value in ips._scan_uv_policy_config()] == [
+            (
+                "exclude-newer-package",
+                {"six": "2015-01-01T00:00:00Z", "docopt": "2016-01-01T00:00:00Z"},
+            )
+        ]
+        with mock.patch.dict(os.environ, {"UNSLOTH_STRICT_PM_POLICY": "1"}, clear = True):
+            ips._UV_POLICY_PROJECTION = None
+            projected = ips._uv_policy_config_projection().read_text(encoding = "utf-8")
+            ips._UV_POLICY_PROJECTION = None
+        assert '"six" = "2015-01-01T00:00:00Z"' in projected
+        assert '"docopt" = "2016-01-01T00:00:00Z"' in projected
+
+    def test_a_cutoff_map_written_as_a_table_header_is_a_policy(self, tmp_path):
+        """`[pip.exclude-newer-package]` with `six = "..."` under it is the same setting,
+        and uv 0.12.1 honours it (measured: the install is refused). The keys under that
+        header are package names, so the header is what names the policy; reading the
+        lines as policy keys leaves strict mode neither projecting nor refusing."""
+        path = tmp_path / "uv.toml"
+        path.write_text(
+            '[pip.exclude-newer-package]\nsix = "2015-01-01T00:00:00Z"\n', encoding = "utf-8"
+        )
+        assert ips._scan_uv_policy_config_by_line([path]) == [
+            ("uv.toml", "exclude-newer-package", {"six": "2015-01-01T00:00:00Z"})
+        ]
+
+    def test_a_cutoff_table_header_under_another_tool_is_not_ours(self, tmp_path):
+        path = tmp_path / "pyproject.toml"
+        path.write_text(
+            '[tool.other.exclude-newer-package]\nsix = "2015-01-01T00:00:00Z"\n',
+            encoding = "utf-8",
+        )
+        assert ips._scan_uv_policy_config_by_line([path]) == []
+
+    def test_the_root_and_pip_cutoff_maps_are_merged(self, tmp_path):
+        """Measured on uv 0.12.1: a root `exclude-newer-package` still filters its package
+        with a different one set under [pip], so both halves are in force. Keeping one of
+        them drops the other's cutoff from the projection."""
+        path = tmp_path / "uv.toml"
+        path.write_text(
+            'exclude-newer-package = { six = "2015-01-01T00:00:00Z" }\n'
+            '[pip]\nexclude-newer-package = { docopt = "2016-01-01T00:00:00Z" }\n',
+            encoding = "utf-8",
+        )
+        assert ips._scan_uv_policy_config_by_line([path]) == [
+            (
+                "uv.toml",
+                "exclude-newer-package",
+                {"six": "2015-01-01T00:00:00Z", "docopt": "2016-01-01T00:00:00Z"},
+            )
+        ]
+
+    def test_the_pip_cutoff_wins_a_package_both_maps_name(self, tmp_path):
+        """Measured the same way: with the root date in the past and the [pip] one in the
+        future the install goes through, so [pip] is the half that binds."""
+        path = tmp_path / "uv.toml"
+        path.write_text(
+            'exclude-newer-package = { six = "2015-01-01T00:00:00Z" }\n'
+            '[pip]\nexclude-newer-package = { six = "2030-01-01T00:00:00Z" }\n',
+            encoding = "utf-8",
+        )
+        assert ips._scan_uv_policy_config_by_line([path]) == [
+            ("uv.toml", "exclude-newer-package", {"six": "2030-01-01T00:00:00Z"})
         ]
 
     def test_a_dotted_key_is_the_table_it_names(self, tmp_path):
