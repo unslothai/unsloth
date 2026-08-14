@@ -406,7 +406,13 @@ cmd = [sys.executable, str(ROOT / {json.dumps(leg.entry)}),
 cmd += [{arg_exprs}]
 print("{PAYLOAD_SENTINEL} exec " + " ".join(cmd), flush=True)
 
-proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+# errors="replace", because the alternative is losing the verdict to the
+# output. text=True decodes strictly, and a payload that dies in native code
+# writes whatever bytes the crash handler had; one of them not being UTF-8
+# raised UnicodeDecodeError HERE, before the synthetic report below, so
+# papermill aborted the cell and the launcher, finding no report for this leg,
+# called the run partial or infra. Both are green, on a leg that died.
+proc = subprocess.run(cmd, env=env, capture_output=True, text=True, errors="replace")
 print(proc.stdout[-40000:], flush=True)
 if proc.stderr.strip():
     print("----- stderr (tail) -----", flush=True)

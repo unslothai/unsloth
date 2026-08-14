@@ -434,17 +434,27 @@ def _drive_main(
     push_seconds,
     pushes,
     extra_argv = (),
+    api_seconds = 0.0,
 ):
     """Run `launch.main()` end to end with Kaggle replaced by stubs.
 
     Returns the per-kernel wait budgets, the slugs deleted on the way out and
     the launch result. The clock is fake, so a push can burn arbitrary wall
     time without the test taking any.
+
+    ``api_seconds`` is what authentication costs. It is not free: with
+    KAGGLE_API_TOKEN set, which is the only credential the workflow passes,
+    `authenticate()` introspects the token over the network.
     """
     clock = {"t": 1_000_000.0}
     monkeypatch.setattr(launch.time, "time", lambda: clock["t"])
     monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(launch, "_api", lambda: object())
+
+    def fake_api():
+        clock["t"] += api_seconds
+        return object()
+
+    monkeypatch.setattr(launch, "_api", fake_api)
 
     outcomes = list(pushes)
 
@@ -572,6 +582,57 @@ def test_a_window_that_fits_still_launches(monkeypatch, tmp_path):
     )
     assert [k["slug"] for k in result["kernels"]] == [p["slug"] for p in _TWO_PUSHES]
     assert waits == [5400, 5400]
+    assert result["verdict"] == "pass"
+
+
+def test_the_window_is_measured_again_after_authenticating(monkeypatch, tmp_path):
+    """Authentication sits between the guard and the first push, and costs time.
+
+    `_api()` calls `KaggleApi.authenticate()`, and the only credential this
+    workflow passes is KAGGLE_API_TOKEN, so kaggle 2.2.4 takes the access-token
+    branch: `_authenticate_with_access_token` -> `_introspect_token`, an HTTP
+    round trip whose only bound is the process-wide SOCKET_TIMEOUT_SEC. Checked
+    once, before that call, a window that fitted by less than the timeout is
+    already gone by the time the first kernel is pushed, and being killed during
+    release() is what leaves kernels billing.
+    """
+    _, deleted, result = _drive_main(
+        monkeypatch,
+        tmp_path,
+        push_seconds = 0.0,
+        pushes = _TWO_PUSHES,
+        api_seconds = float(launch.SOCKET_TIMEOUT_SEC),
+        extra_argv = (
+            "--deadline-epoch",
+            str(int(1_000_000 + launch.worst_case_seconds(5400, 2)) + 60),
+        ),
+    )
+    assert not result.get("kernels"), "a kernel was pushed after the window went"
+    assert result["slug"] is None and deleted == []
+    assert result["verdict"] == "infra"
+    assert "could be killed during cleanup" in result["reason"]
+
+
+def test_a_window_that_survives_authentication_still_launches(monkeypatch, tmp_path):
+    """The recheck must cost the ordinary run nothing.
+
+    Authentication that returns well inside the slack leaves the worst case
+    covered, and a second guard that stood down here would make every run green
+    without testing anything, which is the failure mode this whole guard is
+    least able to notice.
+    """
+    _, _, result = _drive_main(
+        monkeypatch,
+        tmp_path,
+        push_seconds = 0.0,
+        pushes = _TWO_PUSHES,
+        api_seconds = 30.0,
+        extra_argv = (
+            "--deadline-epoch",
+            str(int(1_000_000 + launch.worst_case_seconds(5400, 2)) + 60),
+        ),
+    )
+    assert [k["slug"] for k in result["kernels"]] == [p["slug"] for p in _TWO_PUSHES]
     assert result["verdict"] == "pass"
 
 
@@ -1191,6 +1252,61 @@ def test_a_payload_that_cannot_see_its_gpu_reports_instead_of_vanishing(tmp_path
     assert reports, "an unusable GPU produced no report at all"
     assert reports[0]["passed"] is False
     assert any("could not use its GPU" in f for f in reports[0]["failures"])
+
+
+def test_a_payload_that_writes_malformed_utf8_still_reports(tmp_path, monkeypatch):
+    """Bytes that are not UTF-8 are output, not a reason to lose the verdict.
+
+    `subprocess.run(text=True)` decodes strictly, so one malformed byte from a
+    native crash handler raises UnicodeDecodeError inside the run cell, before
+    the synthetic report below it is printed. Papermill then aborts the cell,
+    the launcher extracts no report for this leg and calls the run `partial` or
+    `infra`, both of which are green -- on a payload that died.
+    """
+    monkeypatch.setattr(build_kernel, "KERNEL_ROOT", str(tmp_path / "src"))
+    leg = LEGS["control"]
+    root = Path(build_kernel._kernel_root(leg))
+    root.mkdir(parents = True, exist_ok = True)
+    (root / leg.entry).write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write(b'trained \\xff\\xfe then died\\n')\n"
+        "sys.stderr.buffer.write(b'terminate called \\xff\\n')\n"
+        "sys.exit(134)\n",
+        encoding = "utf-8",
+    )
+
+    run_cell = _payload_cells(leg)[3].replace("/kaggle/working", str(tmp_path))
+    script = tmp_path / "run_cell.py"
+    script.write_text(run_cell, encoding = "utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output = True,
+        text = True,
+        errors = "replace",
+        timeout = 600,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "UnicodeDecodeError" not in proc.stderr
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "t4_control_output.ipynb").write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {
+                        "cell_type": "code",
+                        "outputs": [{"output_type": "stream", "text": proc.stdout}],
+                    }
+                ]
+            }
+        ),
+        encoding = "utf-8",
+    )
+    reports = launch.extract_reports(evidence)
+    assert reports, "a payload that died with undecodable output produced no report"
+    assert reports[0]["passed"] is False
+    assert reports[0]["returncode"] == 134
 
 
 # ------------------------------------------------------- evidence budget

@@ -894,6 +894,33 @@ def main() -> int:
         _log(f"verdict={result['verdict']} reason={result['reason']}")
         return code
 
+    def window_fits(after: str) -> bool:
+        """Does the job's remaining wall clock still cover the worst case?
+
+        Asked TWICE, because the answer expires: everything between the two
+        asks is time the guard already granted. See the two call sites.
+        """
+        if not args.deadline_epoch:
+            return True
+        need = worst_case_seconds(args.max_wait, len(args.notebook))
+        left = int(args.deadline_epoch - time.time())
+        if left >= need:
+            _log(f"{left}s left of the job deadline, worst case {need}s ({after})")
+            return True
+        result["reason"] = (
+            f"only {left}s of the job's deadline are left {after} and this launcher "
+            f"can take {need}s, so a push now could be killed during cleanup"
+        )
+        print(
+            "::warning title=Stood down before pushing::"
+            f"{after} there were {left}s of the job's deadline left and the launcher's "
+            f"worst case is {need}s. Pushing now risks the runner being killed while "
+            "kernels are still up, which would bill accelerator quota to their own "
+            "ceiling. Nothing was pushed and nothing was learned about this change.",
+            flush = True,
+        )
+        return False
+
     # BEFORE authentication and long before the first push: the one question
     # that has to be answered while the answer can still be acted on.
     #
@@ -916,24 +943,8 @@ def main() -> int:
     # Standing down green is the answer the workflow's FAILURE SEMANTICS give
     # every infrastructure outcome: nothing was learned about the code, and no
     # quota was spent finding that out.
-    if args.deadline_epoch:
-        need = worst_case_seconds(args.max_wait, len(args.notebook))
-        left = int(args.deadline_epoch - time.time())
-        if left < need:
-            result["reason"] = (
-                f"only {left}s of the job's deadline are left and this launcher can "
-                f"take {need}s, so a push now could be killed during cleanup"
-            )
-            print(
-                "::warning title=Stood down before pushing::"
-                f"the setup steps left {left}s of the job's deadline and the launcher's "
-                f"worst case is {need}s. Pushing now risks the runner being killed while "
-                "kernels are still up, which would bill accelerator quota to their own "
-                "ceiling. Nothing was pushed and nothing was learned about this change.",
-                flush = True,
-            )
-            return finish()
-        _log(f"{left}s left of the job deadline, worst case {need}s")
+    if not window_fits("after the setup steps"):
+        return finish()
 
     try:
         api = _api()
@@ -941,6 +952,16 @@ def main() -> int:
         if isinstance(exc, KeyboardInterrupt):
             raise
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
+        return finish()
+
+    # AGAIN, now that authentication is paid for and the next thing is a push.
+    # The check above is not enough on its own: authenticate() reaches the
+    # network -- with KAGGLE_API_TOKEN, which is the only credential this
+    # workflow passes, kaggle 2.2.4 introspects the token over HTTP -- and its
+    # only bound is SOCKET_TIMEOUT_SEC. A window that fitted by less than that
+    # is gone by the time the first kernel is pushed, and the guard would have
+    # granted the push on an answer that had expired.
+    if not window_fits("after authenticating"):
         return finish()
 
     # ANY unforeseen exception from here on still has to delete the kernels.
