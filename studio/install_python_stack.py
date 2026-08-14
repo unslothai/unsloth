@@ -319,17 +319,57 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     return _TORCHAO_DEFAULT_SPEC
 
 
-def _probe_installed_torch_version() -> str | None:
-    """Return torch.__version__ from the target venv (sys.executable), or None if
-    torch is absent/unimportable. Cross-platform (unlike probe_torch_wheel_env,
-    which is Linux-only); mirrors the subprocess probe in _ensure_cuda_torch.
+# Memoized `import torch` classification of the target venv, reset by pip_install()
+# (the only thing here that changes what is installed). None means "not probed yet".
+_TORCH_RUNTIME_PROBE: "tuple[bool, bool, str, str, str] | None" = None
+
+
+def _invalidate_torch_runtime_probe() -> None:
+    """Forget the memoized torch classification after a pip operation."""
+    global _TORCH_RUNTIME_PROBE
+    _TORCH_RUNTIME_PROBE = None
+
+
+def _probe_torch_runtime() -> "tuple[bool, bool, str, str, str]":
+    """Classify the venv's torch with ONE `import torch` subprocess per install run.
+
+    Returns ``(ran, importable, version, hip, cuda)``:
+      ran        -- the subprocess finished; False on OSError/timeout, which is the
+                    wedged-GPU-driver case where callers fall back to their on-disk
+                    classifiers rather than trusting an absent answer
+      importable -- ...and it exited 0, so `import torch` actually works. A False here
+                    with `ran` True is the "installed but broken" signal the repair
+                    paths use to force a reinstall.
+      version    -- torch.__version__ verbatim ("" when unknown)
+      hip        -- torch.version.hip  ("" when absent)
+      cuda       -- torch.version.cuda ("" when absent)
+
+    The torch repair paths (_ensure_cuda_torch, _ensure_xpu_torch, _ensure_rocm_torch,
+    _ensure_cpu_torch) run back to back, at BOTH the post-base-requirements repair point
+    and the final one, and each used to spawn its own `import torch` to derive these
+    same few facts. A single Linux update therefore paid for up to nine interpreter
+    starts: four repair paths at each of the two points, plus the torchao version probe.
+    Importing torch is not cheap -- it costs seconds and hundreds of MB -- but the real
+    cost is the timeout: each probe was bounded at 90s *independently*, so on a stalled
+    GPU driver (exactly the host these repair paths exist to rescue) an update could
+    hang for many minutes before the first on-disk fallback ran. Probing once per
+    repair point bounds that at a single 90s wait each.
     """
+    global _TORCH_RUNTIME_PROBE
+    if _TORCH_RUNTIME_PROBE is not None:
+        return _TORCH_RUNTIME_PROBE
     try:
         probe = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                "import torch, sys; sys.stdout.write(getattr(torch, '__version__', ''))",
+                (
+                    "import torch; "
+                    "v = getattr(torch, '__version__', '') or ''; "
+                    "h = getattr(torch.version, 'hip', '') or ''; "
+                    "c = getattr(torch.version, 'cuda', '') or ''; "
+                    "print('|'.join((v, h, c)))"
+                ),
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -338,11 +378,27 @@ def _probe_installed_torch_version() -> str | None:
             **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None
-    if probe.returncode != 0:
-        return None
+        _TORCH_RUNTIME_PROBE = (False, False, "", "", "")
+        return _TORCH_RUNTIME_PROBE
+    # Last non-empty line only: torch and its dependencies can chatter on import.
     lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
-    return lines[-1] if lines else None
+    version = hip = cuda = ""
+    if lines:
+        version, _sep, _rest = lines[-1].partition("|")
+        hip, _sep, cuda = _rest.partition("|")
+    _TORCH_RUNTIME_PROBE = (True, probe.returncode == 0, version, hip, cuda)
+    return _TORCH_RUNTIME_PROBE
+
+
+def _probe_installed_torch_version() -> str | None:
+    """Return torch.__version__ from the target venv (sys.executable), or None if
+    torch is absent/unimportable. Cross-platform (unlike probe_torch_wheel_env,
+    which is Linux-only); shares the one probe with the torch repair paths.
+    """
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    if not _ran or not _importable:
+        return None
+    return _version or None
 
 
 def _installed_distribution_version(name: str) -> str | None:
@@ -373,28 +429,11 @@ def _installed_torch_is_windows_rocm() -> bool:
     """
     if not IS_WINDOWS:
         return False
-    try:
-        probe = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import sys, torch; "
-                    "hip = getattr(getattr(torch, 'version', None), 'hip', None) or ''; "
-                    "ver = getattr(torch, '__version__', '').lower(); "
-                    "sys.stdout.write('yes' if (hip or 'rocm' in ver or 'rocmsdk' in ver) else '')"
-                ),
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            timeout = 90,
-            **_windows_hidden_subprocess_kwargs(),
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    if not _ran or not _importable:
         return False
-    lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
-    return probe.returncode == 0 and bool(lines and lines[-1] == "yes")
+    _ver = _version.lower()
+    return bool(_hip) or "rocm" in _ver or "rocmsdk" in _ver
 
 
 # constraints.txt caps new anyio resolutions at <4.14 (#6483), but an install
@@ -2291,31 +2330,12 @@ def _ensure_cuda_torch() -> None:
         return
 
     # Classify the installed torch: "hip" (ROCm poisoning signature), "cuda" (healthy),
-    # or "cpu". A non-zero exit means torch is missing/un-importable: without a pin the
-    # base install owns it, but a pinned CUDA index reinstalls it below.
-    try:
-        probe = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import torch, re; "
-                    "hip = getattr(torch.version, 'hip', '') or ''; "
-                    "cuda = getattr(torch.version, 'cuda', '') or ''; "
-                    "ver = getattr(torch, '__version__', '').lower(); "
-                    "m = re.search(r'\\+(cu\\d+)', ver); "
-                    "marker = 'hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'); "
-                    "print('|'.join((marker, m.group(1) if m else '', ver.split('+', 1)[0], "
-                    "('cu' + cuda.replace('.', '')) if cuda else '')))"
-                ),
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 90,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    # or "cpu". Un-importable means torch is missing/broken: without a pin the base
+    # install owns it, but a pinned CUDA index reinstalls it below.
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    if not _ran:
         return
-    if probe.returncode != 0:
+    if not _importable:
         # torch present but can't import. Without a pin the base install owns it; but an
         # explicit CUDA pin forces this pass (failed probe) and the base update won't
         # reinstall an already-installed torch, so reinstall from the pin (self-resolving).
@@ -2339,17 +2359,14 @@ def _ensure_cuda_torch() -> None:
             constrain = False,
         )
         return
-    # Last non-empty line: stray sitecustomize/import-hook output must not mask the marker.
-    _marker_lines = [
-        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
-    ]
-    if not _marker_lines:
-        return
     # marker | +cuXXX local tag | release | family from torch.version.cuda. The last is the
     # only CUDA clue an untagged wheel gives: PyPI forbids the local +cuXXX version.
-    _marker, _installed_cu, _installed_release, _runtime_cu = (
-        _marker_lines[-1].split("|") + ["", "", ""]
-    )[:4]
+    _ver = _version.lower()
+    _cu_match = re.search(r"\+(cu\d+)", _ver)
+    _marker = "hip" if (_hip or "rocm" in _ver) else ("cuda" if _cuda else "cpu")
+    _installed_cu = _cu_match.group(1) if _cu_match else ""
+    _installed_release = _ver.split("+", 1)[0]
+    _runtime_cu = ("cu" + _cuda.replace(".", "")) if _cuda else ""
     # Reinstall on a ROCm build on an NVIDIA host (poisoning signature), when a CUDA index
     # is pinned but the venv has the wrong family (CPU or a different cuXXX), or when the
     # installed family ships no kernels for this host's GPUs. A healthy match, or a CPU
@@ -2429,29 +2446,10 @@ def _ensure_xpu_torch() -> None:
     if pin is None:
         return
 
-    # A non-zero exit means torch is missing or un-importable; the pin installs it below
-    # either way. Bounded like every other probe here.
-    try:
-        probe = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    # Flavour AND range: a migrated 2.5+xpu venv is broken, not correct, so the
-                    # tag alone is not enough. Range matches _XPU_TORCH_PKG_SPEC.
-                    "import torch; "
-                    "ver = getattr(torch, '__version__', '').lower(); "
-                    "rel = ver.split('+')[0].split('.'); "
-                    "n = tuple(int(x) for x in rel[:2] if x.isdigit()); "
-                    "ok = '+xpu' in ver and len(n) == 2 and (2, 6) <= n < (2, 11); "
-                    "print('ok' if ok else 'repair')"
-                ),
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 90,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    # Un-importable means torch is missing or broken; the pin installs it below either
+    # way. Bounded by the single shared probe.
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    if not _ran:
         # Inconclusive, so ask the disk, which answers without loading SYCL. An unsupported or
         # missing wheel does need the reinstall (the resolver keeps a too-old +xpu wheel because
         # it satisfies the base range). A supported one means the Intel DRIVER is stalled, and
@@ -2465,22 +2463,16 @@ def _ensure_xpu_torch() -> None:
                 )
             )
             return
-        probe = None
-    _lines = (
-        [
-            line.strip()
-            for line in probe.stdout.decode(errors = "replace").splitlines()
-            if line.strip()
-        ]
-        if probe is not None
-        else []
-    )
-    if probe is None:
         _why = "torch could not be probed"
-    elif probe.returncode == 0:
-        if not _lines:
+    elif _importable:
+        if not _version:
             return  # unreadable -- the base install step handles a missing torch
-        if _lines[-1] == "ok":
+        # Flavour AND range: a migrated 2.5+xpu venv is broken, not correct, so the
+        # tag alone is not enough. Range matches _XPU_TORCH_PKG_SPEC.
+        _ver = _version.lower()
+        _rel = _ver.split("+")[0].split(".")
+        _n = tuple(int(x) for x in _rel[:2] if x.isdigit())
+        if "+xpu" in _ver and len(_n) == 2 and (2, 6) <= _n < (2, 11):
             return  # already the pinned family, in the supported range
         _why = "torch is not a supported XPU build"
     else:
@@ -2762,37 +2754,16 @@ def _ensure_cpu_torch() -> None:
     if pin is None:
         return
 
-    # Classify the installed torch family. A non-zero exit means torch is missing or
-    # un-importable: the explicit CPU pin reinstalls it below.
-    try:
-        probe = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import torch, re; "
-                    "hip = getattr(torch.version, 'hip', '') or ''; "
-                    "cuda = getattr(torch.version, 'cuda', '') or ''; "
-                    "ver = getattr(torch, '__version__', '').lower(); "
-                    # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so
-                    # without it a working Intel build reads as "cpu" and a CPU pin over it does
-                    # nothing. Local label, since torch.version.xpu is None on some builds.
-                    "gpu = bool(hip) or 'rocm' in ver or bool(cuda) or bool(re.search(r'\\+cu\\d+', ver)) or '+xpu' in ver; "
-                    "print('gpu' if gpu else 'cpu')"
-                ),
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 90,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    # Classify the installed torch family. Un-importable means torch is missing or
+    # broken: the explicit CPU pin reinstalls it below.
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    if not _ran:
         # A hung import is the wedged-driver case this pin exists to rescue, so returning here
         # made the pin a no-op on exactly that host. Classify off disk instead, and only go on
         # for a GPU label: a merely slow CPU-only box must not reinstall torch every update.
         if not _is_gpu_torch_label(_installed_torch_label_on_disk()):
             return
-        probe = None
-    if probe is None or probe.returncode != 0:
+    if not _ran or not _importable:
         # torch present but can't import. The explicit CPU pin forces this pass (failed
         # probe) and the base update won't reinstall an already-installed torch, so
         # reinstall from the pin (self-resolving, no loop).
@@ -2813,12 +2784,20 @@ def _ensure_cpu_torch() -> None:
             constrain = False,
         )
         return
-    _lines = [
-        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
-    ]
-    if not _lines:
+    if not _version:
         return  # unreadable -- the base install step handles a missing torch
-    if _lines[-1] != "gpu":
+    # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so without it a
+    # working Intel build reads as "cpu" and a CPU pin over it does nothing. Local label,
+    # since torch.version.xpu is None on some builds.
+    _ver = _version.lower()
+    _is_gpu_build = (
+        bool(_hip)
+        or "rocm" in _ver
+        or bool(_cuda)
+        or bool(re.search(r"\+cu\d+", _ver))
+        or "+xpu" in _ver
+    )
+    if not _is_gpu_build:
         return  # already a CPU build
 
     _safe_print(
@@ -2861,26 +2840,10 @@ def _ensure_rocm_torch() -> None:
     # setup.ps1 sets this after installing AMD wheels; skip only when torch is actually
     # importable as ROCm (a wiped venv leaves a stale env-var that must not suppress it).
     if os.environ.get("UNSLOTH_ROCM_TORCH_INSTALLED") == "1":
-        _torch_ok = False
-        try:
-            _probe = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    (
-                        "import torch; "
-                        "hip=getattr(torch.version,'hip','') or ''; "
-                        "import sys; "
-                        "sys.exit(0 if (hip or 'rocm' in torch.__version__.lower()) else 1)"
-                    ),
-                ],
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                timeout = 90,
-            )
-            _torch_ok = _probe.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+        _torch_ok = (
+            _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
+        )
         if _torch_ok:
             _rocm_windows_torch_installed = True
             # ROCm torch is already installed, but bnb still needs the ROCm build
@@ -2902,28 +2865,11 @@ def _ensure_rocm_torch() -> None:
         gfx_arch = _detect_windows_gfx_arch()
         if not gfx_arch and _win_rocm_pin is None:
             return  # no AMD GPU visible via hipinfo
-        # Probe whether torch already links against HIP.
-        _torch_already_rocm = False
-        try:
-            probe = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    (
-                        "import torch; "
-                        "hip=getattr(torch.version,'hip','') or ''; "
-                        "ver=torch.__version__; "
-                        "print('yes' if hip or 'rocm' in ver.lower() else '')"
-                    ),
-                ],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                timeout = 90,
-            )
-            if probe.returncode == 0 and probe.stdout.decode().strip() == "yes":
-                _torch_already_rocm = True
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        # Whether torch already links against HIP.
+        _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+        _torch_already_rocm = (
+            _ran and _importable and (bool(_hip) or "rocm" in _version.lower())
+        )
         # "Is ROCm" is not "is the RIGHT ROCm": wheels are per-family, so a host whose arch
         # now resolves elsewhere (dGPU added, or the #7776 repick) would keep the old family
         # forever. setup.ps1 force-reinstalls every run, so this only bites standalone
@@ -3011,41 +2957,16 @@ def _ensure_rocm_torch() -> None:
         # Explicit pin or inferred gfx: the index drives the install.
         ver = (0, 0)
 
-    # Probe whether torch links against HIP, capturing the installed ROCm tag for pin-mismatch
-    # detection. Emit ONE "<hip_marker>|<version>" line: marker (HIP version, "rocm" sentinel,
-    # or empty for CPU/CUDA) before "|", wheel version after.
-    try:
-        probe = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import torch; "
-                    "hip=getattr(torch.version,'hip','') or ''; "
-                    "ver=getattr(torch,'__version__','').lower(); "
-                    # HIP version if present, else a "rocm" sentinel when only the
-                    # version string flags ROCm; empty marker = CPU/CUDA torch.
-                    "marker=hip if hip else ('rocm' if 'rocm' in ver else ''); "
-                    "print(marker + '|' + ver)"
-                ),
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 90,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        probe = None
-    # Last non-empty line, split on the FIRST "|" so the empty HIP field is preserved.
-    _marker_lines = (
-        [ln.strip() for ln in probe.stdout.decode(errors = "replace").splitlines() if ln.strip()]
-        if (probe is not None and probe.returncode == 0)
-        else []
-    )
-    _hip_marker, _sep, _installed_torch_ver = (
-        _marker_lines[-1].partition("|") if _marker_lines else ("", "", "")
-    )
-    # A "|"-delimited line is required; without it treat HIP as absent -> reinstall.
-    has_hip_torch = bool(_sep) and _hip_marker != ""
+    # Whether torch links against HIP, capturing the installed ROCm tag for pin-mismatch
+    # detection. Marker is the HIP version, else a "rocm" sentinel when only the version
+    # string flags ROCm; empty marker = CPU/CUDA torch. An un-probeable torch (missing,
+    # broken, or a stalled driver) leaves the marker empty -> reinstall.
+    _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
+    _installed_torch_ver = _version.lower() if (_ran and _importable) else ""
+    _hip_marker = ""
+    if _ran and _importable:
+        _hip_marker = _hip if _hip else ("rocm" if "rocm" in _installed_torch_ver else "")
+    has_hip_torch = _hip_marker != ""
 
     # An explicit ROCm pin whose family differs from the installed torch must reinstall, else a
     # rocm7.2/gfx* pin over an older +rocm6.4/7.1 build never applies. Version-tag heuristic
@@ -4157,6 +4078,9 @@ def pip_install(
     constrain: bool = True,
 ) -> None:
     """Build and run a pip install command (uses uv when available, falls back to pip)."""
+    # Any pip operation can change which torch is installed, so the memoized
+    # classification from _probe_torch_runtime() must not outlive it.
+    _invalidate_torch_runtime_probe()
     constraint_args_pip: list[str] = []
     constraint_args_uv: list[str] = []
     if constrain and CONSTRAINTS.is_file():

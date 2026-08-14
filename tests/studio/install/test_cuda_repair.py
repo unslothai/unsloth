@@ -25,6 +25,34 @@ _ensure_cuda_torch = stack_mod._ensure_cuda_torch
 _detect_cuda_torch_index_url = stack_mod._detect_cuda_torch_index_url
 
 
+def _dotted_cuda(tag):
+    """"cu128" -> "12.8", the torch.version.cuda form. Minor is the last digit."""
+    digits = tag[2:] if tag.startswith("cu") else tag
+    if not digits.isdigit() or len(digits) < 2:
+        return ""
+    return f"{digits[:-1]}.{digits[-1]}"
+
+
+def _torch_probe_line(torch_state, cuda_version):
+    """Render the shared probe's "<version>|<hip>|<cuda>" line for a test's
+    "<marker>|<installed_cu>|<release>|<runtime_cu>" shorthand.
+
+    _ensure_cuda_torch now derives the marker from torch.__version__ /
+    torch.version.hip / torch.version.cuda rather than reading a pre-computed
+    marker, so the mock has to emit a self-consistent build: a "cuda" marker
+    means torch.version.cuda is set, which always yields a runtime family.
+    """
+    marker, installed_cu, release, runtime_cu = (torch_state.split("|") + ["", "", ""])[:4]
+    release = release or "2.9.1"
+    if marker == "hip":
+        return f"{release}+rocm6.4|6.4|"
+    if marker == "cuda":
+        version = f"{release}+{installed_cu}" if installed_cu else release
+        cuda = _dotted_cuda(runtime_cu) or _dotted_cuda(installed_cu) or cuda_version
+        return f"{version}||{cuda}"
+    return f"{release}||"
+
+
 def _make_run(
     torch_state = "hip",
     cuda_version = "12.8",
@@ -32,7 +60,7 @@ def _make_run(
     smi_rc = 0,
     compute_caps = ("8.6",),
 ):
-    """subprocess.run side_effect: torch-classify probe (sys.executable, bytes
+    """subprocess.run side_effect: the shared torch probe (sys.executable, text
     stdout) vs the nvidia-smi version / compute-capability probes (smi path,
     text=True), keyed on the executable."""
 
@@ -41,7 +69,8 @@ def _make_run(
         exe = str(cmd[0]) if cmd else ""
         if exe == sys.executable:
             result.returncode = torch_rc
-            result.stdout = (torch_state + "\n").encode()
+            out = _torch_probe_line(torch_state, cuda_version) + "\n"
+            result.stdout = out if kwargs.get("text") else out.encode()
             return result
         result.returncode = smi_rc
         if len(cmd) > 1 and str(cmd[1]) == "--query-gpu=compute_cap":
@@ -95,6 +124,10 @@ def _run_cuda_repair(
         if name == "nvidia-smi":
             return smi_path
         return None
+
+    # The torch classification is memoized for the life of an install run, so each
+    # scenario has to start from a clean slate.
+    stack_mod._invalidate_torch_runtime_probe()
 
     with (
         patch.object(stack_mod, "_TORCH_BACKEND", backend),
@@ -557,13 +590,19 @@ class TestPreTuringWheelFamily:
             )
             mock_pip.assert_not_called()
 
-    def test_untagged_cuda_build_is_left_alone(self):
+    def test_untagged_cuda_build_uses_the_runtime_family(self):
+        # An untagged build (no +cuXXX local tag) still reports torch.version.cuda, so
+        # _family falls back to the runtime value and the architecture policy applies.
+        # The "family unknown, leave it alone" branch needs BOTH the tag and
+        # torch.version.cuda empty, and that combination reads as a CPU build, never
+        # as "cuda" -- so an untagged CUDA build is always classifiable.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda||2.11.0",
             cuda_version = "13.0",
             compute_caps = ("7.0",),
         )
-        mock_pip.assert_not_called()
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
 
     def test_non_x86_host_keeps_the_driver_family(self):
         # No aarch64 CUDA family ships sm_<80 kernels, so cu126 cannot help there.
