@@ -54,7 +54,10 @@ HF_OFFLINE = os.environ.get("STUDIO_UI_HF_OFFLINE", "0") == "1"
 # studio/frontend/src/features/hub/hooks/use-hub-model-search.ts). Waiting 15.5s for them clears
 # that, so a slow-but-working Hub is not red, and it also outlives the abort at 15.3s that a
 # blackholed runner's search ends in, so the transport failure that permits the fallback is
-# observed before the wait gives up. The 30s ceiling is that wait plus what is left to do after
+# observed before the wait gives up. Those 200ms of headroom only hold while the debounce fires
+# on time, so when the wait runs out with the search still open the budget is re-based onto the
+# request itself (search_abort_extension_ms) rather than spent. The 30s ceiling is that wait
+# plus the re-basing a starved runner needs, plus what is left to do after
 # it: a list swap landing mid-wheel costs one 2s wheel round, and an unreachable-Hub run has
 # already spent its first 15.5s searching when it clears the query and wheels the built-in list.
 # Only a failing run pays either; a passing run leaves on the first wheel, 1.5s end to end in CI.
@@ -128,14 +131,25 @@ with sync_playwright() as p:
     hf_unreachable: list[str] = []
     # Set while the wheel step owns the picker, so an aborted Hub request can be attributed.
     wheel_step_active = [False]
+    # Hub requests still in flight, by start time, so a wait that runs out while the frontend's
+    # own search timeout is still running can wait for its abort instead of guessing.
+    hf_inflight: dict[object, float] = {}
 
     def _note_hf_unreachable(why: str) -> None:
         if not hf_unreachable:
             info(f"WARN Hugging Face unreachable from this runner: {why}")
         hf_unreachable.append(why)
 
+    def _on_request(req) -> None:
+        try:
+            if "huggingface.co" in req.url:
+                hf_inflight[req] = time.monotonic()
+        except Exception:
+            pass
+
     def _on_requestfailed(req) -> None:
         try:
+            hf_inflight.pop(req, None)
             if "huggingface.co" not in req.url:
                 return
             failure = req.failure or ""
@@ -150,16 +164,37 @@ with sync_playwright() as p:
         except Exception:
             pass
 
+    def _on_requestfinished(req) -> None:
+        try:
+            hf_inflight.pop(req, None)
+        except Exception:
+            pass
+
     def _on_response(resp) -> None:
         # 429 and 5xx are the Hub refusing to serve this runner. Every other 4xx is a request the
         # app itself built wrong, which is a real defect and must not excuse anything.
         try:
-            if "huggingface.co" in resp.url and (resp.status == 429 or resp.status >= 500):
+            if "huggingface.co" not in resp.url:
+                return
+            if resp.status == 429 or resp.status >= 500:
                 _note_hf_unreachable(f"HTTP {resp.status}")
+            elif hf_unreachable:
+                # A served response proves this runner has a route to the Hub, so the earlier
+                # failures are stale and must stop excusing anything: the frontend drops its own
+                # offline state on exactly this signal (markRemoteNetworkOnline,
+                # studio/frontend/src/features/hub/lib/network.ts). Keeping them would let one
+                # transient failure hand a later search-rendering regression the built-in list.
+                info(
+                    f"Hugging Face reachable again (HTTP {resp.status}); dropping "
+                    f"{len(hf_unreachable)} earlier failure(s)"
+                )
+                hf_unreachable.clear()
         except Exception:
             pass
 
+    ctx.on("request", _on_request)
     ctx.on("requestfailed", _on_requestfailed)
+    ctx.on("requestfinished", _on_requestfinished)
     ctx.on("response", _on_response)
     page = ctx.new_page()
     # 60s default for the slow macos-14 runner (second Unsloth boot of the job).
@@ -635,6 +670,7 @@ with sync_playwright() as p:
                     info(f"WARN built-in model rows never rendered: {builtin_err!r}")
                 builtin_rows = robust_evaluate(page, builtin_rows_js)
                 page.get_by_test_id("stt-model-search").fill("whisper")
+                query_typed_at = time.monotonic()
                 searched_rows_overflow = """(builtin) => {
                     const node = document.querySelector('[data-testid="stt-model-results"]');
                     if (!node || node.scrollHeight <= node.clientHeight) return false;
@@ -655,23 +691,61 @@ with sync_playwright() as p:
                 wheel_deadline = time.monotonic() + WHEEL_DEADLINE_S
                 wheel_scrolled = False
                 cleared_search = False
+                extended = False
+                next_rows_ms = float(WHEEL_ROWS_TIMEOUT_MS)
+
+                def search_abort_extension_ms() -> float:
+                    """How much of the frontend's own search timeout is still to run.
+
+                    WHEEL_ROWS_TIMEOUT_MS is counted from `fill`, but the frontend starts its 15s
+                    from the debounced request, which a CPU-starved runner can schedule well past
+                    the nominal 300ms. While that request is in flight the abort that proves the
+                    Hub unreachable has not happened yet, so the budget is re-based onto the
+                    request rather than the step deciding the Hub is healthy without it.
+
+                    Only requests issued after the query was typed count: an unrelated Hub
+                    request left hanging from an earlier step started long ago and would anchor
+                    the budget to a deadline that has already passed.
+                    """
+                    started = min(
+                        (at for at in hf_inflight.values() if at >= query_typed_at),
+                        default = None,
+                    )
+                    if started is None:
+                        return 0.0
+                    return max(0.0, (started - time.monotonic()) * 1000 + WHEEL_ROWS_TIMEOUT_MS)
+
                 while not wheel_scrolled:
                     remaining_ms = (wheel_deadline - time.monotonic()) * 1000
                     if remaining_ms <= 0:
                         break
+                    rows_ms = min(remaining_ms, next_rows_ms)
+                    next_rows_ms = float(WHEEL_ROWS_TIMEOUT_MS)
                     try:
                         if cleared_search:
-                            page.wait_for_function(
-                                rows_overflow,
-                                timeout = min(remaining_ms, WHEEL_ROWS_TIMEOUT_MS),
-                            )
+                            page.wait_for_function(rows_overflow, timeout = rows_ms)
                         else:
                             page.wait_for_function(
                                 searched_rows_overflow,
                                 arg = builtin_rows,
-                                timeout = min(remaining_ms, WHEEL_ROWS_TIMEOUT_MS),
+                                timeout = rows_ms,
                             )
-                    except Exception:
+                    except Exception as row_err:
+                        # A dead renderer must reach the crash handler below, exactly as in the
+                        # wheel wait; swallowed here it becomes a hard "did not wheel-scroll".
+                        if page_crashed(page, row_err):
+                            raise
+                        if not (cleared_search or extended or hf_unreachable or HF_OFFLINE):
+                            extra_ms = search_abort_extension_ms()
+                            if extra_ms > 0:
+                                extended = True
+                                next_rows_ms = extra_ms
+                                info(
+                                    "WARN search rows are not in and a Hugging Face request is "
+                                    f"still open; waiting {extra_ms / 1000:.1f}s more for it to "
+                                    "answer or abort"
+                                )
+                                continue
                         # Falling back to the built-in list means asserting the wheel against the
                         # pre-search list this step was rewritten to stop accepting, so it takes
                         # proof that the Hub is what is missing: a failed huggingface.co request
