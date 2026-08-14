@@ -519,3 +519,91 @@ test("work in flight renews the deadline other tabs put on it", () => {
   now += 120_001;
   assert.equal(counted("proj-1"), 0);
 });
+
+// Clearing to a null scope outranks the refresh still in flight but starts no
+// replacement, so nothing reaches the sequence guard that would clear the
+// flags. The composer reads the list as still unknown and holds every send.
+test("dropping the scope clears the flags no request will", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    hook,
+    /if \(scope\) \{[\s\S]{0,160}?void refresh\(\);\s*\} else \{[\s\S]{0,300}?refreshInFlight\.current = false;[\s\S]{0,200}?setLoading\(false\);/,
+  );
+
+  // The guard that leaves them set: the ticket has already moved on.
+  let seq = 0;
+  let loading = false;
+  const start = () => {
+    loading = true;
+    return ++seq;
+  };
+  const settle = (requestId: number) => {
+    if (seq === requestId) loading = false;
+  };
+  const ticket = start();
+  seq += 1; // the scope change stands the request down
+  settle(ticket);
+  assert.equal(
+    loading,
+    true,
+    "the request cannot clear it after being outranked",
+  );
+});
+
+// The rows a folder sync writes are new sources, and the probe caches its
+// answer for 30s. The watcher is the only observer once the panel unmounts, so
+// a send released by it would still read the cached "no sources".
+test("a folder job drops the cached answer before the gate", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    api,
+    /invalidateProjectSources\(projectId\);\s*noteProjectWork\(projectId, -1\);/,
+  );
+});
+
+// BroadcastChannel does not replay, so a tab opened mid-upload hears nothing
+// until the next delta, which for an upload is its completion.
+test("a tab that opens mid-upload asks what is already running", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  // Asked once, on the way in.
+  assert.match(api, /askForWorkInFlight\(\);\s*return projectChannel;/);
+  assert.match(api, /postMessage\(\{ kind: "work-query" \}\)/);
+  assert.match(
+    api,
+    /channel\.postMessage\(\{ kind: "work-state", projectId, count \}\)/,
+  );
+
+  // The answer is a floor, not a replacement: a third tab's deltas are already
+  // counted, and its own answer arrives separately.
+  const remote = new Map<string, { count: number; until: number }>();
+  const seed = (projectId: string, count: number) => {
+    if (count <= 0) return;
+    const entry = remote.get(projectId);
+    if (entry && entry.until > Date.now() && entry.count >= count) return;
+    remote.set(projectId, { count, until: Date.now() + 120_000 });
+  };
+
+  seed("proj-1", 2);
+  seed("proj-1", 1);
+  assert.equal(
+    remote.get("proj-1")?.count,
+    2,
+    "a smaller answer does not lower it",
+  );
+  seed("proj-1", 3);
+  assert.equal(remote.get("proj-1")?.count, 3);
+  seed("proj-2", 0);
+  assert.equal(remote.has("proj-2"), false, "an idle tab seeds nothing");
+});

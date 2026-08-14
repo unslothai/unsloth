@@ -260,8 +260,21 @@ function getProjectChannel(): BroadcastChannel | null {
       kind?: string;
       projectId?: string;
       delta?: number;
+      count?: number;
     } | null;
-    if (!message?.projectId) {
+    if (!message) {
+      return;
+    }
+    // A tab that opened mid-upload asking what is already running.
+    if (message.kind === "work-query") {
+      answerWorkQuery();
+      return;
+    }
+    if (!message.projectId) {
+      return;
+    }
+    if (message.kind === "work-state") {
+      seedRemoteProjectWork(message.projectId, message.count ?? 0);
       return;
     }
     if (message.kind === "work") {
@@ -270,7 +283,23 @@ function getProjectChannel(): BroadcastChannel | null {
     }
     publishProjectSourcesChanged(message.projectId);
   };
+  askForWorkInFlight();
   return projectChannel;
+}
+
+/** BroadcastChannel does not replay, so a tab that opens mid-upload hears
+ * nothing until the next delta, which for an upload is its completion. Ask on
+ * the way in instead, and answer for whatever this tab is running. */
+function askForWorkInFlight(): void {
+  projectChannel?.postMessage({ kind: "work-query" });
+}
+
+function answerWorkQuery(): void {
+  const channel = projectChannel;
+  if (!channel) return;
+  for (const [projectId, count] of projectWorkInFlight) {
+    channel.postMessage({ kind: "work-state", projectId, count });
+  }
 }
 
 /** Listeners only hear another tab once the channel is open. */
@@ -380,6 +409,16 @@ function noteRemoteProjectWork(projectId: string, delta: number): void {
   publishProjectWorkChanged(projectId);
 }
 
+/** An absolute count another tab reports for work it started before this one
+ * was listening. Taken as a floor, not a replacement: a third tab's deltas are
+ * already counted here, and its own answer arrives separately. */
+function seedRemoteProjectWork(projectId: string, count: number): void {
+  if (count <= 0) return;
+  const entry = remoteProjectWork.get(projectId);
+  if (entry && entry.until > Date.now() && entry.count >= count) return;
+  noteRemoteProjectWork(projectId, count - (entry?.count ?? 0));
+}
+
 export function projectWorkCount(projectId: string): number {
   const remote = remoteProjectWork.get(projectId);
   const remoteCount = remote && remote.until > Date.now() ? remote.count : 0;
@@ -426,6 +465,10 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
       }
     } finally {
       watchedFolderJobs.delete(jobId);
+      // The rows this job wrote are new sources, and this watcher is the only
+      // observer left once the panel unmounts. Drop the probe's cached answer
+      // before the gate, or a send released by it still reads "no sources".
+      invalidateProjectSources(projectId);
       noteProjectWork(projectId, -1);
     }
   })();

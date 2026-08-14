@@ -291,6 +291,14 @@ export function useRagDocuments(
       if (scope) {
         // eslint-disable-next-line react-hooks/set-state-in-effect
         void refresh();
+      } else {
+        // Nothing is coming for the scope just dropped, and the request that
+        // was is now behind the sequence, so it will not clear these itself.
+        // Left set, the composer reads the list as still unknown and holds
+        // every send.
+        refreshInFlight.current = false;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setLoading(false);
       }
     } else if (prev === null && scope && !uploadInFlightRef.current) {
       void refresh();
