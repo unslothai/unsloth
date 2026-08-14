@@ -84,7 +84,7 @@ from determinism import (  # noqa: E402
     set_all_seeds_fast,
     set_deterministic_algorithms,
 )
-from training_evidence import LORA_B_MARKER  # noqa: E402
+from training_evidence import LORA_B_MARKER, LORA_MARKER  # noqa: E402
 from versions import (  # noqa: E402
     GOAL_PACKAGES,
     flatten_versions,
@@ -390,6 +390,10 @@ def train_once(args, run_index: int) -> dict:
             "lora_alpha": args.lora_alpha,
             "target_modules": target_modules,
         },
+        # Asked of the model that was just saved, so the file is compared
+        # against what PEFT calls these tensors rather than against a list this
+        # payload would have to keep in step with peft by hand.
+        peft_keys = peft_adapter_keys(model),
     )
     _log(f"saved adapter: {json.dumps(saved_adapter)}")
 
@@ -518,7 +522,75 @@ def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
     return out
 
 
-def verify_saved_adapter(adapter_dir, expected: dict | None = None) -> dict:
+def peft_adapter_keys(model) -> dict:
+    """The names PEFT itself gives this adapter's tensors, off the live model.
+
+    ``PeftModel.save_pretrained`` writes exactly
+    ``get_peft_model_state_dict(self, ...)`` (peft 0.20.0, peft_model.py), so
+    calling the same function on the model that was just saved reproduces the
+    key set the file is SUPPOSED to hold. That is the oracle a raw tensor read
+    is missing: safetensors deserializes any well-formed file, whatever the keys
+    are called, and PEFT's loader then matches by name.
+
+    Derived rather than restated: no key list, no prefix, no target-module names
+    appear here, so a legitimate peft renaming moves both sides at once and only
+    a save that disagrees with the running peft is a difference.
+
+    Returns ``{"keys": [...]}`` or ``{"error": "..."}``; never raises, because
+    every outcome has to reach ``saved_adapter_failures`` as a verdict rather
+    than as a traceback out of the payload.
+    """
+    try:
+        from peft import get_peft_model_state_dict
+        return {"keys": sorted(get_peft_model_state_dict(model))}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _compare_adapter_keys(saved: set, peft_keys: dict | None) -> dict:
+    """Saved tensor names against the ones PEFT names for the live model.
+
+    Three answers, and they are not the same failure:
+
+    * MISSING -- PEFT names a tensor the file does not carry. On reload peft
+      warns ("Found missing adapter keys while loading the checkpoint",
+      peft_model.py) and leaves that module's adapter at its initial value, so
+      the weight is silently dropped.
+    * UNEXPECTED -- the file carries a LoRA tensor under a name PEFT does not
+      use. ``set_peft_model_state_dict`` ends in
+      ``model.load_state_dict(..., strict=False)`` and nothing reads the
+      returned ``unexpected_keys``, so those tensors are ignored without a word.
+      Measured on peft 0.20.0: stripping ``base_model.model.`` from a valid
+      adapter, or leaving the adapter name in (``lora_B.default.weight``, what
+      filtering ``model.state_dict()`` by hand produces instead of using
+      ``get_peft_model_state_dict``), reloads with every lora_B back at zero and
+      raises nothing. The file still holds two nonzero tensors called lora_B, so
+      the count this function exists to reinforce reads green on it.
+    * EXTRA, non-LoRA -- recorded and NOT failed. ``save_pretrained`` may write
+      more than the adapter (an embedding, a modules_to_save copy) and that is
+      not a name PEFT would have to match.
+    """
+    if not peft_keys or not peft_keys.get("keys"):
+        return {
+            "keys_checked": False,
+            "keys_error": (peft_keys or {}).get("error")
+            or "the live model was never asked what these tensors should be called",
+        }
+    expected = set(peft_keys["keys"])
+    unmatched = saved - expected
+    return {
+        "keys_checked": True,
+        "keys_missing": sorted(expected - saved),
+        "keys_unexpected": sorted(k for k in unmatched if LORA_MARKER in k.lower()),
+        "keys_extra": sorted(k for k in unmatched if LORA_MARKER not in k.lower()),
+    }
+
+
+def verify_saved_adapter(
+    adapter_dir,
+    expected: dict | None = None,
+    peft_keys: dict | None = None,
+) -> dict:
     """Read the serialized adapter back and say what is in it.
 
     Everything downstream of the save runs on the in-memory model, so the only
@@ -526,6 +598,12 @@ def verify_saved_adapter(adapter_dir, expected: dict | None = None) -> dict:
     than a PEFT reload, because it runs on a card already holding a 4-bit model
     and the failure modes worth naming (unreadable, empty, non-finite, all zero)
     are visible in the tensors themselves.
+
+    What is NOT visible in the tensors is whether PEFT would consume them, since
+    it matches by NAME and ignores what it does not recognise. ``peft_keys`` is
+    ``peft_adapter_keys(model)`` for the model that was just saved, and
+    comparing the two key sets is what turns "these bytes deserialize" into
+    "these weights land". See ``_compare_adapter_keys``.
 
     ``nonzero_b_tensors`` is the load-bearing one, counted over the B matrices
     SPECIFICALLY: ``lora_B`` is zero at initialisation and only becomes non-zero
@@ -597,6 +675,7 @@ def verify_saved_adapter(adapter_dir, expected: dict | None = None) -> dict:
     state["nonzero_tensors"] = nonzero
     state["b_tensors"] = b_tensors
     state["nonzero_b_tensors"] = nonzero_b
+    state.update(_compare_adapter_keys(set(tensors), peft_keys))
     return state
 
 
@@ -656,6 +735,28 @@ def saved_adapter_failures(state: dict) -> list[str]:
             f"lora_B starts at zero and only an applied optimizer step moves it, so "
             f"this adapter contributes nothing and reloading it would restore the "
             f"base model."
+        )
+    # Names, after values: peft matches its state dict by key and ignores what
+    # it does not recognise, so a file full of healthy nonzero lora_B tensors
+    # under names it does not use reloads as the base model without raising.
+    if state.get("keys_checked") is False:
+        failures.append(
+            f"the saved adapter's tensor names were never checked against the "
+            f"ones PEFT gives this model, so nothing here says the weights "
+            f"would be loaded rather than ignored: {state.get('keys_error')}"
+        )
+    if state.get("keys_missing"):
+        failures.append(
+            f"PEFT names {len(state['keys_missing'])} adapter tensors the saved "
+            f"file does not carry, so reloading leaves those modules at their "
+            f"initial values: {state['keys_missing'][:5]}"
+        )
+    if state.get("keys_unexpected"):
+        failures.append(
+            f"{len(state['keys_unexpected'])} saved LoRA tensors are named "
+            f"something PEFT does not use for this model, so its loader ignores "
+            f"them silently and the reload restores the base model: "
+            f"{state['keys_unexpected'][:5]}"
         )
     return failures
 

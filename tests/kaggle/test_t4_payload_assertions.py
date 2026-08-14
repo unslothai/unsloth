@@ -177,6 +177,10 @@ def _adapter_state(**over) -> dict:
         "nonzero_tensors": 224,
         "b_tensors": 112,
         "nonzero_b_tensors": 112,
+        "keys_checked": True,
+        "keys_missing": [],
+        "keys_unexpected": [],
+        "keys_extra": [],
     }
     state.update(over)
     return state
@@ -240,6 +244,146 @@ def test_an_adapter_with_no_b_matrices_at_all_is_unusable_rather_than_fine():
     assert failures and "is a lora_B matrix" in failures[0]
 
 
+def test_an_adapter_nobody_checked_the_names_of_is_not_a_pass():
+    """No oracle, no verdict.
+
+    The tensor reading cannot see whether PEFT would consume these weights, so
+    a run that could not derive the expected names learned nothing about the
+    save. Recording that as an unchecked field would leave the strongest thing
+    this function asserts silently switched off.
+    """
+    from run_t4_smoke import saved_adapter_failures
+
+    failures = saved_adapter_failures(
+        _adapter_state(keys_checked = False, keys_error = "ImportError: no such name")
+    )
+    assert failures and "never checked" in failures[0]
+
+
+def test_an_adapter_missing_tensors_peft_names_is_a_failure():
+    from run_t4_smoke import saved_adapter_failures
+    failures = saved_adapter_failures(
+        _adapter_state(keys_missing = ["base_model.model.q_proj.lora_B.weight"])
+    )
+    assert failures and "does not carry" in failures[0]
+
+
+def test_lora_tensors_under_names_peft_does_not_use_are_a_failure():
+    from run_t4_smoke import saved_adapter_failures
+    failures = saved_adapter_failures(_adapter_state(keys_unexpected = ["q_proj.lora_B.weight"]))
+    assert failures and "ignores them silently" in failures[0]
+
+
+def test_a_non_lora_tensor_beside_the_adapter_is_not_a_failure(tmp_path):
+    """The check is about names PEFT has to MATCH, not about extra tensors.
+
+    ``save_pretrained`` can legitimately write more than the adapter -- an
+    embedding copy when the vocabulary was resized, a modules_to_save entry --
+    and none of that is a LoRA tensor PEFT's loader has to recognise. Failing on
+    it turns a supported save into a red leg, which is why the two are sorted
+    apart rather than failed together as "anything the oracle did not name".
+
+    Through the real reading rather than a hand-built state, or the sorting this
+    asserts is not the code that runs.
+    """
+    pytest.importorskip("safetensors")
+    import torch
+    from safetensors.torch import save_file
+
+    from run_t4_smoke import saved_adapter_failures, verify_saved_adapter
+
+    lora = "base_model.model.layers.0.self_attn.q_proj.lora_B.weight"
+    embedding = "base_model.model.model.embed_tokens.weight"
+    (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 16}))
+    save_file(
+        {lora: torch.ones(8, 16) * 0.01, embedding: torch.ones(4, 4)},
+        str(tmp_path / "adapter_model.safetensors"),
+    )
+    state = verify_saved_adapter(tmp_path, peft_keys = {"keys": [lora]})
+    assert state["keys_extra"] == [embedding]
+    assert state["keys_unexpected"] == []
+    assert saved_adapter_failures(state) == []
+
+
+def test_the_key_oracle_reports_a_failure_rather_than_raising():
+    """It runs inside the payload, so a raise here would lose the whole leg."""
+    from run_t4_smoke import peft_adapter_keys
+
+    out = peft_adapter_keys(object())
+    assert "keys" not in out and out["error"]
+
+
+def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
+    """The whole regression, through the real peft, on the CPU.
+
+    A serialization regression that renames the tensors (dropping the
+    ``base_model.model.`` prefix is what filtering ``model.state_dict()`` by
+    hand instead of calling ``get_peft_model_state_dict`` produces) leaves a
+    file that deserializes perfectly and holds the same nonzero lora_B matrices
+    a trained adapter does. Every reading this payload took off the bytes is
+    identical, PEFT raises nothing on reload, and the adapter contributes
+    nothing -- the exact outcome the tensor counts exist to catch.
+
+    The last assertion is the premise rather than the behaviour: if a future
+    peft starts refusing unmatched keys, this test says so instead of quietly
+    checking nothing.
+    """
+    pytest.importorskip("peft")
+    pytest.importorskip("transformers")
+    pytest.importorskip("safetensors")
+    import torch
+    from peft import LoraConfig, PeftModel, get_peft_model
+    from safetensors.torch import load_file, save_file
+    from transformers import GPT2Config, GPT2LMHeadModel
+
+    from run_t4_smoke import peft_adapter_keys, saved_adapter_failures, verify_saved_adapter
+
+    def _base():
+        torch.manual_seed(0)
+        return GPT2LMHeadModel(GPT2Config(n_layer = 1, n_head = 2, n_embd = 32, vocab_size = 64))
+
+    model = get_peft_model(
+        _base(), LoraConfig(r = 4, target_modules = ["c_attn"], task_type = "CAUSAL_LM")
+    )
+    # lora_B starts at zero and only an applied optimizer step moves it.
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.add_(0.25)
+    model.save_pretrained(str(tmp_path))
+    keys = peft_adapter_keys(model)
+    assert keys["keys"], keys
+
+    good = verify_saved_adapter(tmp_path, peft_keys = keys)
+    assert good["keys_checked"] is True
+    assert saved_adapter_failures(good) == []
+
+    weights = tmp_path / "adapter_model.safetensors"
+    tensors = load_file(str(weights))
+    save_file(
+        {name.removeprefix("base_model.model."): value for name, value in tensors.items()},
+        str(weights),
+    )
+    broken = verify_saved_adapter(tmp_path, peft_keys = keys)
+
+    # Everything the bytes alone can say is unchanged.
+    assert broken["tensors"] == good["tensors"]
+    assert broken["nonzero_b_tensors"] == good["nonzero_b_tensors"] > 0
+    assert broken["non_finite_tensors"] == []
+    assert broken["config_loadable"] is True
+
+    failures = saved_adapter_failures(broken)
+    assert failures, "the leg would have passed an adapter that reloads to the base model"
+    assert "ignores them silently" in " ".join(failures)
+
+    reloaded = PeftModel.from_pretrained(_base(), str(tmp_path))
+    b_matrices = [p for n, p in reloaded.named_parameters() if "lora_B" in n]
+    assert b_matrices and all(float(p.abs().sum()) == 0.0 for p in b_matrices), (
+        "peft loaded the renamed keys after all, so this test no longer describes "
+        "the regression it was written for"
+    )
+
+
 def test_a_missing_adapter_config_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
     failures = saved_adapter_failures(_adapter_state(config_readable = False))
@@ -260,14 +404,13 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     from run_t4_smoke import saved_adapter_failures, verify_saved_adapter
 
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", "r": 16}))
-    save_file(
-        {
-            "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
-            "base_model.model.layers.0.self_attn.q_proj.lora_B.weight": torch.zeros(8, 16),
-        },
-        str(tmp_path / "adapter_model.safetensors"),
-    )
-    state = verify_saved_adapter(tmp_path)
+    written = {
+        "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.ones(16, 8),
+        "base_model.model.layers.0.self_attn.q_proj.lora_B.weight": torch.zeros(8, 16),
+    }
+    peft_keys = {"keys": sorted(written)}
+    save_file(written, str(tmp_path / "adapter_model.safetensors"))
+    state = verify_saved_adapter(tmp_path, peft_keys = peft_keys)
     assert state["tensors"] == 2
     assert state["nonzero_tensors"] == 1
     assert state["b_tensors"] == 1
@@ -285,12 +428,14 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
         },
         str(tmp_path / "adapter_model.safetensors"),
     )
-    trained = verify_saved_adapter(tmp_path)
+    trained = verify_saved_adapter(tmp_path, peft_keys = peft_keys)
     assert trained["nonzero_b_tensors"] == 1
     assert saved_adapter_failures(trained) == []
 
     save_file({"a.lora_B.weight": torch.zeros(4, 4)}, str(tmp_path / "adapter_model.safetensors"))
-    failures = saved_adapter_failures(verify_saved_adapter(tmp_path))
+    failures = saved_adapter_failures(
+        verify_saved_adapter(tmp_path, peft_keys = {"keys": ["a.lora_B.weight"]})
+    )
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
 
@@ -316,7 +461,7 @@ def test_a_syntactically_valid_but_empty_adapter_config_is_not_a_pass(tmp_path):
     )
     for body in ("{}", "[]"):
         (tmp_path / "adapter_config.json").write_text(body)
-        state = verify_saved_adapter(tmp_path)
+        state = verify_saved_adapter(tmp_path, peft_keys = {"keys": ["q_proj.lora_B.weight"]})
         assert state["config_readable"] is True, "it IS readable JSON; that was never the question"
         assert state["config_loadable"] is False, body
         failures = saved_adapter_failures(state)
@@ -354,7 +499,8 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
             }
         )
     )
-    state = verify_saved_adapter(tmp_path, expected = requested)
+    keys = {"keys": ["q_proj.lora_B.weight"]}
+    state = verify_saved_adapter(tmp_path, expected = requested, peft_keys = keys)
     assert state["config_loadable"] is True
     assert state["config_differences"], state
     failures = saved_adapter_failures(state)
@@ -362,7 +508,7 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
 
     # The same file, saved as requested: no difference and no failure.
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", **requested}))
-    good = verify_saved_adapter(tmp_path, expected = requested)
+    good = verify_saved_adapter(tmp_path, expected = requested, peft_keys = keys)
     assert good["config_differences"] == []
     assert saved_adapter_failures(good) == []
 
