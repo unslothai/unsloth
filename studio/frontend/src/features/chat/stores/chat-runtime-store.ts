@@ -1482,9 +1482,22 @@ function trackParamsByModel(
   return paramsByModel;
 }
 
-/** State a model switch owes to the memory: the outgoing snapshot, and preset
- * provenance. Replayed params no longer match the named preset as saved, and for
- * Default the settings sheet reads provenance alone to decide that. */
+/** Replayed params no longer match the named preset as saved. For Default the
+ * settings sheet reads provenance alone to decide that, and the post-load hooks
+ * that re-apply model defaults (mergeBackendRecommendedInference, the Qwen
+ * thinking params) all skip a source other than builtin-default, so marking this
+ * is also what stops them overwriting what was just replayed. */
+function getReplayedPresetPatch(
+  state: ChatRuntimeStore,
+  replayed: boolean,
+): Partial<ChatRuntimeStore> {
+  return replayed && state.activePresetSource !== "modified"
+    ? { activePresetSource: "modified" as const }
+    : {};
+}
+
+/** State a model switch owes to the memory: the outgoing snapshot and preset
+ * provenance. */
 function getReplayStatePatch(
   state: ChatRuntimeStore,
   nextParams: InferenceParams,
@@ -1495,9 +1508,7 @@ function getReplayStatePatch(
   persistReplayedParams(state, nextParams, replayed);
   return {
     ...(outgoing ? { paramsByModel: outgoing } : {}),
-    ...(replayed && state.activePresetSource !== "modified"
-      ? { activePresetSource: "modified" as const }
-      : {}),
+    ...getReplayedPresetPatch(state, replayed),
   };
 }
 
@@ -1945,6 +1956,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         params: nextParams,
         ...(paramsByModel ? { paramsByModel } : {}),
+        ...getReplayedPresetPatch(state, nextParams !== params),
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
           : {}),

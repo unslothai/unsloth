@@ -10,6 +10,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// preset-policy imports extensionless, the way vite resolves.
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
 import {
   PERSISTED_INFERENCE_PARAM_KEYS,
   getRememberedParamsPatch,
@@ -163,6 +168,38 @@ test("a load response does not overwrite a remembered token budget", () => {
 
   const withForcedReplay = getReplayedParams(true, memory, loadResponse, QWEN, true);
   assert.equal(withForcedReplay.maxTokens, 4096);
+});
+
+// The post-load hooks that re-apply model defaults all bail on a preset source
+// other than builtin-default, so marking a replay is what keeps them from
+// overwriting the settings that were just restored.
+test("the post-load default hooks stand down once a replay is marked", async () => {
+  const { mergeBackendRecommendedInference } = await import(
+    "../src/features/chat/presets/preset-policy.ts"
+  );
+  const replayed = params({ temperature: 0.2, maxTokens: 4096 });
+  const response = {
+    inference: { temperature: 0.9, top_p: 0.5 },
+    is_gguf: true,
+    context_length: 131072,
+  };
+
+  const unmarked = mergeBackendRecommendedInference({
+    current: replayed,
+    response: response as never,
+    modelId: QWEN,
+    presetSource: "builtin-default",
+  });
+  assert.equal(unmarked.temperature, 0.9, "this is the reported clobber");
+
+  const marked = mergeBackendRecommendedInference({
+    current: replayed,
+    response: response as never,
+    modelId: QWEN,
+    presetSource: "modified",
+  });
+  assert.equal(marked.temperature, 0.2, "the replayed value survives");
+  assert.equal(marked.maxTokens, 4096);
 });
 
 // Null is how the store leaves the map and its hydration version untouched.
