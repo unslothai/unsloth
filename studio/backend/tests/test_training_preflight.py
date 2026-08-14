@@ -367,6 +367,24 @@ def test_shared_eval_split_is_bounded_and_deterministic(rows, expected_eval_rows
     assert dataset.calls == [(expected_eval_rows, 3407)]
 
 
+def test_shared_eval_split_supports_formatted_vlm_lists():
+    from core.training.eval_dataset import split_dataset_for_evaluation
+
+    dataset = [{"id": index, "messages": []} for index in range(40)]
+
+    first_train, first_evaluation = split_dataset_for_evaluation(dataset)
+    second_train, second_evaluation = split_dataset_for_evaluation(dataset)
+
+    assert len(first_train) == 24
+    assert len(first_evaluation) == 16
+    assert first_train == second_train
+    assert first_evaluation == second_evaluation
+    assert {row["id"] for row in first_train}.isdisjoint(
+        row["id"] for row in first_evaluation
+    )
+    assert sorted(row["id"] for row in first_train + first_evaluation) == list(range(40))
+
+
 def test_torch_eval_split_warns_when_dataset_is_too_small():
     warnings: list[str] = []
     owner = SimpleNamespace(_record_warning = warnings.append)
