@@ -736,9 +736,13 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
 
 # The fast path added so an install stops running the C# compiler for colour. Sliced back out
 # to reconstruct the function it replaced, so parity is measured against the real predecessor
-# rather than asserted about it.
+# rather than asserted about it. The comment block goes with the guard: leaving it behind would
+# still run correctly, since PowerShell comments do not execute, but the reconstruction would
+# not be the merge-base function and this test would be comparing against something it invented.
 _VT_FAST_PATH = re.compile(
-    r"(?m)^[ \t]*if \(\$script:StudioStdoutRedirected\) \{ return \$false \}\n"
+    r"(?m)^[ \t]*# A redirected stdout is not a console.*?\n"
+    r"(?:^[ \t]*#.*\n)*"
+    r"^[ \t]*if \(\$script:StudioStdoutRedirected\) \{ return \$false \}\n"
 )
 
 

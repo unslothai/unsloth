@@ -169,8 +169,8 @@ def test_virtual_terminal_answers_a_redirected_stream_without_compiling(name: st
     compile_at = call.start()
     fast_path = text.index("if ($script:StudioStdoutRedirected) { return $false }", start)
     assert fast_path < compile_at, (
-        f"{name} compiles C# for colour before asking the host: move the WT_SESSION check above "
-        f"Add-Type, or every install spawns csc.exe again."
+        f"{name} compiles C# for colour before checking the stream: move the redirect guard "
+        f"above Add-Type, or every install spawns csc.exe again."
     )
     assert "$true" not in text[fast_path:compile_at], (
         f"{name} returns something other than $false before the compile. The early answer is "
