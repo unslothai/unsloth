@@ -1159,6 +1159,48 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     return f"{base}/{arch_family}/"
 
 
+def _rocm_miscomputing_host() -> bool:
+    """True when every AMD GPU on this Linux host is an arch measured to compute
+    incorrectly under ROCm, ROCm torch is already installed, and no explicit index pin
+    overrides that finding.
+
+    Returning None from _amd_arch_index_url() only stops such a host from being GIVEN
+    ROCm wheels. A venv that already HOLDS them -- installed before the gate existed, and
+    carried through the legacy-venv migration untouched because its forward-only
+    validation passes on this arch -- was never demoted: install.sh resolves
+    UNSLOTH_TORCH_BACKEND=cpu, which makes _ensure_rocm_torch() return at its first line,
+    _ensure_cpu_torch() only fires for an EXPLICIT pin, and the base update does not
+    reinstall an already-satisfied torch. So upgrading left in place exactly the build the
+    gate exists to remove, on the machines that most need it removed. Treat the arch
+    itself as CPU authority instead, and let _ensure_cpu_torch() do the demotion.
+
+    EVERY arch, not any: a healthy dGPU beside a miscomputing APU is still served by ROCm.
+    The disk label is read first so the ROCm probes cost nothing on the overwhelming
+    majority of hosts, which have no ROCm torch to demote. An explicit
+    UNSLOTH_TORCH_INDEX_URL / _FAMILY stays the documented escape hatch and wins.
+    """
+    if IS_WINDOWS or IS_MACOS:
+        return False
+    if _explicit_torch_index_url() is not None:
+        return False
+    if "+rocm" not in _installed_torch_label_on_disk():
+        return False
+    _env_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
+    if _env_gfx:
+        _archs = [_env_gfx]
+    else:
+        # ignore_hsa_override: HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh
+        # workaround and makes rocminfo report gfx1030, hiding the arch being judged.
+        _archs = [
+            _code.strip().lower().split(":")[0]
+            for _code in _detect_amd_gfx_codes(ignore_hsa_override = True)
+        ]
+        if not _archs:
+            _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
+            _archs = [_inferred] if _inferred else []
+    return bool(_archs) and all(_arch in _ROCM_MISCOMPUTING_GFX for _arch in _archs)
+
+
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
     """Return the AMD pip index URL for the given GPU arch, or None if unsupported."""
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
@@ -2669,15 +2711,21 @@ def _is_gpu_torch_label(label: str) -> bool:
 
 
 def _ensure_cpu_torch() -> None:
-    """Reinstall CPU torch when an explicit CPU pin is set but the venv has a GPU build.
+    """Reinstall CPU torch when CPU is authoritative but the venv has a GPU build.
 
-    Counterpart to _ensure_cuda/rocm_torch for the explicit-CPU case (those treat a CPU
-    backend as a skip, so a standalone `studio update` would ignore the authoritative CPU
-    pin). Only fires for an EXPLICIT pin.
+    Counterpart to _ensure_cuda/rocm_torch for the CPU case (those treat a CPU backend as
+    a skip, so a standalone `studio update` would ignore the authoritative CPU choice).
+    Authority is an EXPLICIT pin, or an AMD arch measured to compute incorrectly under
+    ROCm -- see _rocm_miscomputing_host for why that one has to demote rather than merely
+    decline to install.
     """
     if NO_TORCH:
         return
     pin = _explicit_cpu_torch_index_url()
+    _reason = "an explicit CPU index is pinned"
+    if pin is None and _rocm_miscomputing_host():
+        pin = f"{_PYTORCH_WHL_BASE}/cpu"
+        _reason = "this AMD arch computes incorrectly under ROCm (studio/ROCM_RDNA2_APU.md)"
     if pin is None:
         return
 
@@ -2717,7 +2765,7 @@ def _ensure_cpu_torch() -> None:
         # reinstall from the pin (self-resolving, no loop).
         _torch_pkg, _vision_pkg, _audio_pkg = _CPU_TORCH_PKG_SPEC
         _safe_print(
-            f"   torch cannot import but an explicit CPU index is pinned -- reinstalling "
+            f"   torch cannot import and {_reason} -- reinstalling "
             f"CPU torch from {_strip_index_url_credentials(pin)}"
         )
         pip_install(
@@ -2741,7 +2789,7 @@ def _ensure_cpu_torch() -> None:
         return  # already a CPU build
 
     _safe_print(
-        "   torch is a GPU build but an explicit CPU index is pinned -- reinstalling "
+        f"   torch is a GPU build but {_reason} -- reinstalling "
         f"CPU torch from {_strip_index_url_credentials(pin)}"
     )
     # Pin the supported torch<2.11 family (the /cpu index now serves 2.11+, so a bare
