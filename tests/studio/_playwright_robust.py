@@ -8,19 +8,24 @@ directly by the standalone scripts; does NOT depend on pytest.
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
 FRONTEND = Path(__file__).resolve().parents[2] / "studio" / "frontend"
+_LIVE_SERVERS: list[subprocess.Popen[str]] = []
+_PREV_HANDLERS: dict[int, Any] = {}
 
 # Chromium launch args.
 # Throttling flags stop Chromium deprioritising CPU/timers when it thinks the
@@ -112,14 +117,58 @@ def install_view_transition_killer(ctx: Any) -> None:
 # Hence the process group, the stdout drain, and the SIGTERM-then-SIGKILL teardown below.
 
 
-def drain_process_output(proc: subprocess.Popen[str]) -> None:
+def drain_process_output(proc: subprocess.Popen[str], sink: deque[str] | None = None) -> None:
+    """Consume vite's output so its pipe cannot fill and wedge; keep the tail for errors."""
     if proc.stdout is not None:
-        for _ in proc.stdout:
-            pass
+        for line in proc.stdout:
+            if sink is not None:
+                sink.append(line.rstrip())
+
+
+def _port_is_taken(port: int, host: str) -> bool:
+    with socket.socket() as probe:
+        probe.settimeout(1.0)
+        return probe.connect_ex((host, port)) == 0
+
+
+def _stop_live_servers() -> None:
+    while _LIVE_SERVERS:
+        stop_process(_LIVE_SERVERS.pop())
+
+
+def _handle_fatal_signal(signum, frame) -> None:
+    _stop_live_servers()
+    previous = _PREV_HANDLERS.get(signum, signal.SIG_DFL)
+    if callable(previous):
+        previous(signum, frame)
+        return
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _arm_teardown_signals() -> None:
+    """`finally` covers exceptions and SIGINT but not SIGTERM, and a CI cancel sends SIGTERM.
+    Without this the server outlives the harness, which is the whole thing being fixed."""
+    if _PREV_HANDLERS or os.name == "nt":
+        return
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            _PREV_HANDLERS[signum] = signal.signal(signum, _handle_fatal_signal)
+        except (ValueError, OSError):
+            _PREV_HANDLERS.clear()  # not the main thread; leave signals alone
+            return
 
 
 def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
-    """Start `vite dev` on `port` in its own process group, with stdout drained."""
+    """Start `vite dev` on `port` in its own process group, with stdout drained.
+
+    Refuses an occupied port. --strictPort would make vite exit anyway, and then the
+    readiness poll would be talking to whatever else is listening, not to us.
+    """
+    if _port_is_taken(port, host):
+        raise RuntimeError(
+            f"{host}:{port} is already serving. Stop it, or move this harness with SMOKE_PORT."
+        )
     process_group = (
         {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         if os.name == "nt"
@@ -133,12 +182,19 @@ def start_vite(port: int, *, host: str = "127.0.0.1") -> subprocess.Popen[str]:
         text = True,
         **process_group,
     )
-    threading.Thread(target = drain_process_output, args = (proc,), daemon = True).start()
+    tail: deque[str] = deque(maxlen = 20)
+    proc.vite_tail = tail  # type: ignore[attr-defined]
+    threading.Thread(target = drain_process_output, args = (proc, tail), daemon = True).start()
+    _LIVE_SERVERS.append(proc)
+    _arm_teardown_signals()
+    atexit.register(_stop_live_servers)
     return proc
 
 
 def stop_process(proc: subprocess.Popen[str]) -> None:
     """SIGTERM the process group, escalating to SIGKILL if it does not go."""
+    if proc in _LIVE_SERVERS:
+        _LIVE_SERVERS.remove(proc)
     if proc.poll() is not None:
         return
 
@@ -170,13 +226,19 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        proc.wait(timeout = 10)
+        # Callers run this from a `finally`, so a process that still will not die must not
+        # raise over the top of whatever sent us here.
+        try:
+            proc.wait(timeout = 10)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def wait_for_smoke_page(
     url: str,
     entry: str,
     *,
+    proc: subprocess.Popen[str] | None = None,
     timeout_s: float = 120.0,
     info: Callable[[str], None] | None = None,
 ) -> None:
@@ -188,6 +250,11 @@ def wait_for_smoke_page(
     deadline = time.monotonic() + timeout_s
     last = "no response"
     while time.monotonic() < deadline:
+        # Ours died (busy port under --strictPort, missing node_modules): stop now rather than
+        # polling out the full timeout, and rather than binding to whoever else holds the port.
+        if proc is not None and proc.poll() is not None:
+            tail = "\n".join(getattr(proc, "vite_tail", []))
+            raise RuntimeError(f"vite exited with code {proc.returncode} before serving {url}\n{tail}")
         try:
             with urllib.request.urlopen(url, timeout = 3.0) as r:
                 body = r.read().decode("utf-8", errors = "replace")

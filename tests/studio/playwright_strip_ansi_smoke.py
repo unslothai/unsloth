@@ -22,7 +22,8 @@ from _playwright_robust import (  # noqa: E402
 
 # 8000 collides with whatever else is on a shared box; sit by chat (5193) and research (5183).
 PORT = int(os.environ.get("SMOKE_PORT", "5203"))
-BASE = os.environ.get("SMOKE_BASE_URL", f"http://127.0.0.1:{PORT}")
+_EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
+BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright-ansi-smoke"))
 SECTIONS = (
     "tool-result-output",
@@ -43,7 +44,7 @@ def main() -> None:
     info(f"starting vite dev server on port {PORT}")
     vite = start_vite(PORT)
     try:
-        wait_for_smoke_page(f"{BASE}/smoke-ansi.html", "smoke-ansi-main.tsx", info = info)
+        wait_for_smoke_page(f"{BASE}/smoke-ansi.html", "smoke-ansi-main.tsx", proc = vite, info = info)
 
         with sync_playwright() as playwright:
             browser_name = os.environ.get("PW_BROWSER", "chromium").lower()

@@ -45,8 +45,11 @@ from _playwright_robust import (  # noqa: E402
 PORT = int(os.environ.get("SMOKE_PORT", "5183"))
 # Set SMOKE_BASE_URL to point at a server you already have; otherwise this file starts and
 # stops its own, so `python tests/studio/playwright_research_freeze.py` is the whole command.
-BASE = os.environ.get("SMOKE_BASE_URL", f"http://127.0.0.1:{PORT}")
-OWNS_SERVER = "SMOKE_BASE_URL" not in os.environ
+# An exported-but-empty SMOKE_BASE_URL counts as unset; otherwise we skip starting a
+# server and then drive "" as the base URL.
+_EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
+BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
+OWNS_SERVER = not _EXTERNAL
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-research-freeze"))
 OUT.mkdir(parents = True, exist_ok = True)
@@ -374,7 +377,7 @@ def main() -> int:
         info(f"starting vite dev server on port {PORT}")
         vite = start_vite(PORT)
     try:
-        wait_for_smoke_page(f"{BASE}/smoke-research.html", "smoke-research-main.tsx", info = info)
+        wait_for_smoke_page(f"{BASE}/smoke-research.html", "smoke-research-main.tsx", proc = vite, info = info)
         results = run()
     finally:
         if vite is not None:
