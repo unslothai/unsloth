@@ -124,12 +124,35 @@ MEMORY_DEPRECATE = {
     },
 }
 
+MEMORY_COMPACT = {
+    "type": "function",
+    "function": {
+        "name": "memory_compact",
+        "description": (
+            "Hygiene pass on durable memory: drop old empty proposed rows, "
+            "deprecate duplicate titles, fold long superseded chains. "
+            "Does not rewrite bodies. dry_run defaults true (preview)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Default true (preview). Pass false to mutate.",
+                    "default": True,
+                }
+            },
+        },
+    },
+}
+
 MEMORY_TOOLS = [
     MEMORY_WRITE,
     MEMORY_SEARCH,
     MEMORY_GET,
     MEMORY_SUPERSEDE,
     MEMORY_DEPRECATE,
+    MEMORY_COMPACT,
 ]
 
 MEMORY_TOOL_NAMES = frozenset(

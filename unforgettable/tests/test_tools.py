@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 
-from unforgettable.store.records import get_record
+from unforgettable.store.records import get_record, insert_record
 from unforgettable.tools.handlers import dispatch
 from unforgettable.tools.specs import MEMORY_TOOL_NAMES
 
@@ -28,6 +28,7 @@ def test_tool_names_are_stable():
         "memory_get",
         "memory_supersede",
         "memory_deprecate",
+        "memory_compact",
     }
 
 
@@ -70,3 +71,50 @@ def test_write_search_get_supersede_deprecate(db_path):
     assert "No matching" in dispatch(
         "memory_search", {"query": "cite ids"}, db_path=db_path
     )
+
+
+def test_memory_compact_default_is_dry_run(db_path):
+    first = insert_record(
+        kind="claim",
+        title="Dup",
+        body="world copy",
+        provenance="world",
+        db_path=db_path,
+    )
+    second = insert_record(
+        kind="claim",
+        title="Dup",
+        body="infer copy",
+        provenance="infer",
+        db_path=db_path,
+    )
+    payload = json.loads(dispatch("memory_compact", None, db_path=db_path))
+    assert payload["dry_run"] is True
+    assert get_record(first["id"], db_path=db_path)["status"] == "active"
+    assert get_record(second["id"], db_path=db_path)["status"] == "active"
+
+
+def test_memory_compact_wet_mutates(db_path):
+    first = insert_record(
+        kind="claim",
+        title="Dup",
+        body="world copy",
+        provenance="world",
+        db_path=db_path,
+    )
+    second = insert_record(
+        kind="claim",
+        title="Dup",
+        body="infer copy",
+        provenance="infer",
+        db_path=db_path,
+    )
+    payload = json.loads(
+        dispatch("memory_compact", {"dry_run": False}, db_path=db_path)
+    )
+    assert payload["dry_run"] is False
+    statuses = {
+        get_record(first["id"], db_path=db_path)["status"],
+        get_record(second["id"], db_path=db_path)["status"],
+    }
+    assert statuses == {"active", "deprecated"}

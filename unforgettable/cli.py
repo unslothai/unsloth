@@ -20,10 +20,12 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from unforgettable.constants import KINDS, STATUSES
+from unforgettable.store.compact import run_compact
 from unforgettable.store.db import default_db_path
 from unforgettable.store.records import (
     get_record,
@@ -47,6 +49,10 @@ STATUS_ALL = "all"
 STUDIO_DB_HELP = (
     'Studio operators can pass --db "$STUDIO_HOME/memory/memory.db" '
     f"(or set {DB_ENV_NAME})."
+)
+COMPACT_FIRST_DRY_RUN_HELP = (
+    "First compact on an existing $STUDIO_HOME/memory/memory.db should be "
+    "compact --dry-run."
 )
 
 
@@ -181,6 +187,12 @@ def _cmd_reject(args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _cmd_compact(args: argparse.Namespace, db_path: Path) -> int:
+    report = run_compact(db_path, dry_run=args.dry_run)
+    _print_json(asdict(report))
+    return 0
+
+
 def _add_db_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--db",
@@ -256,6 +268,27 @@ def build_parser() -> argparse.ArgumentParser:
     reject_p.add_argument("id")
     reject_p.add_argument("--reason", default=None)
     reject_p.set_defaults(func=_cmd_reject)
+
+    compact_p = sub.add_parser(
+        "compact",
+        help="Hygiene pass (wet). " + COMPACT_FIRST_DRY_RUN_HELP,
+        description=(
+            "Drop old empty proposed rows, deprecate duplicate notebook titles, "
+            "and fold long superseded chains. Mutates unless --dry-run. "
+            + COMPACT_FIRST_DRY_RUN_HELP
+        ),
+        epilog=COMPACT_FIRST_DRY_RUN_HELP,
+    )
+    _add_db_flag(compact_p)
+    compact_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Preview without mutating. "
+            + COMPACT_FIRST_DRY_RUN_HELP
+        ),
+    )
+    compact_p.set_defaults(func=_cmd_compact)
 
     return parser
 

@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
-from unforgettable.cli import main
+import re
+
+from unforgettable.cli import COMPACT_FIRST_DRY_RUN_HELP, main
 from unforgettable.store.records import get_record, insert_record
 
 
@@ -48,3 +50,29 @@ def test_unknown_id_exits_2(db_path):
     assert main(["get", "missing-id", "--db", str(db_path)]) == 2
     assert main(["admit", "missing-id", "--db", str(db_path)]) == 2
     assert main(["reject", "missing-id", "--db", str(db_path)]) == 2
+
+
+def test_compact_help_warns_dry_run(capsys):
+    try:
+        main(["compact", "--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("compact --help should exit")
+    out = re.sub(r"\s+", " ", capsys.readouterr().out)
+    assert COMPACT_FIRST_DRY_RUN_HELP in out
+    assert "$STUDIO_HOME/memory/memory.db" in out
+    assert "compact --dry-run" in out
+
+
+def test_compact_dry_run_prints_report(db_path, capsys):
+    insert_record(
+        kind="claim",
+        title="Pump max rate",
+        body="Pump X max rate is 12 L/min",
+        provenance="world",
+        db_path=db_path,
+    )
+    assert main(["compact", "--dry-run", "--db", str(db_path)]) == 0
+    out = capsys.readouterr().out
+    assert '"dry_run": true' in out

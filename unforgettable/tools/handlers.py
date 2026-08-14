@@ -21,6 +21,7 @@ from unforgettable.agents.admissions import admit
 from unforgettable.agents.retriever import DEFAULT_MAX_RECORDS, DEFAULT_RETRIEVE_KINDS
 from unforgettable.constants import DEFAULT_NAMESPACE_ID
 from unforgettable.loop.runtime import current_db_path, current_episode_id, current_namespace
+from unforgettable.store.compact import CompactReport, run_compact
 from unforgettable.store.records import (
     deprecate_record,
     get_record,
@@ -44,6 +45,8 @@ def dispatch(name: str, arguments: dict[str, Any] | None, *, db_path=None) -> st
         return _supersede(args, db_path=path)
     if name == "memory_deprecate":
         return _deprecate(args, db_path=path)
+    if name == "memory_compact":
+        return _compact(args, db_path=path)
     return f"Error: unknown memory tool '{name}'"
 
 
@@ -153,3 +156,20 @@ def _deprecate(args: dict[str, Any], *, db_path) -> str:
     except KeyError:
         return f"Error: no record {rid}"
     return json.dumps({"id": rec["id"], "status": rec["status"]}, indent=2)
+
+
+def _compact(args: dict[str, Any], *, db_path) -> str:
+    dry_run = args.get("dry_run", True)
+    if dry_run is None:
+        dry_run = True
+    report = run_compact(db_path=db_path, dry_run=bool(dry_run))
+    return json.dumps(_report_payload(report), indent=2)
+
+
+def _report_payload(report: CompactReport) -> dict[str, Any]:
+    return {
+        "emptied": report.emptied,
+        "deduped": [list(pair) for pair in report.deduped],
+        "folded": report.folded,
+        "dry_run": report.dry_run,
+    }
