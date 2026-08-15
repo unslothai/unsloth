@@ -449,6 +449,19 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
         )
 
 
+def _native_tts_prompt_for_budget(
+    text: str, audio_type: Optional[str], instructions: Optional[str], language: Optional[str]
+) -> str:
+    """User-controlled text fields tokenized by native TTS prompt builders."""
+    if audio_type == "higgs_tts2":
+        instructions = instructions or "Audio is recorded from a quiet room."
+    parts = [instructions]
+    if audio_type == "moss_tts_local":
+        parts.append(language)
+    parts.append(text)
+    return "\n".join(str(part) for part in parts if part)
+
+
 def _prompt_token_estimate(prompt: str) -> int:
     """Tokens the prompt will occupy, from the loaded tokenizer where one is reachable.
 
@@ -10898,10 +10911,12 @@ async def _generate_tts_wav(
             detail = "MiniMax Music 3 requires a music description in addition to lyrics.",
         )
     if audio_type in ("higgs_tts2", "moss_tts_local"):
-        instructions = payload.audio_instructions
-        if audio_type == "higgs_tts2":
-            instructions = instructions or "Audio is recorded from a quiet room."
-        prompt_for_budget = f"{instructions}\n{text}" if instructions else text
+        prompt_for_budget = _native_tts_prompt_for_budget(
+            text,
+            audio_type,
+            payload.audio_instructions,
+            payload.audio_language,
+        )
         _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget)
 
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before

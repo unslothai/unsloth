@@ -112,6 +112,33 @@ def test_native_audio_instructions_and_seed_reach_the_shared_core(monkeypatch):
     assert payload.seed == 7
 
 
+@pytest.mark.parametrize("seed", (-(2**63) - 1, 2**64))
+def test_seed_outside_torch_generator_range_is_rejected(monkeypatch, seed):
+    from models.inference import ChatCompletionRequest
+    from pydantic import ValidationError
+
+    cli, calls, _saved = _make_client(monkeypatch)
+
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "seed": seed})
+
+    assert resp.status_code == 400
+    assert calls == []
+    with pytest.raises(ValidationError):
+        ChatCompletionRequest(
+            messages = [{"role": "user", "content": "hi"}],
+            seed = seed,
+        )
+
+
+@pytest.mark.parametrize("seed", (-(2**63), 2**64 - 1))
+def test_torch_generator_seed_range_endpoints_are_accepted(seed):
+    from models.inference import AudioSpeechRequest, ChatCompletionRequest
+    assert AudioSpeechRequest(input = "hi", seed = seed).seed == seed
+    assert (
+        ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], seed = seed).seed == seed
+    )
+
+
 def test_native_music_frame_limit_reaches_the_shared_core(monkeypatch):
     cli, calls, _saved = _make_client(monkeypatch)
     resp = cli.post(
@@ -266,6 +293,27 @@ def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
     assert budget == (
         2048 - routes_module._prompt_token_estimate(text) - routes_module._TTS_PROMPT_FORMAT_RESERVE
     )
+
+
+def test_moss_prompt_budget_includes_language_and_instructions(monkeypatch):
+    prompt = routes_module._native_tts_prompt_for_budget(
+        "A short line.",
+        "moss_tts_local",
+        "Warm and calm.",
+        "English",
+    )
+    assert prompt == "Warm and calm.\nEnglish\nA short line."
+
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 128)
+    with pytest.raises(HTTPException, match = "too long"):
+        routes_module._raise_if_prompt_leaves_no_speech_budget(
+            routes_module._native_tts_prompt_for_budget(
+                "A short line.",
+                "moss_tts_local",
+                None,
+                "language-tag-" * 100,
+            )
+        )
 
 
 def test_an_over_context_prompt_is_a_client_error(monkeypatch):
