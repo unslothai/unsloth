@@ -659,6 +659,10 @@ def _cached_gguf(root: Path, name: str, payload: bytes) -> Path:
     return path
 
 
+def _verified(path: Path, repo: str = "owner/model", variant: str = "Q4_K_M"):
+    return repo, variant, str(path), path.stat().st_size
+
+
 def test_a_verified_cached_file_is_judged_without_resolving_it_again(monkeypatch, tmp_path):
     """The probe reuses the file verified during config resolution."""
     _hub_cache(monkeypatch, tmp_path)
@@ -671,7 +675,7 @@ def test_a_verified_cached_file_is_judged_without_resolving_it_again(monkeypatch
     monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", _no_hub)
     monkeypatch.setattr(diffusion_compat, "_read_gguf_header", _no_hub)
 
-    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(cached)))
+    intent = _intent(verified_gguf = _verified(cached))
     verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
     assert verdict is not None and "Video page" in verdict
 
@@ -697,7 +701,7 @@ def test_a_chat_gguf_carried_the_same_way_is_still_not_refused(monkeypatch, tmp_
     monkeypatch.setattr(llama_cpp_module, "_resolve_variant_gguf_files", _no_hub)
     monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", _no_hub)
 
-    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(cached)))
+    intent = _intent(verified_gguf = _verified(cached))
     assert LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent) is None
 
 
@@ -707,7 +711,7 @@ def test_a_carried_path_is_only_used_for_the_repo_and_variant_it_was_verified_fo
     """A carried path is valid only for its verified repo and variant."""
     _hub_cache(monkeypatch, tmp_path)
     cached = _cached_gguf(tmp_path, "model-Q4_K_M.gguf", b"GGUF")
-    verified = ("owner/model", "Q4_K_M", str(cached))
+    verified = _verified(cached)
     take = LlamaCppBackend._verified_cached_gguf
 
     assert take(_intent(verified_gguf = verified), "owner/model", "Q4_K_M") == str(cached)
@@ -723,6 +727,14 @@ def test_a_carried_path_is_only_used_for_the_repo_and_variant_it_was_verified_fo
     # Missing or malformed values are ignored.
     assert take(_intent(), "owner/model", "Q4_K_M") is None
     assert take(_intent(verified_gguf = ("owner/model",)), "owner/model", "Q4_K_M") is None
+    assert (
+        take(
+            _intent(verified_gguf = ("owner/model", "Q4_K_M", str(cached))),
+            "owner/model",
+            "Q4_K_M",
+        )
+        is None
+    )
     assert take(_intent(verified_gguf = "just-a-path"), "owner/model", "Q4_K_M") is None
 
 
@@ -730,7 +742,7 @@ def test_a_file_deleted_between_the_request_and_the_launch_is_not_reused(monkeyp
     """A deleted carried file must not be reused."""
     _hub_cache(monkeypatch, tmp_path)
     cached = _cached_gguf(tmp_path, "model-Q4_K_M.gguf", b"GGUF")
-    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(cached)))
+    intent = _intent(verified_gguf = _verified(cached))
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(cached)
 
     cached.unlink()
@@ -738,6 +750,36 @@ def test_a_file_deleted_between_the_request_and_the_launch_is_not_reused(monkeyp
 
     # A directory at the path is not a model either.
     cached.mkdir()
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_a_file_truncated_after_config_resolution_is_not_reused(monkeypatch, tmp_path):
+    _hub_cache(monkeypatch, tmp_path)
+    cached = _cached_gguf(tmp_path, "model-Q4_K_M.gguf", b"GGUF payload")
+    intent = _intent(verified_gguf = _verified(cached))
+
+    cached.write_bytes(b"GGUF")
+
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_an_incomplete_shard_set_after_config_resolution_is_not_reused(monkeypatch, tmp_path):
+    _hub_cache(monkeypatch, tmp_path)
+    main = _cached_gguf(
+        tmp_path,
+        "model-Q4_K_M-00001-of-00002.gguf",
+        b"first shard",
+    )
+    sibling = _cached_gguf(
+        tmp_path,
+        "model-Q4_K_M-00002-of-00002.gguf",
+        b"second shard",
+    )
+    intent = _intent(verified_gguf = _verified(main))
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(main)
+
+    sibling.unlink()
+
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
 
 
@@ -762,7 +804,7 @@ def test_the_probe_falls_back_to_resolving_when_nothing_usable_is_carried(monkey
     )
 
     _hub_cache(monkeypatch, tmp_path)
-    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(missing)))
+    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(missing), 123))
     verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
     assert verdict is not None and "Images page" in verdict
     assert requests == [("owner/model", "model-Q4_K_M.gguf")]
@@ -783,7 +825,7 @@ def test_a_carried_path_outside_the_active_cache_is_not_reused(monkeypatch, tmp_
     old_root, new_root = tmp_path / "old", tmp_path / "new"
     _hub_cache(monkeypatch, old_root)
     cached = _cached_gguf(old_root, "model-Q4_K_M.gguf", b"GGUF")
-    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(cached)))
+    intent = _intent(verified_gguf = _verified(cached))
 
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(cached)
 
@@ -800,7 +842,7 @@ def test_a_carried_path_outside_the_active_cache_is_not_reused(monkeypatch, tmp_
     # Reject paths outside the cache and unreadable cache settings.
     loose = tmp_path / "loose-Q4_K_M.gguf"
     loose.write_bytes(b"GGUF")
-    loose_intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(loose)))
+    loose_intent = _intent(verified_gguf = _verified(loose))
     assert LlamaCppBackend._verified_cached_gguf(loose_intent, "owner/model", "Q4_K_M") is None
 
     import utils.hf_cache_settings as hf_cache_settings
@@ -834,7 +876,7 @@ def test_the_probe_resolves_normally_when_the_cache_moved_under_it(monkeypatch, 
         ),
     )
 
-    intent = _intent(verified_gguf = ("owner/model", "Q4_K_M", str(cached)))
+    intent = _intent(verified_gguf = _verified(cached))
     verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
     assert verdict is not None and "Video page" in verdict
     assert requests == [("owner/model", "model-Q4_K_M.gguf")]
@@ -867,7 +909,7 @@ def test_the_launch_opens_the_carried_file_instead_of_resolving_it(monkeypatch, 
             backend.load_model(_intent(verified_gguf = verified))
         return order
 
-    assert _load(("owner/model", "Q4_K_M", str(cached))) == ["kill"]
+    assert _load(_verified(cached)) == ["kill"]
     assert _load(None) == ["kill", "download"]
 
 
@@ -920,7 +962,7 @@ def test_the_snapshot_kept_for_a_respawn_carries_no_verified_file(monkeypatch, t
         model_identifier = "owner/model",
         gguf_path = str(gguf),
         hf_variant = "Q4_K_M",
-        verified_gguf = ("owner/model", "Q4_K_M", str(gguf)),
+        verified_gguf = _verified(gguf),
     )
 
     backend = _launchable_backend(monkeypatch)

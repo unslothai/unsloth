@@ -646,6 +646,37 @@ class TestCachedGgufForLoadProbe:
 
 
 class TestLoadHubDownloadExclusion:
+    def test_remote_intent_carries_the_verified_cache_hint(self):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_verified_cache_hint",
+            "routes/inference.py",
+        )
+        verified = (REPO, VARIANT, "/cached/model.gguf", 123)
+        config = SimpleNamespace(
+            identifier = REPO,
+            gguf_hf_repo = REPO,
+            gguf_variant = VARIANT,
+            gguf_verified = verified,
+            is_vision = False,
+        )
+
+        intent = route._resolve_gguf_load_intent(
+            config,
+            LoadRequest(model_path = REPO, gguf_variant = VARIANT),
+            native_grant_backed = False,
+            chat_template_override = None,
+            extra_args = None,
+            placement = SimpleNamespace(
+                resolved_gpu_ids = None,
+                gpu_ids_are_vulkan_ordinals = None,
+            ),
+            n_parallel = 1,
+        )
+
+        assert intent.verified_gguf == verified
+
     def test_resident_local_directory_intent_uses_variant_until_path_is_resolved(self):
         from models.inference import LoadRequest
 

@@ -3581,8 +3581,8 @@ class ModelConfig:
     audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
-    # ``(repo, variant, path)`` for a cached GGUF verified during config resolution.
-    gguf_verified: Optional[tuple[str, str, str]] = None
+    # ``(repo, variant, path, size)`` for a cached GGUF verified during config resolution.
+    gguf_verified: Optional[tuple[str, str, str, int]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
@@ -3872,6 +3872,18 @@ class ModelConfig:
                         identifier, variant, verify_sizes = True, hf_token = hf_token
                     )
 
+                verified_gguf = None
+                if verified_file:
+                    try:
+                        verified_gguf = (
+                            identifier,
+                            variant,
+                            verified_file,
+                            os.path.getsize(verified_file),
+                        )
+                    except OSError:
+                        pass
+
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "
@@ -3887,7 +3899,7 @@ class ModelConfig:
                     is_lora = False,
                     is_gguf = True,
                     gguf_file = None,
-                    gguf_verified = ((identifier, variant, verified_file) if verified_file else None),
+                    gguf_verified = verified_gguf,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

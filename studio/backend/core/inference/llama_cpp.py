@@ -146,8 +146,8 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
-    # A cached file already verified for this repo and variant.
-    verified_gguf: Optional[tuple[str, str, str]] = None
+    # A cached file and byte count already verified for this repo and variant.
+    verified_gguf: Optional[tuple[str, str, str, int]] = None
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
     dspark_draft_path: Optional[str] = None
@@ -7696,7 +7696,7 @@ class LlamaCppBackend:
         if not verified:
             return None
         try:
-            repo, variant, path = verified
+            repo, variant, path, size = verified
         except (TypeError, ValueError):
             return None
         if (repo or "").lower() != (hf_repo or "").lower():
@@ -7717,6 +7717,21 @@ class LlamaCppBackend:
             if not Path(os.path.abspath(path)).is_relative_to(hub_cache):
                 return None
         except (OSError, ValueError):
+            return None
+        # Recheck the recorded byte count and derive the complete shard set from
+        # this snapshot. Both checks are local, so reuse still avoids Hub calls.
+        try:
+            if os.path.getsize(path) != size:
+                return None
+            target = os.path.abspath(path)
+            if not any(
+                os.path.abspath(candidate[0]) == target
+                for candidate in _cached_variant_candidates(
+                    _resolve_repo_id_casing(repo), variant
+                )
+            ):
+                return None
+        except OSError:
             return None
         return path
 

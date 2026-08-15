@@ -61,11 +61,13 @@ def test_variant_match_is_case_insensitive(remote_gguf_repo):
     assert config.gguf_variant == "q4_k_m"
 
 
-def test_variant_only_in_verified_local_cache_accepted(remote_gguf_repo, monkeypatch):
+def test_variant_only_in_verified_local_cache_accepted(remote_gguf_repo, monkeypatch, tmp_path):
+    cached = tmp_path / "Llama-3.2-1B-Instruct-OLD_Q2.gguf"
+    cached.write_bytes(b"cached")
     monkeypatch.setattr(
         llama_cpp,
         "cached_gguf_for_load",
-        lambda repo, variant, **kwargs: "/cache/Llama-3.2-1B-Instruct-OLD_Q2.gguf",
+        lambda repo, variant, **kwargs: str(cached),
     )
     config = ModelConfig.from_identifier(REPO, gguf_variant = "OLD_Q2")
     assert config is not None
@@ -119,20 +121,25 @@ def test_no_variant_still_autoselects(remote_gguf_repo):
     assert config.gguf_variant in {"Q4_K_M", "Q8_0"}
 
 
-def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeypatch):
+def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeypatch, tmp_path):
     """Config carries the cached file it already verified."""
-    cached = "/cache/Llama-3.2-1B-Instruct-Q8_0.gguf"
-    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: cached)
+    cached = tmp_path / "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached.write_bytes(b"cached")
+    monkeypatch.setattr(
+        llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached)
+    )
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
-    assert config.gguf_verified == (REPO, "Q8_0", cached)
+    assert config.gguf_verified == (REPO, "Q8_0", str(cached), cached.stat().st_size)
 
 
 def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
-    remote_gguf_repo, monkeypatch
+    remote_gguf_repo, monkeypatch, tmp_path
 ):
     """A verified cached file proves the requested variant exists."""
     listings = []
+    cached = tmp_path / "old.gguf"
+    cached.write_bytes(b"cached")
 
     def counting_list_repo_files(repo_id, token = None):
         listings.append(repo_id)
@@ -140,7 +147,7 @@ def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
 
     monkeypatch.setattr(huggingface_hub, "list_repo_files", counting_list_repo_files)
     monkeypatch.setattr(
-        llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: "/cache/old.gguf"
+        llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached)
     )
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "OLD_Q2")
@@ -155,20 +162,30 @@ def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
     assert listings == [REPO]
 
 
-def test_the_auto_selected_variant_carries_its_own_verified_copy(remote_gguf_repo, monkeypatch):
+def test_the_auto_selected_variant_carries_its_own_verified_copy(
+    remote_gguf_repo, monkeypatch, tmp_path
+):
     """No explicit variant means config picks one, and that pick is what the load asks for."""
     asked = []
 
     def fake_cached_gguf_for_load(repo, variant, **kw):
         asked.append((repo, variant, kw.get("verify_sizes")))
-        return f"/cache/{variant}.gguf"
+        cached = tmp_path / f"{variant}.gguf"
+        cached.write_bytes(b"cached")
+        return str(cached)
 
     monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", fake_cached_gguf_for_load)
 
     config = ModelConfig.from_identifier(REPO)
     assert config.gguf_variant in {"Q4_K_M", "Q8_0"}
     assert asked == [(REPO, config.gguf_variant, True)]
-    assert config.gguf_verified == (REPO, config.gguf_variant, f"/cache/{config.gguf_variant}.gguf")
+    cached = tmp_path / f"{config.gguf_variant}.gguf"
+    assert config.gguf_verified == (
+        REPO,
+        config.gguf_variant,
+        str(cached),
+        cached.stat().st_size,
+    )
 
 
 def test_nothing_is_carried_when_no_cached_copy_verifies(remote_gguf_repo):
