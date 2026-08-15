@@ -1964,23 +1964,24 @@ def test_a_cached_single_checkpoint_the_loader_cannot_open_is_not_advertised(cat
     _repo_dir, snapshot = _hf_cache_repo(
         tmp_path, "unsloth/Z-Image-Turbo", files = ["z-image-turbo.safetensors"]
     )
-    catalog.append(
-        _info("unsloth/Z-Image-Turbo", snapshot, task = mas.IMAGE_TASK, source = "hf_cache")
-    )
+    catalog.append(_info("unsloth/Z-Image-Turbo", snapshot, task = mas.IMAGE_TASK, source = "hf_cache"))
 
     assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo", task = mas.IMAGE_TASK) is None
 
 
-def test_a_stalled_load_probe_still_answers_inside_the_budget(
-    flux, enabled, backend, monkeypatch
-):
+def test_a_stalled_load_probe_still_answers_inside_the_budget(flux, enabled, backend, monkeypatch):
     # load_progress walks cache directories to count bytes, so one poll on a stalled filesystem
     # outlived the budget the check at the bottom of the loop is there to enforce. Timed inside
     # the loop: asyncio.run joins the executor on the way out, so the worker's own sleep would
     # otherwise be counted against a request that had already answered.
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
 
-    async def _start(owner, pick, current_subject, hf_token = None):
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         backend.phase = "downloading"
         backend.load_progress = lambda: time.sleep(3) or {"phase": "downloading"}
 
