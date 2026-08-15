@@ -336,6 +336,52 @@ def lmstudio_model_dirs() -> list[Path]:
     return dirs
 
 
+def omlx_model_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    # oMLX lists LM Studio's directory among its own roots. That root is already
+    # scanned as source="lmstudio", so claiming it here would scan it twice.
+    for other in lmstudio_model_dirs():
+        try:
+            seen.add(str(other.resolve()))
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    def _add(path: Path | str) -> None:
+        try:
+            expanded = _host_path(path)
+            resolved = expanded.resolve()
+        except (OSError, RuntimeError, ValueError):
+            return
+        key = str(resolved)
+        if key in seen or not expanded.is_dir():
+            return
+        seen.add(key)
+        dirs.append(expanded)
+
+    settings_path = Path.home() / ".omlx" / "settings.json"
+    if settings_path.is_file():
+        try:
+            settings = json.loads(settings_path.read_text(encoding = "utf-8"))
+            model_settings = settings.get("model") or {}
+            configured = model_settings.get("model_dirs")
+            if isinstance(configured, str):
+                configured = [configured]
+            elif not isinstance(configured, list):
+                configured = []
+            single = model_settings.get("model_dir")
+            if isinstance(single, str) and single:
+                configured = [single, *configured]
+            for entry in configured:
+                if isinstance(entry, str) and entry:
+                    _add(entry)
+        except Exception:
+            pass
+    _add(Path.home() / ".omlx" / "models")
+    return dirs
+
+
 def well_known_model_dirs() -> list[Path]:
     candidates: list[Path] = []
     candidates.extend(lmstudio_model_dirs())

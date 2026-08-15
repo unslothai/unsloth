@@ -338,7 +338,13 @@ export function TrainModelSelector({
       if (row.partial) {
         return false;
       }
-      if (row.source === "lmstudio" || row.source === "ollama") {
+      // oMLX holds pre-quantized MLX weights, which are an inference target rather
+      // than a training base -- excluded for the same reason as LM Studio's rows.
+      if (
+        row.source === "lmstudio" ||
+        row.source === "omlx" ||
+        row.source === "ollama"
+      ) {
         return false;
       }
       if (!row.capabilities.canTrain) {

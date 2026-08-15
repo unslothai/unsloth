@@ -175,6 +175,7 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
         tmp_path / "legacy",
         tmp_path / "default",
         (tmp_path / "lm",),
+        (),  # omlx_dirs
         (tmp_path / "known",),
     )
     folders = [[{"id": 1, "path": "/custom", "created_at": "now"}]]

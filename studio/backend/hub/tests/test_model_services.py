@@ -1009,9 +1009,10 @@ def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path)
             active,
             tmp_path / "missing-legacy",
             tmp_path / "missing-default",
-            (),
-            (),
-            (),
+            (),  # lm_dirs
+            (),  # omlx_dirs
+            (),  # ollama_dirs
+            (),  # known_hf_caches
             [{"path": str(custom)}],
         )
     )

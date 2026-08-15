@@ -88,3 +88,22 @@ test("custom and models_dir rows keep the labels the picker groups on", () => {
     ["Custom Folders", "Local models"],
   );
 });
+
+test("an oMLX row is offered, labelled oMLX, and named by its repo id", () => {
+  // oMLX keeps models under ~/.omlx/models in the same publisher/model layout LM Studio
+  // uses. Studio scanned neither that root nor its settings.json, so these rows never
+  // reached Chat at all. They load through mlx-lm exactly like any other local MLX model.
+  const options = chatLocalModelOptions([
+    row({
+      id: "/Users/u/.omlx/models/mlx-community/Qwen3.8-27B-4bit",
+      display_name: "Qwen3.8-27B-4bit",
+      path: "/Users/u/.omlx/models/mlx-community/Qwen3.8-27B-4bit",
+      source: "omlx",
+      model_id: "mlx-community/Qwen3.8-27B-4bit",
+      model_format: "safetensors",
+    }),
+  ]);
+  assert.equal(options.length, 1);
+  assert.equal(options[0].name, "mlx-community/Qwen3.8-27B-4bit");
+  assert.equal(options[0].baseModel, "oMLX");
+});

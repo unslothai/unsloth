@@ -30,6 +30,7 @@ from hub.utils.paths import (
     lmstudio_model_dirs,
     normalize_path,
     ollama_model_dirs,
+    omlx_model_dirs,
     outputs_root,
     path_is_same_or_child,
     studio_root,
@@ -49,6 +50,7 @@ class _LocalInventorySources(NamedTuple):
     legacy_hf: Path
     hf_default: Path
     lm_dirs: tuple[Path, ...]
+    omlx_dirs: tuple[Path, ...]
     ollama_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
 
@@ -73,6 +75,7 @@ class _LocalCacheChanged(RuntimeError):
 
 
 # Local aliases keep the extracted code close to the original implementation.
+LocalModelSource = model_common.LocalModelSource
 _is_model_directory = model_common._is_model_directory
 _local_inventory_id = model_common._local_inventory_id
 _local_model_info = model_common._local_model_info
@@ -175,6 +178,7 @@ def _local_inventory_sources() -> _LocalInventorySources:
         legacy_hf_cache_dir(),
         hf_default_cache_dir(),
         tuple(lmstudio_model_dirs()),
+        tuple(omlx_model_dirs()),
         tuple(ollama_model_dirs()),
         tuple(known_hf_hub_caches()),
     )
@@ -440,21 +444,64 @@ def _scan_hf_cache(
     return found
 
 
-def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
-    """Scan an LM Studio models dir (``publisher/model-name`` folders of GGUFs, or top-level standalone GGUFs)."""
+def _weights_are_hf_cache_links(model_dir: Path, known_hf_caches: tuple[Path, ...]) -> bool:
+    """True when every weight in *model_dir* is a symlink into one of the HF caches.
+
+    A host app can fill a model folder with links into the HF cache instead of copying
+    the weights -- oMLX does this for models it pulled through the Hub. The HF cache scan
+    already reports those repos, so listing them again from the host-app root would show
+    the same model twice. A folder holding its own weights is left alone.
+    """
+    if not known_hf_caches:
+        return False
+    try:
+        entries = list(model_dir.iterdir())
+    except OSError:
+        return False
+    linked_weights = 0
+    for entry in entries:
+        try:
+            if not _is_immediate_model_weight_file(entry):
+                continue
+        except OSError:
+            continue
+        if not entry.is_symlink():
+            return False
+        if not any(path_is_same_or_child(entry, cache) for cache in known_hf_caches):
+            return False
+        linked_weights += 1
+    return linked_weights > 0
+
+
+def _scan_lmstudio_dir(
+    lm_dir: Path,
+    *,
+    entry_limit: int | None = None,
+    source: LocalModelSource = "lmstudio",
+    known_hf_caches: tuple[Path, ...] = (),
+) -> List[LocalModelInfo]:
+    """Scan a ``publisher/model-name`` model tree (or top-level standalone GGUFs).
+
+    LM Studio and oMLX lay their model roots out identically, so ``source`` names
+    which of them this root belongs to; the traversal itself is shared.
+
+    ``known_hf_caches`` suppresses models whose weights merely link into a HF cache the
+    inventory already scans -- see :func:`_weights_are_hf_cache_links`."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
     # If the dir is itself a model dir (config + weights, or a diffusers pipeline root), it's not
     # an LM Studio publisher structure -- return it as a single entry rather than descend.
     if _is_model_directory(lm_dir) or _is_diffusers_pipeline_dir(lm_dir):
+        if _weights_are_hf_cache_links(lm_dir, known_hf_caches):
+            return []
         try:
             updated_at = lm_dir.stat().st_mtime
         except OSError:
             updated_at = None
         return _classify_local_path(
             lm_dir,
-            "lmstudio",
+            source,
             updated_at = updated_at,
         )
 
@@ -484,7 +531,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     found.extend(
                         _classify_local_path(
                             child,
-                            "lmstudio",
+                            source,
                             updated_at = updated_at,
                         )
                     )
@@ -500,7 +547,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                 found.extend(
                     _classify_local_path(
                         child,
-                        "lmstudio",
+                        source,
                         updated_at = updated_at,
                     )
                 )
@@ -524,7 +571,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         found.extend(
                             _classify_local_path(
                                 model_dir,
-                                "lmstudio",
+                                source,
                                 display_name = model_dir.name,
                                 model_id = model_id,
                                 updated_at = updated_at,
@@ -538,7 +585,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         found.extend(
                             _classify_local_path(
                                 model_dir,
-                                "lmstudio",
+                                source,
                                 model_id = f"{child.name}/{model_dir.stem}",
                                 updated_at = updated_at,
                             )
@@ -549,6 +596,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                 break
         except OSError:
             continue
+    if known_hf_caches:
+        found = [
+            model
+            for model in found
+            if not _weights_are_hf_cache_links(Path(model.path), known_hf_caches)
+        ]
     return found
 
 
@@ -639,6 +692,7 @@ async def _collect_models_from_default_sources(
     legacy_hf: Path,
     hf_default: Path,
     lm_dirs: tuple[Path, ...],
+    omlx_dirs: tuple[Path, ...],
     ollama_dirs: tuple[Path, ...],
     known_hf_caches: tuple[Path, ...],
     custom_folders: list[dict],
@@ -711,6 +765,23 @@ async def _collect_models_from_default_sources(
 
     for lm_dir in lm_dirs:
         local_models += await _scan_source("LM Studio", _scan_lmstudio_dir, lm_dir)
+
+    # oMLX uses the same publisher/model layout, so the LM Studio walk is reused and
+    # only the reported source differs. Every HF cache this scan already covers is passed
+    # in so a model oMLX merely linked out of one is not reported a second time.
+    omlx_hf_caches = tuple(
+        dict.fromkeys((hf_cache_dir, legacy_hf, hf_default, *known_hf_caches))
+    )
+    for omlx_dir in omlx_dirs:
+        local_models += await _scan_source(
+            "oMLX",
+            lambda path: _scan_lmstudio_dir(
+                path,
+                source = "omlx",
+                known_hf_caches = omlx_hf_caches,
+            ),
+            omlx_dir,
+        )
 
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
@@ -881,7 +952,15 @@ async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, known_hf_caches = sources
+    (
+        hf_cache_dir,
+        legacy_hf,
+        hf_default,
+        lm_dirs,
+        omlx_dirs,
+        ollama_dirs,
+        known_hf_caches,
+    ) = sources
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
@@ -902,6 +981,7 @@ async def _scan_local_models_response(
             legacy_hf,
             hf_default,
             lm_dirs,
+            omlx_dirs,
             ollama_dirs,
             known_hf_caches,
             custom_folders,

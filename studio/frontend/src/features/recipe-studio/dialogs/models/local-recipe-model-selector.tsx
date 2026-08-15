@@ -16,10 +16,10 @@ import {
   listGgufVariants,
   listLocalModels,
 } from "@/features/chat";
+import { ggufVariantDisplayLabel } from "@/features/hub";
 import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon, RefreshCwIcon } from "lucide-react";
-import { ggufVariantDisplayLabel } from "@/features/hub";
 import {
   type ComponentPropsWithoutRef,
   type ReactElement,
@@ -75,6 +75,8 @@ function sourceLabel(model: LocalModelInfo): string {
       return "HF cache";
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "custom":
       return "Custom folder";
     default:

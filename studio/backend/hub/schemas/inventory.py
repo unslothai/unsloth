@@ -126,7 +126,7 @@ class LocalModelInfo(BaseModel):
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",
     )
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "custom"] = Field(
         ...,
         description = "Discovery source",
     )

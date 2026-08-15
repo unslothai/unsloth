@@ -26,7 +26,7 @@ from hub.utils.gguf import (
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 
 ModelType = Literal["text", "vision", "audio", "embeddings"]
-LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"]
+LocalModelSource = Literal["models_dir", "hf_cache", "lmstudio", "omlx", "ollama", "custom"]
 
 
 def _safe_is_dir(path) -> bool:

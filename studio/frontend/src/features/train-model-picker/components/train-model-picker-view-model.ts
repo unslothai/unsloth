@@ -38,10 +38,12 @@ function trainModelSourceWeight(source: LocalSource): number {
       return 2;
     case "lmstudio":
       return 3;
-    case "ollama":
+    case "omlx":
       return 4;
-    default:
+    case "ollama":
       return 5;
+    default:
+      return 6;
   }
 }
 
