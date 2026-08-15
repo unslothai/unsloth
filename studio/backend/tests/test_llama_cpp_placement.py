@@ -1048,7 +1048,8 @@ def test_a_masked_off_child_takes_no_vram_credit(tmp_path, monkeypatch):
 
     assert backend._launch_host_shortfall_message(argv, [(0, 20_000)]) is None
     assert (
-        backend._launch_host_shortfall_message(argv, [(0, 20_000)], child_has_no_gpu = True) is not None
+        backend._launch_host_shortfall_message(argv, [(0, 20_000)], child_has_no_gpu = True)
+        is not None
     )
 
 
@@ -1104,7 +1105,10 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
     cpu_dir = tmp_path / "cpu"
     cpu_dir.mkdir()
     cpu_build, gguf2 = _offload_backend(
-        cpu_dir, gguf_gb = 20, free_mib = 16_384, avail_mib = 8_192,
+        cpu_dir,
+        gguf_gb = 20,
+        free_mib = 16_384,
+        avail_mib = 8_192,
         monkeypatch = monkeypatch,
     )
     cpu_build._backend_lacks_gpu_lib = lambda _binary = None: True
