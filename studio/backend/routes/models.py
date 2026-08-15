@@ -1177,7 +1177,9 @@ async def list_local_models(
     try:
         models = await _shared_compat_local_inventory_scan(models_root, sources)
         # Tag each model with its task so the Images picker can filter to diffusion.
-        models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
+        models = await asyncio.to_thread(
+            lambda: [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
+        )
 
         return LocalModelListResponse(
             models_dir = str(models_root),

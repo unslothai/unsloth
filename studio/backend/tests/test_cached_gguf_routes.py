@@ -223,6 +223,44 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     )
 
 
+def test_compat_local_inventory_classifies_off_the_event_loop(monkeypatch, tmp_path):
+    model = models_route.LocalModelInfo(
+        id = "model",
+        display_name = "Model",
+        path = str(tmp_path / "model.gguf"),
+        source = "models_dir",
+        model_format = "gguf",
+    )
+    sources = models_route._CompatLocalInventorySources(
+        tmp_path,
+        tmp_path / "legacy",
+        tmp_path / "default",
+        (),
+        (),
+    )
+    classifier_threads: list[int] = []
+
+    async def scan(*_args):
+        return [model]
+
+    def classify(_model):
+        classifier_threads.append(threading.get_ident())
+        return "text-generation"
+
+    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(models_route, "_shared_compat_local_inventory_scan", scan)
+    monkeypatch.setattr(models_route, "_local_model_task", classify)
+
+    async def run():
+        loop_thread = threading.get_ident()
+        listed = await models_route.list_local_models(str(tmp_path), "subject")
+        return loop_thread, listed
+
+    loop_thread, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["text-generation"]
+    assert classifier_threads and loop_thread not in classifier_threads
+
+
 def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     root.mkdir()
@@ -5194,13 +5232,16 @@ def test_the_listing_probe_reads_a_vendor_or_prerelease_version(monkeypatch):
     """A local or pre-release suffix names the release the build was cut from."""
     import importlib.metadata
 
-    from core.inference.diffusion_families import family_pipeline_available
+    from core.inference.diffusion_families import detect_family, family_pipeline_available
 
     z_image, h3 = _listing_families()
+    sdxl = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert sdxl is not None
     installed = ["0.40.0+dfsg"]
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
 
+    assert family_pipeline_available(sdxl) is True
     # A vendor rebuild of the release that first shipped the class.
     assert family_pipeline_available(h3) is True
     assert family_pipeline_available(z_image) is True
