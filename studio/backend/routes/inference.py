@@ -13234,6 +13234,7 @@ async def openai_chat_completions(
     _needs_vision = False
     _needs_image = False
     _needs_audio_input = False
+    _predecoded_audio = None
     if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -13322,17 +13323,19 @@ async def openai_chat_completions(
         # avoid decoding a valid upload twice).
         if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
             raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
-        # Structural check only, before any swap: a payload that is not base64 at all is a
-        # deterministic 400, and paying it after the switch costs the resident model. The
-        # real decode stays below so a valid upload is still only decoded once.
+        # Decoded before any swap and carried to the audio branch below: valid base64
+        # holding non-audio bytes is a deterministic 400, and paying it after the switch
+        # costs the resident model. Decoding here rather than twice is why it is threaded.
         if payload.audio_base64:
             try:
-                base64.b64decode(payload.audio_base64, validate = True)
+                _predecoded_audio = await asyncio.to_thread(
+                    _decode_audio_base64, payload.audio_base64
+                )
             except Exception:
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
-                        "The 'audio_base64' value is not valid base64.",
+                        "The 'audio_base64' value could not be decoded as audio.",
                         status = 400,
                         code = "invalid_value",
                         param = "audio_base64",
@@ -13490,7 +13493,13 @@ async def openai_chat_completions(
                     detail = "continue_final_message is not supported with audio input.",
                 )
             try:
-                audio_array = _decode_audio_base64(payload.audio_base64)
+                # Decoded before the switch; only a path that skipped that preflight
+                # (no automatic load could run) still has to do it here.
+                audio_array = (
+                    _predecoded_audio
+                    if _predecoded_audio is not None
+                    else _decode_audio_base64(payload.audio_base64)
+                )
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))

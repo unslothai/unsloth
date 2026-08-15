@@ -384,10 +384,14 @@ def _weight_shards_all_present(load_dir) -> bool:
     import re
     from pathlib import Path
 
-    # A shard names its set in the filename, so a shard present without the index that
-    # declares the rest is a half-downloaded directory whatever the index check finds.
+    # A shard names its set in the filename, so one present without the index that
+    # declares the rest is a half-downloaded directory. Only when the shards are the
+    # weights being loaded: a complete model.safetensors makes a leftover shard
+    # irrelevant, and the loader never opens it.
     try:
-        if any(re.fullmatch(r".+-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()):
+        if not (load_dir / "model.safetensors").is_file() and any(
+            re.fullmatch(r".+-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()
+        ):
             if not (load_dir / "model.safetensors.index.json").is_file():
                 return False
     except OSError:

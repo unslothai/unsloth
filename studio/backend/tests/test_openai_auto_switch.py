@@ -3203,6 +3203,8 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    # The handler decodes the audio before switching, so give it something decodable.
+    monkeypatch.setattr(inference_route, "_decode_audio_base64", lambda _b64: object())
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
@@ -8682,3 +8684,33 @@ def test_a_slow_tokenizer_vocabulary_is_accepted(tmp_path):
         (path / name).write_text("")
         info = SimpleNamespace(id = str(path), path = str(path))
         assert resolver.local_servable_model(info) == (False, ()), name
+
+
+def test_a_stray_shard_beside_complete_weights_is_ignored(tmp_path):
+    # Codex P2: a complete model.safetensors is what the loader opens, so a leftover
+    # shard with no index must not withhold the checkpoint.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "StrayShard")
+    (path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 32)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+    # With no canonical file the shards are the weight set, so the index is required.
+    (path / "model.safetensors").unlink()
+    assert resolver.local_servable_model(info) is None
+
+
+def test_non_audio_bytes_are_rejected_before_the_switch(monkeypatch):
+    # Codex P2: valid base64 holding non-audio bytes is a deterministic 400, and paying
+    # it after the swap costs the resident model.
+    from fastapi import HTTPException
+
+    def _unexpected(*_a, **_kw):
+        pytest.fail("the switch ran before the audio was decoded")
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _unexpected)
+    payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
