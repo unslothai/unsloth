@@ -1342,7 +1342,9 @@ def test_an_unprobed_gpu_pool_abstains_rather_than_refusing(tmp_path, monkeypatc
 def test_a_rocr_pin_is_not_intersected_with_its_own_cuda_ordinals(tmp_path, monkeypatch):
     """prefer_rocr writes the ROCr mask as physical ids and CUDA as post-ROCr ordinals.
     Intersecting the two numeric strings empties the pool and refuses a fitting load."""
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(2, 20_000, 24_000), (3, 20_000, 24_000)])
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(2, 20_000, 24_000), (3, 20_000, 24_000)]
+    )
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
     backend._select_gpus = lambda *args, **kwargs: ([2, 3], True)
