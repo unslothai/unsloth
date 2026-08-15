@@ -65,7 +65,7 @@ def _query_uuid_to_ordinal() -> Optional[dict[str, int]]:
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=uuid,pci.bus_id,mig.mode.current",
+                "--query-gpu=index,uuid,pci.bus_id,mig.mode.current",
                 "--format=csv,noheader",
             ],
             capture_output = True,
@@ -85,21 +85,45 @@ def _query_uuid_to_ordinal() -> Optional[dict[str, int]]:
     rows = []
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 3:
+        if len(parts) != 4:
             continue
-        rows.append(parts)
+        idx_str, uuid, bus_id, mig_mode = parts
+        try:
+            idx = int(idx_str)
+        except (ValueError, TypeError):
+            continue
+        rows.append((idx, uuid, bus_id, mig_mode))
 
-    # nvidia-smi's own index column isn't guaranteed to match CUDA's PCI-bus
-    # enumeration: NVIDIA's docs note device enumeration ordering isn't
-    # guaranteed consistent and recommend deriving order from UUID or PCI bus
-    # ID instead. Sort by pci.bus_id ourselves -- its fixed-width
-    # "domain:bus:device.function" hex format sorts correctly as plain text --
-    # to compute the same ordinal CUDA_DEVICE_ORDER=PCI_BUS_ID would assign,
-    # rather than trusting nvidia-smi's index to already match it.
-    rows.sort(key = lambda row: row[1])
+    # get_visible_gpu_utilization() and get_backend_visible_gpu_info() below,
+    # and the "GPU index ordering" pin in hardware.py, all assume nvidia-smi's
+    # own index column already matches PCI bus order -- that's the load-bearing
+    # invariant this whole file leans on. NVIDIA's own docs stop short of
+    # guaranteeing it, so verify it here instead of silently trusting it (or
+    # silently computing an independent ordinal that would then disagree with
+    # every other index-keyed probe in this file): sort by pci.bus_id
+    # ourselves -- its fixed-width "domain:bus:device.function" hex format
+    # sorts correctly as plain text -- and confirm every row's index equals
+    # its position in that sort. If it does, resolving to nvidia-smi's own
+    # index is safe and stays consistent with those other probes. If it
+    # doesn't, the assumption this file depends on doesn't hold on this host
+    # and no ordinal from either source can be trusted to line up with the
+    # others, so fail closed rather than resolve to a value that only agrees
+    # with half the codebase's telemetry.
+    by_pci_order = sorted(rows, key = lambda row: row[2])
+    for expected_idx, (idx, _uuid, bus_id, _mig_mode) in enumerate(by_pci_order):
+        if idx != expected_idx:
+            logger.warning(
+                "nvidia-smi index does not match PCI bus order (index=%s, "
+                "pci.bus_id=%s, expected position=%s); declining to resolve "
+                "UUID masks on this host",
+                idx,
+                bus_id,
+                expected_idx,
+            )
+            return None
 
     uuid_to_ordinal: dict[str, int] = {}
-    for ordinal, (uuid, _bus_id, mig_mode) in enumerate(rows):
+    for idx, uuid, _bus_id, mig_mode in rows:
         # A MIG-enabled root GPU's UUID isn't a normal selectable compute
         # device -- CUDA exposes its MIG instances instead of the whole card.
         # Leave it out of the map so it fails resolution the same way an
@@ -107,7 +131,7 @@ def _query_uuid_to_ordinal() -> Optional[dict[str, int]]:
         # index that silently selects a partitioned view of the card.
         if mig_mode == "Enabled":
             continue
-        uuid_to_ordinal[uuid] = ordinal
+        uuid_to_ordinal[uuid] = idx
     return uuid_to_ordinal
 
 
@@ -133,19 +157,23 @@ def _resolve_uuid_token(token: str, uuid_to_ordinal: dict[str, int]) -> Optional
 
 def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
     """Resolve a CUDA_VISIBLE_DEVICES mask that mixes numeric indices and GPU
-    UUIDs (e.g. ["0", "GPU-<uuid>"]) to physical PCI-bus-order indices, so a
-    UUID mask is exactly as selectable as the equivalent numeric one. Numeric
-    tokens pass through as-is, matching the trust level of the plain-numeric
-    fast path in _get_parent_visible_gpu_spec(); UUID tokens are resolved via
-    nvidia-smi. Order is preserved to match the mask, since it defines the
-    visible-ordinal mapping downstream. Returns None -- and the caller falls
-    back to relative ordinals -- if nvidia-smi is unavailable, or any UUID
-    token doesn't match exactly one non-MIG physical device (an actual MIG
-    instance UUID, a MIG-enabled root's UUID, or a UUID/prefix ambiguous
-    across cards). Successes are cached per token tuple for the process
-    lifetime; failures are cached for _FAILED_RESOLUTION_TTL_SECONDS, since a
-    hung or missing nvidia-smi would otherwise cost its full timeout on every
-    caller of _get_parent_visible_gpu_spec() every poll cycle."""
+    UUIDs (e.g. ["0", "GPU-<uuid>"]) to physical indices, so a UUID mask is
+    exactly as selectable as the equivalent numeric one. Numeric tokens pass
+    through as-is, matching the trust level of the plain-numeric fast path in
+    _get_parent_visible_gpu_spec(); UUID tokens are resolved via nvidia-smi,
+    to the same index get_visible_gpu_utilization() and
+    get_backend_visible_gpu_info() already key their own nvidia-smi rows by
+    (see _query_uuid_to_ordinal()'s PCI-bus cross-check). Order is preserved
+    to match the mask, since it defines the visible-ordinal mapping
+    downstream. Returns None -- and the caller falls back to relative
+    ordinals -- if nvidia-smi is unavailable, its index doesn't match PCI bus
+    order, or any UUID token doesn't match exactly one non-MIG physical
+    device (an actual MIG instance UUID, a MIG-enabled root's UUID, or a
+    UUID/prefix ambiguous across cards). Successes are cached per token tuple
+    for the process lifetime; failures are cached for
+    _FAILED_RESOLUTION_TTL_SECONDS, since a hung or missing nvidia-smi would
+    otherwise cost its full timeout on every caller of
+    _get_parent_visible_gpu_spec() every poll cycle."""
     cache_key = tuple(tokens)
     cached = _uuid_mask_resolution_cache.get(cache_key)
     if cached is not None:

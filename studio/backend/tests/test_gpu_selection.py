@@ -221,18 +221,22 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
-    # Real values from issue #8873's own nvidia-smi output: PCI order and
-    # nvidia-smi's index happen to agree there, so other tests deliberately
-    # use bus ids where they DON'T, to prove the ordinal comes from sorting
-    # pci.bus_id rather than from trusting nvidia-smi's own index column.
+    # Real UUIDs from issue #8873's own nvidia-smi output. Every fixture here
+    # keeps index == its position when rows are sorted by pci.bus_id --
+    # get_visible_gpu_utilization() and get_backend_visible_gpu_info() key
+    # their own nvidia-smi rows by index, so resolve_gpu_uuid_mask() only
+    # ever hands back nvidia-smi's own index (verified consistent with PCI
+    # order), never an independently-computed ordinal that could disagree
+    # with those other probes. The one exception is the dedicated
+    # index-mismatch test below.
     _UUID_A = "GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50"
     _UUID_B = "GPU-2f902962-578c-0f96-69a5-3e18679211d7"
 
     def test_resolves_and_preserves_mask_order(self):
         smi_output = "\n".join(
             [
-                f"{self._UUID_A}, 00000000:01:00.0, Disabled",
-                f"{self._UUID_B}, 00000000:04:00.0, Disabled",
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
             ]
         )
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
@@ -242,23 +246,28 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
             result = nvidia.resolve_gpu_uuid_mask([self._UUID_B, self._UUID_A])
         self.assertEqual(result, [1, 0])
 
-    def test_derives_order_from_pci_bus_id_not_nvidia_smi_index(self):
-        # nvidia-smi's own row order (and a hypothetical index column) lists
-        # UUID_A first, but its PCI bus id sorts *after* UUID_B's -- the
-        # resolved ordinal must follow pci.bus_id, not listing/index order.
+    def test_fails_closed_when_nvidia_smi_index_does_not_match_pci_bus_order(self):
+        # UUID_A's PCI bus id sorts *after* UUID_B's, but nvidia-smi reports
+        # UUID_A at index 0 and UUID_B at index 1 -- an index that disagrees
+        # with PCI order. get_visible_gpu_utilization() and
+        # get_backend_visible_gpu_info() are both keyed by nvidia-smi's index
+        # elsewhere in this file, so a resolved index that doesn't match PCI
+        # order can't be trusted to line up with them; this must decline to
+        # resolve rather than guess which ordering the rest of the codebase
+        # will actually use for this host.
         smi_output = "\n".join(
             [
-                f"{self._UUID_A}, 00000000:09:00.0, Disabled",
-                f"{self._UUID_B}, 00000000:02:00.0, Disabled",
+                f"0, {self._UUID_A}, 00000000:09:00.0, Disabled",
+                f"1, {self._UUID_B}, 00000000:02:00.0, Disabled",
             ]
         )
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
             result = nvidia.resolve_gpu_uuid_mask([self._UUID_A, self._UUID_B])
-        self.assertEqual(result, [1, 0])
+        self.assertIsNone(result)
 
     def test_returns_none_when_a_token_does_not_match_any_device(self):
-        smi_output = f"{self._UUID_A}, 00000000:01:00.0, Disabled"
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
             # e.g. a MIG instance UUID nvidia-smi's uuid/pci.bus_id query never lists.
@@ -279,8 +288,8 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
     def test_resolves_an_unambiguous_uuid_prefix(self):
         smi_output = "\n".join(
             [
-                f"{self._UUID_A}, 00000000:01:00.0, Disabled",
-                f"{self._UUID_B}, 00000000:04:00.0, Disabled",
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
             ]
         )
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
@@ -291,8 +300,8 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
     def test_rejects_a_uuid_prefix_shared_by_two_devices(self):
         smi_output = "\n".join(
             [
-                f"{self._UUID_A}, 00000000:01:00.0, Disabled",
-                "GPU-d18a14b7-aaaa-bbbb-cccc-000000000000, 00000000:04:00.0, Disabled",
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                "1, GPU-d18a14b7-aaaa-bbbb-cccc-000000000000, 00000000:04:00.0, Disabled",
             ]
         )
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
@@ -305,7 +314,7 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
         # A single-GPU host where a bare "GPU" (no trailing "-") happens to
         # string-prefix the one UUID present must not resolve it -- "GPU" is
         # not a valid CUDA UUID identifier and this token was never meant as one.
-        smi_output = f"{self._UUID_A}, 00000000:01:00.0, Disabled"
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
             self.assertIsNone(nvidia.resolve_gpu_uuid_mask(["GPU"]))
@@ -314,8 +323,8 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
     def test_leaves_mig_enabled_root_uuid_unresolved(self):
         smi_output = "\n".join(
             [
-                f"{self._UUID_A}, 00000000:01:00.0, Enabled",
-                f"{self._UUID_B}, 00000000:04:00.0, Disabled",
+                f"0, {self._UUID_A}, 00000000:01:00.0, Enabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
             ]
         )
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
@@ -327,7 +336,7 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(nvidia.resolve_gpu_uuid_mask([self._UUID_B]), [1])
 
     def test_resolves_a_mixed_numeric_and_uuid_mask(self):
-        smi_output = f"{self._UUID_A}, 00000000:04:00.0, Disabled"
+        smi_output = f"0, {self._UUID_A}, 00000000:04:00.0, Disabled"
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
             # "0" passes through as-is (same trust level as the pure-numeric
@@ -336,7 +345,7 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result, [0, 0])
 
     def test_caches_a_resolved_mask_and_does_not_requery(self):
-        smi_output = f"{self._UUID_A}, 00000000:01:00.0, Disabled"
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
         tokens = [self._UUID_A]
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
@@ -358,7 +367,7 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_retries_a_failed_resolution_once_the_ttl_expires(self):
         tokens = [self._UUID_A]
-        smi_output = f"{self._UUID_A}, 00000000:01:00.0, Disabled"
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
             first = nvidia.resolve_gpu_uuid_mask(tokens)
