@@ -1204,7 +1204,10 @@ def test_a_cpu_override_beats_the_positive_manual_exemption(tmp_path, monkeypatc
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(
-            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 10,
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = 10,
             extra_args = ["--device", "none"],
         )
 
@@ -1233,9 +1236,7 @@ def test_reclaimable_cgroup_cache_is_added_back(monkeypatch, tmp_path):
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(
-        hw, "_shared_policy", lambda: types.SimpleNamespace(
-            _cgroup_free_bytes = lambda: 12 * 1024**3
-        )
+        hw, "_shared_policy", lambda: types.SimpleNamespace(_cgroup_free_bytes = lambda: 12 * 1024**3)
     )
     monkeypatch.setattr(
         mod.LlamaCppBackend, "_cgroup_reclaimable_file_bytes", staticmethod(lambda: 8 * 1024**3)
