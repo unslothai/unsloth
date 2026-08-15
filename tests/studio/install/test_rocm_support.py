@@ -92,40 +92,72 @@ def _extract_sh_function_body(source: str, name: str) -> str:
 
 
 # A dpkg-query -W stand-in that renders whichever showformat string it is handed,
-# so this tests how install.sh ASKS for the version, not only how it parses the
-# answer. It answers for a package in ANY state because the real tool does: only
-# purged ones are left out, so a rocm-core removed with `apt remove` and never
-# purged keeps reporting the version it had.
+# so this tests how production ASKS for versions, not only how it parses answers.
+# It requires rocm-core and Debian's HSA runtime in ONE invocation, emits any
+# configured package states (like real dpkg-query), and returns nonzero when a
+# requested package is absent while retaining the other package's stdout.
 _DPKG_QUERY_STUB = r"""#!/bin/sh
-_status='__STATUS__'
-_ver='__VERSION__'
-_package='__PACKAGE__'
-# dpkg's Status field is "<want> <error-flag> <status>".
-case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
+_entries='__ENTRIES__'
 _fmt=''
-_found=''
+_requested=''
+_has_rocm_core=0
+_has_hsa_runtime=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -f=*)            _fmt=${1#-f=} ;;
         --showformat=*)  _fmt=${1#--showformat=} ;;
         -f|--showformat) shift; _fmt=$1 ;;
         -*)              : ;;
-        "$_package")     _found=1 ;;
+        rocm-core)
+            _requested="$_requested $1"
+            _has_rocm_core=1
+            ;;
+        libhsa-runtime64-1)
+            _requested="$_requested $1"
+            _has_hsa_runtime=1
+            ;;
     esac
     shift
 done
-[ -n "$_found" ] || exit 1
+[ "$_has_rocm_core" -eq 1 ] && [ "$_has_hsa_runtime" -eq 1 ] || exit 1
 [ -n "$_fmt" ] || _fmt='${Package}\t${Version}\n'
 # Unrecognised fields render empty, like the real dpkg-query.
-_out=$(printf '%s' "$_fmt" | sed \
-    -e "s|\${Package}|$_package|g" \
-    -e "s|\${Status}|$_want ok $_status|g" \
-    -e "s|\${db:Status-Status}|$_status|g" \
-    -e "s|\${db:Status-Want}|$_want|g" \
-    -e "s|\${db:Status-Eflag}|ok|g" \
-    -e "s|\${Version}|$_ver|g" \
-    -e "s|\${[^}]*}||g")
-printf "$_out"
+_emit() {
+    _package=$1
+    _status=$2
+    _ver=$3
+    # dpkg's Status field is "<want> <error-flag> <status>".
+    case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
+    _out=$(printf '%s' "$_fmt" | sed \
+        -e "s|\${Package}|$_package|g" \
+        -e "s|\${Status}|$_want ok $_status|g" \
+        -e "s|\${db:Status-Status}|$_status|g" \
+        -e "s|\${db:Status-Want}|$_want|g" \
+        -e "s|\${db:Status-Eflag}|ok|g" \
+        -e "s|\${Version}|$_ver|g" \
+        -e "s|\${[^}]*}||g")
+    printf "$_out"
+}
+_missing=0
+for _wanted in $_requested; do
+    _found=0
+    while IFS='|' read -r _package _status _ver; do
+        [ "$_package" = "$_wanted" ] && _found=1
+    done <<EOF
+$_entries
+EOF
+    [ "$_found" -eq 1 ] || _missing=1
+done
+# Entries, not requested-argument order, determine stdout order. This proves the
+# parser collects every valid line rather than assuming a particular package order.
+while IFS='|' read -r _package _status _ver; do
+    case " $_requested " in
+        *" $_package "*) _emit "$_package" "$_status" "$_ver" ;;
+    esac
+done <<EOF
+$_entries
+EOF
+exit "$_missing"
 """
 
 
@@ -134,12 +166,16 @@ def _write_dpkg_query_stub(
     version: str,
     status: str = "installed",
     package: str = "rocm-core",
+    packages: dict[str, tuple[str, str]] | None = None,
 ) -> None:
+    entries = packages or {package: (status, version)}
+    rendered_entries = "\n".join(
+        f"{name}|{entry_status}|{entry_version}"
+        for name, (entry_status, entry_version) in entries.items()
+    )
     with open(path, "w", encoding = "utf-8") as f:
         f.write(
-            _DPKG_QUERY_STUB.replace("__STATUS__", status)
-            .replace("__VERSION__", version)
-            .replace("__PACKAGE__", package)
+            _DPKG_QUERY_STUB.replace("__ENTRIES__", rendered_entries)
         )
     os.chmod(path, 0o755)
 
@@ -537,17 +573,15 @@ class TestDetectRocmVersion:
     def test_dpkg_fallback_without_hipconfig(self, tmp_path):
         """dpkg rocm-core fallback works when amd-smi and hipconfig are absent
         (regression: a shadowing local re import raised UnboundLocalError)."""
+        dpkg = tmp_path / "dpkg-query"
+        _write_dpkg_query_stub(str(dpkg), "1:6.3.0-1")
 
         def which(cmd):
-            return "/usr/bin/dpkg-query" if cmd == "dpkg-query" else None
+            return str(dpkg) if cmd == "dpkg-query" else None
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "install ok installed 1:6.3.0-1\n"
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
             with patch("shutil.which", side_effect = which):
-                with patch("subprocess.run", return_value = mock_result):
-                    assert _detect_rocm_version() == (6, 3)
+                assert _detect_rocm_version() == (6, 3)
 
     def test_empty_version_file(self, tmp_path):
         """Empty version file should return None."""
@@ -606,38 +640,107 @@ class TestDetectRocmVersion:
                 assert _detect_rocm_version() is None
 
     def test_debian_split_runtime_uses_installed_hsa_runtime(self, tmp_path):
-        """Debian can ship hipconfig 5.7 beside an installed HSA 6.1 runtime."""
+        """Debian can ship hipconfig 5.7 beside HSA 6.1 with no rocm-core.
+
+        The executable dpkg stub requires both package names and renders the
+        requested showformat, so this fails if production stops requesting
+        ${Status}, queries the packages separately, or discards HSA stdout just
+        because dpkg-query returns nonzero for absent rocm-core.
+        """
+        hipconfig = tmp_path / "hipconfig"
+        hipconfig.write_text("#!/bin/sh\necho '5.7.31921-0'\n", encoding = "utf-8")
+        hipconfig.chmod(0o755)
+        dpkg = tmp_path / "dpkg-query"
+        _write_dpkg_query_stub(
+            str(dpkg),
+            "unused",
+            packages = {"libhsa-runtime64-1": ("installed", "1:6.1.2-2")},
+        )
 
         def which(cmd):
             if cmd == "hipconfig":
-                return "/usr/bin/hipconfig"
+                return str(hipconfig)
             if cmd == "dpkg-query":
-                return "/usr/bin/dpkg-query"
+                return str(dpkg)
             return None
-
-        def run(cmd, **kwargs):
-            result = MagicMock()
-            if cmd[0] == "/usr/bin/hipconfig":
-                result.returncode = 0
-                result.stdout = b"5.7.31921-0\n"
-                return result
-            if cmd[0] == "/usr/bin/dpkg-query" and cmd[-1] == "rocm-core":
-                result.returncode = 1
-                result.stdout = ""
-                return result
-            if cmd[0] == "/usr/bin/dpkg-query" and cmd[-1] == "libhsa-runtime64-1":
-                result.returncode = 0
-                result.stdout = "install ok installed 6.1.2-2\n"
-                return result
-            raise AssertionError(f"unexpected probe: {cmd}")
 
         with patch.dict(
             os.environ,
             {"ROCM_PATH": str(tmp_path / "nonexistent")},
         ):
             with patch("shutil.which", side_effect = which):
-                with patch("subprocess.run", side_effect = run):
+                assert _detect_rocm_version() == (6, 1)
+
+    def test_dpkg_both_packages_vote_independently_highest_wins(self, tmp_path):
+        """Both Debian package readings count, regardless of stdout order."""
+        dpkg = tmp_path / "dpkg-query"
+        # HSA first deliberately differs from the query argument order; the parser
+        # must collect both lines before taking the highest package version.
+        _write_dpkg_query_stub(
+            str(dpkg),
+            "unused",
+            packages = {
+                "libhsa-runtime64-1": ("installed", "6.4.3+dfsg-4"),
+                "rocm-core": ("installed", "1:6.1.2-2"),
+            },
+        )
+
+        def which(cmd):
+            return str(dpkg) if cmd == "dpkg-query" else None
+
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
+            with patch("shutil.which", side_effect = which):
+                assert _detect_rocm_version() == (6, 4)
+
+    def test_removed_dpkg_hsa_runtime_is_ignored(self, tmp_path):
+        """Removed-but-not-purged HSA runtime must not report a stale version."""
+        dpkg = tmp_path / "dpkg-query"
+        _write_dpkg_query_stub(
+            str(dpkg),
+            "unused",
+            packages = {"libhsa-runtime64-1": ("config-files", "1:7.0.0-1")},
+        )
+
+        def which(cmd):
+            return str(dpkg) if cmd == "dpkg-query" else None
+
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
+            with patch("shutil.which", side_effect = which):
+                assert _detect_rocm_version() is None
+
+    def test_disagreeing_sources_emit_one_warning(self, tmp_path, capsys):
+        """A real disagreement warns once and names the highest selected version."""
+        info_dir = tmp_path / ".info"
+        info_dir.mkdir()
+        (info_dir / "version").write_text("5.7.0\n", encoding = "utf-8")
+
+        def which(cmd):
+            return "/usr/bin/hipconfig" if cmd == "hipconfig" else None
+
+        hipconfig = MagicMock(returncode = 0, stdout = b"6.1.0\n")
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
+            with patch("shutil.which", side_effect = which):
+                with patch("subprocess.run", return_value = hipconfig):
                     assert _detect_rocm_version() == (6, 1)
+        stderr = capsys.readouterr().err
+        assert stderr.count("ROCm version sources disagree") == 1
+        assert "using the highest, rocm6.1" in stderr
+
+    def test_agreeing_sources_emit_no_disagreement_warning(self, tmp_path, capsys):
+        """Multiple valid sources that agree stay quiet."""
+        info_dir = tmp_path / ".info"
+        info_dir.mkdir()
+        (info_dir / "version").write_text("6.1.0\n", encoding = "utf-8")
+
+        def which(cmd):
+            return "/usr/bin/hipconfig" if cmd == "hipconfig" else None
+
+        hipconfig = MagicMock(returncode = 0, stdout = b"6.1.0\n")
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
+            with patch("shutil.which", side_effect = which):
+                with patch("subprocess.run", return_value = hipconfig):
+                    assert _detect_rocm_version() == (6, 1)
+        assert "ROCm version sources disagree" not in capsys.readouterr().err
 
     def test_hipconfig_multiline_output(self, tmp_path):
         """hipconfig with multi-line output -- should use first line."""
@@ -1842,6 +1945,111 @@ class TestGfx906LegacyReroute:
         assert 'setdefault("UNSLOTH_COMPILE_DISABLE", "1")' in gate_body
 
 
+class TestGfx1102Rocm64Floor:
+    """Navi 33 / RDNA 4 need generic PyTorch ROCm 6.4 wheels, not rocm6.1."""
+
+    @staticmethod
+    def _ensure_for_gfx(gfx: str, monkeypatch, *, pinned: bool = False):
+        m = stack_mod
+        for name in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_TORCH_INDEX_URL",
+        ):
+            monkeypatch.delenv(name, raising = False)
+        if pinned:
+            monkeypatch.setenv(
+                "UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.1"
+            )
+        probe = MagicMock(returncode = 0, stdout = "\n")  # CPU torch -> repair
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.object(m, "_TORCH_BACKEND", ""),
+            patch.object(m, "_LAST_AMD_GFX_PROBE", None),
+            patch.object(m, "pip_install") as pip,
+            patch.object(m, "pip_install_try", return_value = True),
+            patch.object(m, "_has_usable_nvidia_gpu", return_value = False),
+            patch.object(m, "_has_rocm_gpu", return_value = True),
+            patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
+            patch.object(m, "_detect_rocm_version", return_value = (6, 1)),
+            patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx]),
+            patch("platform.machine", return_value = "x86_64"),
+            patch("subprocess.run", return_value = probe),
+        ):
+            _ensure_rocm_torch()
+        return str(pip.call_args_list[0])
+
+    def test_floor_helper_covers_only_the_affected_generic_leaves(self):
+        assert stack_mod._gfx_needs_rocm64_generic_index((6, 0)) is True
+        assert stack_mod._gfx_needs_rocm64_generic_index((6, 3)) is True
+        assert stack_mod._gfx_needs_rocm64_generic_index((6, 4)) is False
+        assert stack_mod._gfx_needs_rocm64_generic_index((7, 2)) is False
+        assert stack_mod._gfx_needs_rocm64_generic_index((5, 7)) is False
+
+    def test_debian_split_gfx1100_keeps_rocm61(self, monkeypatch):
+        """A Debian split host resolving rocm6.1 must leave gfx1100 on rocm6.1."""
+        torch_call = self._ensure_for_gfx("gfx1100", monkeypatch)
+        assert "rocm6.1" in torch_call
+        assert "rocm6.4" not in torch_call
+
+    @pytest.mark.parametrize("gfx", ("gfx1102", "gfx1200", "gfx1201"))
+    def test_debian_split_affected_gfx_floors_to_rocm64(self, gfx, monkeypatch):
+        """A resolved Debian rocm6.1 host cannot install a kernel-less generic wheel."""
+        torch_call = self._ensure_for_gfx(gfx, monkeypatch)
+        assert "rocm6.4" in torch_call
+        assert "rocm6.1" not in torch_call
+
+    def test_explicit_rocm61_pin_remains_authoritative(self, monkeypatch):
+        """The narrow auto-floor never overwrites an explicit user index pin."""
+        torch_call = self._ensure_for_gfx("gfx1102", monkeypatch, pinned = True)
+        assert "rocm6.1" in torch_call
+        assert "rocm6.4" not in torch_call
+
+    def test_install_sh_floors_resolved_rocm61_by_runtime_gfx(self):
+        """Exercise install.sh's existing generic-routing block with a resolved leaf.
+
+        This models the Debian split detector handing the already-resolved rocm6.1
+        leaf to architecture routing: gfx1100 stays there, while gfx1102/RDNA4
+        move to the wheel family that ships their kernels.
+        """
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute install.sh architecture routing")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        leaf_helper = _extract_sh_function_body(source, "_rocm_leaf_below")
+        start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
+        end = source.find("\nfi  # _torch_index_pinned guard", start)
+        assert leaf_helper and start >= 0 and end >= 0
+        routing_block = source[start:end]
+        floor_pos = routing_block.find("_amd_rocm64_base")
+        pin_start = source.rfind('if [ "$_torch_index_pinned" = false ]; then', 0, start)
+        assert floor_pos >= 0 and pin_start >= 0 and pin_start < start
+
+        for gfx, expected in (
+            ("gfx1100", "rocm6.1"),
+            ("gfx1102", "rocm6.4"),
+            ("gfx1200", "rocm6.4"),
+            ("gfx1201", "rocm6.4"),
+        ):
+            script = (
+                "set -euo pipefail\n"
+                + leaf_helper
+                + "\n"
+                + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1"\n'
+                + '_torch_index_leaf="rocm6.1"\n'
+                + '_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n'
+                + f'UNSLOTH_ROCM_GFX_ARCH="{gfx}"\n'
+                + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES UNSLOTH_PYTORCH_MIRROR\n"
+                + routing_block
+                + '\nprintf "URL:%s LEAF:%s\\n" "$TORCH_INDEX_URL" "$_torch_index_leaf"\n'
+            )
+            result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip().endswith(f"/{expected} LEAF:{expected}"), result.stdout
+
+
 # TEST: install_python_stack.py -- torch-index MARKER mechanism (PR #6692)
 
 
@@ -2254,7 +2462,6 @@ class TestInstallShStructure:
         "_rocm_tag_from_version_file",
         "_rocm_tag_from_hipconfig",
         "_rocm_tag_from_dpkg",
-        "_rocm_tag_from_hsa_runtime_dpkg",
         "_rocm_tag_from_rpm",
     )
 
@@ -2382,7 +2589,7 @@ class TestInstallShStructure:
 
             _write_dpkg_query_stub(
                 os.path.join(d, "dpkg-query"),
-                "6.1.2-2",
+                "1:6.1.2-2",
                 "installed",
                 package = "libhsa-runtime64-1",
             )
@@ -2502,7 +2709,7 @@ class TestInstallShStructure:
         """install.sh should strip Debian epoch prefix from dpkg-query output."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        assert "sed 's/^[0-9]*://' " in source or "sed 's/^[0-9]*://'" in source
+        assert "sub(/^[0-9]+:/, \"\", v)" in source
 
     def test_no_double_bracket_in_rocm_block(self):
         """ROCm block must not use bash-only [[ ]] (POSIX char classes [[:space:]] are fine)."""

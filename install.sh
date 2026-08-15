@@ -3477,10 +3477,11 @@ _cap_cuda_family_for_pre_turing() {
 }
 
 # ── ROCm version sources ──
-# One helper per source, each printing at most one "rocmX.Y" line, and each
-# returning 0 unconditionally: install.sh runs under set -e, so a real AMD GPU
-# with no ROCm userspace at all has to reach the actionable warning at the end of
-# the ROCm branch rather than have a failing source kill the installer.
+# One helper per source, each returning 0 unconditionally: install.sh runs under
+# set -e, so a real AMD GPU with no ROCm userspace at all has to reach the
+# actionable warning at the end of the ROCm branch rather than have a failing
+# source kill the installer. The Debian package source can emit one line per
+# installed package.
 _rocm_tag_from_amd_smi() {
     command -v amd-smi >/dev/null 2>&1 || return 0
     # Cut at the field separator and require digits: the line is pipe-delimited
@@ -3505,29 +3506,26 @@ _rocm_tag_from_hipconfig() {
 _rocm_tag_from_dpkg() {
     command -v dpkg-query >/dev/null 2>&1 || return 0
     # Require the status word "installed". dpkg-query -W lists every package in the
-    # status database except purged ones, so a rocm-core taken out with `apt remove`
-    # stays queryable in state "deinstall ok config-files" still reporting the version
-    # it had, and under highest-wins that dead entry outranks every live source (ran
-    # 7.0, downgraded to 6.1, never purged -> rocm7.0 off a tree that is gone).
+    # status database except purged ones, so an `apt remove`d package remains
+    # queryable in state "deinstall ok config-files" with its old version. Under
+    # highest-wins, that dead reading could outrank the live runtime. Debian does
+    # not ship rocm-core, so its installed HSA runtime is the equivalent source.
     # ${Status} over ${db:Status-Status}: documented showformat field with no dpkg
     # version floor, and dpkg renders an unrecognised field as empty rather than
     # failing, so a dpkg lacking it goes silent instead of over-reporting.
-    _rt_ver=$(dpkg-query -W -f='${Status} ${Version}\n' rocm-core 2>/dev/null \
-        | awk '$3 == "installed" && $4 != "" { print $4; exit }') || return 0
-    [ -n "$_rt_ver" ] || return 0
-    printf '%s\n' "$_rt_ver" | sed 's/^[0-9]*://' \
-        | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
-}
-
-_rocm_tag_from_hsa_runtime_dpkg() {
-    command -v dpkg-query >/dev/null 2>&1 || return 0
-    # Debian can version its HSA runtime ahead of hipconfig and does not ship
-    # rocm-core. Use the actual ROCm HSA runtime package, and only when installed.
-    _rt_ver=$(dpkg-query -W -f='${Status} ${Version}\n' libhsa-runtime64-1 2>/dev/null \
-        | awk '$3 == "installed" && $4 != "" { print $4; exit }') || return 0
-    [ -n "$_rt_ver" ] || return 0
-    printf '%s\n' "$_rt_ver" | sed 's/^[0-9]*://' \
-        | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
+    # Query both in one invocation. dpkg-query returns nonzero when either requested
+    # package is absent, but still writes the installed package's line, so neutralize
+    # that status before pipefail sees it. Emit every installed reading; the resolver
+    # below deliberately selects the highest one.
+    { dpkg-query -W -f='${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
+        | awk '
+            $3 == "installed" && $4 != "" {
+                v = $4
+                sub(/^[0-9]+:/, "", v)
+                split(v, a, /[.-]/)
+                if (a[1] ~ /^[0-9]+$/ && a[2] ~ /^[0-9]+$/) print "rocm" a[1] "." a[2]
+            }
+        ' || return 0
 }
 
 _rocm_tag_from_rpm() {
@@ -3579,7 +3577,6 @@ _detect_rocm_version_tag() {
         _rocm_tag_from_version_file
         _rocm_tag_from_hipconfig
         _rocm_tag_from_dpkg
-        _rocm_tag_from_hsa_runtime_dpkg
         _rocm_tag_from_rpm
     } 2>/dev/null) || _rt_readings=""
     _rt_best=$(printf '%s\n' "$_rt_readings" | _highest_rocm_tag) || _rt_best=""
@@ -3703,7 +3700,7 @@ get_torch_index_url() {
             case "$_rocm_tag" in
                 rocm[1-5].*)
                     echo "[WARN] ROCm $_rocm_tag detected but PyTorch ROCm wheels require ROCm 6.0+ -- falling back to CPU-only PyTorch" >&2
-                    echo "[WARN] $_rocm_tag is the HIGHEST version any of amd-smi, /opt/rocm/.info/version, hipconfig or rocm-core reported." >&2
+                    echo "[WARN] $_rocm_tag is the HIGHEST version detected from usable ROCm sources; Debian uses its installed libhsa-runtime64-1 package rather than rocm-core." >&2
                     echo "[WARN] Upgrade ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
                     echo "[WARN] If this host really runs ROCm 6.0+ and only its packaging says otherwise, pin the wheels and re-run:" >&2
                     echo "[WARN]   UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4   (a PyTorch wheel leaf: rocm6.0-6.4, rocm7.0-7.2)" >&2
@@ -3752,7 +3749,7 @@ get_torch_index_url() {
         echo "[WARN] Install the ROCm/HIP SDK, then re-run this installer:" >&2
         echo "[WARN]   Arch / CachyOS : sudo pacman -S rocm-hip-sdk" >&2
         echo "[WARN]   other distros  : https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
-        echo "[WARN] Minimum required for version detection: amd-smi, hipconfig, /opt/rocm/.info/version, or the rocm-core package." >&2
+        echo "[WARN] Minimum required for version detection: amd-smi, hipconfig, a ROCm version file, or an installed runtime package (Debian: libhsa-runtime64-1)." >&2
         echo "$_base/cpu"; return
     fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P).
@@ -4016,20 +4013,30 @@ get_radeon_wheel_url() {
     # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
     # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
     # rocm-rel-7.1.1/, rocm-rel-7.1/ (AMD publishes both M.m and M.m.p dirs).
-    # Accepts both X.Y and X.Y.Z host versions since /opt/rocm/.info/version
-    # and hipconfig --version can return either shape.
+    # A resolved rocmM.m leaf is authoritative: get_torch_index_url already read
+    # every available source and selected the best host-compatible wheel family.
+    # The legacy fallback accepts X.Y/X.Y.Z only for callers without that result.
     case "$(uname -s)" in Linux) ;; *) echo ""; return ;; esac
 
-    # Detect ROCm version (X.Y or X.Y.Z) -- try amd-smi, then
-    # /opt/rocm/.info/version, then hipconfig.
     _full_ver=""
-    _full_ver=$({ command -v amd-smi >/dev/null 2>&1 && \
-        amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
-            'NF>1{if(match($2,/[0-9]+\.[0-9]+(\.[0-9]+)?/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \
-        { [ -r /opt/rocm/.info/version ] && \
-            awk 'match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1; exit} END{exit !found}' /opt/rocm/.info/version; } || \
-        { command -v hipconfig >/dev/null 2>&1 && \
-            hipconfig --version 2>/dev/null | awk 'NR==1 && match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1} END{exit !found}'; }) 2>/dev/null
+    _resolved_tag="${1:-}"
+    case "$_resolved_tag" in
+        rocm[1-9]*.[0-9]*)
+            _full_ver=$(printf '%s\n' "$_resolved_tag" \
+                | awk '/^rocm[1-9][0-9]*\.[0-9][0-9]*$/ {sub(/^rocm/, ""); print; exit}')
+            ;;
+    esac
+    if [ -z "$_full_ver" ] && [ -z "$_resolved_tag" ]; then
+        # Compatibility fallback for callers that genuinely have no resolved tag:
+        # detect a host X.Y/X.Y.Z once, in the historical source order.
+        _full_ver=$({ command -v amd-smi >/dev/null 2>&1 && \
+            amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+                'NF>1{if(match($2,/[0-9]+\.[0-9]+(\.[0-9]+)?/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \
+            { [ -r /opt/rocm/.info/version ] && \
+                awk 'match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1; exit} END{exit !found}' /opt/rocm/.info/version; } || \
+            { command -v hipconfig >/dev/null 2>&1 && \
+                hipconfig --version 2>/dev/null | awk 'NR==1 && match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1} END{exit !found}'; }) 2>/dev/null
+    fi
 
     # Validate: must be X.Y or X.Y.Z with X >= 1
     case "$_full_ver" in
@@ -4614,6 +4621,28 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
             fi
         fi
+        # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) need the generic
+        # rocm6.4 wheel family: the older generic rocm6.0-6.3 wheels ship no
+        # kernels for them. This is deliberately beside the existing gfx906
+        # policy, rather than inside the runtime-less */cpu reroute, because a
+        # valid host ROCm reading can otherwise select broken rocm6.1 wheels.
+        # Explicit torch-index pins skip this whole architecture-policy block.
+        case "$_runtime_gfx" in
+            gfx1102|gfx1200|gfx1201)
+                if _rocm_leaf_below "$_torch_index_leaf" 6 4; then
+                    echo "" >&2
+                    echo "  [WARN] $_runtime_gfx detected -- routing torch to rocm6.4 because older" >&2
+                    echo "  [WARN] generic ROCm wheel families do not ship $_runtime_gfx kernels." >&2
+                    echo "" >&2
+                    _amd_rocm64_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+                    while [ "${_amd_rocm64_base%/}" != "$_amd_rocm64_base" ]; do
+                        _amd_rocm64_base="${_amd_rocm64_base%/}"
+                    done
+                    TORCH_INDEX_URL="${_amd_rocm64_base}/rocm6.4"
+                    _torch_index_leaf="rocm6.4"
+                fi
+                ;;
+        esac
         # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
         # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
         # dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read for gfx906",
@@ -5013,7 +5042,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     if [ "$SKIP_TORCH" = true ]; then
         substep "skipping PyTorch (--no-torch or Intel Mac x86_64)." "$C_WARN"
     elif [ "$_amd_gpu_radeon" = true ]; then
-        _radeon_url=$(get_radeon_wheel_url)
+        _radeon_url=$(get_radeon_wheel_url "$_torch_index_leaf")
         if [ -n "$_radeon_url" ]; then
             _radeon_listing_ok=false
             if _radeon_fetch_listing "$_radeon_url" 2>/dev/null; then

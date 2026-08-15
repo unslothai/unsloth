@@ -149,6 +149,46 @@ def _runtime_target_is_gfx906() -> bool:
     return set(_detect_amd_gfx_codes()) == {"gfx906"}
 
 
+# Navi 33 and RDNA 4 have no kernels in generic PyTorch ROCm 6.0-6.3 wheels.
+# Keep this a narrow generic-wheel floor, distinct from the AMD per-arch Strix
+# route and the inverse gfx906 legacy route below. Mirrors install.sh.
+_GFX_ROCM64_FLOOR_ARCHES: frozenset[str] = frozenset({"gfx1102", "gfx1200", "gfx1201"})
+_GFX_ROCM64_FLOOR_TAG = "rocm6.4"
+
+
+def _gfx_needs_rocm64_generic_index(ver: tuple[int, int]) -> bool:
+    """True when the selected generic tag is below rocm6.4."""
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    return key is not None and key < (6, 4)
+
+
+def _runtime_target_needs_rocm64_generic_index() -> bool:
+    """Whether the selected runtime GPU needs the generic rocm6.4 floor.
+
+    Match the existing Strix target selection: an explicit arch override wins;
+    otherwise retain rocminfo's already-applied ROCR mask and index only unmasked
+    rocminfo/amd-smi output. This intentionally does not change gfx906's
+    sole-architecture policy.
+    """
+    override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
+    if override:
+        return override in _GFX_ROCM64_FLOOR_ARCHES
+    gfx_devices = _detect_amd_gfx_codes(dedup = False)
+    if not gfx_devices:
+        return False
+    rocr_applied = (
+        _LAST_AMD_GFX_PROBE == "rocminfo" and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+    )
+    runtime_gfx = gfx_devices[0 if rocr_applied else _pick_visible_index(len(gfx_devices))]
+    return runtime_gfx in _GFX_ROCM64_FLOOR_ARCHES
+
+
+def _installed_rocm_wheel_is_below(label: str, floor: tuple[int, int]) -> bool:
+    """Whether a HIP torch label has no identifiable ROCm family at `floor` or newer."""
+    match = re.search(r"rocm(\d+)\.(\d+)", label)
+    return match is None or (int(match.group(1)), int(match.group(2))) < floor
+
+
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
@@ -656,7 +696,8 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             # Explicit length guard: don't rely on the broad except below to
             # swallow IndexError on a single-component version (e.g. "6\n").
             if len(parts) >= 2:
-                _record(path, int(parts[0]), int(parts[1]))
+                _record("ROCm version file", int(parts[0]), int(parts[1]))
+                break
         except Exception:
             pass
 
@@ -707,48 +748,50 @@ def _detect_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Distro package-manager fallbacks: package-managed ROCm can expose GPUs via
-    # rocminfo/amd-smi but lack /opt/rocm/.info/version and hipconfig, so probe
-    # dpkg (Debian/Ubuntu) can report rocm-core or the packaged HSA runtime;
-    # rpm (RHEL/Fedora/SUSE) reports rocm-core. Matches install.sh so
-    # `studio update` == fresh install.
+    # Package-managed ROCm can expose GPUs via rocminfo/amd-smi but lack a version
+    # file and hipconfig. Debian/Ubuntu report rocm-core or the packaged HSA
+    # runtime; RPM distros report rocm-core. Matches install.sh so `studio update`
+    # and fresh install choose the same family.
     #
     # dpkg-query can still report removed-but-not-purged packages, so only
     # accept package readings whose status is actually "installed".
     dpkg = shutil.which("dpkg-query")
     if dpkg:
-        for package, source in (
-            ("rocm-core", "dpkg rocm-core"),
-            ("libhsa-runtime64-1", "dpkg HSA runtime"),
-        ):
-            try:
-                result = subprocess.run(
-                    [
-                        dpkg,
-                        "-W",
-                        "-f=${Status} ${Version}\n",
-                        package,
-                    ],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    text = True,
-                    timeout = 5,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    fields = result.stdout.strip().split()
-                    if len(fields) >= 4 and fields[2] == "installed":
-                        raw = fields[3]
-                        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
-                        raw = re.sub(r"^\d+:", "", raw)
-                        m = re.match(r"(\d+)[.-](\d+)", raw)
-                        if m:
-                            _record(
-                                source,
-                                int(m.group(1)),
-                                int(m.group(2)),
-                            )
-            except Exception:
-                pass
+        try:
+            result = subprocess.run(
+                [
+                    dpkg,
+                    "-W",
+                    "-f=${Package} ${Status} ${Version}\n",
+                    "rocm-core",
+                    "libhsa-runtime64-1",
+                ],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            # dpkg-query returns nonzero when either requested package is absent,
+            # while still printing the other package's installed line. Parse stdout
+            # independently of the process status so the HSA runtime still votes.
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) < 5 or fields[3] != "installed":
+                    continue
+                package, raw = fields[0], fields[4]
+                source = {
+                    "rocm-core": "dpkg rocm-core",
+                    "libhsa-runtime64-1": "dpkg HSA runtime",
+                }.get(package)
+                if source is None:
+                    continue
+                # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
+                raw = re.sub(r"^\d+:", "", raw)
+                m = re.match(r"(\d+)[.-](\d+)", raw)
+                if m:
+                    _record(source, int(m.group(1)), int(m.group(2)))
+        except Exception:
+            pass
 
     rpm = shutil.which("rpm")
     if rpm:
@@ -3190,6 +3233,24 @@ def _ensure_rocm_torch() -> None:
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
+    # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) need generic rocm6.4
+    # wheels. Keep an explicit user pin authoritative, and do not compete with
+    # a selected Strix per-gfx index. A pre-existing older ROCm wheel is actively
+    # repaired just like gfx906's broken generic-wheel combination.
+    _gfx_rocm64_floor = (
+        _rocm_pin is None
+        and _strix_override_url is None
+        and _gfx_needs_rocm64_generic_index(ver)
+        and _runtime_target_needs_rocm64_generic_index()
+    )
+    if _gfx_rocm64_floor:
+        _safe_print(
+            "   gfx1102/gfx1200/gfx1201 needs the generic rocm6.4 wheel family; "
+            "older generic ROCm wheels lack its kernels."
+        )
+        if has_hip_torch and _installed_rocm_wheel_is_below(_installed_torch_ver, (6, 4)):
+            rocm_torch_ready = False
+
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
     # an explicit torch-index pin: a gfx906 host that pins rocm6.3 (without also
@@ -3272,15 +3333,10 @@ def _ensure_rocm_torch() -> None:
         if _override_idx is not None:
             index_url = _override_idx
             tag = _torch_index_leaf(index_url)
+        elif _gfx_rocm64_floor:
+            tag = _GFX_ROCM64_FLOOR_TAG
         else:
-            tag = next(
-                (
-                    t
-                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                    if ver >= (maj, mn)
-                ),
-                None,
-            )
+            tag = _generic_pytorch_rocm_tag(ver)
         if tag is None:
             _safe_print(
                 f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"

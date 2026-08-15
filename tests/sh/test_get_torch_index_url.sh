@@ -74,6 +74,18 @@ _FAKE_ROCM_DIR=$(mktemp -d)
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
   > "$_FUNC_FILE"
 
+# Keep this extracted version-source list synchronized with install.sh. The Debian
+# HSA runtime lives inside _rocm_tag_from_dpkg, so it deliberately has no second
+# helper entry here.
+for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
+           _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
+           _detect_rocm_version_tag get_torch_index_url; do
+    if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
+        echo "FAIL: install.sh no longer defines $_fn() at column 0"
+        exit 1
+    fi
+done
+
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
 _SYS_PATH="/usr/local/bin:/usr/bin:/bin"
 
