@@ -41,6 +41,7 @@ from unforgettable.store.records import (
     ROLLOUT_CONTACTS,
     ROLLOUT_OUTCOMES,
     get_record,
+    insert_record,
     list_admissions,
     list_inject_stats,
     list_records,
@@ -62,6 +63,16 @@ from unforgettable.sidecar.pack import (
 )
 from unforgettable.sidecar.train import FAKE_BASE_MODEL, FakeTrainBackend, train_pack
 from unforgettable.store.search import search_records
+from unforgettable.supervisor import (
+    SKIP_VOTE_KINDS,
+    VOTER_OFF,
+    Vote,
+    config_from_env,
+    request_mine_sync,
+    request_vote_sync,
+    resolve_supervisor_host,
+    voter_blocks,
+)
 
 DEFAULT_SEARCH_TOP = 20
 DEFAULT_LIST_LIMIT = 20
@@ -80,6 +91,8 @@ UNKNOWN_ID_EXIT = 2
 APPLY_CONFLICT_EXIT = 2
 MISSING_DB_EXIT = 2
 ADMIT_STATUS_REFUSED = "admit refused: status is {status} (use --force)"
+VOTER_DENIED = "refused: voter deny: {reason}"
+MINE_NEEDS_VOTER = "mine requires UNFORGETTABLE_VOTER=advisory|binding"
 APPLY_CONFLICT = "cannot combine --apply and --dry-run"
 MISSING_DB = "memory.db not found: {path}"
 STATUS_ALL = "all"
@@ -255,6 +268,35 @@ def _cmd_contradictions(_args: argparse.Namespace, db_path: Path) -> int:
     return 0
 
 
+def _supervisor_host():
+    return resolve_supervisor_host()
+
+
+def _maybe_vote(
+    candidate: dict[str, Any],
+    *,
+    db_path: Path,
+    force: bool,
+) -> tuple[int, Vote | None]:
+    cfg = config_from_env()
+    if cfg.voter == VOTER_OFF:
+        return 0, None
+    vote = request_vote_sync(
+        candidate,
+        host=_supervisor_host(),
+        config=cfg,
+        db_path=db_path,
+    )
+    print(
+        f"voter {vote.decision}: {vote.reason}",
+        file=sys.stderr,
+    )
+    if voter_blocks(vote, force=force, config=cfg):
+        print(VOTER_DENIED.format(reason=vote.reason), file=sys.stderr)
+        return UNKNOWN_ID_EXIT, vote
+    return 0, vote
+
+
 def _cmd_admit(args: argparse.Namespace, db_path: Path) -> int:
     existing = get_record(args.id, db_path=db_path)
     if existing is None:
@@ -265,6 +307,9 @@ def _cmd_admit(args: argparse.Namespace, db_path: Path) -> int:
             file=sys.stderr,
         )
         return UNKNOWN_ID_EXIT
+    code, _vote = _maybe_vote(existing, db_path=db_path, force=args.force)
+    if code:
+        return code
     try:
         rec = set_record_status(
             args.id, "active", reason=CLI_ADMIT_REASON, db_path=db_path
@@ -321,8 +366,12 @@ def _cmd_compiled(_args: argparse.Namespace, db_path: Path) -> int:
 
 
 def _cmd_compile(args: argparse.Namespace, db_path: Path) -> int:
-    if get_record(args.id, db_path=db_path) is None:
+    existing = get_record(args.id, db_path=db_path)
+    if existing is None:
         return _unknown_id(args.id)
+    code, _vote = _maybe_vote(existing, db_path=db_path, force=False)
+    if code:
+        return code
     try:
         row = pin_compiled(args.id, explicit=True, db_path=db_path)
     except ValueError as exc:
@@ -507,6 +556,25 @@ def _cmd_eval(args: argparse.Namespace, db_path: Path) -> int:
 
 
 def _cmd_promote(args: argparse.Namespace, db_path: Path) -> int:
+    adapter = get_adapter(args.id, db_path=db_path)
+    if adapter is None:
+        return _unknown_id(args.id)
+    candidate = {
+        "id": adapter.get("id"),
+        "kind": "adapter",
+        "status": adapter.get("status"),
+        "title": f"adapter {adapter.get('id')}",
+        "body": adapter.get("metrics") or "",
+        "provenance": "mixed",
+        "extra": {
+            "pack_id": adapter.get("pack_id"),
+            "backend": adapter.get("backend"),
+            "recipe": adapter.get("recipe"),
+        },
+    }
+    code, _vote = _maybe_vote(candidate, db_path=db_path, force=args.force)
+    if code:
+        return code
     try:
         row = promote_adapter(args.id, force=args.force, db_path=db_path)
     except KeyError:
@@ -515,6 +583,100 @@ def _cmd_promote(args: argparse.Namespace, db_path: Path) -> int:
         print(str(exc), file=sys.stderr)
         return UNKNOWN_ID_EXIT
     _print_json(row)
+    return 0
+
+
+def _proposed_for_review(db_path: Path) -> list[dict[str, Any]]:
+    rows = list_records(statuses=["proposed"], db_path=db_path)
+    return [row for row in rows if row.get("kind") not in SKIP_VOTE_KINDS]
+
+
+def _cmd_review(args: argparse.Namespace, db_path: Path) -> int:
+    cfg = config_from_env()
+    if cfg.voter == VOTER_OFF:
+        print("voter off; set UNFORGETTABLE_VOTER=advisory|binding", file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    rows = _proposed_for_review(db_path)[: args.limit]
+    host = _supervisor_host()
+    report = []
+    for rec in rows:
+        vote = request_vote_sync(rec, host=host, config=cfg, db_path=db_path)
+        applied = None
+        if args.apply and vote.decision == "allow":
+            set_record_status(rec["id"], "active", reason="review allow", db_path=db_path)
+            applied = "active"
+        elif args.apply and vote.decision == "deny":
+            set_record_status(
+                rec["id"], "rejected", reason="review deny", db_path=db_path
+            )
+            applied = "rejected"
+        report.append(
+            {
+                "id": rec["id"],
+                "kind": rec["kind"],
+                "title": rec["title"],
+                "decision": vote.decision,
+                "reason": vote.reason,
+                "applied": applied,
+            }
+        )
+    _print_json(report)
+    return 0
+
+
+def _cmd_mine(args: argparse.Namespace, db_path: Path) -> int:
+    cfg = config_from_env()
+    if cfg.voter == VOTER_OFF:
+        print(MINE_NEEDS_VOTER, file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    host = _supervisor_host()
+    if host is None:
+        print("mine needs UNFORGETTABLE_SUPERVISOR_URL", file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    proposed = _proposed_for_review(db_path)[: args.limit]
+    rollouts = list_rollouts(limit=args.limit, db_path=db_path)
+    admissions = list_admissions(limit=args.limit, db_path=db_path)
+    items = request_mine_sync(
+        host,
+        proposed=proposed,
+        rollouts=rollouts,
+        admissions=admissions,
+        config=cfg,
+    )
+    report = []
+    for item in items:
+        rec_id = item.get("id")
+        applied = None
+        if rec_id:
+            existing = get_record(rec_id, db_path=db_path)
+            if existing is None:
+                report.append({**item, "applied": None, "error": "unknown id"})
+                continue
+            if args.apply and item.get("decision") == "allow":
+                set_record_status(
+                    rec_id, "active", reason="mine allow", db_path=db_path
+                )
+                applied = "active"
+            elif args.apply and item.get("decision") == "deny":
+                set_record_status(
+                    rec_id, "rejected", reason="mine deny", db_path=db_path
+                )
+                applied = "rejected"
+            report.append({**item, "applied": applied})
+            continue
+        inserted = None
+        if args.apply and item.get("title") and item.get("kind"):
+            inserted = insert_record(
+                kind=item["kind"],
+                title=item["title"],
+                body=item.get("body") or "",
+                provenance="infer",
+                status="proposed",
+                db_path=db_path,
+            )
+            applied = "proposed"
+        report.append({**item, "id": (inserted or {}).get("id"), "applied": applied})
+    _print_json(report)
     return 0
 
 
@@ -645,6 +807,32 @@ def build_parser() -> argparse.ArgumentParser:
     reject_p.add_argument("id")
     reject_p.add_argument("--reason", default=None)
     reject_p.set_defaults(func=_cmd_reject)
+
+    review_p = sub.add_parser(
+        "review",
+        help="Ask the approval voter about proposed records (preview). Pass --apply to mutate.",
+    )
+    _add_db_flag(review_p)
+    review_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
+    review_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Admit voter-allow rows and reject voter-deny rows.",
+    )
+    review_p.set_defaults(func=_cmd_review)
+
+    mine_p = sub.add_parser(
+        "mine",
+        help="Batch voter over proposed rows, rollouts, and the admissions log.",
+    )
+    _add_db_flag(mine_p)
+    mine_p.add_argument("--limit", type=int, default=DEFAULT_LIST_LIMIT)
+    mine_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply allow/deny on existing ids; insert new drafts as proposed infer.",
+    )
+    mine_p.set_defaults(func=_cmd_mine)
 
     compact_p = sub.add_parser(
         "compact",

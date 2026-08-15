@@ -21,6 +21,15 @@ This note is the living “what’s next” for the package. Architecture that i
 
 `TECHNICAL.md` is the source of truth for what the tree actually does. Plans stay as locks and history. A few Phase 4/5 “optional later” one-liners already landed after the phase docs froze (`adapter_id` and `skip_standing` are first-class Studio payload fields and are copied onto `EpisodeRequest`).
 
+### Shipped after Phase 5
+
+These are supervisor jobs, **not** a rename of the MemoryWheels outer wheel (B + C). The local actor remains the only PEFT target. `admit()` and `decide()` stay code.
+
+| Feature | Status | What shipped |
+|---------|--------|----------------|
+| **Approver model** | **Complete.** | Optional vote after local select, before promote. `UNFORGETTABLE_VOTER=off\|advisory\|binding`. CLI `admit` / `compile` / `promote` wrap a vote; `review` batches proposed rows; `mine` is the same voter over proposed + rollouts + admissions and may insert new **proposed** drafts. Binding deny blocks unless `--force`. `episode` rows are skipped. Host seam: `supervise("vote"\|"mine")` or `HttpSupervisor` at `UNFORGETTABLE_SUPERVISOR_URL`. |
+| **Planner model** | **Complete.** | Runtime-selectable temporary overlay. `EpisodeRequest.planner=on` (Studio payload or `UNFORGETTABLE_PLANNER`). One `supervise("plan")` before the first generate; refresh on `RETRY_WORLD` only. Injected as working-memory A. Fail-open. Not written to B. |
+
 ### What “complete” still left named
 
 These are **not** new architecture. They are leftovers the phase docs parked on purpose, plus a couple of wires that exist on one side only.

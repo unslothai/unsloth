@@ -27,6 +27,7 @@ from unforgettable.host import (
     EXTRACT_MAX_TOKENS,
     RUN_ACTION_NAMES,
     RUN_ACTION_TIMEOUT_SEC,
+    SUPERVISE_MAX_TOKENS,
     GenerateRequest,
     GenerateResult,
     ToolTrace,
@@ -61,6 +62,7 @@ class FakeHost:
         run_action=None,
         confirm_result=True,
         cancel_event=None,
+        supervise=None,
     ):
         self.db = root / "memory.db"
         self.world = root / "world"
@@ -77,6 +79,9 @@ class FakeHost:
         self.last_messages = None
         self.last_adapter_path = None
         self.last_run_action_kwargs = None
+        self.generate_messages: list = []
+        self.supervise_calls: list = []
+        self._supervise = supervise
 
     def memory_db_path(self) -> Path:
         return self.db
@@ -103,6 +108,7 @@ class FakeHost:
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         self.calls.append(req.session_id)
         self.last_messages = req.messages
+        self.generate_messages.append(req.messages)
         self.last_adapter_path = req.adapter_path
         if not self._results:
             raise AssertionError("unexpected extra generate")
@@ -110,6 +116,31 @@ class FakeHost:
 
     async def complete(self, messages, *, max_tokens=EXTRACT_MAX_TOKENS) -> str:
         return ""
+
+    async def supervise(
+        self,
+        purpose: str,
+        messages,
+        *,
+        model=None,
+        max_tokens=SUPERVISE_MAX_TOKENS,
+    ) -> str:
+        self.supervise_calls.append(
+            {
+                "purpose": purpose,
+                "messages": messages,
+                "model": model,
+                "max_tokens": max_tokens,
+            }
+        )
+        if self._supervise is None:
+            return ""
+        result = self._supervise(
+            purpose, messages, model=model, max_tokens=max_tokens
+        )
+        if hasattr(result, "__await__"):
+            return await result
+        return result
 
     async def run_action(
         self,
@@ -696,15 +727,6 @@ def test_episode_skip_standing(tmp_path: Path):
 
 
 def test_episode_re_retrieve_on_enter_sim(tmp_path: Path):
-    class RecordingHost(FakeHost):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.generate_messages: list = []
-
-        async def generate(self, req: GenerateRequest) -> GenerateResult:
-            self.generate_messages.append(req.messages)
-            return await super().generate(req)
-
     def _seed(db):
         sim_fix = insert_record(
             kind="error_fix",
@@ -723,7 +745,7 @@ def test_episode_re_retrieve_on_enter_sim(tmp_path: Path):
         return sim_fix, world_claim
 
     sim_fix, world_claim = _seed(tmp_path / "memory.db")
-    host = RecordingHost(
+    host = FakeHost(
         tmp_path,
         [_fail_world(), _ok("fixed in sim", "sim"), _ok("works in world", "world")],
     )
@@ -970,3 +992,75 @@ def test_episode_promoted_without_adapter_id_keeps_standing(tmp_path: Path):
     system = host.last_messages[0]["content"]
     assert f"Source: {pinned['id']}" in system
     assert host.last_adapter_path is None
+
+
+def test_episode_planner_injects_suffix_and_refreshes_on_retry(tmp_path: Path):
+    plans = ["First: reproduce the failure.", "Retry: apply the sim fix."]
+
+    def scripted(purpose, messages, *, model=None, max_tokens=400):
+        assert purpose == "plan"
+        assert model == "planner-large"
+        return plans.pop(0)
+
+    host = FakeHost(
+        tmp_path,
+        [_fail_world(), _ok("fixed in sim", "sim"), _ok("works in world", "world")],
+        supervise=scripted,
+    )
+    asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "run the tests"}],
+                planner="on",
+                planner_model="planner-large",
+            ),
+        )
+    )
+    assert len(host.supervise_calls) == 2
+    first = " ".join(
+        str(m.get("content"))
+        for m in host.generate_messages[0]
+        if m.get("role") == "system"
+    )
+    assert "Supervisor plan" in first
+    assert "reproduce the failure" in first
+    retry = " ".join(
+        str(m.get("content"))
+        for m in host.generate_messages[2]
+        if m.get("role") == "system"
+    )
+    assert "apply the sim fix" in retry
+    assert "Retry in the world with the repaired plan." in retry
+
+
+def test_episode_planner_off_does_not_supervise(tmp_path: Path):
+    host = FakeHost(tmp_path, [_ok("ok", "world")], supervise=lambda *a, **k: "secret")
+    asyncio.run(
+        run(
+            host,
+            EpisodeRequest(messages=[{"role": "user", "content": "hi"}]),
+        )
+    )
+    assert host.supervise_calls == []
+    system = host.last_messages[0]["content"]
+    assert "Supervisor plan" not in system
+
+
+def test_episode_planner_fail_open(tmp_path: Path):
+    def boom(purpose, messages, *, model=None, max_tokens=400):
+        raise RuntimeError("planner down")
+
+    host = FakeHost(tmp_path, [_ok("ok", "world")], supervise=boom)
+    outcome = asyncio.run(
+        run(
+            host,
+            EpisodeRequest(
+                messages=[{"role": "user", "content": "hi"}],
+                planner="on",
+            ),
+        )
+    )
+    assert outcome.text == "ok"
+    system = host.last_messages[0]["content"]
+    assert "Supervisor plan" not in system

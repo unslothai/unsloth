@@ -50,6 +50,8 @@ class EpisodeRequest:
     skip_standing: bool = False
     adapter_id: Optional[str] = None
     shrink_standing: Optional[bool] = None
+    planner: Optional[str] = None
+    planner_model: Optional[str] = None
 
 
 @dataclass
@@ -70,6 +72,7 @@ class EpisodeState:
     last_generate_text: str = ""
     last_fail_summary: str = ""
     last_sim_summary: str = ""
+    planner_text: str = ""
 
     @property
     def active_session(self) -> str:

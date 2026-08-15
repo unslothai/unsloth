@@ -38,6 +38,11 @@ from unforgettable.eyes.gate import LogGateEyes, review_write
 from unforgettable.eyes.probes import MAX_EPISODE_PROBES, run_probes
 from unforgettable.eyes.protocols import RecognizedFailure
 from unforgettable.host import GenerateRequest, GenerateResult, Host
+from unforgettable.supervisor import (
+    planner_block,
+    planner_is_on,
+    request_plan,
+)
 from unforgettable.rims.clone import clone_tree
 from unforgettable.rims.detect import resolve_test_command
 from unforgettable.sidecar.adapters import STATUS_DISCARDED, get_adapter
@@ -141,6 +146,24 @@ async def _maybe_run_sim_tests(
     )
     state.traces.extend(current_traces()[before:])
     return True, grade_run_action("terminal", result, contact="sim")
+
+
+async def _maybe_refresh_plan(host, request, state) -> None:
+    if not planner_is_on(request):
+        return
+    extra_parts = []
+    if state.last_fail_summary:
+        extra_parts.append(f"Last failure: {state.last_fail_summary}")
+    if state.last_sim_summary:
+        extra_parts.append(f"Sim: {state.last_sim_summary}")
+    refreshed = await request_plan(
+        host,
+        user_text=last_user_text(request.messages),
+        extra="\n".join(extra_parts),
+        model=request.planner_model,
+    )
+    if refreshed:
+        state.planner_text = refreshed
 
 
 async def _confirm_retry_world(host, request, state, action, policy, db_path: str) -> str:
@@ -276,10 +299,21 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 namespace=request.namespace,
             )
             notes = _repair_context(state)
-            parts = [inject, suffix, notes]
+            plan = planner_block(state.planner_text)
+            parts = [inject, suffix, notes, plan]
             return _with_system(
                 request.messages, "\n\n".join(p for p in parts if p)
             )
+
+        if planner_is_on(request):
+            state.planner_text = await request_plan(
+                host,
+                user_text=last_user_text(request.messages),
+                extra="",
+                model=request.planner_model,
+            )
+            if not state.planner_text:
+                LogGateEyes().note("planner: skipped or empty", db_path=db_path)
 
         messages = _rebuild("world", "")
         generated = False
@@ -376,6 +410,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                         actions.append(action)
                         if action == Action.RETRY_WORLD:
                             state.enter_world()
+                            await _maybe_refresh_plan(host, request, state)
                             messages = _rebuild(
                                 "world",
                                 "Retry in the world with the repaired plan.",
@@ -408,6 +443,7 @@ async def run(host: Host, request: EpisodeRequest) -> EpisodeOutcome:
                 continue
             if action == Action.RETRY_WORLD:
                 state.enter_world()
+                await _maybe_refresh_plan(host, request, state)
                 messages = _rebuild(
                     "world",
                     "Retry in the world with the repaired plan.",

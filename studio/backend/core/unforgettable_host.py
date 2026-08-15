@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -21,11 +22,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from unforgettable import VIRTUAL_MODEL_ID, inner_model_id, is_virtual_model
+from unforgettable.supervisor import coerce_planner_flag
 from unforgettable.host import (
     EXTRACT_MAX_TOKENS,
     RUN_ACTION_CLIP,
     RUN_ACTION_NAMES,
     RUN_ACTION_TIMEOUT_SEC,
+    SUPERVISE_MAX_TOKENS,
     GenerateRequest,
     GenerateResult,
     Host,
@@ -530,18 +533,19 @@ class StudioHost:
         )
         return verdict == "allow"
 
-    async def complete(
+    async def _one_shot(
         self,
         messages: list[dict[str, Any]],
         *,
-        max_tokens: int = EXTRACT_MAX_TOKENS,
+        model: str,
+        max_tokens: int,
     ) -> str:
         # Pin both token fields: Studio prefers max_completion_tokens when set.
         # Strip leftover tool surfaces; tools_force_disabled beats CLI --enable-tools.
         from state.tool_policy import tools_force_disabled
 
         payload = self.payload.model_copy(deep = True)
-        payload.model = self.inner_model or "default"
+        payload.model = model or self.inner_model or "default"
         payload.stream = False
         payload.enable_tools = False
         payload.mcp_enabled = False
@@ -557,6 +561,55 @@ class StudioHost:
         finally:
             _INNER.reset(token)
         return _choice_text(_response_payload(resp))
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int = EXTRACT_MAX_TOKENS,
+    ) -> str:
+        return await self._one_shot(
+            messages,
+            model = self.inner_model or "default",
+            max_tokens = max_tokens,
+        )
+
+    async def supervise(
+        self,
+        purpose: str,
+        messages: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        max_tokens: int = SUPERVISE_MAX_TOKENS,
+    ) -> str:
+        chosen = model or self._supervisor_model(purpose) or self.inner_model or "default"
+        return await self._one_shot(
+            messages, model = chosen, max_tokens = max_tokens
+        )
+
+    def _supervisor_model(self, purpose: str) -> str | None:
+        import os
+
+        if purpose == "plan":
+            return (
+                getattr(self.payload, "planner_model", None)
+                or os.environ.get("UNFORGETTABLE_PLANNER_MODEL")
+                or None
+            )
+        if purpose in {"vote", "mine"}:
+            return (
+                getattr(self.payload, "voter_model", None)
+                or os.environ.get("UNFORGETTABLE_VOTER_MODEL")
+                or None
+            )
+        return None
+
+
+def _planner_from_payload(payload) -> str | None:
+    flag = getattr(payload, "planner", None)
+    if flag is None:
+        flag = os.environ.get("UNFORGETTABLE_PLANNER")
+    return coerce_planner_flag(flag)
 
 
 async def handle_chat_completions(payload, request, current_subject: str, inner: Callable):
@@ -579,6 +632,12 @@ async def handle_chat_completions(payload, request, current_subject: str, inner:
         max_sim_turns = getattr(payload, "max_sim_turns", None),
         adapter_id = getattr(payload, "adapter_id", None),
         skip_standing = bool(getattr(payload, "skip_standing", False)),
+        planner = _planner_from_payload(payload),
+        planner_model = (
+            getattr(payload, "planner_model", None)
+            or os.environ.get("UNFORGETTABLE_PLANNER_MODEL")
+            or None
+        ),
     )
     if payload.stream:
         queue: asyncio.Queue = asyncio.Queue()

@@ -1344,6 +1344,28 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Unforgettable: skip compiled standing inject.",
     )
+    planner: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Unforgettable planner overlay: on|off. When on, a "
+            "one-shot supervisor plan is injected into working memory for this "
+            "episode only. Default off, or UNFORGETTABLE_PLANNER."
+        ),
+    )
+    planner_model: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Unforgettable: model id for the planner complete. "
+            "Falls back to UNFORGETTABLE_PLANNER_MODEL, then the inner model."
+        ),
+    )
+    voter_model: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Unforgettable: model id for the approval voter "
+            "(CLI review / admit). Falls back to UNFORGETTABLE_VOTER_MODEL."
+        ),
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",

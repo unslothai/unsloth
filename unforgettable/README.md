@@ -60,6 +60,8 @@ Optional extras on the same request (also first-class fields on Studio’s chat 
 | `max_clones` / `max_sim_turns` | Budgets (defaults 1 clone / 8 sim turns) |
 | `adapter_id` | Attach a trained sidecar adapter and shrink standing playbooks it already learned |
 | `skip_standing` | Skip compiled standing inject |
+| `planner` | `"on"` asks a larger supervisor model for a temporary plan (this episode only) |
+| `planner_model` | Model id for that planner complete (else `UNFORGETTABLE_PLANNER_MODEL`, else the inner model) |
 
 The inner model can call memory tools. Durable facts must go through those tools — chat history is not B, and a successful generate is stored as a short grade, not the full completion.
 
@@ -89,6 +91,8 @@ python -m unforgettable get <id>
 python -m unforgettable admissions --limit 50
 python -m unforgettable admit <id>          # promote a proposed extract
 python -m unforgettable reject <id>
+python -m unforgettable review              # approval voter over proposed rows
+python -m unforgettable mine                # batch voter + optional new proposed drafts
 python -m unforgettable compact             # preview (default)
 python -m unforgettable compact --apply     # mutate
 python -m unforgettable compiled
@@ -114,6 +118,19 @@ python -m unforgettable rollback
 ```
 
 Promote never merges into base weights. Rollback discards the promoted row; files stay on disk.
+
+### Optional supervisor (approver + planner)
+
+A larger model can judge promotions and (separately) sketch a plan for one episode. It is not trained. It does not replace `admit()` or the act/sim policy.
+
+```bash
+export UNFORGETTABLE_VOTER=advisory   # or binding (deny blocks admit/promote)
+export UNFORGETTABLE_SUPERVISOR_URL=http://127.0.0.1:8080/supervise
+python -m unforgettable review --apply
+python -m unforgettable mine --apply
+```
+
+Planner is per request: set `planner: "on"` on the chat payload, or `UNFORGETTABLE_PLANNER=on` for Studio. The plan is working memory only.
 
 ## Brief architecture
 

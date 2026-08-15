@@ -73,6 +73,125 @@ def test_admit_after_compact_strips_deprecate_suffix(db_path):
     assert "[deprecated]" not in restored["body"]
 
 
+class _ScriptedSupervisor:
+    def __init__(self, text: str):
+        self.text = text
+        self.calls = []
+
+    async def supervise(self, purpose, messages, *, model=None, max_tokens=400):
+        self.calls.append(purpose)
+        return self.text
+
+
+def test_admit_advisory_prints_vote_and_admits(db_path, monkeypatch, capsys):
+    rec = insert_record(
+        kind="claim",
+        title="Inferred rate",
+        body="maybe 10",
+        provenance="infer",
+        status="proposed",
+        db_path=db_path,
+    )
+    host = _ScriptedSupervisor('{"decision":"deny","reason":"weak"}')
+    monkeypatch.setenv("UNFORGETTABLE_VOTER", "advisory")
+    monkeypatch.setattr("unforgettable.cli.resolve_supervisor_host", lambda: host)
+    assert main(["admit", rec["id"], "--db", str(db_path)]) == 0
+    assert get_record(rec["id"], db_path=db_path)["status"] == "active"
+    err = capsys.readouterr().err
+    assert "voter deny" in err
+    assert host.calls == ["vote"]
+
+
+def test_admit_binding_deny_refuses(db_path, monkeypatch, capsys):
+    rec = insert_record(
+        kind="claim",
+        title="Inferred rate",
+        body="maybe 10",
+        provenance="infer",
+        status="proposed",
+        db_path=db_path,
+    )
+    host = _ScriptedSupervisor('{"decision":"deny","reason":"weak"}')
+    monkeypatch.setenv("UNFORGETTABLE_VOTER", "binding")
+    monkeypatch.setattr("unforgettable.cli.resolve_supervisor_host", lambda: host)
+    assert main(["admit", rec["id"], "--db", str(db_path)]) == 2
+    assert get_record(rec["id"], db_path=db_path)["status"] == "proposed"
+    assert "voter deny" in capsys.readouterr().err
+    assert main(["admit", rec["id"], "--force", "--db", str(db_path)]) == 0
+    assert get_record(rec["id"], db_path=db_path)["status"] == "active"
+
+
+def test_review_apply_admits_and_rejects(db_path, monkeypatch, capsys):
+    keep = insert_record(
+        kind="error_fix",
+        title="Keep me",
+        body="use pytest",
+        provenance="world",
+        status="proposed",
+        db_path=db_path,
+    )
+    drop = insert_record(
+        kind="claim",
+        title="Drop me",
+        body="noise",
+        provenance="infer",
+        status="proposed",
+        db_path=db_path,
+    )
+    answers = {
+        keep["id"]: '{"decision":"allow","reason":"solid"}',
+        drop["id"]: '{"decision":"deny","reason":"junk"}',
+    }
+
+    class _ById:
+        async def supervise(self, purpose, messages, *, model=None, max_tokens=400):
+            payload = json.loads(messages[-1]["content"])
+            return answers[payload["id"]]
+
+    monkeypatch.setenv("UNFORGETTABLE_VOTER", "advisory")
+    monkeypatch.setattr("unforgettable.cli.resolve_supervisor_host", lambda: _ById())
+    assert main(["review", "--apply", "--db", str(db_path)]) == 0
+    assert get_record(keep["id"], db_path=db_path)["status"] == "active"
+    assert get_record(drop["id"], db_path=db_path)["status"] == "rejected"
+
+
+def test_mine_inserts_proposed_draft(db_path, monkeypatch, capsys):
+    existing = insert_record(
+        kind="claim",
+        title="Old",
+        body="stay proposed",
+        provenance="infer",
+        status="proposed",
+        db_path=db_path,
+    )
+
+    class _Mine:
+        async def supervise(self, purpose, messages, *, model=None, max_tokens=400):
+            assert purpose == "mine"
+            return json.dumps(
+                [
+                    {"id": existing["id"], "decision": "allow", "reason": "ok"},
+                    {
+                        "kind": "procedure",
+                        "title": "Format with ruff",
+                        "body": "ruff format .",
+                    },
+                ]
+            )
+
+    monkeypatch.setenv("UNFORGETTABLE_VOTER", "advisory")
+    monkeypatch.setattr("unforgettable.cli.resolve_supervisor_host", lambda: _Mine())
+    assert main(["mine", "--apply", "--db", str(db_path)]) == 0
+    assert get_record(existing["id"], db_path=db_path)["status"] == "active"
+    from unforgettable.store.records import list_records
+
+    procs = list_records(kinds=["procedure"], db_path=db_path)
+    assert len(procs) == 1
+    assert procs[0]["status"] == "proposed"
+    assert procs[0]["provenance"] == "infer"
+    assert procs[0]["title"] == "Format with ruff"
+
+
 def test_admit_flips_proposed_to_active(db_path):
     rec = insert_record(
         kind="claim",

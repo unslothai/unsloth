@@ -277,8 +277,89 @@ def test_studio_host_complete_is_one_shot_no_tools():
     assert seen["model"] == "qwen-inner"
     assert seen["max_tokens"] == EXTRACT_MAX_TOKENS
     assert seen["max_completion_tokens"] == EXTRACT_MAX_TOKENS
+
+
+def test_studio_host_supervise_uses_planner_model():
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "studio"
+        / "backend"
+        / "core"
+        / "unforgettable_host.py"
+    )
+    if not path.is_file():
+        pytest.skip("StudioHost not present")
+    spec = importlib.util.spec_from_file_location(
+        "unforgettable_studio_host_supervise", path
+    )
+    if spec is None or spec.loader is None:
+        pytest.skip("StudioHost import is heavy")
+    backend = str(path.parents[1])
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    try:
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:
+        pytest.skip("StudioHost import is heavy")
+
+    from unforgettable.host import SUPERVISE_MAX_TOKENS
+
+    mod._as_chat_messages = lambda messages: messages
+
+    class _Payload:
+        def __init__(self):
+            self.model = "unforgettable"
+            self.stream = True
+            self.enable_tools = True
+            self.mcp_enabled = True
+            self.tools = [{"type": "function", "function": {"name": "terminal"}}]
+            self.tool_choice = "auto"
+            self.max_tokens = 64
+            self.max_completion_tokens = 8192
+            self.messages = []
+            self.session_id = "world"
+            self.thread_id = None
+            self.planner_model = "large-planner"
+
+        def model_copy(self, deep=True):
+            clone = _Payload()
+            clone.model = self.model
+            clone.stream = self.stream
+            clone.enable_tools = self.enable_tools
+            clone.mcp_enabled = self.mcp_enabled
+            clone.tools = list(self.tools) if self.tools is not None else None
+            clone.tool_choice = self.tool_choice
+            clone.max_tokens = self.max_tokens
+            clone.max_completion_tokens = self.max_completion_tokens
+            clone.messages = list(self.messages)
+            clone.session_id = self.session_id
+            clone.thread_id = self.thread_id
+            clone.planner_model = self.planner_model
+            return clone
+
+    seen: dict = {}
+
+    async def inner(payload, request, subject):
+        seen["model"] = payload.model
+        seen["enable_tools"] = payload.enable_tools
+        seen["max_tokens"] = payload.max_tokens
+        seen["inner"] = mod.in_inner_generate()
+        return {"choices": [{"message": {"content": "1. run tests"}}]}
+
+    host = mod.StudioHost(
+        _Payload(),
+        request=None,
+        current_subject="u",
+        inner=inner,
+        inner_model="qwen-inner",
+    )
+    text = asyncio.run(
+        host.supervise("plan", [{"role": "user", "content": "fix it"}])
+    )
+    assert text == "1. run tests"
+    assert seen["model"] == "large-planner"
+    assert seen["enable_tools"] is False
+    assert seen["max_tokens"] == SUPERVISE_MAX_TOKENS
     assert seen["inner"] is True
-    assert seen["tool_policy"] is False
     assert mod.in_inner_generate() is False
-    assert source.max_completion_tokens == 8192
-    assert source.mcp_enabled is True

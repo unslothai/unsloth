@@ -25,6 +25,8 @@ OnChunk = Callable[[bytes], Awaitable[None] | None]
 
 # One-shot extract completion cap. Not the user's generate budget.
 EXTRACT_MAX_TOKENS = 800
+# One-shot supervisor (vote / plan / mine). Smaller than extract.
+SUPERVISE_MAX_TOKENS = 400
 
 RUN_ACTION_NAMES = frozenset({"python", "terminal"})
 RUN_ACTION_TIMEOUT_SEC = 300
@@ -84,6 +86,18 @@ class Host(Protocol):
     ) -> str:
         """One-shot text completion. No tools, no memory inject, no act/sim.
         Used by llm_extract. Must not re-enter episode.run."""
+        ...
+
+    async def supervise(
+        self,
+        purpose: str,
+        messages: list[dict[str, Any]],
+        *,
+        model: Optional[str] = None,
+        max_tokens: int = SUPERVISE_MAX_TOKENS,
+    ) -> str:
+        """Optional. One-shot vote/plan/mine. No tools, no episode loop.
+        Missing → getattr skip (voter abstains, planner off)."""
         ...
 
     async def run_action(
