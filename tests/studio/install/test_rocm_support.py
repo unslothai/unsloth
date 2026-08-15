@@ -2148,7 +2148,11 @@ class TestGfx1102Rocm64Floor:
     @staticmethod
     def _rocminfo_stub(*arches: str) -> str:
         """A rocminfo stub whose agents repeat their gfx token across Name and ISA."""
-        blocks = ["Agent 1", "  Name:                    AMD Ryzen 9 7950X", "  Device Type:             CPU"]
+        blocks = [
+            "Agent 1",
+            "  Name:                    AMD Ryzen 9 7950X",
+            "  Device Type:             CPU",
+        ]
         for n, gfx in enumerate(arches, start = 2):
             blocks += [
                 "*******",
