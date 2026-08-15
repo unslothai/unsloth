@@ -501,14 +501,9 @@ def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.update(json.loads(request.content.decode("utf-8")))
-        if provider_type == "openai":
-            # OpenAI routes through /v1/responses, which emits typed SSE frames.
-            sse = b"event: response.completed\ndata: {}\n\n"
-        else:
-            sse = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'
         return httpx.Response(
             200,
-            content = sse,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
             headers = {"content-type": "text/event-stream"},
         )
 

@@ -157,7 +157,7 @@ jobs:
           - {os: macos-26, mode: mask,  delivery: file,  flags: '',           experimental: true,  overlay: true}
           # Intel pins python 3.12 and its /usr/bin/git is not CLT-provided, so it
           # survives masking. Informational only.
-          - {os: macos-15-intel, mode: mask, delivery: file, flags: '--no-torch', experimental: true,  overlay: true, allow_working: 'git'}
+          - {os: macos-15-intel, mode: mask, delivery: file, flags: '',       experimental: true,  overlay: true, allow_working: 'git'}
 
     steps:
       # checkout FIRST: it needs a working git, which masking then takes away.
