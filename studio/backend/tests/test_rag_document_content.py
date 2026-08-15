@@ -504,6 +504,57 @@ def test_a_file_with_invalid_utf8_is_shown_but_not_editable(rag_home, stub_embed
     assert path.read_bytes().startswith(b"caf\xe9"), "the file itself is untouched"
 
 
+def test_an_edit_matching_another_source_is_refused(rag_home, stub_embeddings):
+    """A normal upload dedupes by content hash, so a scope never holds the same bytes twice.
+    A replacement cannot take that path, so this is the guard that keeps the invariant: without
+    it the same content is indexed under two documents and retrieval returns both copies."""
+    # Bytes-exact: the PUT writes the payload verbatim, so the hashes only line up if the
+    # ingested file was not newline-translated on the way in (Path.write_text on Windows).
+    first_id = _ingest_bytes("one.md", b"shared body\n")
+    second_id = _ingest_bytes("two.md", b"different body\n")
+    client = _client()
+
+    res = client.put(f"/api/rag/documents/{second_id}/content", json = {"text": "shared body\n"})
+    assert res.status_code == 409
+    assert "identical to another" in res.json()["detail"]
+    # Neither source was touched, and the refused text was never indexed twice.
+    assert _document_row(first_id) is not None
+    assert _document_row(second_id)["status"] == "completed", "the refusal must release the claim"
+    # The refused text exists once, under the source that already had it. ("body" alone
+    # matches both files lexically, so this counts documents carrying the *shared* text.)
+    matches = [r for r in _search(client, "shared body") if "shared body" in r["text"]]
+    assert [r["documentId"] for r in matches] == [first_id]
+
+
+def test_a_failed_retirement_withdraws_the_replacement(rag_home, stub_embeddings, monkeypatch):
+    """If settling raises with the old row still there, reporting success would leave the old
+    and the edited copy both searchable -- the claim release restores the old row afterwards.
+    Exactly one document has to survive, so the replacement is withdrawn instead."""
+    from core.rag import ingestion
+
+    _, doc_id, _ = _ingest("notes.md", "kickoff is on the third\n")
+    client = _client()
+
+    real_delete = ingestion.store.delete_document
+
+    def fail_the_retirement(conn, target, **kwargs):
+        if target == doc_id:
+            raise RuntimeError("database is locked")
+        return real_delete(conn, target, **kwargs)
+
+    monkeypatch.setattr(ingestion.store, "delete_document", fail_the_retirement)
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "replacement\n"})
+    assert res.status_code == 200
+    new_id = res.json()["documentId"]
+    _await_job(res.json()["jobId"], expect = "cancelled")
+
+    monkeypatch.setattr(ingestion.store, "delete_document", real_delete)
+    assert _document_row(new_id) is None, "the unsettled replacement was published anyway"
+    assert _document_row(doc_id) is not None, "the original must survive"
+    assert not _search(client, "replacement"), "both copies are searchable"
+    assert _search(client, "kickoff third")
+
+
 def _ingest_bytes(filename: str, body: bytes) -> str:
     """Index a managed upload whose exact bytes matter, without the newline translation
     ``Path.write_text`` applies on Windows."""

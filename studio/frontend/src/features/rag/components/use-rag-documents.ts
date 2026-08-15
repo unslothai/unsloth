@@ -738,6 +738,16 @@ export function useRagDocuments(
           documentId,
           scope?.type === "project" ? scope.projectId : undefined,
         );
+        // Again, now the row is actually gone. The invalidation above only covers
+        // requests already in flight; a poll starting between it and this line takes
+        // the newest ticket, still reads the row on the server, and would put it back
+        // on screen when it lands. Same mounted-scope gate as the first bump, and the
+        // marker handed back with it, or a scope whose caller starts no replacement
+        // refresh would stop polling.
+        if (forCurrentScope) {
+          refreshSeq.current += 1;
+          refreshInFlight.current = false;
+        }
         return true;
       } catch (err) {
         // `restore` is only set for the mounted scope, so a stale batch's

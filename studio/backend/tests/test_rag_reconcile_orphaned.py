@@ -114,6 +114,51 @@ def test_already_failed_doc_has_its_chunks_dropped(rag_conn):
     assert _chunk_count(rag_conn, "failed_doc") == 0
 
 
+def test_a_crashed_edit_releases_the_claim_on_the_source_it_replaced(rag_conn):
+    """An edit claims its original with status='running' and the worker hands that claim back
+    on every non-successful exit -- but a crash never reaches that finally, and the
+    relationship lived only in the dead process. The replacement row records it, so startup
+    is the last thing able to release the original; left claimed it polls as indexing forever
+    and refuses both a retry and a removal."""
+    _add_doc(rag_conn, "kb_a", "original", "running", ["alpha bravo"])
+    store.create_document(
+        rag_conn,
+        scope = "kb_a",
+        filename = "edited.txt",
+        sha256 = "edited",
+        document_id = "edited",
+        replaces_document_id = "original",
+    )
+    _orphan_job(rag_conn, "edited", "kb_a")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
+
+    # The replacement never landed, so it is failed and carries no citable chunks...
+    assert store.get_document(rag_conn, "edited")["status"] == "failed"
+    assert _chunk_count(rag_conn, "edited") == 0
+    # ...and the source it was replacing is editable again, with its own chunks intact.
+    assert store.get_document(rag_conn, "original")["status"] == "completed"
+    assert _chunk_count(rag_conn, "original") == 1
+
+
+def test_reconcile_leaves_an_unclaimed_replaced_source_alone(rag_conn):
+    # The release is guarded on 'running': a replaced document that was never claimed (the
+    # stale-embedder dedupe path re-ingests a 'completed' row) must not be rewritten.
+    _add_doc(rag_conn, "kb_a", "prior", "failed", [])
+    store.create_document(
+        rag_conn,
+        scope = "kb_a",
+        filename = "redo.txt",
+        sha256 = "redo",
+        document_id = "redo",
+        replaces_document_id = "prior",
+    )
+    _orphan_job(rag_conn, "redo", "kb_a")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
+    assert store.get_document(rag_conn, "prior")["status"] == "failed"
+
+
 def test_live_foreign_lease_is_preserved_then_reconciled_after_expiry(rag_conn):
     _add_doc(rag_conn, "kb_a", "foreign", "processing", ["alpha bravo"])
     _orphan_job(rag_conn, "foreign", "kb_a")

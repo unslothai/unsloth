@@ -257,6 +257,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
     )
+    # The source an edit is replacing, held on the replacement row rather than only in the
+    # worker's arguments. A crash between claiming the original and retiring it would
+    # otherwise lose the relationship with the dead process, leaving the original stuck
+    # 'running' with nothing able to work out what it was waiting for.
+    if "replaces_document_id" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN replaces_document_id TEXT")
     # After the ALTER that adds the column on an older database. Partial, so it holds only folder-owned rows and
     # is empty with nothing linked, which keeps the lexical fast-path gate an index probe rather than a scan.
     conn.execute(
@@ -425,8 +431,20 @@ def reconcile_orphaned_ingestion_jobs() -> int:
         ).fetchall()
         for row in rows:
             doc = conn.execute(
-                "SELECT status FROM documents WHERE id=?", (row["document_id"],)
+                "SELECT status, replaces_document_id FROM documents WHERE id=?",
+                (row["document_id"],),
             ).fetchone()
+            # An edit claims its original with status='running' and the worker hands that
+            # claim back on every non-successful exit -- but a crash never reaches that
+            # finally, and the relationship died with the process. The replacement row
+            # records it, so release the original here: whichever branch below runs, this
+            # job did not retire it, and left claimed it would poll as indexing forever
+            # and refuse both a retry and a removal.
+            if doc is not None and doc["replaces_document_id"]:
+                conn.execute(
+                    "UPDATE documents SET status='completed' WHERE id=? AND status='running'",
+                    (doc["replaces_document_id"],),
+                )
             if doc is not None and doc["status"] == "completed":
                 # The worker finished indexing before the crash but did not retire the job row: mark it completed
                 # and keep its chunks, so the UI does not flag a searchable document as a failed ingestion.

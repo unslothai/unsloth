@@ -1432,6 +1432,24 @@ def update_document_content(
     scope = doc["scope"]
     _raise_if_scope_retired(scope, "The owner of this source is being deleted")
 
+    # An ordinary upload dedupes by content hash, so a scope never holds the same bytes
+    # twice. A replacement cannot go through that path -- start_ingestion's dedupe branch
+    # owns `replaces` and its early return would drop it -- so saving this source into
+    # another one's exact bytes would index the same content under two documents, and
+    # retrieval (which dedupes only by chunk id) would return both copies. Refused rather
+    # than silently merged: the two sources keep their own names, and quietly retiring the
+    # one being edited would make it vanish into a file the user did not open.
+    conn = _rag_connection()
+    try:
+        twin = store.document_by_hash(conn, scope, hashlib.sha256(body).hexdigest())
+    finally:
+        conn.close()
+    if twin is not None and twin != document_id:
+        raise HTTPException(
+            status_code = 409,
+            detail = "This edit would make the source identical to another one in this project.",
+        )
+
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     with open(stored_path, "wb") as handle:
