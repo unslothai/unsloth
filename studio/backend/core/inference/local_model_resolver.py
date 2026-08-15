@@ -87,6 +87,19 @@ def _advertised_loader_id(info) -> Optional[str]:
     return public_model_id(raw_id) or raw_id
 
 
+def _index_key(value: str) -> str:
+    """The index key for an id: exact for a filesystem path, case-folded for a repo id.
+
+    Two directories differing only by case are different weights on a case-sensitive
+    filesystem, and ``/v1/models`` publishes both, so folding them together let a request
+    for one resolve the other's checkpoint. Repo ids stay case-insensitive, which is how
+    clients name them, and the lenient key is still indexed as a fallback for the
+    case-insensitive filesystems where the two spellings are the same directory.
+    """
+    stripped = value.strip()
+    return stripped if _is_abs_path_id(stripped) else stripped.lower()
+
+
 def _resolve_load_dir(p):
     """The concrete dir holding the GGUFs. For an HF cache repo (``models--*``
     with ``snapshots/``) this is the latest snapshot dir, so /load takes the
@@ -198,22 +211,21 @@ _SAFETENSORS_DTYPE_BYTES = {
 def _tensor_span_matches_shape(entry: dict, span: int) -> bool:
     """Whether a tensor's declared byte span agrees with its dtype and shape.
 
-    Only for dtypes of known width: a shape whose elements do not fill the span is
-    metadata the safetensors loader rejects, but an unrecognized dtype is more likely a
-    format this table predates than a corrupt file, so it is left to the extent check.
+    Every tensor needs a shape, whatever its dtype, since the loader rejects an entry
+    without one. Only the byte count is conditional: an unrecognized dtype is more likely
+    a format this table predates than a corrupt file, so its span is left to the extent
+    check rather than withholding a checkpoint that would load.
     """
-    width = _SAFETENSORS_DTYPE_BYTES.get(entry.get("dtype"))
-    if width is None:
-        return True
     shape = entry.get("shape")
     if not isinstance(shape, list):
-        return True
+        return False
     elements = 1
     for dimension in shape:
         if not isinstance(dimension, int) or dimension < 0:
             return False
         elements *= dimension
-    return elements * width == span
+    width = _SAFETENSORS_DTYPE_BYTES.get(entry.get("dtype"))
+    return True if width is None else elements * width == span
 
 
 def _safetensors_file_is_intact(path) -> bool:
@@ -413,7 +425,12 @@ def _quantizer_runtime_present(quant_method: str) -> bool:
         return False
     try:
         from importlib.util import find_spec
-        return any(find_spec(name) is not None for name in modules)
+        from core._torchao_stub import is_stubbed
+
+        # find_spec succeeds against the Windows ROCm stubs, which cannot dequantize.
+        return any(
+            find_spec(name) is not None and not is_stubbed(name) for name in modules
+        )
     except Exception:
         return False
 
@@ -425,11 +442,12 @@ def _mlx_implements_architecture(config: dict) -> bool:
     families, mlx-vlm carries llava and friends, and either can serve a request. A
     family neither implements (XLNet, say) satisfies every other gate and then fails in
     FastMLXModel.from_pretrained, once the swap has unloaded the resident model.
-    Absent a readable model_type there is nothing to check, so the other gates decide.
+    A checkpoint with no readable model_type is withheld rather than trusted: it is the
+    field the loader selects an implementation from, so there is nothing to load without it.
     """
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or not model_type.strip():
-        return True
+        return False
     # one module per family, as the loader resolves it; find_spec keeps mlx off this path.
     name = model_type.strip().lower().replace("-", "_")
     if not name.isidentifier():
@@ -713,6 +731,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     from core.inference.model_ids import public_model_id
 
     index: dict[str, _LocalGgufEntry] = {}
+    folded: list[tuple[str, _LocalGgufEntry]] = []
     seen_hf: set[str] = set()
 
     try:
@@ -802,11 +821,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             public_model_id(raw_id),
         ):
             if key:
-                index.setdefault(key.strip().lower(), entry)
+                index.setdefault(_index_key(key), entry)
+                folded.append((key.strip().lower(), entry))
         # Other revisions of the same repo resolve to their own weights, so a pin on
         # one keeps working after Hugging Face writes a newer snapshot.
         for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):
-            index.setdefault(name.strip().lower(), sibling_entry)
+            index.setdefault(_index_key(name), sibling_entry)
+            folded.append((name.strip().lower(), sibling_entry))
+    # last: one model's folded spelling is another's exact key when two paths differ by case.
+    for key, entry in folded:
+        index.setdefault(key, entry)
     return index
 
 
@@ -1034,7 +1058,8 @@ def _resolve_from_index(
 ) -> Optional[tuple[str, Optional[str], str]]:
     """Resolve *requested* against one immutable published index mapping."""
     try:
-        entry = index.get(requested.lower())
+        # exact before folded, so a case-distinct path resolves its own weights.
+        entry = index.get(_index_key(requested)) or index.get(requested.strip().lower())
         if entry is not None:
             variant = entry.variants[0] if entry.variants else None
             return entry.load_path, variant, entry.loader_id
@@ -1042,7 +1067,7 @@ def _resolve_from_index(
         base, sep, variant = requested.rpartition(":")
         if not sep:
             return None
-        entry = index.get(base.strip().lower())
+        entry = index.get(_index_key(base)) or index.get(base.strip().lower())
         if entry is None:
             return None
         wanted = variant.strip().lower()

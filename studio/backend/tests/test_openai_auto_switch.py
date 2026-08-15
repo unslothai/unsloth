@@ -28,12 +28,17 @@ _REAL_HOST_HAS_NON_GGUF_BACKEND = resolver._host_has_a_non_gguf_backend
 
 @pytest.fixture(autouse = True)
 def _host_serves_non_gguf(monkeypatch):
-    """Pin the host-capability gate for the classifier tests.
+    """Pin the host-capability gates for the classifier tests.
 
     They are about the config rules, not about whether this machine happens to have
-    torch or MLX installed. The gate itself is covered by its own test below.
+    torch or MLX installed, and an unpinned MLX verdict made the whole file pass or fail
+    by platform. Each gate is covered by its own test below.
     """
+    from utils.hardware import hardware as hw
+
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+    # the device itself, not the helper, so a test setting DEVICE for itself still wins.
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -7976,7 +7981,7 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
 
 # Chat generation is the only route these entries feed, so the classifier requires a
 # generative architecture; every fixture below is a plain causal LM unless it says otherwise.
-_CHAT_CONFIG = '{"architectures": ["Qwen3ForCausalLM"]}'
+_CHAT_CONFIG = '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}'
 
 
 def _safetensors_bytes(nbytes = 32):
@@ -8048,7 +8053,7 @@ def test_an_installed_mlx_model_is_indexed_and_resolves(tmp_path, monkeypatch):
 
     path = _local_checkpoint(tmp_path)
     (path / "config.json").write_text(
-        '{"architectures": ["Qwen3ForCausalLM"], "quantization": {"group_size": 64, "bits": 4}}'
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization": {"group_size": 64, "bits": 4}}'
     )
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
@@ -8316,7 +8321,7 @@ def test_mlx_quantized_weights_are_offered_only_on_an_mlx_host(tmp_path, monkeyp
 
     path = _local_checkpoint(tmp_path)
     (path / "config.json").write_text(
-        '{"architectures": ["Qwen3ForCausalLM"], "quantization": {"group_size": 64, "bits": 4}}'
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization": {"group_size": 64, "bits": 4}}'
     )
     info = SimpleNamespace(id = str(path), path = str(path))
 
@@ -8934,6 +8939,52 @@ def test_a_tensor_span_that_contradicts_its_shape_is_withheld(tmp_path):
     assert resolver.local_servable_model(info) == (False, ())
     write({"dtype": "F4_SOMETHING_NEW", "shape": [8], "data_offsets": [0, 4]})
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_mlx_host_withholds_a_config_with_no_model_type(tmp_path, monkeypatch):
+    # codex P2: model_type is what the MLX loader selects an implementation from.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    path = _local_checkpoint(tmp_path, "NoModelType")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text('{"architectures": ["XLNetLMHeadModel"]}')
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_stubbed_quantizer_runtime_does_not_count_as_installed(monkeypatch):
+    # codex P2: find_spec succeeds against the Windows ROCm stubs, which cannot dequantize.
+    import core._torchao_stub as stub
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
+    config = {"quantization_config": {"quant_method": "torchao"}}
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: object())
+    monkeypatch.setattr(stub, "is_stubbed", lambda _name: False)
+    assert resolver._quantization_suits_host(config) is True
+    monkeypatch.setattr(stub, "is_stubbed", lambda _name: True)
+    assert resolver._quantization_suits_host(config) is False
+
+
+def test_two_directories_differing_only_by_case_keep_their_own_weights(tmp_path, monkeypatch):
+    # codex P1: folding path keys let a request for one resolve the other's checkpoint.
+    # built directly, so the collision is exercised where the test filesystem folds case.
+    paths = ("/models/Foo", "/models/foo")
+    entries = {path: resolver._LocalGgufEntry(path, path, (), is_gguf = False) for path in paths}
+    index = {}
+    for path in paths:
+        index.setdefault(resolver._index_key(path), entries[path])
+    for path in paths:
+        index.setdefault(path.lower(), entries[path])
+
+    for path in paths:
+        resolved = resolver._resolve_from_index(path, index)
+        assert resolved is not None
+        assert resolved[0] == path, path
+
+    # a repo id stays case-insensitive, which is how clients name one.
+    repo = resolver._LocalGgufEntry("org/Chat", "/models/chat", (), is_gguf = False)
+    repo_index = {resolver._index_key("org/Chat"): repo}
+    assert resolver._resolve_from_index("ORG/chat", repo_index)[0] == "/models/chat"
 
 
 def test_an_unreadable_mlx_registry_withholds_the_model(tmp_path, monkeypatch):
