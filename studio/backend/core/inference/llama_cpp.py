@@ -14904,9 +14904,7 @@ class LlamaCppBackend:
                     # a cpu-resident kv is not fungible with weights the gpus can take
                     _kv_on_host = not _kv_offload_from_args(extra_args)
                     _gpu_side_bytes = (
-                        model_size
-                        + _mtp_reserve_bytes
-                        + (0 if _kv_on_host else _guard_kv_bytes)
+                        model_size + _mtp_reserve_bytes + (0 if _kv_on_host else _guard_kv_bytes)
                     )
                     # clamped first, so spare vram cannot absorb what is pinned to the host
                     _host_bytes = max(0, _gpu_side_bytes - _fit_vram_mib * 1024 * 1024)
