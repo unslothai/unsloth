@@ -1269,7 +1269,11 @@ def _ltx23_assembly_stubs(monkeypatch, tmp_path):
             _FakeLTX2Pipeline.last = kwargs
 
         @staticmethod
-        def load_config(base_repo, token = None):
+        # An exact hand-written signature, so it follows the production one: the assembly bypasses
+        # the caller's guarded pipe_kwargs, and this base-repo read is the first of the calls that
+        # a load nobody asked for must not turn into a fetch.
+        def load_config(base_repo, token = None, local_files_only = False):
+            _FakeLTX2Pipeline.last_config_kwargs = {"local_files_only": local_files_only}
             return {
                 "scheduler": ["diffusers", "_Loaded"],
                 "tokenizer": ["transformers", "_Loaded"],

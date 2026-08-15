@@ -1344,7 +1344,21 @@ class DiffusionBackend:
         pin_cuda_ordinal(state.placed_ordinal)
         return target
 
-    def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
+    def _resolve_gguf_path(
+        self,
+        repo_id: str,
+        gguf_filename: str,
+        hf_token: Optional[str],
+        local_files_only: bool = False,
+    ) -> str:
+        """The local path of this pick's checkpoint, downloading it when it is not on disk.
+
+        ``local_files_only`` makes both resolutions below cache lookups. The prefetch already
+        staged this file under the same flag, so the promise looks kept -- but this call re-resolves
+        the revision against the Hub, and a checkpoint republished upstream since the cache was
+        filled (or removed between the staging and here) is a multi-GB pull taken under the
+        generation lock, after the resident pipeline was evicted, where unload cannot preempt it and
+        progress already reads 100%. It is the last unrestricted byte-mover on the image path."""
         local_root = Path(repo_id).expanduser()
         if local_root.exists():
             return str(resolve_local_gguf_child(local_root, gguf_filename))
@@ -1367,13 +1381,23 @@ class DiffusionBackend:
                 if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                     try:
                         return hf_hub_download(
-                            repo_id, gguf_filename, token = hf_token, cache_dir = None
+                            repo_id,
+                            gguf_filename,
+                            token = hf_token,
+                            cache_dir = None,
+                            local_files_only = local_files_only,
                         )
                     except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
                         return elsewhere
         except Exception:  # noqa: BLE001 — an unreadable cache is not a verdict, just download
             pass
-        return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir)
+        return hf_hub_download(
+            repo_id,
+            gguf_filename,
+            token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
 
     def _dense_quant_prefetch_needed(
         self,
@@ -3182,7 +3206,9 @@ class DiffusionBackend:
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
-                    self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
+                    self._resolve_gguf_path(
+                        repo_id, gguf_filename, hf_token, local_files_only = local_files_only
+                    )
                     if kind in ("gguf", "single_file")
                     else None
                 )
@@ -3874,6 +3900,9 @@ class DiffusionBackend:
                                 fetch_base,
                                 dtype,
                                 hf_token = hf_token,
+                                # The branch never sees pipe_kwargs, so the one keyword that keeps
+                                # the no-download promise has to be handed over with the rest.
+                                local_files_only = local_files_only,
                                 text_encoder = te_prequant_pipe_kwargs(
                                     fam,
                                     fetch_base,
@@ -3964,6 +3993,10 @@ class DiffusionBackend:
                                 dtype,
                                 hf_token = hf_token,
                                 transformer = transformer,
+                                # Same reason as the full-pipeline branch: the single file supplies
+                                # only the denoiser, so the encoder, VAE and tokenizer below are
+                                # still GB this load promised not to fetch.
+                                local_files_only = local_files_only,
                                 # Same pre-cast TE hand-in as the full-pipeline branch.
                                 text_encoder = te_prequant_pipe_kwargs(
                                     fam,
@@ -4577,6 +4610,9 @@ class DiffusionBackend:
                 hf_token = hf_token,
                 transformer = transformer,
                 text_encoder = krea_te,
+                # ``base_local_dir`` is None whenever nothing was staged, and then this is a repo
+                # id: the same guard the pipe_kwargs below carry for every other family.
+                local_files_only = local_files_only,
             )
             pipe.to(device)
             return pipe

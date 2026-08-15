@@ -36,11 +36,15 @@ logger = get_logger(__name__)
 KREA2_FAMILY_NAME = "krea-2"
 
 
-def load_krea2_tokenizer(repo_id: str, hf_token: Optional[str] = None):
+def load_krea2_tokenizer(
+    repo_id: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+):
     """The Krea 2 tokenizer, tolerating the repo's transformers-5.x tokenizer config."""
     from transformers import AutoTokenizer
 
-    kwargs: dict[str, Any] = {"subfolder": "tokenizer"}
+    kwargs: dict[str, Any] = {"subfolder": "tokenizer", "local_files_only": local_files_only}
     if hf_token:
         kwargs["token"] = hf_token
     try:
@@ -64,11 +68,12 @@ def load_krea2_text_encoder(
     repo_id: str,
     dtype,
     hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ):
     """The Qwen3-VL text encoder, remapping 5.x ``rope_parameters`` for a 4.x runtime."""
     from transformers import AutoConfig, Qwen3VLModel
 
-    kwargs: dict[str, Any] = {"subfolder": "text_encoder"}
+    kwargs: dict[str, Any] = {"subfolder": "text_encoder", "local_files_only": local_files_only}
     if hf_token:
         kwargs["token"] = hf_token
     config = AutoConfig.from_pretrained(repo_id, **kwargs)
@@ -76,7 +81,11 @@ def load_krea2_text_encoder(
     return Qwen3VLModel.from_pretrained(repo_id, config = config, dtype = dtype, **kwargs)
 
 
-def _load_model_index(repo_id: str, hf_token: Optional[str] = None) -> dict[str, Any]:
+def _load_model_index(
+    repo_id: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> dict[str, Any]:
     """model_index.json as a dict, from a local path or the Hub cache."""
     is_local_dir = False
     try:
@@ -92,7 +101,12 @@ def _load_model_index(repo_id: str, hf_token: Optional[str] = None) -> dict[str,
         raise FileNotFoundError(f"model_index.json not found in local model dir {repo_id}")
     from huggingface_hub import hf_hub_download
 
-    path = hf_hub_download(repo_id, "model_index.json", token = hf_token or None)
+    path = hf_hub_download(
+        repo_id,
+        "model_index.json",
+        token = hf_token or None,
+        local_files_only = local_files_only,
+    )
     return json.loads(Path(path).read_text(encoding = "utf-8"))
 
 
@@ -103,6 +117,7 @@ def load_krea2_pipeline(
     transformer = None,
     with_transformer: bool = True,
     text_encoder = None,
+    local_files_only: bool = False,
 ):
     """A ready ``Krea2Pipeline`` for ``repo_id`` (still on CPU; caller places it).
 
@@ -112,6 +127,13 @@ def load_krea2_pipeline(
     pre-cast TE path (diffusion_te_prequant) hand in an already-built encoder, skipping
     the dense Qwen3-VL download. The remaining components (VAE, tokenizer, scheduler)
     come from the repo.
+
+    ``local_files_only`` is a load nobody asked for. This assembler is reached with a REPO ID
+    rather than a staged snapshot dir and builds every component itself, so without the flag a
+    switch that verified locality from the outside can still pull the 26 GB transformer, the
+    8.88 GB Qwen3-VL encoder and the VAE here, after the resident pipeline was evicted. Every
+    component load below therefore resolves from the cache or raises, which is what the
+    caller's ``pipe_kwargs`` already does for every non-Krea family.
     """
     import diffusers
 
@@ -124,20 +146,30 @@ def load_krea2_pipeline(
         )
 
     token = hf_token or None
-    tokenizer = load_krea2_tokenizer(repo_id, hf_token = token)
+    tokenizer = load_krea2_tokenizer(repo_id, hf_token = token, local_files_only = local_files_only)
     if text_encoder is None:
-        text_encoder = load_krea2_text_encoder(repo_id, dtype, hf_token = token)
+        text_encoder = load_krea2_text_encoder(
+            repo_id, dtype, hf_token = token, local_files_only = local_files_only
+        )
     scheduler = diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained(
-        repo_id, subfolder = "scheduler", token = token
+        repo_id, subfolder = "scheduler", token = token, local_files_only = local_files_only
     )
     vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
-        repo_id, subfolder = "vae", torch_dtype = dtype, token = token
+        repo_id,
+        subfolder = "vae",
+        torch_dtype = dtype,
+        token = token,
+        local_files_only = local_files_only,
     )
     if transformer is None and with_transformer:
         transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
-            repo_id, subfolder = "transformer", torch_dtype = dtype, token = token
+            repo_id,
+            subfolder = "transformer",
+            torch_dtype = dtype,
+            token = token,
+            local_files_only = local_files_only,
         )
-    model_index = _load_model_index(repo_id, hf_token = token)
+    model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     return diffusers.Krea2Pipeline(
         scheduler = scheduler,
         vae = vae,

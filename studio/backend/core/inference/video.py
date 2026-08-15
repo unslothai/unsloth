@@ -3660,6 +3660,11 @@ class VideoBackend:
                     hf_token = hf_token,
                     # The 2.3 assembly builds every component itself and never sees pipe_kwargs, so hand the pre-cast encoder over explicitly.
                     text_encoder = pipe_kwargs.get("text_encoder"),
+                    # And the no-download promise with it, for the same reason: it is in
+                    # pipe_kwargs, and this branch is the one path that does not read them. There is
+                    # no staged snapshot to fall back on either -- _base_local_dir is None for 2.3
+                    # by design -- so every component below resolves the hub id.
+                    local_files_only = local_files_only,
                 )
             else:
                 transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
@@ -4417,6 +4422,11 @@ class VideoBackend:
                 # already holds text_encoder/config.json: read it from there rather than sending
                 # the config resolution back to the hub.
                 local_base = _base_local_dir,
+                # And the same refusal the denoiser and load_components take: this artifact is
+                # ~27 GB, the flag protected only the calls either side of it, and the staging
+                # fetch that cleared the skip accepted a copy under EITHER cache root while this
+                # lookup searched only the live one.
+                local_files_only = local_files_only,
                 logger = logger,
             )
             if text_encoder is None:
