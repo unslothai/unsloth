@@ -588,6 +588,256 @@ def test_max_steps_bound_is_off_without_it(monkeypatch):
     assert result[0]["dataset"] is train
 
 
+def test_max_steps_dataset_rows_survives_unusable_numbers():
+    from core.training.trainer import MIN_MAX_STEPS_ROWS, max_steps_dataset_rows
+
+    # The worker is also driven from the DB and by direct callers, so a None or a
+    # string reaches this. A row bound is an optimization; it must never raise.
+    assert max_steps_dataset_rows(30, None, None) == MIN_MAX_STEPS_ROWS
+    assert max_steps_dataset_rows(30, "2", "4") == MIN_MAX_STEPS_ROWS
+    assert max_steps_dataset_rows("30", 2, 4) == MIN_MAX_STEPS_ROWS
+    assert max_steps_dataset_rows(-5, 2, 4) is None
+    assert max_steps_dataset_rows("not a number", 2, 4) is None
+    # A bound this far past any corpus is a no-op at the apply site, not an error.
+    assert max_steps_dataset_rows(10**9, 2, 4) == 10**9 * 8 * 4
+
+
+def test_effective_packing_decides_the_opt_out():
+    from core.training.dataset_bounds import effective_packing, max_train_rows_for_config
+
+    text = {"max_steps": 30, "batch_size": 2, "gradient_accumulation_steps": 4}
+
+    # Packing spans an unknown number of rows per sample, so text runs opt out.
+    assert effective_packing({**text, "packing": True}) is True
+    assert max_train_rows_for_config({**text, "packing": True}) is None
+
+    # ...but the image, audio and VLM branches train without packing whatever the
+    # config says, and the frontend hides the control without resetting it. A
+    # stale flag must not cost those runs the bound.
+    assert effective_packing({**text, "packing": True, "is_dataset_image": True}) is False
+    assert effective_packing({**text, "packing": True, "is_dataset_audio": True}) is False
+    assert effective_packing({**text, "packing": True}, is_vlm = True) is False
+    assert max_train_rows_for_config({**text, "packing": True}, is_vlm = True) == 1024
+    assert max_train_rows_for_config({**text, "packing": True, "is_dataset_image": True}) == 1024
+
+    # An epoch-bounded run is unbounded whatever packing says.
+    assert max_train_rows_for_config({"max_steps": 0, "packing": False}) is None
+
+
+def test_bound_dataset_rows_edges():
+    from core.training.dataset_bounds import bound_dataset_rows
+
+    class _Streaming:
+        """No __len__, like an IterableDataset: bounded lazily elsewhere."""
+
+        def shuffle(self, seed = None):
+            raise AssertionError("a streaming dataset must not be shuffled eagerly")
+
+    exact = _SizedDataset(1024)
+    assert bound_dataset_rows(exact, 1024, 3407) is exact
+    assert len(bound_dataset_rows(_SizedDataset(1025), 1024, 3407)) == 1024
+
+    # A non-positive bound from a direct caller would select an empty dataset.
+    untouched = _SizedDataset(500_000)
+    assert bound_dataset_rows(untouched, 0, 3407) is untouched
+    assert bound_dataset_rows(untouched, -5, 3407) is untouched
+    assert bound_dataset_rows(untouched, None, 3407) is untouched
+
+    streaming = _Streaming()
+    assert bound_dataset_rows(streaming, 1024, 3407) is streaming
+
+    # A seed the config could not coerce still has to produce a subset.
+    assert len(bound_dataset_rows(_SizedDataset(500_000), 1024, None)) == 1024
+
+
+def test_bound_dataset_rows_keeps_seed_zero():
+    from datasets import Dataset
+
+    from core.training.dataset_bounds import bound_dataset_rows
+
+    source = Dataset.from_dict({"row": list(range(5000))})
+
+    # 0 is a legitimate seed, not a missing one: it must not collapse onto the
+    # default, or every run configured with it trains on the same other subset.
+    assert bound_dataset_rows(source, 1024, 0)["row"] != bound_dataset_rows(
+        source, 1024, 3407
+    )["row"]
+    assert bound_dataset_rows(source, 1024, 0)["row"] == bound_dataset_rows(
+        source, 1024, 0
+    )["row"]
+
+
+def test_bound_dataset_rows_survives_a_hostile_seed():
+    from datasets import Dataset
+
+    from core.training.dataset_bounds import bound_dataset_rows
+
+    source = Dataset.from_dict({"row": list(range(3000))})
+
+    # numpy rejects a negative seed, and -1 is a common "pick one for me"
+    # sentinel; json accepts Infinity with no flag, so a stored config can hold
+    # one. Neither may take a training run down.
+    for seed in (-1, -3407, float("inf"), float("nan"), "3407", None, "seed"):
+        assert len(bound_dataset_rows(source, 1024, seed)) == 1024
+
+
+def test_max_steps_dataset_rows_survives_infinity():
+    from core.training.dataset_bounds import MIN_MAX_STEPS_ROWS, max_steps_dataset_rows
+
+    infinity = float("inf")
+    assert max_steps_dataset_rows(infinity, 2, 4) is None
+    assert max_steps_dataset_rows(30, infinity, 4) == MIN_MAX_STEPS_ROWS
+    assert max_steps_dataset_rows(30, 2, infinity) == MIN_MAX_STEPS_ROWS
+
+
+def test_bound_dataset_rows_leaves_a_dataset_dict_alone():
+    from datasets import Dataset, DatasetDict
+
+    from core.training.dataset_bounds import bound_dataset_rows
+
+    # len() on a DatasetDict is the split count, so the row comparison is
+    # meaningless there; it has no select() either.
+    splits = DatasetDict(
+        {
+            "train": Dataset.from_dict({"row": list(range(5000))}),
+            "test": Dataset.from_dict({"row": list(range(100))}),
+        }
+    )
+    assert bound_dataset_rows(splits, 1024, 3407) is splits
+
+
+def test_checkpoint_predates_row_bound(tmp_path):
+    import json
+
+    from core.training.dataset_bounds import checkpoint_predates_row_bound
+
+    config = {"batch_size": 2, "gradient_accumulation_steps": 4}
+
+    def _checkpoint(name, *, step, epoch):
+        path = tmp_path / name
+        path.mkdir()
+        (path / "trainer_state.json").write_text(
+            json.dumps({"global_step": step, "epoch": epoch})
+        )
+        return str(path)
+
+    # 15 steps x 8 rows against 192,523 rows: a run that saw the whole corpus.
+    full = _checkpoint("full", step = 15, epoch = 120 / 192_523)
+    assert checkpoint_predates_row_bound(full, 1024, config) is True
+
+    # The same 15 steps against a 1,024-row bound: already bounded, so resuming
+    # keeps the bound and continues over the same rows.
+    bounded = _checkpoint("bounded", step = 15, epoch = 120 / 1024)
+    assert checkpoint_predates_row_bound(bounded, 1024, config) is False
+
+    # The checkpoint's own batch size wins over a resume that changed it.
+    recorded = tmp_path / "recorded"
+    recorded.mkdir()
+    (recorded / "trainer_state.json").write_text(
+        json.dumps({"global_step": 15, "epoch": 120 / 192_523, "train_batch_size": 2})
+    )
+    assert checkpoint_predates_row_bound(str(recorded), 1024, {**config, "batch_size": 8}) is True
+
+    # Nothing to decide from, and nothing to break: leave the bound alone.
+    assert checkpoint_predates_row_bound(None, 1024, config) is False
+    assert checkpoint_predates_row_bound(full, None, config) is False
+    assert checkpoint_predates_row_bound(str(tmp_path / "missing"), 1024, config) is False
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "trainer_state.json").write_text("{}")
+    assert checkpoint_predates_row_bound(str(empty), 1024, config) is False
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "trainer_state.json").write_text("not json")
+    assert checkpoint_predates_row_bound(str(broken), 1024, config) is False
+
+
+def test_bound_dataset_rows_is_deterministic_and_seed_sensitive():
+    from datasets import Dataset
+
+    from core.training.dataset_bounds import bound_dataset_rows
+
+    source = Dataset.from_dict({"row": list(range(5000)), "text": [f"t{i}" for i in range(5000)]})
+
+    first = bound_dataset_rows(source, 1024, 3407)["row"]
+    second = bound_dataset_rows(source, 1024, 3407)["row"]
+    other = bound_dataset_rows(source, 1024, 99)["row"]
+
+    assert len(first) == 1024
+    assert first == second
+    assert first != other
+    # The head of a corpus ordered by source or difficulty is not a sample of it.
+    assert first != list(range(1024))
+    # Features survive the shuffle+select, so the formatting passes still work.
+    assert bound_dataset_rows(source, 1024, 3407).column_names == ["row", "text"]
+
+
+def test_bound_leaves_enough_rows_after_the_eval_carve():
+    from datasets import Dataset
+
+    from core.training.dataset_bounds import bound_dataset_rows, max_train_rows_for_config
+    from core.training.eval_dataset import split_dataset_for_evaluation
+
+    config = {"max_steps": 30, "batch_size": 2, "gradient_accumulation_steps": 4}
+    rows = max_train_rows_for_config(config)
+    source = Dataset.from_dict({"text": [f"t{i}" for i in range(500_000)]})
+
+    bounded = bound_dataset_rows(source, rows, 3407)
+    train, _eval = split_dataset_for_evaluation(bounded)
+
+    # The eval carve is what MAX_STEPS_ROW_SLACK is budgeted for: the run must
+    # still reach max_steps without re-reading rows.
+    needed = config["max_steps"] * config["batch_size"] * config["gradient_accumulation_steps"]
+    assert len(train) >= needed
+
+
+def test_both_loaders_apply_the_row_bound():
+    """Guards the wiring: the helpers are useless if a loader stops calling them.
+
+    Read from source because driving the CUDA worker needs a GPU and the MLX one
+    needs Apple hardware, so neither call site is otherwise reachable in CI.
+    """
+    import ast
+    from pathlib import Path
+
+    worker_src = (Path(__file__).resolve().parents[1] / "core/training/worker.py").read_text()
+    tree = ast.parse(worker_src)
+    calls = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        names = {
+            sub.func.id
+            for sub in ast.walk(node)
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+        }
+        calls[node.name] = names
+
+    # The CUDA worker derives the bound and hands it to load_and_format_dataset.
+    assert "max_train_rows_for_config" in calls["run_training_process"]
+    assert "max_train_rows = max_train_rows" in worker_src
+    # The MLX worker loads its own dataset, so it has to bound its own rows.
+    assert "bound_dataset_rows" in calls["_slice"]
+    assert "max_train_rows_for_config" in calls["_run_mlx_training"]
+
+
+def test_mlx_adapter_keeps_one_source_of_truth_for_the_bound():
+    from core.training.training import _build_training_worker_config
+
+    config = _build_training_worker_config(
+        {"model_name": "org/model", "max_steps": 30, "batch_size": 2}
+    )
+    # The normalized worker config is a whitelist: a forwarded copy of the bound
+    # would be dropped here and silently disagree with what the worker computes.
+    assert "max_train_rows" not in config
+    assert "max_train_rows_seed" not in config
+    # Everything the worker needs to recompute it does survive.
+    assert config["max_steps"] == 30
+    assert config["batch_size"] == 2
+    assert config["gradient_accumulation_steps"] == 4
+    assert config["random_seed"] == 3407
+
+
 def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
     from hub.utils import dataset_cache
 

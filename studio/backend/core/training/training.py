@@ -801,8 +801,10 @@ class _MLXTrainerAdapter:
         max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
         # UnslothTrainer.__new__ hands back this adapter on an MLX host, so the
-        # signature has to match. The CLI does its own loading; the bound rides
-        # along in the config it is handed.
+        # signature has to match. The MLX worker does its own loading and derives
+        # the max_steps row bound from the config it is handed, so the two bound
+        # arguments are accepted and deliberately not forwarded: a copy here would
+        # be a second source of truth that _build_training_worker_config drops.
         self._dataset_config = {
             "hf_dataset": dataset_source or "",
             "local_datasets": local_datasets,
@@ -821,8 +823,6 @@ class _MLXTrainerAdapter:
             "dataset_snapshot_path": dataset_local_path,
             "dataset_revision": dataset_revision,
             "require_exact_dataset_resource": bool(require_exact_resume_resources),
-            "max_train_rows": max_train_rows,
-            "max_train_rows_seed": max_train_rows_seed,
         }
         self.is_cpt = bool(is_cpt)
         self._update_progress(status_message = "Queued MLX dataset load")

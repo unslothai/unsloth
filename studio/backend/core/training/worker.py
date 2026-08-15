@@ -54,6 +54,13 @@ activate_native_tls()
 
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
+# Light module on purpose: the MLX branch below runs on hosts that have no torch,
+# so it cannot reach these through core.training.trainer.
+from core.training.dataset_bounds import (
+    bound_dataset_rows,
+    checkpoint_predates_row_bound,
+    max_train_rows_for_config,
+)
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -2779,14 +2786,29 @@ def _run_mlx_training(event_queue, stop_queue, config):
     slice_end = config.get("dataset_slice_end")
     config["_dataset_loaded_from_exact_snapshot"] = False
 
+    # A max_steps run cannot reach the whole dataset, and everything below this
+    # point -- formatting, chat templating, tokenization -- maps over every row.
+    # Recomputed from the config rather than carried over from the parent so an
+    # MLX run can never train against a bound derived from stale values.
+    mlx_max_train_rows = max_train_rows_for_config(config, is_vlm = is_vlm)
+
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
             start = slice_start if slice_start is not None else 0
             end = slice_end if slice_end is not None else len(ds) - 1
             if end < start:
                 return ds.select([])
-            ds = ds.select(range(start, min(end + 1, len(ds))))
-        return ds
+            # The user named these rows; the bound below defers to that.
+            return ds.select(range(start, min(end + 1, len(ds))))
+        return bound_dataset_rows(
+            ds,
+            mlx_max_train_rows,
+            config.get("random_seed", 3407),
+            on_bound = lambda kept, total: _send(
+                "status",
+                status_message = f"Using {kept} of {total} rows (max_steps run)",
+            ),
+        )
 
     def _load_local(file_paths):
         from datasets import load_from_disk
@@ -4017,7 +4039,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
-        from core.training.trainer import UnslothTrainer, max_steps_dataset_rows
+        from core.training.trainer import UnslothTrainer
         from utils.paths import (
             ensure_dir,
             resolve_output_dir,
@@ -4084,18 +4106,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
 
-        # Packing opts out: one packed sample spans an unknown number of rows, so
-        # steps cannot be converted to a row count. Streaming and an explicit
-        # train-split range opt out inside load_and_format_dataset, where they live.
-        max_train_rows = (
-            None
-            if config.get("packing", False)
-            else max_steps_dataset_rows(
-                config.get("max_steps", 0) or 0,
-                config.get("batch_size", 2),
-                config.get("gradient_accumulation_steps", 4),
+        # Effective packing opts out: one packed sample spans an unknown number of
+        # rows, so steps cannot be converted to a row count. Streaming and an
+        # explicit train-split range opt out inside load_and_format_dataset, where
+        # they live.
+        max_train_rows = max_train_rows_for_config(config)
+        # A resume keeps the same rows, because the bound is a function of the
+        # seed, max_steps, batch size and accumulation. A checkpoint from before
+        # the bound existed is the exception: it trained on the whole dataset, and
+        # the trainer fast-forwards by batch count over the current dataloader, so
+        # bounding it now would continue into unrelated rows.
+        if checkpoint_predates_row_bound(
+            config.get("resume_from_checkpoint"), max_train_rows, config
+        ):
+            logger.info(
+                "Resuming a checkpoint that trained on the full dataset: skipping the "
+                "max_steps row bound so the run continues over the same rows\n"
             )
-        )
+            max_train_rows = None
 
         def _load_training_dataset():
             result = trainer.load_and_format_dataset(
