@@ -174,9 +174,7 @@ def _write_dpkg_query_stub(
         for name, (entry_status, entry_version) in entries.items()
     )
     with open(path, "w", encoding = "utf-8") as f:
-        f.write(
-            _DPKG_QUERY_STUB.replace("__ENTRIES__", rendered_entries)
-        )
+        f.write(_DPKG_QUERY_STUB.replace("__ENTRIES__", rendered_entries))
     os.chmod(path, 0o755)
 
 
@@ -1949,7 +1947,12 @@ class TestGfx1102Rocm64Floor:
     """Navi 33 / RDNA 4 need generic PyTorch ROCm 6.4 wheels, not rocm6.1."""
 
     @staticmethod
-    def _ensure_for_gfx(gfx: str, monkeypatch, *, pinned: bool = False):
+    def _ensure_for_gfx(
+        gfx: str,
+        monkeypatch,
+        *,
+        pinned: bool = False,
+    ):
         m = stack_mod
         for name in (
             "HIP_VISIBLE_DEVICES",
@@ -2039,7 +2042,7 @@ class TestGfx1102Rocm64Floor:
                 + "\n"
                 + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1"\n'
                 + '_torch_index_leaf="rocm6.1"\n'
-                + '_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n'
+                + "_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n"
                 + f'UNSLOTH_ROCM_GFX_ARCH="{gfx}"\n'
                 + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES UNSLOTH_PYTORCH_MIRROR\n"
                 + routing_block
@@ -2709,7 +2712,7 @@ class TestInstallShStructure:
         """install.sh should strip Debian epoch prefix from dpkg-query output."""
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        assert "sub(/^[0-9]+:/, \"\", v)" in source
+        assert 'sub(/^[0-9]+:/, "", v)' in source
 
     def test_no_double_bracket_in_rocm_block(self):
         """ROCm block must not use bash-only [[ ]] (POSIX char classes [[:space:]] are fine)."""
