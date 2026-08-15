@@ -2522,6 +2522,44 @@ _TARGET_ROLLBACK_SPEC_TYPES = frozenset(
 )
 
 
+# Architectures whose TARGET context leaves the embedded MTP/NextN blocks out of
+# its KV cache, so block_count must lose them before the target is priced.
+#
+# This is NOT every architecture that carries {arch}.nextn_predict_layers.
+# llama_hparams::n_layer() subtracts nextn everywhere (llama-hparams.cpp:297),
+# but llama_kv_cache walks hparams.n_layer_all (llama-kv-cache.cpp:100) and drops
+# blocks only through an optional per-arch filter (:169). That filter is installed
+# for the hybrids at llama-model.cpp:2289 (Qwen3-Next/Qwen3.5/MiniMax-01 and, via
+# is_recr, Nemotron-H), for GLM-DSA and DeepSeek3.2 at :2129, and for the
+# STEP35/HY_V3/MIMO2 group at :2356. Everywhere else -- deepseek2, glm4, glm4moe,
+# bailingmoe2, cohere2moe, exaone4 -- filter is nullptr and the trailing MTP block
+# DOES get target KV, so subtracting it under-reserves.
+#
+# Fail closed: an arch not named here keeps every block, because over-reserving
+# costs context while under-reserving OOMs the load. Recurrent state is the one
+# thing that always excludes nextn, llama_memory_recurrent sizing on n_layer()
+# directly (llama-memory-recurrent.cpp:29), which is why
+# _mamba_recurrent_state_bytes subtracts unconditionally.
+_TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
+    {
+        # Hybrid attention + recurrent, llama-model.cpp:2289
+        "qwen3next",
+        "qwen35",
+        "qwen35moe",
+        "minimax-01",
+        "nemotron_h",
+        "nemotron_h_moe",
+        # MLA/DSA trunk with a dense MTP head, llama-model.cpp:2129
+        "glm-dsa",
+        "deepseek32",
+        # Plain attention trunk with an explicit nextn filter, llama-model.cpp:2356
+        "step35",
+        "hy_v3",
+        "mimo2",
+    }
+)
+
+
 def _accumulated_spec_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> set:
@@ -7452,6 +7490,28 @@ class LlamaCppBackend:
         n_embd_s = head_dim * head_dim * n_head
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
 
+    def _target_kv_excludes_nextn(self) -> bool:
+        """Whether this model's TARGET KV cache skips the embedded MTP blocks.
+
+        See _TARGET_KV_EXCLUDES_NEXTN_ARCHS for why this is per-architecture
+        rather than a property of the nextn key.
+
+        A hybrid recurrent header answers yes without consulting that list. Every
+        hybrid Mamba architecture llama.cpp accepts a nextn key from -- Qwen3-Next,
+        Qwen3.5, Qwen3.5-MoE, Nemotron-H -- is filtered at llama-model.cpp:2289,
+        and the recurrent half is sized on n_layer() regardless
+        (llama-memory-recurrent.cpp:29), so the ssm dims are sufficient evidence
+        and a GGUF whose header names an arch this build has never heard of still
+        gets the right answer. Everything else must be named, so an unreadable or
+        unknown architecture keeps every block.
+        """
+        if not self._nextn_predict_layers:
+            return False
+        if self._ssm_inner_size is not None and self._full_attention_interval is not None:
+            return True
+        arch = getattr(self, "_architecture", None)
+        return bool(arch) and str(arch).strip().lower() in _TARGET_KV_EXCLUDES_NEXTN_ARCHS
+
     def _mamba_recurrent_state_bytes(
         self,
         n_parallel: int = 1,
@@ -7569,10 +7629,15 @@ class LlamaCppBackend:
         if not self._can_estimate_kv() or n_ctx <= 0:
             return 0
 
-        # GGUF block_count includes embedded MTP blocks. llama.cpp excludes
-        # those blocks from the target context and allocates their KV in the
-        # draft context, which _mtp_draft_kv_bytes prices separately.
-        n_layers = max(1, self._n_layers - (self._nextn_predict_layers or 0))
+        # GGUF block_count includes embedded MTP blocks, and llama.cpp keeps
+        # those out of the target context for SOME architectures only -- see
+        # _TARGET_KV_EXCLUDES_NEXTN_ARCHS. Where it does, their KV lives in the
+        # draft context and _mtp_draft_kv_bytes prices it separately; where it
+        # does not, the target cache still allocates them and subtracting here
+        # would under-reserve.
+        n_layers = self._n_layers  # type: ignore[assignment]
+        if self._target_kv_excludes_nextn():
+            n_layers = max(1, n_layers - (self._nextn_predict_layers or 0))
         # Gemma 3n / Gemma 4 reuse earlier KV in the last ``shared_kv_layers``
         # blocks (no cache). Floor at 1 so a bad GGUF can't zero out KV.
         shared = self._shared_kv_layers or 0
