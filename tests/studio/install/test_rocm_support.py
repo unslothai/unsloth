@@ -2132,8 +2132,8 @@ class TestGfx1102Rocm64Floor:
             assert result.stdout.strip().endswith(f"/{expected} LEAF:{expected}"), result.stdout
 
     @staticmethod
-    def _run_install_sh_routing(preamble: str) -> str:
-        """Execute install.sh's architecture-routing block over a rocm6.1 leaf."""
+    def _install_sh_routing_result(preamble: str, leaf: str = "rocm6.1") -> tuple:
+        """Run install.sh's architecture-routing block, returning (leaf, floor-target flag)."""
         shell = shutil.which("bash")
         if not shell:
             pytest.skip("bash needed to execute install.sh architecture routing")
@@ -2149,19 +2149,26 @@ class TestGfx1102Rocm64Floor:
             + "\n"
             + gfx_helper
             + "\n"
-            + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1"\n'
-            + '_torch_index_leaf="rocm6.1"\n'
+            + f'TORCH_INDEX_URL="https://download.pytorch.org/whl/{leaf}"\n'
+            + f'_torch_index_leaf="{leaf}"\n'
             + "_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n"
+            + "_gfx_rocm64_target=false\n"
             + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES\n"
             + "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_PYTORCH_MIRROR\n"
             + preamble
             + "\n"
             + source[start:end]
-            + '\nprintf "LEAF:%s\\n" "$_torch_index_leaf"\n'
+            + '\nprintf "LEAF:%s TARGET:%s\\n" "$_torch_index_leaf" "$_gfx_rocm64_target"\n'
         )
         result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
         assert result.returncode == 0, result.stderr
-        return result.stdout.strip().rsplit("LEAF:", 1)[-1]
+        tail = result.stdout.strip().rsplit("LEAF:", 1)[-1]
+        _leaf, _target = tail.split(" TARGET:")
+        return _leaf, _target
+
+    @classmethod
+    def _run_install_sh_routing(cls, preamble: str) -> str:
+        return cls._install_sh_routing_result(preamble)[0]
 
     @pytest.mark.parametrize(
         ("mask", "expected"),
@@ -2260,8 +2267,26 @@ class TestGfx1102Rocm64Floor:
         )
         assert self._run_install_sh_routing(preamble) == "rocm6.1"
 
+    @pytest.mark.parametrize(
+        ("gfx", "leaf", "expected_leaf", "expected_target"),
+        (
+            # already at or above the floor: no reroute, but the arch still needs it
+            ("gfx1200", "rocm6.4", "rocm6.4", "true"),
+            ("gfx1200", "rocm7.2", "rocm7.2", "true"),
+            ("gfx1200", "rocm6.1", "rocm6.4", "true"),
+            ("gfx1100", "rocm6.4", "rocm6.4", "false"),
+            ("gfx1100", "rocm6.1", "rocm6.1", "false"),
+        ),
+    )
+    def test_install_sh_marks_the_floor_target_independently_of_the_leaf(
+        self, gfx, leaf, expected_leaf, expected_target
+    ):
+        """The migrated repair keys off the arch, so the flag cannot depend on a reroute."""
+        result = self._install_sh_routing_result(f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"', leaf)
+        assert result == (expected_leaf, expected_target)
+
     @staticmethod
-    def _run_migrated_rocm_repair(torch_version: str, hip: str, floor_applied: str) -> str:
+    def _run_migrated_rocm_repair(torch_version: str, hip: str, gfx_target: str) -> str:
         """Execute install.sh's migrated-environment ROCm repair with a stubbed venv torch."""
         shell = shutil.which("bash")
         if not shell:
@@ -2297,7 +2322,7 @@ class TestGfx1102Rocm64Floor:
                 + "substep() { :; }\n"
                 + '_install_torch_default_index() { printf "REINSTALL\\n"; }\n'
                 + f'_VENV_PY="{venv_py}"\n'
-                + f"_gfx_rocm64_floor_applied={floor_applied}\n"
+                + f"_gfx_rocm64_target={gfx_target}\n"
                 + '_torch_index_leaf="rocm6.4"\n'
                 + source[start:end]
                 + '\nprintf "DONE\\n"\n'
@@ -2307,7 +2332,7 @@ class TestGfx1102Rocm64Floor:
             return r.stdout
 
     @pytest.mark.parametrize(
-        ("torch_version", "hip", "floor_applied", "reinstalls"),
+        ("torch_version", "hip", "gfx_target", "reinstalls"),
         (
             # the gap: a migrated venv keeps its hip torch, so a pre-6.4 wheel survived
             ("2.5.1+rocm6.1", "6.1.40093", "true", True),
@@ -2319,9 +2344,9 @@ class TestGfx1102Rocm64Floor:
         ),
     )
     def test_install_sh_migrated_repair_honors_the_rocm64_floor(
-        self, torch_version, hip, floor_applied, reinstalls
+        self, torch_version, hip, gfx_target, reinstalls
     ):
-        out = self._run_migrated_rocm_repair(torch_version, hip, floor_applied)
+        out = self._run_migrated_rocm_repair(torch_version, hip, gfx_target)
         assert "DONE" in out, out
         assert ("REINSTALL" in out) is reinstalls, out
 

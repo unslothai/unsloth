@@ -4503,8 +4503,8 @@ fi
 # Skipped when the index is pinned: an explicit override must not be rerouted to the
 # Radeon/Strix repos by GPU probing.
 _amd_gpu_radeon=false
-# set when the gfx1102/rdna4 floor rerouted this install, so the migrated repair below can act on it
-_gfx_rocm64_floor_applied=false
+# set when the runtime gpu needs the rocm6.4 floor at all, independent of whether the leaf had to be rerouted
+_gfx_rocm64_target=false
 if [ "$_torch_index_pinned" = false ]; then
 case "$TORCH_INDEX_URL" in
     */rocm*)
@@ -4693,6 +4693,7 @@ case "$_torch_index_leaf" in
         # Explicit torch-index pins skip this whole architecture-policy block.
         case "$_runtime_gfx" in
             gfx1102|gfx1200|gfx1201)
+                _gfx_rocm64_target=true
                 if _rocm_leaf_below "$_torch_index_leaf" 6 4; then
                     echo "" >&2
                     echo "  [WARN] $_runtime_gfx detected -- routing torch to rocm6.4 because older" >&2
@@ -4704,7 +4705,6 @@ case "$_torch_index_leaf" in
                     done
                     TORCH_INDEX_URL="${_amd_rocm64_base}/rocm6.4"
                     _torch_index_leaf="rocm6.4"
-                    _gfx_rocm64_floor_applied=true
                 fi
                 ;;
         esac
@@ -5096,7 +5096,7 @@ if [ "$_MIGRATED" = true ]; then
         if [ -z "$_has_hip" ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
             _install_torch_default_index --force-reinstall
-        elif [ "$_gfx_rocm64_floor_applied" = true ] && _venv_torch_rocm_below "$_VENV_PY" 6 4; then
+        elif [ "$_gfx_rocm64_target" = true ] && _venv_torch_rocm_below "$_VENV_PY" 6 4; then
             # a migrated venv keeps its hip torch, but a pre-6.4 wheel carries no kernels for this gpu
             substep "reinstalling torch from $_torch_index_leaf (the migrated wheels have no kernels for this GPU)..."
             _install_torch_default_index --force-reinstall
