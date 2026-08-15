@@ -1833,9 +1833,7 @@ def test_a_weightless_component_is_still_accepted(catalog, enabled, tmp_path, ba
     assert [pick.model_id for _owner, pick in loads] == ["Tongyi-MAI/Z-Image-Turbo"]
 
 
-def test_a_tokenizer_without_its_vocabulary_is_refused(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_a_tokenizer_without_its_vocabulary_is_refused(catalog, enabled, tmp_path, backend, loads):
     # tokenizer_config.json alone builds no tokenizer: from_pretrained fetches the vocabulary,
     # and by then the resident pipeline is already gone.
     pipeline = tmp_path / "z-image"
