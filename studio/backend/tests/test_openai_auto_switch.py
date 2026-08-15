@@ -8679,9 +8679,12 @@ def test_a_slow_tokenizer_vocabulary_is_accepted(tmp_path):
     for name in ("vocab.txt", "spiece.model"):
         path = _local_checkpoint(tmp_path, f"slow-{name}")
         (path / "tokenizer.json").unlink()
-        (path / name).write_text("")
+        (path / name).write_text("[UNK]\n")
         info = SimpleNamespace(id = str(path), path = str(path))
         assert resolver.local_servable_model(info) == (False, ()), name
+        # an empty vocabulary is a copy still in flight, not a slow tokenizer.
+        (path / name).write_text("")
+        assert resolver.local_servable_model(info) is None, name
 
 
 def test_a_stray_shard_beside_complete_weights_is_ignored(tmp_path):
@@ -9020,6 +9023,59 @@ def test_two_directories_differing_only_by_case_keep_their_own_weights(tmp_path,
     repo_index = {resolver._index_key("org/Chat"): repo}
     assert resolver._resolve_from_index("ORG/chat", repo_index)[0] == "/models/chat"
 
+    # codex P1 again: the advertised basenames Foo and foo are not path-shaped and refolded.
+    alias_index = {}
+    aliases = {"Foo": "/models/Foo", "foo": "/models/foo"}
+    entries = {
+        alias: resolver._LocalGgufEntry(alias, load, (), is_gguf = False)
+        for alias, load in aliases.items()
+    }
+    for alias, load in aliases.items():
+        alias_index.setdefault(resolver._index_key(alias, exact = True), entries[alias])
+    for alias in aliases:
+        alias_index.setdefault(alias.lower(), entries[alias])
+    for alias, load in aliases.items():
+        assert resolver._resolve_from_index(alias, alias_index)[0] == load, alias
+
+
+def test_unreadable_safetensors_metadata_is_withheld(tmp_path):
+    # codex P2: safetensors 0.8.0 requires __metadata__ to be str -> str (verified).
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadMeta")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    tensor = {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}
+
+    def write(metadata):
+        blob = json.dumps({"__metadata__": metadata, "a": tensor}).encode()
+        (path / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(blob)) + blob + b"\0" * 16
+        )
+
+    write({"format": "pt"})
+    assert resolver.local_servable_model(info) == (False, ())
+    for broken in (["x"], {"k": 1}, {"k": {"a": "b"}}):
+        write(broken)
+        assert resolver.local_servable_model(info) is None, broken
+
+
+def test_an_empty_tokenizer_file_is_withheld(tmp_path):
+    # codex P2: a copy in flight leaves a file AutoTokenizer rejects after the swap.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "EmptyTokenizer")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+    (path / "tokenizer.json").write_text("")
+    assert resolver.local_servable_model(info) is None
+    # truncated mid-copy, so the closing delimiter never arrived.
+    (path / "tokenizer.json").write_text('{"model": {"vocab": ')
+    assert resolver.local_servable_model(info) is None
+    (path / "tokenizer.json").write_text('{"model": {"vocab": {}}}')
+    assert resolver.local_servable_model(info) == (False, ())
+
 
 def test_an_unreadable_mlx_registry_withholds_the_model(tmp_path, monkeypatch):
     # codex P2: a registry find_spec cannot import is one the loader cannot import either.
@@ -9053,12 +9109,29 @@ def test_an_mlx_host_withholds_a_family_mlx_cannot_build(tmp_path, monkeypatch):
     )
     assert resolver.local_servable_model(info) is None
 
-    # a family either mlx stack implements is still offered, and mlx-vlm counts.
-    for model_type in ("qwen3", "llava"):
-        (path / "config.json").write_text(
-            json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": model_type})
+    # the registry follows the loader's text_only decision: mlx-lm for text, mlx-vlm otherwise.
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"})
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+    (path / "preprocessor_config.json").write_text("{}")
+    (path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["LlavaForConditionalGeneration"],
+                "model_type": "llava",
+                "vision_config": {},
+            }
         )
-        assert resolver.local_servable_model(info) == (False, ()), model_type
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+    # llava lives only in mlx-vlm, so a text-classified config naming it cannot load.
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["LlavaForConditionalGeneration"], "model_type": "llava"})
+    )
+    assert resolver.local_servable_model(info) is None
 
 
 def test_a_host_with_no_accelerator_serves_gguf_only(monkeypatch):

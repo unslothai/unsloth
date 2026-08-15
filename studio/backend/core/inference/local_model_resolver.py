@@ -87,17 +87,20 @@ def _advertised_loader_id(info) -> Optional[str]:
     return public_model_id(raw_id) or raw_id
 
 
-def _index_key(value: str) -> str:
-    """The index key for an id: exact for a filesystem path, case-folded for a repo id.
+def _index_key(value: str, exact: bool = False) -> str:
+    """The index key for an id: exact for anything naming a local directory, else folded.
 
     Two directories differing only by case are different weights on a case-sensitive
     filesystem, and ``/v1/models`` publishes both, so folding them together let a request
-    for one resolve the other's checkpoint. Repo ids stay case-insensitive, which is how
-    clients name them, and the lenient key is still indexed as a fallback for the
-    case-insensitive filesystems where the two spellings are the same directory.
+    for one resolve the other's checkpoint. ``exact`` covers the aliases derived from such
+    a directory as well as the path itself: ``/models/Foo`` is advertised as ``Foo``, which
+    is not path-shaped and would otherwise fold onto ``foo``. Repo ids stay
+    case-insensitive, which is how clients name them, and every id is also indexed folded
+    as a fallback, so the case-insensitive filesystems where both spellings name one
+    directory keep resolving.
     """
     stripped = value.strip()
-    return stripped if _is_abs_path_id(stripped) else stripped.lower()
+    return stripped if exact or _is_abs_path_id(stripped) else stripped.lower()
 
 
 def _resolve_load_dir(p):
@@ -180,9 +183,34 @@ def _has_tokenizer_vocabulary(load_dir) -> bool:
     only half a BPE tokenizer and needs merges.txt, while the slow-tokenizer vocabularies
     vocab.txt and spiece.model stand on their own.
     """
-    if any((load_dir / name).is_file() for name in _TOKENIZER_MARKERS):
+    if any(_vocabulary_file_is_readable(load_dir / name) for name in _TOKENIZER_MARKERS):
         return True
-    return (load_dir / "vocab.json").is_file() and (load_dir / "merges.txt").is_file()
+    return _vocabulary_file_is_readable(load_dir / "vocab.json") and (
+        load_dir / "merges.txt"
+    ).is_file()
+
+
+def _vocabulary_file_is_readable(path) -> bool:
+    """Whether a vocabulary file is present and not obviously unusable.
+
+    A copy still in flight leaves a zero-byte or truncated file that AutoTokenizer rejects
+    only after the swap. The JSON vocabularies are checked at their delimiters rather than
+    parsed: tokenizer.json runs to tens of megabytes, and parsing one per catalog row on
+    every scan would cost far more than the case it catches.
+    """
+    try:
+        size = path.stat().st_size
+        if size <= 0:
+            return False
+        if path.suffix.lower() != ".json":
+            return True
+        with path.open("rb") as handle:
+            head = handle.read(1)
+            handle.seek(max(0, size - 64))
+            tail = handle.read().rstrip()
+        return head == b"{" and tail.endswith(b"}")
+    except OSError:
+        return False
 
 
 # far above any real header: a corrupt length reads huge, and reading it is the failure here.
@@ -257,6 +285,11 @@ def _safetensors_file_is_intact(path) -> bool:
         spans = []
         for name, entry in header.items():
             if name == "__metadata__":
+                # str -> str or the loader refuses the header outright.
+                if not isinstance(entry, dict) or not all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in entry.items()
+                ):
+                    return False
                 continue
             if not isinstance(entry, dict):
                 return False
@@ -441,16 +474,20 @@ def _quantizer_runtime_present(quant_method: str) -> bool:
 def _mlx_implements_architecture(config: dict) -> bool:
     """Whether the MLX loader has an implementation for this checkpoint's model_type.
 
-    Both stacks are consulted because they are complementary: mlx-lm carries the text
-    families, mlx-vlm carries llava and friends, and either can serve a request. A
-    family neither implements (XLNet, say) satisfies every other gate and then fails in
-    FastMLXModel.from_pretrained, once the swap has unloaded the resident model.
+    The stacks are not interchangeable for a given load: MLXInferenceBackend passes
+    ``text_only`` off its vision verdict, so it reaches mlx-vlm for a multimodal
+    checkpoint and mlx-lm otherwise, and a family carried only by the other one fails in
+    FastMLXModel.from_pretrained once the swap has unloaded the resident model. The
+    modality is read from the same config keys this module already uses to require
+    processor files, rather than is_vision_model, which runs a subprocess.
     A checkpoint with no readable model_type is withheld rather than trusted: it is the
     field the loader selects an implementation from, so there is nothing to load without it.
     """
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or not model_type.strip():
         return False
+    multimodal = any(key in config for key in _MULTIMODAL_CONFIG_KEYS)
+    package = "mlx_vlm" if multimodal else "mlx_lm"
     # one module per family, as the loader resolves it; find_spec keeps mlx off this path.
     name = model_type.strip().lower().replace("-", "_")
     if not name.isidentifier():
@@ -458,9 +495,7 @@ def _mlx_implements_architecture(config: dict) -> bool:
     # fail closed: a registry this cannot import is one the loader cannot import either.
     try:
         from importlib.util import find_spec
-        return any(
-            find_spec(f"{package}.models.{name}") is not None for package in ("mlx_lm", "mlx_vlm")
-        )
+        return find_spec(f"{package}.models.{name}") is not None
     except Exception:
         return False
 
@@ -824,7 +859,8 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             public_model_id(raw_id),
         ):
             if key:
-                index.setdefault(_index_key(key), entry)
+                # keyed off the source: an alias of a case-distinct directory is as ambiguous.
+                index.setdefault(_index_key(key, exact = _is_abs_path_id(raw_id)), entry)
                 folded.append((key.strip().lower(), entry))
         # Other revisions of the same repo resolve to their own weights, so a pin on
         # one keeps working after Hugging Face writes a newer snapshot.
@@ -1061,8 +1097,8 @@ def _resolve_from_index(
 ) -> Optional[tuple[str, Optional[str], str]]:
     """Resolve *requested* against one immutable published index mapping."""
     try:
-        # exact before folded, so a case-distinct path resolves its own weights.
-        entry = index.get(_index_key(requested)) or index.get(requested.strip().lower())
+        # exact before folded, so a case-distinct id resolves its own weights.
+        entry = index.get(requested.strip()) or index.get(requested.strip().lower())
         if entry is not None:
             variant = entry.variants[0] if entry.variants else None
             return entry.load_path, variant, entry.loader_id
@@ -1070,7 +1106,7 @@ def _resolve_from_index(
         base, sep, variant = requested.rpartition(":")
         if not sep:
             return None
-        entry = index.get(_index_key(base)) or index.get(base.strip().lower())
+        entry = index.get(base.strip()) or index.get(base.strip().lower())
         if entry is None:
             return None
         wanted = variant.strip().lower()
