@@ -14933,7 +14933,6 @@ class LlamaCppBackend:
                     )
                     try:
                         from utils.model_memory_settings import get_model_memory_settings
-
                         _keep_resident, _no_ram_reserve = get_model_memory_settings()
                     except Exception:
                         # settings unavailable: price the spill, the pre-guard behaviour
