@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from core.inference.gpu_arbiter import DIFFUSION, VIDEO
 from core.inference.media_locality import is_edit_only, missing_download_bytes
@@ -311,6 +311,7 @@ async def maybe_auto_switch_media_model(
     current_subject: str,
     openai_errors: bool,
     hf_token: Optional[str] = None,
+    before_switch: Optional[Callable[[MediaModelPick], None]] = None,
 ) -> None:
     """Load the image or video model a generation request names, if it is not resident.
 
@@ -318,6 +319,11 @@ async def maybe_auto_switch_media_model(
     informational meaning for every existing client. With the setting on, a name that resolves
     to no downloaded model is refused: answering it would return one model's output under
     another's name.
+
+    ``before_switch`` is the caller's last say on the resolved pick, run only when a switch is
+    actually going to happen. It exists so a request the target model cannot serve is refused
+    while the resident one is still loaded, rather than after a multi-minute load; a request the
+    resident model already answers skips it, since the generate route judges that one anyway.
     """
     from utils.openai_auto_switch_settings import get_media_auto_switch_enabled
 
@@ -371,6 +377,14 @@ async def maybe_auto_switch_media_model(
     # re-read: the index build can run for the whole budget, and an idle unload can land in it
     if satisfied_by(await asyncio.to_thread(backend_for(owner).status), name, pick):
         return
+
+    if before_switch is not None:
+        await bounded(
+            asyncio.to_thread(before_switch, pick),
+            deadline,
+            kind = kind,
+            openai_errors = openai_errors,
+        )
 
     lock = switch_lock(owner)
     # held only when the load takes the gpu, since a cpu-only switch takes it from nobody

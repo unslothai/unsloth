@@ -35,6 +35,9 @@ _EXTERNAL_ENCODER_FAMILIES = frozenset({"hidream-i1"})
 # encoder repos that always ship sharded, where a missing index means an interrupted download
 _SHARDED_ENCODER_REPOS = frozenset({"unsloth/Meta-Llama-3.1-8B-Instruct"})
 
+# what from_pretrained reads besides the weights, tiny next to them but still a download
+_ENCODER_METADATA_FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")
+
 
 def detected_image_family(pick: MediaModelPick) -> Any:
     """The diffusion family for *pick*, tried against its id and then its path.
@@ -111,12 +114,19 @@ def encoder_repo_complete(repo_id: str) -> bool:
     ``_upstream_is_cached`` counts any single weight file, while the pipeline calls
     from_pretrained on the whole repository, so an interrupted sharded pull would otherwise
     read as local and the load would fetch the rest.
+
+    The config and tokenizer files count as much as the shards. They are kilobytes rather than
+    gigabytes, but the encoder is built with ``AutoTokenizer.from_pretrained`` and
+    ``LlamaForCausalLM.from_pretrained`` on the whole repository, so a cache holding every shard
+    and none of those still reaches the Hub during an accepted switch.
     """
     import json
 
     from core.inference.diffusion_families import _upstream_is_cached, cache_holds_files
 
     if not _upstream_is_cached(repo_id):
+        return False
+    if not cache_holds_files(repo_id, list(_ENCODER_METADATA_FILES)):
         return False
     index = _cached_snapshot_file(repo_id, "model.safetensors.index.json")
     if index is None:
@@ -153,16 +163,23 @@ def hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
     The planner judges 2.3 by name, while the loader reads the checkpoint header and then pulls
     the 2.3 VAE, audio and connector artifacts. A renamed checkpoint therefore plans as 2.0,
     reports nothing missing, and downloads those extras during assembly.
+
+    The family is resolved the way the loader resolves it, which falls back to the checkpoint's
+    ``general.architecture`` where neither the repo nor the filename carries a family token.
+    Deciding by name alone left a generically named LTX checkpoint exempt from the very check
+    its header would have triggered.
     """
     if owner != VIDEO or not pick.gguf_filename:
         return False
     try:
         from core.inference.diffusion_families import resolve_local_gguf_child
+        from core.inference.video import _detect_load_family
         from core.inference.video_ltx2 import LTX23_EXTRAS_REPO, is_ltx23_checkpoint
-        from core.inference.video_families import detect_video_family
     except Exception:  # noqa: BLE001 -- no ltx support here means nothing to hide
         return False
-    fam = detect_video_family(pick.model_id or "") or detect_video_family(pick.model_path)
+    fam = _detect_load_family(pick.model_path, pick.gguf_filename, None) or (
+        _detect_load_family(pick.model_id, pick.gguf_filename, None) if pick.model_id else None
+    )
     if fam is None or getattr(fam, "name", None) != "ltx-2":
         return False
     root = Path(pick.model_path).expanduser()

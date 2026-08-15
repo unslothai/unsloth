@@ -489,6 +489,7 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
         current_subject,
         openai_errors,
         hf_token = None,
+        before_switch = None,
     ):
         calls.append((requested_model, owner, openai_errors, hf_token))
 
@@ -1727,6 +1728,7 @@ def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
         current_subject,
         openai_errors,
         hf_token = None,
+        before_switch = None,
     ):
         calls.append((requested_model, owner, openai_errors, hf_token))
 
@@ -1825,3 +1827,124 @@ def test_a_setup_refusal_after_the_caller_gives_up_is_not_reported_as_unretrieve
         gc.collect()
 
     assert "never retrieved" not in caplog.text
+
+
+def test_a_pre_switch_refusal_evicts_nothing(catalog, enabled, tmp_path, backend, loads):
+    # The caller's last say on the resolved pick runs while the resident model is still up, so
+    # a request the target could never serve costs no eviction and no load.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    seen: list = []
+
+    def _refuse(pick):
+        seen.append(pick.model_id)
+        raise HTTPException(status_code = 422, detail = "no")
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            mas.maybe_auto_switch_media_model(
+                "black-forest-labs/FLUX.1-dev",
+                owner = arb.DIFFUSION,
+                current_subject = "test-user",
+                openai_errors = True,
+                before_switch = _refuse,
+            )
+        )
+
+    assert excinfo.value.status_code == 422
+    assert seen == ["black-forest-labs/FLUX.1-dev"]
+    assert loads == []
+
+
+def test_the_video_route_refuses_a_shape_the_target_family_cannot_render(monkeypatch):
+    # 512x512 is not one of the A14B presets, and begin_generate would only say so after the
+    # switch had already torn the resident model down and spent minutes loading the target.
+    import core.inference.video as video_module
+    from routes.video import router as video_router
+
+    generated: list = []
+
+    async def _switch_stub(
+        requested_model,
+        *,
+        owner,
+        current_subject,
+        openai_errors,
+        hf_token = None,
+        before_switch = None,
+    ):
+        before_switch(index.MediaModelPick(requested_model, "unsloth/Wan2.2-T2V-A14B-GGUF"))
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
+
+    class _Backend:
+        def begin_generate(self, **kwargs):
+            generated.append(kwargs)
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(video_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "a sloth",
+            "model": "unsloth/Wan2.2-T2V-A14B-GGUF",
+            "width": 512,
+            "height": 512,
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "not a supported resolution" in resp.json()["detail"]
+    assert generated == []
+
+
+def test_an_encoder_missing_its_config_is_incomplete(monkeypatch):
+    # Every shard on disk and no config.json still reaches the Hub: the pipeline builds the
+    # encoder with from_pretrained on the whole repository, not on the weights alone.
+    import core.inference.diffusion_families as families
+
+    monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
+    monkeypatch.setattr(locality, "_cached_snapshot_file", lambda repo, name: None)
+    held: list = []
+    monkeypatch.setattr(families, "cache_holds_files", lambda repo, names: held == names)
+
+    held = ["config.json", "tokenizer.json", "tokenizer_config.json"]
+    assert locality.encoder_repo_complete("org/unsharded-encoder") is True
+    held = ["config.json"]
+    assert locality.encoder_repo_complete("org/unsharded-encoder") is False
+
+
+def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # Neither the repo nor the filename carries a family token, so only the loader's
+    # general.architecture fallback resolves LTX and reaches the 2.3 extras check.
+    import core.inference.video as video_module
+    import core.inference.video_ltx2 as ltx2
+    from core.inference.video_families import detect_video_family
+
+    checkpoint = tmp_path / "model-Q4_K_M.gguf"
+    checkpoint.write_bytes(b"")
+    catalog.append(_info("local/generic", checkpoint, task = mas.VIDEO_TASK, model_format = "gguf"))
+    monkeypatch.setattr(
+        video_module, "_picked_gguf_arch", lambda repo_id, gguf_filename: "ltxv"
+    )
+    monkeypatch.setattr(ltx2, "is_ltx23_checkpoint", lambda path: True)
+    monkeypatch.setattr(ltx2, "ltx23_extras_files", lambda path: ("vae.safetensors",))
+    monkeypatch.setattr(
+        "core.inference.diffusion_families.cache_holds_files", lambda repo, names: False
+    )
+    # The family token really is absent from both names, so only the header can find it.
+    assert detect_video_family("local/generic") is None
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("local/generic", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
