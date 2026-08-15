@@ -2572,6 +2572,7 @@ class UnslothTrainer:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        hf_token: Optional[str] = None,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2581,6 +2582,11 @@ class UnslothTrainer:
 
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
+
+        A provided hf_token is forwarded to every load_dataset and
+        get_dataset_split_names call, so a gated or private dataset is read
+        under the request identity rather than whatever HF_TOKEN the
+        environment carries.
         """
         from core.training.s3_dataset import S3DownloadCancelled
 
@@ -2713,6 +2719,8 @@ class UnslothTrainer:
                     load_kwargs["name"] = subset
                 if dataset_revision:
                     load_kwargs["revision"] = dataset_revision
+                if hf_token:
+                    load_kwargs["token"] = hf_token
 
                 if dataset_streaming:
                     self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
@@ -2859,6 +2867,8 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
                         if dataset_revision:
                             eval_load_kwargs["revision"] = dataset_revision
+                        if hf_token:
+                            eval_load_kwargs["token"] = hf_token
 
                         if dataset_streaming:
                             # Probe splits first: load_dataset(streaming=True) returns an IterableDataset without
@@ -2870,6 +2880,8 @@ class UnslothTrainer:
                                 probe_kwargs["config_name"] = subset
                             if dataset_revision:
                                 probe_kwargs["revision"] = dataset_revision
+                            if hf_token:
+                                probe_kwargs["token"] = hf_token
                             try:
                                 available_splits = get_dataset_split_names(**probe_kwargs)
                             except Exception as probe_err:

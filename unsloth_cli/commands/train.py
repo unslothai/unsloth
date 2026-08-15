@@ -142,6 +142,7 @@ def train(
         dataset_source = cfg.data.dataset or "",
         format_type = cfg.data.format_type,
         local_datasets = cfg.data.local_dataset,
+        hf_token = hf_token,
     )
     if result is None:
         typer.echo("Dataset load failed", err = True)

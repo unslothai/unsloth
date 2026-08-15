@@ -4107,6 +4107,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
             )
             if isinstance(result, tuple):
                 loaded_dataset, loaded_eval_dataset = result
