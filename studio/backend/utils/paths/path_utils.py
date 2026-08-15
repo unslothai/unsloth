@@ -8,11 +8,78 @@ Path utilities for model and dataset handling
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterable, Optional, TypeVar
 import structlog
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── macOS Finder metadata companions ───────────────────────────
+# A volume without native xattrs (exFAT, FAT, most SMB and NFS) makes macOS keep a file's xattrs
+# in a "._" companion carrying the same extension, so it answers every name-shaped question the
+# way the real file does and sorts ahead of it. Nothing may be refused for the prefix alone: a
+# user's own "._model.gguf" is a real model, and only the magic bytes settle it.
+
+_MAGIC = b"\x00\x05\x16\x07"
+
+PathLike = TypeVar("PathLike", str, Path)
+
+
+def is_appledouble_name(path: str) -> bool:
+    """A name test only: it decides which files are worth opening, never what one is."""
+    return str(path).replace("\\", "/").rsplit("/", 1)[-1].startswith("._")
+
+
+def has_appledouble_magic(path: Path) -> bool:
+    """The four bytes ``file(1)`` reads to report "AppleDouble encoded Macintosh file"."""
+    try:
+        # Directory scans reach here with whatever the volume holds, and opening a FIFO blocks
+        # until someone writes to it. Only a regular file can carry the magic anyway.
+        if not path.is_file():
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(len(_MAGIC)) == _MAGIC
+    except OSError:
+        return False
+
+
+def is_appledouble_metadata(path: Path) -> bool:
+    """True only for a ``._`` file whose bytes ARE AppleDouble."""
+    path = Path(path)
+    return is_appledouble_name(path.name) and has_appledouble_magic(path)
+
+
+def drop_appledouble_metadata(paths: Iterable[PathLike]) -> list[PathLike]:
+    """*paths* without the entries that are Finder metadata, preserving order and type."""
+    return [p for p in paths if not is_appledouble_metadata(Path(p))]
+
+
+def any_not_appledouble_metadata(paths: Iterable[PathLike]) -> bool:
+    """Whether *paths* holds anything that is not Finder metadata, stopping at the first.
+
+    Callers hand this a live ``glob``, which materializing would walk in full.
+    """
+    return any(not is_appledouble_metadata(Path(p)) for p in paths)
+
+
+def _shadowed_name(path: str) -> str:
+    head, _, name = str(path).replace("\\", "/").rpartition("/")
+    return f"{head}/{name[2:]}" if head else name[2:]
+
+
+def drop_shadowed_appledouble_names(
+    files: list[str], *, subject_key: "Callable[[str], object] | None" = None
+) -> list[str]:
+    """*files* without the ``._`` entries whose subject is present in the same listing.
+
+    For remote listings, which carry no bytes to read, so a sole candidate survives whatever it
+    is called. *subject_key* widens what counts as the subject, for files that come in sets.
+    """
+    key = subject_key or (lambda name: name)
+    present = {key(f.replace("\\", "/")) for f in files}
+    return [f for f in files if not (is_appledouble_name(f) and key(_shadowed_name(f)) in present)]
+
 
 # Per-process cache to avoid repeated cache-dir scans for the same identifier.
 _CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
@@ -114,7 +181,7 @@ def is_model_cached(model_name: str) -> bool:
 
     # Check for model files
     for suffix in [".safetensors", ".bin", ".json"]:
-        if list(cache_path.rglob(f"*{suffix}")):
+        if any_not_appledouble_metadata(cache_path.rglob(f"*{suffix}")):
             return True
 
     return False

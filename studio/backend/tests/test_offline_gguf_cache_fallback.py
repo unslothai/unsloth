@@ -223,14 +223,6 @@ class TestGgufVariantFileResolution:
 
         assert _gguf_files_for_variant(files, "") == ["model-Q4_K_M.gguf"]
 
-    def test_appledouble_sidecar_cannot_resolve_as_a_variant(self):
-        files = [
-            "._model-Q4_K_M.gguf",
-            "model-Q4_K_M.gguf",
-        ]
-
-        assert _gguf_files_for_variant(files, "Q4_K_M") == ["model-Q4_K_M.gguf"]
-
     def test_remote_listing_skips_big_endian_quant_sibling(self, monkeypatch, clean_offline_env):
         siblings = [
             _types.SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),

@@ -49,6 +49,7 @@ from models.data_recipe import (
     SeedInspectUploadRequest,
     UnstructuredFileUploadResponse,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -428,6 +429,10 @@ def _get_block_total_size(block_dir: Path) -> int:
         if not f.is_file():
             continue
         if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
+            continue
+        # remove_unstructured_file keys on the name up to the first dot, which is empty for a
+        # "._" name, so a counted companion could never be removed and the quota never freed.
+        if is_appledouble_metadata(f):
             continue
         total += f.stat().st_size
     return total

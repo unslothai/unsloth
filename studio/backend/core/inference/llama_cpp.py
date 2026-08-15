@@ -122,6 +122,7 @@ from state.tool_approvals import (
     new_approval_id,
     wait_tool_decision,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -1325,22 +1326,11 @@ def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
     return False
 
 
-def _is_gguf_filename(path: str) -> bool:
-    """Core-local mirror of ``hub.utils.gguf.is_gguf_filename``.
-
-    Core deliberately avoids Hub imports. Keep this and
-    ``utils.models.model_config._is_gguf_filename`` in lockstep with the Hub's
-    canonical rule.
-    """
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    return name.lower().endswith(".gguf") and not name.startswith("._")
-
-
 def _gguf_snapshot_files(snapshot: Path) -> list[str]:
     return [
         p.relative_to(snapshot).as_posix()
         for p in snapshot.rglob("*")
-        if p.is_file() and _is_gguf_filename(p.name)
+        if p.is_file() and p.name.lower().endswith(".gguf") and not is_appledouble_metadata(p)
     ]
 
 
@@ -1652,9 +1642,31 @@ def _companion_snapshot_sibling(
     return str(candidate) if _drafter_split_is_complete(candidate) else None
 
 
+def _pick_dspark(candidates: list[str]) -> Optional[str]:
+    """The DSpark drafter a listing offers, or None. Module level for the same reason
+    ``_pick_mmproj`` is: both are handed a live repo listing as well as a snapshot."""
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+    from utils.models.model_config import dspark_preference_key
+
+    # Every GGUF under dspark/ qualifies, so a sidecar ranks equal to its sibling and sorts first.
+    files = sorted(
+        (
+            name
+            for name in drop_shadowed_appledouble_names(list(candidates))
+            if _is_dspark_drafter_path(name)
+        ),
+        key = dspark_preference_key,
+    )
+    return files[0] if files else None
+
+
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+
+    # "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter.
+    candidates = drop_shadowed_appledouble_names(list(candidates))
     mmproj_files = sorted(
-        f for f in candidates if _is_gguf_filename(f) and "mmproj" in Path(f).name.lower()
+        f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
     )
     if not mmproj_files:
         return None
@@ -1861,11 +1873,14 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     Prefer exact quant-label matches over loose substring matches so a request
     for ``stories260K`` does not resolve to ``stories260K-be.gguf``.
     """
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+
     variant_key = variant.strip().lower()
+    # A repo listing has no bytes to read; a local one arrives already filtered on its headers.
     main_files = [
         f
-        for f in files
-        if _is_gguf_filename(f)
+        for f in drop_shadowed_appledouble_names(list(files))
+        if f.lower().endswith(".gguf")
         and not _is_companion_gguf_path(f)
         # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
         # parent directory only -- so it gets the file's own label, never the requested key. Handed
@@ -3635,8 +3650,6 @@ class LlamaCppBackend:
         self._is_diffusion: bool = False
         # Whole header walked? Separates "declares no architecture" from "unreadable".
         self._gguf_header_parsed: bool = False
-        # None means the file could not be opened; False is a definite non-GGUF header.
-        self._gguf_magic_valid: Optional[bool] = None
         self._gguf_split_index: Optional[int] = None
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
@@ -8135,10 +8148,12 @@ class LlamaCppBackend:
             from huggingface_hub import get_paths_info, list_repo_files
 
             files = list_repo_files(hf_repo, token = hf_token)
+            from hub.utils.gguf import drop_shadowed_appledouble_names
+
             gguf_files = [
                 f
-                for f in files
-                if _is_gguf_filename(f)
+                for f in drop_shadowed_appledouble_names(list(files))
+                if f.lower().endswith(".gguf")
                 and not _is_companion_gguf_path(f)
                 and not _is_big_endian_gguf_path(f)
             ]
@@ -8538,7 +8553,6 @@ class LlamaCppBackend:
         self._architecture = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
-        self._gguf_magic_valid = None
         self._gguf_split_index = None
 
         try:
@@ -8570,9 +8584,8 @@ class LlamaCppBackend:
             general: dict[str, str] = {}
 
             with open(gguf_path, "rb") as f:
-                magic_bytes = f.read(4)
-                self._gguf_magic_valid = magic_bytes == b"GGUF"
-                if not self._gguf_magic_valid:
+                magic = struct.unpack("<I", f.read(4))[0]
+                if magic != 0x46554747:  # b"GGUF" as little-endian u32
                     return
                 _version = struct.unpack("<I", f.read(4))[0]
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
@@ -9677,7 +9690,9 @@ class LlamaCppBackend:
             mtp_files = sorted(
                 f
                 for f in candidates
-                if _is_gguf_filename(f) and "/" not in f and Path(f).name.lower().startswith("mtp-")
+                if f.lower().endswith(".gguf")
+                and "/" not in f
+                and Path(f).name.lower().startswith("mtp-")
             )
             return mtp_files[0] if mtp_files else None
 
@@ -9764,14 +9779,6 @@ class LlamaCppBackend:
         """
         if caps_probe is None:
             caps_probe = self.probe_server_capabilities
-
-        def _pick_dspark(candidates: list[str]) -> Optional[str]:
-            from utils.models.model_config import dspark_preference_key
-            files = sorted(
-                (name for name in candidates if _is_dspark_drafter_path(name)),
-                key = dspark_preference_key,
-            )
-            return files[0] if files else None
 
         cached = _companion_snapshot_sibling(near_path, _pick_dspark) if near_path else None
         if not cached and _hf_env_offline():
@@ -9943,7 +9950,7 @@ class LlamaCppBackend:
             others = [
                 Path(name).name
                 for name in candidates
-                if _is_gguf_filename(name) and not _is_root_dflash_drafter_path(name)
+                if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
             ]
             # Same bound as dflash_plan_files: dflash- is a prefix real weights carry,
             # the header only reads once the bytes are here, and a drafter is a few
@@ -10336,19 +10343,6 @@ class LlamaCppBackend:
 
         Naming the destination page is the point, so when the architecture does not say
         which it is, the family detectors are asked about the repo id and the filename."""
-        if getattr(self, "_gguf_magic_valid", None) is False:
-            gguf_name = gguf_path.replace("\\", "/").rsplit("/", 1)[-1]
-            if gguf_name.startswith("._"):
-                return (
-                    "This file is not a valid GGUF: it does not start with the GGUF header. "
-                    "On macOS, a file whose name starts with '._' is Finder metadata, "
-                    "not model weights; select the matching file without that prefix."
-                )
-            return (
-                "This file is not a valid GGUF: it does not start with the GGUF header. "
-                "Download or select the model weights again."
-            )
-
         arch = (self._architecture or "").strip().lower()
         # A declared media arch is the whole answer, and it is KV #0 in every GGUF measured,
         # so the remote probe's prefix can carry it even where bulkier later metadata leaves
@@ -10998,21 +10992,6 @@ class LlamaCppBackend:
                 f"{LlamaCppBackend._runtime_remedy(binary)}."
             )
 
-        # llama.cpp names this failure precisely. Keep it ahead of the generic
-        # invalid-file/OOM fallback so a Finder AppleDouble sidecar is not
-        # presented as a memory problem (#8566).
-        if "invalid magic characters" in lowered and "expected 'gguf'" in lowered:
-            _gguf_name = (gguf_path or "").replace("\\", "/").rsplit("/", 1)[-1]
-            if _gguf_name.startswith("._"):
-                return (
-                    "This is an AppleDouble Finder metadata file, not model weights. "
-                    "Select the matching GGUF file without the '._' prefix."
-                )
-            return (
-                "This file is not a valid GGUF: it does not start with the GGUF "
-                "header. Download or select the model weights again."
-            )
-
         # Argument parsing runs before the model is touched, so a rejected flag is
         # never about the GGUF or memory. llama.cpp prints two shapes, and the
         # difference matters to the reader: an unknown flag is a typo or a flag
@@ -11100,6 +11079,30 @@ class LlamaCppBackend:
                 "Tensor parallelism is not supported for this model's "
                 "architecture. Turn off Tensor Parallelism in the model "
                 "settings and reload."
+            )
+
+        # llama.cpp prints the four bytes it found with %c, so a binary header arrives as
+        # unprintable characters; the generic fallback then blamed the user's memory (#8566).
+        if "invalid magic characters" in lowered:
+            # Not necessarily the main model: the projector and drafter report this too.
+            base = os.path.basename(gguf_path) if gguf_path else ""
+            named = f", loading {base}" if base else ""
+            # A "._" model path proves the volume keeps xattrs in companions, whichever file
+            # llama-server actually opened, and dot_clean is the remedy for the volume.
+            remedy = (
+                'This volume has no native extended attributes, so macOS keeps them in "._" '
+                'companions: run "dot_clean -m" on the folder to remove them, or keep models '
+                "on an APFS disk."
+                if base.startswith("._")
+                else "Re-download the model, or pick a different file."
+            )
+            return LlamaCppBackend._with_startup_diagnostics(
+                f"llama-server opened a file that is not a GGUF{named}: it does not start with "
+                "the GGUF magic. It may be that file or a companion loaded with it, such as a "
+                f"vision projector or a drafter, which llama-server does not always name. {remedy}",
+                output,
+                log_path,
+                secrets,
             )
 
         # Detect Ollama source up front so the arch branch can keep the

@@ -5878,7 +5878,11 @@ def _remote_gguf_companion_bytes(
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
         dflash_sizes: dict[str, int] = {}
-        for sibling in info.siblings or []:
+        from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+        # The same listing the downloader resolves against: a sidecar outranking the real drafter
+        # here budgets its own few KB for a load that then fetches the whole thing.
+        for sibling in drop_shadowed_appledouble_siblings(list(info.siblings or [])):
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
             if not base.endswith(".gguf"):
@@ -6001,9 +6005,13 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         from huggingface_hub import model_info
         from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
 
+        from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
         info = model_info(repo, token = hf_token, files_metadata = True)
         sizes: dict[str, int] = {}
-        for sibling in info.siblings or []:
+        # A sidecar's few KB stands in for the drafter the launch then fetches, and this figure
+        # is what admits or refuses a load beside a training run.
+        for sibling in drop_shadowed_appledouble_siblings(list(info.siblings or [])):
             name = sibling.rfilename or ""
             if not Path(name).name.lower().endswith(".gguf"):
                 continue
@@ -6078,7 +6086,10 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
                 ),
                 None,
             ) or max(revisions, key = lambda r: getattr(r, "last_modified", 0) or 0, default = None)
-            for f in getattr(chosen, "files", ()) or ():
+            from hub.services.models.cache_inventory import cached_repo_files
+
+            # Quant subdirectories share a basename, so the largest file carrying one is charged.
+            for f in cached_repo_files(chosen):
                 name = str(f.file_name)
                 if name.lower().endswith(".gguf"):
                     sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
@@ -16240,6 +16251,7 @@ from core.inference.tools import (
     _MAX_SNAPSHOT_FILES,
     _servable_segment,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
@@ -16302,6 +16314,8 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
                 if not os.path.isfile(path) or os.path.islink(path):
                     continue
             except OSError:
+                continue
+            if is_appledouble_metadata(Path(path)):
                 continue
             names.append(os.path.relpath(path, sandbox_dir).replace(os.sep, "/"))
             if len(names) >= _MAX_SNAPSHOT_FILES:

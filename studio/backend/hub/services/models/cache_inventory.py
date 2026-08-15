@@ -45,6 +45,7 @@ from hub.services.models.common import (
 # scan loop swallows per-repo exceptions and would drop every repo. Lives under
 # ``utils`` (not ``utils.models``) to avoid the eager model-config/checkpoint
 # imports in ``utils/models/__init__.py``.
+from utils.paths.path_utils import is_appledouble_metadata
 from utils.hidden_models import is_curated_stt_repo_id, is_hidden_model
 
 logger = get_logger(__name__)
@@ -131,7 +132,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
-        for f in revision.files:
+        for f in cached_repo_files(revision):
             # Snapshot-relative: only the directory marks an MTP/ drafter as a companion.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
@@ -164,7 +165,7 @@ def _blob_mtime(file_obj) -> float:
 def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
-        for f in revision.files:
+        for f in cached_repo_files(revision):
             if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
@@ -177,7 +178,7 @@ def _repo_has_mmproj(repo_info) -> bool:
     return any(
         _is_gguf_filename(f.file_name) and _is_mmproj_filename(f.file_name)
         for revision in repo_info.revisions
-        for f in revision.files
+        for f in cached_repo_files(revision)
     )
 
 
@@ -193,6 +194,21 @@ def _cached_repo_file_name(file_obj) -> str:
         except Exception:
             pass
     return str(getattr(file_obj, "file_name", "")).replace("\\", "/")
+
+
+def cached_repo_files(revision) -> list:
+    """``revision.files`` without the Finder metadata companions.
+
+    Every classification below reads these by name, and a "._" companion carries the described
+    file's own name, so it answers each one the way the real file does.
+    """
+    # The "._" name is on the snapshot entry, the bytes are in the content-addressed blob whose
+    # own name carries no prefix -- but the entry is a symlink to it, so one open reads both.
+    return [
+        f
+        for f in getattr(revision, "files", ()) or ()
+        if not is_appledouble_metadata(Path(getattr(f, "file_path", "")))
+    ]
 
 
 def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
@@ -242,7 +258,7 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
     blob_map: dict[str, set[str]] = {}
     repo_path = getattr(repo_info, "repo_path", None)
     for revision in repo_info.revisions:
-        for f in revision.files:
+        for f in cached_repo_files(revision):
             name = _cached_repo_file_name(f)
             if include_companions:
                 if not _is_gguf_filename(name):
@@ -720,7 +736,9 @@ def _repo_gguf_payload_snapshots(repo_info) -> tuple[Optional[Path], frozenset[s
         snapshot
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
-        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
+        and any(
+            _is_main_gguf_filename(_cached_repo_file_name(f)) for f in cached_repo_files(revision)
+        )
     ]
     complete = [
         snapshot
@@ -752,7 +770,7 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         flags = dict.fromkeys(_PAYLOAD_FLAGS, False)
-        for f in revision.files:
+        for f in cached_repo_files(revision):
             file_name = str(f.file_name)
             lower = file_name.lower()
             name = lower.replace("\\", "/").rsplit("/", 1)[-1]

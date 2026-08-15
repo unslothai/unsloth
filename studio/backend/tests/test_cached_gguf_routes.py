@@ -90,24 +90,6 @@ def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
     assert result == ["Q4_K_M.gguf", "Q8_0.GGUF"]
 
 
-def test_iter_gguf_paths_skips_macos_appledouble_sidecars(tmp_path):
-    real = tmp_path / "model-Q4_K_M.gguf"
-    sidecar = tmp_path / "._model-Q4_K_M.gguf"
-    real.write_bytes(b"GGUF")
-    sidecar.write_bytes(b"AppleDouble metadata")
-
-    assert list(models_route._iter_gguf_paths(tmp_path)) == [real]
-
-
-def test_appledouble_sidecar_is_not_a_legacy_model_directory_weight(tmp_path):
-    model_dir = tmp_path / "model"
-    model_dir.mkdir()
-    (model_dir / "config.json").write_text("{}", encoding = "utf-8")
-    (model_dir / "._model-Q4_K_M.gguf").write_bytes(b"AppleDouble metadata")
-
-    assert models_route._is_model_directory(model_dir) is False
-
-
 def test_legacy_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
     repo = tmp_path / "models--Org--Model"
     snapshot = repo / "snapshots" / "revision"

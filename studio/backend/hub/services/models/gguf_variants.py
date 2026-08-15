@@ -34,7 +34,6 @@ from hub.utils.gguf import (
     gguf_variant_key,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
-    is_gguf_filename,
     list_empty_gguf_variant_dirs,
     list_gguf_variants,
     list_local_gguf_variants,
@@ -59,6 +58,7 @@ from hub.utils.gguf_plan import (
     build_gguf_variant_plans,
     is_main_gguf_variant_path,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = get_logger(__name__)
 
@@ -649,6 +649,7 @@ def _direct_gguf_loads(path: Path) -> bool:
         _is_mmproj_filename(path.name)
         or _is_mtp_drafter_path(context)
         or is_big_endian_gguf_path(context, _extract_quant_label(context))
+        or is_appledouble_metadata(path)
     )
 
 
@@ -1098,7 +1099,7 @@ async def get_gguf_variants_answer(
             if (
                 not variants
                 and local_target.is_file()
-                and is_gguf_filename(local_target.name)
+                and local_target.suffix.lower() == ".gguf"
                 and _direct_gguf_loads(local_target)
             ):
                 # An unmarked-parent .gguf is skipped by the directory scan but detect_gguf_model

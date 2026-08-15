@@ -210,6 +210,7 @@ from models.responses import (
     VisionCheckResponse,
     EmbeddingCheckResponse,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -246,11 +247,13 @@ def _is_model_directory(d: Path) -> bool:
     """
 
     def _is_weight_file(f: Path) -> bool:
+        if is_appledouble_metadata(f):
+            return False
         suffix = f.suffix.lower()
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return _is_main_gguf_filename(f.name)
+            return "mmproj" not in f.name.lower()
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -285,7 +288,9 @@ def _has_non_gguf_weights(path: Path) -> bool:
     ``.bin``), ignoring companion ``.bin`` files such as ``tokenizer.bin`` so a
     GGUF-only folder is not misread as a plain checkpoint."""
     try:
-        if any(path.glob("*.safetensors")):
+        # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name
+        # prefix, which a "._" already fails.
+        if any(not is_appledouble_metadata(f) for f in path.glob("*.safetensors")):
             return True
         return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
     except OSError:
@@ -320,9 +325,7 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
             return False
         if (path / "config.json").exists() or (path / "adapter_config.json").exists():
             return False
-        return any(
-            _is_gguf_filename(p.name) for p in path.glob("*.gguf")
-        ) and not _has_non_gguf_weights(path)
+        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
     except OSError:
         return False
 
@@ -357,7 +360,8 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         try:
             if not child.is_dir():
                 continue
-            gguf_names = [p.name for p in child.glob("*.gguf")]
+
+            gguf_names = [p.name for p in child.glob("*.gguf") if not is_appledouble_metadata(p)]
             has_gguf = bool(gguf_names)
             # mmproj alone is a vision adapter, not servable weights: decides presence, never format.
             has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
@@ -395,7 +399,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             if limit is not None and len(found) >= limit:
                 break
             # A standalone mmproj is a vision adapter, not servable weights.
-            if gguf_file.is_file() and _is_main_gguf_filename(gguf_file.name):
+            if (
+                gguf_file.is_file()
+                and _is_main_gguf_filename(gguf_file.name)
+                and not is_appledouble_metadata(gguf_file)
+            ):
                 try:
                     updated_at = gguf_file.stat().st_mtime
                 except OSError:
@@ -516,11 +524,14 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
     blocking the event loop on a large cache.
     """
     try:
-        found = path.glob("*.gguf")
-        if not any(_is_main_gguf_filename(p.name) for p in found):
+
+        def _servable(p: Path) -> bool:
+            return _is_main_gguf_filename(p.name) and not is_appledouble_metadata(p)
+
+        if not any(_servable(p) for p in path.glob("*.gguf")):
             if not recursive:
                 return None
-            if not any(_is_main_gguf_filename(p.name) for p in path.glob("*/*.gguf")):
+            if not any(_servable(p) for p in path.glob("*/*.gguf")):
                 return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
@@ -557,7 +568,11 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     for child in lm_dir.iterdir():
         try:
             if not child.is_dir():
-                if _is_main_gguf_filename(child.name) and child.is_file():
+                if (
+                    _is_main_gguf_filename(child.name)
+                    and child.is_file()
+                    and not is_appledouble_metadata(child)
+                ):
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -597,9 +612,12 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 try:
                     if model_dir.is_dir():
                         has_model = (
-                            any(_is_gguf_filename(p.name) for p in model_dir.glob("*.gguf"))
+                            any(not is_appledouble_metadata(p) for p in model_dir.glob("*.gguf"))
                             or (model_dir / "config.json").exists()
-                            or any(model_dir.glob("*.safetensors"))
+                            or any(
+                                not is_appledouble_metadata(p)
+                                for p in model_dir.glob("*.safetensors")
+                            )
                         )
                         if not has_model:
                             continue
@@ -619,7 +637,11 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 updated_at = updated_at,
                             ),
                         )
-                    elif _is_main_gguf_filename(model_dir.name) and model_dir.is_file():
+                    elif (
+                        _is_main_gguf_filename(model_dir.name)
+                        and model_dir.is_file()
+                        and not is_appledouble_metadata(model_dir)
+                    ):
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -999,7 +1021,7 @@ def collect_local_models(
                         detect_gguf_model(str(file), model_root = str(folder_path)) is not None
                         for pattern in patterns
                         for file in path.glob(pattern)
-                        if not _safe_is_dir(file) and _is_gguf_filename(file.name)
+                        if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
                     ):
                         custom_models.append(model)
                 elif (
@@ -1303,6 +1325,8 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                         queue.append(entry)
                 else:
                     low = entry.name.lower()
+                    if is_appledouble_metadata(entry):
+                        continue
                     if low.endswith((".gguf", ".safetensors")):
                         return True
                     # PyTorch checkpoints; gate by name so tokenizer.bin and friends don't count as weights.
@@ -1415,7 +1439,9 @@ def _has_direct_model_signal(directory: Path) -> bool:
                 name = child.name
                 if child.is_file():
                     low = name.lower()
-                    if low.endswith((".gguf", ".safetensors")):
+                    if low.endswith((".gguf", ".safetensors")) and not is_appledouble_metadata(
+                        child
+                    ):
                         return True
                     if low in ("config.json", "adapter_config.json"):
                         return True
@@ -2529,10 +2555,8 @@ async def discard_remote_code_download(
             return {"deleted": False, "reason": "not_cached"}
 
         # Hard guard: a repo with weights is a real model the user has -- leave it.
-        for rev in target_repo.revisions:
-            for f in rev.files:
-                if f.file_name.lower().endswith(_WEIGHTS):
-                    return {"deleted": False, "reason": "has_weights"}
+        if any(f.file_name.lower().endswith(_WEIGHTS) for f in _cached_files(target_repo)):
+            return {"deleted": False, "reason": "has_weights"}
 
         revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
         if not revision_hashes:
@@ -2863,8 +2887,15 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
 def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_count = 0
     deleted_bytes = 0
+    from hub.utils.gguf import remove_appledouble_sidecar
+
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
+            continue
+        # Counted as a model if left in, so the reported count would follow the walk order; it
+        # still goes below, as metadata of the file it belongs to. Proven metadata only: anything
+        # else carrying this variant's key is a file the user asked to delete.
+        if is_appledouble_metadata(path):
             continue
         # Keyed on the path, not the basename: a repo holding several checkpoints at
         # one quant would otherwise delete every one of them for a single row.
@@ -2881,6 +2912,9 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
         except OSError:
             pass
         path.unlink()
+        # Skipped by the walk above, so this is its only chance to be reclaimed. Its bytes count
+        # toward what was freed even though it is not counted as a model.
+        deleted_bytes += remove_appledouble_sidecar(path)
         deleted_count += 1
     return deleted_count, deleted_bytes
 
@@ -3695,8 +3729,7 @@ def _all_hf_cache_scans():
 
 
 def _is_gguf_filename(name: str) -> bool:
-    basename = name.replace("\\", "/").rsplit("/", 1)[-1]
-    return basename.lower().endswith(".gguf") and not basename.startswith("._")
+    return name.lower().endswith(".gguf")
 
 
 def _is_mmproj_filename(name: str) -> bool:
@@ -3750,6 +3783,15 @@ def _snapshot_has_gguf_projector(snapshot: str) -> bool:
     """See hub.utils.inventory_scan; reads the same walk the variant lister reports from."""
     from hub.utils.inventory_scan import snapshot_has_gguf_projector as impl
     return impl(Path(snapshot))
+
+
+def _cached_files(repo_info) -> list:
+    return [f for rev in getattr(repo_info, "revisions", ()) or () for f in cached_repo_files(rev)]
+
+
+def cached_repo_files(revision) -> list:
+    from hub.services.models.cache_inventory import cached_repo_files as impl
+    return impl(revision)
 
 
 def _cached_repo_file_name(file_obj) -> str:
@@ -3840,7 +3882,9 @@ def _repo_has_mmproj(repo_info) -> bool:
     """True if the repo ships a GGUF vision adapter (mmproj), so it can
     take image inputs. Cheap: scans already-listed file names only."""
     return any(
-        _is_mmproj_filename(f.file_name) for revision in repo_info.revisions for f in revision.files
+        _is_mmproj_filename(f.file_name)
+        for revision in repo_info.revisions
+        for f in cached_repo_files(revision)
     )
 
 
@@ -3880,6 +3924,8 @@ def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
         if deadline is not None and time.monotonic() >= deadline:
             return
         if path.is_file() and _is_gguf_filename(path.name):
+            if is_appledouble_metadata(path):
+                continue
             yield path
 
 
@@ -3898,7 +3944,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     unique_blobs: dict[str, int] = {}
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
-        for f in revision.files:
+        for f in cached_repo_files(revision):
             # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
@@ -3944,7 +3990,7 @@ def _repo_gguf_last_modified(repo_info) -> float:
     """
     latest = 0.0
     for revision in repo_info.revisions:
-        for f in revision.files:
+        for f in cached_repo_files(revision):
             if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
@@ -4334,7 +4380,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
     if model.model_format == "gguf":
         try:
             p = Path(path)
-            if _is_gguf_filename(p.name) and p.is_file():
+            if p.suffix.lower() == ".gguf" and p.is_file():
                 return _arch_to_task(_gguf_architecture(str(p)), name_hints = _id_hints + (p.name,))
             return _gguf_folder_task(p, _id_hints)
         except Exception:
@@ -4450,7 +4496,9 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
         Path(snapshot)
         for revision in repo_info.revisions
         if (snapshot := getattr(revision, "snapshot_path", None)) is not None
-        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
+        and any(
+            _is_main_gguf_filename(_cached_repo_file_name(f)) for f in cached_repo_files(revision)
+        )
     ]
     candidates.sort(key = snapshot_selection_key, reverse = True)
     # Newest first, skipping any holding no whole quant, else a torn download beats a loadable one.
@@ -4706,8 +4754,7 @@ async def list_cached_models(
                         continue
                     weight_files = [
                         f
-                        for rev in repo_info.revisions
-                        for f in rev.files
+                        for f in _cached_files(repo_info)
                         if f.file_name.endswith(_WEIGHT_EXTENSIONS)
                     ]
                     if not weight_files:
@@ -4790,6 +4837,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     """Absolute path of a cached repo (newest snapshot dir) or, with *variant*,
     that quant's main GGUF file (first split of a sharded quant). Paths come
     from the HF cache scan only, so callers can't probe arbitrary paths."""
+
     cache_scans = _all_hf_cache_scans()
 
     matching_repos = []
@@ -4822,6 +4870,9 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                         pass
                 rank = _main_variant_rank(rel, want)
                 if rank is None:
+                    continue
+                # Listed as a file of the revision, and keyed like the weights beside it.
+                if is_appledouble_metadata(p):
                     continue
                 if p.exists() or p.is_symlink():
                     ranked[rank].append((rel, p))

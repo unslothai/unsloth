@@ -1560,16 +1560,16 @@ def _shared_prefix_len(a: str, b: str) -> int:
 
 
 def _is_gguf_filename(filename: str) -> bool:
-    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
-    return name.lower().endswith(".gguf") and not name.startswith("._")
+    return filename.lower().endswith(".gguf")
 
 
 def _iter_gguf_files(directory: Path, recursive: bool = False):
     if not directory.is_dir():
         return
+
     iterator = directory.rglob("*") if recursive else directory.iterdir()
     for f in iterator:
-        if f.is_file() and _is_gguf_filename(f.name):
+        if f.is_file() and _is_gguf_filename(f.name) and not is_appledouble_metadata(f):
             yield f
 
 
@@ -1822,6 +1822,7 @@ from utils.models.drafters import (  # noqa: E402
 from utils.models.drafters import (  # noqa: E402
     dspark_preference_key as _drafters_dspark_preference_key,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 def dspark_preference_key(name: str) -> Tuple[int, str]:
@@ -1894,7 +1895,7 @@ def detect_mtp_file(
         )
 
     p = Path(path)
-    weight_name = p.name.lower() if _is_gguf_filename(p.name) else None
+    weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
     dirs = [start_dir]
     if search_root is not None:
@@ -2042,7 +2043,7 @@ def detect_dspark_file(
         )
 
     p = Path(path)
-    weight_name = p.name if _is_gguf_filename(p.name) else None
+    weight_name = p.name if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
     dirs = [start_dir]
     if search_root is not None:
@@ -2173,16 +2174,20 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
     )
 
     # Case 1: direct .gguf file
-    if _is_gguf_filename(p.name):
+    if p.suffix.lower() == ".gguf":
         # Companions are not models: rejecting a drafter here also keeps detect_mtp_file from
         # pairing the same file with itself. Include the immediate parent dir so MTP/ subdir
         # copies are caught -- the basename alone (...-MTP.gguf) misses the mtp- prefix.
         rel = f"{p.parent.name}/{p.name}"
         quant = _extract_quant_label(rel)
+
         if (
             _is_mmproj(p.name)
             or _is_local_mtp_drafter(p, root, rel)
             or _is_big_endian_gguf_path(rel, quant)
+            # Pointed at directly, a sidecar bypasses the scan that would have skipped it.
+            # Identified positively so an unreadable file still reaches the lock window below.
+            or is_appledouble_metadata(p)
         ):
             return None
         # Extension is authoritative: is_file()/exists() can fail in the Windows lock window.
@@ -2284,6 +2289,10 @@ _GGUF_QUANT_PREFERENCE = [
 
 def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
     """Pick the best GGUF file: quant levels in _GGUF_QUANT_PREFERENCE order, else first .gguf."""
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+
+    # See hub.utils.gguf.pick_best_gguf: the first matching name wins.
+    filenames = drop_shadowed_appledouble_names(list(filenames))
     gguf_files = [f for f in filenames if f.lower().endswith(".gguf")]
     if not gguf_files:
         return None
@@ -2543,7 +2552,7 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     gguf_path = Path(gguf_file)
     # One shared quant vocabulary: a local copy fell behind on bpw, hiding IQ4_XS-3.53bpw dirs.
     quant_dir_re = rf"{_GGUF_KNOWN_QUANT_RE.pattern}(-[0-9]+(?:\.[0-9]+)?bpw)?"
-    search_dir = gguf_path.parent if _is_gguf_filename(selected.name) else selected
+    search_dir = gguf_path.parent if selected.suffix.lower() == ".gguf" else selected
     if not search_dir.name:
         return str(search_dir)
     if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
@@ -2686,7 +2695,10 @@ def list_gguf_variants(
     # (name, quant, size); grouped per shard FAMILY below, not summed across copies.
     main_files: list[tuple[str, str, int]] = []
 
-    for sibling in info.siblings:
+    from hub.utils.gguf import drop_shadowed_appledouble_siblings
+
+    # Sidecars in the listing would otherwise be advertised as the variant, at their own size.
+    for sibling in drop_shadowed_appledouble_siblings(list(info.siblings)):
         fname = sibling.rfilename
         if not fname.lower().endswith(".gguf"):
             continue
@@ -2753,7 +2765,7 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
     """
     if p.is_dir():
         return p
-    if p.is_file() and _is_gguf_filename(p.name):
+    if p.is_file() and p.suffix.lower() == ".gguf":
         parent = p.parent
         if (
             (parent / "config.json").exists()
@@ -3104,8 +3116,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
 def _has_model_weight_files(model_dir: Path) -> bool:
     """Return True when a directory contains loadable model weights."""
+
     for item in model_dir.iterdir():
         if not item.is_file():
+            continue
+        if is_appledouble_metadata(item):
             continue
 
         suffix = item.suffix.lower()
@@ -3199,6 +3214,7 @@ def scan_exported_models(
         List of (display_name, model_path, export_type, base_model), where
         export_type is "lora" | "merged" | "gguf".
     """
+
     results = []
     exports_path = resolve_export_dir(exports_dir)
 
@@ -3235,8 +3251,9 @@ def scan_exported_models(
 
                 adapter_config = checkpoint_dir / "adapter_config.json"
                 config_file = checkpoint_dir / "config.json"
-                has_weights = any(checkpoint_dir.glob("*.safetensors")) or any(
-                    checkpoint_dir.glob("*.bin")
+                has_weights = any(
+                    not is_appledouble_metadata(f)
+                    for f in (*checkpoint_dir.glob("*.safetensors"), *checkpoint_dir.glob("*.bin"))
                 )
                 has_gguf = any(_iter_gguf_files(checkpoint_dir))
 

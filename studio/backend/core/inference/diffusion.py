@@ -163,6 +163,11 @@ from .diffusion_transformer_quant import (
     quantize_transformer,
     select_transformer_quant_scheme,
 )
+from utils.paths.path_utils import (
+    any_not_appledouble_metadata,
+    drop_appledouble_metadata,
+    is_appledouble_metadata,
+)
 
 logger = get_logger(__name__)
 
@@ -341,12 +346,14 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
         # A PEFT adapter folder is not a base checkpoint; skip it so validation 400s before eviction.
         if (root / "adapter_config.json").is_file():
             return None
+
         checkpoints = [
             p.name
             for p in root.iterdir()
             if p.is_file()
             and p.suffix.lower() == ".safetensors"
             and p.stem.lower() != "adapter_model"
+            and not is_appledouble_metadata(p)
         ]
     except OSError:
         return None
@@ -995,7 +1002,9 @@ def _local_base_transformer_present(base_repo: Optional[str]) -> bool:
         return False
     try:
         transformer = Path(base).expanduser() / "transformer"
-        return transformer.is_dir() and any(transformer.glob("*.safetensors"))
+        return transformer.is_dir() and any_not_appledouble_metadata(
+            transformer.glob("*.safetensors")
+        )
     except OSError:  # an id with invalid path characters is simply not a directory
         return False
 

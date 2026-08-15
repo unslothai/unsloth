@@ -5701,6 +5701,27 @@ def test_a_shared_companion_alone_is_not_evidence_the_quant_is_here(tmp_path):
     assert snapshot_progress._materialized_bytes(snap, lambda path: path.startswith("mmproj")) == 64
 
 
+def test_finder_metadata_left_by_a_deleted_quant_is_not_that_quant(tmp_path):
+    """macOS keeps a file's metadata in a "._" companion carrying the same name, so it matches
+    the quant matcher exactly as its file does. Deleting the quant on a filesystem without
+    native xattrs strands that companion, which both walks then read as the quant still being
+    here -- hydration re-adopts the stale job and blocks a fresh download. A real GGUF a user
+    named that way is still the quant."""
+    snap = tmp_path / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (snap / "._model-Q4_K_M.gguf").write_bytes(b"\x00\x05\x16\x07" + b"m" * 60)
+
+    def matcher(path, *, companions = True):
+        return path.endswith("Q4_K_M.gguf")
+
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 0
+    assert snapshot_progress._variant_main_shard_present(snap, matcher) is False
+
+    (snap / "._named-Q4_K_M.gguf").write_bytes(b"GGUF" + b"q" * 28)
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 32
+    assert snapshot_progress._variant_main_shard_present(snap, matcher) is True
+
+
 def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
     """A root that stats but will not resolve -- an intermittent network mount, a Windows
     reparse point -- was dropped silently, so the scan answered "measured, no cache" and
@@ -6097,6 +6118,25 @@ def test_local_embedding_model_is_not_chat_capable(tmp_path):
     assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True
 
 
+def test_a_snapshot_whose_only_weight_is_finder_metadata_is_not_a_safetensors_row(tmp_path):
+    """Every non-GGUF classification here reads the file list by suffix, and a "._" companion
+    carries the suffix of the file it describes -- so a directory left holding only those was
+    given a ready safetensors row. A real weight named that way still gets one."""
+
+    def _formats(name, weight = None):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "config.json").write_text("{}")
+        if weight is not None:
+            (d / "._model.safetensors").write_bytes(weight)
+        return [r.model_format for r in model_common._classify_local_path(d, "models_dir")]
+
+    # A config with no weight beside it is already "unknown"; metadata must not read as more.
+    assert _formats("config-only") == ["unknown"]
+    assert _formats("metadata-only", b"\x00\x05\x16\x07\x00\x02\x00\x00") == ["unknown"]
+    assert _formats("named", b"weights") == ["safetensors"]
+
+
 def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
     """Cached rows build capabilities from file format too, so a cached BERT
     looked like a chat model to auto-load."""
@@ -6353,15 +6393,6 @@ def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
     found = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(lm_dir)}
 
     assert found == {"lower.gguf", "UPPER.GGUF", "Mixed.GguF"}
-
-
-def test_appledouble_sidecar_is_not_a_model_directory_weight(tmp_path):
-    model_dir = tmp_path / "model"
-    model_dir.mkdir()
-    (model_dir / "config.json").write_text("{}", encoding = "utf-8")
-    (model_dir / "._model-Q4_K_M.gguf").write_bytes(b"AppleDouble metadata")
-
-    assert model_common._is_model_directory(model_dir) is False
 
 
 @pytest.mark.parametrize(

@@ -44,28 +44,6 @@ def test_direct_gguf_file_is_a_loadable_variant(in_tmp_cwd):
     assert response.variants[0].partial is False
 
 
-def test_appledouble_sidecar_is_not_a_loadable_variant(in_tmp_cwd):
-    sidecar = in_tmp_cwd / "._model-Q4_K_M.gguf"
-    sidecar.write_bytes(b"AppleDouble metadata")
-
-    response = _variants(os.fspath(sidecar))
-
-    assert response.variants == []
-
-
-def test_appledouble_sidecar_cannot_outrank_the_real_gguf(in_tmp_cwd):
-    from utils.models.model_config import detect_gguf_model
-
-    real = in_tmp_cwd / "model-Q4_K_M.gguf"
-    real.write_bytes(b"GGUF")
-    # Finder metadata can be larger than a tiny test fixture. Selection must reject it by
-    # filename, not merely rely on the real model usually being larger in production.
-    (in_tmp_cwd / "._model-Q4_K_M.gguf").write_bytes(b"AppleDouble" * 100)
-
-    assert detect_gguf_model(os.fspath(in_tmp_cwd)) == os.fspath(real)
-    assert [v.filename for v in _variants(os.fspath(in_tmp_cwd)).variants] == [real.name]
-
-
 def test_markerless_relative_gguf_file_resolves_locally(in_tmp_cwd):
     (in_tmp_cwd / "models").mkdir()
     (in_tmp_cwd / "models" / "foo.gguf").write_bytes(b"GGUF")

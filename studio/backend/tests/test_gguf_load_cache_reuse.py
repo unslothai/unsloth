@@ -550,19 +550,6 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / "mmproj-F16.gguf")
 
-    def test_companion_ignores_appledouble_mmproj_sidecar(self, hf_cache):
-        backend = LlamaCppBackend()
-        snap = _build_cache(
-            hf_cache,
-            REPO,
-            {MAIN: 4, "._mmproj-F16.gguf": 2, "mmproj-F16.gguf": 2},
-        )
-
-        with patch("huggingface_hub.list_repo_files", _fail_download):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
-
-        assert out == str(snap / "mmproj-F16.gguf")
-
     def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {})

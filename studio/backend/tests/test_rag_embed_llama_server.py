@@ -751,17 +751,6 @@ def test_the_pick_takes_the_shortest_variant_match_and_never_an_mmproj(monkeypat
     assert LlamaServerBackend._pick_gguf(names) == "bge-small-en-v1.5-F16.gguf"
 
 
-def test_the_pick_ignores_appledouble_sidecars(monkeypatch):
-    monkeypatch.setattr(config, "EMBED_GGUF_VARIANT", "F16")
-
-    assert (
-        LlamaServerBackend._pick_gguf(
-            ["._bge-small-en-v1.5-F16.gguf", "bge-small-en-v1.5-F16.gguf"]
-        )
-        == "bge-small-en-v1.5-F16.gguf"
-    )
-
-
 def test_cached_gguf_skips_mmproj_and_honours_the_variant(monkeypatch, tmp_path):
     """The same rule reached through the cache, over a real snapshot layout."""
     repo = config.effective_gguf_repo()

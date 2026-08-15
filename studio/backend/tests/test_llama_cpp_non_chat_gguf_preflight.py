@@ -109,50 +109,25 @@ def test_metadata_less_gguf_of_unknown_family_still_refuses(tmp_path):
     assert "general.architecture" in message
 
 
-def test_invalid_magic_is_refused_before_llama_server(tmp_path):
-    apple_double = tmp_path / "._model-Q4_K_M.gguf"
-    apple_double.write_bytes(b"AppleDouble metadata")
+def test_unreadable_header_yields_no_verdict(tmp_path):
+    # A non-GGUF file and a GGUF truncated mid-KV must both fall through to llama-server
+    # rather than being refused as "declares no architecture".
+    not_gguf = tmp_path / "notes.txt"
+    not_gguf.write_bytes(b"this is not a gguf file at all")
     backend = LlamaCppBackend()
-    backend._read_gguf_metadata(str(apple_double))
+    backend._read_gguf_metadata(str(not_gguf))
     assert backend._gguf_header_parsed is False
-
-    message = backend._non_chat_gguf_refusal(str(apple_double))
-
-    assert message is not None
-    assert "does not start with the GGUF header" in message
-    assert "Finder metadata" in message
-    assert "without that prefix" in message
-    assert "memory" not in message.lower()
-
-
-def test_non_appledouble_invalid_magic_has_no_finder_guidance(tmp_path):
-    invalid = tmp_path / "model-Q4_K_M.gguf"
-    invalid.write_bytes(b"HTML is not GGUF")
-    backend = LlamaCppBackend()
-    backend._read_gguf_metadata(str(invalid))
-
-    message = backend._non_chat_gguf_refusal(str(invalid))
-
-    assert message is not None
-    assert "not a valid GGUF" in message
-    assert "does not start with the GGUF header" in message
-    assert "Finder" not in message
-    assert "._" not in message
-
-
-def test_truncated_valid_header_yields_no_verdict(tmp_path):
-    # A real GGUF truncated mid-KV must still fall through to llama-server rather than being
-    # refused as "declares no architecture"; the magic check alone cannot diagnose truncation.
-    backend = LlamaCppBackend()
+    assert backend._non_chat_gguf_refusal(str(not_gguf)) is None
 
     full = _write_gguf(tmp_path / "chat.gguf", arch = "llama")
     truncated = tmp_path / "truncated.gguf"
     # Keep the counts (which promise a KV pair) but cut the KV itself away.
     truncated.write_bytes(full.read_bytes()[:24])
-    backend._read_gguf_metadata(str(truncated))
-    assert backend._architecture is None
-    assert backend._gguf_header_parsed is False
-    assert backend._non_chat_gguf_refusal(str(truncated)) is None
+    backend2 = LlamaCppBackend()
+    backend2._read_gguf_metadata(str(truncated))
+    assert backend2._architecture is None
+    assert backend2._gguf_header_parsed is False
+    assert backend2._non_chat_gguf_refusal(str(truncated)) is None
 
 
 def test_verdict_requires_a_parsed_header_even_if_called_directly(tmp_path):

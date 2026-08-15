@@ -34,6 +34,7 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 from . import config
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -190,16 +191,17 @@ class LlamaServerBackend:
     def _resolve_local_gguf(model: str) -> str | None:
         """A custom model may be a local .gguf file or a directory holding one;
         resolve it without the hub. None when the value is not a local path."""
-        from hub.utils.gguf import is_gguf_filename
-
         p = Path(model).expanduser()
-        if p.is_file() and is_gguf_filename(p.name):
-            return str(p)
+
+        if p.is_file() and p.suffix.lower() == ".gguf":
+            return None if is_appledouble_metadata(p) else str(p)
         if p.is_dir():
             files = [
                 f
                 for f in p.iterdir()
-                if is_gguf_filename(f.name) and "mmproj" not in f.name.lower()
+                if f.suffix.lower() == ".gguf"
+                and "mmproj" not in f.name.lower()
+                and not is_appledouble_metadata(f)
             ]
             if not files:
                 raise RuntimeError(f"no .gguf file found in local model dir {model!r}")
@@ -221,14 +223,13 @@ class LlamaServerBackend:
         `require_variant` refuses the fallback to another variant. Falling back on a hub
         listing means the variant is not published; falling back on a cache would serve
         whatever happened to be fetched under an earlier setting."""
-        from hub.utils.gguf import is_gguf_filename
         from utils.models.model_config import _is_mtp_drafter
 
         name_of = key or (lambda n: n)
         usable = [
             n
             for n in names
-            if is_gguf_filename(name_of(n))
+            if name_of(n).lower().endswith(".gguf")
             and "mmproj" not in name_of(n).lower()
             # A drafter is a companion, never a model in its own right, so it must be
             # excluded everywhere mmproj is. A cache holding only the companion would
@@ -291,7 +292,12 @@ class LlamaServerBackend:
         try:
             # Not a "*.gguf" glob: that is case-sensitive, and quant-per-directory layouts
             # put the file a level down, both of which the hub listing handles.
-            files = [p for p in snapshot.rglob("*") if p.is_file()]
+
+            # A complete family of sidecars is servable by every test below -- whole, quant
+            # matched, opens as a file -- so the retry that drops a torn real set lands on it.
+            files = [
+                p for p in snapshot.rglob("*") if p.is_file() and not is_appledouble_metadata(p)
+            ]
         except OSError:
             return None
         # llama-server opens sibling shards implicitly, so a split set is servable only when

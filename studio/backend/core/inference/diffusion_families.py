@@ -21,6 +21,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
+from utils.paths.path_utils import is_appledouble_metadata
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
@@ -718,7 +719,12 @@ def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> boo
             if wanted:
                 if all((rev / name).exists() for name in wanted):
                     return True
-            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+            elif any(
+                p.suffix.lower() in _WEIGHT_SUFFIXES
+                and p.is_file()
+                and not is_appledouble_metadata(p)
+                for p in rev.rglob("*")
+            ):
                 return True
         return False
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"

@@ -37,6 +37,7 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 from core.inference.video_families import detect_video_family, supported_video_family_names
+from utils.paths.path_utils import drop_appledouble_metadata
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry over. Both import this module first.
 install_xformers_windows_rocm_stub()
@@ -1381,7 +1382,11 @@ def discover_image_caption_pairs(
     if not root.is_dir():
         raise FileNotFoundError(f"data_dir is not a directory: {data_dir}")
 
-    images = sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
+    # The caption lookup resolves to the caption's own companion, which exists, so the pair
+    # reads as a real one.
+    images = drop_appledouble_metadata(
+        sorted(p for p in root.iterdir() if p.is_file() and p.suffix.lower() in _IMAGE_EXTS)
+    )
 
     # 1. metadata.jsonl / captions.jsonl (either name accepted).
     meta_caption: dict[str, str] = {}
