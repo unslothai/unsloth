@@ -214,6 +214,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "warmup_ratio": values.get("warmup_ratio"),
         "max_steps": values.get("max_steps", 0),
         "save_steps": values.get("save_steps", 0),
+        "checkpoint_backup": values.get("checkpoint_backup"),
         "weight_decay": values.get("weight_decay", 0.001),
         "max_grad_norm": _coerce_optional_nonneg_float(
             "max_grad_norm", values.get("max_grad_norm")
@@ -1132,6 +1133,7 @@ class TrainingBackend:
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
+        self._checkpoint_backup_manager = None
 
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
@@ -1766,6 +1768,25 @@ class TrainingBackend:
             self._progress = TrainingProgress(
                 is_training = True, status_message = "Initializing training..."
             )
+            backup_policy = config.get("checkpoint_backup")
+            if self._checkpoint_backup_manager is not None:
+                self._checkpoint_backup_manager.shutdown()
+                self._checkpoint_backup_manager = None
+            if backup_policy and backup_policy.get("enabled"):
+                from .checkpoint_backup import CheckpointBackupConfig, CheckpointBackupManager
+                from .checkpoint_backup.huggingface import HuggingFaceCheckpointTransport
+                from .resume import is_resume_checkpoint_valid
+
+                backup_config = CheckpointBackupConfig.model_validate(backup_policy)
+                self._checkpoint_backup_manager = CheckpointBackupManager(
+                    backup_config,
+                    outputs_root(),
+                    HuggingFaceCheckpointTransport(
+                        config.get("hf_token") or "", backup_config.repo_id
+                    ),
+                    checkpoint_validator = is_resume_checkpoint_valid,
+                    save_steps = config.get("save_steps", 0),
+                )
             # Reset the throttle so the new run logs its first step even within 30s of a prior run.
             self._last_progress_log_ts = 0.0
             self._last_progress_log_step = -1
@@ -2804,6 +2825,15 @@ class TrainingBackend:
         if etype == "stall":
             self._handle_stall_event(event)
             return
+        if etype == "checkpoint_saved":
+            manager = self._checkpoint_backup_manager
+            if manager is not None and self.current_job_id:
+                manager.on_checkpoint_saved(
+                    self.current_job_id,
+                    int(event.get("step", 0)),
+                    Path(event.get("checkpoint_path", "")),
+                )
+            return
 
         with self._lock:
             if etype == "progress":
@@ -2990,6 +3020,22 @@ class TrainingBackend:
                     "expected_job_id": self.current_job_id,
                 }
                 self._terminal_finalize_payload = dict(db_action_kwargs)
+
+                manager = self._checkpoint_backup_manager
+                should_upload_final = manager is not None and (
+                    (stopped and manager.config.upload_on_stop)
+                    or (not stopped and manager.config.upload_on_complete)
+                )
+                if should_upload_final and self._output_dir:
+                    from .resume import get_resume_checkpoint_path
+
+                    checkpoint_path = get_resume_checkpoint_path(self._output_dir)
+                    if checkpoint_path:
+                        match = re.fullmatch(r"checkpoint-(\d+)", Path(checkpoint_path).name)
+                        checkpoint_step = int(match.group(1)) if match else self._progress.step
+                        manager.on_run_finished(
+                            self.current_job_id, checkpoint_step, Path(checkpoint_path)
+                        )
 
             elif etype == "error":
                 self._progress.is_training = False

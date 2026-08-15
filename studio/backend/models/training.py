@@ -702,6 +702,9 @@ class TrainingStatus(BaseModel):
         description = "Full metric history arrays for chart recovery after SSE reconnection. "
         "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values.",
     )
+    checkpoint_backup: Optional[dict] = Field(
+        None, description = "Current asynchronous checkpoint backup snapshot"
+    )
 
 
 class TrainingProgress(BaseModel):
