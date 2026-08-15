@@ -76,38 +76,39 @@ def max_steps_dataset_rows(
     return max(MIN_MAX_STEPS_ROWS, steps * per_step * MAX_STEPS_ROW_SLACK)
 
 
-def effective_packing(config: dict, is_vlm: bool = False) -> bool:
+def effective_packing(config: dict, branch_never_packs: bool = False) -> bool:
     """Whether the trainer will actually pack, not merely what was requested.
 
     Packing opts the bound out because one packed sample spans an unknown number
     of source rows, and the requested value is the answer unless the caller has
-    established that the run cannot pack. Only `is_vlm` does that: it says the
-    caller probed the model and the dataset and landed on the vision branch,
-    which sets no packing at all.
+    established that the branch this run takes sets no packing at all: the
+    vision and audio-VLM branches, and every audio codec, which train on a
+    Trainer that has no packing argument to give.
 
-    The dataset flags do NOT establish it, though they look like they should.
+    The dataset flags do NOT establish that, though they look like they should.
     `is_dataset_image` and `is_dataset_audio` are client-supplied and true on a
     column-NAME match, so a text model with a column called "audio" carries the
-    flag and still trains on the text path, which honours packing. Raw-text and
-    CPT take that path too, whatever the flags say, because the vision branch is
-    gated on `not raw_text_mode`. Guessing the branch from a flag was wrong in
-    three separate ways; where the branch is unknown, assume it packs.
+    flag and still trains on the text path, which honours packing. Pass the
+    branch the model probe actually detected instead.
+
+    Raw-text and CPT are the exception on top: they reach the text path from any
+    branch, because the vision one is gated on `not raw_text_mode`.
     """
     if not config.get("packing", False):
         return False
     raw_text_mode = (
         config.get("training_type") == "Continued Pretraining" or config.get("format_type") == "raw"
     )
-    return bool(raw_text_mode or not is_vlm)
+    return bool(raw_text_mode or not branch_never_packs)
 
 
-def max_train_rows_for_config(config: dict, is_vlm: bool = False) -> Optional[int]:
+def max_train_rows_for_config(config: dict, branch_never_packs: bool = False) -> Optional[int]:
     """The bound for a worker config, or None when the run is not bounded.
 
     Streaming and an explicit train-split range opt out further down, in the
     loaders, where those values live.
     """
-    if effective_packing(config, is_vlm = is_vlm):
+    if effective_packing(config, branch_never_packs = branch_never_packs):
         return None
     return max_steps_dataset_rows(
         config.get("max_steps", 0) or 0,
@@ -132,8 +133,10 @@ def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
     if not path:
         return None
     head, tail = os.path.split(path)
-    if head and _CHECKPOINT_DIR_RE.match(tail):
-        return head
+    if _CHECKPOINT_DIR_RE.match(tail):
+        # A bare "checkpoint-30" splits to an empty head, and its run directory is
+        # the working directory rather than itself.
+        return head or os.curdir
     return path
 
 

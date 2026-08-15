@@ -2792,7 +2792,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # point -- formatting, chat templating, tokenization -- maps over every row.
     # Recomputed from the config rather than carried over from the parent so an
     # MLX run can never train against a bound derived from stale values.
-    mlx_max_train_rows = max_train_rows_for_config(config, is_vlm = is_vlm)
+    mlx_max_train_rows = max_train_rows_for_config(config, branch_never_packs = is_vlm)
     # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
     # whatever dataset it is handed, so a bound applied to a checkpoint that was
     # written without one continues on unrelated rows. Same marker, same rule as
@@ -4126,26 +4126,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
 
-        # Effective packing opts out: one packed sample spans an unknown number of
-        # rows, so steps cannot be converted to a row count. Streaming and an
-        # explicit train-split range opt out inside load_and_format_dataset, where
-        # they live.
-        max_train_rows = max_train_rows_for_config(config)
+        # Filled in below, after the model probe: the closure reads them when it
+        # runs, which is after both.
+        max_train_rows = None
         max_train_rows_seed = config.get("random_seed", 3407)
-        # A resume trains on the rows its first start chose, read back from the
-        # marker written beside the checkpoints. A checkpoint with no marker
-        # predates the bound: it trained on the whole dataset, and the trainer
-        # fast-forwards by batch count over the current dataloader, so bounding it
-        # now would continue into unrelated rows.
-        resumed_rows, max_train_rows_seed = row_bound_for_resume(
-            config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
-        )
-        if resumed_rows != max_train_rows:
-            logger.info(
-                "Resuming with the row bound recorded at the original start "
-                f"({resumed_rows} rows) instead of {max_train_rows}\n"
-            )
-        max_train_rows = resumed_rows
 
         def _load_training_dataset():
             result = trainer.load_and_format_dataset(
@@ -4229,6 +4213,31 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
+
+        # Now that 4a has probed the model, the branch this run takes is known, so
+        # the packing opt-out can read it instead of guessing from the client's
+        # dataset flags. Streaming and an explicit train-split range opt out inside
+        # load_and_format_dataset, where they live.
+        branch_never_packs = bool(
+            getattr(trainer, "is_vlm", False)
+            or getattr(trainer, "is_audio_vlm", False)
+            or getattr(trainer, "_audio_type", None)
+        )
+        max_train_rows = max_train_rows_for_config(config, branch_never_packs = branch_never_packs)
+        # A resume trains on the rows its first start chose, read back from the
+        # marker written beside the checkpoints. A checkpoint with no marker
+        # predates the bound: it trained on the whole dataset, and the trainer
+        # fast-forwards by batch count over the current dataloader, so bounding it
+        # now would continue into unrelated rows.
+        resumed_rows, max_train_rows_seed = row_bound_for_resume(
+            config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
+        )
+        if resumed_rows != max_train_rows:
+            logger.info(
+                "Resuming with the row bound recorded at the original start "
+                f"({resumed_rows} rows) instead of {max_train_rows}\n"
+            )
+        max_train_rows = resumed_rows
 
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
         _send_status(event_queue, "Loading and formatting dataset...")

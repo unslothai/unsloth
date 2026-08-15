@@ -613,8 +613,8 @@ def test_effective_packing_decides_the_opt_out():
 
     # A caller that probed the model and landed on the vision branch knows the run
     # cannot pack, so a stale flag does not cost it the bound.
-    assert effective_packing({**text, "packing": True}, is_vlm = True) is False
-    assert max_train_rows_for_config({**text, "packing": True}, is_vlm = True) == 1024
+    assert effective_packing({**text, "packing": True}, branch_never_packs = True) is False
+    assert max_train_rows_for_config({**text, "packing": True}, branch_never_packs = True) == 1024
 
     # The dataset flags alone establish nothing: they are client-supplied and true
     # on a column-NAME match, so a text model with a column called "audio" or
@@ -630,11 +630,11 @@ def test_effective_packing_decides_the_opt_out():
     # is gated on `not raw_text_mode` -- and the text path honours the requested
     # value, so those runs pack for real and keep the opt-out.
     for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
-        assert effective_packing({**text, **raw, "packing": True}, is_vlm = True) is True
-        assert max_train_rows_for_config({**text, **raw, "packing": True}, is_vlm = True) is None
+        assert effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is True
+        assert max_train_rows_for_config({**text, **raw, "packing": True}, branch_never_packs = True) is None
         # Without packing they are bounded like anything else.
-        assert effective_packing({**text, **raw}, is_vlm = True) is False
-        assert max_train_rows_for_config({**text, **raw}, is_vlm = True) == 1024
+        assert effective_packing({**text, **raw}, branch_never_packs = True) is False
+        assert max_train_rows_for_config({**text, **raw}, branch_never_packs = True) == 1024
 
 
 def test_bound_dataset_rows_edges():
@@ -785,6 +785,28 @@ def test_row_bound_marker_is_replaced_atomically(tmp_path):
     assert [p.name for p in run_dir.iterdir()] == ["unsloth_row_bound.json"]
 
 
+def test_run_dir_for_a_bare_relative_checkpoint(tmp_path, monkeypatch):
+    from core.training.dataset_bounds import (
+        record_row_bound,
+        row_bound_for_resume,
+        run_dir_for_checkpoint,
+    )
+
+    # "checkpoint-30" splits to an empty head; its run directory is the working
+    # directory, not itself, or the marker is looked for one level too deep and
+    # the bounded run reads as legacy.
+    assert run_dir_for_checkpoint("checkpoint-30") == os.curdir
+    assert run_dir_for_checkpoint("run/checkpoint-30") == "run"
+    # A relative run directory is still itself.
+    assert run_dir_for_checkpoint("checkpoint-model") == "checkpoint-model"
+
+    run_dir = tmp_path / "run"
+    (run_dir / "checkpoint-30").mkdir(parents = True)
+    record_row_bound(str(run_dir), 4096, 3407)
+    monkeypatch.chdir(run_dir)
+    assert row_bound_for_resume("checkpoint-30", 40960, 99) == (4096, 3407)
+
+
 def test_record_row_bound_reports_whether_it_wrote():
     from core.training.dataset_bounds import record_row_bound
 
@@ -896,6 +918,15 @@ def test_both_loaders_apply_the_row_bound():
     for loader in ("run_training_process", "_run_mlx_training"):
         assert "row_bound_for_resume" in calls[loader]
         assert "record_row_bound" in calls[loader]
+
+    # Both pass the branch they detected, rather than letting it default: the
+    # dataset flags are client-supplied and cannot stand in for it.
+    assert worker_src.count("branch_never_packs = ") >= 2
+    # And the CUDA one computes it only after the model probe has set it, which is
+    # what makes the value real.
+    assert worker_src.index("_pre_detect_training_model(\n") < worker_src.index(
+        "branch_never_packs = bool("
+    )
 
 
 def test_mlx_adapter_keeps_one_source_of_truth_for_the_bound():
