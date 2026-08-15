@@ -8661,7 +8661,6 @@ def test_a_slow_tokenizer_vocabulary_is_accepted(tmp_path):
     # Codex P2: unsloth.models.loader_utils._has_local_tokenizer_files accepts vocab.txt
     # and spiece.model, so rejecting them hid loadable checkpoints.
     from types import SimpleNamespace
-
     for name in ("vocab.txt", "spiece.model"):
         path = _local_checkpoint(tmp_path, f"slow-{name}")
         (path / "tokenizer.json").unlink()

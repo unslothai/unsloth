@@ -335,7 +335,6 @@ def _bitsandbytes_suits_host() -> bool:
     """
     try:
         from importlib.util import find_spec
-
         return find_spec("bitsandbytes") is not None
     except Exception:
         return True
