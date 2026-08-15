@@ -1764,8 +1764,10 @@ def _detect_amd_gfx_codes(
             codes = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
             return list(dict.fromkeys(codes))
         # One entry per agent section; fall back to dedup for flat output.
+        # amd-smi heads each device with "GPU: N" / "GPU[N]"; install.sh parses the same shapes.
         _sections = re.split(
-            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b",
+            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b"
+            r"|^[ \t]*gpu[ \t]*[:\[][ \t]*\d+",
             text,
         )
         if len(_sections) > 1:

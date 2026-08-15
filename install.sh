@@ -3335,10 +3335,11 @@ _gfx_targets_per_device() {
     awk '
         {
             _low = tolower($0)
-            if (match(_low, /agent[ \t]+[0-9]+/) || match(_low, /device[ \t]*#[ \t]*[0-9]+/)) {
+            if (match(_low, /agent[ \t]+[0-9]+/) || match(_low, /device[ \t]*#[ \t]*[0-9]+/) \
+                || match(_low, /^[ \t]*gpu[ \t]*:[ \t]*[0-9]+/) \
+                || match(_low, /^[ \t]*gpu[ \t]*\[[ \t]*[0-9]+/)) {
                 if (_started && _cur != "") print _cur
                 _started = 1; _cur = ""
-                next
             }
             if (match(_low, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
                 _tok = substr(_low, RSTART, RLENGTH)
@@ -4502,6 +4503,8 @@ fi
 # Skipped when the index is pinned: an explicit override must not be rerouted to the
 # Radeon/Strix repos by GPU probing.
 _amd_gpu_radeon=false
+# set when the gfx1102/rdna4 floor rerouted this install, so the migrated repair below can act on it
+_gfx_rocm64_floor_applied=false
 if [ "$_torch_index_pinned" = false ]; then
 case "$TORCH_INDEX_URL" in
     */rocm*)
@@ -4523,6 +4526,13 @@ _rocm_leaf_below() {
     if [ "$_maj" -eq "$2" ] && [ "$_min" -lt "$3" ]; then return 0; fi
     return 1
 }
+# 0 when the venv's torch has no identifiable rocm family at $2.$3 or newer, mirroring _installed_rocm_wheel_is_below in studio/install_python_stack.py
+_venv_torch_rocm_below() {
+    _vtr_leaf=$("$1" -c 'import re, torch; m = re.search(r"rocm([0-9]+)\.([0-9]+)", getattr(torch, "__version__", "") or ""); print("rocm%s.%s" % m.groups() if m else "")' 2>/dev/null || true)
+    [ -n "$_vtr_leaf" ] || return 0
+    _rocm_leaf_below "$_vtr_leaf" "$2" "$3"
+}
+
 # ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
 # gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/,
 # which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167,
@@ -4694,6 +4704,7 @@ case "$_torch_index_leaf" in
                     done
                     TORCH_INDEX_URL="${_amd_rocm64_base}/rocm6.4"
                     _torch_index_leaf="rocm6.4"
+                    _gfx_rocm64_floor_applied=true
                 fi
                 ;;
         esac
@@ -5084,6 +5095,10 @@ if [ "$_MIGRATED" = true ]; then
         _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
         if [ -z "$_has_hip" ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
+            _install_torch_default_index --force-reinstall
+        elif [ "$_gfx_rocm64_floor_applied" = true ] && _venv_torch_rocm_below "$_VENV_PY" 6 4; then
+            # a migrated venv keeps its hip torch, but a pre-6.4 wheel carries no kernels for this gpu
+            substep "reinstalling torch from $_torch_index_leaf (the migrated wheels have no kernels for this GPU)..."
             _install_torch_default_index --force-reinstall
         fi
         _gfx906_bnb_prune

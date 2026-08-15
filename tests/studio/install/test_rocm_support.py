@@ -1256,6 +1256,44 @@ Agent 4
         assert self._probe_gfx(flat, False) == ["gfx1100", "gfx1151"]
         assert self._probe_gfx(flat, True) == ["gfx1100", "gfx1151"]
 
+    _AMD_SMI_ASIC = """GPU: 0
+    ASIC:
+        MARKET_NAME: Radeon RX 7900 XTX
+        TARGET_GRAPHICS_VERSION: gfx1100
+GPU: 1
+    ASIC:
+        MARKET_NAME: Radeon RX 7900 XTX
+        TARGET_GRAPHICS_VERSION: gfx1100
+GPU: 2
+    ASIC:
+        MARKET_NAME: Radeon RX 9060
+        TARGET_GRAPHICS_VERSION: gfx1200
+"""
+
+    @staticmethod
+    def _probe_gfx_amd_smi(out, dedup):
+        which = lambda n: "/usr/bin/amd-smi" if n == "amd-smi" else None  # noqa: E731
+        with patch("shutil.which", side_effect = which):
+            with patch.object(stack_mod, "_amd_smi_allowed", return_value = True):
+                with patch(
+                    "subprocess.run", return_value = MagicMock(returncode = 0, stdout = out)
+                ):
+                    return stack_mod._detect_amd_gfx_codes(dedup = dedup)
+
+    def test_gfx_probe_splits_amd_smi_gpu_headers(self):
+        """amd-smi heads each device with "GPU: N", so duplicate arches stay separate."""
+        assert self._probe_gfx_amd_smi(self._AMD_SMI_ASIC, False) == [
+            "gfx1100",
+            "gfx1100",
+            "gfx1200",
+        ]
+        assert self._probe_gfx_amd_smi(self._AMD_SMI_ASIC, True) == ["gfx1100", "gfx1200"]
+
+    def test_gfx_probe_splits_amd_smi_bracket_headers(self):
+        """The "GPU[N] : gfx" one-line form keeps its token on the header line."""
+        bracket = "GPU[0]  : gfx1100\nGPU[1]  : gfx1100\nGPU[2]  : gfx1200\n"
+        assert self._probe_gfx_amd_smi(bracket, False) == ["gfx1100", "gfx1100", "gfx1200"]
+
     def test_gfx_probe_records_which_tool_answered(self):
         # Only rocminfo is mask-filtered, and only by ROCR, so the reroute needs this.
         self._probe_gfx(self._ROCMINFO, False)
@@ -2194,6 +2232,29 @@ class TestGfx1102Rocm64Floor:
         preamble = self._rocminfo_stub(*arches) + f"export ROCR_VISIBLE_DEVICES={rocr}"
         assert self._run_install_sh_routing(preamble) == expected
 
+    @pytest.mark.parametrize(
+        ("mask", "expected"),
+        (("HIP_VISIBLE_DEVICES=2", "rocm6.4"), ("HIP_VISIBLE_DEVICES=1", "rocm6.1")),
+    )
+    def test_install_sh_splits_amd_smi_gpu_headers(self, mask, expected):
+        """amd-smi heads each device with "GPU: N", so two gfx1100 cards stay two entries."""
+        asic = "\\n".join(
+            [
+                "GPU: 0",
+                "        TARGET_GRAPHICS_VERSION: gfx1100",
+                "GPU: 1",
+                "        TARGET_GRAPHICS_VERSION: gfx1100",
+                "GPU: 2",
+                "        TARGET_GRAPHICS_VERSION: gfx1200",
+            ]
+        )
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            f"amd-smi() {{ printf '{asic}\\n'; }}\n"
+            f"export {mask}"
+        )
+        assert self._run_install_sh_routing(preamble) == expected
+
     def test_install_sh_still_indexes_amd_smi_output_under_a_rocr_mask(self):
         """amd-smi ignores ROCR_VISIBLE_DEVICES, so its flat output still needs indexing."""
         preamble = (
@@ -2202,6 +2263,71 @@ class TestGfx1102Rocm64Floor:
             "export ROCR_VISIBLE_DEVICES=1"
         )
         assert self._run_install_sh_routing(preamble) == "rocm6.1"
+
+    @staticmethod
+    def _run_migrated_rocm_repair(torch_version: str, hip: str, floor_applied: str) -> str:
+        """Execute install.sh's migrated-environment ROCm repair with a stubbed venv torch."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the migrated repair block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("        # Repair ROCm torch if overwritten during migrated install")
+        end = source.find("        _gfx906_bnb_prune", start)
+        assert start >= 0 and end >= 0
+        with tempfile.TemporaryDirectory() as d:
+            venv_py = os.path.join(d, "python")
+            with open(venv_py, "w", encoding = "utf-8") as fh:
+                fh.write(
+                    "#!/bin/sh\n"
+                    f'exec {sys.executable} -c "\n'
+                    "import sys, types\n"
+                    "t = types.ModuleType('torch')\n"
+                    f"t.__version__ = '{torch_version}'\n"
+                    "v = types.ModuleType('torch.version')\n"
+                    f"v.hip = '{hip}'\n"
+                    "t.version = v\n"
+                    "sys.modules['torch'] = t\n"
+                    "sys.modules['torch.version'] = v\n"
+                    "exec(sys.argv[1])\n"
+                    '" "$2"\n'
+                )
+            os.chmod(venv_py, 0o755)
+            script = (
+                "set -euo pipefail\n"
+                + _extract_sh_function_body(source, "_rocm_leaf_below")
+                + "\n"
+                + _extract_sh_function_body(source, "_venv_torch_rocm_below")
+                + "\n"
+                + "substep() { :; }\n"
+                + '_install_torch_default_index() { printf "REINSTALL\\n"; }\n'
+                + f'_VENV_PY="{venv_py}"\n'
+                + f"_gfx_rocm64_floor_applied={floor_applied}\n"
+                + '_torch_index_leaf="rocm6.4"\n'
+                + source[start:end]
+                + '\nprintf "DONE\\n"\n'
+            )
+            r = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+
+    @pytest.mark.parametrize(
+        ("torch_version", "hip", "floor_applied", "reinstalls"),
+        (
+            # the gap: a migrated venv keeps its hip torch, so a pre-6.4 wheel survived
+            ("2.5.1+rocm6.1", "6.1.40093", "true", True),
+            ("2.7.0+rocm6.3", "6.3.42131", "true", True),
+            ("2.8.0+rocm6.4", "6.4.43482", "true", False),
+            ("2.11.0+rocm7.13.0", "7.13.0", "true", False),
+            ("2.5.1+rocm6.1", "6.1.40093", "false", False),
+            ("2.5.1+cpu", "", "false", True),
+        ),
+    )
+    def test_install_sh_migrated_repair_honors_the_rocm64_floor(
+        self, torch_version, hip, floor_applied, reinstalls
+    ):
+        out = self._run_migrated_rocm_repair(torch_version, hip, floor_applied)
+        assert "DONE" in out, out
+        assert ("REINSTALL" in out) is reinstalls, out
 
     @pytest.mark.parametrize(
         "override",
