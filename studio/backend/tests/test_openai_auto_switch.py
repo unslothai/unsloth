@@ -2412,7 +2412,7 @@ def test_local_servable_model_reads_files_not_model_format(tmp_path):
 
     st = tmp_path / "safetensors_model"
     st.mkdir()
-    (st / "model.safetensors").write_bytes(b"x" * 32)
+    (st / "model.safetensors").write_bytes(_safetensors_bytes())
     (st / "tokenizer.json").write_text("{}")
     assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) is None
     (st / "config.json").write_text(_CHAT_CONFIG)
@@ -7976,6 +7976,20 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
 _CHAT_CONFIG = '{"architectures": ["Qwen3ForCausalLM"]}'
 
 
+def _safetensors_bytes(nbytes = 32):
+    """A minimal but structurally valid .safetensors file.
+
+    The resolver reads the header and checks the file carries the bytes it declares, so a
+    fixture of arbitrary filler now reads as a truncated checkpoint and is withheld.
+    """
+    import struct
+
+    header = json.dumps(
+        {"w": {"dtype": "F32", "shape": [nbytes // 4], "data_offsets": [0, nbytes]}}
+    ).encode()
+    return struct.pack("<Q", len(header)) + header + b"\0" * nbytes
+
+
 def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
     """An on-disk non-GGUF checkpoint: config.json and a tokenizer beside safetensors.
 
@@ -7985,7 +7999,7 @@ def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
     path = root / name
     path.mkdir()
     (path / "config.json").write_text(_CHAT_CONFIG)
-    (path / "model.safetensors").write_bytes(b"x" * 32)
+    (path / "model.safetensors").write_bytes(_safetensors_bytes())
     (path / "tokenizer.json").write_text("{}")
     return path
 
@@ -8016,7 +8030,7 @@ def test_an_adapter_only_directory_is_not_a_servable_chat_model(tmp_path):
     path = tmp_path / "adapter"
     path.mkdir()
     (path / "adapter_config.json").write_text("{}")
-    (path / "adapter_model.safetensors").write_bytes(b"x" * 32)
+    (path / "adapter_model.safetensors").write_bytes(_safetensors_bytes())
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
 
@@ -8235,14 +8249,14 @@ def test_a_sharded_checkpoint_missing_shards_is_not_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "Sharded")
     (path / "model.safetensors").unlink()
-    (path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 32)
+    (path / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
     (path / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
         ' "b": "model-00002-of-00002.safetensors"}}'
     )
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
-    (path / "model-00002-of-00002.safetensors").write_bytes(b"x" * 32)
+    (path / "model-00002-of-00002.safetensors").write_bytes(_safetensors_bytes())
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -8284,7 +8298,7 @@ def test_a_checkpoint_without_tokenizer_assets_is_not_switchable(tmp_path):
     path = tmp_path / "WeightsOnly"
     path.mkdir()
     (path / "config.json").write_text(_CHAT_CONFIG)
-    (path / "model.safetensors").write_bytes(b"x" * 32)
+    (path / "model.safetensors").write_bytes(_safetensors_bytes())
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
     (path / "tokenizer.json").write_text("{}")
@@ -8519,7 +8533,7 @@ def test_a_shard_without_its_index_is_not_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "Fragment")
     (path / "model.safetensors").unlink()
-    (path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 32)
+    (path / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
 
@@ -8668,7 +8682,7 @@ def test_a_stray_shard_beside_complete_weights_is_ignored(tmp_path):
     from types import SimpleNamespace
 
     path = _local_checkpoint(tmp_path, "StrayShard")
-    (path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 32)
+    (path / "model-00001-of-00002.safetensors").write_bytes(_safetensors_bytes())
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) == (False, ())
     # With no canonical file the shards are the weight set, so the index is required.
@@ -8802,7 +8816,7 @@ def test_an_index_naming_shards_in_a_subdirectory_still_serves(tmp_path):
     path = _local_checkpoint(tmp_path, "SubdirShards")
     (path / "model.safetensors").unlink()
     (path / "weights").mkdir()
-    (path / "weights" / "model-00001-of-00001.safetensors").write_bytes(b"x" * 32)
+    (path / "weights" / "model-00001-of-00001.safetensors").write_bytes(_safetensors_bytes())
     (path / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "weights/model-00001-of-00001.safetensors"}}'
     )
@@ -8824,7 +8838,7 @@ def test_a_symlinked_hf_snapshot_is_not_withheld(tmp_path):
     blobs = tmp_path / "blobs"
     blobs.mkdir()
     blob = blobs / "deadbeef"
-    blob.write_bytes(b"x" * 32)
+    blob.write_bytes(_safetensors_bytes())
     snapshot = tmp_path / "snapshots" / "abc"
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text(_CHAT_CONFIG)
@@ -8843,7 +8857,7 @@ def test_a_drive_qualified_shard_path_is_withheld(tmp_path):
 
     path = _local_checkpoint(tmp_path, "DriveShard")
     (path / "model.safetensors").unlink()
-    (path / "model-00001-of-00001.safetensors").write_bytes(b"x" * 32)
+    (path / "model-00001-of-00001.safetensors").write_bytes(_safetensors_bytes())
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
@@ -8854,6 +8868,28 @@ def test_a_drive_qualified_shard_path_is_withheld(tmp_path):
             json.dumps({"weight_map": {"a": escape}})
         )
         assert resolver.local_servable_model(info) is None, escape
+
+
+def test_a_truncated_checkpoint_is_withheld(tmp_path):
+    # codex P2: a copy still in flight passes is_file, and partial covers only Studio downloads.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Truncated")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+    intact = _safetensors_bytes()
+    for broken in (b"", b"\x00" * 4, intact[: len(intact) - 8], b"z" * 64):
+        (path / "model.safetensors").write_bytes(broken)
+        assert resolver.local_servable_model(info) is None, broken[:8]
+
+    # a truncated shard behind an index is withheld the same way.
+    (path / "model.safetensors").write_bytes(intact)
+    (path / "model-00001-of-00001.safetensors").write_bytes(intact[:-8])
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) is None
 
 
 def test_a_pickle_shard_named_by_a_safetensors_index_is_withheld(tmp_path):
@@ -8902,7 +8938,7 @@ def test_a_serving_hf_cache_row_is_reported_loaded(tmp_path, monkeypatch):
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text(_CHAT_CONFIG)
     (snapshot / "tokenizer.json").write_text("{}")
-    (snapshot / "model.safetensors").write_bytes(b"x" * 32)
+    (snapshot / "model.safetensors").write_bytes(_safetensors_bytes())
 
     monkeypatch.setattr(
         inference_route,

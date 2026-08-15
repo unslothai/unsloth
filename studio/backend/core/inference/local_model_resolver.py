@@ -172,6 +172,52 @@ def _has_tokenizer_vocabulary(load_dir) -> bool:
     return (load_dir / "vocab.json").is_file() and (load_dir / "merges.txt").is_file()
 
 
+# far above any real header: a corrupt length reads huge, and reading it is the failure here.
+_MAX_SAFETENSORS_HEADER_BYTES = 256 * 1024 * 1024
+
+
+def _safetensors_file_is_intact(path) -> bool:
+    """Whether a .safetensors file carries a header and all the bytes that header declares.
+
+    A copy still in flight, an interrupted transfer or a zero-byte placeholder passes an
+    ``is_file`` check and then fails in the loader, by which point the swap has unloaded
+    the resident model. ``partial`` only covers Studio's own downloads, so weights a user
+    put in a scan folder by hand are checked here instead. Reads the header, never the
+    tensors: 8 bytes of length, then the JSON, then one size comparison.
+    """
+    import json
+    import struct
+
+    try:
+        size = path.stat().st_size
+        if size < 8:
+            return False
+        with path.open("rb") as handle:
+            (header_len,) = struct.unpack("<Q", handle.read(8))
+            if header_len <= 0 or header_len > _MAX_SAFETENSORS_HEADER_BYTES:
+                return False
+            if 8 + header_len > size:
+                return False
+            header = json.loads(handle.read(header_len))
+        if not isinstance(header, dict):
+            return False
+        end = 0
+        for name, entry in header.items():
+            if name == "__metadata__":
+                continue
+            if not isinstance(entry, dict):
+                return False
+            offsets = entry.get("data_offsets")
+            if not (isinstance(offsets, list) and len(offsets) == 2):
+                return False
+            if not all(isinstance(value, int) and value >= 0 for value in offsets):
+                return False
+            end = max(end, offsets[1])
+        return 8 + header_len + end <= size
+    except (OSError, ValueError, struct.error):
+        return False
+
+
 def _has_canonical_safetensors(load_dir) -> bool:
     """Whether the loader will find weights under the names it actually looks for.
 
@@ -180,8 +226,9 @@ def _has_canonical_safetensors(load_dir) -> bool:
     """
     import re
 
-    if (load_dir / "model.safetensors").is_file():
-        return True
+    canonical = load_dir / "model.safetensors"
+    if canonical.is_file():
+        return _safetensors_file_is_intact(canonical)
     if (load_dir / "model.safetensors.index.json").is_file():
         return True
     try:
@@ -413,7 +460,8 @@ def _weight_shards_all_present(load_dir) -> bool:
             # the index is picked but its filenames are opened, so a .bin here loads a pickle.
             if relative.suffix != ".safetensors":
                 return False
-            if not (load_dir / relative).is_file():
+            shard_file = load_dir / relative
+            if not shard_file.is_file() or not _safetensors_file_is_intact(shard_file):
                 return False
     return True
 
