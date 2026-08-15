@@ -252,6 +252,60 @@ def plan_gpu_ordinal() -> Optional[int]:
     return resolve_selected_cuda_ordinal(None)
 
 
+def _pipeline_components_present(root: Path) -> bool:
+    """Whether every component a local pipeline's own index names is on disk.
+
+    A directory carrying ``model_index.json`` is treated as complete by definition, because
+    from_pretrained reads it off disk and the planner cannot be asked about an absolute path.
+    That holds only if the components are actually there: a hand-copied or interrupted pipeline
+    passes the index check, and the loader then tears the resident pipeline down before
+    from_pretrained discovers the gap, leaving the API with no image model at all.
+
+    Judged on what can be seen without reading weights: each named component's directory must
+    exist and hold something, and a sharded component must hold every shard its index lists.
+    """
+    import json
+
+    try:
+        with open(root / "model_index.json", encoding = "utf-8-sig") as handle:
+            index = json.load(handle)
+    except Exception as exc:  # noqa: BLE001 -- an index the loader cannot read is not complete
+        logger.debug("media auto-switch: unreadable pipeline index under %s: %s", root, exc)
+        return False
+    if not isinstance(index, dict):
+        return False
+    for name, entry in index.items():
+        if name.startswith("_") or not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            continue
+        # [null, null] marks a component this pipeline deliberately ships without.
+        if not entry[1]:
+            continue
+        component = root / name
+        try:
+            if not component.is_dir() or not any(component.iterdir()):
+                return False
+            if not _shards_present(component):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _shards_present(component: Path) -> bool:
+    """Whether a sharded component holds every file its own weight index names."""
+    import json
+
+    for index_file in component.glob("*.index.json"):
+        try:
+            with open(index_file, encoding = "utf-8-sig") as handle:
+                weight_map = (json.load(handle) or {}).get("weight_map") or {}
+        except Exception:  # noqa: BLE001 -- an unreadable shard index is not evidence of presence
+            return False
+        if any(not (component / shard).is_file() for shard in set(weight_map.values())):
+            return False
+    return True
+
+
 def missing_download_bytes(
     owner: str,
     pick: MediaModelPick,
@@ -276,6 +330,8 @@ def missing_download_bytes(
     """
     target = normalized_pick(pick)
     if owner == DIFFUSION and not target.gguf_filename and Path(target.model_path).is_dir():
+        if not _pipeline_components_present(Path(target.model_path)):
+            return UNSIZED_MISSING
         # the pipeline is present, so only a dependency living outside it can still be fetched
         return _missing_external_encoder(target)
     try:

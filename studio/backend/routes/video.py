@@ -376,7 +376,8 @@ async def generate_video(
         family and MiniMax-H3 partition, both of which the pick already determines.
         """
         from core.inference.media_model_index import expected_partition
-        from core.inference.video import _detect_load_family
+        from core.inference.video import _detect_load_family, resolve_video_model_kind
+        from core.inference.video_minimax_h3 import is_h3_native
         from core.inference.video_families import (
             validate_video_flow_controls,
             validate_video_keyframe_conditioning,
@@ -399,7 +400,12 @@ async def generate_video(
                 request.reference_images or request.reference_videos or request.reference_audios
             ),
         )
-        validate_video_flow_controls(fam, request.flow_shift, request.audio_flow_shift)
+        # the engine is only knowable up front where the pick decides it, as an h3 gguf does
+        kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
+        engine = "sd_cpp" if is_h3_native(fam, kind) else None
+        validate_video_flow_controls(
+            fam, request.flow_shift, request.audio_flow_shift, engine = engine
+        )
 
     # Before the backend is resolved: the requested model may be the one this brings up.
     try:

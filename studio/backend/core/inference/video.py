@@ -5367,21 +5367,11 @@ class VideoBackend:
 
         sd.cpp rejects non-default audio shifts because it cannot apply them.
         """
-        validate_video_flow_controls(fam, flow_shift, audio_flow_shift)
+        validate_video_flow_controls(fam, flow_shift, audio_flow_shift, engine = engine)
         shift = flow_shift if flow_shift is not None else fam.default_flow_shift
         audio_shift = (
             audio_flow_shift if audio_flow_shift is not None else fam.default_audio_flow_shift
         )
-        if (
-            audio_flow_shift is not None
-            and engine == "sd_cpp"
-            and audio_flow_shift != fam.default_audio_flow_shift
-        ):
-            raise ValueError(
-                "stable-diffusion.cpp derives the audio schedule against a fixed "
-                f"{fam.default_audio_flow_shift:g} shift, so audio_flow_shift needs the "
-                "Diffusers engine."
-            )
         return shift, audio_shift
 
     @staticmethod

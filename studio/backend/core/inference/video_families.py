@@ -648,18 +648,33 @@ def validate_video_keyframe_conditioning(
 
 
 def validate_video_flow_controls(
-    fam: VideoFamily, flow_shift: Optional[float], audio_flow_shift: Optional[float]
+    fam: VideoFamily,
+    flow_shift: Optional[float],
+    audio_flow_shift: Optional[float],
+    *,
+    engine: Optional[str] = None,
 ) -> None:
-    """Raise ``ValueError`` when a family exposes no control the request is trying to set.
+    """Raise ``ValueError`` when a request sets a shift the checkpoint cannot honour.
 
-    The family half of the backend's flow-shift resolution, split out so the generate route can
-    judge the checkpoint it is about to switch TO. The remaining rule there is the engine's, and
-    a target's engine is not chosen until the load runs.
+    The backend's flow-shift rules, kept here so the generate route can judge the checkpoint it
+    is about to switch TO by the same ones. ``engine`` is optional because a target's engine is
+    normally not chosen until the load runs; where it IS determined by the pick, as MiniMax-H3
+    GGUFs are, passing it refuses an unservable request before anything is evicted.
     """
     if flow_shift is not None and fam.default_flow_shift is None:
         raise ValueError(f"{fam.name} does not expose a video flow_shift control.")
     if audio_flow_shift is not None and fam.default_audio_flow_shift is None:
         raise ValueError(f"{fam.name} does not expose an audio_flow_shift control.")
+    if (
+        audio_flow_shift is not None
+        and engine == "sd_cpp"
+        and audio_flow_shift != fam.default_audio_flow_shift
+    ):
+        raise ValueError(
+            "stable-diffusion.cpp derives the audio schedule against a fixed "
+            f"{fam.default_audio_flow_shift:g} shift, so audio_flow_shift needs the "
+            "Diffusers engine."
+        )
 
 
 def validate_video_reference_conditioning(

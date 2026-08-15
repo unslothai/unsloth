@@ -1655,3 +1655,138 @@ def test_the_video_route_refuses_a_flow_control_the_target_does_not_expose(monke
     assert resp.status_code == 400
     assert "audio_flow_shift" in resp.json()["detail"]
     assert generated == []
+
+
+def test_an_incomplete_local_pipeline_is_refused_before_the_resident_model_goes(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A hand-copied or interrupted pipeline still carries model_index.json, and treating the
+    # directory as complete let the loader tear the resident pipeline down and only then find
+    # that from_pretrained has no weights for one of the components.
+    pipeline = tmp_path / "z-image"
+    (pipeline / "vae").mkdir(parents = True)
+    (pipeline / "vae" / "config.json").write_text("{}")
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline", "vae": ["diffusers", "AutoencoderKL"],'
+        ' "transformer": ["diffusers", "ZImageTransformer2DModel"]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
+    assert loads == []
+
+
+def test_a_complete_local_pipeline_still_needs_no_plan(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # The completeness check must not turn every on-disk pipeline into a planned one: a
+    # directory whose components are all present is still complete by definition.
+    pipeline = tmp_path / "z-image"
+    for component in ("vae", "transformer"):
+        (pipeline / component).mkdir(parents = True)
+        (pipeline / component / "config.json").write_text("{}")
+        (pipeline / component / "model.safetensors").write_bytes(b"")
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline", "vae": ["diffusers", "AutoencoderKL"],'
+        ' "transformer": ["diffusers", "ZImageTransformer2DModel"],'
+        ' "safety_checker": [null, null]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    def _explode(model_path, **kwargs):
+        raise AssertionError("a complete local pipeline must not be planned against the Hub")
+
+    backend.download_plan = _explode
+
+    _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert [pick.model_id for _owner, pick in loads] == ["Tongyi-MAI/Z-Image-Turbo"]
+
+
+def test_a_sharded_component_missing_a_shard_is_refused(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # The component directory exists and is not empty, but its own weight index names a shard
+    # that is not there, which from_pretrained would fetch.
+    pipeline = tmp_path / "z-image"
+    (pipeline / "transformer").mkdir(parents = True)
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "transformer" / "model-00001-of-00002.safetensors").write_bytes(b"")
+    (pipeline / "transformer" / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
+        ' "b": "model-00002-of-00002.safetensors"}}'
+    )
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline",'
+        ' "transformer": ["diffusers", "ZImageTransformer2DModel"]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_native_h3_target_refuses_an_audio_shift_sd_cpp_cannot_apply(monkeypatch):
+    # A MiniMax-H3 GGUF always loads through sd.cpp, which derives the audio schedule against a
+    # fixed shift, so the engine rule is knowable before the switch rather than only after it.
+    import core.inference.video as video_module
+    from routes.video import router as video_router
+
+    generated: list = []
+
+    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+        before_switch(
+            index.MediaModelPick(
+                requested_model,
+                "unsloth/MiniMax-H3-GGUF",
+                "minimax_h3_fl2va-Q4_K_M.gguf",
+                "gguf",
+            )
+        )
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
+
+    class _Backend:
+        def begin_generate(self, **kwargs):
+            generated.append(kwargs)
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+
+    resp = _client(video_router, "/api/inference").post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "a sloth",
+            "model": "unsloth/MiniMax-H3-GGUF",
+            "audio_flow_shift": 4.0,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "Diffusers engine" in resp.json()["detail"]
+    assert generated == []
+
+
+def test_a_load_route_refusal_still_carries_the_openai_envelope(monkeypatch):
+    # _start_load calls the internal load route, which raises a plain-string HTTPException; the
+    # /v1 surface must still answer in the OpenAI error shape rather than FastAPI's detail body.
+    from routes.inference import router as images_router
+
+    async def _refuses(requested_model, **kwargs):
+        raise HTTPException(status_code = 400, detail = "'x/y' is not a supported diffusion model.")
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _refuses)
+
+    resp = _client(images_router, "/v1").post(
+        "/v1/images/generations",
+        json = {"prompt": "p", "size": "256x256", "model": "x/y"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["message"] == "'x/y' is not a supported diffusion model."
