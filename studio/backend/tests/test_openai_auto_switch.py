@@ -24,6 +24,16 @@ from utils import openai_auto_switch_settings as settings
 
 
 @pytest.fixture(autouse = True)
+def _host_serves_non_gguf(monkeypatch):
+    """Pin the host-capability gate for the classifier tests.
+
+    They are about the config rules, not about whether this machine happens to have
+    torch or MLX installed. The gate itself is covered by its own test below.
+    """
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+
+
+@pytest.fixture(autouse = True)
 def _clean_resolver_index():
     """Drop the scan cache around every test.
 
@@ -8477,3 +8487,41 @@ def test_tokenizer_metadata_alone_is_not_a_vocabulary(tmp_path):
     assert resolver.local_servable_model(info) is None
     (path / "vocab.json").write_text("{}")
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_host_without_a_non_gguf_backend_advertises_none(tmp_path, monkeypatch):
+    # Codex P2: with neither torch nor MLX the worker has nothing to load safetensors
+    # with, and _load_model_impl unloads the resident GGUF before that fails.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoBackend")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: False)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_shard_without_its_index_is_not_switchable(tmp_path):
+    # Codex P2: a shard names its set in the filename, so one present without the index
+    # that declares the rest is a half-downloaded directory.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Fragment")
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 32)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_nested_row_is_not_resident_against_a_loaded_gguf_directory(monkeypatch):
+    # Codex P2: llama.cpp loading out of /models/A must not mark the separately
+    # cataloged /models/A/sub/B resident through the directory prefix rule.
+    llama = _FakeBackend("/models/A")
+    llama.gguf_path = "/models/A"
+
+    class _FakeOrchestrator:
+        active_model_name = None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resolves_to_resident("/models/A/sub/B", exact_only = True) is False
+    assert inference_route._resolves_to_resident("/models/A", exact_only = True) is True

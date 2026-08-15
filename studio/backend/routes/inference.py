@@ -5369,12 +5369,16 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
     return bool(variant) and resident.lower() == variant.strip().lower()
 
 
-def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False) -> bool:
+def _resolves_to_resident(
+    load_path: Optional[str], *, llama_only: bool = False, exact_only: bool = False
+) -> bool:
     """Whether a resolved on-disk path is what is already loaded.
 
     ``llama_only`` drops the Transformers backend: only llama.cpp carries a quant
     identity, so a Transformers model active from a directory that also holds GGUF
-    exports would otherwise answer a request for one of those quants.
+    exports would otherwise answer a request for one of those quants. ``exact_only``
+    drops the directory prefix rules, which exist for a GGUF loaded out of a directory
+    and would otherwise let a checkpoint nested under the loaded one read as resident.
     """
     if not load_path:
         return False
@@ -5397,10 +5401,9 @@ def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False)
         current = _norm_path(candidate)
         if current == target:
             return True
-        # A non-GGUF model loads from its own directory, so a catalog row nested under
-        # it is different weights. The llama branch keeps the prefix rule: there the
-        # loaded identifier is a .gguf file, which nothing can be nested under.
-        if candidate is orchestrator_model and orchestrator_model is not None:
+        # A non-GGUF checkpoint loads from its own directory, so a row nested under the
+        # loaded one is different weights however that model was loaded.
+        if exact_only or (candidate is orchestrator_model and orchestrator_model is not None):
             continue
         if current.startswith(f"{target}/"):
             # A model directory holding the weights loaded from it. Nested entries
@@ -13297,6 +13300,11 @@ async def openai_chat_completions(
         _needs_vision = _needs_image or bool(payload.audio_base64)
         _needs_audio_input = bool(payload.audio_base64)
 
+    # An audio request cannot resume a partial turn, and the audio branch refuses it
+    # downstream, so refuse here rather than let the swap evict the resident model.
+    if _needs_audio_input:
+        _reject_audio_output_continuation(payload)
+
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
@@ -16835,7 +16843,9 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
         is_gguf, quants = servable
         # llama-only for a GGUF row, or a Transformers model live from a directory of
         # GGUF exports marks one of those quants loaded.
-        resident = _resolves_to_resident(getattr(info, "path", None), llama_only = is_gguf)
+        resident = _resolves_to_resident(
+            getattr(info, "path", None), llama_only = is_gguf, exact_only = not is_gguf
+        )
         rows.append((info, is_gguf, quants, resident))
     return rows
 

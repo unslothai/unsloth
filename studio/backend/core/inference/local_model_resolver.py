@@ -189,6 +189,23 @@ def _is_generative_chat_config(config: dict) -> bool:
     )
 
 
+def _host_has_a_non_gguf_backend() -> bool:
+    """Whether this host can serve non-GGUF weights at all.
+
+    The worker picks MLX on Apple Silicon and Transformers everywhere else, so a host
+    with neither leaves the load to fail after the swap has unloaded the resident GGUF.
+    find_spec, not an import: torch costs seconds and this runs on the request path.
+    """
+    if _host_serves_mlx():
+        return True
+    try:
+        from importlib.util import find_spec
+
+        return find_spec("torch") is not None
+    except Exception:
+        return False
+
+
 def _quantization_suits_host(config: dict) -> bool:
     """Whether this host's backend can load the checkpoint's quantization, if any.
 
@@ -236,8 +253,17 @@ def _weight_shards_all_present(load_dir) -> bool:
     through ``info.partial``.
     """
     import json
+    import re
     from pathlib import Path
 
+    # A shard names its set in the filename, so a shard present without the index that
+    # declares the rest is a half-downloaded directory whatever the index check finds.
+    try:
+        if any(re.fullmatch(r".+-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()):
+            if not (load_dir / "model.safetensors.index.json").is_file():
+                return False
+    except OSError:
+        return False
     for name in _WEIGHT_INDEXES:
         index_file = load_dir / name
         if not index_file.is_file():
@@ -312,6 +338,8 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             candidate = config if name == "config.json" else _read_json(load_dir / name)
             if isinstance(candidate, dict) and "auto_map" in candidate:
                 return None
+        if not _host_has_a_non_gguf_backend():
+            return None
         if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
             return None
         # Whisper and the TTS families need an audio request shape the switch cannot
