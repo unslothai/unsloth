@@ -11,9 +11,10 @@ private dataset therefore fell back to the ambient HF_TOKEN env var
 so on a host whose env token differs from the request token the metadata
 probes and the eventual load could run under the wrong identity.
 
-These tests pin that the token is forwarded when provided, on both the
-streaming and eager paths, and stays absent when it is not (so the
-environment fallback keeps working for callers that never had a token)."""
+These tests pin that the token is forwarded when provided — on the streaming
+and eager paths, and through the auto-detected eval-split probe — and stays
+absent when it is not (so the environment fallback keeps working for callers
+that never had a token)."""
 
 from __future__ import annotations
 
@@ -80,7 +81,8 @@ class _Dataset:
     column_names = ["text"]
 
     def __len__(self):
-        return 8
+        # >= MIN_EVAL_ROWS (16) so an auto-detected candidate split is accepted.
+        return 16
 
 
 def _trainer():
@@ -170,6 +172,40 @@ def test_eager_path_forwards_explicit_token(monkeypatch):
     assert load_calls[0]["token"] == "hf_0123456789abcdef"
     assert "streaming" not in load_calls[0]
     assert probe_calls == []
+
+
+def test_auto_detect_eval_forwards_explicit_token(monkeypatch):
+    load_calls: list[dict] = []
+    probe_calls: list[dict] = []
+    _patch_dataset_loading(monkeypatch, load_calls, probe_calls)
+
+    result = _trainer().load_and_format_dataset(
+        "org/gated",
+        subset = "en",
+        dataset_streaming = False,
+        eval_steps = 1,
+        dataset_revision = "dataset-commit",
+        hf_token = "hf_0123456789abcdef",
+    )
+
+    assert result is not None
+    # Auto-detect (no explicit eval_split) probes the splits, then loads a candidate.
+    assert probe_calls == [
+        {
+            "path": "org/gated",
+            "config_name": "en",
+            "revision": "dataset-commit",
+            "token": "hf_0123456789abcdef",
+        }
+    ]
+    # Train load first, then the auto-detected "validation" candidate.
+    assert [call.get("split") for call in load_calls] == ["train", "validation"]
+    for call in load_calls:
+        assert call["path"] == "org/gated"
+        assert call["name"] == "en"
+        assert call["revision"] == "dataset-commit"
+        assert call["token"] == "hf_0123456789abcdef"
+        assert "streaming" not in call
 
 
 def test_token_stays_absent_when_not_provided(monkeypatch):

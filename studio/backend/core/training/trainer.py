@@ -2982,6 +2982,7 @@ class UnslothTrainer:
                                 train_split or "train"
                             ),
                             revision = dataset_revision,
+                            token = hf_token,
                             strict_split_loading = (
                                 require_exact_resume_resources and dataset_loaded_from_cache
                             ),
@@ -3223,6 +3224,7 @@ class UnslothTrainer:
         split_loader: Optional[Callable[[str], Dataset]] = None,
         excluded_split: Any = None,
         revision: Optional[str] = None,
+        token: Optional[str] = None,
         strict_split_loading: bool = False,
     ) -> Optional[Dataset]:
         """Auto-detect an eval split from an HF dataset (named split only)."""
@@ -3235,6 +3237,8 @@ class UnslothTrainer:
                     load_kwargs["config_name"] = subset
                 if revision:
                     load_kwargs["revision"] = revision
+                if token:
+                    load_kwargs["token"] = token
                 available_splits = get_dataset_split_names(**load_kwargs)
             elif available_splits is None or split_loader is None:
                 raise ValueError("Cached split names and loader must be provided together")
@@ -3255,6 +3259,8 @@ class UnslothTrainer:
                             eval_load_kwargs["name"] = subset
                         if revision:
                             eval_load_kwargs["revision"] = revision
+                        if token:
+                            eval_load_kwargs["token"] = token
                         candidate_ds = load_dataset(**eval_load_kwargs)
                     if len(candidate_ds) >= MIN_EVAL_ROWS:
                         logger.info(
