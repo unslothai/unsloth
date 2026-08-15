@@ -206,21 +206,23 @@ _MULTIMODAL_CONFIG_KEYS = (
 )
 # Families the chat loader has no branch for. Checked when architectures is absent,
 # which is optional in a config and cannot be read as "generative" on its own.
-_NON_CHAT_MODEL_TYPES = frozenset({
-    "bart",
-    "bert",
-    "blip",
-    "clip",
-    "deberta",
-    "distilbert",
-    "electra",
-    "longt5",
-    "mt5",
-    "pegasus",
-    "roberta",
-    "t5",
-    "xlm-roberta",
-})
+_NON_CHAT_MODEL_TYPES = frozenset(
+    {
+        "bart",
+        "bert",
+        "blip",
+        "clip",
+        "deberta",
+        "distilbert",
+        "electra",
+        "longt5",
+        "mt5",
+        "pegasus",
+        "roberta",
+        "t5",
+        "xlm-roberta",
+    }
+)
 # The chat loader reaches these weights through causal and vision auto classes, so an
 # encoder-only or classifier checkpoint has no head it can generate with.
 _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
