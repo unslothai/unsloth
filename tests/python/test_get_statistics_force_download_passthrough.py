@@ -47,12 +47,12 @@ def test_snapshot_download_receives_the_parameter_not_a_constant():
         keywords = {kw.arg: kw.value for kw in call.keywords}
         assert "force_download" in keywords, "force_download keyword missing"
         value = keywords["force_download"]
-        assert not isinstance(value, ast.Constant), (
-            "force_download is hard-coded to a constant; the caller's argument is discarded"
-        )
-        assert isinstance(value, ast.Name) and value.id == "force_download", (
-            "force_download must forward the function parameter"
-        )
+        assert not isinstance(
+            value, ast.Constant
+        ), "force_download is hard-coded to a constant; the caller's argument is discarded"
+        assert (
+            isinstance(value, ast.Name) and value.id == "force_download"
+        ), "force_download must forward the function parameter"
 
 
 def test_repeat_caller_still_requests_no_forced_download():
