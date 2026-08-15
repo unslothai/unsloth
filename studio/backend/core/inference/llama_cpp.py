@@ -13449,6 +13449,7 @@ class LlamaCppBackend:
                 # assigned last in the fit try, so None means no fit ran and no gpu pool to price
                 kv_cache_bytes: Optional[int] = None
                 _mtp_reserve_bytes = 0
+                _cpu_draft_weights = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -13780,6 +13781,12 @@ class LlamaCppBackend:
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
+                    if _draft_on_cpu and _mtp_draft_for_budget:
+                        # off the gpu budget, but still resident in host ram
+                        try:
+                            _cpu_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
+                        except Exception:
+                            _cpu_draft_weights = 0
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
                     _mtp_draft_weights = 0
@@ -14854,7 +14861,12 @@ class LlamaCppBackend:
                     and model_size is not None
                     and kv_cache_bytes is not None
                     and not (_manual_layers and (gpu_layers or 0) > 0)
-                    and not self._amd_apu_wants_unified_memory(gpu_indices)
+                    # the pinned devices, so an arch-gated apu cannot skip the discrete guard
+                    and not self._amd_apu_wants_unified_memory(
+                        list(gpu_indices)
+                        if gpu_indices is not None
+                        else [_i for _i, _f in _detected_gpus]
+                    )
                 ):
                     # manual + auto omits -c, so a zero context still allocates the fit floor
                     _guard_kv_bytes = kv_cache_bytes
@@ -14891,14 +14903,17 @@ class LlamaCppBackend:
                     )
                     # a cpu-resident kv is not fungible with weights the gpus can take
                     _kv_on_host = not _kv_offload_from_args(extra_args)
-                    _host_bytes = (
+                    _gpu_side_bytes = (
                         model_size
                         + _mtp_reserve_bytes
                         + (0 if _kv_on_host else _guard_kv_bytes)
-                        - _fit_vram_mib * 1024 * 1024
                     )
+                    # clamped first, so spare vram cannot absorb what is pinned to the host
+                    _host_bytes = max(0, _gpu_side_bytes - _fit_vram_mib * 1024 * 1024)
                     if _kv_on_host:
-                        _host_bytes = max(0, _host_bytes) + _guard_kv_bytes
+                        _host_bytes += _guard_kv_bytes
+                    # a cpu-pinned drafter left the vram budget but still occupies ram
+                    _host_bytes += _cpu_draft_weights
                     _offload_msg = self._host_offload_shortfall_message(
                         _host_bytes,
                         self._available_system_memory_mib(),

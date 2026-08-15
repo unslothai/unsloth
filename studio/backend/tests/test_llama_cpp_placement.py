@@ -1015,3 +1015,31 @@ def test_cpu_resident_kv_is_not_offset_by_free_vram(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(backend, gguf, extra_args = ["--no-kv-offload"])
+
+
+def test_cpu_pinned_drafter_weights_are_charged_to_host_ram(tmp_path, monkeypatch):
+    """`--spec-draft-ngl 0` drops the drafter from the VRAM budget, but its weights
+    still sit in host RAM. A target that fits the card plus an 8 GB CPU drafter must
+    not read as a zero host requirement."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 4, free_mib = 14 * 1024)
+    drafter = tmp_path / "drafter.gguf"
+    drafter.write_bytes(b"draft")
+    sizes = {str(drafter): int(8 * 1024**3)}
+    backend._get_gguf_size_bytes = lambda p: sizes.get(str(p), int(4 * 1024**3))
+    backend._resolve_launch_mtp_path = lambda **_k: str(drafter)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 9 * 1024)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend,
+            gguf,
+            mtp_draft_path = str(drafter),
+            speculative_type = "mtp",
+            extra_args = ["--spec-draft-ngl", "0"],
+        )
