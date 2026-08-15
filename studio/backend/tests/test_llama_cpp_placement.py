@@ -1203,3 +1203,21 @@ def test_an_external_backend_path_keeps_its_vram_credit(tmp_path):
             )
             is False
         )
+
+
+def test_a_paravirtual_metal_launch_prices_the_whole_model(tmp_path, monkeypatch):
+    """A virtualised Apple GPU rewrites the command to --gpu-layers 0 --device none, and
+    Metal hosts leave the pool empty, so the abstention swallowed a placement the launch
+    already knew was CPU-only."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+    argv = ["llama-server", "-m", str(gguf), "--gpu-layers", "0", "--device", "none"]
+
+    assert backend._launch_host_shortfall_message(argv, [], {}) is None
+    assert (
+        backend._launch_host_shortfall_message(argv, [], {}, child_has_no_gpu = True) is not None
+    )

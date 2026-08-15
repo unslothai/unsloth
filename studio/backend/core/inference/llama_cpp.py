@@ -16062,6 +16062,7 @@ class LlamaCppBackend:
                     child_has_no_gpu = (
                         _cpu_only_zero_offload
                         or _arch_gate_forced_cpu
+                        or _paravirtual_cpu_forced
                         or self._binary_ships_no_gpu_backend(binary, env)
                     ),
                 )
