@@ -124,6 +124,30 @@ def _gguf_load_path(info, on_disk: Path, load_dir: Path) -> str:
     return str(load_dir)
 
 
+def _loader_can_open(load_path: str, filename: str) -> bool:
+    """Whether the load routes will resolve *filename* under *load_path*, by their own rule.
+
+    A repo id is opened from the cache by id and has nothing to check here. A directory does:
+    an HF cache snapshot's entries are symlinks into ``blobs/``, and both validators resolve a
+    symlink before their containment check, so such a directory refuses its own file. The
+    scanner hands one over already unwrapped for a non-active cache, where naming the repo id
+    instead would only send the loader to the active cache and download the model again.
+
+    Advertising a name the loader then refuses costs a 400 on every request for a model the
+    lister shows as downloaded, so an unopenable build is left out of the index.
+    """
+    root = Path(load_path)
+    if not root.is_dir():
+        return True
+    from core.inference.diffusion_families import resolve_local_gguf_child
+
+    try:
+        resolve_local_gguf_child(root, filename)
+    except Exception:  # noqa: BLE001 -- whatever the loader refuses, the index does not advertise
+        return False
+    return True
+
+
 def _add_gguf_picks(
     index: dict[str, MediaModelPick], info, keys: tuple[str, ...], on_disk: Path, load_dir: Path
 ) -> bool:
@@ -141,16 +165,17 @@ def _add_gguf_picks(
     if load_dir.is_file():
         if load_dir.suffix.lower() != ".gguf":
             return False
-        _register(
-            index,
-            keys,
-            MediaModelPick(
-                keys[0],
-                str(load_dir.parent),
-                load_dir.name,
-                "gguf",
-            ),
-        )
+        if _loader_can_open(str(load_dir.parent), load_dir.name):
+            _register(
+                index,
+                keys,
+                MediaModelPick(
+                    keys[0],
+                    str(load_dir.parent),
+                    load_dir.name,
+                    "gguf",
+                ),
+            )
         return True
     # filenames come back relative to this directory, which is what the loader joins them onto
     variants, _ = list_local_gguf_variants(str(load_dir))
@@ -158,19 +183,26 @@ def _add_gguf_picks(
     if not by_quant:
         return False
     load_path = _gguf_load_path(info, on_disk, load_dir)
-    for quant, variant in by_quant.items():
+    openable = {
+        quant: variant
+        for quant, variant in by_quant.items()
+        if _loader_can_open(load_path, variant.filename)
+    }
+    if not openable:
+        return True
+    for quant, variant in openable.items():
         # model_id stays the bare id so a "not found" error lists models, not one row per quant
         _register(
             index,
             [f"{key}:{quant}" for key in keys],
             MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
         )
-    unqualified = [quant for quant in by_quant if "/" not in quant]
-    best = preferred_quant(unqualified or list(by_quant)) or next(iter(unqualified or by_quant))
+    unqualified = [quant for quant in openable if "/" not in quant]
+    best = preferred_quant(unqualified or list(openable)) or next(iter(unqualified or openable))
     _register(
         index,
         keys,
-        MediaModelPick(keys[0], load_path, by_quant[best].filename, "gguf"),
+        MediaModelPick(keys[0], load_path, openable[best].filename, "gguf"),
     )
     return True
 

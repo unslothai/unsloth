@@ -40,15 +40,17 @@ _ENCODER_METADATA_FILES = ("config.json", "tokenizer.json", "tokenizer_config.js
 
 
 def detected_image_family(pick: MediaModelPick) -> Any:
-    """The diffusion family for *pick*, tried against its id and then its path.
+    """The diffusion family for *pick*, tried against its path and then its id.
 
-    The on-disk directory is often named nothing like the model, and a single-file pick is
-    identified by its checkpoint name, so every caller needs the same needles rather than
-    whichever one it happened to pass.
+    The path comes first because it is the only needle the load route is ever handed, and the
+    only one that can carry a local ``model_index.json``: ``detect_family_for_pick`` reads that
+    index ahead of any guess made from a name, so asking about the id first answers FLUX for a
+    HiDream pipeline in a directory called ``flux.1`` while the loader answers HiDream and
+    fetches its 16 GB encoder. The id is kept as a fallback for a pick whose path says nothing.
     """
     from core.inference.diffusion_families import detect_family_for_pick
 
-    for needle in (pick.model_id, pick.model_path):
+    for needle in (pick.model_path, pick.model_id):
         if not needle:
             continue
         try:

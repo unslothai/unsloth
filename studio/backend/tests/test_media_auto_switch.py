@@ -1566,3 +1566,44 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
     assert loads == []
 
 
+
+
+def test_a_pipeline_is_planned_by_its_index_not_its_directory_name(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # detect_family_for_pick reads model_index.json ahead of any guess made from a name, so
+    # asking about the catalog id first answered FLUX for a HiDream pipeline in a flux.1
+    # directory while the loader answered HiDream and fetched its 16 GB encoder.
+    pipeline = tmp_path / "flux.1"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text('{"_class_name": "HiDreamImagePipeline"}')
+    catalog.append(_info("local/flux.1", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(locality, "encoder_repo_complete", lambda repo_id: False)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("local/flux.1")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_gguf_the_loader_cannot_open_is_not_advertised(catalog, tmp_path):
+    # A non-active HF cache is scanned with the snapshot directory as the entry path, so it is
+    # never unwrapped to a repo id. Its entries are symlinks into blobs/, which both load
+    # validators refuse for escaping the directory, and the repo id would send the loader to the
+    # active cache and download the model again.
+    _repo_dir, snapshot = _hf_cache_repo(
+        tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-image-turbo-Q4_K_S.gguf"]
+    )
+    catalog.append(
+        _info(
+            "unsloth/Z-Image-Turbo-GGUF",
+            snapshot,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
+
+    assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None
+    assert mas.available_media_model_ids(mas.IMAGE_TASK) == []
