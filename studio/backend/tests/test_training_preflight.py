@@ -649,9 +649,7 @@ def test_effective_packing_decides_the_opt_out():
     # `not raw_text_mode` and gives way to the text path, while audio
     # preprocessing is chosen before the raw-text bypass and holds either way.
     for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
-        assert (
-            effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is False
-        )
+        assert effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is False
         assert effective_packing({**text, **raw, "packing": True}) is True
         # Without packing they are bounded like anything else.
         assert effective_packing({**text, **raw}, branch_never_packs = True) is False
