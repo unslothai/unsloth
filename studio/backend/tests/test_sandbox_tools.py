@@ -466,9 +466,7 @@ class TestSandboxEnvIsolation:
         workdir = tmp_path / "sandbox"
         (workdir / "real").mkdir(parents = True)
         try:
-            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(
-                workdir / "real", target_is_directory = True
-            )
+            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(workdir / "real", target_is_directory = True)
         except (OSError, NotImplementedError):
             pytest.skip("symlinks unavailable (Windows without developer mode)")
         assert _sandbox_temp_dir(str(workdir)) == str(workdir / _SANDBOX_TEMP_DIRNAME)
