@@ -430,9 +430,9 @@ test("a shorter prefix sibling fence keeps the longer one highlighted", async ()
   );
 });
 
-// Neither of these can close a fence: whitespace carries no marker, and a
-// closing run never mixes backticks with tildes.
-for (const suffix of ["   ", "`~"]) {
+// None of these can close a fence: whitespace carries no marker, a closing run
+// never mixes backticks with tildes, and a closer starts its own line.
+for (const suffix of ["   ", "`~", "```"]) {
   test(`a sibling ending in ${JSON.stringify(suffix)} keeps its own entry`, async () => {
     const plugin = createCodePlugin({ themes: THEMES });
     const language = "json" as HighlightOptions["language"];
@@ -535,6 +535,44 @@ test("an unchanged fence does not cancel an identical sibling's refresh", async 
     (latest as HighlightResult | null)?.tokens,
     (await reference(grown, "python")).tokens,
     "the growing fence must still receive its refresh",
+  );
+});
+
+test("a block that keeps failing to tokenize does not fill the cache", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  // createHighlighter accepts a nameless theme, but codeToTokens cannot find it
+  // again, so tokenization throws after the grammar has loaded.
+  const nameless = [{ settings: [] }, { settings: [] }] as unknown as [
+    ThemeInput,
+    ThemeInput,
+  ];
+  const kept = "kept = 1\n";
+  const first = await highlightOnce(plugin, {
+    code: kept,
+    language,
+    themes: THEMES,
+  });
+
+  const originalError = console.error;
+  try {
+    console.error = () => {};
+    for (let render = 0; render < 600; render += 1) {
+      plugin.highlight({ code: "broken = 1\n", language, themes: nameless });
+      // The first render only queues; let the grammar load resolve.
+      if (render === 0) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  } finally {
+    console.error = originalError;
+  }
+
+  // A successful update runs eviction. Failed fences must not have crowded the
+  // cache past MAX_FENCES in the meantime.
+  await highlightOnce(plugin, { code: "later = 2\n", language, themes: THEMES });
+  assert.equal(
+    plugin.highlight({ code: kept, language, themes: THEMES }),
+    first,
+    "a failing block evicted a healthy fence",
   );
 });
 

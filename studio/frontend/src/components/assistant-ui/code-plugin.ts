@@ -146,15 +146,18 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     ? line
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
-// Markdown reports a closing fence as body until it recognizes it, so all a
-// fence can lose is one run of backticks or tildes plus surrounding whitespace.
-// A closing run is never empty and never mixes the two markers.
-const CLOSING_DELIMITER = /^\s*(?:`+|~+)\s*$/;
+// Markdown reports a closing fence as body until it recognizes it, so that
+// line is all a fence can lose: up to three spaces, one run of backticks or
+// tildes, then spaces. It also starts a line, so the body it leaves behind ends
+// at a newline. The run can be short, because the cached code is the last text
+// tokenized and the run may still have been arriving then.
+const CLOSING_FENCE = /^ {0,3}(?:`+|~+)[ \t]*$/;
 
-/** Whether `longer` is one fence's body, `shorter`, plus its closing run. */
+/** Whether `longer` is one fence's body, `shorter`, plus its closing line. */
 const shedsClosingRun = (shorter: string, longer: string): boolean =>
+  (shorter === "" || shorter.endsWith("\n")) &&
   longer.startsWith(shorter) &&
-  CLOSING_DELIMITER.test(longer.slice(shorter.length));
+  CLOSING_FENCE.test(longer.slice(shorter.length));
 
 export function createCodePlugin(
   options: CodePluginOptions = {},
@@ -205,6 +208,15 @@ export function createCodePlugin(
     for (const callback of pending.callbacks) callback(result);
   };
 
+  const dropFence = (fence: Fence): void => {
+    const index = fences.indexOf(fence);
+    if (index < 0) return;
+    fences.splice(index, 1);
+    cachedCharacters -= fence.code.length;
+    dropCodeIndex(fence);
+    clearTrailing(fence);
+  };
+
   const evict = (): void => {
     while (
       fences.length > MAX_FENCES ||
@@ -216,10 +228,7 @@ export function createCodePlugin(
         dropIndex -= 1;
       }
       if (dropIndex < 0) return;
-      const [dropped] = fences.splice(dropIndex, 1);
-      cachedCharacters -= dropped.code.length;
-      dropCodeIndex(dropped);
-      clearTrailing(dropped);
+      dropFence(fences[dropIndex]);
     }
   };
 
@@ -353,6 +362,9 @@ export function createCodePlugin(
     } catch (error) {
       console.error("[Studio Code] Failed to highlight code:", error);
       resetFence(fence);
+      // A fence that never produced tokens has no anchor to match on, so a
+      // block that keeps failing would strand a new one on every render.
+      if (fence.result === null) dropFence(fence);
       return null;
     }
     cachedCharacters += code.length - fence.code.length;
