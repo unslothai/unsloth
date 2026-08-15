@@ -309,9 +309,10 @@ def test_every_provider_type_but_codex_takes_a_real_override(
         display_name = provider_type,
         base_url = "https://example.com/v1",
     )
-    assert _update(
-        f"{provider_type}-1", ProviderUpdate(max_output_tokens = 262144)
-    ).max_output_tokens == 262144
+    assert (
+        _update(f"{provider_type}-1", ProviderUpdate(max_output_tokens = 262144)).max_output_tokens
+        == 262144
+    )
     assert _raw_override(provider_routes, f"{provider_type}-1") == 262144
 
 
