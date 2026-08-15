@@ -1275,9 +1275,7 @@ GPU: 2
         which = lambda n: "/usr/bin/amd-smi" if n == "amd-smi" else None  # noqa: E731
         with patch("shutil.which", side_effect = which):
             with patch.object(stack_mod, "_amd_smi_allowed", return_value = True):
-                with patch(
-                    "subprocess.run", return_value = MagicMock(returncode = 0, stdout = out)
-                ):
+                with patch("subprocess.run", return_value = MagicMock(returncode = 0, stdout = out)):
                     return stack_mod._detect_amd_gfx_codes(dedup = dedup)
 
     def test_gfx_probe_splits_amd_smi_gpu_headers(self):
@@ -2249,9 +2247,7 @@ class TestGfx1102Rocm64Floor:
             ]
         )
         preamble = (
-            "rocminfo() { return 1; }\n"
-            f"amd-smi() {{ printf '{asic}\\n'; }}\n"
-            f"export {mask}"
+            f"rocminfo() {{ return 1; }}\namd-smi() {{ printf '{asic}\\n'; }}\nexport {mask}"
         )
         assert self._run_install_sh_routing(preamble) == expected
 
