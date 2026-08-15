@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A janked window may not paint for a long time, so do not wait on frames
-// alone. This is a scheduled fallback, not a deadline: a hidden page throttles
-// this timer too (>=1s, and ~1/min once Chrome's intensive throttling kicks in),
-// and pauses frames outright. There the cap below is what paces publishes,
-// which is why the cap is counted in arrivals rather than in time.
+// A janked window may not paint for a while, so do not wait on frames alone.
+// A scheduled fallback, not a deadline: a hidden page pauses frames and
+// throttles this timer (>=1s, ~1/min under Chrome's intensive throttling), so
+// there the cap below paces publishes. Hence a cap in arrivals, not in time.
 export const UNPAINTED_REOPEN_MS = 500;
 
 /**
@@ -38,9 +37,8 @@ export function createStreamPublishGate(): (streamed: number) => boolean {
       open = false;
       // Per cycle, so the loser of the previous race cannot reopen this one.
       let reopened = false;
-      // Initialised before reopen closes over them, so a scheduler that runs
-      // its callback synchronously cannot hit the temporal dead zone and throw
-      // out of the stream loop.
+      // Initialised before reopen closes over them, so a scheduler that calls
+      // back synchronously cannot hit the temporal dead zone and throw.
       const handles: {
         frame?: number;
         timer?: ReturnType<typeof setTimeout>;

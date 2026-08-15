@@ -4501,9 +4501,8 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
-      // What the publish gate bounds. Only ever grows, unlike cumulativeText, which
-      // the ${...} strip below can shorten, and it also counts the tool-argument
-      // deltas that never reach cumulativeText at all.
+      // What the gate bounds. Only grows, unlike cumulativeText, which the
+      // ${...} strip can shorten, and it counts tool-argument deltas too.
       let streamedChars = 0;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
@@ -4519,17 +4518,15 @@ export function createOpenAIStreamAdapter(
               text.slice(continuationPartial.length),
             )
           : text;
-      // The publish gate can hide a reasoning group entirely: if every chunk
-      // that revealed it was coalesced away, the tracker never started it and
-      // the persisted durations would have a hole where the rendered panel has
-      // a group. Both terminal publishes call this before reading metadata().
+      // A group whose every revealing chunk the gate coalesced away was never
+      // started, leaving a hole in the persisted durations where the panel
+      // renders a group. Both terminal publishes call this before metadata().
       const adoptGatedReasoningGroups = (
         content: readonly { type?: unknown; text?: unknown }[],
       ) => {
         const groups = countReasoningGroups(content);
         if (groups > reasoningDurationTracker.groupCount) {
-          // startGroup back-fills every index it skips, so one call fills the
-          // whole hole, not just the last group.
+          // startGroup back-fills the indexes it skips, so one call is enough.
           reasoningDurationTracker.startGroup(groups - 1);
         }
       };
@@ -5510,10 +5507,10 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      // Gated like the text path: this preview repeats per argument
-                      // delta and tool_start replaces it with the authoritative
-                      // parse. The tool events themselves are rare and carry the
-                      // card's state, so they publish ungated.
+                      // Gated like the text path: this preview repeats per
+                      // argument delta and tool_start replaces it with the
+                      // authoritative parse. The tool events are rare and carry
+                      // the card's state, so those publish ungated.
                       if (canPublish(streamedChars)) {
                         yield {
                           content: liveAssistantContent(),
@@ -5972,11 +5969,10 @@ export function createOpenAIStreamAdapter(
                 rawDeltaToolCalls.length > 0
               ) {
                 closeReasoningContent();
-                // A fragment that only extends an existing call's arguments is
-                // the same per-delta preview as tool_args, so it is gated the
-                // same way. A fragment that introduces a call is not: that is
-                // the state an aborted turn would otherwise lose, so it always
-                // publishes.
+                // A fragment extending an existing call's arguments is the same
+                // per-delta preview as tool_args, so it is gated the same way.
+                // One that introduces a call always publishes: that is state an
+                // aborted turn would otherwise lose.
                 let addedToolCall = false;
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
@@ -6137,18 +6133,17 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              // A chunk the strip above emptied has nothing to show, and the
-              // yield below is skipped for it anyway. Asking the gate first
-              // would spend this cycle's publish on it and hold the next real
-              // chunk, so leave the gate untouched.
+              // A chunk the strip emptied has nothing to show and is skipped
+              // below anyway; asking the gate would spend this cycle's publish
+              // on it and hold the next real chunk.
               if (
                 mergeContinuation(cumulativeText).length === 0 &&
                 toolCallParts.length === 0
               ) {
                 continue;
               }
-              // Coalesce text received before the next frame; cumulativeText retains
-              // it. The gate publishes anyway once it holds more than a stop may drop.
+              // Coalesce text arriving before the next frame; cumulativeText
+              // keeps it, and the cap publishes before a stop could drop it.
               if (!canPublish(streamedChars)) {
                 continue;
               }
@@ -6178,8 +6173,8 @@ export function createOpenAIStreamAdapter(
               if (
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
-                // The publishing chunk's flag only. Every finish re-measures from
-                // the group's start, so a coalesced chunk's dropped flag cannot skew it.
+                // The publishing chunk's flag only; every finish re-measures
+                // from the group's start, so a dropped flag cannot skew it.
                 !structuredReasoningContinues &&
                 !hasUnclosedThinkTag(cumulativeText)
               ) {
@@ -6310,9 +6305,7 @@ export function createOpenAIStreamAdapter(
           finalTokPerSec,
         );
 
-        // Finalize reasoning-only streams. A group whose only chunks the gate
-        // skipped was never started, so adopt it here or the persisted durations
-        // would have a hole where the rendered panel has a group.
+        // Finalize reasoning-only streams.
         const finalContent = buildAssistantContent(
           mergeContinuation(cumulativeText),
         );
@@ -6395,8 +6388,7 @@ export function createOpenAIStreamAdapter(
           const partialText = mergeContinuation(cumulativeText);
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
-            // Same hole as the success path: this partial can render a group
-            // the gate never let the tracker see.
+            // This partial can render a group the gate hid from the tracker.
             adoptGatedReasoningGroups(partialContent);
             reasoningDurationTracker.finishGroup();
             const partialTiming = buildTiming(
