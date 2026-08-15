@@ -2629,7 +2629,7 @@ def _get_statistics(statistics = None, force_download = True):
                 with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as f:
                     snapshot_download(
                         f"unslothai/{statistics}",
-                        force_download = True,
+                        force_download = force_download,
                         cache_dir = f,
                         local_dir = f,
                     )
