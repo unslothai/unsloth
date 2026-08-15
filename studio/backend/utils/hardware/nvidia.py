@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import subprocess
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -48,13 +49,25 @@ def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[di
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
 
-_uuid_mask_resolution_cache: dict[tuple[str, ...], Optional[list[int]]] = {}
+# Failures aren't cached forever: a hung/missing nvidia-smi at Studio startup
+# (driver still initializing, momentary system load) can recover mid-session,
+# and the picker shouldn't stay hidden until a restart on the strength of one
+# bad probe. Successes ARE cached forever -- GPU topology doesn't change
+# mid-process -- so only failure entries carry a timestamp to expire against.
+_FAILED_RESOLUTION_TTL_SECONDS = 30
+_uuid_mask_resolution_cache: dict[tuple[str, ...], tuple[Optional[list[int]], float]] = {}
+
+_GPU_UUID_PREFIX = "GPU-"
 
 
-def _query_uuid_to_index() -> Optional[dict[str, int]]:
+def _query_uuid_to_ordinal() -> Optional[dict[str, int]]:
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+            [
+                "nvidia-smi",
+                "--query-gpu=uuid,pci.bus_id,mig.mode.current",
+                "--format=csv,noheader",
+            ],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -69,60 +82,96 @@ def _query_uuid_to_index() -> Optional[dict[str, int]]:
     if result.returncode != 0:
         return None
 
-    uuid_to_index: dict[str, int] = {}
+    rows = []
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 2:
+        if len(parts) != 3:
             continue
-        try:
-            idx = int(parts[0])
-        except (ValueError, TypeError):
+        rows.append(parts)
+
+    # nvidia-smi's own index column isn't guaranteed to match CUDA's PCI-bus
+    # enumeration: NVIDIA's docs note device enumeration ordering isn't
+    # guaranteed consistent and recommend deriving order from UUID or PCI bus
+    # ID instead. Sort by pci.bus_id ourselves -- its fixed-width
+    # "domain:bus:device.function" hex format sorts correctly as plain text --
+    # to compute the same ordinal CUDA_DEVICE_ORDER=PCI_BUS_ID would assign,
+    # rather than trusting nvidia-smi's index to already match it.
+    rows.sort(key = lambda row: row[1])
+
+    uuid_to_ordinal: dict[str, int] = {}
+    for ordinal, (uuid, _bus_id, mig_mode) in enumerate(rows):
+        # A MIG-enabled root GPU's UUID isn't a normal selectable compute
+        # device -- CUDA exposes its MIG instances instead of the whole card.
+        # Leave it out of the map so it fails resolution the same way an
+        # actual MIG instance UUID already does, rather than resolving to an
+        # index that silently selects a partitioned view of the card.
+        if mig_mode == "Enabled":
             continue
-        uuid_to_index[parts[1]] = idx
-    return uuid_to_index
+        uuid_to_ordinal[uuid] = ordinal
+    return uuid_to_ordinal
 
 
-def _resolve_one(token: str, uuid_to_index: dict[str, int]) -> Optional[int]:
-    exact = uuid_to_index.get(token)
+def _resolve_uuid_token(token: str, uuid_to_ordinal: dict[str, int]) -> Optional[int]:
+    exact = uuid_to_ordinal.get(token)
     if exact is not None:
         return exact
     # NVIDIA accepts an unambiguous UUID prefix (e.g. "GPU-abcdef12") as a
-    # device identifier -- resolve one only if exactly one device matches it,
-    # since a prefix shared by more than one card can't be trusted either way.
-    prefix_matches = [idx for uuid, idx in uuid_to_index.items() if uuid.startswith(token)]
+    # device identifier. Require the token to actually look like a GPU UUID
+    # before attempting a prefix match -- otherwise a malformed token like
+    # "G" or "GPU" (no trailing "-") could coincidentally prefix a real UUID
+    # on a single-GPU host and get treated as a valid, intentional selector.
+    if not (token.startswith(_GPU_UUID_PREFIX) and len(token) > len(_GPU_UUID_PREFIX)):
+        return None
+    # A prefix shared by more than one card can't be trusted either way.
+    prefix_matches = [
+        ordinal for uuid, ordinal in uuid_to_ordinal.items() if uuid.startswith(token)
+    ]
     if len(prefix_matches) == 1:
         return prefix_matches[0]
     return None
 
 
 def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
-    """Resolve a CUDA_VISIBLE_DEVICES UUID mask (e.g. ["GPU-<uuid>", ...]) to
-    physical indices via nvidia-smi. Order is preserved to match the mask, since
-    it defines the visible-ordinal mapping downstream. Returns None -- and the
-    caller falls back to relative ordinals -- if nvidia-smi is unavailable, or
-    any token doesn't match exactly one physical device (a MIG instance UUID,
-    or a UUID/prefix ambiguous across cards). Cached per token tuple: the mask
-    is only re-queried once per distinct CUDA_VISIBLE_DEVICES value a process
-    sees, not on every poll -- a hung or missing nvidia-smi would otherwise cost
-    its full timeout on every caller of _get_parent_visible_gpu_spec()."""
+    """Resolve a CUDA_VISIBLE_DEVICES mask that mixes numeric indices and GPU
+    UUIDs (e.g. ["0", "GPU-<uuid>"]) to physical PCI-bus-order indices, so a
+    UUID mask is exactly as selectable as the equivalent numeric one. Numeric
+    tokens pass through as-is, matching the trust level of the plain-numeric
+    fast path in _get_parent_visible_gpu_spec(); UUID tokens are resolved via
+    nvidia-smi. Order is preserved to match the mask, since it defines the
+    visible-ordinal mapping downstream. Returns None -- and the caller falls
+    back to relative ordinals -- if nvidia-smi is unavailable, or any UUID
+    token doesn't match exactly one non-MIG physical device (an actual MIG
+    instance UUID, a MIG-enabled root's UUID, or a UUID/prefix ambiguous
+    across cards). Successes are cached per token tuple for the process
+    lifetime; failures are cached for _FAILED_RESOLUTION_TTL_SECONDS, since a
+    hung or missing nvidia-smi would otherwise cost its full timeout on every
+    caller of _get_parent_visible_gpu_spec() every poll cycle."""
     cache_key = tuple(tokens)
-    if cache_key in _uuid_mask_resolution_cache:
-        return _uuid_mask_resolution_cache[cache_key]
+    cached = _uuid_mask_resolution_cache.get(cache_key)
+    if cached is not None:
+        value, cached_at = cached
+        if value is not None or time.monotonic() - cached_at < _FAILED_RESOLUTION_TTL_SECONDS:
+            return value
 
-    uuid_to_index = _query_uuid_to_index()
-    if uuid_to_index is None:
-        _uuid_mask_resolution_cache[cache_key] = None
+    uuid_to_ordinal = _query_uuid_to_ordinal()
+    if uuid_to_ordinal is None:
+        _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
         return None
 
     resolved = []
     for token in tokens:
-        idx = _resolve_one(token, uuid_to_index)
+        try:
+            resolved.append(int(token))
+            continue
+        except ValueError:
+            pass
+        idx = _resolve_uuid_token(token, uuid_to_ordinal)
         if idx is None:
-            _uuid_mask_resolution_cache[cache_key] = None
+            _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
             return None
         resolved.append(idx)
 
-    _uuid_mask_resolution_cache[cache_key] = resolved
+    _uuid_mask_resolution_cache[cache_key] = (resolved, time.monotonic())
     return resolved
 
 
