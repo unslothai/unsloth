@@ -611,28 +611,30 @@ def test_effective_packing_decides_the_opt_out():
     assert effective_packing({**text, "packing": True}) is True
     assert max_train_rows_for_config({**text, "packing": True}) is None
 
-    # ...but the image, audio and VLM branches train without packing whatever the
-    # config says, and the frontend hides the control without resetting it. A
-    # stale flag must not cost those runs the bound.
-    assert effective_packing({**text, "packing": True, "is_dataset_image": True}) is False
-    assert effective_packing({**text, "packing": True, "is_dataset_audio": True}) is False
+    # A caller that probed the model and landed on the vision branch knows the run
+    # cannot pack, so a stale flag does not cost it the bound.
     assert effective_packing({**text, "packing": True}, is_vlm = True) is False
     assert max_train_rows_for_config({**text, "packing": True}, is_vlm = True) == 1024
-    assert max_train_rows_for_config({**text, "packing": True, "is_dataset_image": True}) == 1024
+
+    # The dataset flags alone establish nothing: they are client-supplied and true
+    # on a column-NAME match, so a text model with a column called "audio" or
+    # "image" still trains on the text path, which honours packing.
+    assert effective_packing({**text, "packing": True, "is_dataset_image": True}) is True
+    assert effective_packing({**text, "packing": True, "is_dataset_audio": True}) is True
+    assert max_train_rows_for_config({**text, "packing": True, "is_dataset_audio": True}) is None
 
     # An epoch-bounded run is unbounded whatever packing says.
     assert max_train_rows_for_config({"max_steps": 0, "packing": False}) is None
 
-    # Raw-text and CPT take the text path however the dataset is flagged -- the
-    # vision branch is gated on `not raw_text_mode` -- and that path honours the
-    # requested value, so those runs pack for real and keep the opt-out.
+    # Raw-text and CPT take the text path even on a vision model -- that branch
+    # is gated on `not raw_text_mode` -- and the text path honours the requested
+    # value, so those runs pack for real and keep the opt-out.
     for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
-        assert effective_packing({**text, **raw, "packing": True, "is_dataset_image": True}) is True
-        assert effective_packing({**text, **raw, "packing": True, "is_dataset_audio": True}) is True
-        assert max_train_rows_for_config({**text, **raw, "packing": True}) is None
+        assert effective_packing({**text, **raw, "packing": True}, is_vlm = True) is True
+        assert max_train_rows_for_config({**text, **raw, "packing": True}, is_vlm = True) is None
         # Without packing they are bounded like anything else.
-        assert effective_packing({**text, **raw, "is_dataset_image": True}) is False
-        assert max_train_rows_for_config({**text, **raw, "is_dataset_image": True}) == 1024
+        assert effective_packing({**text, **raw}, is_vlm = True) is False
+        assert max_train_rows_for_config({**text, **raw}, is_vlm = True) == 1024
 
 
 def test_bound_dataset_rows_edges():
@@ -781,6 +783,15 @@ def test_row_bound_marker_is_replaced_atomically(tmp_path):
     assert row_bound_for_resume(str(run_dir), 40960, 99) == (4096, 3407)
     # And the temporary file it wrote instead is cleaned up.
     assert [p.name for p in run_dir.iterdir()] == ["unsloth_row_bound.json"]
+
+
+def test_record_row_bound_reports_whether_it_wrote():
+    from core.training.dataset_bounds import record_row_bound
+
+    # The caller logs a failure rather than failing the run: by the time this is
+    # called the dataset is already bounded, so there is nothing to fall back to.
+    assert record_row_bound(None, 1024, 3407) is False
+    assert record_row_bound("/definitely/not/a/directory/here", 1024, 3407) is False
 
 
 def test_row_bound_is_dropped_for_a_checkpoint_that_predates_it(tmp_path):

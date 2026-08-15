@@ -80,27 +80,25 @@ def effective_packing(config: dict, is_vlm: bool = False) -> bool:
     """Whether the trainer will actually pack, not merely what was requested.
 
     Packing opts the bound out because one packed sample spans an unknown number
-    of source rows. The stored value alone overshoots: the frontend hides the
-    packing control for image VLMs without resetting it, API clients can submit
-    the combination directly, and the vision, audio-VLM and audio-codec branches
-    all train without packing whatever the config says -- csm and snac on a plain
-    HF Trainer, whisper on Seq2SeqTrainer, none of which take a packing argument,
-    and bicodec/dac forced off on the SFTTrainer path.
+    of source rows, and the requested value is the answer unless the caller has
+    established that the run cannot pack. Only `is_vlm` does that: it says the
+    caller probed the model and the dataset and landed on the vision branch,
+    which sets no packing at all.
 
-    Raw-text and CPT are the exception to that: the vision/audio-VLM branch is
-    gated on `not raw_text_mode`, so those runs take the text path and it honours
-    the requested value however the dataset is flagged.
+    The dataset flags do NOT establish it, though they look like they should.
+    `is_dataset_image` and `is_dataset_audio` are client-supplied and true on a
+    column-NAME match, so a text model with a column called "audio" carries the
+    flag and still trains on the text path, which honours packing. Raw-text and
+    CPT take that path too, whatever the flags say, because the vision branch is
+    gated on `not raw_text_mode`. Guessing the branch from a flag was wrong in
+    three separate ways; where the branch is unknown, assume it packs.
     """
     if not config.get("packing", False):
         return False
     raw_text_mode = (
         config.get("training_type") == "Continued Pretraining" or config.get("format_type") == "raw"
     )
-    if raw_text_mode:
-        return True
-    if is_vlm or config.get("is_dataset_image", False) or config.get("is_dataset_audio", False):
-        return False
-    return True
+    return bool(raw_text_mode or not is_vlm)
 
 
 def max_train_rows_for_config(config: dict, is_vlm: bool = False) -> Optional[int]:
@@ -143,7 +141,7 @@ def record_row_bound(
     output_dir: Any,
     max_train_rows: Optional[int],
     seed: Any = 3407,
-) -> None:
+) -> bool:
     """Record the bound a run started with, beside its checkpoints.
 
     The subset a run trains on is training state: it has to be fixed at the first
@@ -153,9 +151,11 @@ def record_row_bound(
     runs, and a checkpoint written before this feature existed leaves no
     arithmetic that distinguishes it reliably.
 
-    Best effort by design. A run must never fail over a marker; a marker that
-    could not be written costs the optimization on the next resume and nothing
-    else.
+    Best effort by design, and it answers whether it succeeded so the caller can
+    say so. A run must never fail over a marker, and by the time this is called
+    the dataset has already been bounded, so there is nothing to fall back to
+    either; what an unwritable marker costs is a later resume reading the run as
+    unbounded.
 
     Written through a temporary file and moved into place, because a resume
     rewrites a marker that is already valid: truncating in place and then failing
@@ -165,7 +165,7 @@ def record_row_bound(
     """
     run_dir = run_dir_for_checkpoint(output_dir)
     if not run_dir:
-        return
+        return False
     marker = os.path.join(run_dir, ROW_BOUND_MARKER_FILE)
     tmp_path = None
     try:
@@ -183,13 +183,14 @@ def record_row_bound(
         os.replace(tmp_path, marker)
         tmp_path = None
     except (OSError, UnicodeError, TypeError, ValueError):
-        return
+        return False
     finally:
         if tmp_path is not None:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+    return True
 
 
 def row_bound_for_resume(

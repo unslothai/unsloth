@@ -3025,7 +3025,16 @@ def _run_mlx_training(event_queue, stop_queue, config):
     ensure_dir(Path(output_dir))
     _emit_output_dir(event_queue, output_dir)
     # Pin the subset before any checkpoint lands here; a resume reads it back.
-    record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed)
+    if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
+        mlx_max_train_rows
+    ):
+        _send(
+            "warning",
+            message = (
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded"
+            ),
+        )
 
     # ── 6. Create trainer ──
     raw_eval_steps = config.get("eval_steps", 0)
@@ -4522,7 +4531,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # Pin the subset this run trains on before any checkpoint lands in here,
         # so a later resume reads it back rather than deriving it from a config
         # the user may have edited in between.
-        record_row_bound(output_dir, max_train_rows, max_train_rows_seed)
+        if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
+            # Not fatal, and nothing to fall back to at this point: the dataset is
+            # already bounded. Say it, so a later resume reading this run as
+            # unbounded is explainable.
+            logger.warning(
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded\n"
+            )
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
