@@ -504,7 +504,7 @@ def _cached_only_loader(
 
 
 def test_max_steps_dataset_rows_bounds_the_run():
-    from core.training.trainer import (
+    from core.training.dataset_bounds import (
         MAX_STEPS_ROW_SLACK,
         MIN_MAX_STEPS_ROWS,
         max_steps_dataset_rows,
@@ -589,7 +589,7 @@ def test_max_steps_bound_is_off_without_it(monkeypatch):
 
 
 def test_max_steps_dataset_rows_survives_unusable_numbers():
-    from core.training.trainer import MIN_MAX_STEPS_ROWS, max_steps_dataset_rows
+    from core.training.dataset_bounds import MIN_MAX_STEPS_ROWS, max_steps_dataset_rows
 
     # The worker is also driven from the DB and by direct callers, so a None or a
     # string reaches this. A row bound is an optimization; it must never raise.
@@ -704,48 +704,59 @@ def test_bound_dataset_rows_leaves_a_dataset_dict_alone():
     assert bound_dataset_rows(splits, 1024, 3407) is splits
 
 
-def test_checkpoint_predates_row_bound(tmp_path):
-    import json
+def test_row_bound_marker_round_trips_through_a_resume(tmp_path):
+    from core.training.dataset_bounds import record_row_bound, row_bound_for_resume
 
-    from core.training.dataset_bounds import checkpoint_predates_row_bound
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    checkpoint = run_dir / "checkpoint-30"
+    checkpoint.mkdir()
 
-    config = {"batch_size": 2, "gradient_accumulation_steps": 4}
+    # Not resuming: the freshly computed pair, which is what gets recorded.
+    assert row_bound_for_resume(None, 4096, 3407) == (4096, 3407)
 
-    def _checkpoint(name, *, step, epoch):
-        path = tmp_path / name
-        path.mkdir()
-        (path / "trainer_state.json").write_text(json.dumps({"global_step": step, "epoch": epoch}))
-        return str(path)
+    record_row_bound(str(run_dir), 4096, 3407)
+    # Resuming reads back the bound the run started with, so the rows and their
+    # order do not move when max_steps or the batch size are edited in between.
+    assert row_bound_for_resume(str(checkpoint), 40960, 99) == (4096, 3407)
+    # The run directory itself is accepted as well as a checkpoint inside it.
+    assert row_bound_for_resume(str(run_dir), 40960, 99) == (4096, 3407)
 
-    # 15 steps x 8 rows against 192,523 rows: a run that saw the whole corpus.
-    full = _checkpoint("full", step = 15, epoch = 120 / 192_523)
-    assert checkpoint_predates_row_bound(full, 1024, config) is True
+    # A run that was never bounded stays unbounded on resume.
+    unbounded = tmp_path / "unbounded"
+    unbounded.mkdir()
+    record_row_bound(str(unbounded), None, 3407)
+    assert row_bound_for_resume(str(unbounded / "checkpoint-5"), 1024, 3407) == (None, 3407)
 
-    # The same 15 steps against a 1,024-row bound: already bounded, so resuming
-    # keeps the bound and continues over the same rows.
-    bounded = _checkpoint("bounded", step = 15, epoch = 120 / 1024)
-    assert checkpoint_predates_row_bound(bounded, 1024, config) is False
 
-    # The checkpoint's own batch size wins over a resume that changed it.
-    recorded = tmp_path / "recorded"
-    recorded.mkdir()
-    (recorded / "trainer_state.json").write_text(
-        json.dumps({"global_step": 15, "epoch": 120 / 192_523, "train_batch_size": 2})
+def test_row_bound_is_dropped_for_a_checkpoint_that_predates_it(tmp_path):
+    from core.training.dataset_bounds import record_row_bound, row_bound_for_resume
+
+    # A checkpoint written before the marker existed trained on the whole corpus
+    # in its natural order. Both trainers resume by batch index, so a shuffled
+    # subset would continue on unrelated rows: no bound, whatever its size.
+    legacy = tmp_path / "legacy"
+    (legacy / "checkpoint-30").mkdir(parents = True)
+    assert row_bound_for_resume(str(legacy / "checkpoint-30"), 1024, 3407) == (None, 3407)
+
+    # Including the range the arithmetic estimate could not tell apart: a legacy
+    # dataset only slightly larger than the bound still gets shrunk by it.
+    (legacy / "checkpoint-30" / "trainer_state.json").write_text(
+        json.dumps({"global_step": 15, "epoch": 120 / 1500, "train_batch_size": 2})
     )
-    assert checkpoint_predates_row_bound(str(recorded), 1024, {**config, "batch_size": 8}) is True
+    assert row_bound_for_resume(str(legacy / "checkpoint-30"), 1024, 3407) == (None, 3407)
 
-    # Nothing to decide from, and nothing to break: leave the bound alone.
-    assert checkpoint_predates_row_bound(None, 1024, config) is False
-    assert checkpoint_predates_row_bound(full, None, config) is False
-    assert checkpoint_predates_row_bound(str(tmp_path / "missing"), 1024, config) is False
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    (empty / "trainer_state.json").write_text("{}")
-    assert checkpoint_predates_row_bound(str(empty), 1024, config) is False
-    broken = tmp_path / "broken"
-    broken.mkdir()
-    (broken / "trainer_state.json").write_text("not json")
-    assert checkpoint_predates_row_bound(str(broken), 1024, config) is False
+    # An unreadable or truncated marker reads as legacy, never as a bound.
+    for name, body in (("empty", "{}"), ("broken", "not json"), ("null", "null")):
+        run_dir = tmp_path / name
+        run_dir.mkdir()
+        (run_dir / "unsloth_row_bound.json").write_text(body)
+        assert row_bound_for_resume(str(run_dir), 1024, 3407) == (None, 3407)
+
+    # A marker that cannot be written leaves the resume unbounded rather than
+    # failing the run that was trying to record it.
+    record_row_bound(str(tmp_path / "does" / "not" / "exist"), 1024, 3407)
+    record_row_bound(None, 1024, 3407)
 
 
 def test_bound_dataset_rows_is_deterministic_and_seed_sensitive():
@@ -815,6 +826,11 @@ def test_both_loaders_apply_the_row_bound():
     # The MLX worker loads its own dataset, so it has to bound its own rows.
     assert "bound_dataset_rows" in calls["_slice"]
     assert "max_train_rows_for_config" in calls["_run_mlx_training"]
+    # Both loaders resume on the recorded bound and both record their own, or a
+    # resume silently trains on rows the checkpoint never saw.
+    for loader in ("run_training_process", "_run_mlx_training"):
+        assert "row_bound_for_resume" in calls[loader]
+        assert "record_row_bound" in calls[loader]
 
 
 def test_mlx_adapter_keeps_one_source_of_truth_for_the_bound():

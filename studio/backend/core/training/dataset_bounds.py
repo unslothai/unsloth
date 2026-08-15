@@ -25,6 +25,9 @@ from typing import Any, Optional
 MAX_STEPS_ROW_SLACK = 4
 # Below this a subset is small enough to skew a run for no meaningful saving.
 MIN_MAX_STEPS_ROWS = 1024
+# Written into a run's output directory at its first start; read back on resume.
+# Its absence is the signal that a checkpoint predates the bound.
+ROW_BOUND_MARKER_FILE = "unsloth_row_bound.json"
 
 
 def _int_or(value: Any, default: int) -> int:
@@ -100,47 +103,90 @@ def max_train_rows_for_config(config: dict, is_vlm: bool = False) -> Optional[in
     )
 
 
-def checkpoint_predates_row_bound(
-    checkpoint_path: Any, max_train_rows: Optional[int], config: dict
-) -> bool:
-    """Whether a checkpoint was written against a much larger dataset.
+def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
+    """The run directory a checkpoint lives in, or None when there is none.
 
-    The subset is part of training state now. Resuming a run that was started
-    with the same bound continues exactly, because the bound is a function of the
-    seed, max_steps, batch size and accumulation. A checkpoint written before the
-    bound existed saw the whole corpus, and Trainer fast-forwards by batch count
-    over the *current* dataloader (ignore_data_skip defaults to False), so
-    bounding it now would resume into unrelated rows.
-
-    trainer_state.json records global_step and a fractional epoch, and epoch is
-    rows_seen / dataset_rows, so the dataset the checkpoint trained on can be
-    recovered. Anything unreadable answers False: an unresumable checkpoint is
-    the resume path's problem, not this one's.
+    Checkpoints are written as ``<output_dir>/checkpoint-<step>``; a caller that
+    names the run directory itself gets it back unchanged.
     """
-    if not checkpoint_path or not max_train_rows:
-        return False
-    state_file = os.path.join(str(checkpoint_path), "trainer_state.json")
+    if not checkpoint_path:
+        return None
+    path = str(checkpoint_path).rstrip("/\\")
+    if not path:
+        return None
+    head, tail = os.path.split(path)
+    if tail.startswith("checkpoint-") and head:
+        return head
+    return path
+
+
+def record_row_bound(output_dir: Any, max_train_rows: Optional[int], seed: Any = 3407) -> None:
+    """Record the bound a run started with, beside its checkpoints.
+
+    The subset a run trains on is training state: it has to be fixed at the first
+    start and read back on every resume, because both loaders fast-forward to a
+    batch *index* and the ordering is a function of the bound. Deriving it again
+    on resume cannot work -- the config it is derived from is editable between
+    runs, and a checkpoint written before this feature existed leaves no
+    arithmetic that distinguishes it reliably.
+
+    Best effort by design. A run must never fail over a marker; a marker that
+    could not be written costs the optimization on the next resume and nothing
+    else.
+    """
+    run_dir = run_dir_for_checkpoint(output_dir)
+    if not run_dir:
+        return
     try:
-        with open(state_file, encoding = "utf-8") as handle:
-            state = json.load(handle)
-        step = float(state["global_step"])
-        epoch = float(state["epoch"])
+        with open(
+            os.path.join(run_dir, ROW_BOUND_MARKER_FILE), "w", encoding = "utf-8"
+        ) as handle:
+            json.dump(
+                {
+                    "max_train_rows": _positive_int(max_train_rows, 0) or None,
+                    "seed": _seed_int(seed, 3407),
+                },
+                handle,
+            )
+    except (OSError, UnicodeError, TypeError, ValueError):
+        return
+
+
+def row_bound_for_resume(
+    checkpoint_path: Any, max_train_rows: Optional[int], seed: Any = 3407
+) -> tuple[Optional[int], int]:
+    """The (rows, seed) a resume must use, or the freshly computed pair.
+
+    Not resuming: the caller's own values, which record_row_bound then pins.
+
+    Resuming a run recorded by record_row_bound: that run's values, so the rows
+    and their order are exactly the ones it was training on, whatever the config
+    now says about max_steps, batch size or accumulation.
+
+    Resuming anything with no marker -- a checkpoint written before the bound
+    existed, or one whose marker is unreadable: no bound. Such a checkpoint
+    trained on the whole corpus in its natural order, and both trainers resume by
+    batch index rather than by remembering which rows they saw (HF Trainer
+    replays the current dataloader, `ignore_data_skip` defaulting to False;
+    unsloth_zoo's MLXTrainer jumps a cursor into a schedule rebuilt from the
+    current dataset), so a shuffled subset would silently continue on unrelated
+    rows.
+    """
+    fallback_seed = _seed_int(seed, 3407)
+    if not checkpoint_path:
+        return max_train_rows, fallback_seed
+    run_dir = run_dir_for_checkpoint(checkpoint_path)
+    if not run_dir:
+        return max_train_rows, fallback_seed
+    try:
+        with open(
+            os.path.join(run_dir, ROW_BOUND_MARKER_FILE), encoding = "utf-8"
+        ) as handle:
+            marker = json.load(handle)
+        recorded = marker["max_train_rows"]
     except (OSError, UnicodeDecodeError, ValueError, TypeError, KeyError):
-        return False
-    if step <= 0 or epoch <= 0 or step != step or epoch != epoch:
-        return False
-    # The checkpoint's own batch size when it recorded one, since a resume may
-    # carry a different one. Accumulation is not in the state, so the current
-    # config answers for it; changing it on resume already makes the trainer's
-    # own fast-forward arithmetic unreliable, and reading it wrong here only
-    # drops the bound, which is the pre-existing behaviour.
-    per_step = _positive_int(
-        state.get("train_batch_size"), _positive_int(config.get("batch_size"), 1)
-    ) * _positive_int(config.get("gradient_accumulation_steps"), 1)
-    previous_rows = (step * per_step) / epoch
-    # Twice the bound, so an eval carve or masked-out rows in the earlier leg
-    # cannot read as a different dataset.
-    return previous_rows > max_train_rows * 2
+        return None, fallback_seed
+    return _positive_int(recorded, 0) or None, _seed_int(marker.get("seed"), fallback_seed)
 
 
 def bound_dataset_rows(

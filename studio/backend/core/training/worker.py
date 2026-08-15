@@ -59,8 +59,9 @@ from utils.hf_dataset_options import hf_dataset_split_instruction_names
 # so it cannot reach these through core.training.trainer.
 from core.training.dataset_bounds import (
     bound_dataset_rows,
-    checkpoint_predates_row_bound,
     max_train_rows_for_config,
+    record_row_bound,
+    row_bound_for_resume,
 )
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
@@ -2792,6 +2793,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Recomputed from the config rather than carried over from the parent so an
     # MLX run can never train against a bound derived from stale values.
     mlx_max_train_rows = max_train_rows_for_config(config, is_vlm = is_vlm)
+    # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
+    # whatever dataset it is handed, so a bound applied to a checkpoint that was
+    # written without one continues on unrelated rows. Same marker, same rule as
+    # the CUDA path.
+    mlx_max_train_rows, mlx_max_train_rows_seed = row_bound_for_resume(
+        resume_from_checkpoint, mlx_max_train_rows, random_seed
+    )
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
@@ -2804,7 +2812,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         return bound_dataset_rows(
             ds,
             mlx_max_train_rows,
-            config.get("random_seed", 3407),
+            mlx_max_train_rows_seed,
             on_bound = lambda kept, total: _send(
                 "status",
                 status_message = f"Using {kept} of {total} rows (max_steps run)",
@@ -3016,6 +3024,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     ensure_dir(Path(output_dir))
     _emit_output_dir(event_queue, output_dir)
+    # Pin the subset before any checkpoint lands here; a resume reads it back.
+    record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed)
 
     # ── 6. Create trainer ──
     raw_eval_steps = config.get("eval_steps", 0)
@@ -4112,19 +4122,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # explicit train-split range opt out inside load_and_format_dataset, where
         # they live.
         max_train_rows = max_train_rows_for_config(config)
-        # A resume keeps the same rows, because the bound is a function of the
-        # seed, max_steps, batch size and accumulation. A checkpoint from before
-        # the bound existed is the exception: it trained on the whole dataset, and
-        # the trainer fast-forwards by batch count over the current dataloader, so
-        # bounding it now would continue into unrelated rows.
-        if checkpoint_predates_row_bound(
-            config.get("resume_from_checkpoint"), max_train_rows, config
-        ):
+        max_train_rows_seed = config.get("random_seed", 3407)
+        # A resume trains on the rows its first start chose, read back from the
+        # marker written beside the checkpoints. A checkpoint with no marker
+        # predates the bound: it trained on the whole dataset, and the trainer
+        # fast-forwards by batch count over the current dataloader, so bounding it
+        # now would continue into unrelated rows.
+        resumed_rows, max_train_rows_seed = row_bound_for_resume(
+            config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
+        )
+        if resumed_rows != max_train_rows:
             logger.info(
-                "Resuming a checkpoint that trained on the full dataset: skipping the "
-                "max_steps row bound so the run continues over the same rows\n"
+                "Resuming with the row bound recorded at the original start "
+                f"({resumed_rows} rows) instead of {max_train_rows}\n"
             )
-            max_train_rows = None
+        max_train_rows = resumed_rows
 
         def _load_training_dataset():
             result = trainer.load_and_format_dataset(
@@ -4150,7 +4162,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     or config.get("require_exact_dataset_resource")
                 ),
                 max_train_rows = max_train_rows,
-                max_train_rows_seed = config.get("random_seed", 3407),
+                max_train_rows_seed = max_train_rows_seed,
             )
             if isinstance(result, tuple):
                 loaded_dataset, loaded_eval_dataset = result
@@ -4507,6 +4519,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
+        # Pin the subset this run trains on before any checkpoint lands in here,
+        # so a later resume reads it back rather than deriving it from a config
+        # the user may have edited in between.
+        record_row_bound(output_dir, max_train_rows, max_train_rows_seed)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):

@@ -89,15 +89,7 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-# Re-exported: the worker and the tests import these from here, and the MLX
-# loader imports them from the light module directly.
-from .dataset_bounds import (  # noqa: F401
-    MAX_STEPS_ROW_SLACK,
-    MIN_MAX_STEPS_ROWS,
-    bound_dataset_rows,
-    max_steps_dataset_rows,
-    max_train_rows_for_config,
-)
+from .dataset_bounds import bound_dataset_rows
 
 logger = get_logger(__name__)
 
