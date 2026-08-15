@@ -93,7 +93,11 @@ try:
     from unsloth_zoo.saving_utils import sanitize_tokenizer_class_in_config
 except ImportError:
 
-    def sanitize_tokenizer_class_in_config(tokenizer, saved_folder, filename_prefix = None):
+    def sanitize_tokenizer_class_in_config(
+        tokenizer,
+        saved_folder,
+        filename_prefix = None,
+    ):
         _UNLOADABLE_TOKENIZER_CLASSES = frozenset({"TokenizersBackend"})
         if saved_folder is None:
             return
@@ -107,7 +111,11 @@ except ImportError:
         if not os.path.isfile(tokenizer_config_path):
             return
 
-        source = tokenizer.tokenizer if tokenizer is not None and hasattr(tokenizer, "tokenizer") else tokenizer
+        source = (
+            tokenizer.tokenizer
+            if tokenizer is not None and hasattr(tokenizer, "tokenizer")
+            else tokenizer
+        )
         replacement = None
         if source is not None and type(source).__name__ not in _UNLOADABLE_TOKENIZER_CLASSES:
             replacement = type(source).__name__
@@ -131,6 +139,7 @@ except ImportError:
             logger.warning_once(
                 f"Unsloth: Could not sanitize tokenizer_class in {tokenizer_config_path}: {error}"
             )
+
 
 __all__ = [
     "print_quantization_methods",
