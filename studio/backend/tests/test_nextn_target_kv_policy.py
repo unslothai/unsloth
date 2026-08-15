@@ -253,9 +253,9 @@ def test_the_glm4_moe_regression_is_gone():
     with_head = _backend_from_gguf("glm4moe", {**_GQA_FIELDS, "nextn_predict_layers": 1})
     without = _backend_from_gguf("glm4moe", dict(_GQA_FIELDS))
 
-    assert with_head._estimate_kv_cache_bytes(
+    assert with_head._estimate_kv_cache_bytes(4096, "f16") == without._estimate_kv_cache_bytes(
         4096, "f16"
-    ) == without._estimate_kv_cache_bytes(4096, "f16")
+    )
 
 
 def test_a_nextn_equal_to_block_count_does_not_collapse():
@@ -314,7 +314,5 @@ def test_the_status_field_stays_an_optional_string():
     field = InferenceStatusResponse.model_fields["spec_fallback_reason"]
     assert field.default is None
     # Free-form string, so "mtp_partial_offload" needs no enum change anywhere.
-    parsed = InferenceStatusResponse.model_validate(
-        {"spec_fallback_reason": "mtp_partial_offload"}
-    )
+    parsed = InferenceStatusResponse.model_validate({"spec_fallback_reason": "mtp_partial_offload"})
     assert parsed.spec_fallback_reason == "mtp_partial_offload"

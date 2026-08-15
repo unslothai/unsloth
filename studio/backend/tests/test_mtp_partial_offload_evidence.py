@@ -182,7 +182,11 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
 
     with patch.object(sys, "platform", plat):
         result = _launch(
-            backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+            backend,
+            gguf,
+            speculative_type = "auto",
+            n_ctx = 4096,
+            n_parallel = 4,
             extra_args = extra,
         )
 
@@ -201,9 +205,7 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
     ACCELERATORS,
     ids = [a[0] for a in ACCELERATORS],
 )
-def test_full_offload_keeps_mtp_everywhere(
-    tmp_path, plat_id, plat, acc_id, memory, vulkan, device
-):
+def test_full_offload_keeps_mtp_everywhere(tmp_path, plat_id, plat, acc_id, memory, vulkan, device):
     """The planner proved every layer fits: MTP is the whole point, keep it.
 
     This is the regression direction that matters most -- the PR must not cost
@@ -215,7 +217,11 @@ def test_full_offload_keeps_mtp_everywhere(
 
     with patch.object(sys, "platform", plat):
         result = _launch(
-            backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+            backend,
+            gguf,
+            speculative_type = "auto",
+            n_ctx = 4096,
+            n_parallel = 4,
             extra_args = extra,
         )
 
@@ -244,7 +250,11 @@ def test_cpu_only_layer_count_keeps_mtp_everywhere(
 
     with patch.object(sys, "platform", plat):
         result = _launch(
-            backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+            backend,
+            gguf,
+            speculative_type = "auto",
+            n_ctx = 4096,
+            n_parallel = 4,
             extra_args = extra,
         )
 
@@ -269,7 +279,11 @@ def test_over_full_layer_count_keeps_mtp_everywhere(
 
     with patch.object(sys, "platform", plat):
         result = _launch(
-            backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+            backend,
+            gguf,
+            speculative_type = "auto",
+            n_ctx = 4096,
+            n_parallel = 4,
             extra_args = extra,
         )
 
@@ -283,7 +297,11 @@ def test_explicit_mtp_survives_partial_offload_everywhere(tmp_path, plat_id, pla
 
     with patch.object(sys, "platform", plat):
         result = _launch(
-            backend, gguf, speculative_type = "mtp", n_ctx = 4096, n_parallel = 4,
+            backend,
+            gguf,
+            speculative_type = "mtp",
+            n_ctx = 4096,
+            n_parallel = 4,
             extra_args = ["--gpu-layers", "42"],
         )
 
@@ -303,12 +321,16 @@ def test_a_metal_mac_style_empty_probe_keeps_mtp(tmp_path, plat_id, plat):
 
     with patch.object(sys, "platform", plat):
         result = _launch(
-            backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+            backend,
+            gguf,
+            speculative_type = "auto",
+            n_ctx = 4096,
+            n_parallel = 4,
         )
 
-    assert _spec_of(result["cmd"]) != "none", (
-        f"{plat_id} stood MTP down with no GPU evidence and no planner verdict"
-    )
+    assert (
+        _spec_of(result["cmd"]) != "none"
+    ), f"{plat_id} stood MTP down with no GPU evidence and no planner verdict"
 
 
 @pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
@@ -325,7 +347,11 @@ def test_an_empty_probe_with_a_hand_pinned_device_keeps_mtp(tmp_path, plat_id, p
 
     with patch.object(sys, "platform", plat):
         result = _launch(
-            backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+            backend,
+            gguf,
+            speculative_type = "auto",
+            n_ctx = 4096,
+            n_parallel = 4,
             extra_args = ["--device", device],
         )
 
@@ -351,7 +377,11 @@ def test_a_build_without_mtp_reports_the_binary_not_the_placement(tmp_path):
     }
 
     result = _launch(
-        backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
         extra_args = ["--gpu-layers", "42"],
     )
 
@@ -366,10 +396,18 @@ def test_an_old_gguf_without_ssm_group_count_is_priced_as_before(tmp_path):
     """
     b = LlamaCppBackend()
     for k, v in {
-        "_n_layers": 65, "_nextn_predict_layers": 1, "_n_kv_heads": 4, "_n_heads": 24,
-        "_embedding_length": 5120, "_kv_key_length": 256, "_kv_value_length": 256,
-        "_full_attention_interval": 4, "_ssm_inner_size": 6144, "_ssm_state_size": 128,
-        "_ssm_group_count": None, "_ssm_conv_kernel": None,
+        "_n_layers": 65,
+        "_nextn_predict_layers": 1,
+        "_n_kv_heads": 4,
+        "_n_heads": 24,
+        "_embedding_length": 5120,
+        "_kv_key_length": 256,
+        "_kv_value_length": 256,
+        "_full_attention_interval": 4,
+        "_ssm_inner_size": 6144,
+        "_ssm_state_size": 128,
+        "_ssm_group_count": None,
+        "_ssm_conv_kernel": None,
     }.items():
         setattr(b, k, v)
 
@@ -383,8 +421,12 @@ def test_a_gguf_without_nextn_is_untouched_by_the_layer_change(tmp_path):
     """No embedded head: block_count - 0 == block_count, byte for byte."""
     b = LlamaCppBackend()
     for k, v in {
-        "_n_layers": 28, "_n_kv_heads": 8, "_n_heads": 16, "_embedding_length": 1024,
-        "_kv_key_length": 128, "_kv_value_length": 128,
+        "_n_layers": 28,
+        "_n_kv_heads": 8,
+        "_n_heads": 16,
+        "_embedding_length": 1024,
+        "_kv_key_length": 128,
+        "_kv_value_length": 128,
     }.items():
         setattr(b, k, v)
 
@@ -397,8 +439,12 @@ def test_recurrent_state_scales_linearly_in_slots_and_depth(n_parallel, n_rs_seq
     """llama-memory-recurrent.cpp:99 allocates n_seq_max * (1 + n_rs_seq) rows."""
     b = LlamaCppBackend()
     for k, v in {
-        "_n_layers": 65, "_nextn_predict_layers": 1, "_full_attention_interval": 4,
-        "_ssm_inner_size": 6144, "_ssm_state_size": 128, "_ssm_group_count": 16,
+        "_n_layers": 65,
+        "_nextn_predict_layers": 1,
+        "_full_attention_interval": 4,
+        "_ssm_inner_size": 6144,
+        "_ssm_state_size": 128,
+        "_ssm_group_count": 16,
         "_ssm_conv_kernel": 4,
     }.items():
         setattr(b, k, v)
@@ -410,15 +456,26 @@ def test_recurrent_state_scales_linearly_in_slots_and_depth(n_parallel, n_rs_seq
 
 
 @pytest.mark.parametrize(
-    "field", ["_n_layers", "_ssm_inner_size", "_ssm_state_size", "_ssm_group_count",
-              "_ssm_conv_kernel", "_full_attention_interval"]
+    "field",
+    [
+        "_n_layers",
+        "_ssm_inner_size",
+        "_ssm_state_size",
+        "_ssm_group_count",
+        "_ssm_conv_kernel",
+        "_full_attention_interval",
+    ],
 )
 def test_any_missing_recurrent_dimension_fails_closed(field):
     """A partially-populated header must return 0, never a partial product."""
     b = LlamaCppBackend()
     for k, v in {
-        "_n_layers": 65, "_nextn_predict_layers": 1, "_full_attention_interval": 4,
-        "_ssm_inner_size": 6144, "_ssm_state_size": 128, "_ssm_group_count": 16,
+        "_n_layers": 65,
+        "_nextn_predict_layers": 1,
+        "_full_attention_interval": 4,
+        "_ssm_inner_size": 6144,
+        "_ssm_state_size": 128,
+        "_ssm_group_count": 16,
         "_ssm_conv_kernel": 4,
     }.items():
         setattr(b, k, v)
@@ -430,8 +487,12 @@ def test_any_missing_recurrent_dimension_fails_closed(field):
 def test_zero_full_attention_interval_does_not_divide_by_zero():
     b = LlamaCppBackend()
     for k, v in {
-        "_n_layers": 65, "_nextn_predict_layers": 1, "_full_attention_interval": 0,
-        "_ssm_inner_size": 6144, "_ssm_state_size": 128, "_ssm_group_count": 16,
+        "_n_layers": 65,
+        "_nextn_predict_layers": 1,
+        "_full_attention_interval": 0,
+        "_ssm_inner_size": 6144,
+        "_ssm_state_size": 128,
+        "_ssm_group_count": 16,
         "_ssm_conv_kernel": 4,
     }.items():
         setattr(b, k, v)
@@ -453,7 +514,11 @@ def test_the_reported_regression_is_still_fixed(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(
-        backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = 4,
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = 4,
     )
 
     cmd = result["cmd"]
@@ -468,7 +533,11 @@ def test_the_stand_down_survives_a_64k_context(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(
-        backend, gguf, speculative_type = "auto", n_ctx = 65536, n_parallel = 4,
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 65536,
+        n_parallel = 4,
     )
 
     assert _spec_of(result["cmd"]) == "none"
@@ -481,7 +550,11 @@ def test_the_verdict_does_not_depend_on_slot_count(tmp_path, n_parallel):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
     result = _launch(
-        backend, gguf, speculative_type = "auto", n_ctx = 4096, n_parallel = n_parallel,
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 4096,
+        n_parallel = n_parallel,
     )
 
     assert _spec_of(result["cmd"]) == "none"
@@ -490,8 +563,12 @@ def test_the_verdict_does_not_depend_on_slot_count(tmp_path, n_parallel):
 def test_nextn_larger_than_block_count_does_not_go_negative():
     b = LlamaCppBackend()
     for k, v in {
-        "_n_layers": 4, "_nextn_predict_layers": 99, "_full_attention_interval": 4,
-        "_ssm_inner_size": 6144, "_ssm_state_size": 128, "_ssm_group_count": 16,
+        "_n_layers": 4,
+        "_nextn_predict_layers": 99,
+        "_full_attention_interval": 4,
+        "_ssm_inner_size": 6144,
+        "_ssm_state_size": 128,
+        "_ssm_group_count": 16,
         "_ssm_conv_kernel": 4,
     }.items():
         setattr(b, k, v)
