@@ -7482,9 +7482,8 @@ class LlamaCppBackend:
             )
         ):
             return 0
-        # Embedded MTP blocks are included in GGUF block_count (n_layer_all),
-        # but llama.cpp excludes them from the target context's n_layer. Their
-        # KV is priced separately by _mtp_draft_kv_bytes.
+        # Excludes the embedded MTP blocks, as _estimate_kv_cache_bytes does and
+        # for the same reason: llama.cpp keeps them out of the target's n_layer.
         n_layers = max(
             0,
             int(n_layers_raw or 0) - int(getattr(self, "_nextn_predict_layers", None) or 0),
@@ -7885,13 +7884,10 @@ class LlamaCppBackend:
             )
         # Hybrid Mamba targets keep one recurrent state in the normal target
         # context, counted by _estimate_kv_cache_bytes. Verification adds one
-        # rollback copy for every drafted token: llama.cpp gives the TARGET
-        # context n_rs_seq = --spec-draft-n-max for draft-mtp, draft-eagle3,
-        # draft-dflash and draft-dspark alike (common_params_speculative::
-        # need_n_rs_seq), so a separate drafter file pays it exactly like the
-        # embedded head -- ``target_rollback``, not ``drafter_path``, decides.
-        # draft-simple and the ngram types get 0 there. This is the dominant
-        # hidden cost on Qwen3.5/3.8 at multiple parallel slots.
+        # rollback copy per drafted token, in the TARGET context, so a separate
+        # drafter file pays it exactly like the embedded head: ``target_rollback``
+        # decides, not ``drafter_path`` (see _TARGET_ROLLBACK_SPEC_TYPES). The
+        # dominant hidden cost on Qwen3.5/3.8 at multiple parallel slots.
         target_recurrent_copies = 0
         if target_rollback and spec_draft_n_max > 0:
             base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
@@ -13867,13 +13863,11 @@ class LlamaCppBackend:
                         _user_mtp_via_extras
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
-                    # The recurrent rollback copies are a WIDER set than that copy:
-                    # llama.cpp gives the target n_rs_seq for draft-mtp, draft-eagle3,
-                    # draft-dflash and draft-dspark, so DSpark/DFlash pay it too and a
-                    # separate drafter file pays it exactly like an embedded head.
-                    # draft-simple is the one engaged draft mode that does not, which
-                    # is why the pass-through arm reads the types rather than assuming
-                    # every extras-owned drafter qualifies.
+                    # The recurrent rollback copies are a WIDER set than that copy
+                    # (_TARGET_ROLLBACK_SPEC_TYPES): DSpark and DFlash pay them too,
+                    # and draft-simple is the one engaged draft mode that does not,
+                    # which is why the pass-through arm reads the types rather than
+                    # assuming every extras-owned drafter qualifies.
                     _target_rollback = bool(
                         _auto_studio_mtp
                         or _user_mtp_via_extras
