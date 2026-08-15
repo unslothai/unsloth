@@ -106,9 +106,7 @@ MIN_MAX_STEPS_ROWS = 1024
 
 
 def max_steps_dataset_rows(
-    max_steps: int,
-    batch_size: int,
-    gradient_accumulation_steps: int,
+    max_steps: int, batch_size: int, gradient_accumulation_steps: int
 ) -> Optional[int]:
     """Rows a max_steps run can reach, or None when it is unbounded.
 

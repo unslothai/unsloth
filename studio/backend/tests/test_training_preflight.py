@@ -470,7 +470,11 @@ def test_bounded_cached_train_forwards_only_required_row_count(monkeypatch):
     assert cache_calls == [("train", 33), ("validation", None)]
 
 
-def _cached_only_loader(monkeypatch, train, validation = None):
+def _cached_only_loader(
+    monkeypatch,
+    train,
+    validation = None,
+):
     """A trainer whose dataset comes from cache, with remote access fatal."""
     from hub.utils import dataset_cache
 
