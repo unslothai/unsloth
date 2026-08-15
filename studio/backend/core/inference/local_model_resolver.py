@@ -391,10 +391,8 @@ def _mlx_implements_architecture(config: dict) -> bool:
         return False
     try:
         from importlib.util import find_spec
-
         return any(
-            find_spec(f"{package}.models.{name}") is not None
-            for package in ("mlx_lm", "mlx_vlm")
+            find_spec(f"{package}.models.{name}") is not None for package in ("mlx_lm", "mlx_vlm")
         )
     except Exception:
         return True
