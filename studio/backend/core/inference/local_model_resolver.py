@@ -202,6 +202,7 @@ def _safetensors_file_is_intact(path) -> bool:
         if not isinstance(header, dict):
             return False
         end = 0
+        tensors = 0
         for name, entry in header.items():
             if name == "__metadata__":
                 continue
@@ -212,7 +213,11 @@ def _safetensors_file_is_intact(path) -> bool:
                 return False
             if not all(isinstance(value, int) and value >= 0 for value in offsets):
                 return False
+            tensors += 1
             end = max(end, offsets[1])
+        # a __metadata__-only header passes the extent check at end 0 and loads random weights.
+        if tensors == 0:
+            return False
         return 8 + header_len + end <= size
     except (OSError, ValueError, struct.error):
         return False
@@ -283,12 +288,20 @@ def _host_has_a_non_gguf_backend() -> bool:
 
     The worker picks MLX on Apple Silicon and Transformers everywhere else, so a host
     with neither leaves the load to fail after the swap has unloaded the resident GGUF.
-    find_spec, not an import: torch costs seconds and this runs on the request path.
+    An installed torch is not enough: the Transformers worker imports unsloth, whose
+    get_device_type raises outright on a host with no NVIDIA, AMD or Intel accelerator,
+    so a CPU-only or Vulkan-only box with a CPU wheel serves GGUF alone. Read the
+    detected device rather than importing torch, which costs seconds on this path.
     """
     if _host_serves_mlx():
         return True
     try:
+        from utils.hardware import hardware as hw
+
+        if hw.DEVICE not in (hw.DeviceType.CUDA, hw.DeviceType.XPU):
+            return False
         from importlib.util import find_spec
+
         return find_spec("torch") is not None
     except Exception:
         return False
@@ -358,6 +371,33 @@ def _quantizer_runtime_present(quant_method: str) -> bool:
         return any(find_spec(name) is not None for name in modules)
     except Exception:
         return False
+
+
+def _mlx_implements_architecture(config: dict) -> bool:
+    """Whether the MLX loader has an implementation for this checkpoint's model_type.
+
+    Both stacks are consulted because they are complementary: mlx-lm carries the text
+    families, mlx-vlm carries llava and friends, and either can serve a request. A
+    family neither implements (XLNet, say) satisfies every other gate and then fails in
+    FastMLXModel.from_pretrained, once the swap has unloaded the resident model.
+    Absent a readable model_type there is nothing to check, so the other gates decide.
+    """
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str) or not model_type.strip():
+        return True
+    # one module per family, as the loader resolves it; find_spec keeps mlx off this path.
+    name = model_type.strip().lower().replace("-", "_")
+    if not name.isidentifier():
+        return False
+    try:
+        from importlib.util import find_spec
+
+        return any(
+            find_spec(f"{package}.models.{name}") is not None
+            for package in ("mlx_lm", "mlx_vlm")
+        )
+    except Exception:
+        return True
 
 
 def _quantization_suits_host(config: dict) -> bool:
@@ -518,6 +558,8 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     ):
         return False
     if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
+        return False
+    if _host_serves_mlx() and not _mlx_implements_architecture(config):
         return False
     # whisper and TTS need a request shape the chat route rejects only after the swap.
     from utils.models.model_config import detect_audio_type

@@ -22,6 +22,9 @@ from models.inference import LoadRequest
 from core.inference import local_model_resolver as resolver
 from utils import openai_auto_switch_settings as settings
 
+# captured before the autouse fixture below pins it, so its own test can reach the real one.
+_REAL_HOST_HAS_NON_GGUF_BACKEND = resolver._host_has_a_non_gguf_backend
+
 
 @pytest.fixture(autouse = True)
 def _host_serves_non_gguf(monkeypatch):
@@ -8890,6 +8893,51 @@ def test_a_truncated_checkpoint_is_withheld(tmp_path):
         '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
     )
     assert resolver.local_servable_model(info) is None
+
+
+def test_a_safetensors_file_with_no_tensors_is_withheld(tmp_path):
+    # codex P2: a __metadata__-only header clears the extent check and loads random weights.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoTensors")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    for header in ({}, {"__metadata__": {"format": "pt"}}):
+        blob = json.dumps(header).encode()
+        (path / "model.safetensors").write_bytes(struct.pack("<Q", len(blob)) + blob)
+        assert resolver.local_servable_model(info) is None, header
+
+
+def test_an_mlx_host_withholds_a_family_mlx_cannot_build(tmp_path, monkeypatch):
+    # codex P2: a complete XLNet checkpoint clears every other gate, then fails in the loader.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    path = _local_checkpoint(tmp_path, "MlxArch")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["XLNetLMHeadModel"], "model_type": "xlnet"})
+    )
+    assert resolver.local_servable_model(info) is None
+
+    # a family either mlx stack implements is still offered, and mlx-vlm counts.
+    for model_type in ("qwen3", "llava"):
+        (path / "config.json").write_text(
+            json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": model_type})
+        )
+        assert resolver.local_servable_model(info) == (False, ()), model_type
+
+
+def test_a_host_with_no_accelerator_serves_gguf_only(monkeypatch):
+    # codex P2: unsloth's get_device_type raises without a GPU, so a CPU wheel proves nothing.
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU, raising = False)
+    assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is False
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is True
 
 
 def test_a_pickle_shard_named_by_a_safetensors_index_is_withheld(tmp_path):
