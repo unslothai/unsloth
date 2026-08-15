@@ -2960,7 +2960,7 @@ export function AppSidebar() {
                                 ? toggleProjectCollapsed(project.id)
                                 : openProject(project.id)
                             }
-                            className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+                            className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
                           >
                             <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon! shrink-0" />
                             <span className="truncate text-ui-14p5 leading-ui-19 tracking-nav">{project.name}</span>
@@ -2973,7 +2973,7 @@ export function AppSidebar() {
                               e.stopPropagation();
                               openNewChat(project.id);
                             }}
-                            className="sidebar-row-action is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                           >
                             <span className="sidebar-row-action-glyph">
                               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
@@ -2986,7 +2986,7 @@ export function AppSidebar() {
                                 type="button"
                                 onClick={(e) => e.stopPropagation()}
                                 aria-label="Project options"
-                                className="sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                                className="sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                               >
                                 <span className="sidebar-row-action-glyph">
                                   <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
