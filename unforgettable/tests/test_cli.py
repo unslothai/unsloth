@@ -740,3 +740,42 @@ def test_train_preference_without_pairs_exits_2(db_path, capsys):
     err = capsys.readouterr().err
     assert "preference pairs" in err
 
+
+def test_train_preference_writes_pairs(db_path, capsys):
+    _voted_procedures(db_path)
+    insert_record(
+        kind="error_fix",
+        title="Error then fix",
+        body="Tried: broke in world\nThen: fixed in world",
+        provenance="mixed",
+        source_episode_id="ep-0",
+        db_path=db_path,
+    )
+    assert main(["pack", "--apply", "--db", str(db_path)]) == 0
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "train",
+                "--backend",
+                "fake",
+                "--recipe",
+                "preference",
+                "--db",
+                str(db_path),
+            ]
+        )
+        == 0
+    )
+    trained = json.loads(capsys.readouterr().out)
+    assert trained["recipe"] == "preference"
+    assert trained["n_examples"] == 1
+    adapter = get_adapter(trained["adapter_id"], db_path=db_path)
+    assert adapter is not None
+    dest = Path(adapter["path"])
+    lines = (dest / "pairs.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    pair = json.loads(lines[0])
+    assert pair["chosen"] == "Tried: broke in world\nThen: fixed in world"
+    assert pair["rejected"] == "broke in world"
+

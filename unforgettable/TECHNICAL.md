@@ -380,7 +380,7 @@ Chat completions and tool argument blobs are not training gold. Preference pairs
 
 `pack_from_admitted_b` (`sidecar/pack.py`): only active `procedure`/`error_fix` with trusted provenance; probes and `test command` dropped; traces **vote** (and hold out by episode); they do not donate episode text. Compiled membership is also a vote (operator `compile` or auto-pin after two world-pass hits). `include_sim` default false; sim/pass votes only with world/pass and no **active** twin_note. Sim rows never become assistant gold. Empty candidate sets are not persisted. `pack_is_retrieval_heavy` counts compiled rows without refreshing/unpinning them.
 
-`train_pack` refuses fewer than `PACK_MIN_TRAIN` (4) train items. Fake backend writes `adapter_config.json` + `fake_gold.json`. Unsloth backend lazy-imports `FastModel` (falls back to `FastLanguageModel`), prefers `text_only=True`, refuses `UNSLOTH_ENABLE_FULL_FINETUNING=1` and `full_finetuning=True`, writes a LoRA dir. Preference recipe: Fake writes `pairs.jsonl` from `preference_pairs(..., train_episode_ids=)` — only episodes that appear on **train** pack items. Unsloth DPO is not wired (`NotImplementedError`).
+`train_pack` refuses fewer than `PACK_MIN_TRAIN` (4) train items. Fake backend writes `adapter_config.json` + `fake_gold.json`. Unsloth backend lazy-imports `FastModel` (falls back to `FastLanguageModel`), prefers `text_only=True`, refuses `UNSLOTH_ENABLE_FULL_FINETUNING=1` and `full_finetuning=True`, writes a LoRA dir. Preference recipe: Fake writes `pairs.jsonl` from `preference_pairs(..., train_episode_ids=)` — only episodes that appear on **train** pack items. Unsloth preference flattens those pairs to string `prompt` / `chosen` / `rejected`, lazy-imports TRL `DPOTrainer` **after** Unsloth (same LoRA knobs as SFT, `ref_model=None`), and writes the LoRA dir plus `pairs.jsonl`. Missing `trl` raises `RuntimeError("preference recipe needs trl.DPOTrainer")` before any Unsloth import. SFT/distill do not import DPO.
 
 `eval_adapter`: holdout title-only complete vs gold. Empty completions on both sides (`adapter_lean == base_lean == 0`) **fail**. CLI `eval` selects Fake vs Unsloth from `adapters.backend` and passes `base_model` into `UnslothTrainBackend.complete` (load base, then PEFT adapter).
 
@@ -409,11 +409,11 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **255** CPU tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
+Apache suite: **260** CPU tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
 
 | File | What it locks |
 |------|----------------|
-| `test_import_hygiene.py` | No `studio` imports; sidecar import does not load `unsloth`/`torch`; no module-level Unsloth in sidecar except indented `train.py` |
+| `test_import_hygiene.py` | No `studio` imports; sidecar import does not load `unsloth`/`torch`; no module-level Unsloth in sidecar except indented `train.py`; SFT import excludes DPO |
 | `test_virtual_model.py` | `unforgettable` / `unforgettable/<id>` alias strip; nested `unforgettable/unforgettable` |
 | `test_store.py` | Schema CRUD, supersede history, deprecate hidden from search, world > infer rank |
 | `test_admissions.py` | Locked `admit()` order including bookkeeping vs force_proposed vs sim procedure |
@@ -435,8 +435,8 @@ Apache suite: **255** CPU tests under `unforgettable/tests/`, no GPU, tmp SQLite
 | `test_runtime_context.py` | `copy_context` carries db + traces; raw thread does not |
 | `test_sidecar_pack.py` | Drop reasons, no episode gold, sim vote matrix, rejected twin_note is not a veto, holdout-by-episode, preference pairs |
 | `test_remember_path.py` | Unbound dispatch, no human/episode from tools, sim cannot mint world, supersede does not promote, generate-text clip |
-| `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl, unpacked episode is not preference gold |
-| `test_sidecar_gpu.py` | CUDA + cached `--base` only: `UnslothTrainBackend.train` writes a real PEFT dir. Skips without GPU or weights |
+| `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl, unpacked episode is not preference gold, missing-TRL DPO refuse, flattened DPO rows, stubbed Unsloth DPO |
+| `test_sidecar_gpu.py` | CUDA + cached `--base` only: `UnslothTrainBackend.train` writes a real PEFT dir for SFT and `--recipe preference`. Skips without GPU or weights |
 | `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails |
 | `test_sidecar_adapters.py` | Promote gate, one promoted, rollback keeps files, probe-fail refuse |
 
@@ -496,7 +496,7 @@ python -m pytest unforgettable/tests -q --tb=short
 python -m pytest unforgettable/tests/test_episode.py -q
 ```
 
-Expect **255 passed** (the GPU file skips). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached, `test_sidecar_gpu.py` adds one more pass (~1–2 minutes).
+Expect **260 passed** (the GPU file skips). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached, `test_sidecar_gpu.py` adds SFT and preference passes (~1–2 minutes each).
 
 If the environment has no `pytest` in the project venv:
 
@@ -529,6 +529,7 @@ If collection fails on missing Studio extras, install Studio’s backend require
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" pack --dry-run
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" pack --apply
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" train --backend unsloth --base <hf-or-local-id>
+python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" train --backend unsloth --base <hf-or-local-id> --recipe preference
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" eval <adapter-id>
 python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id>
 ```
@@ -539,7 +540,7 @@ python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id
 
 - `unforgettable` imports with no Studio on `sys.path`.
 - `import unforgettable.sidecar` does not import `unsloth` or `torch`.
-- `pytest unforgettable/tests` 255 passed.
+- `pytest unforgettable/tests` 260 passed.
 - FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
 - FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
 - Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.

@@ -887,7 +887,8 @@ def build_parser() -> argparse.ArgumentParser:
         "train",
         help=(
             "Train a shadow adapter from a pack. Unsloth uses "
-            "FastLanguageModel.from_pretrained, get_peft_model, SFTTrainer."
+            "FastLanguageModel.from_pretrained, get_peft_model, and "
+            "SFTTrainer or DPOTrainer (--recipe preference)."
         ),
     )
     _add_db_flag(train_p)
@@ -899,7 +900,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Training backend (default: unsloth if importable, else fake). "
             "unsloth calls FastLanguageModel.from_pretrained, get_peft_model, "
-            "SFTTrainer."
+            "and SFTTrainer or DPOTrainer."
         ),
     )
     train_p.add_argument(

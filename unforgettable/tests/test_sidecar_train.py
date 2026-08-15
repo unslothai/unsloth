@@ -24,6 +24,7 @@ from unforgettable.sidecar.pack import pack_from_admitted_b
 from unforgettable.sidecar.train import (
     FakeTrainBackend,
     UnslothTrainBackend,
+    _dpo_rows,
     train_pack,
 )
 from unforgettable.store.records import insert_record, insert_retrieve_use, insert_rollout
@@ -137,19 +138,35 @@ def test_unsloth_backend_refuses_full_finetune(monkeypatch, tmp_path):
     assert "torch" not in sys.modules
 
 
-def test_unsloth_backend_preference_raises_before_import(tmp_path):
+def test_unsloth_backend_preference_raises_before_import(monkeypatch, tmp_path):
+    import importlib.util
     import sys
 
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "trl":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
     backend = UnslothTrainBackend()
-    with pytest.raises((RuntimeError, NotImplementedError), match="preference|DPO|wired"):
+    with pytest.raises(RuntimeError, match="trl.DPOTrainer"):
         backend.train(
-            [{"messages": [{"role": "user", "content": "u"}]}],
+            [
+                {
+                    "prompt": [{"role": "user", "content": "broke"}],
+                    "chosen": "fix it",
+                    "rejected": "broke",
+                }
+            ],
             output_dir=tmp_path / "out",
             base_model="dummy",
             recipe="preference",
         )
     assert "unsloth" not in sys.modules
     assert "torch" not in sys.modules
+    assert not (tmp_path / "out").exists()
 
 
 def test_train_pack_preference_writes_pairs_jsonl(db_path):
@@ -224,3 +241,134 @@ def test_train_pack_preference_without_pairs_raises(db_path):
             recipe="preference",
             db_path=db_path,
         )
+
+
+def test_dpo_rows_flattens_conversational_prompt():
+    rows = _dpo_rows(
+        [
+            {
+                "prompt": [{"role": "user", "content": "broke in world"}],
+                "chosen": "Tried: broke in world\nThen: fixed",
+                "rejected": "broke in world",
+                "episode_id": "ep-0",
+            },
+            {
+                "prompt": "plain prompt",
+                "chosen": [{"role": "assistant", "content": "yes"}],
+                "rejected": [{"role": "assistant", "content": "no"}],
+            },
+            {"prompt": "missing completions"},
+            "skip-me",
+        ]
+    )
+    assert rows == [
+        {
+            "prompt": "broke in world",
+            "chosen": "Tried: broke in world\nThen: fixed",
+            "rejected": "broke in world",
+        },
+        {"prompt": "plain prompt", "chosen": "yes", "rejected": "no"},
+    ]
+
+
+def test_unsloth_preference_empty_rows_skips_unsloth(monkeypatch, tmp_path):
+    import sys
+
+    monkeypatch.setattr(
+        "unforgettable.sidecar.train._require_preference_trl", lambda: None
+    )
+    called = []
+
+    def _boom():
+        called.append("import")
+        raise AssertionError("DPO should not import when rows are empty")
+
+    monkeypatch.setattr("unforgettable.sidecar.train._import_dpo", _boom)
+    with pytest.raises(ValueError, match="preference pairs"):
+        UnslothTrainBackend().train(
+            [{"messages": [{"role": "user", "content": "u"}]}],
+            output_dir=tmp_path / "out",
+            base_model="dummy",
+            recipe="preference",
+        )
+    assert called == []
+    assert "unsloth" not in sys.modules
+    assert "torch" not in sys.modules
+
+
+def test_unsloth_preference_runs_dpo_on_flattened_rows(monkeypatch, tmp_path):
+    import sys
+
+    seen: dict = {}
+
+    class Cfg:
+        def __init__(self, **kwargs):
+            seen["cfg"] = kwargs
+            self.beta = kwargs.get("beta")
+
+    class Trainer:
+        def __init__(self, **kwargs):
+            seen["trainer"] = kwargs
+
+        def train(self):
+            seen["trained"] = True
+
+    class Model:
+        def save_pretrained(self, dest):
+            Path(dest).mkdir(parents=True, exist_ok=True)
+            (Path(dest) / "adapter_config.json").write_text(
+                json.dumps({"peft_type": "LORA", "base_model_name_or_path": "dummy"}),
+                encoding="utf-8",
+            )
+
+    class Tok:
+        def save_pretrained(self, dest):
+            del dest
+
+    monkeypatch.setattr(
+        "unforgettable.sidecar.train._require_preference_trl", lambda: None
+    )
+    monkeypatch.setattr(
+        "unforgettable.sidecar.train._import_dpo", lambda: (Trainer, Cfg)
+    )
+    monkeypatch.setattr(
+        "unforgettable.sidecar.train._new_peft_model",
+        lambda base_model: (Model(), Tok()),
+    )
+    monkeypatch.setattr(
+        "unforgettable.sidecar.train._dataset_from_list",
+        lambda rows: seen.setdefault("rows", rows) or rows,
+    )
+
+    out = tmp_path / "out"
+    UnslothTrainBackend().train(
+        [
+            {
+                "prompt": [{"role": "user", "content": "broke"}],
+                "chosen": "Tried: broke\nThen: fixed",
+                "rejected": "broke",
+                "episode_id": "ep-0",
+            }
+        ],
+        output_dir=out,
+        base_model="dummy",
+        recipe="preference",
+    )
+    assert seen["trained"] is True
+    assert seen["rows"] == [
+        {
+            "prompt": "broke",
+            "chosen": "Tried: broke\nThen: fixed",
+            "rejected": "broke",
+        }
+    ]
+    assert seen["cfg"]["per_device_train_batch_size"] == 1
+    assert seen["cfg"]["beta"] == 0.1
+    assert seen["trainer"]["train_dataset"] == seen["rows"]
+    pair = json.loads((out / "pairs.jsonl").read_text(encoding="utf-8").strip())
+    assert pair["episode_id"] == "ep-0"
+    assert pair["chosen"] == "Tried: broke\nThen: fixed"
+    cfg = json.loads((out / "adapter_config.json").read_text(encoding="utf-8"))
+    assert cfg["peft_type"] == "LORA"
+    assert "unsloth" not in sys.modules
+    assert "torch" not in sys.modules

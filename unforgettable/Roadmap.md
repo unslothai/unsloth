@@ -37,7 +37,7 @@ These are **not** new architecture. They are leftovers the phase docs parked on 
 | Leftover | Where it sits today |
 |----------|---------------------|
 | Live LoRA attach | **Shipped.** `StudioHost.generate` sets `payload.use_adapter` to a PEFT adapter directory. The inference worker loads it for that pass and restores. Fake dirs and GGUF inners fail open. |
-| Unsloth DPO | Fake backend writes `pairs.jsonl`. `UnslothTrainBackend` with `--recipe preference` raises `NotImplementedError("Unsloth DPO training is not wired")`. |
+| Unsloth DPO | **Shipped.** `--recipe preference` uses TRL `DPOTrainer` after Unsloth (same LoRA recipe as SFT). Missing `trl` still errors before any Unsloth import. CI stays on the fake backend. |
 | Compact is explicit-only | CLI / `memory_compact`. Never at episode end, never on a timer. |
 | Extract stays proposed | Naive `error_fix` and `llm_extract` drafts do not auto-admit. Operator `admit` is the promote path. |
 | No `console_scripts` | Entry is `python -m unforgettable`. |
@@ -101,8 +101,8 @@ MemPhase3 open question 7: “no, not in v1.” The hook is already there (`revi
 
 ### 3. A focused PR or two — still product, more surface
 
-**13. Wire Unsloth DPO**
-MemPhase5 B13 left Unsloth/TRL `DPOTrainer` optional. Fake path already emits `pairs.jsonl`. Fill `UnslothTrainBackend.train` for `recipe=preference` (the `NotImplementedError` is the bookmark). Keep SFT/distill free of a DPO import. GPU-box only; CI stays on the fake backend.
+**13. Wire Unsloth DPO** — **Done.**
+`--recipe preference` on `UnslothTrainBackend` calls TRL `DPOTrainer` (imported after Unsloth). Fake path still writes `pairs.jsonl`. SFT/distill do not import DPO. GPU-box only; CI stays on the fake backend.
 
 **14. Contradiction / supersession UX**
 MemoryWheels §15. CLI `contradictions` already exists. Next fruit: print a warning from `compact --dry-run` / `admissions`, then a thin inspect view (titles, both bodies, `admit` / `reject` / `supersede` actions). A Studio memory browser is the same job with a frontend — see item 16.

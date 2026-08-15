@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import uuid
@@ -41,8 +42,8 @@ PREFERENCE_NEEDS_DPO = "preference recipe needs trl.DPOTrainer"
 NO_PREFERENCE_PAIRS = (
     "no preference pairs (need a world pass and an admitted error_fix)"
 )
-UNSLOTH_DPO_NOT_WIRED = "Unsloth DPO training is not wired"
 RECIPE_PREFERENCE = "preference"
+DPO_BETA = 0.1
 
 
 @dataclass(frozen=True)
@@ -149,15 +150,144 @@ def _preference_gold(examples: list[dict]) -> dict[str, str]:
     for example in examples:
         if not isinstance(example, dict):
             continue
-        prompt = example.get("prompt") or []
-        user = ""
-        if isinstance(prompt, list):
-            for msg in prompt:
-                if isinstance(msg, dict) and msg.get("role") == "user":
-                    user = msg.get("content") or ""
+        user = _pair_prompt_text(example)
         if user:
-            gold[user] = example.get("chosen") or ""
+            gold[user] = _pair_completion_text(example.get("chosen"))
     return gold
+
+
+def _message_text(value: Any, *, role: Optional[str] = None) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    text = ""
+    for msg in value:
+        if not isinstance(msg, dict):
+            continue
+        if role is not None and msg.get("role") != role:
+            continue
+        content = msg.get("content") or ""
+        if content:
+            text = content
+    return text
+
+
+def _pair_prompt_text(example: dict) -> str:
+    prompt = example.get("prompt")
+    if isinstance(prompt, str):
+        return prompt
+    return _message_text(prompt, role="user")
+
+
+def _pair_completion_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return _message_text(value)
+
+
+def _dpo_rows(examples: list[dict]) -> list[dict[str, str]]:
+    """TRL DPO wants string prompt / chosen / rejected columns."""
+    rows: list[dict[str, str]] = []
+    for example in examples:
+        if not isinstance(example, dict):
+            continue
+        prompt = _pair_prompt_text(example)
+        chosen = _pair_completion_text(example.get("chosen"))
+        rejected = _pair_completion_text(example.get("rejected"))
+        if prompt and chosen and rejected:
+            rows.append({"prompt": prompt, "chosen": chosen, "rejected": rejected})
+    return rows
+
+
+def _write_pairs_jsonl(dest: Path, examples: list[dict]) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "pairs.jsonl").write_text(
+        "".join(json.dumps(example) + "\n" for example in examples),
+        encoding="utf-8",
+    )
+
+
+def _require_preference_trl() -> None:
+    if importlib.util.find_spec("trl") is None:
+        raise RuntimeError(PREFERENCE_NEEDS_DPO)
+
+
+def _new_peft_model(base_model: str):
+    loader = _unsloth_loader()
+    model, tokenizer = _from_pretrained(loader, base_model)
+    model = loader.get_peft_model(
+        model,
+        r=16,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=3407,
+    )
+    return model, tokenizer
+
+
+def _import_dpo():
+    # Unsloth first so DPOTrainer / DPOConfig are the patched classes.
+    _unsloth_loader()
+    try:
+        from trl import DPOConfig, DPOTrainer
+    except ImportError as exc:
+        raise RuntimeError(PREFERENCE_NEEDS_DPO) from exc
+    return DPOTrainer, DPOConfig
+
+
+def _dataset_from_list(rows: list[dict]) -> Any:
+    from datasets import Dataset
+
+    return Dataset.from_list(rows)
+
+
+def _dpo_config(DPOConfig, dest: Path, n_rows: int):
+    batch = 2 if n_rows >= 2 else 1
+    shared = {
+        "output_dir": str(dest),
+        "per_device_train_batch_size": batch,
+        "num_train_epochs": 1,
+        "logging_steps": 1,
+        "seed": 3407,
+    }
+    attempts = (
+        {**shared, "report_to": [], "beta": DPO_BETA},
+        {**shared, "report_to": "none", "beta": DPO_BETA},
+        {**shared, "report_to": "none"},
+        shared,
+    )
+    last_error: Optional[TypeError] = None
+    for kwargs in attempts:
+        try:
+            return DPOConfig(**kwargs)
+        except TypeError as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
+def _dpo_trainer(DPOTrainer, model, tokenizer, args, dataset, extra=None):
+    extras = (dict(extra or {}), {})
+    attempts = (
+        {"ref_model": None, "processing_class": tokenizer},
+        {"ref_model": None, "tokenizer": tokenizer},
+        {"processing_class": tokenizer},
+        {"tokenizer": tokenizer},
+    )
+    last_error: Optional[TypeError] = None
+    for payload in extras:
+        for kw in attempts:
+            try:
+                return DPOTrainer(
+                    model=model, args=args, train_dataset=dataset, **kw, **payload
+                )
+            except TypeError as exc:
+                last_error = exc
+    assert last_error is not None
+    raise last_error
 
 
 class FakeTrainBackend:
@@ -175,10 +305,7 @@ class FakeTrainBackend:
         dest = Path(output_dir)
         dest.mkdir(parents=True, exist_ok=True)
         if recipe == RECIPE_PREFERENCE:
-            (dest / "pairs.jsonl").write_text(
-                "".join(json.dumps(example) + "\n" for example in examples),
-                encoding="utf-8",
-            )
+            _write_pairs_jsonl(dest, examples)
             gold = _preference_gold(examples)
         else:
             gold = {}
@@ -252,33 +379,40 @@ class UnslothTrainBackend:
         recipe: str = "sft",
     ) -> None:
         _refuse_full_finetune()
-        if recipe == RECIPE_PREFERENCE:
-            import importlib.util
-
-            if importlib.util.find_spec("trl") is None:
-                raise RuntimeError(PREFERENCE_NEEDS_DPO)
-            raise NotImplementedError(UNSLOTH_DPO_NOT_WIRED)
-        from datasets import Dataset
-
         self._base_model = base_model
         dest = Path(output_dir)
+        if recipe == RECIPE_PREFERENCE:
+            self._train_preference(examples, dest)
+            return
+        self._train_sft(examples, dest, base_model)
+
+    def _train_preference(self, examples: list[dict], dest: Path) -> None:
+        _require_preference_trl()
+        rows = _dpo_rows(examples)
+        if not rows:
+            raise ValueError(NO_PREFERENCE_PAIRS)
         dest.mkdir(parents=True, exist_ok=True)
-        loader = _unsloth_loader()
+        _write_pairs_jsonl(dest, examples)
+        DPOTrainer, DPOConfig = _import_dpo()
+        model, tokenizer = _new_peft_model(self._base_model or "")
+        ds = _dataset_from_list(rows)
+        dpo_args = _dpo_config(DPOConfig, dest, len(rows))
+        extra = {} if hasattr(dpo_args, "beta") else {"beta": DPO_BETA}
+        trainer = _dpo_trainer(DPOTrainer, model, tokenizer, dpo_args, ds, extra)
+        trainer.train()
+        model.save_pretrained(dest)
+        tokenizer.save_pretrained(dest)
+
+    def _train_sft(self, examples: list[dict], dest: Path, base_model: str) -> None:
+        from datasets import Dataset
+
+        dest.mkdir(parents=True, exist_ok=True)
         # Import TRL after Unsloth so SFTConfig is the patched class TRL's
         # isinstance check expects. A pre-import instance is rebuilt and
         # picks up Unsloth's '<EOS_TOKEN>' sentinel.
-        from trl import SFTTrainer, SFTConfig
+        model, tokenizer = _new_peft_model(base_model)
+        from trl import SFTConfig, SFTTrainer
 
-        model, tokenizer = _from_pretrained(loader, base_model)
-        model = loader.get_peft_model(
-            model,
-            r=16,
-            lora_alpha=16,
-            lora_dropout=0.0,
-            bias="none",
-            use_gradient_checkpointing="unsloth",
-            random_state=3407,
-        )
         eos = _vocab_token(tokenizer, "eos_token")
         pad = _vocab_token(tokenizer, "pad_token") or eos
         ds = Dataset.from_dict(
