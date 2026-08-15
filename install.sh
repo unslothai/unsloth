@@ -4009,33 +4009,46 @@ _strip_index_url_credentials() {
     fi
 }
 
+# 0 when host version $1 (x.y or x.y.z) is no older than leaf version $2 (x.y), or $2 is empty
+_radeon_host_ver_not_older() {
+    [ -n "$1" ] || return 1
+    [ -n "$2" ] || return 0
+    _rh_maj=${1%%.*}; _rh_rest=${1#*.}; _rh_min=${_rh_rest%%.*}
+    _rl_maj=${2%%.*}; _rl_rest=${2#*.}; _rl_min=${_rl_rest%%.*}
+    case "$_rh_maj$_rh_min$_rl_maj$_rl_min" in *[!0-9]*) return 1 ;; esac
+    if [ "$_rh_maj" -gt "$_rl_maj" ]; then return 0; fi
+    if [ "$_rh_maj" -lt "$_rl_maj" ]; then return 1; fi
+    [ "$_rh_min" -ge "$_rl_min" ]
+}
+
 get_radeon_wheel_url() {
     # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
     # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
     # rocm-rel-7.1.1/, rocm-rel-7.1/ (AMD publishes both M.m and M.m.p dirs).
-    # A resolved rocmM.m leaf is authoritative: get_torch_index_url already read
-    # every available source and selected the best host-compatible wheel family.
-    # The legacy fallback accepts X.Y/X.Y.Z only for callers without that result.
+    # the resolved leaf ($1) is a floor, not the answer: it is clipped to a family pytorch publishes and has no patch level, so the host probe wins unless it reads older
     case "$(uname -s)" in Linux) ;; *) echo ""; return ;; esac
 
     _full_ver=""
     _resolved_tag="${1:-}"
+    _resolved_ver=""
     case "$_resolved_tag" in
         rocm[1-9]*.[0-9]*)
-            _full_ver=$(printf '%s\n' "$_resolved_tag" \
+            _resolved_ver=$(printf '%s\n' "$_resolved_tag" \
                 | awk '/^rocm[1-9][0-9]*\.[0-9][0-9]*$/ {sub(/^rocm/, ""); print; exit}')
             ;;
     esac
-    if [ -z "$_full_ver" ] && [ -z "$_resolved_tag" ]; then
-        # Compatibility fallback for callers that genuinely have no resolved tag:
-        # detect a host X.Y/X.Y.Z once, in the historical source order.
-        _full_ver=$({ command -v amd-smi >/dev/null 2>&1 && \
-            amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
-                'NF>1{if(match($2,/[0-9]+\.[0-9]+(\.[0-9]+)?/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \
-            { [ -r /opt/rocm/.info/version ] && \
-                awk 'match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1; exit} END{exit !found}' /opt/rocm/.info/version; } || \
-            { command -v hipconfig >/dev/null 2>&1 && \
-                hipconfig --version 2>/dev/null | awk 'NR==1 && match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1} END{exit !found}'; }) 2>/dev/null
+    # detect a host x.y/x.y.z once, in the historical source order
+    _host_ver=$({ command -v amd-smi >/dev/null 2>&1 && \
+        amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+            'NF>1{if(match($2,/[0-9]+\.[0-9]+(\.[0-9]+)?/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \
+        { [ -r /opt/rocm/.info/version ] && \
+            awk 'match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1; exit} END{exit !found}' /opt/rocm/.info/version; } || \
+        { command -v hipconfig >/dev/null 2>&1 && \
+            hipconfig --version 2>/dev/null | awk 'NR==1 && match($0,/[0-9]+\.[0-9]+(\.[0-9]+)?/){print substr($0,RSTART,RLENGTH); found=1} END{exit !found}'; }) 2>/dev/null || _host_ver=""
+    if _radeon_host_ver_not_older "$_host_ver" "$_resolved_ver"; then
+        _full_ver="$_host_ver"
+    else
+        _full_ver="$_resolved_ver"
     fi
 
     # Validate: must be X.Y or X.Y.Z with X >= 1

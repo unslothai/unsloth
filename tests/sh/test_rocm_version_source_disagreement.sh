@@ -69,6 +69,8 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
     echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_radeon_host_ver_not_older()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_radeon_wheel_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/proc/driver/nvidia|$_FAKE_PROC_NV_DIR|g" \
@@ -79,7 +81,8 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
 # below fail as a plain "cpu" with no hint why.
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
            _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
-           _detect_rocm_version_tag get_torch_index_url get_radeon_wheel_url; do
+           _detect_rocm_version_tag get_torch_index_url get_radeon_wheel_url \
+           _radeon_host_ver_not_older; do
     if ! grep -q "^$_fn()" "$_FUNC_FILE"; then
         echo "  FAIL: install.sh no longer defines $_fn() at column 0"
         exit 1
@@ -592,6 +595,34 @@ else
     assert_eq "the rpm probe is bounded, not left to block the installer" \
         "under 20s" "$((_t1 - _t0))s (outer bound fired)"
 fi
+
+# radeon repo selection keeps the real host release: the generic leaf is clipped and patchless, the repo is not
+reset_sources
+add_version_file "6.5.0-1"
+assert_eq "a ROCm 6.5 host clipped to the rocm6.4 leaf still gets rocm-rel-6.5.0" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.5.0/" "$(run_radeon_url rocm6.4)"
+
+reset_sources
+add_version_file "7.3.1-1"
+assert_eq "a ROCm 7.3 host capped to the rocm7.2 leaf still gets rocm-rel-7.3.1" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.3.1/" "$(run_radeon_url rocm7.2)"
+
+# the caller only falls back x.y.z -> x.y, so a leaf-derived x.y never reaches an x.y.z-only directory
+reset_sources
+add_version_file "7.2.1-98"
+assert_eq "a matching-family host still contributes its patch level" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1/" "$(run_radeon_url rocm7.2)"
+
+# the split debian case the leaf exists for: the probe reads older than the resolver did
+reset_sources
+add_hipconfig "5.7.31921-0"
+assert_eq "an older host probe never overrides the resolved leaf" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.1/" "$(run_radeon_url rocm6.1)"
+
+reset_sources
+assert_eq "with no readable host source the leaf is used verbatim" \
+    "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.4/" "$(run_radeon_url rocm6.4)"
+assert_eq "no host source and no leaf yields no Radeon URL" "" "$(run_radeon_url '')"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
