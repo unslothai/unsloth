@@ -9677,9 +9677,7 @@ class LlamaCppBackend:
             mtp_files = sorted(
                 f
                 for f in candidates
-                if _is_gguf_filename(f)
-                and "/" not in f
-                and Path(f).name.lower().startswith("mtp-")
+                if _is_gguf_filename(f) and "/" not in f and Path(f).name.lower().startswith("mtp-")
             )
             return mtp_files[0] if mtp_files else None
 
