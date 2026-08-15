@@ -48,6 +48,49 @@ def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[di
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
 
+def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
+    """Resolve a CUDA_VISIBLE_DEVICES UUID mask (e.g. ["GPU-<uuid>", ...]) to
+    physical indices via nvidia-smi. Order is preserved to match the mask, since
+    it defines the visible-ordinal mapping downstream. Returns None -- and the
+    caller falls back to relative ordinals -- if nvidia-smi is unavailable or
+    any token doesn't match a physical device (e.g. a MIG instance UUID)."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed while resolving a UUID mask: %s", e)
+        return None
+    if result.returncode != 0:
+        return None
+
+    uuid_to_index: dict[str, int] = {}
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 2:
+            continue
+        try:
+            idx = int(parts[0])
+        except (ValueError, TypeError):
+            continue
+        uuid_to_index[parts[1]] = idx
+
+    resolved = []
+    for token in tokens:
+        idx = uuid_to_index.get(token)
+        if idx is None:
+            return None
+        resolved.append(idx)
+    return resolved
+
+
 def get_physical_gpu_count() -> Optional[int]:
     """Return physical GPU count via nvidia-smi, or None on failure."""
     try:

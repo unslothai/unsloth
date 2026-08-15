@@ -2721,6 +2721,20 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     try:
         numeric_ids = [int(value) for value in tokens]
     except ValueError:
+        # A UUID mask ("GPU-<uuid>", ...) is a legitimate, common NVIDIA config
+        # (stable across PCIe reordering). ROCm doesn't have nvidia-smi, so only
+        # CUDA hosts get a resolution attempt; anything nvidia-smi can't match
+        # (MIG instance UUIDs, nvidia-smi missing) keeps the prior unresolved
+        # behaviour so relative ordinals are used instead.
+        if not _is_rocm_spec:
+            from . import nvidia
+            resolved_ids = nvidia.resolve_gpu_uuid_mask(tokens)
+            if resolved_ids is not None:
+                return {
+                    "raw": cuda_visible,
+                    "numeric_ids": resolved_ids,
+                    "supports_explicit_gpu_ids": True,
+                }
         return {
             "raw": cuda_visible,
             "numeric_ids": None,

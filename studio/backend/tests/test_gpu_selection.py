@@ -32,6 +32,7 @@ from utils.hardware import (
     prepare_gpu_selection,
     resolve_requested_gpu_ids,
 )
+from utils.hardware import nvidia
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -84,12 +85,38 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(get_parent_visible_gpu_ids(), [1, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [1, 3])
 
-    def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
+    def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks_nvidia_smi_cannot_resolve(
+        self,
+    ):
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = None),
         ):
             self.assertEqual(get_parent_visible_gpu_ids(), [])
+
+    def test_parent_visibility_resolves_uuid_masks_via_nvidia_smi(self):
+        with (
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch(
+                "utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = [2, 5]
+            ) as mock_resolve,
+        ):
+            self.assertEqual(get_parent_visible_gpu_ids(), [2, 5])
+            mock_resolve.assert_called_once_with(["GPU-aaa", "GPU-bbb"])
+
+    def test_parent_visibility_does_not_resolve_uuid_masks_on_rocm(self):
+        # ROCm has no nvidia-smi; a non-numeric mask there must stay unresolved
+        # rather than attempt an nvidia-only resolution path.
+        with (
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
+            patch("utils.hardware.hardware.IS_ROCM", True),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask") as mock_resolve,
+        ):
+            self.assertEqual(get_parent_visible_gpu_ids(), [])
+            mock_resolve.assert_not_called()
 
     def test_invalid_requests_raise_clear_value_errors(self):
         cases = [
@@ -161,6 +188,48 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
 
             self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "5,6")
             self.assertEqual(os.environ["TEST_PARENT_ENV"], "keep-me")
+
+
+class TestResolveGpuUuidMask(unittest.TestCase):
+    def test_resolves_and_preserves_mask_order(self):
+        smi_output = "\n".join(
+            [
+                "0, GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50",
+                "1, GPU-2f902962-578c-0f96-69a5-3e18679211d7",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            # Mask order is reversed relative to nvidia-smi's index order --
+            # the resolved list must follow the mask, not the smi listing.
+            result = nvidia.resolve_gpu_uuid_mask(
+                [
+                    "GPU-2f902962-578c-0f96-69a5-3e18679211d7",
+                    "GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50",
+                ]
+            )
+        self.assertEqual(result, [1, 0])
+
+    def test_returns_none_when_a_token_does_not_match_any_device(self):
+        smi_output = "0, GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            # e.g. a MIG instance UUID nvidia-smi's index/uuid query never lists.
+            result = nvidia.resolve_gpu_uuid_mask(
+                ["GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50", "MIG-not-a-root-gpu"]
+            )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_nvidia_smi_fails(self):
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 1, stdout = "")
+            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50"])
+        self.assertIsNone(result)
+
+    def test_returns_none_when_nvidia_smi_is_missing(self):
+        with patch("utils.hardware.nvidia.subprocess.run", side_effect = FileNotFoundError()):
+            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7-70a4-61bd-56f1-371055dfbb50"])
+        self.assertIsNone(result)
 
 
 class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
@@ -384,6 +453,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
                 "utils.hardware.hardware._torch_get_device_inventory",
                 return_value = fake_torch_devices,
             ),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = None),
         ):
             result = get_backend_visible_gpu_info()
 
@@ -391,6 +461,29 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result["parent_visible_gpu_ids"], [])
         self.assertEqual(len(result["devices"]), 2)
         self.assertEqual(result["index_kind"], "relative")
+
+    def test_uuid_parent_visibility_resolves_to_physical_indices(self):
+        """A UUID mask nvidia-smi can resolve (issue #8873) must surface
+        physical indices, not fall back to relative torch ordinals."""
+        smi_output = "\n".join(
+            [
+                "0, GPU Zero, 10000",
+                "1, GPU One, 20000",
+            ]
+        )
+        with (
+            patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.nvidia.resolve_gpu_uuid_mask", return_value = [0, 1]),
+            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = get_backend_visible_gpu_info()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["parent_visible_gpu_ids"], [0, 1])
+        self.assertEqual(result["index_kind"], "physical")
+        self.assertEqual([device["index"] for device in result["devices"]], [0, 1])
 
     def test_mlx_visible_gpu_info_is_best_effort_relative(self):
         with (
