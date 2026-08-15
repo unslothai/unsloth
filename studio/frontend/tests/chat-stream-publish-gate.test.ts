@@ -637,6 +637,25 @@ test("every publish path reconciles, including the backend tool events", () => {
   );
 });
 
+test("the arrival stamp survives a publish that adopted no group", () => {
+  const source = withoutComments(ADAPTER);
+
+  // A provider can emit a bare "<think>" as its own delta. It parses to no
+  // parts at all, so a publish there adopts nothing; if it still cleared the
+  // stamp, the group would start at whatever later publish first sees the
+  // reasoning body. Exactly one place may clear it, and it is inside the
+  // adopted branch, so a new publish path cannot get this wrong by omission.
+  const clears = [...source.matchAll(/gateHeldSince = undefined;/g)];
+  assert.equal(clears.length, 1, "the stamp is cleared in more than one place");
+
+  const reconcile = source.indexOf("const reconcileReasoning = (");
+  const adopted = source.indexOf("if (groups > 0) {", reconcile);
+  assert.ok(
+    reconcile !== -1 && adopted !== -1 && adopted < (clears[0].index ?? 0),
+    "the stamp is cleared outside the branch that adopted a group",
+  );
+});
+
 test("a server reasoning summary is assigned to the gated group", () => {
   const source = withoutComments(ADAPTER);
 

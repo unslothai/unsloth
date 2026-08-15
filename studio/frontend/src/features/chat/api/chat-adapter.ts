@@ -4554,6 +4554,13 @@ export function createOpenAIStreamAdapter(
         adoptGatedReasoningGroups(content, firstSeenAt);
         const groups = countReasoningGroups(content);
         if (groups > 0) {
+          // Dropped here rather than at the call sites, because a publish can
+          // land between the opening tag and any reasoning body: a provider
+          // that emits a bare "<think>" as its own delta parses to no parts at
+          // all. Clearing the stamp on that publish would start the group at
+          // whatever later publish first sees the body, and a pass that ran for
+          // 30s would measure 0.
+          gateHeldSince = undefined;
           reasoningDurationTracker.resumeGroup(
             groups - 1,
             lastReasoningGroupTextLength(content),
@@ -5891,7 +5898,6 @@ export function createOpenAIStreamAdapter(
                 // synthesize a _toolEvent with no delta.tool_calls fragment
                 // before it.
                 reconcileReasoning(liveAssistantContent(), gateHeldSince);
-                gateHeldSince = undefined;
                 yield {
                   content: liveAssistantContent(),
                   metadata: {
@@ -6151,7 +6157,6 @@ export function createOpenAIStreamAdapter(
                   // it yields with no duration and keeps timing across the tool
                   // run, so run the full transition.
                   reconcileReasoning(liveAssistantContent(), gateHeldSince);
-                  gateHeldSince = undefined;
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -6178,7 +6183,6 @@ export function createOpenAIStreamAdapter(
                 // other two: this yield can be the first to expose a group the
                 // gate was holding.
                 reconcileReasoning(replayContent, gateHeldSince);
-                gateHeldSince = undefined;
                 if (replayContent.length > 0) {
                   yield {
                     content: replayContent,
@@ -6288,7 +6292,6 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
               const reasoningSeenAt = gateHeldSince;
-              gateHeldSince = undefined;
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives. Shared
