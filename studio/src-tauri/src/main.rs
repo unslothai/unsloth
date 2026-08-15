@@ -1936,8 +1936,16 @@ fn main() {
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Never close directly: the only window, so closing exits before the reap.
+                // Never close directly: closing the main window exits before the reap.
                 api.prevent_close();
+                // This handler is registered for every window. The ask panel is
+                // transient, so Cmd+W over it must hide the panel, not run the
+                // main window's close policy and quit the app under it.
+                #[cfg(target_os = "macos")]
+                if window.label() == selection_pill::ASK_WINDOW_LABEL {
+                    selection_pill::hide_ask_window(window);
+                    return;
+                }
                 let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);
                 match main_window_close_action(close_to_tray) {
                     MainWindowCloseAction::Hide => {
