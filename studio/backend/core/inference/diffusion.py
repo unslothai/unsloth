@@ -617,6 +617,8 @@ def _assert_base_repo_accessible(
     base_repo: str,
     hf_token: Optional[str],
     probe_file: str = "model_index.json",
+    *,
+    local_files_only: bool = False,
 ) -> Optional[str]:
     """Fail up front, with the licence URL, when a companion base cannot be read.
 
@@ -629,7 +631,14 @@ def _assert_base_repo_accessible(
     Returns the base's snapshot dir when an ACCESS verdict was excused by a copy living only under
     huggingface_hub's import-time root, so the caller can load off disk: ``from_pretrained`` is
     pinned to ``hub_cache_dir()`` and cannot see it, and the failure that earned the escape also
-    empties the size estimate. None otherwise."""
+    empties the size estimate. None otherwise.
+
+    Under ``local_files_only`` the Hub half stands down and only the cache probe runs. This whole
+    function exists to name the repo whose BYTES a download is about to fail on; a load that is
+    forbidden to download has no such fetch to pre-empt, so the verdict it would compute is about a
+    request that will never be made. The one thing worth keeping is the other-root escape, which is
+    a pure cache read, and it is exactly what lets a base staged under huggingface_hub's
+    import-time root still load off disk."""
     repo = (base_repo or "").strip()
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
@@ -684,6 +693,15 @@ def _assert_base_repo_accessible(
         except Exception:  # noqa: BLE001 — a cache we cannot read is not an access verdict
             pass
         return False
+
+    if local_files_only:
+        # Cache read only: no model_info, no metadata HEAD. ``_already_downloaded`` is called for
+        # its side effect (it sets ``other_root_snapshot``), and its bool is deliberately dropped
+        # -- a miss here is not a refusal. The loader is the one that raises for a file that is not
+        # on disk, with the file's own name in it, which is a better answer than this probe's
+        # "add a token" text for a load that was never going to fetch anything.
+        _already_downloaded()
+        return other_root_snapshot
 
     def _is_auth_error(exc: Any) -> bool:
         """A 401/403 that hf_raise_for_status did not classify: an expired token 401s "Invalid
@@ -1545,6 +1563,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         cancel_event: Optional[threading.Event] = None,
         fetch_base: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """Pre-download the GGUF + the given ``base_files`` into the HF cache,
         WITHOUT the lock and honoring ``cancel_event`` (this load's own event, so a
@@ -1556,7 +1575,14 @@ class DiffusionBackend:
         the pipeline manifest, so from_pretrained can load from disk instead of
         re-sweeping the hub (its own sweep also pulls files the scoped list skips,
         e.g. the 24 GB packaged root singles in each FLUX.1 repo); None otherwise
-        (estimate failure, config-only base, local repo) -> hub id as before."""
+        (estimate failure, config-only base, local repo) -> hub id as before.
+
+        ``local_files_only`` makes every resolution below a CACHE LOOKUP: the file is returned when
+        it is on disk and ``LocalEntryNotFoundError`` is raised when it is not. This is the one call
+        in the staging phase that moves multi-GB bytes, so a dropped flag here is the whole
+        no-download promise -- a checkpoint that vanished after the switch's locality check, or a
+        check that read the cache as more complete than it is, becomes a pull on the user's
+        connection that nobody asked for."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         # Only the BYTES move; the caller keeps the upstream id. ``fetch_base`` is the load-wide
@@ -1576,6 +1602,7 @@ class DiffusionBackend:
                 hf_token,
                 cancel_event = cancel,
                 reuse_other_cache_root = True,
+                local_files_only = local_files_only,
             )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
@@ -1587,7 +1614,12 @@ class DiffusionBackend:
             if cancel.is_set():
                 raise RuntimeError("Cancelled")
             local = hf_hub_download_with_xet_fallback(
-                base, rfilename, hf_token, cancel_event = cancel, reuse_other_cache_root = True
+                base,
+                rfilename,
+                hf_token,
+                cancel_event = cancel,
+                reuse_other_cache_root = True,
+                local_files_only = local_files_only,
             )
             # The resolved path minus the file's own relative path, so a subfolder entry yields the
             # same root as a top-level one. Not resolve()d: that follows the symlink into blobs/.
@@ -1855,6 +1887,13 @@ class DiffusionBackend:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
+        # An API-initiated load promises to download NOTHING: it may only open what is already
+        # cached. Read once here and threaded into the staging phase below, the same way the video
+        # path does it -- the flag reached load_pipeline and nothing before it, so the prefetch that
+        # actually moves the bytes ran unrestricted and the promise was carried only by the locality
+        # check the flag exists to stop relying on.
+        # READ, not popped: load_pipeline takes it too (it is in this thread's kwargs by contract).
+        local_files_only = bool(kwargs.get("local_files_only"))
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
             fam = detect_family_for_pick(
@@ -1875,6 +1914,7 @@ class DiffusionBackend:
                 kwargs.get("text_encoder_quant"),
                 kwargs.get("hf_token"),
                 kwargs.get("gpu_ordinal"),
+                local_files_only = local_files_only,
             )
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -1900,6 +1940,7 @@ class DiffusionBackend:
                     else False
                 ),
                 skip_te_components = tuple(te_prequant_files),
+                local_files_only = local_files_only,
             )
             # Only shards this prefetch staged may be materialised by the dense fallback, so read it
             # off the staged list: a failed size estimate drops every base file too. A LOCAL base
@@ -1917,7 +1958,9 @@ class DiffusionBackend:
             # refusing the upstream id would reject the gated picks the ungated mirror rescues.
             # Everything above is metadata, so no byte has moved yet. Returns a snapshot dir when it
             # excused the base off a copy only the import-time root holds.
-            base_snapshot = _assert_base_repo_accessible(fetch_base, kwargs.get("hf_token"))
+            base_snapshot = _assert_base_repo_accessible(
+                fetch_base, kwargs.get("hf_token"), local_files_only = local_files_only
+            )
             # And the same size-pairing preflight the plan and the route run, here because a direct
             # begin_load (a saved config, the deploy path) reaches neither. Still metadata only, so
             # it lands before _prefetch_files stages the base and before load_pipeline unloads the
@@ -1944,6 +1987,7 @@ class DiffusionBackend:
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     fetch_base = fetch_base,
+                    local_files_only = local_files_only,
                 )
                 or base_snapshot
             )
@@ -2027,12 +2071,20 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str],
         hf_token: Optional[str],
         gpu_ordinal: Optional[int] = None,
+        local_files_only: bool = False,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
         """``{component: (repo_id, [(rfilename, size)])}`` for the text encoders this pick will
         take PRE-CAST from a hosted checkpoint instead of the base repo's dense weights.
 
         Empty unless the request asked for a scheme with a hosted artifact AND that artifact
-        really resolves, so a plan can never drop a dense encoder the load still wants."""
+        really resolves, so a plan can never drop a dense encoder the load still wants.
+
+        Empty under ``local_files_only``: ``te_prequant_hub_files`` is a ``model_info`` per source,
+        and the only consumer is the size estimate, which has already stood down. Empty is the
+        answer an unresolvable pre-cast gives today, and it is the safe one -- it keeps the dense
+        shards in the list rather than dropping weights the load may still open."""
+        if local_files_only:
+            return {}
         try:
             from huggingface_hub import HfApi
 
@@ -2177,6 +2229,7 @@ class DiffusionBackend:
         revisions_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
         failures_out: Optional[list] = None,
+        local_files_only: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
@@ -2204,7 +2257,15 @@ class DiffusionBackend:
         encoder for a pre-cast load wastes tens of GB (FLUX.2-dev's Mistral-24B is ~48 GB,
         Qwen-Image's Qwen2.5-VL ~16.6 GB) and nothing ever opens them. Everything else in the
         component folder (config, shard index, tokenizer) is kept -- the pre-cast loader
-        meta-inits the encoder from the base repo's config."""
+        meta-inits the encoder from the base repo's config.
+
+        ``local_files_only`` returns the "metadata unavailable" answer -- ``(0, [])`` -- instead of
+        asking. Every byte this counts belongs to a download that is not permitted, and the empty
+        file list is what makes the prefetch below stage nothing: ``from_pretrained`` resolves the
+        cached snapshot itself. Callers already handle it, because it is the same pair a failed
+        lookup produces."""
+        if local_files_only:
+            return 0, []
         from huggingface_hub import HfApi
 
         # No swap on purpose: the Hub gates only the BYTE endpoint, so model_info answers

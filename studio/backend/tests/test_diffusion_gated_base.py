@@ -975,6 +975,9 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
         hf_token,
         cancel_event = None,
         fetch_base = None,
+        # Tracks the real signature: the staging phase now threads the no-download flag into the
+        # prefetch, and a double that refuses it turns the load into a TypeError.
+        local_files_only = False,
     ):
         staged.append(base_files)
         return None
