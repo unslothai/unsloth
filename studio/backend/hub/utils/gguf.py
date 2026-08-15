@@ -143,7 +143,8 @@ def is_reclaimable_drafter_path(path: str) -> bool:
 
 
 def is_gguf_filename(filename: str) -> bool:
-    return filename.lower().endswith(".gguf")
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    return name.lower().endswith(".gguf") and not name.startswith("._")
 
 
 # Every repo that bundles H3's denoisers together with its companion models. The Unsloth mirror
@@ -885,7 +886,7 @@ def list_gguf_variants(
 def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     if path.is_dir():
         return path
-    if path.is_file() and path.suffix.lower() == ".gguf":
+    if path.is_file() and is_gguf_filename(path.name):
         parent = path.parent
         if (
             (parent / "config.json").exists()

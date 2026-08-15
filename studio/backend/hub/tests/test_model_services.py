@@ -6355,6 +6355,15 @@ def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
     assert found == {"lower.gguf", "UPPER.GGUF", "Mixed.GguF"}
 
 
+def test_appledouble_sidecar_is_not_a_model_directory_weight(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding = "utf-8")
+    (model_dir / "._model-Q4_K_M.gguf").write_bytes(b"AppleDouble metadata")
+
+    assert model_common._is_model_directory(model_dir) is False
+
+
 @pytest.mark.parametrize(
     ("config", "expected"),
     [

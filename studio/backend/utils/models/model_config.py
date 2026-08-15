@@ -1560,7 +1560,8 @@ def _shared_prefix_len(a: str, b: str) -> int:
 
 
 def _is_gguf_filename(filename: str) -> bool:
-    return filename.lower().endswith(".gguf")
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    return name.lower().endswith(".gguf") and not name.startswith("._")
 
 
 def _iter_gguf_files(directory: Path, recursive: bool = False):
@@ -1893,7 +1894,7 @@ def detect_mtp_file(
         )
 
     p = Path(path)
-    weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
+    weight_name = p.name.lower() if _is_gguf_filename(p.name) else None
     start_dir = p.parent if p.is_file() else p
     dirs = [start_dir]
     if search_root is not None:
@@ -2041,7 +2042,7 @@ def detect_dspark_file(
         )
 
     p = Path(path)
-    weight_name = p.name if p.suffix.lower() == ".gguf" else None
+    weight_name = p.name if _is_gguf_filename(p.name) else None
     start_dir = p.parent if p.is_file() else p
     dirs = [start_dir]
     if search_root is not None:
@@ -2172,7 +2173,7 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
     )
 
     # Case 1: direct .gguf file
-    if p.suffix.lower() == ".gguf":
+    if _is_gguf_filename(p.name):
         # Companions are not models: rejecting a drafter here also keeps detect_mtp_file from
         # pairing the same file with itself. Include the immediate parent dir so MTP/ subdir
         # copies are caught -- the basename alone (...-MTP.gguf) misses the mtp- prefix.
@@ -2542,7 +2543,7 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     gguf_path = Path(gguf_file)
     # One shared quant vocabulary: a local copy fell behind on bpw, hiding IQ4_XS-3.53bpw dirs.
     quant_dir_re = rf"{_GGUF_KNOWN_QUANT_RE.pattern}(-[0-9]+(?:\.[0-9]+)?bpw)?"
-    search_dir = gguf_path.parent if selected.suffix.lower() == ".gguf" else selected
+    search_dir = gguf_path.parent if _is_gguf_filename(selected.name) else selected
     if not search_dir.name:
         return str(search_dir)
     if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
@@ -2752,7 +2753,7 @@ def _resolve_gguf_dir(p: Path) -> Optional[Path]:
     """
     if p.is_dir():
         return p
-    if p.is_file() and p.suffix.lower() == ".gguf":
+    if p.is_file() and _is_gguf_filename(p.name):
         parent = p.parent
         if (
             (parent / "config.json").exists()

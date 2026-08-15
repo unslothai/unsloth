@@ -72,7 +72,7 @@ def _is_model_directory(d: Path) -> bool:
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower() and not _is_mtp_drafter_path(f.name)
+            return _is_main_gguf_filename(f.name)
         if suffix == ".bin":
             name = f.name.lower()
             return (

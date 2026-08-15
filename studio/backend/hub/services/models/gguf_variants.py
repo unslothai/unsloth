@@ -34,6 +34,7 @@ from hub.utils.gguf import (
     gguf_variant_key,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
+    is_gguf_filename,
     list_empty_gguf_variant_dirs,
     list_gguf_variants,
     list_local_gguf_variants,
@@ -1097,7 +1098,7 @@ async def get_gguf_variants_answer(
             if (
                 not variants
                 and local_target.is_file()
-                and local_target.suffix.lower() == ".gguf"
+                and is_gguf_filename(local_target.name)
                 and _direct_gguf_loads(local_target)
             ):
                 # An unmarked-parent .gguf is skipped by the directory scan but detect_gguf_model

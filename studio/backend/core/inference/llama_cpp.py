@@ -1325,11 +1325,22 @@ def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
     return False
 
 
+def _is_gguf_filename(path: str) -> bool:
+    """Core-local mirror of ``hub.utils.gguf.is_gguf_filename``.
+
+    Core deliberately avoids Hub imports. Keep this and
+    ``utils.models.model_config._is_gguf_filename`` in lockstep with the Hub's
+    canonical rule.
+    """
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return name.lower().endswith(".gguf") and not name.startswith("._")
+
+
 def _gguf_snapshot_files(snapshot: Path) -> list[str]:
     return [
         p.relative_to(snapshot).as_posix()
         for p in snapshot.rglob("*")
-        if p.is_file() and p.name.lower().endswith(".gguf")
+        if p.is_file() and _is_gguf_filename(p.name)
     ]
 
 
@@ -1643,7 +1654,7 @@ def _companion_snapshot_sibling(
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
     mmproj_files = sorted(
-        f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
+        f for f in candidates if _is_gguf_filename(f) and "mmproj" in Path(f).name.lower()
     )
     if not mmproj_files:
         return None
@@ -1854,7 +1865,7 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     main_files = [
         f
         for f in files
-        if f.lower().endswith(".gguf")
+        if _is_gguf_filename(f)
         and not _is_companion_gguf_path(f)
         # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
         # parent directory only -- so it gets the file's own label, never the requested key. Handed
@@ -3624,6 +3635,8 @@ class LlamaCppBackend:
         self._is_diffusion: bool = False
         # Whole header walked? Separates "declares no architecture" from "unreadable".
         self._gguf_header_parsed: bool = False
+        # None means the file could not be opened; False is a definite non-GGUF header.
+        self._gguf_magic_valid: Optional[bool] = None
         self._gguf_split_index: Optional[int] = None
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
@@ -8125,7 +8138,7 @@ class LlamaCppBackend:
             gguf_files = [
                 f
                 for f in files
-                if f.lower().endswith(".gguf")
+                if _is_gguf_filename(f)
                 and not _is_companion_gguf_path(f)
                 and not _is_big_endian_gguf_path(f)
             ]
@@ -8525,6 +8538,7 @@ class LlamaCppBackend:
         self._architecture = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
+        self._gguf_magic_valid = None
         self._gguf_split_index = None
 
         try:
@@ -8556,8 +8570,9 @@ class LlamaCppBackend:
             general: dict[str, str] = {}
 
             with open(gguf_path, "rb") as f:
-                magic = struct.unpack("<I", f.read(4))[0]
-                if magic != 0x46554747:  # b"GGUF" as little-endian u32
+                magic_bytes = f.read(4)
+                self._gguf_magic_valid = magic_bytes == b"GGUF"
+                if not self._gguf_magic_valid:
                     return
                 _version = struct.unpack("<I", f.read(4))[0]
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
@@ -9662,7 +9677,7 @@ class LlamaCppBackend:
             mtp_files = sorted(
                 f
                 for f in candidates
-                if f.lower().endswith(".gguf")
+                if _is_gguf_filename(f)
                 and "/" not in f
                 and Path(f).name.lower().startswith("mtp-")
             )
@@ -9930,7 +9945,7 @@ class LlamaCppBackend:
             others = [
                 Path(name).name
                 for name in candidates
-                if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
+                if _is_gguf_filename(name) and not _is_root_dflash_drafter_path(name)
             ]
             # Same bound as dflash_plan_files: dflash- is a prefix real weights carry,
             # the header only reads once the bytes are here, and a drafter is a few
@@ -10323,6 +10338,19 @@ class LlamaCppBackend:
 
         Naming the destination page is the point, so when the architecture does not say
         which it is, the family detectors are asked about the repo id and the filename."""
+        if getattr(self, "_gguf_magic_valid", None) is False:
+            gguf_name = gguf_path.replace("\\", "/").rsplit("/", 1)[-1]
+            if gguf_name.startswith("._"):
+                return (
+                    "This file is not a valid GGUF: it does not start with the GGUF header. "
+                    "On macOS, a file whose name starts with '._' is Finder metadata, "
+                    "not model weights; select the matching file without that prefix."
+                )
+            return (
+                "This file is not a valid GGUF: it does not start with the GGUF header. "
+                "Download or select the model weights again."
+            )
+
         arch = (self._architecture or "").strip().lower()
         # A declared media arch is the whole answer, and it is KV #0 in every GGUF measured,
         # so the remote probe's prefix can carry it even where bulkier later metadata leaves
@@ -10970,6 +10998,21 @@ class LlamaCppBackend:
                 "llama-server could not start: the executable was built for a "
                 "different CPU architecture than this Mac, so "
                 f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
+
+        # llama.cpp names this failure precisely. Keep it ahead of the generic
+        # invalid-file/OOM fallback so a Finder AppleDouble sidecar is not
+        # presented as a memory problem (#8566).
+        if "invalid magic characters" in lowered and "expected 'gguf'" in lowered:
+            _gguf_name = (gguf_path or "").replace("\\", "/").rsplit("/", 1)[-1]
+            if _gguf_name.startswith("._"):
+                return (
+                    "This is an AppleDouble Finder metadata file, not model weights. "
+                    "Select the matching GGUF file without the '._' prefix."
+                )
+            return (
+                "This file is not a valid GGUF: it does not start with the GGUF "
+                "header. Download or select the model weights again."
             )
 
         # Argument parsing runs before the model is touched, so a rejected flag is

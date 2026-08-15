@@ -250,7 +250,7 @@ def _is_model_directory(d: Path) -> bool:
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return "mmproj" not in f.name.lower()
+            return _is_main_gguf_filename(f.name)
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -320,7 +320,9 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
             return False
         if (path / "config.json").exists() or (path / "adapter_config.json").exists():
             return False
-        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
+        return any(
+            _is_gguf_filename(p.name) for p in path.glob("*.gguf")
+        ) and not _has_non_gguf_weights(path)
     except OSError:
         return False
 
@@ -595,7 +597,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 try:
                     if model_dir.is_dir():
                         has_model = (
-                            any(model_dir.glob("*.gguf"))
+                            any(_is_gguf_filename(p.name) for p in model_dir.glob("*.gguf"))
                             or (model_dir / "config.json").exists()
                             or any(model_dir.glob("*.safetensors"))
                         )
@@ -997,7 +999,7 @@ def collect_local_models(
                         detect_gguf_model(str(file), model_root = str(folder_path)) is not None
                         for pattern in patterns
                         for file in path.glob(pattern)
-                        if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
+                        if not _safe_is_dir(file) and _is_gguf_filename(file.name)
                     ):
                         custom_models.append(model)
                 elif (
@@ -3693,7 +3695,8 @@ def _all_hf_cache_scans():
 
 
 def _is_gguf_filename(name: str) -> bool:
-    return name.lower().endswith(".gguf")
+    basename = name.replace("\\", "/").rsplit("/", 1)[-1]
+    return basename.lower().endswith(".gguf") and not basename.startswith("._")
 
 
 def _is_mmproj_filename(name: str) -> bool:
@@ -4331,7 +4334,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
     if model.model_format == "gguf":
         try:
             p = Path(path)
-            if p.suffix.lower() == ".gguf" and p.is_file():
+            if _is_gguf_filename(p.name) and p.is_file():
                 return _arch_to_task(_gguf_architecture(str(p)), name_hints = _id_hints + (p.name,))
             return _gguf_folder_task(p, _id_hints)
         except Exception:

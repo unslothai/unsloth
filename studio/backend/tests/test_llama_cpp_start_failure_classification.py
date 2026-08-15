@@ -191,6 +191,31 @@ class TestOllamaAndFallback:
         assert "GGUF file is valid" not in msg
 
 
+class TestInvalidGgufMagic:
+    def test_appledouble_sidecar_names_finder_metadata_not_memory(self):
+        output = (
+            "gguf_init_from_reader: invalid magic characters: '????', expected 'GGUF'\n"
+            "llama_server: exiting due to model loading error"
+        )
+
+        msg = _classify(output, "/Volumes/Models/._model-Q4_K_M.gguf", "local/model")
+
+        assert "AppleDouble" in msg
+        assert "Finder metadata" in msg
+        assert "without the '._' prefix" in msg
+        assert "memory" not in msg.lower()
+
+    def test_non_appledouble_invalid_magic_names_corrupt_file_not_memory(self):
+        output = "gguf_init_from_reader: invalid magic characters: 'HTML', expected 'GGUF'"
+
+        msg = _classify(output, "/models/model-Q4_K_M.gguf", "local/model")
+
+        assert "not a valid GGUF" in msg
+        assert "does not start with the GGUF header" in msg
+        assert "AppleDouble" not in msg
+        assert "memory" not in msg.lower()
+
+
 class TestOsKillReturncode:
     """SIGKILL (-9) with no diagnostic output is the OOM killer and gets a named,
     actionable message; SIGTERM (-15) is also unload/cancel/supervisor stop, so it

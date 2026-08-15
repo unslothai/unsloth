@@ -219,7 +219,7 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
-            is_gguf_file = not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
+            is_gguf_file = not is_dir and _is_main_gguf_filename(child.name) and child.is_file()
             if not is_dir and not is_gguf_file:
                 continue
             has_model_files = is_gguf_file or _has_immediate_model_signal(child)
@@ -476,7 +476,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             break
         try:
             if not child.is_dir():
-                if child.suffix.lower() == ".gguf" and child.is_file():
+                if _is_main_gguf_filename(child.name) and child.is_file():
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -530,7 +530,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                                 updated_at = updated_at,
                             )
                         )
-                    elif model_dir.suffix.lower() == ".gguf" and model_dir.is_file():
+                    elif _is_main_gguf_filename(model_dir.name) and model_dir.is_file():
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -782,7 +782,7 @@ def _scan_custom_folder(
             if any(
                 detect_gguf_model(str(file), model_root = str(folder_path)) is not None
                 for file in path.glob("*")
-                if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
+                if not _safe_is_dir(file) and _is_main_gguf_filename(file.name)
             ):
                 selectable.append(model)
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
