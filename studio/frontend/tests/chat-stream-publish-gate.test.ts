@@ -284,7 +284,9 @@ test("the stream loop gates the text publish, not just the yield", () => {
     "} catch (streamError) {",
   );
 
-  const gate = loop.indexOf("if (!canPublish(streamedChars)) {");
+  // Tolerant of extra conditions on the same line (a state-bearing delta
+  // forces a publish), but not of the gate call going away.
+  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
   assert.notEqual(gate, -1, "the text publish is not gated");
   const rebuild = loop.indexOf(
     "const assistantContent = liveAssistantContent()",
@@ -420,7 +422,7 @@ test("a chunk with nothing to show does not spend the gate's publish", () => {
 
   const empty = loop.indexOf("mergeContinuation(cumulativeText).length === 0");
   assert.notEqual(empty, -1, "an emptied chunk still consumes a gate cycle");
-  const gate = loop.indexOf("if (!canPublish(streamedChars)) {");
+  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
   assert.ok(
     empty < gate,
     "the emptiness check must run before the gate is consulted",
@@ -476,13 +478,60 @@ test("a gated reasoning group is timed from when it arrived", () => {
   assert.deepEqual(durations, [10], "the group must span its real arrival");
 });
 
+test("groups revealed inside one discovery keep their measured zero", () => {
+  // Backdating the whole discovery would hand every skipped index the entire
+  // coalescing interval, so three groups revealed together would each claim the
+  // same 30s and overlap. Only the group still open takes the arrival time.
+  let clock = 0;
+  const tracker = createReasoningDurationTracker(() => clock);
+
+  const arrivedAt = 1_000;
+  clock = 31_000;
+  tracker.startGroup(2, arrivedAt);
+  tracker.finishGroup();
+
+  const durations = (tracker.metadata() as { reasoningDurations?: number[] })
+    .reasoningDurations;
+  assert.deepEqual(durations, [0, 0, 30]);
+});
+
+test("a state-bearing provider delta is never held by the gate", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // A thought signature or reasoning ledger reaches the message only through a
+  // yield, so holding one behind the gate loses it outright on Stop.
+  assert.ok(
+    loop.includes("let replayStateChanged = false;"),
+    "replay state changes are not tracked",
+  );
+  const gate = loop.search(/if \(!replayStateChanged && !canPublish\(/);
+  assert.notEqual(gate, -1, "replay state does not force a publish");
+});
+
+test("the reasoning timer stops on arrival, not on the next publish", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // finishGroup reads only pre-gate state, so deferring it to the next publish
+  // counted a post-reasoning pause as reasoning.
+  const finish = loop.indexOf("reasoningDurationTracker.finishGroup();");
+  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
+  assert.notEqual(finish, -1, "the group is never closed in the loop");
+  assert.ok(finish < gate, "the close must run before the gate can skip");
+});
+
 test("the stream loop stamps when a held chunk arrived", () => {
   const loop = regionOf(
     "for await (const chunk of stream) {",
     "} catch (streamError) {",
   );
 
-  const gate = loop.indexOf("if (!canPublish(streamedChars)) {");
+  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
   const stamp = loop.indexOf("gateHeldSince ??= Date.now();", gate);
   const skip = loop.indexOf("continue;", gate);
   assert.notEqual(stamp, -1, "a held chunk's arrival time is not recorded");

@@ -160,9 +160,13 @@ export function createReasoningDurationTracker(
       // A single delta can reveal more than one group at once. Any index we
       // skipped became visible and closed within this same chunk, so give it a
       // measured zero rather than leaving a hole in the persisted array.
+      // Deliberately `at`, not `from`: these indexes became visible AND closed
+      // inside one discovery, so they keep their measured zero. Backdating them
+      // too would give every one of them the whole coalescing interval and have
+      // them all overlap.
       for (let skipped = groupCount; skipped < index; skipped += 1) {
         if (startedAt[skipped] === undefined) {
-          startedAt[skipped] = from;
+          startedAt[skipped] = at;
         }
         measure(skipped, at);
       }

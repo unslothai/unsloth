@@ -5914,12 +5914,19 @@ export function createOpenAIStreamAdapter(
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
+              // Replay state, not a preview: a Gemini thought signature or a
+              // Codex reasoning ledger reaches the message only through a yield,
+              // and a Stop while the gate holds one would persist a turn that
+              // replays without it. Same rule as the tool events -- gate the
+              // previews, never the publishes that carry state.
+              let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<string, unknown>;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
                   const sig = (eGoogle as Record<string, unknown>).thought_signature;
                   if (typeof sig === "string" && sig) {
+                    replayStateChanged ||= sig !== latestTextThoughtSignature;
                     latestTextThoughtSignature = sig;
                   }
                 }
@@ -5930,6 +5937,7 @@ export function createOpenAIStreamAdapter(
                     codexReasoning,
                     codexRoundToolCallIds,
                   );
+                  replayStateChanged = true;
                 }
               }
 
@@ -6091,6 +6099,11 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 if (addedToolCall || canPublish(streamedChars)) {
+                  // This publish can be the first to expose a reasoning group
+                  // the gate was holding. Reconcile before yielding, or a Stop
+                  // during the tool run persists content with a group the
+                  // durations know nothing about.
+                  adoptGatedReasoningGroups(liveAssistantContent(), gateHeldSince);
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -6139,6 +6152,18 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
+              // Closing a group reads only pre-gate state, so it runs on every
+              // arrival: deferring it to the next publish let a pause after the
+              // reasoning ended count as part of the reasoning. Only the START
+              // needs the parsed content, so only that stays gated.
+              if (
+                reasoningDurationTracker.hasActiveGroup &&
+                !reasoningContentOpen &&
+                !structuredReasoningContinues &&
+                !hasUnclosedThinkTag(cumulativeText)
+              ) {
+                reasoningDurationTracker.finishGroup();
+              }
               // A chunk the strip emptied has nothing to show and is skipped
               // below anyway; asking the gate would spend this cycle's publish
               // on it and hold the next real chunk.
@@ -6150,9 +6175,14 @@ export function createOpenAIStreamAdapter(
               }
               // Coalesce text arriving before the next frame; cumulativeText
               // keeps it, and the cap publishes before a stop could drop it.
-              if (!canPublish(streamedChars)) {
-                // Earliest moment the text this publish will carry was here.
-                gateHeldSince ??= Date.now();
+              if (!replayStateChanged && !canPublish(streamedChars)) {
+                // Only when the held chunk actually carries reasoning. Stamping
+                // on any held chunk backdated a group to a prose delta that
+                // arrived before reasoning began, which inflates the duration by
+                // the gap between them.
+                if (reasoning || delta.includes("<think>")) {
+                  gateHeldSince ??= Date.now();
+                }
                 continue;
               }
               const reasoningSeenAt = gateHeldSince;
@@ -6181,17 +6211,6 @@ export function createOpenAIStreamAdapter(
                   lastReasoningGroupTextLength(assistantContent),
                 );
               }
-              if (
-                reasoningDurationTracker.hasActiveGroup &&
-                !reasoningContentOpen &&
-                // The publishing chunk's flag only; every finish re-measures
-                // from the group's start, so a dropped flag cannot skew it.
-                !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText)
-              ) {
-                reasoningDurationTracker.finishGroup();
-              }
-
               if (assistantContent.length > 0) {
                 yield {
                   content: assistantContent,
