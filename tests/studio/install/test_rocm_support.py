@@ -2253,9 +2253,7 @@ class TestGfx1102Rocm64Floor:
                 "        TARGET_GRAPHICS_VERSION: gfx1200",
             ]
         )
-        preamble = (
-            f"rocminfo() {{ return 1; }}\namd-smi() {{ printf '{asic}\\n'; }}\nexport {mask}"
-        )
+        preamble = f"rocminfo() {{ return 1; }}\namd-smi() {{ printf '{asic}\\n'; }}\nexport {mask}"
         assert self._run_install_sh_routing(preamble) == expected
 
     def test_install_sh_still_indexes_amd_smi_output_under_a_rocr_mask(self):
