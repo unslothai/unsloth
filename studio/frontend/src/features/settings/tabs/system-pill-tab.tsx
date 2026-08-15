@@ -34,9 +34,12 @@ export function SystemPillTab(): ReactElement {
   // The model scan gates this whole load, so the settings GET it carries can
   // land long after a toggle has already been saved. Let a saved edit win.
   const editedRef = useRef(false);
-  // Saves are independent PUTs, so a slow earlier one can answer after a later
-  // one and put the UI, the native hotkey and the backend out of step.
+  // Saves are independent PUTs each followed by its own native sync, so a slow
+  // earlier one can answer, or apply its config to Rust, after a later one.
+  // The sequence drops superseded UI writes; the chain keeps the PUT and the
+  // native sync of one save from interleaving with the next.
   const saveSeqRef = useRef(0);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     let cancelled = false;
@@ -55,20 +58,23 @@ export function SystemPillTab(): ReactElement {
     };
   }, []);
 
-  const applySettings = async (update: Partial<PillSettings>) => {
+  const applySettings = (update: Partial<PillSettings>): Promise<void> => {
     const seq = ++saveSeqRef.current;
-    try {
-      const next = await updatePillSettings(update);
-      // A superseded save must not restore its own result over the newer one.
-      if (seq !== saveSeqRef.current) return;
-      // Fenced only once a save actually landed, so a failed edit cannot
-      // suppress the initial load and leave the tab showing defaults.
-      editedRef.current = true;
-      setSettings(next);
-      await syncNativePillConfig(next);
-    } catch {
-      toast.error(t("systemPill.settings.saveError"));
-    }
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      try {
+        const next = await updatePillSettings(update);
+        // A superseded save must not restore its own result over the newer one.
+        if (seq !== saveSeqRef.current) return;
+        // Fenced only once a save actually landed, so a failed edit cannot
+        // suppress the initial load and leave the tab showing defaults.
+        editedRef.current = true;
+        setSettings(next);
+        await syncNativePillConfig(next);
+      } catch {
+        toast.error(t("systemPill.settings.saveError"));
+      }
+    });
+    return saveChainRef.current;
   };
 
   return (
