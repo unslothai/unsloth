@@ -90,21 +90,54 @@ def iter_mtp_outputs(output):
     return [output]
 
 
+def normalize_mtp_packed_lengths(seq_lengths, device):
+    if seq_lengths is None:
+        return None
+    if isinstance(seq_lengths, torch.Tensor):
+        lengths = seq_lengths.to(device = device, dtype = torch.int64).reshape(-1)
+    else:
+        lengths = torch.tensor(seq_lengths, device = device, dtype = torch.int64).reshape(-1)
+    if lengths.numel() == 0:
+        return None
+    return lengths
+
+
+def build_mtp_packed_attention_mask(seq_lengths, total_tokens, dtype, device):
+    """Block causal mask so MTP sublayers never attend across packed documents.
+
+    Mirrors `unsloth.utils.packing.build_sdpa_packed_attention_mask`, but is kept
+    dependency free here so MTP can run without importing the packing utilities.
+    """
+    lengths = normalize_mtp_packed_lengths(seq_lengths, device)
+    if lengths is None:
+        return None
+    if int(lengths.sum().item()) != total_tokens:
+        # Padded / multi row batches are not packed sequences.
+        return None
+
+    min_value = torch.finfo(dtype).min
+    mask = torch.full((total_tokens, total_tokens), min_value, dtype = dtype, device = device)
+    offset = 0
+    for length in lengths.tolist():
+        length = int(length)
+        if length <= 0:
+            continue
+        block = torch.zeros((length, length), dtype = dtype, device = device)
+        upper = torch.ones((length, length), device = device).triu(diagonal = 1).bool()
+        block.masked_fill_(upper, min_value)
+        mask[offset : offset + length, offset : offset + length] = block
+        offset += length
+    return mask.unsqueeze(0).unsqueeze(0)
+
+
 def mask_mtp_packed_sequence_boundaries(
     shift_labels,
     seq_lengths,
     offset,
     ignore_index = -100,
 ):
-    if seq_lengths is None:
-        return False
-    if isinstance(seq_lengths, torch.Tensor):
-        lengths = seq_lengths.to(device = shift_labels.device, dtype = torch.int64).reshape(-1)
-    else:
-        lengths = torch.tensor(seq_lengths, device = shift_labels.device, dtype = torch.int64).reshape(
-            -1
-        )
-    if lengths.numel() == 0:
+    lengths = normalize_mtp_packed_lengths(seq_lengths, shift_labels.device)
+    if lengths is None:
         return False
 
     flat = shift_labels.view(-1)
@@ -156,17 +189,62 @@ def should_use_mtp_loss(
 
 
 def filter_mtp_kwargs(kwargs):
-    return {
-        key: value
-        for key, value in kwargs.items()
-        if key
-        not in {
+    """Drop every kwarg `compute_mtp_loss` already receives explicitly.
+
+    Callers expand `**filter_mtp_kwargs(kwargs)` alongside explicit arguments such
+    as `n_items`, `cache_position` and `position_embeddings`, so anything named in
+    the signature has to be removed here or Python raises "got multiple values for
+    keyword argument" before `compute_mtp_loss` even runs.
+    """
+    try:
+        parameters = inspect.signature(compute_mtp_loss).parameters
+        explicit = {
+            name
+            for name, parameter in parameters.items()
+            if parameter.kind != inspect.Parameter.VAR_KEYWORD
+        }
+    except (TypeError, ValueError):
+        explicit = set()
+    explicit.update(
+        (
             "use_mtp_loss",
             "train_mtp",
             "mtp_loss_weight",
             "packed_seq_lengths",
-        }
-    }
+            "num_items_in_batch",
+        )
+    )
+    return {key: value for key, value in kwargs.items() if key not in explicit}
+
+
+def get_config_value(config, name):
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(name, None)
+    return getattr(config, name, None)
+
+
+def get_mtp_loss_weight(model, mtp_loss_weight = None):
+    """Resolve the auxiliary loss coefficient.
+
+    Qwen3.5 / NeMo style checkpoints ship the coefficient as
+    `mtp_loss_scaling_factor` (or `mtp_config.loss_scaling_factor`), so falling
+    back to 1.0 when only those exist would scale the objective ~10x too high.
+    """
+    if mtp_loss_weight is not None:
+        return mtp_loss_weight
+    config = getattr(model, "config", None)
+    for name in ("mtp_loss_weight", "mtp_loss_scaling_factor", "loss_scaling_factor"):
+        weight = get_config_value(config, name)
+        if weight is not None:
+            return weight
+    mtp_config = get_config_value(config, "mtp_config")
+    for name in ("loss_scaling_factor", "mtp_loss_scaling_factor", "loss_weight"):
+        weight = get_config_value(mtp_config, name)
+        if weight is not None:
+            return weight
+    return 1.0
 
 
 def compute_mtp_loss(
@@ -196,10 +274,22 @@ def compute_mtp_loss(
     if not mtp_modules or not should_use_mtp_loss(model, use_mtp_loss, train_mtp):
         return None
 
-    if mtp_loss_weight is None:
-        mtp_loss_weight = getattr(getattr(model, "config", None), "mtp_loss_weight", 1.0)
+    mtp_loss_weight = get_mtp_loss_weight(model, mtp_loss_weight)
 
     mtp_kwargs = filter_mtp_kwargs(kwargs)
+    attention_mask_ndim = getattr(attention_mask, "ndim", None)
+    if packed_seq_lengths is not None and (attention_mask is None or attention_mask_ndim == 2):
+        # Sample packing drops `attention_mask`, so without this the MTP sublayers
+        # would attend across packed document boundaries. A mask that is already 4D
+        # (or a block mask object) is left alone since it encodes packing itself.
+        packed_attention_mask = build_mtp_packed_attention_mask(
+            packed_seq_lengths,
+            hidden_states.shape[0] * hidden_states.shape[1],
+            hidden_states.dtype,
+            hidden_states.device,
+        )
+        if packed_attention_mask is not None:
+            attention_mask = packed_attention_mask
     if input_ids is not None:
         mtp_kwargs.setdefault("input_ids", input_ids)
     if position_ids is not None:
@@ -297,6 +387,30 @@ def get_forward_argument(
     return bound_arguments.get(name, default)
 
 
+def set_forward_argument(forward_fn, args, kwargs, name, value):
+    """Override one forward argument, even when it was passed positionally."""
+    if name not in kwargs and len(args) != 0:
+        try:
+            parameters = list(inspect.signature(forward_fn).parameters)
+        except (TypeError, ValueError):
+            parameters = []
+        if name in parameters:
+            index = parameters.index(name)
+            if index < len(args):
+                return args[:index] + (value,) + args[index + 1 :], kwargs
+    kwargs[name] = value
+    return args, kwargs
+
+
+def get_effective_return_dict(model, return_dict):
+    if return_dict is not None:
+        return bool(return_dict)
+    use_return_dict = get_config_value(getattr(model, "config", None), "use_return_dict")
+    if use_return_dict is None:
+        return True
+    return bool(use_return_dict)
+
+
 def get_tuple_hidden_states(outputs):
     for item in reversed(outputs):
         if isinstance(item, (tuple, list)) and len(item) != 0 and hasattr(item[-1], "shape"):
@@ -354,13 +468,40 @@ def patch_mtp_loss(model, loss_fn):
             kwargs,
             "output_hidden_states",
         )
-        kwargs["output_hidden_states"] = True
-        if original_return_dict is False:
-            kwargs["return_dict"] = True
+        # `return_dict` also defaults to False through `config.use_return_dict`, so
+        # keying off an explicit `return_dict = False` alone would leave the
+        # internally requested hidden states in the returned tuple.
+        return_dict = get_effective_return_dict(self, original_return_dict)
+        keep_hidden_states = original_output_hidden_states is True or bool(
+            get_config_value(getattr(self, "config", None), "output_hidden_states")
+        )
+        args, kwargs = set_forward_argument(
+            original_forward,
+            args,
+            kwargs,
+            "output_hidden_states",
+            True,
+        )
+        if not return_dict:
+            args, kwargs = set_forward_argument(
+                original_forward,
+                args,
+                kwargs,
+                "return_dict",
+                True,
+            )
+
+        def _restore_output_shape(outputs):
+            if not keep_hidden_states and not isinstance(outputs, tuple):
+                outputs.hidden_states = None
+            if not return_dict and hasattr(outputs, "to_tuple"):
+                return outputs.to_tuple()
+            return outputs
+
         outputs = original_forward(*args, **kwargs)
         base_loss, hidden_states = get_output_loss_and_hidden_states(outputs)
         if base_loss is None or hidden_states is None:
-            return outputs
+            return _restore_output_shape(outputs)
 
         last_hidden_state = hidden_states[-1]
         mtp_loss = compute_mtp_loss(
@@ -380,17 +521,13 @@ def patch_mtp_loss(model, loss_fn):
             cache_position = get_forward_argument(bound_arguments, kwargs, "cache_position"),
         )
         if mtp_loss is None:
-            return outputs
+            return _restore_output_shape(outputs)
 
         output_loss = base_loss + mtp_loss.to(base_loss.device)
-        if original_output_hidden_states is not True and not getattr(
-            getattr(self, "config", None), "output_hidden_states", False
-        ):
+        if not keep_hidden_states:
             hidden_states = None
         outputs = set_output_loss_and_hidden_states(outputs, output_loss, hidden_states)
-        if original_return_dict is False and hasattr(outputs, "to_tuple"):
-            return outputs.to_tuple()
-        return outputs
+        return _restore_output_shape(outputs)
 
     model._unsloth_old_forward_before_mtp_loss = original_forward
     _forward_with_mtp_loss.__signature__ = wrapper_signature
