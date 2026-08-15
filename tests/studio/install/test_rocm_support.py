@@ -2132,7 +2132,6 @@ class TestGfx1102Rocm64Floor:
         (
             ("CUDA_VISIBLE_DEVICES=1", "rocm6.4"),
             ("HIP_VISIBLE_DEVICES=1", "rocm6.4"),
-            ("ROCR_VISIBLE_DEVICES=1", "rocm6.4"),
             ("CUDA_VISIBLE_DEVICES=0", "rocm6.1"),
             # a set-but-empty hip mask selects no gpu instead of deferring to cuda
             ("HIP_VISIBLE_DEVICES= CUDA_VISIBLE_DEVICES=1", "rocm6.1"),
@@ -2178,6 +2177,31 @@ class TestGfx1102Rocm64Floor:
         """A visible-device mask is a device ordinal, so duplicate arches each count."""
         preamble = self._rocminfo_stub("gfx1100", "gfx1100", "gfx1200") + f"export {mask}"
         assert self._run_install_sh_routing(preamble) == expected
+
+    @pytest.mark.parametrize(
+        ("rocr", "arches", "expected"),
+        (
+            # rocminfo reports the rocr selection in runtime order, so index 0 is the target
+            ("1,0", ("gfx1200", "gfx1100"), "rocm6.4"),
+            ("1", ("gfx1200",), "rocm6.4"),
+            ("0,1", ("gfx1100", "gfx1200"), "rocm6.1"),
+        ),
+    )
+    def test_install_sh_does_not_reapply_a_rocr_mask_rocminfo_already_applied(
+        self, rocr, arches, expected
+    ):
+        """rocminfo output is already filtered and ordered by ROCR_VISIBLE_DEVICES."""
+        preamble = self._rocminfo_stub(*arches) + f"export ROCR_VISIBLE_DEVICES={rocr}"
+        assert self._run_install_sh_routing(preamble) == expected
+
+    def test_install_sh_still_indexes_amd_smi_output_under_a_rocr_mask(self):
+        """amd-smi ignores ROCR_VISIBLE_DEVICES, so its flat output still needs indexing."""
+        preamble = (
+            "rocminfo() { return 1; }\n"
+            "amd-smi() { printf 'gfx1200\\ngfx1100\\n'; }\n"
+            "export ROCR_VISIBLE_DEVICES=1"
+        )
+        assert self._run_install_sh_routing(preamble) == "rocm6.1"
 
     @pytest.mark.parametrize(
         "override",

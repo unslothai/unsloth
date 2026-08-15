@@ -4545,8 +4545,11 @@ case "$_torch_index_leaf" in
         _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
         _gfx_all=${_gfx_all%%:*}
+        # which probe answered: only rocminfo is filtered by an rocr mask, so only it can pre-apply one
+        _gfx_probe=""
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
             _gfx_all=$(rocminfo 2>/dev/null | _gfx_targets_per_device || true)
+            [ -n "$_gfx_all" ] && _gfx_probe=rocminfo
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
             _gfx_all=$(amd-smi list 2>/dev/null | _gfx_targets_per_device || true)
@@ -4586,17 +4589,21 @@ case "$_torch_index_leaf" in
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
             # first-set-wins over hip/rocr/cuda, mirroring _pick_visible_index in studio/install_python_stack.py
+            _vis_var=""
             if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
-                _vis="$HIP_VISIBLE_DEVICES"
+                _vis_var=HIP_VISIBLE_DEVICES; _vis="$HIP_VISIBLE_DEVICES"
             elif [ -n "${ROCR_VISIBLE_DEVICES+x}" ]; then
-                _vis="$ROCR_VISIBLE_DEVICES"
+                _vis_var=ROCR_VISIBLE_DEVICES; _vis="$ROCR_VISIBLE_DEVICES"
             elif [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
-                _vis="$CUDA_VISIBLE_DEVICES"
+                _vis_var=CUDA_VISIBLE_DEVICES; _vis="$CUDA_VISIBLE_DEVICES"
             else
                 _vis=""
             fi
             _idx=0
-            if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
+            # rocminfo already applied an rocr mask, so its output IS the runtime order and must not be indexed again
+            if [ "$_gfx_probe" = rocminfo ] && [ "$_vis_var" = ROCR_VISIBLE_DEVICES ]; then
+                _idx=0
+            elif [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
                 _first=${_vis%%,*}
                 case "$_first" in
                     ''|*[!0-9]*) _idx=0 ;;
