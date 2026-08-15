@@ -8908,6 +8908,53 @@ def test_a_safetensors_file_with_no_tensors_is_withheld(tmp_path):
         assert resolver.local_servable_model(info) is None, header
 
 
+def test_a_tensor_span_that_contradicts_its_shape_is_withheld(tmp_path):
+    # codex P2: the loader rejects a reversed span or a shape that does not fill it.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadSpan")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(entry, payload = 64):
+        blob = json.dumps({"w": entry}).encode()
+        (path / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(blob)) + blob + b"\0" * payload
+        )
+
+    write({"dtype": "F32", "shape": [8], "data_offsets": [8, 4]})
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": "F32", "shape": [8], "data_offsets": [0, 16]})
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": "F32", "shape": [-1], "data_offsets": [0, 32]})
+    assert resolver.local_servable_model(info) is None
+
+    # agreeing metadata is accepted, and a dtype the table predates skips the size check.
+    write({"dtype": "F32", "shape": [8], "data_offsets": [0, 32]})
+    assert resolver.local_servable_model(info) == (False, ())
+    write({"dtype": "F4_SOMETHING_NEW", "shape": [8], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_unreadable_mlx_registry_withholds_the_model(tmp_path, monkeypatch):
+    # codex P2: a registry find_spec cannot import is one the loader cannot import either.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
+    path = _local_checkpoint(tmp_path, "BrokenMlx")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"})
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+    def _raise(_name):
+        raise ModuleNotFoundError("mlx_lm")
+
+    monkeypatch.setattr("importlib.util.find_spec", _raise)
+    assert resolver.local_servable_model(info) is None
+
+
 def test_an_mlx_host_withholds_a_family_mlx_cannot_build(tmp_path, monkeypatch):
     # codex P2: a complete XLNet checkpoint clears every other gate, then fails in the loader.
     from types import SimpleNamespace

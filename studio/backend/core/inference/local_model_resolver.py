@@ -175,6 +175,35 @@ def _has_tokenizer_vocabulary(load_dir) -> bool:
 # far above any real header: a corrupt length reads huge, and reading it is the failure here.
 _MAX_SAFETENSORS_HEADER_BYTES = 256 * 1024 * 1024
 
+# bytes per element, fixed-width dtypes only; sub-byte and unlisted ones skip the check.
+_SAFETENSORS_DTYPE_BYTES = {
+    "F64": 8, "I64": 8, "U64": 8,
+    "F32": 4, "I32": 4, "U32": 4,
+    "F16": 2, "BF16": 2, "I16": 2, "U16": 2,
+    "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1, "BOOL": 1,
+}
+
+
+def _tensor_span_matches_shape(entry: dict, span: int) -> bool:
+    """Whether a tensor's declared byte span agrees with its dtype and shape.
+
+    Only for dtypes of known width: a shape whose elements do not fill the span is
+    metadata the safetensors loader rejects, but an unrecognized dtype is more likely a
+    format this table predates than a corrupt file, so it is left to the extent check.
+    """
+    width = _SAFETENSORS_DTYPE_BYTES.get(entry.get("dtype"))
+    if width is None:
+        return True
+    shape = entry.get("shape")
+    if not isinstance(shape, list):
+        return True
+    elements = 1
+    for dimension in shape:
+        if not isinstance(dimension, int) or dimension < 0:
+            return False
+        elements *= dimension
+    return elements * width == span
+
 
 def _safetensors_file_is_intact(path) -> bool:
     """Whether a .safetensors file carries a header and all the bytes that header declares.
@@ -213,8 +242,13 @@ def _safetensors_file_is_intact(path) -> bool:
                 return False
             if not all(isinstance(value, int) and value >= 0 for value in offsets):
                 return False
+            start, stop = offsets
+            if start > stop:
+                return False
+            if not _tensor_span_matches_shape(entry, stop - start):
+                return False
             tensors += 1
-            end = max(end, offsets[1])
+            end = max(end, stop)
         # a __metadata__-only header passes the extent check at end 0 and loads random weights.
         if tensors == 0:
             return False
@@ -389,13 +423,14 @@ def _mlx_implements_architecture(config: dict) -> bool:
     name = model_type.strip().lower().replace("-", "_")
     if not name.isidentifier():
         return False
+    # fail closed: a registry this cannot import is one the loader cannot import either.
     try:
         from importlib.util import find_spec
         return any(
             find_spec(f"{package}.models.{name}") is not None for package in ("mlx_lm", "mlx_vlm")
         )
     except Exception:
-        return True
+        return False
 
 
 def _quantization_suits_host(config: dict) -> bool:
