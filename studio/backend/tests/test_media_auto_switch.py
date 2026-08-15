@@ -1141,7 +1141,7 @@ def test_a_switch_waits_for_work_the_gpu_handoff_would_cancel(
     # holds it, cancelling a video generation or a streaming completion this request never met.
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
     if busy == "chat":
-        monkeypatch.setattr(backends, "chat_busy", lambda: True)
+        monkeypatch.setattr(backends, "chat_busy", lambda *a, **k: True)
     else:
         monkeypatch.setattr(backends, "other_backend_busy", lambda owner: True)
 
@@ -1191,7 +1191,7 @@ def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
     # both bindings: the drain sizes its wait with it, the switch decides on the gpu lock with it
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
-    monkeypatch.setattr(backends, "chat_busy", lambda: True)
+    monkeypatch.setattr(backends, "chat_busy", lambda *a, **k: True)
     monkeypatch.setattr(backends, "other_backend_busy", lambda owner: True)
     # And a real tracked request on the other backend, which the count must also ignore.
     monkeypatch.setattr(mk._TRACKERS[arb.VIDEO], "_inflight", 1)
@@ -2307,3 +2307,80 @@ def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path
     assert (
         mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is not None
     )
+
+
+def test_chat_admitted_before_the_gate_still_stops_the_switch(
+    flux, enabled, backend, loads, monkeypatch
+):
+    # A chat request that passed the lifecycle gate after the outer drain's last probe is
+    # already running when the switch takes that gate, and the GPU handoff would terminate it.
+    import core.inference.llama_keepwarm as chat
+
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
+    outer = {"done": False}
+
+    def _counted(current_request_counted = True, *, include_pending = True):
+        # idle until the outer drain has passed, then in flight for the in-gate check
+        return 1 if outer["done"] else 0
+
+    def _pass_outer_drain(owner, backend_obj, deadline, **kwargs):
+        if kwargs.get("count_pending", True):
+            outer["done"] = True
+        return _real_drain(owner, backend_obj, deadline, **kwargs)
+
+    _real_drain = mas.drain
+    monkeypatch.setattr(chat, "other_inference_request_count", _counted)
+    monkeypatch.setattr(mas, "drain", _pass_outer_drain)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_scheduler_without_its_config_is_refused(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A metadata-only component IS its config, so a directory holding a stray file and nothing
+    # else builds nothing and would be fetched after the resident model had gone.
+    pipeline = tmp_path / "z-image"
+    (pipeline / "scheduler").mkdir(parents = True)
+    (pipeline / "scheduler" / "README.md").write_text("hello")
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline", "scheduler": ["diffusers", "FlowMatchEulerScheduler"]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_two_h3_partitions_of_one_quant_are_told_apart(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # Both denoisers share a directory and a quant token, but status publishes h3_task and
+    # partition_matches reads it, so marking them indistinguishable reloaded on every request.
+    for partition in ("fl2va", "ref2va"):
+        name = f"minimax_h3_{partition}-Q4_K_M.gguf"
+        (tmp_path / name).write_bytes(b"")
+        catalog.append(
+            _info(
+                f"minimax_h3_{partition}-Q4_K_M",
+                tmp_path / name,
+                task = mas.VIDEO_TASK,
+                model_format = "gguf",
+            )
+        )
+    backend.repo_id = str(tmp_path)
+    backend.gguf_variant = "Q4_K_M"
+    backend.model_kind = "gguf"
+    backend.h3_task = "ref2va"
+
+    _switch("minimax_h3_ref2va-Q4_K_M", owner = arb.VIDEO, openai_errors = False)
+
+    # The resident partition is the one this checkpoint brings up, so nothing is reloaded.
+    assert loads == []

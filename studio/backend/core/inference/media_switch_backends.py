@@ -51,11 +51,15 @@ def load_takes_the_gpu() -> bool:
         return True
 
 
-def chat_busy() -> bool:
+def chat_busy(count_pending: bool = True) -> bool:
     """Whether a chat request or load is in flight, so the GPU handoff would interrupt it.
 
     The arbiter evicts chat unconditionally for the current owner, terminating a streaming
     completion that has nothing to do with this switch.
+
+    ``count_pending`` is False once the lifecycle gate is held: a request blocked in the
+    middleware behind that gate has not started inference and cannot be interrupted, while one
+    admitted just before the gate was taken is already running and still can be.
     """
     try:
         from core.inference.llama_keepwarm import other_inference_request_count
@@ -64,7 +68,9 @@ def chat_busy() -> bool:
     try:
         # chat's counter covers media requests too, and none of those is using chat
         parked = switcher_count()
-        counted = other_inference_request_count(current_request_counted = True)
+        counted = other_inference_request_count(
+            current_request_counted = True, include_pending = count_pending
+        )
         # counted once, since a request parked on a switch lock is a waiter inside its own switch
         return max(0, counted - max(0, parked - 1)) > 0
     except Exception:  # noqa: BLE001
@@ -132,9 +138,10 @@ async def drain(
     at all because ``loading_repo_ids`` takes the backend lock, which the loader holds across
     pipeline assembly, so an unbounded probe outlives the response window.
 
-    ``check_chat`` is False for that same in-gate check. Chat's counter includes media requests,
-    and one arriving while the gates are held is blocked in the middleware, so counting it would
-    abort the switch; the chat lifecycle gate is held by then, which is what makes it safe.
+    ``check_chat`` stays on for the in-gate check, where ``count_pending`` is what makes it safe:
+    a chat request blocked behind the held lifecycle gate has not started inference and must not
+    abort the switch, but one admitted between the outer drain's last probe and this gate being
+    taken is already running and would be terminated by the handoff.
     """
     from core.inference.media_keepwarm import other_request_count
 
@@ -158,7 +165,13 @@ async def drain(
             others <= 0
             and not await bounded_probe(backend_busy, backend, probe_by)
             and not (cross_owner and await bounded_probe(other_backend_busy, owner, probe_by))
-            and not (cross_owner and check_chat and await bounded_probe(chat_busy, None, probe_by))
+            and not (
+                cross_owner
+                and check_chat
+                and await bounded_probe(
+                    functools.partial(chat_busy, count_pending), None, probe_by
+                )
+            )
         ):
             return True
         if time.monotonic() >= deadline:

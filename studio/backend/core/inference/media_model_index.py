@@ -288,6 +288,20 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
     return index
 
 
+def _collision_key(pick: MediaModelPick) -> tuple[str, str, str]:
+    """What the backend publishes about a build, which is all a resident model can be matched on.
+
+    The partition counts: two MiniMax-H3 denoisers in one directory share a quant token, and
+    without it both read as indistinguishable and every request reloads a multi-GB checkpoint
+    that status already identifies through ``h3_task``.
+    """
+    return (
+        identity_key(pick.model_path),
+        published_token(pick),
+        str(expected_partition(pick) or ""),
+    )
+
+
 def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaModelPick]:
     """Flag every GGUF pick whose published token another build under its path also publishes.
 
@@ -296,12 +310,11 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
     still be recognised. Only a token two builds answer to is ambiguous, and marking a lone
     build would reload a multi-GB pipeline on every request naming it.
     """
-    seen: dict[tuple[str, str], set] = {}
+    seen: dict[tuple[str, str, str], set] = {}
     for pick in index.values():
         if pick is _AMBIGUOUS or pick.model_kind != "gguf":
             continue
-        key = (identity_key(pick.model_path), published_token(pick))
-        seen.setdefault(key, set()).add(pick.gguf_filename)
+        seen.setdefault(_collision_key(pick), set()).add(pick.gguf_filename)
     collides = {key for key, files in seen.items() if len(files) > 1}
     if not collides:
         return index
@@ -310,7 +323,7 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
             pick
             if pick is _AMBIGUOUS
             or pick.model_kind != "gguf"
-            or (identity_key(pick.model_path), published_token(pick)) not in collides
+            or _collision_key(pick) not in collides
             else replace(pick, ambiguous = True)
         )
         for name, pick in index.items()

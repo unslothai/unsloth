@@ -311,7 +311,6 @@ async def _gated_start_load(
                 time.monotonic(),
                 count_pending = False,
                 probe_deadline = deadline,
-                check_chat = False,
                 kind = kind,
                 openai_errors = openai_errors,
             ):

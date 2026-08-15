@@ -416,7 +416,9 @@ def _component_present(component: Path, variant: str = "") -> bool:
     # that is varies by class, so any one of the known spellings answers for all of them
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
-    return True
+    # a metadata-only component is its config: a scheduler or processor directory holding
+    # anything else at all (a stray README) builds nothing and is fetched at load time
+    return any(entry.name.endswith("config.json") for entry in entries)
 
 
 def _shards_declared(component: Path) -> bool:
