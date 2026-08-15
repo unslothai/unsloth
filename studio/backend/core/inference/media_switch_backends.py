@@ -29,6 +29,7 @@ def backend_for(owner: str) -> Any:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
         return get_active_diffusion_engine()
     from core.inference.video import get_video_backend
+
     return get_video_backend()
 
 
