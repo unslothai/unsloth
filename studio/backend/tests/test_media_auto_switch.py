@@ -1932,9 +1932,7 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
     checkpoint = tmp_path / "model-Q4_K_M.gguf"
     checkpoint.write_bytes(b"")
     catalog.append(_info("local/generic", checkpoint, task = mas.VIDEO_TASK, model_format = "gguf"))
-    monkeypatch.setattr(
-        video_module, "_picked_gguf_arch", lambda repo_id, gguf_filename: "ltxv"
-    )
+    monkeypatch.setattr(video_module, "_picked_gguf_arch", lambda repo_id, gguf_filename: "ltxv")
     monkeypatch.setattr(ltx2, "is_ltx23_checkpoint", lambda path: True)
     monkeypatch.setattr(ltx2, "ltx23_extras_files", lambda path: ("vae.safetensors",))
     monkeypatch.setattr(
