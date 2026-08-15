@@ -23417,6 +23417,7 @@ async def openai_image_generations(
     body: ImageGenerationRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """OpenAI-compatible text-to-image (POST /v1/images/generations).
 
@@ -23452,6 +23453,7 @@ async def openai_image_generations(
         owner = DIFFUSION,
         current_subject = current_subject,
         openai_errors = True,
+        hf_token = hf_token,
     )
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.

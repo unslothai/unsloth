@@ -435,6 +435,19 @@ def _same_identity(requested: str, resident: str) -> bool:
     return _identity_key(requested) == _identity_key(resident)
 
 
+def _resident_is_gguf(status: dict[str, Any]) -> bool:
+    """Whether the resident build is a GGUF, however its engine says so.
+
+    The native sd.cpp status publishes ``dtype="gguf"`` and a quant but no ``model_kind``, so a
+    model_kind test alone reads every native checkpoint as a plain pipeline.
+    """
+    return (
+        status.get("model_kind") == "gguf"
+        or str(status.get("dtype") or "").strip().lower() == "gguf"
+        or bool(status.get("gguf_variant"))
+    )
+
+
 def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -> bool:
     """Whether the resident build is the one *pick* names, on the identity status publishes."""
     if not status.get("loaded"):
@@ -454,10 +467,30 @@ def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -
     # default keyframe denoiser, so a resident ref2va does not answer for it.
     if not _partition_matches(status, pick):
         return False
-    if pick.model_kind != "gguf":
+    if pick.model_kind != "gguf" and not _resident_is_gguf(status):
         return True
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
     return loaded_quant == _published_token(pick)
+
+
+def _expected_partition(pick: MediaModelPick) -> Optional[str]:
+    """The MiniMax-H3 partition this pick will come up on, or None when it is not an H3 model.
+
+    Sent with the load so the recorded provenance matches what status publishes: a GGUF takes
+    the partition its filename names, and a modular pipeline takes the keyframe default.
+    """
+    try:
+        from core.inference.video_minimax_h3 import H3_TASK_KEYFRAMES, h3_transformer_task
+        from hub.utils.gguf import is_h3_bundle_repo
+    except Exception:  # noqa: BLE001 -- no h3 support here means no partition to name
+        return None
+    name = (pick.gguf_filename or "").strip().lower()
+    if name.startswith("minimax_h3_"):
+        return h3_transformer_task(name)
+    try:
+        return H3_TASK_KEYFRAMES if is_h3_bundle_repo(pick.model_path) else None
+    except Exception:  # noqa: BLE001 -- a probe failure must not name a partition
+        return None
 
 
 def _partition_matches(status: dict[str, Any], pick: Optional[MediaModelPick] = None) -> bool:
@@ -691,7 +724,11 @@ def _plan_gpu_ordinal() -> Optional[int]:
     return resolve_selected_cuda_ordinal(None)
 
 
-def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
+def _missing_download_bytes(
+    owner: str,
+    pick: MediaModelPick,
+    hf_token: Optional[str] = None,
+) -> Optional[int]:
     """Bytes this pick would still have to fetch, or 0 when nothing is missing.
 
     The resolver only indexes downloaded CHECKPOINTS, but a GGUF or single-file pick loads its
@@ -725,6 +762,7 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
                 gguf_filename = target.gguf_filename,
                 model_kind = target.model_kind,
                 gpu_ordinal = ordinal,
+                hf_token = hf_token,
             )
             or {}
             for planner in _planners_for(owner, target)
@@ -747,8 +785,14 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
     return missing
 
 
-async def _start_load(owner: str, pick: MediaModelPick, current_subject: str) -> None:
+async def _start_load(
+    owner: str,
+    pick: MediaModelPick,
+    current_subject: str,
+    hf_token: Optional[str] = None,
+) -> None:
     """Run the load its own route would run, as an API load rather than a user one."""
+    partition = _expected_partition(pick)
     if owner == DIFFUSION:
         from models.inference import DiffusionLoadRequest
         from routes.inference import load_diffusion_model_gated
@@ -757,6 +801,7 @@ async def _start_load(owner: str, pick: MediaModelPick, current_subject: str) ->
                 model_path = pick.model_path,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
+                hf_token = hf_token,
             ),
             current_subject,
             user_initiated = False,
@@ -769,6 +814,8 @@ async def _start_load(owner: str, pick: MediaModelPick, current_subject: str) ->
                 model_path = pick.model_path,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
+                h3_task = partition,
+                hf_token = hf_token,
             ),
             current_subject,
             user_initiated = False,
@@ -786,6 +833,7 @@ async def _gated_start_load(
     *,
     kind: str,
     openai_errors: bool,
+    hf_token: Optional[str],
 ) -> bool:
     """Run the final checks and start the load, owning the gate and *lock* throughout.
 
@@ -819,7 +867,7 @@ async def _gated_start_load(
             # Bounded inside the task: it holds the gate and the lock, and this step has no
             # side effects, so a stalled planner can safely give both back.
             missing = await _bounded(
-                asyncio.to_thread(_missing_download_bytes, owner, pick),
+                asyncio.to_thread(_missing_download_bytes, owner, pick, hf_token),
                 deadline,
                 kind = kind,
                 openai_errors = openai_errors,
@@ -833,14 +881,19 @@ async def _gated_start_load(
                     openai_errors = openai_errors,
                     code = "model_not_downloaded",
                 )
-            await _start_load(owner, pick, current_subject)
+            await _start_load(owner, pick, current_subject, hf_token)
             return False
     finally:
         lock.release()
 
 
 async def maybe_auto_switch_media_model(
-    requested_model: Optional[str], *, owner: str, current_subject: str, openai_errors: bool
+    requested_model: Optional[str],
+    *,
+    owner: str,
+    current_subject: str,
+    openai_errors: bool,
+    hf_token: Optional[str] = None,
 ) -> None:
     """Load the image or video model a generation request names, if it is not resident.
 
@@ -870,7 +923,7 @@ async def maybe_auto_switch_media_model(
     resident = await asyncio.to_thread(_backend_for(owner).status)
     if (
         resident.get("loaded")
-        and resident.get("model_kind") != "gguf"
+        and not _resident_is_gguf(resident)
         and _partition_matches(resident)
         and _same_identity(name, str(resident.get("repo_id") or ""))
     ):
@@ -921,7 +974,7 @@ async def maybe_auto_switch_media_model(
         if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
             return
         missing = await _bounded(
-            asyncio.to_thread(_missing_download_bytes, owner, pick),
+            asyncio.to_thread(_missing_download_bytes, owner, pick, hf_token),
             deadline,
             kind = kind,
             openai_errors = openai_errors,
@@ -961,6 +1014,7 @@ async def maybe_auto_switch_media_model(
                 deadline,
                 kind = kind,
                 openai_errors = openai_errors,
+                hf_token = hf_token,
             )
         )
         handed_over = True

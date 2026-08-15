@@ -266,7 +266,12 @@ def loads(monkeypatch, backend):
     """Record every load the switch starts, and bring the fake up as the loader would."""
     started: list = []
 
-    async def _start(owner, pick, current_subject):
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         started.append((owner, pick))
         backend.repo_id = pick.model_path
         # The real backends publish extract_quant_token, not the lister label.
@@ -406,7 +411,12 @@ def test_a_load_still_running_at_the_deadline_asks_for_a_retry(
     (pipeline / "model_index.json").write_text("{}")
     catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
 
-    async def _start(owner, pick, current_subject):
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         backend.phase = "downloading"
 
     monkeypatch.setattr(mas, "_start_load", _start)
@@ -424,7 +434,12 @@ def test_a_failed_load_surfaces_its_error(catalog, enabled, tmp_path, backend, m
     (pipeline / "model_index.json").write_text("{}")
     catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
 
-    async def _start(owner, pick, current_subject):
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         backend.phase = "error"
         backend.load_progress = lambda: {"phase": "error", "error": "not enough VRAM"}
 
@@ -463,8 +478,15 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
 
     calls: list = []
 
-    async def _switch_stub(requested_model, *, owner, current_subject, openai_errors):
-        calls.append((requested_model, owner, openai_errors))
+    async def _switch_stub(
+        requested_model,
+        *,
+        owner,
+        current_subject,
+        openai_errors,
+        hf_token = None,
+    ):
+        calls.append((requested_model, owner, openai_errors, hf_token))
 
     monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
 
@@ -481,11 +503,12 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
     resp = TestClient(app).post(
         "/api/inference/video/generate",
         json = {"prompt": "a sloth", "model": "unsloth/Wan2.2"},
+        headers = {"X-Unsloth-HF-Token": "hf_abc"},
     )
 
     assert resp.status_code == 200
     # Not the OpenAI envelope: this route is a Studio surface and its errors are plain details.
-    assert calls == [("unsloth/Wan2.2", arb.VIDEO, False)]
+    assert calls == [("unsloth/Wan2.2", arb.VIDEO, False, "hf_abc")]
 
 
 def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
@@ -586,7 +609,12 @@ def test_the_drain_and_the_load_share_one_budget(catalog, enabled, tmp_path, bac
 
     monkeypatch.setattr(mas, "_backend_busy", _busy)
 
-    async def _start(owner, pick, current_subject):
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         backend.phase = "downloading"
 
     monkeypatch.setattr(mas, "_start_load", _start)
@@ -634,7 +662,12 @@ def test_a_replacement_load_is_not_reported_as_the_requested_model(
     (pipeline / "model_index.json").write_text("{}")
     catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
 
-    async def _start(owner, pick, current_subject):
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         backend.repo_id = "Qwen/Qwen-Image"
         backend.phase = "ready"
 
@@ -1059,7 +1092,12 @@ def test_load_setup_that_stalls_returns_inside_the_budget(
     catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
 
-    async def _stalls(owner, pick, current_subject):
+    async def _stalls(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         await asyncio.sleep(5)
 
     monkeypatch.setattr(mas, "_start_load", _stalls)
@@ -1146,7 +1184,12 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _slow_setup(owner, pick, current_subject):
+    async def _slow_setup(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         started.set()
         await release.wait()
 
@@ -1328,8 +1371,15 @@ def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
 
     calls: list = []
 
-    async def _switch_stub(requested_model, *, owner, current_subject, openai_errors):
-        calls.append((requested_model, owner, openai_errors))
+    async def _switch_stub(
+        requested_model,
+        *,
+        owner,
+        current_subject,
+        openai_errors,
+        hf_token = None,
+    ):
+        calls.append((requested_model, owner, openai_errors, hf_token))
 
     monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
 
@@ -1361,7 +1411,8 @@ def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     resp = TestClient(app).post(
         "/v1/images/generations",
         json = {"prompt": "p", "size": "256x256", "model": "black-forest-labs/FLUX.1-dev"},
+        headers = {"X-Unsloth-HF-Token": "hf_abc"},
     )
 
     assert resp.status_code == 200
-    assert calls == [("black-forest-labs/FLUX.1-dev", arb.DIFFUSION, True)]
+    assert calls == [("black-forest-labs/FLUX.1-dev", arb.DIFFUSION, True, "hf_abc")]

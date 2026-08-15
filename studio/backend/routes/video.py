@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from auth.authentication import get_current_subject
+from hub.dependencies import get_hf_token
 from loggers import get_logger
 from models.inference import (
     DiffusionDownloadPlanResponse,
@@ -330,7 +331,9 @@ async def video_load_progress(current_subject: str = Depends(get_current_subject
 
 @router.post("/video/generate", response_model = VideoGenerateResponse)
 async def generate_video(
-    request: VideoGenerateRequest, current_subject: str = Depends(get_current_subject)
+    request: VideoGenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """Start a generation job and return at once (the begin_load pattern): a clip
     takes minutes, and secure mode's tunnel caps the origin response window near
@@ -355,6 +358,7 @@ async def generate_video(
         owner = VIDEO,
         current_subject = current_subject,
         openai_errors = False,
+        hf_token = hf_token,
     )
 
     backend = get_video_backend()
