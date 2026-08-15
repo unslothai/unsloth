@@ -102,8 +102,6 @@ type Fence = {
   state: GrammarState | undefined;
   liveTokens: TokenLine | null;
   lastTokenizedAt: number;
-  /** Whether `result` has a plain tail awaiting refresh. */
-  approximate: boolean;
   trailing: ReturnType<typeof setTimeout> | null;
   pending: Pending | null;
 };
@@ -149,15 +147,14 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
 // Markdown reports a closing fence as body until it recognizes it, so all a
-// fence can lose is a backtick or tilde run plus surrounding whitespace. The
-// run has to be there: whitespace alone never closes a fence.
-const CLOSING_DELIMITER = /^[\s`~]*[`~][\s`~]*$/;
+// fence can lose is one run of backticks or tildes plus surrounding whitespace.
+// A closing run is never empty and never mixes the two markers.
+const CLOSING_DELIMITER = /^\s*(?:`+|~+)\s*$/;
 
-/** Whether `code` is the fence's own body with just its closing delimiter gone. */
-const isClosingReparse = (fence: Fence, code: string): boolean =>
-  fence.code.startsWith(code) &&
-  code.length >= fence.committedLength &&
-  CLOSING_DELIMITER.test(fence.code.slice(code.length));
+/** Whether `longer` is one fence's body, `shorter`, plus its closing run. */
+const shedsClosingRun = (shorter: string, longer: string): boolean =>
+  longer.startsWith(shorter) &&
+  CLOSING_DELIMITER.test(longer.slice(shorter.length));
 
 export function createCodePlugin(
   options: CodePluginOptions = {},
@@ -251,7 +248,9 @@ export function createCodePlugin(
       const anchor = fence.code;
       // A block that lost more than its closing delimiter is a different fence;
       // sharing this entry would cancel the refresh it has queued.
-      const reaches = code.startsWith(anchor) || isClosingReparse(fence, code);
+      const reaches =
+        code.startsWith(anchor) ||
+        (code.length >= fence.committedLength && shedsClosingRun(code, anchor));
       const reach = Math.min(anchor.length, code.length);
       if (!anchor || reach <= matchLength || !reaches) continue;
       match = fence;
@@ -268,7 +267,6 @@ export function createCodePlugin(
       state: undefined,
       liveTokens: null,
       lastTokenizedAt: 0,
-      approximate: false,
       trailing: null,
       pending: null,
     };
@@ -322,7 +320,6 @@ export function createCodePlugin(
       fence.committedLength,
     );
     fence.lastTokenizedAt = monotonicNow();
-    fence.approximate = false;
     return { ...fence.meta, tokens: [...fence.lines, fence.liveTokens] };
   };
 
@@ -331,7 +328,6 @@ export function createCodePlugin(
     // A live line may have grown mid-token, so render the whole tail plain.
     const keptLines = exact.tokens.slice(0, fence.lines.length);
     const tail = code.slice(fence.committedLength).split("\n");
-    fence.approximate = true;
     return { ...exact, tokens: [...keptLines, ...tail.map(plainLine)] };
   };
 
@@ -341,7 +337,6 @@ export function createCodePlugin(
     fence.state = undefined;
     fence.liveTokens = null;
     fence.meta = null;
-    fence.approximate = false;
   };
 
   // Leave the block plain if highlighting fails instead of breaking render.
@@ -419,7 +414,14 @@ export function createCodePlugin(
       const key = `${language} ${themeKey(opts.themes[0])} ${themeKey(opts.themes[1])}`;
       const fence = findFence(key, opts.code);
 
-      if (fence.result && fence.code === opts.code && !fence.approximate) {
+      if (fence.result && fence.code === opts.code) {
+        // A refresh queued for this body plus a closing run is this same fence
+        // finishing, so it is spent; a longer body belongs to a sibling sharing
+        // the entry and has to survive. Either way the cache answers this code.
+        const queued = fence.pending?.code;
+        if (queued !== undefined && shedsClosingRun(opts.code, queued)) {
+          clearTrailing(fence);
+        }
         return fence.result;
       }
 

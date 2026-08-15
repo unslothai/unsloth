@@ -430,28 +430,31 @@ test("a shorter prefix sibling fence keeps the longer one highlighted", async ()
   );
 });
 
-test("a sibling that differs only by trailing spaces keeps its own entry", async () => {
-  const plugin = createCodePlugin({ themes: THEMES });
-  const language = "json" as HighlightOptions["language"];
-  const shorter = `{"values": [${Array.from({ length: 300 }, (_, i) => `"item-${i}"`).join(", ")}`;
-  // Whitespace alone never closes a fence, so this is a separate block.
-  const longer = `${shorter}   `;
+// Neither of these can close a fence: whitespace carries no marker, and a
+// closing run never mixes backticks with tildes.
+for (const suffix of ["   ", "`~"]) {
+  test(`a sibling ending in ${JSON.stringify(suffix)} keeps its own entry`, async () => {
+    const plugin = createCodePlugin({ themes: THEMES });
+    const language = "json" as HighlightOptions["language"];
+    const shorter = `{"values": [${Array.from({ length: 300 }, (_, i) => `"item-${i}"`).join(", ")}`;
+    const longer = `${shorter}${suffix}`;
 
-  await highlightOnce(plugin, { code: longer, language, themes: THEMES });
-  await highlightOnce(plugin, { code: shorter, language, themes: THEMES });
+    await highlightOnce(plugin, { code: longer, language, themes: THEMES });
+    await highlightOnce(plugin, { code: shorter, language, themes: THEMES });
 
-  let rendered: HighlightResult | null = null;
-  for (let frame = 0; frame < 3; frame += 1) {
-    rendered = plugin.highlight({ code: longer, language, themes: THEMES });
-    plugin.highlight({ code: shorter, language, themes: THEMES });
-  }
+    let rendered: HighlightResult | null = null;
+    for (let frame = 0; frame < 3; frame += 1) {
+      rendered = plugin.highlight({ code: longer, language, themes: THEMES });
+      plugin.highlight({ code: shorter, language, themes: THEMES });
+    }
 
-  assert.deepEqual(
-    rendered?.tokens,
-    (await reference(longer, "json")).tokens,
-    "the longer fence must not be left as an unhighlighted plain tail",
-  );
-});
+    assert.deepEqual(
+      rendered?.tokens,
+      (await reference(longer, "json")).tokens,
+      "the longer fence must not be left as an unhighlighted plain tail",
+    );
+  });
+}
 
 test("a changed theme definition is not answered from the old theme's cache", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
@@ -503,6 +506,36 @@ test("shedding a closing delimiter drops the refresh queued for it", async () =>
 
   assert.equal(stale.length, 0, "the closed fence must cancel the delimiter refresh");
   assert.deepEqual(closed?.tokens, (await reference(body, "python")).tokens);
+});
+
+test("an unchanged fence does not cancel an identical sibling's refresh", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const body = `${Array.from(
+    { length: 120 },
+    (_, index) => `value_${index} = ${index}  # a completed Python line`,
+  ).join("\n")}\n`;
+  // Byte-identical fences cannot be told apart, so they share one entry.
+  await highlightOnce(plugin, { code: body, language, themes: THEMES });
+  await highlightOnce(plugin, { code: body, language, themes: THEMES });
+
+  let grown = body;
+  let latest: HighlightResult | null = null;
+  const receive = (result: HighlightResult) => {
+    latest = result;
+  };
+  for (let frame = 0; frame < 3; frame += 1) {
+    grown = `${grown}appended_${frame} = ${frame}\n`;
+    latest = plugin.highlight({ code: grown, language, themes: THEMES }, receive);
+    plugin.highlight({ code: body, language, themes: THEMES });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 500));
+
+  assert.deepEqual(
+    (latest as HighlightResult | null)?.tokens,
+    (await reference(grown, "python")).tokens,
+    "the growing fence must still receive its refresh",
+  );
 });
 
 test("a throttled multiline tail matches the previous plugin", async () => {
