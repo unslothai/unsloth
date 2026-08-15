@@ -6820,7 +6820,11 @@ class LlamaCppBackend:
     _ARGV_MODEL = frozenset({"-m", "--model"})
 
     def _launch_host_shortfall_message(
-        self, cmd: Iterable[str], detected_gpus: Iterable[tuple], *, gpu_masked_off: bool = False
+        self,
+        cmd: Iterable[str],
+        detected_gpus: Iterable[tuple],
+        *,
+        gpu_masked_off: bool = False,
     ) -> Optional[str]:
         """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
 

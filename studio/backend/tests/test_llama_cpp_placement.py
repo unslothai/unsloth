@@ -1048,8 +1048,7 @@ def test_a_masked_off_child_takes_no_vram_credit(tmp_path, monkeypatch):
 
     assert backend._launch_host_shortfall_message(argv, [(0, 20_000)]) is None
     assert (
-        backend._launch_host_shortfall_message(argv, [(0, 20_000)], gpu_masked_off = True)
-        is not None
+        backend._launch_host_shortfall_message(argv, [(0, 20_000)], gpu_masked_off = True) is not None
     )
 
 
