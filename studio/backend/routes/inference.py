@@ -4935,6 +4935,52 @@ def _target_accepts_request_input(
     return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
+async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: bool) -> None:
+    """Apply the pre-switch audio rules that depend on the target's serving format.
+
+    Only for a swap that is about to run: these exist so a request the target cannot
+    serve fails before the load evicts the resident model, and where no swap happens the
+    serving branch decides for itself. A GGUF target is exempt from all of them, since
+    llama-server takes the audio through :func:`_prepare_audio_for_llama`, which accepts
+    a ``data:`` URI and the containers torchaudio cannot open, and supports
+    ``continue_final_message``. A non-GGUF target is served by
+    :func:`_decode_audio_base64`, so the upload is validated with that same decoder and
+    the array handed back under ``decoded`` for the audio branch to reuse.
+    """
+    if target_is_gguf:
+        return
+    if audio_preflight.get("continue_final"):
+        raise HTTPException(
+            status_code = 400,
+            detail = "continue_final_message is not supported with audio input.",
+        )
+    if not _audio_decoder_is_available():
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "This server cannot decode audio input for a non-GGUF model: "
+                "torchaudio is not installed.",
+                status = 400,
+                code = "invalid_value",
+                param = "model",
+            ),
+        )
+    try:
+        audio_preflight["decoded"] = await asyncio.to_thread(
+            _decode_audio_base64, audio_preflight["b64"]
+        )
+    except Exception:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "The 'audio_base64' value could not be decoded as audio.",
+                status = 400,
+                code = "invalid_value",
+                param = "audio_base64",
+            ),
+        ) from None
+
+
 def _messages_have_image(messages) -> bool:
     return any(
         isinstance(m.content, list) and any(isinstance(p, ImageContentPart) for p in m.content)
@@ -5424,6 +5470,24 @@ def _resolves_to_resident(
     return False
 
 
+def _classify_and_probe_residency(
+    load_path: str, alias: Optional[str], llama_only: bool
+) -> tuple[bool, bool]:
+    """Classify a switch target's serving format and probe residency, in one pass.
+
+    Both touch the filesystem, so they share a single off-loop hop, and the format is
+    what decides how residency is matched: a non-GGUF checkpoint loads from its own
+    directory, so the GGUF prefix rules must not let a model nested under the loaded
+    one answer for it. Returns ``(is_gguf, is_resident)``.
+    """
+    from core.inference.local_model_resolver import local_target_is_gguf
+
+    is_gguf = local_target_is_gguf(load_path, alias)
+    return is_gguf, _resolves_to_resident(
+        load_path, llama_only = llama_only, exact_only = not is_gguf
+    )
+
+
 def _innermost_indexed_owner(path: str) -> Optional[str]:
     """Longest catalog-listed model path containing *path*, or None if none does."""
     best = None
@@ -5467,7 +5531,6 @@ async def _reject_unservable_model(
     gguf_hub_repo = looks_like_gguf_hub_repo_id(base)
     from core.inference.local_model_resolver import (
         index_is_built,
-        local_target_is_gguf,
         recently_downloaded,
         resolve_local_gguf,
         warm_index_soon,
@@ -5509,37 +5572,26 @@ async def _reject_unservable_model(
         # would be answered by a resident Q4_K_M.
         # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
         # skip the offloaded reads, so on a restart this built the singleton on the loop.
-        # A non-GGUF target loads from its own directory, so the prefix rules must not
-        # let a checkpoint nested under the loaded model answer for it.
-        resolved_is_gguf = resolved is None or local_target_is_gguf(resolved[0], resolved[2])
-        if (
-            resolved is not None
-            and await asyncio.to_thread(
-                _resolves_to_resident,
-                resolved[0],
-                llama_only = quantified,
-                exact_only = not resolved_is_gguf,
+        resolved_is_resident = resolved is not None and (
+            await asyncio.to_thread(
+                _classify_and_probe_residency, resolved[0], resolved[2], quantified
             )
-            and (not quantified or _resident_quant_is(variant))
-        ):
+        )[1]
+        if resolved_is_resident and (not quantified or _resident_quant_is(variant)):
             return
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
         advertised = _advertised_local_path(base)
-        # Classify the advertised path itself: a resolver miss leaves resolved_is_gguf
-        # at its safe default, and reusing it here would apply the GGUF prefix rules to
-        # a checkpoint the catalog advertised.
-        advertised_is_gguf = advertised is None or local_target_is_gguf(advertised, base)
-        if (
+        # classified from the advertised path itself, since a resolver miss left the pair above safe.
+        advertised_is_resident = (
             advertised is not None
-            and await asyncio.to_thread(
-                _resolves_to_resident,
-                advertised,
-                llama_only = quantified,
-                exact_only = not advertised_is_gguf,
-            )
-            and (not quantified or _resident_quant_is(variant))
-        ):
+            and (
+                await asyncio.to_thread(
+                    _classify_and_probe_residency, advertised, base, quantified
+                )
+            )[1]
+        )
+        if advertised_is_resident and (not quantified or _resident_quant_is(variant)):
             return
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = (
@@ -5615,6 +5667,8 @@ async def _maybe_auto_switch_model(
     require_image: bool = True,
     require_audio_input: bool = False,
     gguf_only: bool = False,
+    gguf_only_message: Optional[str] = None,
+    audio_preflight: Optional[dict] = None,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -5630,7 +5684,11 @@ async def _maybe_auto_switch_model(
     carries both, and ``require_audio_input`` covers a non-GGUF checkpoint, which
     declares the two separately. ``gguf_only`` marks an endpoint that reads
     llama.cpp alone, where loading a non-GGUF model would unload the resident one
-    and leave the handler with nothing to serve.
+    and leave the handler with nothing to serve, with ``gguf_only_message`` naming the
+    real constraint where the endpoint itself is not GGUF-only (chat completions serves
+    both, but only llama.cpp returns ``n`` choices). ``audio_preflight`` carries an audio
+    upload whose format-dependent checks only the resolved target can decide; see
+    :func:`_preflight_audio_for_switch`.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -5660,19 +5718,14 @@ async def _maybe_auto_switch_model(
         return
     auto_switch_on = get_openai_auto_switch_enabled()
 
-    # The reload-stash path also runs when idle-unload is active on its own (a
-    # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
-    # loop freed is restored on the next request. The resolver-based switch still
-    # requires the auto-switch toggle.
-    # Configured, not effective: residency zeroes the TTL, and the stash still
-    # has to be restorable after it is turned on.
     def _refuse_non_gguf_endpoint() -> None:
-        """Refuse a target this endpoint cannot serve, loaded or not.
+        """Refuse a switch target this endpoint cannot serve.
 
-        Hoisted above the resident fast paths so the answer does not depend on whether
-        the unsupported model happens to be resident already.
+        Raised only for a target the resolver found and that is not already serving:
+        a resident non-GGUF model reaches the handler's own error instead, since no
+        swap is pending to refuse.
         """
-        message = (
+        message = gguf_only_message or (
             f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
             "Use /v1/chat/completions for this model."
         )
@@ -5688,6 +5741,7 @@ async def _maybe_auto_switch_model(
             ),
         )
 
+    # configured, not effective: residency zeroes the TTL, and the stash still has to restore.
     if not auto_switch_on and not idle_unload_is_configured():
         # No switching to do, but a named model must still not be answered by another.
         await _reject_unservable_model(requested_model, fastapi_request)
@@ -5754,6 +5808,14 @@ async def _maybe_auto_switch_model(
             target_id, variant, override_id = resolved
         # Not inferred from the quant: a GGUF loaded from a local directory carries none.
         target_is_gguf = await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
+        # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
+        if (
+            gguf_only
+            and not target_is_gguf
+            and resolved is not None
+            and _peek_inference_backend() is None
+        ):
+            _refuse_non_gguf_endpoint()
         # Resolved once, off the loop: a cold orchestrator build waits on hardware detection.
         target_backend = (
             get_llama_cpp_backend()
@@ -5850,6 +5912,9 @@ async def _maybe_auto_switch_model(
                     param = "model",
                 ),
             )
+        # resolver branch only, like the probe above: a reload-stash restore changes no format.
+        if audio_preflight is not None and resolved is not None:
+            await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
@@ -13327,46 +13392,9 @@ async def openai_chat_completions(
                         param = "tool_choice",
                     ),
                 )
-        # Reject an oversized audio upload before the switch: the size cap is a
-        # cheap, target-independent length check, so a too-large payload must not
-        # load a GGUF only to 413 afterward (the decode itself stays post-switch to
-        # avoid decoding a valid upload twice).
+        # target-independent, unlike the format-dependent checks the switch itself runs.
         if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
             raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
-        # Decoded before any swap and carried to the audio branch below: valid base64
-        # holding non-audio bytes is a deterministic 400, and paying it after the switch
-        # costs the resident model. Decoding here rather than twice is why it is threaded.
-        # Only where the decoder can run: it needs torchaudio, while the GGUF path is
-        # deliberately torch-free, so a GGUF-only host validates the encoding alone and
-        # leaves the bytes to _prepare_audio_for_llama.
-        if payload.audio_base64 and _audio_decoder_is_available():
-            try:
-                _predecoded_audio = await asyncio.to_thread(
-                    _decode_audio_base64, payload.audio_base64
-                )
-            except Exception:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = openai_error_body(
-                        "The 'audio_base64' value could not be decoded as audio.",
-                        status = 400,
-                        code = "invalid_value",
-                        param = "audio_base64",
-                    ),
-                ) from None
-        elif payload.audio_base64:
-            try:
-                base64.b64decode(payload.audio_base64, validate = True)
-            except Exception:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = openai_error_body(
-                        "The 'audio_base64' value is not valid base64.",
-                        status = 400,
-                        code = "invalid_value",
-                        param = "audio_base64",
-                    ),
-                ) from None
         # Reject streaming n>1 before the switch: only the non-streaming GGUF path
         # returns multiple choices, so stream=true + n>1 is invalid on every local
         # serving path (the external path already rejected it before its early
@@ -13384,10 +13412,12 @@ async def openai_chat_completions(
         _needs_vision = _needs_image or bool(payload.audio_base64)
         _needs_audio_input = bool(payload.audio_base64)
 
-    # An audio request cannot resume a partial turn, and the audio branch refuses it
-    # downstream, so refuse here rather than let the swap evict the resident model.
-    if _needs_audio_input:
-        _reject_audio_output_continuation(payload)
+    # the rest of the audio checks depend on the target's format, so the switch runs them.
+    _audio_preflight = (
+        {"b64": payload.audio_base64, "continue_final": _continue_final_message(payload)}
+        if _needs_audio_input
+        else None
+    )
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
@@ -13399,7 +13429,14 @@ async def openai_chat_completions(
         # Only the GGUF path returns multiple choices, so a non-GGUF swap would load
         # the target and then hit the unsupported-n rejection below.
         gguf_only = _wants_multiple_choices(payload),
+        gguf_only_message = (
+            f"'n' greater than 1 is only supported for GGUF models, and '{payload.model}' "
+            "is not one. Send this model a request with 'n' unset or 1."
+        ),
+        audio_preflight = _audio_preflight,
     )
+    if _audio_preflight is not None:
+        _predecoded_audio = _audio_preflight.get("decoded")
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
@@ -16923,7 +16960,7 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
     """``(info, is_gguf, quants, resident)`` per catalog entry this server can serve
     from disk. Module scope, and always called through ``asyncio.to_thread``: the file
     checks stat many files and the residency check reads the inference singleton."""
-    from core.inference.local_model_resolver import local_servable_model
+    from core.inference.local_model_resolver import local_load_dir, local_servable_model
 
     rows = []
     for info in catalog:
@@ -16931,10 +16968,12 @@ def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...],
         if servable is None:
             continue
         is_gguf, quants = servable
-        # llama-only for a GGUF row, or a Transformers model live from a directory of
-        # GGUF exports marks one of those quants loaded.
+        path = getattr(info, "path", None)
+        # the load dir, since an HF cache repo loads as a snapshot exact_only cannot match.
         resident = _resolves_to_resident(
-            getattr(info, "path", None), llama_only = is_gguf, exact_only = not is_gguf
+            path if is_gguf else local_load_dir(path),
+            llama_only = is_gguf,
+            exact_only = not is_gguf,
         )
         rows.append((info, is_gguf, quants, resident))
     return rows

@@ -3193,6 +3193,8 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         require_image = True,
         require_audio_input = False,
         gguf_only = False,
+        gguf_only_message = None,
+        audio_preflight = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -3203,8 +3205,6 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
-    # The handler decodes the audio before switching, so give it something decodable.
-    monkeypatch.setattr(inference_route, "_decode_audio_base64", lambda _b64: object())
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
@@ -8551,18 +8551,13 @@ def test_a_non_canonical_safetensors_name_is_not_switchable(tmp_path):
 
 
 def test_a_causal_model_without_the_suffix_stays_switchable(tmp_path):
-    # Codex P2: GPT2LMHeadModel and an absent architectures list are both resolved from
-    # model_type by the loader, so requiring the suffix hid working models.
+    # the loader selects GPT2LMHeadModel too, so requiring ForCausalLM alone hid working models.
     from types import SimpleNamespace
 
     path = _local_checkpoint(tmp_path, "gpt2")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text('{"architectures": ["GPT2LMHeadModel"]}')
     assert resolver.local_servable_model(info) == (False, ())
-    # With no architectures the answer comes from transformers' causal mapping, and is
-    # a refusal when that mapping is not resident to consult.
-    (path / "config.json").write_text('{"model_type": "gpt2"}')
-    assert resolver.local_servable_model(info) is None
 
 
 def test_an_fp8_checkpoint_is_offered_only_on_cuda(tmp_path, monkeypatch):
@@ -8596,40 +8591,21 @@ def test_an_obsolete_bin_index_does_not_hide_a_safetensors_checkpoint(tmp_path):
     assert resolver.local_servable_model(info) == (False, ())
 
 
-def test_a_seq2seq_model_type_without_architectures_is_not_switchable(tmp_path):
-    # Codex P2: architectures is optional, so a family with no causal branch must not
-    # qualify simply by omitting it.
+def test_a_model_type_without_architectures_is_not_switchable(tmp_path):
+    # the causal mapping holds bert and bart, so model_type alone stays withheld either way.
     from types import SimpleNamespace
 
-    path = _local_checkpoint(tmp_path, "t5-no-arch")
+    path = _local_checkpoint(tmp_path, "no-arch")
     info = SimpleNamespace(id = str(path), path = str(path))
-    (path / "config.json").write_text('{"model_type": "t5"}')
-    assert resolver.local_servable_model(info) is None
-    # Even a causal family is withheld without the mapping: the subprocess that imports
-    # transformers never populates this process, so guessing is what got encoders through.
-    (path / "config.json").write_text('{"model_type": "qwen3"}')
-    assert resolver.local_servable_model(info) is None
+    for model_type in ("t5", "deberta-v2", "qwen3"):
+        (path / "config.json").write_text(json.dumps({"model_type": model_type}))
+        assert resolver.local_servable_model(info) is None, model_type
 
+    import transformers  # noqa: F401
 
-def test_a_family_variant_model_type_is_not_switchable(tmp_path, monkeypatch):
-    # Codex P2: a denylist cannot be complete, and deberta-v2 slipped past one holding
-    # only deberta. The family prefix is matched too when transformers is not loaded.
-    from types import SimpleNamespace
-
-    path = _local_checkpoint(tmp_path, "deberta-v2")
-    info = SimpleNamespace(id = str(path), path = str(path))
-    (path / "config.json").write_text('{"model_type": "deberta-v2"}')
-    assert resolver.local_servable_model(info) is None
-    # And when the mapping is resident it decides, so a causal family still qualifies.
-    import sys
-    from types import ModuleType
-
-    module = ModuleType("transformers.models.auto.modeling_auto")
-    module.MODEL_FOR_CAUSAL_LM_MAPPING_NAMES = {"qwen3": "Qwen3ForCausalLM"}
-    monkeypatch.setitem(sys.modules, "transformers", ModuleType("transformers"))
-    monkeypatch.setitem(sys.modules, "transformers.models.auto.modeling_auto", module)
-    (path / "config.json").write_text('{"model_type": "qwen3"}')
-    assert resolver.local_servable_model(info) == (False, ())
+    for model_type in ("t5", "deberta-v2", "qwen3"):
+        (path / "config.json").write_text(json.dumps({"model_type": model_type}))
+        assert resolver.local_servable_model(info) is None, model_type
 
 
 def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
@@ -8700,21 +8676,67 @@ def test_a_stray_shard_beside_complete_weights_is_ignored(tmp_path):
     assert resolver.local_servable_model(info) is None
 
 
-def test_non_audio_bytes_are_rejected_before_the_switch(monkeypatch):
-    # Codex P2: valid base64 holding non-audio bytes is a deterministic 400, and paying
-    # it after the swap costs the resident model.
+def test_the_audio_preflight_only_binds_a_non_gguf_target(monkeypatch):
+    # _prepare_audio_for_llama takes a data: URI, containers torchaudio cannot open, and a continuation.
     from fastapi import HTTPException
 
-    def _unexpected(*_a, **_kw):
-        pytest.fail("the switch ran before the audio was decoded")
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_base64",
+        lambda _b64: pytest.fail("the non-GGUF decoder ran for a GGUF target"),
+    )
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: False)
+    preflight = {"b64": "data:audio/mp4;base64,AAAA", "continue_final": True}
+    asyncio.run(inference_route._preflight_audio_for_switch(preflight, True))
+    assert "decoded" not in preflight
 
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _unexpected)
+    # the non-GGUF branch runs _decode_audio_base64, so it refuses the same input, before the load.
     monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
-    payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+        asyncio.run(inference_route._preflight_audio_for_switch(dict(preflight), False))
     assert exc.value.status_code == 400
+    assert "continue_final_message" in exc.value.detail
+    assert "audio input" in exc.value.detail
+
+
+def test_a_non_gguf_audio_target_is_refused_without_a_decoder(monkeypatch):
+    # on a torch-free host the swap used to unload the resident model, then fail importing torchaudio.
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._preflight_audio_for_switch(
+                {"b64": "AAAA", "continue_final": False}, False
+            )
+        )
+    assert exc.value.status_code == 400
+    assert "torchaudio" in exc.value.detail["error"]["message"]
+
+
+def test_non_audio_bytes_are_rejected_before_a_non_gguf_switch(monkeypatch):
+    # non-audio bytes are a deterministic 400, and the decoded array is reused downstream.
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
+
+    def _decode(b64):
+        if b64 != "GOOD":
+            raise ValueError("not audio")
+        return "pcm"
+
+    monkeypatch.setattr(inference_route, "_decode_audio_base64", _decode)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._preflight_audio_for_switch(
+                {"b64": "AAAA", "continue_final": False}, False
+            )
+        )
+    assert exc.value.status_code == 400
+
+    preflight = {"b64": "GOOD", "continue_final": False}
+    asyncio.run(inference_route._preflight_audio_for_switch(preflight, False))
+    assert preflight["decoded"] == "pcm"
 
 
 def test_a_gguf_only_host_does_not_need_torchaudio_to_accept_audio(monkeypatch):
@@ -8813,3 +8835,70 @@ def test_a_symlinked_hf_snapshot_is_not_withheld(tmp_path):
     )
     info = SimpleNamespace(id = str(snapshot), path = str(snapshot))
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_drive_qualified_shard_path_is_withheld(tmp_path):
+    # "C:/x" is relative to PurePosixPath but resets the anchor when joined on Windows.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "DriveShard")
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00001.safetensors").write_bytes(b"x" * 32)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+    for escape in ("C:/evil/model.safetensors", "C:model.safetensors"):
+        (path / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"a": escape}})
+        )
+        assert resolver.local_servable_model(info) is None, escape
+
+
+def test_the_n_refusal_names_n_not_the_endpoint(monkeypatch):
+    # the default gguf_only wording sent the caller to the endpoint they were already on.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", None, "org/B-MLX"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_k: False)
+    payload = _chat_request(model = "org/B-MLX", n = 2)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    message = str(exc.value.detail)
+    assert "'n' greater than 1" in message
+    assert "This endpoint serves GGUF models only" not in message
+    assert rec.calls == []
+
+
+def test_a_serving_hf_cache_row_is_reported_loaded(tmp_path, monkeypatch):
+    # the scanner lists the models--* dir but the orchestrator records the snapshot it loaded.
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Chat"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(_CHAT_CONFIG)
+    (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"x" * 32)
+
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = str(snapshot), models = {}),
+    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    info = SimpleNamespace(id = "org/Chat", model_id = "org/Chat", path = str(repo))
+    rows = inference_route._servable_catalog_rows([info])
+    assert [(is_gguf, quants, resident) for _i, is_gguf, quants, resident in rows] == [
+        (False, (), True)
+    ]

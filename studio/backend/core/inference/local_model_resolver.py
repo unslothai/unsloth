@@ -207,32 +207,6 @@ _MULTIMODAL_CONFIG_KEYS = (
 )
 
 
-def _model_type_has_a_causal_head(model_type) -> bool:
-    """Whether the loader has a causal implementation for this model_type.
-
-    Read from transformers' own causal mapping when it is already imported. The
-    orchestrator imports transformers in a subprocess, so the parent usually has not,
-    and a cold import here would cost seconds per catalog row. With no mapping to
-    consult the answer is no: a denylist cannot be complete, and an encoder advertised
-    by mistake costs the resident model.
-    """
-    if not isinstance(model_type, str) or not model_type.strip():
-        return False
-    name = model_type.strip().lower()
-    import sys
-
-    if "transformers" in sys.modules:
-        try:
-            from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-            return name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-        except Exception:
-            pass
-    # No mapping to consult and no architectures to read. Withholding a rare valid model
-    # is recoverable by loading it in Studio; advertising an encoder is not, since the
-    # swap unloads the resident model before the load can fail.
-    return False
-
-
 # The chat loader reaches these weights through causal and vision auto classes, so an
 # encoder-only or classifier checkpoint has no head it can generate with.
 _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
@@ -241,10 +215,9 @@ _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
 def _is_generative_chat_config(config: dict) -> bool:
     """Whether a config.json describes a checkpoint the chat loader can generate with."""
     architectures = config.get("architectures")
-    # The list is optional, so fall back to model_type: the loader resolves from it, and
-    # a family with no causal branch must not slip through just by omitting the list.
+    # model_type cannot stand in for the list: transformers' causal mapping lists bert and bart.
     if not isinstance(architectures, list) or not architectures:
-        return _model_type_has_a_causal_head(config.get("model_type"))
+        return False
     names = [name for name in architectures if isinstance(name, str)]
     # Not every causal checkpoint wears ForCausalLM: GPT2LMHeadModel and friends are
     # selected from model_type by the loader, and withholding them is the invisibility
@@ -428,11 +401,76 @@ def _weight_shards_all_present(load_dir) -> bool:
             if not isinstance(shard, str) or not shard:
                 return False
             relative = PurePosixPath(shard.replace("\\", "/"))
-            if relative.is_absolute() or ".." in relative.parts:
+            # ":" too: "C:/x" is relative to PurePosixPath but resets the anchor on Windows.
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or any(":" in part for part in relative.parts)
+            ):
                 return False
             if not (load_dir / relative).is_file():
                 return False
     return True
+
+
+def _weight_assets_are_complete(load_dir) -> bool:
+    """Whether *load_dir* holds a complete checkpoint the chat loader can open.
+
+    On-disk shape only, nothing parsed from the config: real, whole safetensors weights
+    beside a tokenizer, and none of the markers that make a directory something other
+    than a servable model (a diffusers pipeline, a bare LoRA adapter, an embedder).
+    """
+    from routes.models import _local_pipeline_index
+
+    if _local_pipeline_index(load_dir) or not (load_dir / "config.json").is_file():
+        return False
+    # Safetensors only. A .bin checkpoint is pickle-backed, and an API request
+    # must not be able to execute one without an explicit load action.
+    if not _has_canonical_safetensors(load_dir) or not _weight_shards_all_present(load_dir):
+        return False
+    if any((load_dir / name).is_file() for name in _ADAPTER_MARKERS):
+        return False
+    # Weights alone cannot serve chat, and the swap has evicted the resident model
+    # by the time the loader finds the tokenizer missing.
+    if not _has_tokenizer_vocabulary(load_dir):
+        return False
+    # Only the generative chat path consumes these, and an embedder loaded as a
+    # language model fails after the swap has already evicted the resident one.
+    # Same marker is_embedding_model reads for a local path, without its memo,
+    # which would pin a verdict for the process from one scan.
+    return not (load_dir / "modules.json").is_file()
+
+
+def _config_is_servable_here(load_dir, config: dict) -> bool:
+    """Whether *config* describes a chat model this host can load without an explicit action.
+
+    Everything the switch cannot recover from once it has run: a repo needing
+    ``trust_remote_code``, a VLM with no processor files, a quantization this host has no
+    runtime for, weights with no generative head, and the audio families whose request
+    shape the chat route rejects only after the swap.
+    """
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
+
+    # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
+    for name in REMOTE_CODE_CONFIG_FILES:
+        candidate = config if name == "config.json" else _read_json(load_dir / name)
+        if isinstance(candidate, dict) and "auto_map" in candidate:
+            return False
+    # A VLM builds an AutoProcessor, which tokenizer files alone cannot supply. Same
+    # pair unsloth.models.loader_utils._has_local_processor_files reads, checked here
+    # rather than imported so the request path stays clear of the unsloth package.
+    if any(key in config for key in _MULTIMODAL_CONFIG_KEYS) and not any(
+        (load_dir / name).is_file()
+        for name in ("processor_config.json", "preprocessor_config.json")
+    ):
+        return False
+    if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
+        return False
+    # whisper and TTS need a request shape the chat route rejects only after the swap.
+    from utils.models.model_config import detect_audio_type
+
+    audio_type = detect_audio_type(str(load_dir), local_files_only = True)
+    return audio_type is None or audio_type in _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES
 
 
 def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
@@ -445,68 +483,23 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     only the generative chat path consumes these entries, and a switch that cannot
     load its target has already evicted the resident model by the time it fails.
     """
-    import json
     from pathlib import Path
-    from routes.models import _local_pipeline_index
 
     path = getattr(info, "path", None)
     if not isinstance(path, str) or getattr(info, "partial", False):
+        return None
+    # model-independent, so first: with no backend every row is withheld anyway.
+    if not _host_has_a_non_gguf_backend():
         return None
     try:
         p = Path(path)
         if not p.is_dir():
             return None
         load_dir = _resolve_load_dir(p)
-        config_file = load_dir / "config.json"
-        if _local_pipeline_index(load_dir) or not config_file.is_file():
+        if not _weight_assets_are_complete(load_dir):
             return None
-        # Safetensors only. A .bin checkpoint is pickle-backed, and an API request
-        # must not be able to execute one without an explicit load action.
-        if not _has_canonical_safetensors(load_dir) or not _weight_shards_all_present(load_dir):
-            return None
-        if any((load_dir / name).is_file() for name in _ADAPTER_MARKERS):
-            return None
-        # Weights alone cannot serve chat, and the swap has evicted the resident model
-        # by the time the loader finds the tokenizer missing.
-        if not _has_tokenizer_vocabulary(load_dir):
-            return None
-        # Only the generative chat path consumes these, and an embedder loaded as a
-        # language model fails after the swap has already evicted the resident one.
-        # Same marker is_embedding_model reads for a local path, without its memo,
-        # which would pin a verdict for the process from one scan.
-        if (load_dir / "modules.json").is_file():
-            return None
-        with config_file.open(encoding = "utf-8") as handle:
-            config = json.load(handle) or {}
-        # A custom-code repo loads only with trust_remote_code plus the subject's
-        # approval fingerprint, and a switch carries neither, so it would evict the
-        # resident model and then fail. trust_remote_code runs auto_map from any of
-        # these, so read the scanner's own set. Read as data; nothing is executed.
-        from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
-
-        for name in REMOTE_CODE_CONFIG_FILES:
-            candidate = config if name == "config.json" else _read_json(load_dir / name)
-            if isinstance(candidate, dict) and "auto_map" in candidate:
-                return None
-        # A VLM builds an AutoProcessor, which tokenizer files alone cannot supply. Same
-        # pair unsloth.models.loader_utils._has_local_processor_files reads, checked here
-        # rather than imported so the request path stays clear of the unsloth package.
-        if any(key in config for key in _MULTIMODAL_CONFIG_KEYS) and not any(
-            (load_dir / name).is_file()
-            for name in ("processor_config.json", "preprocessor_config.json")
-        ):
-            return None
-        if not _host_has_a_non_gguf_backend():
-            return None
-        if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
-            return None
-        # Whisper and the TTS families need an audio request shape the switch cannot
-        # know about, so the chat route rejects them after the swap has already run. An
-        # audio VLM is a chat model that also takes audio, and the backend serves it.
-        from utils.models.model_config import detect_audio_type
-
-        audio_type = detect_audio_type(str(load_dir), local_files_only = True)
-        if audio_type is not None and audio_type not in _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES:
+        config = _read_json(load_dir / "config.json")
+        if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
@@ -539,6 +532,23 @@ def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
         return None
     entry = _local_servable_entry(getattr(info, "id", "") or "", info)
     return (entry.is_gguf, entry.variants) if entry is not None else None
+
+
+def local_load_dir(path: Optional[str]) -> Optional[str]:
+    """The concrete directory *path* loads from, or None when it names no directory.
+
+    An HF cache repo resolves to its snapshot, which is what the orchestrator records as
+    the active model, so a caller comparing a scanned catalog path against resident state
+    is comparing the same string the loader used. Touches the filesystem.
+    """
+    from pathlib import Path
+
+    if not isinstance(path, str) or not path:
+        return None
+    try:
+        return str(_resolve_load_dir(Path(path)))
+    except Exception:
+        return path
 
 
 def _build_index() -> dict[str, _LocalGgufEntry]:
