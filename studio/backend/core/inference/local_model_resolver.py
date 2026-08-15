@@ -217,6 +217,11 @@ def _vocabulary_file_is_readable(path) -> bool:
 # far above any real header: a corrupt length reads huge, and reading it is the failure here.
 _MAX_SAFETENSORS_HEADER_BYTES = 256 * 1024 * 1024
 
+def _is_index(value) -> bool:
+    """A nonnegative integer offset or dimension, excluding bool, which subclasses int."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 # bytes per element, fixed-width dtypes only; sub-byte and unlisted ones skip the check.
 _SAFETENSORS_DTYPE_BYTES = {
     "F64": 8,
@@ -250,7 +255,7 @@ def _tensor_span_matches_shape(entry: dict, span: int) -> bool:
         return False
     elements = 1
     for dimension in shape:
-        if not isinstance(dimension, int) or dimension < 0:
+        if not _is_index(dimension):
             return False
         elements *= dimension
     width = _SAFETENSORS_DTYPE_BYTES.get(entry.get("dtype"))
@@ -297,7 +302,7 @@ def _safetensors_file_is_intact(path) -> bool:
             offsets = entry.get("data_offsets")
             if not (isinstance(offsets, list) and len(offsets) == 2):
                 return False
-            if not all(isinstance(value, int) and value >= 0 for value in offsets):
+            if not all(_is_index(value) for value in offsets):
                 return False
             start, stop = offsets
             if start > stop:
@@ -433,9 +438,13 @@ def _fp8_suits_host(quant_method: str) -> bool:
         torch = sys.modules.get("torch")
         if torch is None:
             return True
-        major, minor = torch.cuda.get_device_capability()
     except Exception:
         return True
+    # the loader runs the same query, so a probe that raises here raises there too.
+    try:
+        major, minor = torch.cuda.get_device_capability()
+    except Exception:
+        return False
     if quant_method == "fbgemm_fp8":
         return major >= 9
     return major * 10 + minor >= 89
@@ -472,24 +481,54 @@ def _quantizer_runtime_present(quant_method: str) -> bool:
         return False
 
 
-def _mlx_implements_architecture(config: dict) -> bool:
-    """Whether the MLX loader has an implementation for this checkpoint's model_type.
+def _has_a_chat_template(load_dir, loader_id: str) -> bool:
+    """Whether chat generation will find a template for this checkpoint.
 
-    The stacks are not interchangeable for a given load: MLXInferenceBackend passes
+    ``generate_stream`` raises outright when neither the mapper nor the tokenizer supplies
+    one, so a base checkpoint would load, evict the resident model and then refuse every
+    message. Checked against the same three sources the loader reads: Unsloth's model-to-
+    template mapper, a ``chat_template`` key in the tokenizer or processor config, and the
+    standalone template file newer saves write.
+    """
+    for name in ("chat_template.jinja", "chat_template.json"):
+        if (load_dir / name).is_file():
+            return True
+    for name in ("tokenizer_config.json", "processor_config.json", "preprocessor_config.json"):
+        entry = _read_json(load_dir / name)
+        if isinstance(entry, dict) and entry.get("chat_template"):
+            return True
+    try:
+        from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
+
+        return str(loader_id).strip().lower() in MODEL_TO_TEMPLATE_MAPPER
+    except Exception:
+        return False
+
+
+def _loader_implements_architecture(config: dict) -> bool:
+    """Whether the backend that would serve this checkpoint implements its model_type.
+
+    A causal-looking class name is not enough: ``MadeUpForCausalLM`` satisfies every
+    other gate and then fails in the loader, once the swap has unloaded the resident
+    model. Each backend keeps one module per family, so the family's presence answers it.
+
+    The MLX stacks are not interchangeable for a given load: MLXInferenceBackend passes
     ``text_only`` off its vision verdict, so it reaches mlx-vlm for a multimodal
-    checkpoint and mlx-lm otherwise, and a family carried only by the other one fails in
-    FastMLXModel.from_pretrained once the swap has unloaded the resident model. The
-    modality is read from the same config keys this module already uses to require
-    processor files, rather than is_vision_model, which runs a subprocess.
+    checkpoint and mlx-lm otherwise, and a family carried only by the other one fails the
+    same way. That modality is read from the config keys this module already uses to
+    require processor files, rather than is_vision_model, which runs a subprocess.
+
     A checkpoint with no readable model_type is withheld rather than trusted: it is the
     field the loader selects an implementation from, so there is nothing to load without it.
     """
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or not model_type.strip():
         return False
-    multimodal = any(key in config for key in _MULTIMODAL_CONFIG_KEYS)
-    package = "mlx_vlm" if multimodal else "mlx_lm"
-    # one module per family, as the loader resolves it; find_spec keeps mlx off this path.
+    if _host_serves_mlx():
+        multimodal = any(key in config for key in _MULTIMODAL_CONFIG_KEYS)
+        package = "mlx_vlm" if multimodal else "mlx_lm"
+    else:
+        package = "transformers"
     name = model_type.strip().lower().replace("-", "_")
     if not name.isidentifier():
         return False
@@ -660,7 +699,7 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
         return False
     if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
         return False
-    if _host_serves_mlx() and not _mlx_implements_architecture(config):
+    if not _loader_implements_architecture(config):
         return False
     # whisper and TTS need a request shape the chat route rejects only after the swap.
     from utils.models.model_config import detect_audio_type
@@ -696,6 +735,8 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         config = _read_json(load_dir / "config.json")
         if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
+            return None
+        if not _has_a_chat_template(load_dir, loader_id):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)

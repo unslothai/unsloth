@@ -4948,6 +4948,22 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
     the array handed back under ``decoded`` for the audio branch to reuse.
     """
     if target_is_gguf:
+        # the encoding alone, normalized as _prepare_audio_for_llama does so data: still passes.
+        raw = audio_preflight["b64"]
+        if isinstance(raw, str) and raw.startswith("data:"):
+            raw = raw.split(",", 1)[1] if "," in raw else ""
+        try:
+            base64.b64decode(raw, validate = True)
+        except Exception:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "The 'audio_base64' value is not valid base64.",
+                    status = 400,
+                    code = "invalid_value",
+                    param = "audio_base64",
+                ),
+            ) from None
         return
     if audio_preflight.get("continue_final"):
         raise HTTPException(
@@ -5376,11 +5392,14 @@ def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
     )
 
 
-def _matches_any(requested: str, candidates) -> bool:
+def _matches_any(requested: str, candidates, fold_case: bool = True) -> bool:
     """Whether *requested* names any of *candidates*.
 
     A repo alias is case-insensitive, a filesystem path is not: lowercasing both
-    made /srv/models/foo.gguf and /srv/models/Foo.gguf the same weights.
+    made /srv/models/foo.gguf and /srv/models/Foo.gguf the same weights. ``fold_case``
+    carries that distinction to an alias derived from a path, which is a plain basename
+    and so indistinguishable from a repo id here: /models/Foo is advertised as Foo, and
+    folding it onto a resident foo answers one directory's id with the other's weights.
     """
     lowered = requested.strip().lower()
     for candidate in candidates:
@@ -5390,7 +5409,8 @@ def _matches_any(requested: str, candidates) -> bool:
             if _norm_path(requested) == _norm_path(candidate):
                 return True
             continue
-        if lowered == str(candidate).strip().lower():
+        other = str(candidate).strip()
+        if (lowered == other.lower()) if fold_case else (requested.strip() == other):
             return True
     return False
 
@@ -5845,9 +5865,11 @@ async def _maybe_auto_switch_model(
                 # case are different weights on a case-sensitive filesystem, and a false
                 # match here records the alias on the wrong resident model.
                 loaded_keys = [active, getattr(target_backend, "_openai_advertised_id", None)]
-                # No quant identity on these weights, so the ids decide alone.
+                # a path target's alias is a basename, so fold it no further than the resolver.
                 return _matches_any(target_id, loaded_keys) or _matches_any(
-                    override_id, loaded_keys
+                    override_id,
+                    loaded_keys,
+                    fold_case = not _looks_like_local_path(target_id),
                 )
             if not backend.is_loaded or not backend.model_identifier:
                 return False

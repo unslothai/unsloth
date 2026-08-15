@@ -2422,6 +2422,7 @@ def test_local_servable_model_reads_files_not_model_format(tmp_path):
     st.mkdir()
     (st / "model.safetensors").write_bytes(_safetensors_bytes())
     (st / "tokenizer.json").write_text("{}")
+    (st / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
     assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) is None
     (st / "config.json").write_text(_CHAT_CONFIG)
     assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) == (
@@ -8009,6 +8010,8 @@ def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
     (path / "config.json").write_text(_CHAT_CONFIG)
     (path / "model.safetensors").write_bytes(_safetensors_bytes())
     (path / "tokenizer.json").write_text("{}")
+    # chat generation raises without one, so a real servable checkpoint carries it.
+    (path / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
     return path
 
 
@@ -8231,7 +8234,7 @@ def test_a_custom_code_checkpoint_is_not_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "CustomCode")
     (path / "config.json").write_text(
-        '{"architectures": ["Qwen3ForCausalLM"], "auto_map": {"AutoModel": "modeling.MyModel"}}'
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": {"AutoModel": "modeling.MyModel"}}'
     )
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
@@ -8307,6 +8310,7 @@ def test_a_checkpoint_without_tokenizer_assets_is_not_switchable(tmp_path):
     path.mkdir()
     (path / "config.json").write_text(_CHAT_CONFIG)
     (path / "model.safetensors").write_bytes(_safetensors_bytes())
+    (path / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
     (path / "tokenizer.json").write_text("{}")
@@ -8347,7 +8351,7 @@ def test_auto_map_in_a_processor_config_is_not_switchable(tmp_path):
         path = _local_checkpoint(tmp_path, f"custom-{name}")
         info = SimpleNamespace(id = str(path), path = str(path))
         assert resolver.local_servable_model(info) is not None
-        blob = '{"architectures": ["Qwen3ForCausalLM"], "auto_map": {"A": "m.M"}}'
+        blob = '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "auto_map": {"A": "m.M"}}'
         (path / name).write_text(blob)
         assert resolver.local_servable_model(info) is None, name
 
@@ -8433,7 +8437,7 @@ def test_a_transformers_quantization_is_not_offered_on_an_mlx_host(tmp_path, mon
 
     path = _local_checkpoint(tmp_path, "BnB")
     (path / "config.json").write_text(
-        '{"architectures": ["Qwen3ForCausalLM"],'
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",'
         ' "quantization_config": {"quant_method": "bitsandbytes"}}'
     )
     info = SimpleNamespace(id = str(path), path = str(path))
@@ -8495,10 +8499,10 @@ def test_a_text_seq2seq_checkpoint_is_not_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "t5-base")
     info = SimpleNamespace(id = str(path), path = str(path))
-    (path / "config.json").write_text('{"architectures": ["T5ForConditionalGeneration"]}')
+    (path / "config.json").write_text('{"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}')
     assert resolver.local_servable_model(info) is None
     (path / "config.json").write_text(
-        '{"architectures": ["Gemma3ForConditionalGeneration"], "vision_config": {}}'
+        '{"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3", "vision_config": {}}'
     )
     # A VLM also needs its processor assets before it can be advertised.
     assert resolver.local_servable_model(info) is None
@@ -8514,6 +8518,7 @@ def test_tokenizer_metadata_alone_is_not_a_vocabulary(tmp_path):
     path = _local_checkpoint(tmp_path, "MetadataOnly")
     (path / "tokenizer.json").unlink()
     (path / "tokenizer_config.json").write_text("{}")
+    (path / "chat_template.jinja").write_text("{{ messages }}")
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
     # A bare vocab.json is only half a BPE tokenizer; it needs its merges.
@@ -8578,7 +8583,7 @@ def test_a_causal_model_without_the_suffix_stays_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "gpt2")
     info = SimpleNamespace(id = str(path), path = str(path))
-    (path / "config.json").write_text('{"architectures": ["GPT2LMHeadModel"]}')
+    (path / "config.json").write_text('{"architectures": ["GPT2LMHeadModel"], "model_type": "gpt2"}')
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -8590,13 +8595,41 @@ def test_an_fp8_checkpoint_is_offered_only_on_cuda(tmp_path, monkeypatch):
 
     path = _local_checkpoint(tmp_path, "FP8")
     (path / "config.json").write_text(
-        '{"architectures": ["Qwen3ForCausalLM"], "quantization_config": {"quant_method": "fp8"}}'
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization_config": {"quant_method": "fp8"}}'
     )
     info = SimpleNamespace(id = str(path), path = str(path))
+    # a capability the tier check accepts, or the verdict turns on whether torch is imported.
+    import sys
+    import types as _types
+
+    _torch = _types.ModuleType("torch")
+    _torch.cuda = _types.SimpleNamespace(get_device_capability = lambda: (9, 0))
+    monkeypatch.setitem(sys.modules, "torch", _torch)
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
     assert resolver.local_servable_model(info) is None
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_the_fp8_capability_probe_fails_closed(monkeypatch):
+    # codex P2: the loader runs the same query, so a probe that raises here raises there too.
+    import sys
+    import types as _types
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", False, raising = False)
+
+    torch = _types.ModuleType("torch")
+    torch.cuda = _types.SimpleNamespace(get_device_capability = lambda: (9, 0))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    assert resolver._fp8_suits_host("fp8") is True
+
+    def _raise():
+        raise RuntimeError("CUDA driver version is insufficient")
+
+    torch.cuda.get_device_capability = _raise
+    assert resolver._fp8_suits_host("fp8") is False
 
 
 def test_an_obsolete_bin_index_does_not_hide_a_safetensors_checkpoint(tmp_path):
@@ -8652,7 +8685,7 @@ def test_an_nvfp4_checkpoint_is_not_switchable(tmp_path, monkeypatch):
 
     path = _local_checkpoint(tmp_path, "NVFP4")
     (path / "config.json").write_text(
-        '{"architectures": ["Qwen3ForCausalLM"],'
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",'
         ' "quantization": {"group_size": 16, "bits": 4, "mode": "nvfp4"}}'
     )
     info = SimpleNamespace(id = str(path), path = str(path))
@@ -8797,7 +8830,7 @@ def test_an_unknown_quantizer_is_withheld(tmp_path, monkeypatch):
     for method in ("gptq", "awq", "something-invented"):
         path = _local_checkpoint(tmp_path, f"q-{method}")
         (path / "config.json").write_text(
-            '{"architectures": ["Qwen3ForCausalLM"],'
+            '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",'
             f' "quantization_config": {{"quant_method": "{method}"}}}}'
         )
         info = SimpleNamespace(id = str(path), path = str(path))
@@ -8812,7 +8845,7 @@ def test_fp8_is_withheld_on_rocm(tmp_path, monkeypatch):
 
     path = _local_checkpoint(tmp_path, "FP8-ROCm")
     (path / "config.json").write_text(
-        '{"architectures": ["Qwen3ForCausalLM"], "quantization_config": {"quant_method": "fp8"}}'
+        '{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "quantization_config": {"quant_method": "fp8"}}'
     )
     info = SimpleNamespace(id = str(path), path = str(path))
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
@@ -8854,6 +8887,7 @@ def test_a_symlinked_hf_snapshot_is_not_withheld(tmp_path):
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text(_CHAT_CONFIG)
     (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
     (snapshot / "model.safetensors").symlink_to(blob)
     (snapshot / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "model.safetensors"}}'
@@ -9038,6 +9072,57 @@ def test_two_directories_differing_only_by_case_keep_their_own_weights(tmp_path,
         assert resolver._resolve_from_index(alias, alias_index)[0] == load, alias
 
 
+def test_a_checkpoint_with_no_chat_template_is_withheld(tmp_path):
+    # codex P2: generate_stream raises outright without one, after the swap has evicted.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoTemplate")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+    (path / "tokenizer_config.json").write_text('{"model_max_length": 4096}')
+    assert resolver.local_servable_model(info) is None
+    # the standalone file newer saves write counts too.
+    (path / "chat_template.jinja").write_text("{{ messages }}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_fabricated_architecture_is_withheld(tmp_path):
+    # codex P2: the ForCausalLM suffix is a convention, not proof the loader implements it.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "MadeUp")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["MadeUpForCausalLM"], "model_type": "made_up"})
+    )
+    assert resolver.local_servable_model(info) is None
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["MadeUpForCausalLM"], "model_type": "qwen3"})
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_boolean_is_not_a_safetensors_offset(tmp_path):
+    # codex P2: bool subclasses int, so shape [true] and offsets [false, 4] passed.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BoolOffsets")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(tensor, payload):
+        blob = json.dumps({"w": tensor}).encode()
+        (path / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(blob)) + blob + b"\0" * payload
+        )
+
+    write({"dtype": "F32", "shape": [True], "data_offsets": [False, 4]}, 4)
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}, 4)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
 def test_unreadable_safetensors_metadata_is_withheld(tmp_path):
     # codex P2: safetensors 0.8.0 requires __metadata__ to be str -> str (verified).
     import struct
@@ -9189,6 +9274,7 @@ def test_a_serving_hf_cache_row_is_reported_loaded(tmp_path, monkeypatch):
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text(_CHAT_CONFIG)
     (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "tokenizer_config.json").write_text('{"chat_template": "{{ messages }}"}')
     (snapshot / "model.safetensors").write_bytes(_safetensors_bytes())
 
     monkeypatch.setattr(
