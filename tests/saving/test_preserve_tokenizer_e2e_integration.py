@@ -14,7 +14,7 @@ from unsloth.save import _preserve_tokenizer_class
 @pytest.mark.integration
 def test_real_bge_tokenizer_export_roundtrip():
     base = "unsloth/bge-small-en-v1.5"
-    tok = AutoTokenizer.from_pretrained(base, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(base, trust_remote_code = True)
     orig_class = tok.__class__.__name__
 
     with tempfile.TemporaryDirectory() as td:
@@ -31,6 +31,6 @@ def test_real_bge_tokenizer_export_roundtrip():
         assert fixed["tokenizer_class"] != "TokenizersBackend"
         assert fixed["tokenizer_class"] in {orig_class, "BertTokenizer", "BertTokenizerFast"}
 
-        reloaded = AutoTokenizer.from_pretrained(export, trust_remote_code=True)
+        reloaded = AutoTokenizer.from_pretrained(export, trust_remote_code = True)
         ids = reloaded("hello world")["input_ids"]
         assert len(ids) > 0
