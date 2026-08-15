@@ -886,8 +886,8 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
 
 def _restore_host_guard(backend):
     """Put the real preflight back on a harness that stubs it off by default."""
-    backend._launch_host_shortfall_message = (
-        LlamaCppBackend._launch_host_shortfall_message.__get__(backend)
+    backend._launch_host_shortfall_message = LlamaCppBackend._launch_host_shortfall_message.__get__(
+        backend
     )
     return backend
 
@@ -1248,8 +1248,12 @@ def test_manual_zero_layers_keeps_the_card_for_its_kv(tmp_path, monkeypatch):
     )
 
     assert _launch(
-        backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0,
-        mtp_draft_path = str(drafter), speculative_type = "mtp",
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        mtp_draft_path = str(drafter),
+        speculative_type = "mtp",
     )["cmd"]
 
 
@@ -1289,7 +1293,9 @@ def test_reclaimable_cgroup_cache_is_added_back(monkeypatch, tmp_path):
 def test_a_device_pin_narrowing_the_pool_only_credits_its_own_cards(tmp_path, monkeypatch):
     """A pass-through `--device CUDA0` restricts the child to one card, so the second
     card's free VRAM is credit the launch never gets."""
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 8_000, 12_000), (1, 8_000, 12_000)])
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 8_000, 12_000), (1, 8_000, 12_000)]
+    )
     _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(14 * 1024**3)
     backend._select_gpus = lambda *args, **kwargs: (None, True)

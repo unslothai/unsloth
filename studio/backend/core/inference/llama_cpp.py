@@ -6950,8 +6950,12 @@ class LlamaCppBackend:
         mlock, reserves_ram = resolve_effective_memory_state(argv, env)
         weights_on_host = no_gpu or ngl == 0 or mlock or reserves_ram
 
-        free_vram_mib = 0 if no_gpu else self._visible_gpu_free_mib(
-            argv, env, detected_gpus, total_by_idx, is_vulkan_backend = is_vulkan_backend
+        free_vram_mib = (
+            0
+            if no_gpu
+            else self._visible_gpu_free_mib(
+                argv, env, detected_gpus, total_by_idx, is_vulkan_backend = is_vulkan_backend
+            )
         )
 
         # Each companion sits on one side or the other; only the GPU side competes
@@ -6976,9 +6980,7 @@ class LlamaCppBackend:
             + (0 if draft_on_cpu else draft_bytes)
         )
         host_bytes = host_pinned + max(0, gpu_side - free_vram_mib * 1024 * 1024)
-        return self._host_offload_shortfall_message(
-            host_bytes, self._available_system_memory_mib()
-        )
+        return self._host_offload_shortfall_message(host_bytes, self._available_system_memory_mib())
 
     def _visible_gpu_free_mib(
         self,
