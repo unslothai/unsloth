@@ -434,3 +434,107 @@ def test_the_video_assembly_hands_the_flag_to_the_ltx23_assembler():
         "core/inference/video.py", "load_pipeline", "load_ltx23_pipeline"
     ):
         assert "local_files_only" in keywords
+
+
+# ── the live cache root ──────────────────────────────────────────────────────────
+# Studio's HF cache folder is a SETTING (PUT /settings/hugging-face-cache), and changing it only
+# rewrites the DB: os.environ and huggingface_hub's import-time constant keep the startup value.
+# So after a change the live root and the import-time root differ, and an unset cache_dir resolves
+# through the stale one. That mismatch predates this PR and used to be survivable, because a miss
+# in the stale root just downloaded again. It is not survivable with local_files_only: the switch's
+# locality gate reads the LIVE root (media_locality passes cache_dir = hub_cache_dir()), so it
+# clears a model that is fully present, the resident pipeline is evicted, and the assembler then
+# raises LocalEntryNotFoundError against the other root. Pinning is what keeps the gate's verdict
+# and the load looking in the same place.
+
+LIVE_ROOT = "/live-hub"
+
+
+@pytest.fixture
+def live_cache_root(monkeypatch):
+    """Point the live root somewhere unmistakable, so a stale-root read cannot pass by accident."""
+    import utils.hf_cache_settings as cache_settings
+
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: LIVE_ROOT)
+    return LIVE_ROOT
+
+
+def test_the_krea_assembler_pins_every_component_to_the_live_cache(
+    monkeypatch, tmp_path, live_cache_root
+):
+    seen = _drive_krea(monkeypatch, tmp_path, local_files_only = True)
+    # The direct loader calls. "tokenizer" and "text_encoder" are absent by design: those two tags
+    # record the kwargs handed to load_krea2_tokenizer / load_krea2_text_encoder, which are Studio
+    # helpers rather than hub calls, so they take no cache_dir and pin internally instead. The test
+    # below drives them for real.
+    for tag in ("scheduler", "vae", "transformer", "model_index"):
+        assert seen[tag].get("cache_dir") == live_cache_root, tag
+
+
+def test_the_krea_tokenizer_and_encoder_helpers_pin_internally(monkeypatch, live_cache_root):
+    """Both build their own kwargs dict, so the pin has to be inside each one."""
+    transformers = pytest.importorskip("transformers")
+
+    from core.inference import diffusion_krea2
+
+    seen: dict = {}
+
+    class _Component:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def from_pretrained(self, repo_id, **kwargs):
+            seen[self.tag] = kwargs
+            return SimpleNamespace(tag = self.tag, text_config = SimpleNamespace())
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Component("tokenizer"), raising = False)
+    monkeypatch.setattr(transformers, "AutoConfig", _Component("config"), raising = False)
+    monkeypatch.setattr(transformers, "Qwen3VLModel", _Component("text_encoder"), raising = False)
+
+    diffusion_krea2.load_krea2_tokenizer("krea/Krea-2-Turbo", local_files_only = True)
+    diffusion_krea2.load_krea2_text_encoder("krea/Krea-2-Turbo", "bf16", local_files_only = True)
+
+    assert set(seen) == {"tokenizer", "config", "text_encoder"}
+    for tag, kwargs in seen.items():
+        assert kwargs.get("cache_dir") == live_cache_root, tag
+        assert kwargs.get("local_files_only") is True, tag
+
+
+def test_the_ltx23_assembler_pins_the_base_reads_to_the_live_cache(monkeypatch, live_cache_root):
+    seen = _drive_ltx23(monkeypatch, local_files_only = True)
+    # The base-repo reads only: the companion loaders take a checkpoint path, not a hub id.
+    assert seen["load_config"]["cache_dir"] == live_cache_root
+    for name in ("scheduler", "tokenizer", "text_encoder"):
+        assert seen[name]["cache_dir"] == live_cache_root, name
+
+
+def test_the_hidream_external_encoder_is_pinned_to_the_live_cache(monkeypatch, live_cache_root):
+    """TE4 lives in its own standalone repo, so it never rides the pipeline's pipe_kwargs (which
+    do carry cache_dir); it is the one 16 GB component that resolves its hub id unaided."""
+    transformers = pytest.importorskip("transformers")
+
+    from core.inference import diffusion_hidream
+
+    seen: dict = {}
+
+    class _Component:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def from_pretrained(self, repo_id, **kwargs):
+            seen[self.tag] = kwargs
+            return SimpleNamespace(tag = self.tag)
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Component("tokenizer_4"), raising = False)
+    monkeypatch.setattr(
+        transformers, "LlamaForCausalLM", _Component("text_encoder_4"), raising = False
+    )
+    diffusion_hidream.hidream_te4_kwargs(
+        dtype = "bf16",
+        hf_token = None,
+        local_files_only = True,
+    )
+    assert set(seen) == {"tokenizer_4", "text_encoder_4"}
+    for tag, kwargs in seen.items():
+        assert kwargs.get("cache_dir") == live_cache_root, tag
+        assert kwargs.get("local_files_only") is True, tag

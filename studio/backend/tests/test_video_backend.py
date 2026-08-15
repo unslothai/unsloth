@@ -1276,8 +1276,14 @@ def _ltx23_assembly_stubs(monkeypatch, tmp_path):
             base_repo,
             token = None,
             local_files_only = False,
+            cache_dir = None,
         ):
-            _FakeLTX2Pipeline.last_config_kwargs = {"local_files_only": local_files_only}
+            _FakeLTX2Pipeline.last_config_kwargs = {
+                "local_files_only": local_files_only,
+                # Pinned to Studio's LIVE root: unset, this resolves through huggingface_hub's
+                # import-time constant, which a mid-session cache-folder change leaves stale.
+                "cache_dir": cache_dir,
+            }
             return {
                 "scheduler": ["diffusers", "_Loaded"],
                 "tokenizer": ["transformers", "_Loaded"],

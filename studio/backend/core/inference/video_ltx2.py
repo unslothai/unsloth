@@ -32,6 +32,13 @@ logger = get_logger(__name__)
 
 # Companion files (text projections, VAEs incl. vocoder) beside the quants in unsloth's GGUF repo: the official Lightricks weights split out of the combined checkpoint. Keyed by variant.
 LTX23_EXTRAS_REPO = "unsloth/LTX-2.3-GGUF"
+
+
+def _live_cache_dir() -> str:
+    """Studio's LIVE hub cache root. Read from utils rather than ``diffusion.hub_cache_dir`` to
+    avoid a circular import, the same way diffusion_auto_policy does."""
+    from utils.hf_cache_settings import active_hf_hub_cache
+    return active_hf_hub_cache()
 _EXTRAS_TEXT_PROJ = "text_encoders/ltx-2.3-22b-{variant}_embeddings_connectors.safetensors"
 _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
 _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"
@@ -648,7 +655,14 @@ def load_ltx23_pipeline(
     )
 
     # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather than drift.
-    index = LTX2Pipeline.load_config(base_repo, token = hf_token, local_files_only = local_files_only)
+    # Pinned to the LIVE hub root, not huggingface_hub's import-time constant: Studio's cache
+    # folder is a setting, and the locality gate that cleared this switch reads the live root. An
+    # unpinned lookup after a mid-session change searches the OTHER root, so under
+    # local_files_only it raises for a base that is fully downloaded, after eviction.
+    cache_dir = _live_cache_dir()
+    index = LTX2Pipeline.load_config(
+        base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
+    )
 
     def _sub(name: str, **extra: Any) -> Any:
         library, class_name = index[name]
@@ -660,6 +674,7 @@ def load_ltx23_pipeline(
             # The dense Gemma3 encoder below is the largest of these by far, and every one of them
             # resolves the hub id: the flag is what keeps each a cache read.
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
             **extra,
         )
 

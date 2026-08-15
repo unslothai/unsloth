@@ -52,8 +52,18 @@ def hidream_te4_kwargs(
     import torch  # noqa: F401 -- dtype values are torch dtypes; import keeps parity with callers
     from transformers import AutoTokenizer, LlamaForCausalLM
 
+    # Pinned to the LIVE hub root: ``encoder_repo_complete`` verifies these assets there, so an
+    # unpinned lookup after a mid-session cache-folder change searches huggingface_hub's
+    # import-time root instead and fails under local_files_only for a 16 GB encoder that is
+    # present, after the resident image pipeline was evicted.
+    from utils.hf_cache_settings import active_hf_hub_cache
+    cache_dir = active_hf_hub_cache()
+
     tokenizer_4 = AutoTokenizer.from_pretrained(
-        HIDREAM_LLAMA_REPO, token = hf_token, local_files_only = local_files_only
+        HIDREAM_LLAMA_REPO,
+        token = hf_token,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
     )
 
     fp8_engages = False
@@ -109,6 +119,7 @@ def hidream_te4_kwargs(
         torch_dtype = dtype,
         token = hf_token,
         local_files_only = local_files_only,
+        cache_dir = cache_dir,
     )
     if fp8_engages:
         try:
@@ -131,5 +142,6 @@ def hidream_te4_kwargs(
                 torch_dtype = dtype,
                 local_files_only = local_files_only,
                 token = hf_token,
+                cache_dir = cache_dir,
             )
     return {"text_encoder_4": text_encoder_4, "tokenizer_4": tokenizer_4}

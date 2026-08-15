@@ -36,6 +36,21 @@ logger = get_logger(__name__)
 KREA2_FAMILY_NAME = "krea-2"
 
 
+def _live_cache_dir() -> str:
+    """Studio's LIVE hub cache root, which every component load here must be pinned to.
+
+    An unset ``cache_dir`` resolves through huggingface_hub's import-time constant, and Studio's
+    cache folder is a setting: after a mid-session change the two roots differ. This assembler is
+    reached with a repo id, and the locality gate that cleared the switch reads the live root
+    (``media_locality`` passes ``cache_dir = hub_cache_dir()``), so an unpinned load looks in the
+    OTHER root -- which under ``local_files_only`` raises after the resident pipeline was already
+    evicted, for a model that is fully downloaded. Read from utils rather than
+    ``diffusion.hub_cache_dir`` to avoid a circular import, the same way diffusion_auto_policy does.
+    """
+    from utils.hf_cache_settings import active_hf_hub_cache
+    return active_hf_hub_cache()
+
+
 def load_krea2_tokenizer(
     repo_id: str,
     hf_token: Optional[str] = None,
@@ -44,7 +59,11 @@ def load_krea2_tokenizer(
     """The Krea 2 tokenizer, tolerating the repo's transformers-5.x tokenizer config."""
     from transformers import AutoTokenizer
 
-    kwargs: dict[str, Any] = {"subfolder": "tokenizer", "local_files_only": local_files_only}
+    kwargs: dict[str, Any] = {
+        "subfolder": "tokenizer",
+        "local_files_only": local_files_only,
+        "cache_dir": _live_cache_dir(),
+    }
     if hf_token:
         kwargs["token"] = hf_token
     try:
@@ -73,7 +92,11 @@ def load_krea2_text_encoder(
     """The Qwen3-VL text encoder, remapping 5.x ``rope_parameters`` for a 4.x runtime."""
     from transformers import AutoConfig, Qwen3VLModel
 
-    kwargs: dict[str, Any] = {"subfolder": "text_encoder", "local_files_only": local_files_only}
+    kwargs: dict[str, Any] = {
+        "subfolder": "text_encoder",
+        "local_files_only": local_files_only,
+        "cache_dir": _live_cache_dir(),
+    }
     if hf_token:
         kwargs["token"] = hf_token
     config = AutoConfig.from_pretrained(repo_id, **kwargs)
@@ -106,6 +129,7 @@ def _load_model_index(
         "model_index.json",
         token = hf_token or None,
         local_files_only = local_files_only,
+        cache_dir = _live_cache_dir(),
     )
     return json.loads(Path(path).read_text(encoding = "utf-8"))
 
@@ -146,13 +170,18 @@ def load_krea2_pipeline(
         )
 
     token = hf_token or None
+    cache_dir = _live_cache_dir()
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token, local_files_only = local_files_only)
     if text_encoder is None:
         text_encoder = load_krea2_text_encoder(
             repo_id, dtype, hf_token = token, local_files_only = local_files_only
         )
     scheduler = diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained(
-        repo_id, subfolder = "scheduler", token = token, local_files_only = local_files_only
+        repo_id,
+        subfolder = "scheduler",
+        token = token,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
     )
     vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
         repo_id,
@@ -160,6 +189,7 @@ def load_krea2_pipeline(
         torch_dtype = dtype,
         token = token,
         local_files_only = local_files_only,
+        cache_dir = cache_dir,
     )
     if transformer is None and with_transformer:
         transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
@@ -168,6 +198,7 @@ def load_krea2_pipeline(
             torch_dtype = dtype,
             token = token,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
     model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     return diffusers.Krea2Pipeline(
