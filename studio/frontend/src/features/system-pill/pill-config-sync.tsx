@@ -15,9 +15,16 @@ import { isMacPlatform } from "@/lib/pill-native";
 // leaving the hotkey stale for the window's lifetime.
 let lastSyncSucceededAt = 0;
 let syncInFlight = false;
+let syncQueued = false;
 
 async function syncConfigToNative(): Promise<void> {
-  if (syncInFlight) return;
+  // A trigger arriving mid-attempt is remembered, not dropped: during startup
+  // it is often the only retry there will be, and the attempt it overlaps is
+  // the one most likely to fail on a backend that is not up yet.
+  if (syncInFlight) {
+    syncQueued = true;
+    return;
+  }
   if (lastSyncSucceededAt && Date.now() - lastSyncSucceededAt < 30_000) return;
   syncInFlight = true;
   try {
@@ -27,6 +34,12 @@ async function syncConfigToNative(): Promise<void> {
     // Backend not up yet or signed out; the next sync trigger really does retry.
   } finally {
     syncInFlight = false;
+    if (syncQueued) {
+      syncQueued = false;
+      // Re-enters the throttle above, so a successful attempt still collapses
+      // the queued one instead of running it back to back.
+      void syncConfigToNative();
+    }
   }
 }
 
