@@ -1364,6 +1364,10 @@ async def _async_none(*args, **kwargs):
     return None
 
 
+async def _lock_is_held(owner):
+    return mas._switch_lock(owner).locked()
+
+
 def test_a_switch_waits_for_the_other_media_backend(
     catalog, enabled, tmp_path, backend, loads, monkeypatch
 ):
@@ -1491,10 +1495,60 @@ def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
     monkeypatch.setattr(mas, "_load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(mas, "_chat_busy", lambda: True)
     monkeypatch.setattr(mas, "_other_backend_busy", lambda owner: True)
+    # And a real tracked request on the other backend, which the count must also ignore.
+    monkeypatch.setattr(mk._TRACKERS[arb.VIDEO], "_inflight", 1)
 
     _switch("black-forest-labs/FLUX.1-dev")
 
     assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+
+
+def test_a_renamed_ltx23_checkpoint_is_refused_when_its_extras_are_absent(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # The planner judges 2.3 by name while the loader reads the header, so a renamed checkpoint
+    # plans as 2.0, reports nothing missing, and pulls the 2.3 extras during assembly.
+    (tmp_path / "generic-Q4_K_M.gguf").write_bytes(b"")
+    catalog.append(
+        _info(
+            "local/ltx",
+            tmp_path / "generic-Q4_K_M.gguf",
+            task = mas.VIDEO_TASK,
+            model_format = "gguf",
+        )
+    )
+    monkeypatch.setattr(mas, "_hidden_ltx23_extras", lambda owner, pick: True)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("local/ltx", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_stalled_gate_does_not_pin_the_switch_lock(
+    catalog, enabled, tmp_path, backend, monkeypatch
+):
+    # A gate held elsewhere must not keep the setup task, and with it the switch lock, alive
+    # past the budget: acquisition happens before the non-cancellable phase.
+    import core.inference.media_keepwarm as keepwarm
+
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
+    keepwarm._TRACKERS[arb.VIDEO].gate.acquire()
+    try:
+        began = time.monotonic()
+        with pytest.raises(HTTPException) as excinfo:
+            _switch("black-forest-labs/FLUX.1-dev")
+        assert excinfo.value.status_code == 503
+        assert time.monotonic() - began < 3.0
+        # The lock is per running loop, so its release is asserted inside one.
+        assert not asyncio.run(_lock_is_held(arb.DIFFUSION))
+    finally:
+        keepwarm._TRACKERS[arb.VIDEO].gate.release()
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

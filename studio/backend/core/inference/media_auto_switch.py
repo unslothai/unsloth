@@ -634,16 +634,17 @@ async def _drain(
         # Every recorded waiter is another request parked on the lock: this one left the marker
         # when it acquired the lock, so nothing here belongs to it.
         others -= _waiter_count(owner)
+        # A CPU load never calls acquire_for, so it evicts nobody and owes no cross-owner wait.
+        cross_owner = await asyncio.to_thread(_load_takes_the_gpu)
         # The other media backend counts too: the load route takes the GPU through the arbiter,
         # whose cross-owner handoff unloads whatever holds it, cancelling a generation that has
         # nothing to do with this request.
-        others += other_request_count(_other_owner(owner), count_pending = count_pending)
+        if cross_owner:
+            others += other_request_count(_other_owner(owner), count_pending = count_pending)
         # Probed under the deadline: loading_repo_ids takes the backend lock, which the loader
         # holds across pipeline assembly, so an unbounded probe outlives the response window.
         # Chat counts as well: the arbiter evicts whoever owns the GPU, streaming or not.
         probe_by = deadline if probe_deadline is None else probe_deadline
-        # A CPU load never calls acquire_for, so it evicts nobody and owes no cross-owner wait.
-        cross_owner = await asyncio.to_thread(_load_takes_the_gpu)
         if (
             others <= 0
             and not await _probe(_backend_busy, backend, probe_by)
@@ -748,6 +749,37 @@ def _refuse(
 # partitions are a load-time choice. Both make a directory on disk an incomplete answer.
 _EXTERNAL_ENCODER_FAMILIES = frozenset({"hidream-i1"})
 _H3_FAMILY = "minimax-h3"
+
+
+def _hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
+    """Whether this local video pick is an LTX-2.3 checkpoint the plan did not treat as one.
+
+    The planner judges 2.3 by name, while the loader reads the checkpoint header and then pulls
+    the 2.3 VAE, audio and connector artifacts. A renamed checkpoint therefore plans as 2.0,
+    reports nothing missing, and downloads those extras during assembly.
+    """
+    if owner != VIDEO or not pick.gguf_filename:
+        return False
+    try:
+        from core.inference.diffusion_families import resolve_local_gguf_child
+        from core.inference.video_ltx2 import LTX23_EXTRAS_REPO, is_ltx23_checkpoint
+        from core.inference.video_families import detect_video_family
+    except Exception:  # noqa: BLE001 -- no ltx support here means nothing to hide
+        return False
+    fam = detect_video_family(pick.model_id or "") or detect_video_family(pick.model_path)
+    if fam is None or getattr(fam, "name", None) != "ltx-2":
+        return False
+    root = Path(pick.model_path).expanduser()
+    if not root.exists():
+        # A repo id: the planner reads the same remote listing the loader will, so it knows.
+        return False
+    try:
+        checkpoint = resolve_local_gguf_child(root, pick.gguf_filename)
+    except Exception:  # noqa: BLE001 -- an unreadable pick is refused by the load itself
+        return False
+    if not is_ltx23_checkpoint(checkpoint):
+        return False
+    return not _encoder_repo_complete(LTX23_EXTRAS_REPO)
 
 
 def _missing_external_encoder(pick: MediaModelPick) -> Optional[int]:
@@ -959,6 +991,8 @@ def _missing_download_bytes(
     # the background loader, after the resident pipeline has already been torn down.
     if any(plan.get("incompatible_reason") for plan in plans):
         return None
+    if _hidden_ltx23_extras(owner, target):
+        return _UNSIZED_MISSING
     missing = max((max(0, int(plan.get("total_bytes") or 0)) for plan in plans), default = 0)
     # An entry whose sibling sizes could not be read still names a file the load will fetch, and
     # both planners coerce an unknown size to zero, so entries decide and bytes only describe.
@@ -1034,11 +1068,22 @@ async def _gated_start_load(
         # deadlock: both media backends, image first, and chat. The arbiter unloads whichever
         # owner holds the GPU, so a request admitted between the drain and registration would
         # be cancelled by this load.
-        async with (
-            admission_gate(DIFFUSION),
-            admission_gate(VIDEO),
-            inference_lifecycle_gate(),
-        ):
+        async with contextlib.AsyncExitStack() as gates:
+            # Entered one at a time under the budget: a stalled holder elsewhere would otherwise
+            # pin this task, and with it the switch lock, indefinitely. Cancelling here is
+            # side-effect-free and the stack releases whatever was already entered; nothing past
+            # this point may be interrupted.
+            for gate in (
+                admission_gate(DIFFUSION),
+                admission_gate(VIDEO),
+                inference_lifecycle_gate(),
+            ):
+                await _bounded(
+                    gates.enter_async_context(gate),
+                    deadline,
+                    kind = kind,
+                    openai_errors = openai_errors,
+                )
             # Re-resolved under the gate: a concurrent load can activate the other image engine
             # while this request drains, leaving the earlier reference on the idle one.
             backend = _backend_for(owner)
