@@ -278,6 +278,16 @@ async def _gated_start_load(
     that acquisition is free, and the stack releases whatever was already entered; nothing past
     it may be interrupted.
 
+    Chat's lifecycle gate is the FIRST of them, not the last. Every media generation route is
+    counted on chat's in-flight counter as well as its own, and the middleware takes chat's gate
+    and releases it before it parks on the media one. With the media gates taken first, a request
+    arriving in between passed the still-open chat gate, incremented chat's ``_inflight``, and
+    only then blocked on the held media gate: the in-gate drain discounts it on the media side
+    (``count_pending=False``) but ``chat_busy(count_pending=False)`` still read it as running chat
+    work, and an otherwise idle switch answered 409 without loading anything. Taking chat's gate
+    first parks such a request in ``_note_pending`` instead, where both counters ignore it, and
+    the middleware never holds a media gate while it waits for chat's, so the order is safe.
+
     A load that does not take the GPU holds its own backend's gate only. It cannot evict chat or
     the other media backend, so waiting on their gates would let an unrelated chat teardown time
     the switch out, and holding them would block new chat and video requests for as long as the
@@ -287,7 +297,7 @@ async def _gated_start_load(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     needed = (
-        (admission_gate(DIFFUSION), admission_gate(VIDEO), inference_lifecycle_gate())
+        (inference_lifecycle_gate(), admission_gate(DIFFUSION), admission_gate(VIDEO))
         if takes_the_gpu
         else (admission_gate(owner),)
     )

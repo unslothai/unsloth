@@ -11,6 +11,7 @@ error envelopes without torch, diffusers, weights or a GPU.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import logging
 import time
@@ -2476,3 +2477,123 @@ def test_a_non_h3_sibling_stays_in_the_ambiguity_group(catalog, enabled, tmp_pat
 
     # The resident H3 checkpoint must not answer for the Wan request.
     assert [pick.gguf_filename for _owner, pick in loads] == ["wan-Q4_K_M.gguf"]
+
+
+async def _until(predicate, *, timeout = 5.0):
+    """Wait for a real condition rather than guessing a sleep length."""
+    limit = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < limit, "condition never held"
+        await asyncio.sleep(0.01)
+
+
+def test_a_media_request_parked_on_a_gate_is_not_read_as_running_chat_work(monkeypatch):
+    # Every media generation route is counted on chat's in-flight counter as well as its own.
+    # With the media gates taken before chat's, a request arriving in between passed the still
+    # open chat gate, incremented chat's _inflight, and only then blocked on the held media
+    # gate: the in-gate drain discounted it on the media side but chat_busy(count_pending=False)
+    # read the same blocked request as running chat work, so an otherwise idle switch answered
+    # 409 and loaded nothing. Driven with the real gates and the real middleware.
+    import core.inference.llama_keepwarm as chat
+
+    class _Backend:
+        def status(self):
+            return {"loaded": True, "repo_id": "resident/model"}
+
+        def loading_repo_ids(self):
+            return []
+
+        def generate_progress(self):
+            return {"active": False}
+
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(backends, "other_backend_busy", lambda owner: False)
+    monkeypatch.setattr(backends, "backend_for", lambda owner: _Backend())
+    monkeypatch.setattr(mas, "backend_for", lambda owner: _Backend())
+    monkeypatch.setattr(mas, "satisfied_by", lambda status, name, pick: False)
+
+    started: list = []
+
+    async def _start_load(owner, pick, subject, token):
+        started.append(pick)
+
+    async def _require_local(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mas, "_start_load", _start_load)
+    monkeypatch.setattr(mas, "_require_local", _require_local)
+
+    pick = index.MediaModelPick("org/target", "/models/target", None, None)
+    image = mk._TRACKERS[arb.DIFFUSION]
+    video = mk._TRACKERS[arb.VIDEO]
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def _scenario():
+        # The switching request is itself tracked by the middleware, on both counters.
+        chat._note_pending()
+        chat._note_start()
+        image.note_pending()
+        image.note_start()
+        # An ordinary holder of the other backend's admission gate: the media idle tick keeps
+        # it across status(), the busy probe and unload(). A real lock, not a patched count.
+        assert video.gate.acquire(blocking = False)
+        newcomer = None
+        try:
+            switcher = asyncio.ensure_future(
+                mas._gated_start_load(
+                    arb.DIFFUSION,
+                    "org/target",
+                    pick,
+                    "test-user",
+                    [],
+                    time.monotonic() + 30.0,
+                    kind = "image",
+                    openai_errors = True,
+                    hf_token = None,
+                    takes_the_gpu = True,
+                )
+            )
+            # it is parked on the video gate, having taken everything ahead of it
+            await _until(lambda: image.gate.locked())
+
+            # a second /v1/images/generations arrives now, through the real middleware
+            newcomer = asyncio.ensure_future(
+                chat.LlamaKeepWarmMiddleware(_app)(
+                    {
+                        "type": "http",
+                        "method": "POST",
+                        "path": "/v1/images/generations",
+                        "headers": [(b"authorization", b"Bearer token")],
+                    },
+                    None,
+                    lambda message: asyncio.sleep(0),
+                )
+            )
+            # counted by the middleware, on whichever gate it came to rest on
+            await _until(lambda: chat._inflight + chat._pending > 1)
+
+            # it is waiting, so it is neither running chat work nor touching the backend
+            assert image.outstanding(count_pending = False) == 1
+            assert backends.chat_busy(False) is False
+
+            video.gate.release()
+            assert await asyncio.wait_for(switcher, 10) is False
+        finally:
+            with contextlib.suppress(RuntimeError):
+                video.gate.release()
+            if newcomer is not None:
+                newcomer.cancel()
+                with contextlib.suppress(BaseException):
+                    await newcomer
+
+    try:
+        asyncio.run(_scenario())
+    finally:
+        chat._inflight = chat._pending = 0
+        for tracker in mk._TRACKERS.values():
+            tracker._inflight = tracker._pending = 0
+
+    assert [entry.model_id for entry in started] == ["org/target"]
