@@ -226,7 +226,10 @@ def _loadable_directory(load_dir: Path) -> bool:
             return True
     except OSError:
         return False
-    return resolve_local_single_file(str(load_dir)) is not None
+    # a sole checkpoint is reinterpreted as a single_file load, which resolves the name through
+    # the same containment check a gguf goes through, so a cache snapshot's symlink is refused
+    sole = resolve_local_single_file(str(load_dir))
+    return sole is not None and _loader_can_open(str(load_dir), sole)
 
 
 def _build_index(task: str) -> dict[str, MediaModelPick]:

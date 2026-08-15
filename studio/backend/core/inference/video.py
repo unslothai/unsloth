@@ -141,7 +141,6 @@ from .video_minimax_h3 import (
     H3_CANVAS_MAX_PIXELS,
     H3_CANVAS_SHORT_EDGE,
     H3_REF_SIZE_MATCH,
-    H3_REF_SIZE_MAX,
     H3_TASK_REFERENCES,
     fit_h3_keyframe,
     fit_h3_reference_image,

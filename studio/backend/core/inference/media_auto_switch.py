@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import time
 from typing import Any, Callable, Optional
 
@@ -167,20 +168,33 @@ def _consume_detached_error(task: "asyncio.Task") -> None:
         logger.debug("Media auto-switch: setup finished after the caller stopped waiting: %s", exc)
 
 
-async def _await_loaded(backend: Any, name: str, pick: MediaModelPick, deadline: float) -> bool:
+async def _await_loaded(
+    backend: Any,
+    name: str,
+    pick: MediaModelPick,
+    deadline: float,
+    *,
+    kind: str,
+    openai_errors: bool,
+) -> bool:
     """Poll the background load until the REQUESTED model is resident; False if still going.
 
     Checked against the pick, not merely "something is loaded": a user load accepted between
     two polls supersedes this one, and returning success there would generate on the
     replacement while reporting the requested model.
+
+    The probes are bounded like every other wait here: ``load_progress`` walks cache directories
+    to count bytes, so on a slow or stalled filesystem a single poll can outlive the budget that
+    the check at the bottom of the loop is meant to enforce.
     """
+    probe = functools.partial(bounded, deadline = deadline, kind = kind, openai_errors = openai_errors)
     while True:
-        progress = await asyncio.to_thread(backend.load_progress) or {}
+        progress = await probe(asyncio.to_thread(backend.load_progress)) or {}
         phase = progress.get("phase")
         if phase == "error":
             raise RuntimeError(progress.get("error") or "The model failed to load.")
         if phase in (None, "ready"):
-            status = await asyncio.to_thread(backend.status)
+            status = await probe(asyncio.to_thread(backend.status))
             # the landed check, not the skip check: this load is ours, so ambiguity is settled
             if resident_is_pick(status, name, pick):
                 return True
@@ -454,7 +468,9 @@ async def maybe_auto_switch_media_model(
 
     try:
         # re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object
-        ready = await _await_loaded(backend_for(owner), name, pick, deadline)
+        ready = await _await_loaded(
+            backend_for(owner), name, pick, deadline, kind = kind, openai_errors = openai_errors
+        )
     except RuntimeError as exc:
         # the loader already redacts this text; a bare raise would 500 with it
         raise refuse(

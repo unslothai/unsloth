@@ -1914,3 +1914,88 @@ def test_a_native_h3_target_refuses_max_reference_sizing(monkeypatch):
     assert resp.status_code == 400
     assert "Diffusers engine" in resp.json()["detail"]
     assert generated == []
+
+
+def test_a_modular_component_the_index_keeps_locally_is_checked(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A modular entry is [library, class, spec], so a two-element test skipped every component
+    # of a MiniMax-H3 pipeline. One whose spec names another repo is the planner's business; one
+    # with no source is a local subfolder this directory is expected to hold.
+    modular = tmp_path / "h3"
+    (modular / "transformer").mkdir(parents = True)
+    (modular / "transformer" / "config.json").write_text("{}")
+    (modular / "modular_model_index.json").write_text(
+        '{"transformer": ["diffusers", "MiniMaxH3Transformer3DModel", {}],'
+        ' "text_encoder": ["transformers", "Qwen3VLModel",'
+        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3"}]}'
+    )
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_hosted_modular_component_is_left_to_the_planner(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # Every component sourced from another repository, so the directory holds none of them and
+    # refusing on that would refuse every modular pipeline there is.
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text(
+        '{"text_encoder": ["transformers", "Qwen3VLModel",'
+        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3"}]}'
+    )
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert [pick.model_id for _owner, pick in loads] == ["MiniMaxAI/MiniMax-H3"]
+
+
+def test_a_cached_single_checkpoint_the_loader_cannot_open_is_not_advertised(catalog, tmp_path):
+    # The directory holds exactly one checkpoint, so both load routes reinterpret it as a
+    # single_file load and resolve the name through the same containment check a GGUF gets,
+    # which a snapshot's symlink into blobs/ fails.
+    _repo_dir, snapshot = _hf_cache_repo(
+        tmp_path, "unsloth/Z-Image-Turbo", files = ["z-image-turbo.safetensors"]
+    )
+    catalog.append(
+        _info("unsloth/Z-Image-Turbo", snapshot, task = mas.IMAGE_TASK, source = "hf_cache")
+    )
+
+    assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo", task = mas.IMAGE_TASK) is None
+
+
+def test_a_stalled_load_probe_still_answers_inside_the_budget(
+    flux, enabled, backend, monkeypatch
+):
+    # load_progress walks cache directories to count bytes, so one poll on a stalled filesystem
+    # outlived the budget the check at the bottom of the loop is there to enforce. Timed inside
+    # the loop: asyncio.run joins the executor on the way out, so the worker's own sleep would
+    # otherwise be counted against a request that had already answered.
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
+
+    async def _start(owner, pick, current_subject, hf_token = None):
+        backend.phase = "downloading"
+        backend.load_progress = lambda: time.sleep(3) or {"phase": "downloading"}
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+
+    async def _drive():
+        began = time.monotonic()
+        with pytest.raises(HTTPException) as excinfo:
+            await mas.maybe_auto_switch_media_model(
+                "black-forest-labs/FLUX.1-dev",
+                owner = arb.DIFFUSION,
+                current_subject = "test-user",
+                openai_errors = True,
+            )
+        assert excinfo.value.status_code == 503
+        assert time.monotonic() - began < 2.0
+
+    asyncio.run(_drive())

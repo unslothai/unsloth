@@ -265,8 +265,8 @@ def _pipeline_components_present(root: Path) -> bool:
     from_pretrained discovers the gap, leaving the API with no model at all.
 
     Judged on what can be seen without reading weights. A directory carrying neither index is
-    not this function's business, and a Modular Diffusers index lists its components in a shape
-    this does not read, so both answer True and are left to the load route.
+    not this function's business, and a modular entry whose spec names another repository is
+    left to the planner, which is what actually covers a hosted component.
     """
     import json
 
@@ -286,11 +286,23 @@ def _pipeline_components_present(root: Path) -> bool:
             if component.startswith("_") or not isinstance(entry, (list, tuple)):
                 continue
             # [null, null] marks a component this pipeline deliberately ships without.
-            if len(entry) != 2 or not entry[1]:
+            if len(entry) not in (2, 3) or not entry[1]:
+                continue
+            # a modular entry is [library, class, spec], and its spec can name another repo,
+            # which the planner covers and this directory is never expected to hold
+            if len(entry) == 3 and _entry_is_hosted(entry[2]):
                 continue
             if not _component_present(root / component):
                 return False
     return True
+
+
+def _entry_is_hosted(spec: Any) -> bool:
+    """Whether a modular index entry sources its component from another repository."""
+    if not isinstance(spec, dict):
+        return False
+    source = spec.get("pretrained_model_name_or_path") or spec.get("repo")
+    return isinstance(source, str) and bool(source.strip())
 
 
 def _component_present(component: Path) -> bool:
