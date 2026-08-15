@@ -8472,6 +8472,9 @@ def test_a_text_seq2seq_checkpoint_is_not_switchable(tmp_path):
     (path / "config.json").write_text(
         '{"architectures": ["Gemma3ForConditionalGeneration"], "vision_config": {}}'
     )
+    # A VLM also needs its processor assets before it can be advertised.
+    assert resolver.local_servable_model(info) is None
+    (path / "preprocessor_config.json").write_text("{}")
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -8551,3 +8554,20 @@ def test_a_causal_model_without_the_suffix_stays_switchable(tmp_path):
     for blob in ('{"architectures": ["GPT2LMHeadModel"]}', '{"model_type": "gpt2"}'):
         (path / "config.json").write_text(blob)
         assert resolver.local_servable_model(info) == (False, ()), blob
+
+
+def test_an_fp8_checkpoint_is_offered_only_on_cuda(tmp_path, monkeypatch):
+    # Codex P2: verify_fp8_support_if_applicable rejects FP8 outside CUDA, so a CPU,
+    # ROCm or MLX host would evict the resident model for a load that cannot succeed.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "FP8")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "quantization_config": {"quant_method": "fp8"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    assert resolver.local_servable_model(info) == (False, ())

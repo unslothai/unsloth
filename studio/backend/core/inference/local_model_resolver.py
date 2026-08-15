@@ -243,6 +243,34 @@ def _host_has_a_non_gguf_backend() -> bool:
         return False
 
 
+_FP8_QUANT_METHODS = ("fp8", "fbgemm_fp8")
+
+
+def _fp8_suits_host(quant_method: str) -> bool:
+    """Whether this host can load an FP8 checkpoint, mirroring the loader's own gates.
+
+    verify_fp8_support_if_applicable requires CUDA, compute capability 8.9 for fp8 and
+    an H100 class card for fbgemm_fp8. The capability tiers need torch, so they apply
+    only when it is already imported; a cold import on the request path is not worth it.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.DEVICE != hw.DeviceType.CUDA:
+            return False
+        import sys
+
+        torch = sys.modules.get("torch")
+        if torch is None:
+            return True
+        major, minor = torch.cuda.get_device_capability()
+    except Exception:
+        return True
+    if quant_method == "fbgemm_fp8":
+        return major >= 9
+    return major * 10 + minor >= 89
+
+
 def _quantization_suits_host(config: dict) -> bool:
     """Whether this host's backend can load the checkpoint's quantization, if any.
 
@@ -254,7 +282,11 @@ def _quantization_suits_host(config: dict) -> bool:
     if isinstance(config.get("quantization"), dict) and "group_size" in config["quantization"]:
         return mlx_host
     method = (config.get("quantization_config") or {}).get("quant_method")
-    return not (mlx_host and isinstance(method, str) and method.strip())
+    if not isinstance(method, str) or not method.strip():
+        return True
+    if mlx_host:
+        return False
+    return method not in _FP8_QUANT_METHODS or _fp8_suits_host(method)
 
 
 def _read_json(path):
@@ -375,6 +407,14 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             candidate = config if name == "config.json" else _read_json(load_dir / name)
             if isinstance(candidate, dict) and "auto_map" in candidate:
                 return None
+        # A VLM builds an AutoProcessor, which tokenizer files alone cannot supply. Same
+        # pair unsloth.models.loader_utils._has_local_processor_files reads, checked here
+        # rather than imported so the request path stays clear of the unsloth package.
+        if any(key in config for key in _MULTIMODAL_CONFIG_KEYS) and not any(
+            (load_dir / name).is_file()
+            for name in ("processor_config.json", "preprocessor_config.json")
+        ):
+            return None
         if not _host_has_a_non_gguf_backend():
             return None
         if not _quantization_suits_host(config) or not _is_generative_chat_config(config):

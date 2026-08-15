@@ -5793,14 +5793,21 @@ async def _maybe_auto_switch_model(
         # Loading a non-GGUF model unloads the resident GGUF, and these endpoints read
         # llama.cpp alone, so the swap would strand them with nothing to serve.
         if gguf_only and not target_is_gguf and resolved is not None:
+            message = (
+                f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
+                "Use /v1/chat/completions for this model."
+            )
+            # error_body_for_path, not the OpenAI shape: the Anthropic routes reach this
+            # too and the global handler passes an already-formatted body through as is.
+            path = getattr(getattr(fastapi_request, "url", None), "path", None)
             raise HTTPException(
                 status_code = 400,
-                detail = openai_error_body(
-                    f"This endpoint serves GGUF models only, and '{requested_model}' is not "
-                    "one. Use /v1/chat/completions for this model.",
-                    status = 400,
-                    code = "invalid_value",
-                    param = "model",
+                detail = (
+                    error_body_for_path(
+                        path, message, status = 400, code = "invalid_value", param = "model"
+                    )
+                    if isinstance(path, str)
+                    else message
                 ),
             )
         # An image/audio request naming a different text-only target would load it
