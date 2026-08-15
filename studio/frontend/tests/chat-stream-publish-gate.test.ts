@@ -534,10 +534,15 @@ test("the stream loop stamps when a held chunk arrived", () => {
   );
 
   const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
-  const stamp = loop.indexOf("gateHeldSince ??= Date.now();", gate);
-  const skip = loop.indexOf("continue;", gate);
+  const stamp = loop.indexOf("gateHeldSince ??= Date.now();");
+  const close = loop.indexOf("gateReasoningEndedAt ??= Date.now();");
   assert.notEqual(stamp, -1, "a held chunk's arrival time is not recorded");
-  assert.ok(stamp < skip, "the stamp must be taken before the chunk is skipped");
+  // Before the close check, not just before the gate: a chunk carrying a
+  // COMPLETE <think>...</think> block has to stamp its own start early enough
+  // for its own end check to see it, or the end falls to the next arrival and
+  // any pause in between is charged to the reasoning.
+  assert.ok(stamp < close, "the arrival stamp must precede the close check");
+  assert.ok(stamp < gate, "and be taken whether or not the chunk publishes");
   assert.ok(
     loop.includes("reconcileReasoning(assistantContent, reasoningSeenAt)"),
     "the publish does not hand the arrival time to the tracker",
@@ -616,6 +621,20 @@ test("the replay-only publish reconciles like the other two", () => {
   const yielded = loop.indexOf("content: replayContent,", branch);
   assert.notEqual(reconcile, -1, "the replay publish does not reconcile");
   assert.ok(reconcile < yielded, "it must reconcile before it yields");
+});
+
+test("every publish path reconciles, including the backend tool events", () => {
+  const source = withoutComments(ADAPTER);
+
+  // Four paths can be the first to expose a group the gate is holding: the
+  // normal text publish, the forced tool-call publish, the replay-only publish
+  // and the ungated _toolEvent publish. Each needs the shared transition, and
+  // the last one was missed twice.
+  const calls = source.match(/reconcileReasoning\(/g) ?? [];
+  assert.ok(
+    calls.length >= 4,
+    `every publish path must reconcile; found ${calls.length} call sites`,
+  );
 });
 
 test("a scheduler that calls back synchronously does not throw", () => {

@@ -5877,6 +5877,12 @@ export function createOpenAIStreamAdapter(
                     };
                   }
                 }
+                // Ungated and state-bearing, so it can be the first publish to
+                // expose a group the gate is holding: an external provider can
+                // synthesize a _toolEvent with no delta.tool_calls fragment
+                // before it.
+                reconcileReasoning(liveAssistantContent(), gateHeldSince);
+                gateHeldSince = undefined;
                 yield {
                   content: liveAssistantContent(),
                   metadata: {
@@ -6213,6 +6219,16 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
+              // Stamped before the close below can read it. Assigning it only
+              // in the skip branch meant a chunk carrying a COMPLETE
+              // <think>...</think> block stamped its start after its own end
+              // check had already run, so the end fell to the next arrival and
+              // any pause in between was charged to the reasoning. Cleared on
+              // every publish, so stamping a chunk that turns out to publish is
+              // harmless.
+              if (reasoning || delta.includes("<think>")) {
+                gateHeldSince ??= Date.now();
+              }
               // Closing a group reads only pre-gate state, so it runs on every
               // arrival: deferring it to the next publish let a pause after the
               // reasoning ended count as part of the reasoning. Only the START
@@ -6246,13 +6262,6 @@ export function createOpenAIStreamAdapter(
               // Coalesce text arriving before the next frame; cumulativeText
               // keeps it, and the cap publishes before a stop could drop it.
               if (!replayStateChanged && !canPublish(streamedChars)) {
-                // Only when the held chunk actually carries reasoning. Stamping
-                // on any held chunk backdated a group to a prose delta that
-                // arrived before reasoning began, which inflates the duration by
-                // the gap between them.
-                if (reasoning || delta.includes("<think>")) {
-                  gateHeldSince ??= Date.now();
-                }
                 continue;
               }
               const reasoningSeenAt = gateHeldSince;
