@@ -1383,6 +1383,11 @@ class VideoBackend:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
+        # An API-initiated load promises to download NOTHING: it may only open what is already
+        # cached. Read once here and threaded into every helper below -- the metadata probes as
+        # much as the fetches, since a model_info call reaches the Hub just as a weight pull does.
+        # READ, not popped: load_pipeline takes it too (it is in this thread's kwargs by contract).
+        local_files_only = bool(kwargs.get("local_files_only"))
         try:
             fam = _detect_load_family(
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
@@ -1391,6 +1396,8 @@ class VideoBackend:
             from .video_minimax_h3 import is_h3_native
 
             if is_h3_native(fam, kind):
+                # local_files_only rides in kwargs and is now a NAMED parameter over there, so the
+                # native path binds it explicitly instead of swallowing it.
                 self._run_load_h3_native(
                     fam = fam,
                     token = token,
@@ -1437,6 +1444,7 @@ class VideoBackend:
                 base,
                 kwargs.get("h3_task"),
                 kwargs.get("hf_token"),
+                local_files_only = local_files_only,
             )
             # Handed to the loader only when the dense shards really are gone from the pull. Then
             # the choice is already committed and the loader must not re-take it against a reading
@@ -1450,7 +1458,11 @@ class VideoBackend:
             # Verified, not just name-matched: this scheme decides whether the base pull DROPS the
             # dense encoder, and a derivative that the seed will decline must keep its own.
             h3_te_scheme = self._h3_te_quant_scheme_verified(
-                fam, kwargs.get("text_encoder_quant"), base, kwargs.get("hf_token")
+                fam,
+                kwargs.get("text_encoder_quant"),
+                base,
+                kwargs.get("hf_token"),
+                local_files_only = local_files_only,
             )
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -1462,6 +1474,7 @@ class VideoBackend:
                 skip_transformer_weights = skip_transformer_weights,
                 h3_task = kwargs.get("h3_task"),
                 h3_te_scheme = h3_te_scheme,
+                local_files_only = local_files_only,
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
@@ -1487,6 +1500,9 @@ class VideoBackend:
                         # The plan counts a file cached under EITHER root, so the load has to
                         # resolve through both or it re-pulls what the planner skipped.
                         reuse_other_cache_root = True,
+                        # An API-initiated load takes the cached checkpoint or fails; it never
+                        # pulls the multi-GB file itself.
+                        local_files_only = local_files_only,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE + tokenizer; recompute the estimate.
@@ -1506,6 +1522,7 @@ class VideoBackend:
                                 kwargs["repo_id"],
                                 kwargs.get("gguf_filename"),
                                 kwargs.get("hf_token"),
+                                local_files_only = local_files_only,
                             )
                         except Exception:  # noqa: BLE001 -- surfaced by load_pipeline
                             probe = None
@@ -1522,19 +1539,26 @@ class VideoBackend:
                         skip_transformer_weights = skip_transformer_weights,
                         h3_task = kwargs.get("h3_task"),
                         h3_te_scheme = h3_te_scheme,
+                        local_files_only = local_files_only,
                     )
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
             te_skipped = self._fetch_te_prequant(
-                te_sources, kwargs.get("hf_token"), cancel_event = cancel_event
+                te_sources,
+                kwargs.get("hf_token"),
+                cancel_event = cancel_event,
+                local_files_only = local_files_only,
             )
             kwargs["_te_prequant_skipped"] = te_skipped
             # Same rule for the H3 conditioner: the artifact has to be on disk before the base pull
             # is allowed to leave the dense encoder behind.
             h3_te_skipped = self._fetch_h3_te_quant(
-                h3_te_scheme, kwargs.get("hf_token"), cancel_event = cancel_event
+                h3_te_scheme,
+                kwargs.get("hf_token"),
+                cancel_event = cancel_event,
+                local_files_only = local_files_only,
             )
             base_local = self._predownload_base(
                 base,
@@ -1547,6 +1571,7 @@ class VideoBackend:
                 # separate 66.28 GB transformer_ref/ that load_components(workflow="ref2va") opens.
                 h3_task = kwargs.get("h3_task"),
                 cancel_event = cancel_event,
+                local_files_only = local_files_only,
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it only gets the warmed cache.
             kwargs["_base_local_dir"] = None if ltx23 else base_local
@@ -1582,9 +1607,16 @@ class VideoBackend:
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in
+        # through _run_load's kwargs, and swallowed it meant the four-file bundle, the sizing
+        # metadata and the sd-cli install were all fetched by a load that promised no downloads.
+        local_files_only: bool = False,
         **_: Any,
     ) -> None:
-        """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
+        """Download and commit the four-file stable-diffusion.cpp H3 runtime.
+
+        ``local_files_only`` restricts this to what is already on disk: no Hub sizing metadata, no
+        prebuilt install, and every file resolved from the cache."""
         from huggingface_hub import HfApi
 
         from .sd_cpp_args import SdCppModelFiles, device_backend_flags, offload_flags
@@ -1632,7 +1664,11 @@ class VideoBackend:
         if cancel_event.is_set():
             raise RuntimeError(VIDEO_CANCELLED_MSG)
         target = self._device_target(gpu_ordinal)
-        allow_install = _install_allowed()
+        # An install DOWNLOADS and extracts the sd-cli prebuilt, so an offline load may not start
+        # one. A build already on disk (managed or user-supplied) is still discovered and used;
+        # when there is none, the ensure returns None and the refusal below names it, which is the
+        # honest answer for a load that was told not to fetch anything.
+        allow_install = _install_allowed() and not local_files_only
         binary = ensure_h3_sd_cpp_binary(
             allow_install = allow_install,
             accelerator = _install_accelerator_for(target.backend),
@@ -1698,8 +1734,14 @@ class VideoBackend:
         )
         total = 0
         try:
-            api = HfApi(token = hf_token or None)
+            # Skipped wholesale offline: model_info is a Hub call, and the number it produces is
+            # the size of a download that is not going to happen -- every file below either
+            # resolves from the cache or fails the load. total stays 0, which load_progress already
+            # reads as "no estimate" and reports as a bare phase.
+            api = HfApi(token = hf_token or None) if not local_files_only else None
             for repo, wanted in requests:
+                if api is None:
+                    break
                 if Path(repo).expanduser().exists():
                     continue
                 info = api.model_info(repo, files_metadata = True)
@@ -1731,6 +1773,9 @@ class VideoBackend:
                             hf_token,
                             cancel_event = cancel_event,
                             reuse_other_cache_root = True,
+                            # Offline this resolves from the cache and raises when the file is not
+                            # there; h3_download_error below still names the missing repo/file.
+                            local_files_only = local_files_only,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
@@ -2014,7 +2059,11 @@ class VideoBackend:
             return None
 
     @staticmethod
-    def _h3_te_base_index_source(base: Optional[str], hf_token: Optional[str]) -> Optional[str]:
+    def _h3_te_base_index_source(
+        base: Optional[str],
+        hf_token: Optional[str],
+        local_files_only: bool = False,
+    ) -> Optional[str]:
         """The text-encoder source ``base``'s own ``modular_model_index.json`` names, or None.
 
         The staging twin of ``_h3_te_index_source``, which can only run once the pipeline exists.
@@ -2023,7 +2072,12 @@ class VideoBackend:
         62 GB inline. Reading the index first makes the skip as exact as the substitution.
 
         A few KB, from the repo the load is about to pull anyway, pinned to the live cache root.
-        None on anything unanswerable, which keeps the dense shards."""
+        None on anything unanswerable, which keeps the dense shards.
+
+        Under ``local_files_only`` the index is read from the cache instead of fetched. A load that
+        gets this far offline has the base staged, so the index is there and the answer is the same
+        one the online read would give; an unstaged base raises inside the try and keeps the dense
+        shards, which is the existing unanswerable path."""
         if not base:
             return None
         try:
@@ -2041,6 +2095,7 @@ class VideoBackend:
                         hf_token,
                         cache_dir = hub_cache_dir(),
                         reuse_other_cache_root = True,
+                        local_files_only = local_files_only,
                     )
                 )
             with open(path, "r", encoding = "utf-8") as handle:
@@ -2059,6 +2114,7 @@ class VideoBackend:
         base: Optional[str],
         h3_task: Optional[str],
         hf_token: Optional[str],
+        local_files_only: bool = False,
     ) -> bool:
         """``_denoiser_prequant_covered`` plus the Hub check, for the decisions that COMMIT.
 
@@ -2071,7 +2127,16 @@ class VideoBackend:
         disk budget).
 
         Same rule as ``_h3_te_quant_scheme_verified`` next door, and the same fail-closed
-        direction: unanswerable keeps the dense shards."""
+        direction: unanswerable keeps the dense shards.
+
+        ``local_files_only`` swaps the Hub probe for a cache probe rather than refusing the load.
+        Refusing would break the one case the flag exists for -- a fully cached model coming up
+        offline -- and the question the probe answers is not actually about the Hub: it is
+        "is there a replacement denoiser to open instead of the dense shards?". Offline nothing is
+        downloaded either way, so the honest reading is whether the artifact is already on disk,
+        and that is exactly as strict as the online one in the direction that matters (an absent
+        checkpoint keeps the dense shards, so the loader's bf16 fallback still has something to
+        open)."""
         if not self._denoiser_prequant_covered(fam, transformer_quant, base, h3_task):
             return False
         from .diffusion_prequant import restricted_prequant_load_supported
@@ -2086,13 +2151,18 @@ class VideoBackend:
                 transformer_quant,
             )
             return False
-        try:
-            from huggingface_hub import HfApi
-            repo, _files = self._denoiser_prequant_hub_files(
-                fam, transformer_quant, base, HfApi(token = hf_token), h3_task
+        if local_files_only:
+            repo = (
+                self._denoiser_prequant_cached_repo(fam, transformer_quant, base, h3_task)
             )
-        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
-            return False
+        else:
+            try:
+                from huggingface_hub import HfApi
+                repo, _files = self._denoiser_prequant_hub_files(
+                    fam, transformer_quant, base, HfApi(token = hf_token), h3_task
+                )
+            except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
+                return False
         if repo is None:
             logger.info(
                 "video.denoiser_prequant: no hosted %s checkpoint resolved for %s %s; keeping its "
@@ -2166,17 +2236,25 @@ class VideoBackend:
         text_encoder_quant: Optional[str],
         base: Optional[str],
         hf_token: Optional[str],
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """``_h3_te_quant_scheme`` plus the exact index check, for the decisions that COMMIT.
 
         The pure resolver compares repo NAMES, which is right for a plan (it must not raise and
         must not touch the network) but not for dropping a derivative's dense encoder from the
         pull. This one is allowed the few-KB index read, so the staged snapshot and the seed agree
-        on the same base."""
+        on the same base.
+
+        Offline the read comes from the cache (see ``_h3_te_base_index_source``) rather than being
+        skipped: this check is what stops a derivative being conditioned on someone else's encoder,
+        and an offline load is no safer to get that wrong. An unreadable index keeps the dense
+        encoder, exactly as it does online."""
         scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
         if scheme is None:
             return None
-        source = self._h3_te_base_index_source(base, hf_token)
+        source = self._h3_te_base_index_source(
+            base, hf_token, local_files_only = local_files_only
+        )
         if source is None or _h3_te_canonical(source) != _h3_te_canonical(
             getattr(fam, "base_repo", None)
         ):
@@ -2242,6 +2320,7 @@ class VideoBackend:
         hf_token: Optional[str],
         *,
         cancel_event: Optional[threading.Event] = None,
+        local_files_only: bool = False,
     ) -> tuple[str, ...]:
         """Pre-fetch the hosted quantized conditioner; return ``("text_encoder",)`` when it landed.
 
@@ -2253,7 +2332,11 @@ class VideoBackend:
         A file that lands and then fails to LOAD (corrupt, or a re-upload this loader does not
         implement) is slow rather than broken: the base snapshot has no dense encoder, so
         ``load_components`` pulls it from the modular index's own repo id inline. Degrading to the
-        download this skip avoided is the right failure -- the alternative is refusing the load."""
+        download this skip avoided is the right failure -- the alternative is refusing the load.
+
+        ``local_files_only`` turns the pull into a cache lookup. An artifact already staged still
+        earns the skip; one that is not raises inside the same handler a failed fetch lands in, so
+        the load keeps the dense encoder rather than being refused."""
         from .video_minimax_h3_te import h3_te_quant_filename
 
         filename = h3_te_quant_filename(scheme)
@@ -2270,6 +2353,7 @@ class VideoBackend:
                 cancel_event = cancel,
                 cache_dir = hub_cache_dir(),
                 reuse_other_cache_root = True,
+                local_files_only = local_files_only,
             )
         except Exception as exc:  # noqa: BLE001 -- no artifact just means the dense encoder
             if cancel.is_set():
@@ -2367,6 +2451,52 @@ class VideoBackend:
             if name in by_name:
                 return source.location, [(name, by_name[name])]
         return None, []
+
+    @staticmethod
+    def _denoiser_prequant_cached_repo(
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        h3_task: Optional[str] = None,
+    ) -> Optional[str]:
+        """The hosted pre-quantized denoiser repo when its checkpoint is ALREADY cached, else None.
+
+        The offline twin of ``_denoiser_prequant_hub_files``, for a load that may not reach the
+        Hub. ``resolve_prequant_source`` is pure registry work and ``try_to_load_from_cache``
+        (behind ``_hub_file_is_cached``) is network-free, so this answers the same question -- is
+        there a replacement denoiser to open? -- from disk alone.
+
+        Both candidate names are tried, in the order the load tries them, and both cache roots are
+        searched, because that is what the fetch would have resolved through. No size to
+        corroborate against without the Hub, so a cached name is taken at face value: the loader
+        opening a damaged checkpoint falls back to dense, which is the same failure an online
+        size mismatch would have produced one step later."""
+        try:
+            from .diffusion_prequant import resolve_prequant_source
+
+            source = resolve_prequant_source(
+                fam,
+                (transformer_quant or "").strip().lower(),
+                base_repo = base,
+                task = h3_task,
+            )
+        except Exception as exc:  # noqa: BLE001 -- a bad registry entry keeps the dense shards
+            logger.warning("video.denoiser_prequant_unresolved: %s", exc)
+            return None
+        # A local override is on disk by definition; only a hosted checkpoint has a cache to probe.
+        if source is None or getattr(source, "kind", None) != "repo":
+            return None
+        from core.inference.diffusion import DiffusionBackend
+
+        for name in (
+            getattr(source, "filename", None),
+            getattr(source, "fallback_filename", None),
+        ):
+            if name and DiffusionBackend._hub_file_is_cached(source.location, name):
+                return source.location
+        # No log here: the caller reports the same "keeping its dense denoiser shards" outcome for
+        # a miss, and logging it twice would read as two separate decisions.
+        return None
 
     @staticmethod
     def _te_prequant_hub_files(
@@ -2501,6 +2631,7 @@ class VideoBackend:
         skip_transformer_weights: bool = False,
         h3_task: Optional[str] = None,
         h3_te_scheme: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
 
@@ -2509,7 +2640,17 @@ class VideoBackend:
         pre-quantized checkpoint replaces (``skip_transformer_weights``) and H3's dense
         ``text_encoder/`` under ``h3_te_scheme``. None of those hosted checkpoints' own bytes are
         added: the progress bar counts cached bytes for the checkpoint and base repos only, so a
-        third repo in the total would leave the bar permanently short of 100%."""
+        third repo in the total would leave the bar permanently short of 100%.
+
+        Under ``local_files_only`` this is None without asking anything. The function is nothing
+        but ``model_info`` calls, and the number they produce is the size of a download that is not
+        going to happen: every file below either resolves from the cache or fails the load. None is
+        the value the estimate ALREADY takes whenever the metadata is unavailable, and
+        ``load_progress`` reads it as "no estimate" and reports the bare phase -- so the offline
+        path costs nothing beyond a bar that does not fill, which is right for a load that fetches
+        nothing."""
+        if local_files_only:
+            return None
         try:
             from huggingface_hub import HfApi
 
@@ -2934,6 +3075,7 @@ class VideoBackend:
         hf_token: Optional[str],
         *,
         cancel_event: Optional[threading.Event] = None,
+        local_files_only: bool = False,
     ) -> tuple[str, ...]:
         """Pre-fetch the hosted pre-cast encoder checkpoints; return the components whose
         dense weights the base pull can therefore skip.
@@ -2942,7 +3084,11 @@ class VideoBackend:
         is what makes that skip safe: only a checkpoint already on disk earns the right to
         drop the dense shards, and the pull becomes cancellable and resumable like every
         other load download instead of an untracked stall. A component whose fetch fails
-        keeps its dense weights, so the load still has an encoder to fall back to."""
+        keeps its dense weights, so the load still has an encoder to fall back to.
+
+        ``local_files_only`` makes each fetch a cache lookup: a checkpoint already staged still
+        earns the skip, and one that is not lands in the same handler a failed fetch does, so the
+        component keeps its dense weights instead of the load being refused."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
@@ -2959,6 +3105,7 @@ class VideoBackend:
                     cancel_event = cancel,
                     # Pre-quant encoders are planned with the same both-roots probe.
                     reuse_other_cache_root = True,
+                    local_files_only = local_files_only,
                 )
             except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
                 if cancel.is_set():
@@ -2984,6 +3131,7 @@ class VideoBackend:
         skip_transformer_weights: bool = False,
         h3_task: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
 
@@ -2993,8 +3141,18 @@ class VideoBackend:
         also cancellable per file, and handing the local dir to from_pretrained skips
         diffusers' own expected-files sweep. None -> caller keeps the hub id (local
         path, non-diffusers layout, or any metadata failure: from_pretrained then
-        resolves the repo exactly as before)."""
+        resolves the repo exactly as before).
+
+        ``local_files_only`` skips the whole prefetch and returns None. The scoped file list comes
+        from ``model_info``, which is a Hub call, and there is nothing to scope: the load below
+        passes ``local_files_only=True`` to ``from_pretrained``, which resolves the cached snapshot
+        itself and fetches nothing. Enumerating the cache here instead would only reconstruct what
+        diffusers is about to do offline anyway, and getting it wrong would hand it an incomplete
+        directory. None is the value this already returns whenever the metadata is unavailable, so
+        the caller path is the tested one."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
+        if local_files_only:
+            return None
         try:
             if not base or Path(base).expanduser().exists():
                 return None
@@ -3187,6 +3345,9 @@ class VideoBackend:
                 gguf_filename = gguf_filename,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
+                # Carried, not defaulted: load_pipeline is also reached directly (no _run_load),
+                # and dropping it here would let an offline load fetch the four-file bundle.
+                local_files_only = local_files_only,
             )
             return self.status()
 
@@ -3299,7 +3460,9 @@ class VideoBackend:
         te_scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
         transformer_mib: Optional[int] = None
         if kind != "pipeline":
-            checkpoint_path = self._resolve_checkpoint_path(repo_id, gguf_filename, hf_token)
+            checkpoint_path = self._resolve_checkpoint_path(
+                repo_id, gguf_filename, hf_token, local_files_only = local_files_only
+            )
             size_mib = file_size_mib(str(checkpoint_path))
             if kind == "gguf":
                 transformer_mib = estimate_gguf_resident_mib(size_mib)
@@ -3461,7 +3624,17 @@ class VideoBackend:
                 ", ".join(missing_dense),
             )
             _base_local_dir = (
-                self._predownload_base(base, hf_token, kind, ltx23 = False) or _base_local_dir
+                self._predownload_base(
+                    base,
+                    hf_token,
+                    kind,
+                    ltx23 = False,
+                    # An offline load never had a scoped snapshot to top up (the prefetch returns
+                    # None), so this is a no-op there -- but the flag is carried rather than
+                    # defaulted so the top-up can never become the one call that reaches the Hub.
+                    local_files_only = local_files_only,
+                )
+                or _base_local_dir
             )
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
@@ -4623,9 +4796,16 @@ class VideoBackend:
 
     @staticmethod
     def _resolve_checkpoint_path(
-        repo_id: str, gguf_filename: Optional[str], hf_token: Optional[str]
+        repo_id: str,
+        gguf_filename: Optional[str],
+        hf_token: Optional[str],
+        local_files_only: bool = False,
     ) -> Path:
-        """The local checkpoint file for a gguf/single_file load (downloads if hub)."""
+        """The local checkpoint file for a gguf/single_file load (downloads if hub).
+
+        ``local_files_only`` resolves it from the cache instead: an API-initiated load has already
+        been told the checkpoint is staged, and this call runs a second time inside load_pipeline
+        (after _run_load's own fetch), where a cache miss must fail rather than pull the file."""
         from .diffusion_families import resolve_local_gguf_child
 
         root = Path(repo_id).expanduser()
@@ -4642,6 +4822,7 @@ class VideoBackend:
                 hf_token,
                 # Matches the planner's both-roots cache probe, as the diffusion fetches already do.
                 reuse_other_cache_root = True,
+                local_files_only = local_files_only,
             )
         )
 
