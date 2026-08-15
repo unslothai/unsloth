@@ -94,8 +94,7 @@ def effective_packing(config: dict, is_vlm: bool = False) -> bool:
     if not config.get("packing", False):
         return False
     raw_text_mode = (
-        config.get("training_type") == "Continued Pretraining"
-        or config.get("format_type") == "raw"
+        config.get("training_type") == "Continued Pretraining" or config.get("format_type") == "raw"
     )
     if raw_text_mode:
         return True
