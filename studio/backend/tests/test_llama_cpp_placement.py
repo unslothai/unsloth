@@ -1073,9 +1073,9 @@ def test_a_cpu_only_build_takes_no_vram_credit(tmp_path, monkeypatch):
 
 
 def test_an_unknown_backend_layout_keeps_its_vram_credit(tmp_path):
-    """_backend_lacks_gpu_lib fails open on a static or unrecognised layout, so a custom
-    GPU build is never mistaken for a CPU-only one and refused."""
-    assert LlamaCppBackend._backend_lacks_gpu_lib("/nonexistent/llama-server") is False
+    """Fails open on a static or unrecognised layout, so a custom GPU build is never
+    mistaken for a CPU-only one and refused."""
+    assert LlamaCppBackend._binary_ships_no_gpu_backend("/nonexistent/llama-server") is False
 
 
 def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch):
@@ -1085,7 +1085,7 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
     gpu_build, gguf = _offload_backend(
         tmp_path, gguf_gb = 20, free_mib = 16_384, avail_mib = 8_192, monkeypatch = monkeypatch
     )
-    gpu_build._backend_lacks_gpu_lib = lambda _binary = None: False
+    gpu_build._binary_ships_no_gpu_backend = lambda _binary = None: False
     assert _launch(gpu_build, gguf)["cmd"]
 
     cpu_dir = tmp_path / "cpu"
@@ -1097,7 +1097,7 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
         avail_mib = 8_192,
         monkeypatch = monkeypatch,
     )
-    cpu_build._backend_lacks_gpu_lib = lambda _binary = None: True
+    cpu_build._binary_ships_no_gpu_backend = lambda _binary = None: True
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(cpu_build, gguf2)
 
@@ -1114,3 +1114,57 @@ def test_an_empty_gpu_pool_abstains(tmp_path, monkeypatch):
     )
 
     assert _launch(backend, gguf)["cmd"]
+
+
+@pytest.mark.parametrize("accelerator", ["sycl", "opencl", "musa", "cann"])
+def test_a_non_cuda_accelerator_build_keeps_its_vram_credit(tmp_path, accelerator):
+    """_installed_ggml_backends reads only cuda, hip and vulkan, so a split-library build
+    shipping any other supported ggml accelerator looked CPU-only. Pricing its weights
+    against RAM refused loads the accelerator can hold."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-cpu.{extension}").write_bytes(b"x")
+    (lib_dir / f"{prefix}ggml-{accelerator}.{extension}").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary)) is False
+        # the narrower pre-existing helper is what misreads this layout
+        assert LlamaCppBackend._backend_lacks_gpu_lib(str(binary)) is True
+
+
+def test_a_genuinely_cpu_only_layout_is_still_recognised(tmp_path):
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-cpu.{extension}").write_bytes(b"x")
+    (lib_dir / f"{prefix}ggml-base.{extension}").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary)) is True
+
+
+def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
+    """--rpc places layers on remote devices this cannot size, so refusing on local
+    capacity alone would block a viable distributed launch."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    assert backend._launch_host_shortfall_message(argv, [(0, 4877)]) is not None
+    assert (
+        backend._launch_host_shortfall_message(
+            [*argv, "--rpc", "10.0.0.2:50052"], [(0, 4877)]
+        )
+        is None
+    )
+    assert (
+        backend._launch_host_shortfall_message([*argv, "--rpc", "  "], [(0, 4877)]) is not None
+    )

@@ -6818,6 +6818,29 @@ class LlamaCppBackend:
         return None
 
     _ARGV_MODEL = frozenset({"-m", "--model"})
+    _ARGV_RPC = frozenset({"--rpc"})
+
+    @staticmethod
+    def _binary_ships_no_gpu_backend(binary: Optional[str] = None) -> bool:
+        """Whether a split-library build beside ``binary`` carries no GPU backend at all.
+
+        Stricter than ``_backend_lacks_gpu_lib``, which reads cuda, hip and vulkan only:
+        a SYCL, MUSA, CANN or OpenCL build offloads too, and pricing its weights against
+        host RAM would refuse a load the accelerator can hold. A static or unrecognised
+        layout, and any directory this cannot read, answer False so a custom GPU build
+        keeps its VRAM credit.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        try:
+            files = tuple(path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file())
+        except OSError:
+            return False
+        cpu_stem = "ggml-cpu" if sys.platform == "win32" else "libggml-cpu"
+        base_stem = "ggml-base" if sys.platform == "win32" else "libggml-base"
+        split_library = any(name.startswith((cpu_stem, base_stem)) for name in files)
+        return split_library and not any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
 
     def _launch_host_shortfall_message(
         self,
@@ -6846,6 +6869,9 @@ class LlamaCppBackend:
             return None
         model_path = _extra_args_device(argv, self._ARGV_MODEL)
         if not model_path:
+            return None
+        # --rpc places layers on remote devices this cannot size
+        if (_extra_args_device(argv, self._ARGV_RPC) or "").strip():
             return None
         try:
             model_bytes = self._get_gguf_size_bytes(model_path)
@@ -16027,7 +16053,7 @@ class LlamaCppBackend:
                     child_has_no_gpu = (
                         _cpu_only_zero_offload
                         or _arch_gate_forced_cpu
-                        or self._backend_lacks_gpu_lib(binary)
+                        or self._binary_ships_no_gpu_backend(binary)
                     ),
                 )
                 if _offload_msg:
