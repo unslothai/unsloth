@@ -30,4 +30,16 @@ test("the Hybrid Mamba partial-offload stand-down has its own notice", () => {
   // partial layer count the user picked, on a card that may hold the whole
   // model, where the useful remedy is more layers rather than forcing MTP.
   assert.doesNotMatch(copy, /not fit|cannot fit|doesn't fit|too (big|large)/i);
+
+  // Nor may it assert the placement the model ENDS UP with. The partial verdict
+  // is priced with MTP's rollback reserve included, so on the --fit path
+  // llama.cpp can place every layer on the GPU once this branch turns MTP off;
+  // an unconditional "only part of this model is on the GPU" would then be false
+  // and would recommend the placement the load already has. Describe what MTP
+  // would require instead.
+  assert.doesNotMatch(
+    copy,
+    /(only|just) part of this model is on the gpu|part of this model is running on/i,
+  );
+  assert.match(copy, /with mtp|mtp('s)? (extra state|on)|would/i);
 });
