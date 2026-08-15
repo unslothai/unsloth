@@ -109,6 +109,29 @@ def save_disk_cache(
 def _fetch_newest_published_release(
     repo: str, timeout: float, *, log_message: str
 ) -> Optional[dict]:
+    """Newest published release object for `repo`, bounded by a wall-clock deadline.
+
+    Not redundant with `timeout`: urllib applies that per address, so a host whose leading
+    addresses blackhole pays it once for each. /api/inference/status reads this, and that
+    multiplication becomes the route's response time.
+    """
+    from utils.utils import call_with_deadline
+    try:
+        return call_with_deadline(
+            lambda: _fetch_newest_published_release_blocking(
+                repo, timeout, log_message = log_message
+            ),
+            timeout + 1,
+            name = "prebuilt-freshness-fetch",
+        )
+    except TimeoutError as exc:
+        logger.debug(log_message, repo = repo, error = str(exc))
+        return None
+
+
+def _fetch_newest_published_release_blocking(
+    repo: str, timeout: float, *, log_message: str
+) -> Optional[dict]:
     """Newest published (non-draft/non-prerelease) release object for `repo`, by
     ``published_at``.
 

@@ -1122,6 +1122,73 @@ def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monke
     assert row["has_vision"] is True
 
 
+def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_path):
+    """ultravox, Voxtral and Qwen3-ASR ship a projector for audio input, so reading the row's
+    badge off the projector's presence claims an image button the model cannot honour."""
+    import struct
+
+    def _projector(path: Path, *keys: str) -> None:
+        """A minimal GGUF declaring the given ``clip.has_*_encoder`` bools, no tensors."""
+        kvs = b"".join(
+            struct.pack("<Q", len(key))
+            + key.encode()
+            + struct.pack("<I", 7)
+            + struct.pack("<?", True)
+            for key in keys
+        )
+        path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(keys)) + kvs)
+
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Audio"
+    snapshot = repo_dir / "snapshots" / ("d" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder")
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+
+    repo = _repo(
+        "Org/Audio",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    _file("Model-Q4_K_M.gguf", 256),
+                    _file("mmproj-F16.gguf", 256),
+                ],
+                snapshot_path = snapshot,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr(
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [snapshot]
+    )
+
+    def _row():
+        return {
+            c["repo_id"]: c
+            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+                "cached"
+            ]
+        }["Org/Audio"]
+
+    assert _row()["has_vision"] is False
+
+    # Control: the same snapshot, with a vision tower declared, is vision support.
+    _projector(snapshot / "mmproj-F16.gguf", "clip.has_vision_encoder")
+    assert _row()["has_vision"] is True
+
+    # A projector serving both modalities declares both (Qwen2.5-Omni), so the row cannot be
+    # read off the audio claim alone.
+    _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder", "clip.has_vision_encoder")
+    assert _row()["has_vision"] is True
+
+
 def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_path):
     """The same repo can sit in several cache roots, and the row describes one copy: a duplicate
     elsewhere is a download the load never reaches, so it cannot answer for this row's projector."""
