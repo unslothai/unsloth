@@ -3519,10 +3519,21 @@ _rocm_tag_from_dpkg() {
         | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
 }
 
+_rocm_tag_from_hsa_runtime_dpkg() {
+    command -v dpkg-query >/dev/null 2>&1 || return 0
+    # Debian can version its HSA runtime ahead of hipconfig and does not ship
+    # rocm-core. Use the actual ROCm HSA runtime package, and only when installed.
+    _rt_ver=$(dpkg-query -W -f='${Status} ${Version}\n' libhsa-runtime64-1 2>/dev/null \
+        | awk '$3 == "installed" && $4 != "" { print $4; exit }') || return 0
+    [ -n "$_rt_ver" ] || return 0
+    printf '%s\n' "$_rt_ver" | sed 's/^[0-9]*://' \
+        | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
+}
+
 _rocm_tag_from_rpm() {
     command -v rpm >/dev/null 2>&1 || return 0
-    # Bounded, alone among the five, because this is the one source highest-wins
-    # newly made unconditional that can block forever: it used to be LAST in a
+    # Bounded because highest-wins made this probe unconditional and it can
+    # block forever: it used to be LAST in a
     # first-answer-wins `||` chain, so /opt/rocm/.info/version answered at position
     # two and rpm was never invoked on a normal RHEL/SLES install. `rpm -q` is not a
     # lock-free read -- a leftover /var/lib/rpm/__db.00* from a killed rpm/yum wedges
@@ -3560,7 +3571,7 @@ _highest_rocm_tag() {
 # not a downgrade. The symmetric risk, overshoot, is bounded: PyTorch's ROCm wheels
 # vendor their own userspace and need only an amdgpu/KFD driver AMD documents as
 # compatible +/- 2 releases, the normalisation below can only emit a leaf PyTorch
-# publishes, the one source that can report a tree that is not installed is
+# publishes, package-manager sources that can report a tree that is not installed are
 # filtered above, and any disagreement is named on stderr for the install log.
 _detect_rocm_version_tag() {
     _rt_readings=$({
@@ -3568,6 +3579,7 @@ _detect_rocm_version_tag() {
         _rocm_tag_from_version_file
         _rocm_tag_from_hipconfig
         _rocm_tag_from_dpkg
+        _rocm_tag_from_hsa_runtime_dpkg
         _rocm_tag_from_rpm
     } 2>/dev/null) || _rt_readings=""
     _rt_best=$(printf '%s\n' "$_rt_readings" | _highest_rocm_tag) || _rt_best=""

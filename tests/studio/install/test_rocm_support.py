@@ -99,6 +99,7 @@ def _extract_sh_function_body(source: str, name: str) -> str:
 _DPKG_QUERY_STUB = r"""#!/bin/sh
 _status='__STATUS__'
 _ver='__VERSION__'
+_package='__PACKAGE__'
 # dpkg's Status field is "<want> <error-flag> <status>".
 case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
 _fmt=''
@@ -109,7 +110,7 @@ while [ $# -gt 0 ]; do
         --showformat=*)  _fmt=${1#--showformat=} ;;
         -f|--showformat) shift; _fmt=$1 ;;
         -*)              : ;;
-        rocm-core)       _found=1 ;;
+        "$_package")     _found=1 ;;
     esac
     shift
 done
@@ -117,7 +118,7 @@ done
 [ -n "$_fmt" ] || _fmt='${Package}\t${Version}\n'
 # Unrecognised fields render empty, like the real dpkg-query.
 _out=$(printf '%s' "$_fmt" | sed \
-    -e "s|\${Package}|rocm-core|g" \
+    -e "s|\${Package}|$_package|g" \
     -e "s|\${Status}|$_want ok $_status|g" \
     -e "s|\${db:Status-Status}|$_status|g" \
     -e "s|\${db:Status-Want}|$_want|g" \
@@ -132,9 +133,14 @@ def _write_dpkg_query_stub(
     path: str,
     version: str,
     status: str = "installed",
+    package: str = "rocm-core",
 ) -> None:
     with open(path, "w", encoding = "utf-8") as f:
-        f.write(_DPKG_QUERY_STUB.replace("__STATUS__", status).replace("__VERSION__", version))
+        f.write(
+            _DPKG_QUERY_STUB.replace("__STATUS__", status)
+            .replace("__VERSION__", version)
+            .replace("__PACKAGE__", package)
+        )
     os.chmod(path, 0o755)
 
 
@@ -537,7 +543,7 @@ class TestDetectRocmVersion:
 
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "1:6.3.0-1\n"
+        mock_result.stdout = "install ok installed 1:6.3.0-1\n"
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path / "nonexistent")}):
             with patch("shutil.which", side_effect = which):
                 with patch("subprocess.run", return_value = mock_result):
@@ -562,17 +568,76 @@ class TestDetectRocmVersion:
             result = _detect_rocm_version()
             assert result == (6, 2)
 
-    def test_multiple_version_sources_first_wins(self, tmp_path):
-        """When both .info/version and lib/rocm_version exist, first found wins."""
+    def test_multiple_version_sources_highest_wins(self, tmp_path):
+        """When ROCm version sources disagree, the highest valid version wins."""
         info_dir = tmp_path / ".info"
         info_dir.mkdir()
-        (info_dir / "version").write_text("7.1.0\n")
-        lib_dir = tmp_path / "lib"
-        lib_dir.mkdir()
-        (lib_dir / "rocm_version").write_text("6.3.0\n")
+        (info_dir / "version").write_text("5.7.0\n")
+
+        def which(cmd):
+            return "/usr/bin/hipconfig" if cmd == "hipconfig" else None
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"6.4.0\n"
+
         with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
-            result = _detect_rocm_version()
-            assert result == (7, 1)  # .info/version checked first
+            with patch("shutil.which", side_effect = which):
+                with patch("subprocess.run", return_value = mock_result):
+                    assert _detect_rocm_version() == (6, 4)
+
+    def test_removed_dpkg_rocm_core_is_ignored(self, tmp_path):
+        """Removed-but-not-purged rocm-core must not report a stale version."""
+        dpkg = tmp_path / "dpkg-query"
+        _write_dpkg_query_stub(
+            str(dpkg),
+            "1:7.0.0-1",
+            "config-files",
+        )
+
+        def which(cmd):
+            return str(dpkg) if cmd == "dpkg-query" else None
+
+        with patch.dict(
+            os.environ,
+            {"ROCM_PATH": str(tmp_path / "nonexistent")},
+        ):
+            with patch("shutil.which", side_effect = which):
+                assert _detect_rocm_version() is None
+
+    def test_debian_split_runtime_uses_installed_hsa_runtime(self, tmp_path):
+        """Debian can ship hipconfig 5.7 beside an installed HSA 6.1 runtime."""
+
+        def which(cmd):
+            if cmd == "hipconfig":
+                return "/usr/bin/hipconfig"
+            if cmd == "dpkg-query":
+                return "/usr/bin/dpkg-query"
+            return None
+
+        def run(cmd, **kwargs):
+            result = MagicMock()
+            if cmd[0] == "/usr/bin/hipconfig":
+                result.returncode = 0
+                result.stdout = b"5.7.31921-0\n"
+                return result
+            if cmd[0] == "/usr/bin/dpkg-query" and cmd[-1] == "rocm-core":
+                result.returncode = 1
+                result.stdout = ""
+                return result
+            if cmd[0] == "/usr/bin/dpkg-query" and cmd[-1] == "libhsa-runtime64-1":
+                result.returncode = 0
+                result.stdout = "install ok installed 6.1.2-2\n"
+                return result
+            raise AssertionError(f"unexpected probe: {cmd}")
+
+        with patch.dict(
+            os.environ,
+            {"ROCM_PATH": str(tmp_path / "nonexistent")},
+        ):
+            with patch("shutil.which", side_effect = which):
+                with patch("subprocess.run", side_effect = run):
+                    assert _detect_rocm_version() == (6, 1)
 
     def test_hipconfig_multiline_output(self, tmp_path):
         """hipconfig with multi-line output -- should use first line."""
@@ -2189,6 +2254,7 @@ class TestInstallShStructure:
         "_rocm_tag_from_version_file",
         "_rocm_tag_from_hipconfig",
         "_rocm_tag_from_dpkg",
+        "_rocm_tag_from_hsa_runtime_dpkg",
         "_rocm_tag_from_rpm",
     )
 
@@ -2297,6 +2363,53 @@ class TestInstallShStructure:
                     f"{winner} reported 6.4 while every other source reported 5.7, "
                     f"but detection resolved {r.stdout.strip()}"
                 )
+
+    def test_debian_split_runtime_uses_installed_hsa_runtime_package(self):
+        """Debian 13 may have hipconfig 5.7, HSA runtime 6.1, and no rocm-core."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+
+        with tempfile.TemporaryDirectory() as d:
+            rocm_prefix = os.path.join(d, "rocm")
+            script_body = self._rocm_version_detection_script(source, rocm_prefix)
+
+            hipconfig = os.path.join(d, "hipconfig")
+            with open(hipconfig, "w", encoding = "utf-8") as f:
+                f.write("#!/bin/sh\necho '5.7.31921-0'\n")
+            os.chmod(hipconfig, 0o755)
+
+            _write_dpkg_query_stub(
+                os.path.join(d, "dpkg-query"),
+                "6.1.2-2",
+                "installed",
+                package = "libhsa-runtime64-1",
+            )
+
+            for name in ("amd-smi", "rpm"):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding = "utf-8") as f:
+                    f.write("#!/bin/sh\nexit 1\n")
+                os.chmod(p, 0o755)
+
+            script = (
+                "set -euo pipefail\n"
+                + script_body
+                + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
+            )
+            env = dict(
+                os.environ,
+                PATH = d + os.pathsep + os.environ.get("PATH", ""),
+            )
+            r = subprocess.run(
+                [shell, "-c", script],
+                env = env,
+                capture_output = True,
+                text = True,
+            )
+            assert r.returncode == 0, r.stderr
+            assert r.stdout.strip() == "TAG:rocm6.1", r.stdout
 
     def test_removed_dpkg_rocm_core_cannot_pick_the_wheels(self):
         """Highest-wins fixed the undershoot in #8402 and opened the symmetric

@@ -640,6 +640,11 @@ def _amd_smi_allowed() -> bool:
 
 def _detect_rocm_version() -> tuple[int, int] | None:
     """Return (major, minor) of the installed ROCm stack, or None."""
+    readings: list[tuple[str, tuple[int, int]]] = []
+
+    def _record(source: str, major: int, minor: int) -> None:
+        readings.append((source, (major, minor)))
+
     rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     for path in (
         os.path.join(rocm_root, ".info", "version"),
@@ -651,7 +656,7 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             # Explicit length guard: don't rely on the broad except below to
             # swallow IndexError on a single-component version (e.g. "6\n").
             if len(parts) >= 2:
-                return int(parts[0]), int(parts[1])
+                _record(path, int(parts[0]), int(parts[1]))
         except Exception:
             pass
 
@@ -672,7 +677,11 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
-                    return int(m.group(1)), int(m.group(2))
+                    _record(
+                        "amd-smi",
+                        int(m.group(1)),
+                        int(m.group(2)),
+                    )
         except Exception:
             pass
 
@@ -689,42 +698,108 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 raw = result.stdout.decode().strip().split("\n")[0]
                 parts = raw.split(".")
-                if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
-                    return int(parts[0]), int(parts[1].split("-")[0])
+                if (
+                    len(parts) >= 2
+                    and parts[0].isdigit()
+                    and parts[1].split("-")[0].isdigit()
+                ):
+                    _record(
+                        "hipconfig",
+                        int(parts[0]),
+                        int(parts[1].split("-")[0]),
+                    )
         except Exception:
             pass
 
     # Distro package-manager fallbacks: package-managed ROCm can expose GPUs via
     # rocminfo/amd-smi but lack /opt/rocm/.info/version and hipconfig, so probe
-    # dpkg (Debian/Ubuntu) and rpm (RHEL/Fedora/SUSE) for the rocm-core version.
-    # Matches install.sh::get_torch_index_url so `studio update` == fresh install.
-    for cmd in (
-        ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
-        ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
-    ):
-        exe = shutil.which(cmd[0])
-        if not exe:
-            continue
+    # dpkg (Debian/Ubuntu) can report rocm-core or the packaged HSA runtime;
+    # rpm (RHEL/Fedora/SUSE) reports rocm-core. Matches install.sh so
+    # `studio update` == fresh install.
+    #
+    # dpkg-query can still report removed-but-not-purged packages, so only
+    # accept package readings whose status is actually "installed".
+    dpkg = shutil.which("dpkg-query")
+    if dpkg:
+        for package, source in (
+            ("rocm-core", "dpkg rocm-core"),
+            ("libhsa-runtime64-1", "dpkg HSA runtime"),
+        ):
+            try:
+                result = subprocess.run(
+                    [
+                        dpkg,
+                        "-W",
+                        "-f=${Status} ${Version}\n",
+                        package,
+                    ],
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.DEVNULL,
+                    text = True,
+                    timeout = 5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    fields = result.stdout.strip().split()
+                    if len(fields) >= 4 and fields[2] == "installed":
+                        raw = fields[3]
+                        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
+                        raw = re.sub(r"^\d+:", "", raw)
+                        m = re.match(r"(\d+)[.-](\d+)", raw)
+                        if m:
+                            _record(
+                                source,
+                                int(m.group(1)),
+                                int(m.group(2)),
+                            )
+            except Exception:
+                pass
+
+    rpm = shutil.which("rpm")
+    if rpm:
         try:
             result = subprocess.run(
-                [exe, *cmd[1:]],
+                [
+                    rpm,
+                    "-q",
+                    "--qf",
+                    "%{VERSION}\n",
+                    "rocm-core",
+                ],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 5,
             )
+            if result.returncode == 0 and result.stdout.strip():
+                raw = result.stdout.strip()
+                m = re.match(r"(\d+)[.-](\d+)", raw)
+                if m:
+                    _record(
+                        "rpm rocm-core",
+                        int(m.group(1)),
+                        int(m.group(2)),
+                    )
         except Exception:
-            continue
-        if result.returncode != 0 or not result.stdout.strip():
-            continue
-        raw = result.stdout.strip()
-        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
-        raw = re.sub(r"^\d+:", "", raw)
-        m = re.match(r"(\d+)[.-](\d+)", raw)
-        if m:
-            return int(m.group(1)), int(m.group(2))
+            pass
 
-    return None
+    if not readings:
+        return None
+
+    best = max(version for _, version in readings)
+    distinct = {version for _, version in readings}
+
+    if len(distinct) > 1:
+        details = ", ".join(
+            f"{source}=rocm{version[0]}.{version[1]}"
+            for source, version in readings
+        )
+        _safe_print(
+            f"WARNING: ROCm version sources disagree ({details}) -- "
+            f"using the highest, rocm{best[0]}.{best[1]}.",
+            file = sys.stderr,
+        )
+
+    return best
 
 
 # APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
