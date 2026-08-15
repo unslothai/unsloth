@@ -414,7 +414,6 @@ class TestSandboxEnvIsolation:
     def test_temp_dir_falls_back_to_the_workdir_when_unusable(self, tmp_path):
         # a TMPDIR that does not exist fails every tempfile call in the child.
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
-
         (tmp_path / _SANDBOX_TEMP_DIRNAME).write_text("not a directory")
         assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
 
