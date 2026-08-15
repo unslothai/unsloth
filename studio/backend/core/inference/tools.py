@@ -6719,7 +6719,8 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
 
 
 # not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write.
-_SANDBOX_TEMP_DIRNAME = "tmp"
+# not "tmp": too common in a workspace, and adopting one is what broke the walks.
+_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
 
 
 def _sandbox_temp_dir(workdir: str) -> str:
@@ -6755,26 +6756,31 @@ def _sandbox_temp_dir(workdir: str) -> str:
 def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     """Whether an existing entry may serve as the scratch directory.
 
-    Must be the real directory of that name, not a link or junction to one.
-    Containment alone is not enough: os.walk does not follow links, so a
-    ``tmp -> .scratch`` inside the workdir would take every temporary artifact
-    somewhere both artifact walks then skip. Resolving both sides also settles
-    the Windows case: an existing ``TMP`` resolves to its stored spelling, which
-    normcase matches there and leaves distinct on a case-sensitive filesystem.
+    Both artifact walks decide the segment discount from the name they are
+    handed by os.walk, so the entry is reused only when the filesystem stores
+    that exact spelling. A case-insensitive volume (default APFS, every NTFS)
+    resolves our lowercase probe onto a directory stored as ``TMP``, and
+    os.path.realpath does not canonicalise case, so a name comparison alone
+    adopted it and then failed to recognise the spelling the walk reported.
 
-    Writability is probed because tempfile abandons an unwritable TMPDIR and
-    falls back to the platform default, putting the child's temporary data
-    outside the session sandbox entirely.
+    It must also be the real directory rather than a link or junction to one:
+    os.walk does not follow links, so the artifacts would land somewhere both
+    walks skip. Writability is checked because tempfile abandons an unwritable
+    TMPDIR for the platform default, putting the child's temporary data outside
+    the session sandbox.
     """
     try:
-        resolved = os.path.normcase(os.path.realpath(temp_dir))
-        literal = os.path.normcase(os.path.join(os.path.realpath(workdir), _SANDBOX_TEMP_DIRNAME))
+        with os.scandir(workdir) as entries:
+            if not any(entry.name == _SANDBOX_TEMP_DIRNAME for entry in entries):
+                return False
+        # realpath, not islink: a Windows junction is not a link to either.
+        if os.path.realpath(temp_dir) != os.path.join(
+            os.path.realpath(workdir), _SANDBOX_TEMP_DIRNAME
+        ):
+            return False
     except OSError:
         return False
-    if resolved != literal or not os.path.isdir(temp_dir):
-        return False
-    # reads the posix bits and the windows read-only attribute, not acls.
-    return os.access(temp_dir, os.W_OK | os.X_OK)
+    return os.path.isdir(temp_dir) and os.access(temp_dir, os.W_OK | os.X_OK)
 
 
 def _build_safe_env(workdir: str) -> dict[str, str]:
@@ -12421,10 +12427,8 @@ def _user_path_parts(parts: "list[str]") -> "list[str]":
     would drop one level of the /tmp artifacts that were served before the
     workdir stopped being %TEMP%, so it is not counted.
     """
-    # normcase: the walks report the stored spelling, which Windows may have cased.
-    if parts and os.path.normcase(parts[0]) == _SANDBOX_TEMP_DIRNAME:
-        return parts[1:]
-    return parts
+    # exact: _reusable_sandbox_temp_dir reuses only this stored spelling.
+    return parts[1:] if parts and parts[0] == _SANDBOX_TEMP_DIRNAME else parts
 
 
 # The same allowlist the download route applies per segment, so a name that

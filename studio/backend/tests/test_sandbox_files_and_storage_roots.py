@@ -729,7 +729,9 @@ def test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal(tmp_path, mon
     scratch = Path(tools._sandbox_temp_dir(str(workdir)))
     (scratch / "report.csv").write_text("x")
 
-    assert inference._sandbox_listing_names(str(workdir)) == ["tmp/report.csv"]
+    assert inference._sandbox_listing_names(str(workdir)) == [
+        f"{tools._SANDBOX_TEMP_DIRNAME}/report.csv"
+    ]
     assert tools.session_sandbox_has_files(session) is True
     assert tools.remove_session_sandbox(session) is False
     assert (scratch / "report.csv").is_file()
@@ -767,10 +769,10 @@ def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path
     (scratch / "a/b/c").mkdir(parents = True)
     (scratch / "a/b/c/result.csv").write_bytes(b"x")
 
-    _, path = _contained_sandbox_path(session, "tmp/a/b/c/result.csv")
+    _, path = _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/result.csv")
     assert Path(path) == scratch / "a/b/c/result.csv"
     with pytest.raises(HTTPException):
-        _contained_sandbox_path(session, "tmp/a/b/c/d/toodeep.csv")
+        _contained_sandbox_path(session, f"{tools._SANDBOX_TEMP_DIRNAME}/a/b/c/d/toodeep.csv")
 
 
 def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):

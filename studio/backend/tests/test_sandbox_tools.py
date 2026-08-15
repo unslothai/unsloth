@@ -476,6 +476,19 @@ class TestSandboxEnvIsolation:
             pytest.skip("symlinks unavailable (Windows without developer mode)")
         assert _sandbox_temp_dir(str(workdir)) == str(workdir)
 
+    def test_temp_dir_refuses_an_entry_stored_under_another_case(self, tmp_path):
+        """On a case-insensitive volume (default APFS, every NTFS) our lowercase
+        probe resolves onto a directory stored as another case, and realpath does
+        not canonicalise case. Adopting it left os.walk reporting the stored
+        spelling, which the segment discount then failed to recognise.
+        """
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        (tmp_path / _SANDBOX_TEMP_DIRNAME.upper()).mkdir()
+        if not (tmp_path / _SANDBOX_TEMP_DIRNAME).exists():
+            pytest.skip("case-sensitive volume, so the collision cannot arise")
+        assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
+
     def test_temp_dir_refuses_an_unwritable_existing_directory(self, tmp_path):
         """tempfile abandons an unwritable TMPDIR for the platform default, which
         would put the child's temporary data outside the session sandbox.
@@ -497,7 +510,11 @@ class TestSandboxEnvIsolation:
         and was downloadable. Nesting TMPDIR one level deeper must not push it
         past _MAX_SANDBOX_PATH_SEGMENTS and drop it from the card.
         """
-        from core.inference.tools import _sandbox_temp_dir, _snapshot_workdir_files
+        from core.inference.tools import (
+            _SANDBOX_TEMP_DIRNAME,
+            _sandbox_temp_dir,
+            _snapshot_workdir_files,
+        )
 
         scratch = Path(_sandbox_temp_dir(str(tmp_path)))
         (scratch / "a/b/c").mkdir(parents = True)
@@ -505,18 +522,26 @@ class TestSandboxEnvIsolation:
         (scratch / "a/b/c/d").mkdir()
         (scratch / "a/b/c/d/toodeep.csv").write_bytes(b"x")
         # the cap still applies, it is just measured from inside the scratch dir.
-        assert sorted(_snapshot_workdir_files(str(tmp_path))) == ["tmp/a/b/c/result.csv"]
+        assert sorted(_snapshot_workdir_files(str(tmp_path))) == [
+            f"{_SANDBOX_TEMP_DIRNAME}/a/b/c/result.csv"
+        ]
 
     def test_scratch_files_are_still_offered_as_artifacts(self, tmp_path):
         """On Windows this directory is what /tmp resolves to, so a model writing
         /tmp/report.csv must still get a download card. A dot-named scratch dir
         would be skipped by the snapshot walk and the file would vanish.
         """
-        from core.inference.tools import _sandbox_temp_dir, _snapshot_workdir_files
+        from core.inference.tools import (
+            _SANDBOX_TEMP_DIRNAME,
+            _sandbox_temp_dir,
+            _snapshot_workdir_files,
+        )
 
         temp_dir = _sandbox_temp_dir(str(tmp_path))
         (Path(temp_dir) / "report.csv").write_bytes(b"x")
-        assert list(_snapshot_workdir_files(str(tmp_path))) == ["tmp/report.csv"]
+        assert list(_snapshot_workdir_files(str(tmp_path))) == [
+            f"{_SANDBOX_TEMP_DIRNAME}/report.csv"
+        ]
 
     def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
         # #7317: Windows Git lives under Program Files, not System32. Sandbox
