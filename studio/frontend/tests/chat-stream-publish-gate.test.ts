@@ -275,7 +275,7 @@ test("the stream loop gates the text publish, not just the yield", () => {
     "} catch (streamError) {",
   );
 
-  const gate = loop.indexOf("if (!canPublish(cumulativeText.length)) {");
+  const gate = loop.indexOf("if (!canPublish(streamedChars)) {");
   assert.notEqual(gate, -1, "the text publish is not gated");
   const rebuild = loop.indexOf(
     "const assistantContent = liveAssistantContent()",
@@ -313,8 +313,52 @@ test("the live tool-argument preview shares the gate", () => {
     "\n                closeReasoningContent();",
   );
 
-  const gate = preview.indexOf("if (canPublish(cumulativeText.length)) {");
+  const gate = preview.indexOf("if (canPublish(streamedChars)) {");
   assert.notEqual(gate, -1, "the per-argument-delta preview is not gated");
   const rebuild = preview.indexOf("content: liveAssistantContent()");
   assert.ok(rebuild > gate, "the gate must precede the message rebuild");
+
+  // Argument deltas never reach cumulativeText, so without this the cap can
+  // never fire on a turn that is only streaming a tool call's arguments.
+  const count = preview.indexOf("streamedChars += fragment.length;");
+  assert.ok(
+    count !== -1 && count < gate,
+    "arguments must count toward the cap",
+  );
+});
+
+test("the gate is fed a counter that only grows", () => {
+  const source = withoutComments(ADAPTER);
+
+  // cumulativeText shrinks when the ${...} strip fires, which would let a closed
+  // gate hold the removed length on top of the cap before publishing again.
+  assert.equal(
+    source.indexOf("canPublish(cumulativeText"),
+    -1,
+    "the cap must not be measured against the mutable reply length",
+  );
+  assert.ok(source.includes("let streamedChars = 0;"), "the counter is gone");
+  const writes = source.match(/streamedChars\s*[+^*/-]?=[^=]/g) ?? [];
+  assert.equal(
+    writes.filter((write) => write.startsWith("streamedChars +=")).length,
+    writes.length - 1,
+    "the counter may only be initialised once and incremented after",
+  );
+});
+
+test("a reasoning group the gate skipped is adopted before the final metadata", () => {
+  const source = withoutComments(ADAPTER);
+
+  const adopt = source.indexOf(
+    "if (finalReasoningGroups > reasoningDurationTracker.groupCount) {",
+  );
+  assert.notEqual(adopt, -1, "a group revealed only by skipped chunks is lost");
+  const finalize = source.indexOf(
+    "reasoningDurationTracker.finishGroup();",
+    adopt,
+  );
+  assert.ok(
+    finalize > adopt,
+    "the group must be adopted before the run finalizes durations",
+  );
 });

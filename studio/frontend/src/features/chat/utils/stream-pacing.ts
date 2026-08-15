@@ -17,18 +17,19 @@ export const MAX_HELD_CHARS = 256;
 /**
  * Paces streamed publishes to one per frame while capping what a stop would discard.
  *
- * `length` is the caller's accumulated reply length. The gate closes on a publish and
- * reopens on the next frame, or on UNPAINTED_REOPEN_MS when no frame comes. A closed
- * gate publishes anyway once MAX_HELD_CHARS have arrived since the last publish.
+ * `streamed` counts the characters the caller has received. It must only grow, since
+ * the cap is on the arrivals a publish has yet to carry. The gate closes on a publish
+ * and reopens on the next frame, or on UNPAINTED_REOPEN_MS when no frame comes; a
+ * closed gate publishes anyway once MAX_HELD_CHARS have arrived since the last one.
  */
-export function createStreamPublishGate(): (length: number) => boolean {
+export function createStreamPublishGate(): (streamed: number) => boolean {
   let open = true;
-  let publishedLength = 0;
-  return (length: number) => {
-    if (!open && length - publishedLength < MAX_HELD_CHARS) {
+  let publishedAt = 0;
+  return (streamed: number) => {
+    if (!open && streamed - publishedAt < MAX_HELD_CHARS) {
       return false;
     }
-    publishedLength = length;
+    publishedAt = streamed;
     if (open) {
       open = false;
       // Per cycle, so the loser of the previous race cannot reopen this one.

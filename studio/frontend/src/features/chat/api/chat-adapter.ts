@@ -4501,6 +4501,10 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
+      // What the publish gate bounds. Only ever grows, unlike cumulativeText, which
+      // the ${...} strip below can shorten, and it also counts the tool-argument
+      // deltas that never reach cumulativeText at all.
+      let streamedChars = 0;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -5478,6 +5482,7 @@ export function createOpenAIStreamAdapter(
                     const accum =
                       (liveArgsTextById.get(liveId) ?? "") + fragment;
                     liveArgsTextById.set(liveId, accum);
+                    streamedChars += fragment.length;
                     const partial = parseLiveToolArgs(accum);
                     const idx = toolCallParts.findIndex(
                       (p) => p.toolCallId === liveId,
@@ -5495,7 +5500,7 @@ export function createOpenAIStreamAdapter(
                       // delta and tool_start replaces it with the authoritative
                       // parse. The tool events themselves are rare and carry the
                       // card's state, so they publish ungated.
-                      if (canPublish(cumulativeText.length)) {
+                      if (canPublish(streamedChars)) {
                         yield {
                           content: liveAssistantContent(),
                           metadata: {
@@ -6098,6 +6103,7 @@ export function createOpenAIStreamAdapter(
                 }
                 cumulativeText += delta;
               }
+              streamedChars += reasoning.length + delta.length;
               // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
@@ -6108,7 +6114,7 @@ export function createOpenAIStreamAdapter(
               }
               // Coalesce text received before the next frame; cumulativeText retains
               // it. The gate publishes anyway once it holds more than a stop may drop.
-              if (!canPublish(cumulativeText.length)) {
+              if (!canPublish(streamedChars)) {
                 continue;
               }
               const assistantContent = liveAssistantContent();
@@ -6269,11 +6275,20 @@ export function createOpenAIStreamAdapter(
           finalTokPerSec,
         );
 
-        // Finalize reasoning-only streams.
+        // Finalize reasoning-only streams. A group whose only chunks the gate
+        // skipped was never started, so adopt it here or the persisted durations
+        // would have a hole where the rendered panel has a group.
+        const finalContent = buildAssistantContent(
+          mergeContinuation(cumulativeText),
+        );
+        const finalReasoningGroups = countReasoningGroups(finalContent);
+        if (finalReasoningGroups > reasoningDurationTracker.groupCount) {
+          reasoningDurationTracker.startGroup(finalReasoningGroups - 1);
+        }
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText)),
+            ...finalContent,
             ...sourceParts,
             ...documentCitationParts,
           ],
