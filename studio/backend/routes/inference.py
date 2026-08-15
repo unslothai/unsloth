@@ -5483,9 +5483,7 @@ def _classify_and_probe_residency(
     from core.inference.local_model_resolver import local_target_is_gguf
 
     is_gguf = local_target_is_gguf(load_path, alias)
-    return is_gguf, _resolves_to_resident(
-        load_path, llama_only = llama_only, exact_only = not is_gguf
-    )
+    return is_gguf, _resolves_to_resident(load_path, llama_only = llama_only, exact_only = not is_gguf)
 
 
 def _innermost_indexed_owner(path: str) -> Optional[str]:
@@ -5572,11 +5570,14 @@ async def _reject_unservable_model(
         # would be answered by a resident Q4_K_M.
         # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
         # skip the offloaded reads, so on a restart this built the singleton on the loop.
-        resolved_is_resident = resolved is not None and (
-            await asyncio.to_thread(
-                _classify_and_probe_residency, resolved[0], resolved[2], quantified
-            )
-        )[1]
+        resolved_is_resident = (
+            resolved is not None
+            and (
+                await asyncio.to_thread(
+                    _classify_and_probe_residency, resolved[0], resolved[2], quantified
+                )
+            )[1]
+        )
         if resolved_is_resident and (not quantified or _resident_quant_is(variant)):
             return
         downloaded = resolved is not None
@@ -5586,9 +5587,7 @@ async def _reject_unservable_model(
         advertised_is_resident = (
             advertised is not None
             and (
-                await asyncio.to_thread(
-                    _classify_and_probe_residency, advertised, base, quantified
-                )
+                await asyncio.to_thread(_classify_and_probe_residency, advertised, base, quantified)
             )[1]
         )
         if advertised_is_resident and (not quantified or _resident_quant_is(variant)):
