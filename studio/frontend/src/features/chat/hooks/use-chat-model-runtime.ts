@@ -58,6 +58,7 @@ import {
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
+import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
@@ -654,19 +655,18 @@ export function useChatModelRuntime() {
       };
       if (bailIfLoadInFlight()) return;
 
-      // Picking an external provider leaves the local model resident and stops the status poll
-      // mirroring it, so params.checkpoint cannot tell whether this pick is that same model.
-      // Ask the backend before prompting: /load answers already_loaded ahead of its cancel
-      // hook, so the dialog would promise to stop chats this pick never interrupts. A staged
-      // config always carries forceReload, so Apply still reloads and prompts.
+      // ask the backend, not params.checkpoint: an external pick leaves the local model resident, and a pinned cached row is loaded under a name its picker row never shows
       const selectedCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
-      if (!forceReload && isExternalModelId(selectedCheckpoint)) {
+      if (!forceReload) {
         const residentStatus = await getInferenceStatus().catch(() => null);
         if (
           residentStatus &&
-          resolveInferenceCheckpointId(residentStatus) === modelId &&
-          (residentStatus.gguf_variant ?? null) === (ggufVariant ?? null)
+          residentModelMatchesPick(residentStatus, {
+            id: modelId,
+            loadPath,
+            ggufVariant,
+          })
         ) {
           // Same window as the confirm below: a rival load may have started during that GET,
           // and it owns the resident model now.
