@@ -555,7 +555,11 @@ def test_a_request_queued_on_the_switch_lock_does_not_block_the_drain(
     backend.repo_id = "Qwen/Qwen-Image"
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.5)
     # Two tracked requests in flight, and both parked on the switch: only one holds the lock.
-    monkeypatch.setattr(mk, "other_request_count", lambda owner, current_request_counted = False: 1)
+    monkeypatch.setattr(
+        mk,
+        "other_request_count",
+        lambda owner, current_request_counted = False, count_pending = True: 1,
+    )
     monkeypatch.setattr(mas, "_waiter_count", lambda owner: 2)
 
     _switch("black-forest-labs/FLUX.1-dev")
@@ -1173,6 +1177,62 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
         assert not mas._switch_lock(arb.DIFFUSION).locked()
 
     asyncio.run(_drive())
+
+
+def test_an_expired_budget_refuses_instead_of_crashing(
+    catalog, enabled, tmp_path, backend, monkeypatch
+):
+    # _bounded receives a Future from shield(), which cancels rather than closes; calling
+    # close() on it raised AttributeError instead of the intended retryable 503.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    async def _expired(coro):
+        return await mas._bounded(coro, time.monotonic() - 1, kind = "image", openai_errors = True)
+
+    async def _drive():
+        with pytest.raises(HTTPException) as excinfo:
+            await _expired(asyncio.shield(asyncio.ensure_future(asyncio.sleep(0))))
+        assert excinfo.value.status_code == 503
+
+    asyncio.run(_drive())
+
+
+def test_a_request_parked_on_the_held_gate_does_not_abort_the_switch(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # A newcomer arriving while the gated task owns the gate is counted pending and then blocks
+    # on that gate, so counting it aborted an otherwise idle switch.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+    tracker = mk._TRACKERS[arb.DIFFUSION]
+    monkeypatch.setattr(tracker, "_pending", 1)
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+
+
+def test_paths_differing_only_in_case_are_not_merged_by_the_ambiguity_scan(catalog, tmp_path):
+    # Lowercasing the path merged two directories whose builds publish the same quant token,
+    # marking both ambiguous so the resident one could never be reused.
+    for name in ("Foo", "foo"):
+        directory = tmp_path / name
+        if not directory.exists():
+            directory.mkdir()
+        (directory / f"{name}-Q4_K_M.gguf").write_bytes(b"")
+        catalog.append(_info(f"org/{name}", directory, task = mas.IMAGE_TASK, model_format = "gguf"))
+    upper = mas.resolve_local_media_model("org/Foo", task = mas.IMAGE_TASK)
+    lower = mas.resolve_local_media_model("org/foo", task = mas.IMAGE_TASK)
+    if upper is None or lower is None or upper.model_path == lower.model_path:
+        pytest.skip("this filesystem folds case, so the two directories cannot coexist")
+
+    assert not upper.ambiguous and not lower.ambiguous
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

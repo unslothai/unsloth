@@ -78,9 +78,9 @@ class _Tracker:
         with self._lock:
             self._last_active = time.monotonic()
 
-    def outstanding(self) -> int:
+    def outstanding(self, *, count_pending: bool = True) -> int:
         with self._lock:
-            return self._inflight + self._pending
+            return self._inflight + (self._pending if count_pending else 0)
 
     def is_idle(self, ttl_seconds: float) -> bool:
         with self._lock:
@@ -96,11 +96,15 @@ _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
 # Per backend, not per engine object: a diffusers <-> sd.cpp switch replaces that object.
 # Keyed by the target a load was started for, since a load route records this the moment the
 # background load is accepted and that load can still fail with the previous model resident.
-_LOAD_ORIGINS: dict[str, tuple[tuple[str, str], bool]] = {}
+_LOAD_ORIGINS: dict[str, tuple[tuple[str, str, str], bool]] = {}
 _LOAD_ORIGINS_GUARD = threading.Lock()
 
 
-def _origin_key(target: Optional[str], variant: Optional[str]) -> tuple[str, str]:
+def _origin_key(
+    target: Optional[str],
+    variant: Optional[str],
+    partition: Optional[str] = None,
+) -> tuple[str, str, str]:
     """The build a provenance record answers for: the repo/path AND its GGUF variant.
 
     The path alone is not the build: a user-loaded Q4 and an API load of Q8 from the same repo
@@ -114,7 +118,7 @@ def _origin_key(target: Optional[str], variant: Optional[str]) -> tuple[str, str
     text = str(target or "").strip()
     # A repo id folds case; a path does not, or /models/Foo and /models/foo share an origin.
     key = os.path.normcase(text) if os.path.isabs(text) else text.lower()
-    return (key, str(variant or "").strip().lower())
+    return (key, str(variant or "").strip().lower(), str(partition or "").strip().lower())
 
 
 def note_load_origin(
@@ -133,6 +137,7 @@ def loaded_by_user_action(
     owner: str,
     resident: Optional[str] = None,
     variant: Optional[str] = None,
+    partition: Optional[str] = None,
 ) -> bool:
     """Whether the RESIDENT model was loaded from Studio rather than by an API request.
 
@@ -146,18 +151,24 @@ def loaded_by_user_action(
     if entry is None:
         return True
     key, user_action = entry
-    if resident is not None and key[0] and key != _origin_key(resident, variant):
+    if resident is not None and key[0] and key != _origin_key(resident, variant, partition):
         return True
     return user_action
 
 
-def other_request_count(owner: str, *, current_request_counted: bool = False) -> int:
+def other_request_count(
+    owner: str,
+    *,
+    current_request_counted: bool = False,
+    count_pending: bool = True,
+) -> int:
     """Tracked media requests in flight on *owner*, excluding this one when it is counted.
 
     The auto-switch drain reads this from inside a tracked request, so its own entry must
-    not make the backend look permanently busy.
+    not make the backend look permanently busy. ``count_pending`` False drops requests that
+    have registered but are still blocked on the gate, which a gate holder must not wait for.
     """
-    total = _TRACKERS[owner].outstanding()
+    total = _TRACKERS[owner].outstanding(count_pending = count_pending)
     return max(0, total - 1) if current_request_counted else total
 
 
@@ -357,7 +368,12 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         if (
             ttl <= 0
             or not tracker.is_idle(ttl)
-            or _user_pinned(tracker.owner, status.get("repo_id"), status.get("gguf_variant"))
+            or _user_pinned(
+                tracker.owner,
+                status.get("repo_id"),
+                status.get("gguf_variant"),
+                status.get("h3_task"),
+            )
         ):
             return
         await asyncio.to_thread(backend.unload)
@@ -378,14 +394,16 @@ def _effective_ttl() -> float:
     return float(get_media_auto_unload_idle_seconds())
 
 
-def _user_pinned(owner: str, resident: Optional[str], variant: Optional[str]) -> bool:
+def _user_pinned(
+    owner: str, resident: Optional[str], variant: Optional[str], partition: Optional[str]
+) -> bool:
     """Whether "only unload models loaded by the API" spares this backend's model.
 
     Read immediately before the teardown, like the TTL: the setting can be turned on
     while a step is running, and a model it now pins must not be freed by the rest of it.
     """
     from utils.openai_auto_switch_settings import get_auto_unload_api_only
-    return get_auto_unload_api_only() and loaded_by_user_action(owner, resident, variant)
+    return get_auto_unload_api_only() and loaded_by_user_action(owner, resident, variant, partition)
 
 
 async def idle_unload_step() -> None:

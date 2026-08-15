@@ -311,6 +311,7 @@ async def load_video_model_gated(
             VIDEO,
             request.model_path,
             extract_quant_token(request.gguf_filename) if request.gguf_filename else None,
+            request.h3_task,
             user_action = user_initiated,
         )
         return VideoStatusResponse(**status_dict)

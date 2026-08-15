@@ -316,7 +316,7 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
     for pick in index.values():
         if pick is _AMBIGUOUS or pick.model_kind != "gguf":
             continue
-        key = (pick.model_path.strip().lower(), _published_token(pick))
+        key = (_identity_key(pick.model_path), _published_token(pick))
         seen.setdefault(key, set()).add(pick.gguf_filename)
     collides = {key for key, files in seen.items() if len(files) > 1 or key[1] == ""}
     if not collides:
@@ -326,7 +326,7 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
             pick
             if pick is _AMBIGUOUS
             or pick.model_kind != "gguf"
-            or (pick.model_path.strip().lower(), _published_token(pick)) not in collides
+            or (_identity_key(pick.model_path), _published_token(pick)) not in collides
             else replace(pick, ambiguous = True)
         )
         for name, pick in index.items()
@@ -417,6 +417,12 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
     return not pick.ambiguous
 
 
+def _identity_key(value: str) -> str:
+    """A model identity normalized for comparison: a repo id folds case, a path does not."""
+    text = str(value or "").strip()
+    return os.path.normcase(text) if os.path.isabs(text) else text.lower()
+
+
 def _same_identity(requested: str, resident: str) -> bool:
     """Whether two model identities name the same thing.
 
@@ -426,9 +432,7 @@ def _same_identity(requested: str, resident: str) -> bool:
     requested, resident = requested.strip(), resident.strip()
     if not requested or not resident:
         return False
-    if os.path.isabs(requested) or os.path.isabs(resident):
-        return os.path.normcase(requested) == os.path.normcase(resident)
-    return requested.lower() == resident.lower()
+    return _identity_key(requested) == _identity_key(resident)
 
 
 def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -> bool:
@@ -479,18 +483,30 @@ def _backend_busy(backend: Any) -> bool:
     return bool((backend.generate_progress() or {}).get("active"))
 
 
-async def _drain(owner: str, backend: Any, deadline: float) -> bool:
+async def _drain(
+    owner: str,
+    backend: Any,
+    deadline: float,
+    *,
+    count_pending: bool = True,
+) -> bool:
     """Wait out other tracked requests and any in-flight load or generation.
 
     A request queued on this backend's switch lock is counted by the middleware but is not
     doing any work, so it is discounted here: two concurrent requests for the same absent
     model would otherwise each wait the other out and both return 409. Mirrors the chat
     switch, which excludes its own waiters from ``_wait_for_model_switch_idle``.
+
+    ``count_pending`` is False for the check made while holding the admission gate. A request
+    arriving then is counted pending and immediately blocks on that gate, so counting it would
+    abort a switch over a newcomer that cannot be touching the backend.
     """
     from core.inference.media_keepwarm import other_request_count
     while True:
         # This request is itself tracked and itself a waiter, so it counts as neither.
-        others = other_request_count(owner, current_request_counted = True)
+        others = other_request_count(
+            owner, current_request_counted = True, count_pending = count_pending
+        )
         others -= max(0, _waiter_count(owner) - 1)
         if others <= 0 and not await asyncio.to_thread(_backend_busy, backend):
             return True
@@ -541,7 +557,11 @@ async def _bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
     """
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        coro.close()
+        # shield() yields a Future, which has no close(); a bare coroutine has no cancel().
+        if hasattr(coro, "cancel"):
+            coro.cancel()
+        else:
+            coro.close()
         raise _refuse(
             _SLOW_MSG.format(kind = kind),
             status_code = 503,
@@ -777,7 +797,7 @@ async def _gated_start_load(
             # What the drain waited out may have been the very load this request wanted.
             if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                 return True
-            if not await _drain(owner, backend, time.monotonic()):
+            if not await _drain(owner, backend, time.monotonic(), count_pending = False):
                 raise _refuse(
                     _BUSY_MSG.format(kind = kind),
                     status_code = 409,
@@ -788,7 +808,14 @@ async def _gated_start_load(
             # Re-planned here because the drain can last 30 seconds, and a cache deletion during
             # it sees a target that is neither loaded nor loading yet, so its guard allows the
             # removal of files this already verified.
-            missing = await asyncio.to_thread(_missing_download_bytes, owner, pick)
+            # Bounded inside the task: it holds the gate and the lock, and this step has no
+            # side effects, so a stalled planner can safely give both back.
+            missing = await _bounded(
+                asyncio.to_thread(_missing_download_bytes, owner, pick),
+                deadline,
+                kind = kind,
+                openai_errors = openai_errors,
+            )
             if missing is None or missing:
                 raise _refuse(
                     _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind)
@@ -871,88 +898,89 @@ async def maybe_auto_switch_media_model(
     if _satisfied_by(resident, name, pick):
         return
 
+    # Acquired within the budget: a request that spent most of it resolving would otherwise
+    # queue behind another full switch and blow past the response window before any of the
+    # inner waits could notice. The waiter marker covers only the wait for the lock: once this
+    # request holds it, and especially once it is polling its own load, it is real work another
+    # switch has to see rather than discount.
+    lock = _switch_lock(owner)
     with _note_waiter(owner):
-        # Acquired within the budget: a request that spent most of it resolving would otherwise
-        # queue behind another full switch and blow past the response window before any of the
-        # inner waits could notice.
-        lock = _switch_lock(owner)
         await _bounded(lock.acquire(), deadline, kind = kind, openai_errors = openai_errors)
-        handed_over = False
-        try:
-            backend = _backend_for(owner)
-            # Re-read under the lock: a concurrent request may have just loaded this model.
-            if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
-                return
-            missing = await _bounded(
-                asyncio.to_thread(_missing_download_bytes, owner, pick),
+    handed_over = False
+    try:
+        backend = _backend_for(owner)
+        # Re-read under the lock: a concurrent request may have just loaded this model.
+        if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
+            return
+        missing = await _bounded(
+            asyncio.to_thread(_missing_download_bytes, owner, pick),
+            deadline,
+            kind = kind,
+            openai_errors = openai_errors,
+        )
+        if missing is None:
+            raise _refuse(
+                _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind),
+                status_code = 409,
+                openai_errors = openai_errors,
+                code = "model_not_downloaded",
+            )
+        if missing:
+            raise _refuse(
+                _incomplete_message(pick, missing, kind),
+                status_code = 409,
+                openai_errors = openai_errors,
+                code = "model_not_downloaded",
+            )
+        if not await _drain(owner, backend, min(deadline, time.monotonic() + _DRAIN_WAIT_S)):
+            raise _refuse(
+                _BUSY_MSG.format(kind = kind),
+                status_code = 409,
+                openai_errors = openai_errors,
+                code = "model_busy",
+                retry_after = _RETRY_AFTER_S,
+            )
+        # The gated section runs as its own task holding the gate AND the switch lock, so
+        # a timeout below frees the caller without unwinding either: setup that has begun
+        # activating an engine must reach begin_load before anything else is admitted.
+        setup = asyncio.ensure_future(
+            _gated_start_load(
+                owner,
+                name,
+                pick,
+                current_subject,
+                lock,
                 deadline,
                 kind = kind,
                 openai_errors = openai_errors,
             )
-            if missing is None:
-                raise _refuse(
-                    _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind),
-                    status_code = 409,
-                    openai_errors = openai_errors,
-                    code = "model_not_downloaded",
-                )
-            if missing:
-                raise _refuse(
-                    _incomplete_message(pick, missing, kind),
-                    status_code = 409,
-                    openai_errors = openai_errors,
-                    code = "model_not_downloaded",
-                )
-            if not await _drain(owner, backend, min(deadline, time.monotonic() + _DRAIN_WAIT_S)):
-                raise _refuse(
-                    _BUSY_MSG.format(kind = kind),
-                    status_code = 409,
-                    openai_errors = openai_errors,
-                    code = "model_busy",
-                    retry_after = _RETRY_AFTER_S,
-                )
-            # The gated section runs as its own task holding the gate AND the switch lock, so
-            # a timeout below frees the caller without unwinding either: setup that has begun
-            # activating an engine must reach begin_load before anything else is admitted.
-            setup = asyncio.ensure_future(
-                _gated_start_load(
-                    owner,
-                    name,
-                    pick,
-                    current_subject,
-                    lock,
-                    deadline,
-                    kind = kind,
-                    openai_errors = openai_errors,
-                )
-            )
-            handed_over = True
-            if await _bounded(
-                asyncio.shield(setup), deadline, kind = kind, openai_errors = openai_errors
-            ):
-                return
-        finally:
-            if not handed_over:
-                lock.release()
-        try:
-            # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
-            ready = await _await_loaded(_backend_for(owner), name, pick, deadline)
-        except RuntimeError as exc:
-            # The loader already redacts this text; a bare raise would 500 with it.
-            raise _refuse(
-                f"'{pick.model_id}' could not be loaded: {exc}",
-                status_code = 503,
-                openai_errors = openai_errors,
-                code = "model_load_failed",
-            )
-        if not ready:
-            raise _refuse(
-                _LOADING_MSG.format(model = pick.model_id),
-                status_code = 503,
-                openai_errors = openai_errors,
-                code = "model_loading",
-                retry_after = _RETRY_AFTER_S,
-            )
+        )
+        handed_over = True
+        if await _bounded(asyncio.shield(setup), deadline, kind = kind, openai_errors = openai_errors):
+            return
+    finally:
+        if not handed_over:
+            lock.release()
+
+    try:
+        # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
+        ready = await _await_loaded(_backend_for(owner), name, pick, deadline)
+    except RuntimeError as exc:
+        # The loader already redacts this text; a bare raise would 500 with it.
+        raise _refuse(
+            f"'{pick.model_id}' could not be loaded: {exc}",
+            status_code = 503,
+            openai_errors = openai_errors,
+            code = "model_load_failed",
+        )
+    if not ready:
+        raise _refuse(
+            _LOADING_MSG.format(model = pick.model_id),
+            status_code = 503,
+            openai_errors = openai_errors,
+            code = "model_loading",
+            retry_after = _RETRY_AFTER_S,
+        )
 
 
 # One switch at a time per backend, so two requests cannot race the single pipeline slot.
