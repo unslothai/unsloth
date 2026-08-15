@@ -1414,6 +1414,55 @@ def test_a_hidream_pipeline_is_planned_despite_being_local(
     assert loads == []
 
 
+def test_a_switch_waits_for_chat(catalog, enabled, tmp_path, backend, loads, monkeypatch):
+    # The arbiter evicts whoever owns the GPU, so an image switch would terminate a streaming
+    # chat completion that has nothing to do with this request.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
+    monkeypatch.setattr(mas, "_chat_busy", lambda: True)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_local_hidream_is_accepted_once_its_encoder_is_cached(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # The planner cannot be handed an absolute pipeline path, so the dependency is checked
+    # against the cache directly rather than by refusing the model outright.
+    pipeline = tmp_path / "hidream"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
+    import core.inference.diffusion_families as families
+
+    monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
+
+    def _explode(model_path, **kwargs):
+        raise AssertionError("a local pipeline must not be planned against the Hub")
+
+    backend.download_plan = _explode
+
+    _switch("HiDream-ai/HiDream-I1-Dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["HiDream-ai/HiDream-I1-Dev"]
+
+
+def test_a_failed_api_load_of_an_indistinguishable_build_keeps_the_user_mark():
+    # Sibling GGUFs can share a quant token, so the two builds produce one provenance key; a
+    # failed API load must not reclassify the user's surviving model.
+    mk.note_load_origin(arb.DIFFUSION, "/models/x", "IQ4_XS", None, user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "/models/x", "IQ4_XS", None, user_action = False)
+
+    assert mk.loaded_by_user_action(arb.DIFFUSION, "/models/x", "IQ4_XS") is True
+
+
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module

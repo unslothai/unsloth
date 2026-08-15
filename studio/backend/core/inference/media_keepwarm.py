@@ -129,9 +129,18 @@ def note_load_origin(
     *,
     user_action: bool,
 ) -> None:
-    """Record who asked for the model a load route is bringing up."""
+    """Record who asked for the model a load route is bringing up.
+
+    An API load over a user-loaded build with the same key keeps the user's mark: the two are
+    indistinguishable to ``status()`` (sibling GGUFs can share a quant token), and a load that
+    is accepted and then fails leaves the user's model resident, which this must not reclassify.
+    """
+    key = _origin_key(target, variant, partition)
     with _LOAD_ORIGINS_GUARD:
-        _LOAD_ORIGINS[owner] = (_origin_key(target, variant, partition), user_action)
+        previous = _LOAD_ORIGINS.get(owner)
+        if not user_action and previous is not None and previous[0] == key and previous[1]:
+            return
+        _LOAD_ORIGINS[owner] = (key, user_action)
 
 
 def loaded_by_user_action(

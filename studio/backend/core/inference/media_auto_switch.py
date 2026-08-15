@@ -521,6 +521,35 @@ def _partition_matches(status: dict[str, Any], pick: Optional[MediaModelPick] = 
     return resident == str(expected or "").strip().lower()
 
 
+async def _probe(fn, arg, deadline: float) -> bool:
+    """Run a blocking busy probe off the loop, treating an overrun as still busy."""
+    remaining = deadline - time.monotonic()
+    call = asyncio.to_thread(fn, arg) if arg is not None else asyncio.to_thread(fn)
+    if remaining <= 0:
+        call.close()
+        return True
+    try:
+        return bool(await asyncio.wait_for(call, timeout = remaining))
+    except asyncio.TimeoutError:
+        return True
+
+
+def _chat_busy() -> bool:
+    """Whether a chat request or load is in flight, so the GPU handoff would interrupt it.
+
+    The arbiter evicts chat unconditionally for the current owner, terminating a streaming
+    completion that has nothing to do with this switch.
+    """
+    try:
+        from core.inference.llama_keepwarm import other_inference_request_count
+    except Exception:  # noqa: BLE001 -- no chat stack means no chat work
+        return False
+    try:
+        return other_inference_request_count(current_request_counted = True) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _other_owner(owner: str) -> str:
     """The media backend this one would take the GPU from."""
     return VIDEO if owner == DIFFUSION else DIFFUSION
@@ -561,6 +590,7 @@ async def _drain(
     deadline: float,
     *,
     count_pending: bool = True,
+    probe_deadline: Optional[float] = None,
 ) -> bool:
     """Wait out other tracked requests and any in-flight load or generation.
 
@@ -572,6 +602,10 @@ async def _drain(
     ``count_pending`` is False for the check made while holding the admission gate. A request
     arriving then is counted pending and immediately blocks on that gate, so counting it would
     abort a switch over a newcomer that cannot be touching the backend.
+
+    ``probe_deadline`` bounds the busy probes themselves, and is the switch budget rather than
+    this loop's deadline: the in-gate check evaluates the condition once with no time to wait,
+    and reusing that as the probe bound would report every backend busy.
     """
     from core.inference.media_keepwarm import other_request_count
     while True:
@@ -586,8 +620,16 @@ async def _drain(
         # whose cross-owner handoff unloads whatever holds it, cancelling a generation that has
         # nothing to do with this request.
         others += other_request_count(_other_owner(owner), count_pending = count_pending)
-        idle = others <= 0 and not await asyncio.to_thread(_backend_busy, backend)
-        if idle and not await asyncio.to_thread(_other_backend_busy, owner):
+        # Probed under the deadline: loading_repo_ids takes the backend lock, which the loader
+        # holds across pipeline assembly, so an unbounded probe outlives the response window.
+        # Chat counts as well: the arbiter evicts whoever owns the GPU, streaming or not.
+        probe_by = deadline if probe_deadline is None else probe_deadline
+        if (
+            others <= 0
+            and not await _probe(_backend_busy, backend, probe_by)
+            and not await _probe(_other_backend_busy, owner, probe_by)
+            and not await _probe(_chat_busy, None, probe_by)
+        ):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -688,12 +730,29 @@ _EXTERNAL_ENCODER_FAMILIES = frozenset({"hidream-i1"})
 _H3_FAMILY = "minimax-h3"
 
 
-def _needs_external_encoder(pick: MediaModelPick) -> bool:
-    """Whether this pick's pipeline fetches an encoder that its own directory cannot hold.
+def _missing_external_encoder(pick: MediaModelPick) -> Optional[int]:
+    """0 when this local pipeline needs nothing more, else what its outside dependency costs.
 
-    HiDream-I1 loads unsloth/Meta-Llama-3.1-8B-Instruct unconditionally, around 16 GB, so a
-    local directory is not evidence that nothing will be downloaded.
+    HiDream-I1 loads unsloth/Meta-Llama-3.1-8B-Instruct unconditionally, around 16 GB, which no
+    amount of the pipeline being on disk accounts for. Checked against the cache directly rather
+    than through the planner, which cannot be handed an absolute pipeline path.
     """
+    if not _needs_external_encoder(pick):
+        return 0
+    from core.inference.diffusion_families import _upstream_is_cached
+    from core.inference.diffusion_hidream import HIDREAM_LLAMA_REPO
+
+    try:
+        if _upstream_is_cached(HIDREAM_LLAMA_REPO):
+            return 0
+    except Exception as exc:  # noqa: BLE001 -- an unreadable cache is not proof of locality
+        logger.debug("media auto-switch: hidream encoder probe failed: %s", exc)
+        return None
+    return _UNSIZED_MISSING
+
+
+def _needs_external_encoder(pick: MediaModelPick) -> bool:
+    """Whether this pick's pipeline fetches an encoder that its own directory cannot hold."""
     from core.inference.diffusion_families import detect_family_for_pick
 
     # Both needles: the on-disk directory is often named nothing like the model, and a
@@ -821,13 +880,10 @@ def _missing_download_bytes(
     # unverifiable and would refuse every on-device model. Video is excluded: a local MiniMax-H3
     # modular pipeline still substitutes a hosted quantized conditioner, tens of GB the loader
     # fetches during assembly, so it has to be planned like any other pick.
-    if (
-        owner == DIFFUSION
-        and not target.gguf_filename
-        and Path(target.model_path).is_dir()
-        and not _needs_external_encoder(target)
-    ):
-        return 0
+    if owner == DIFFUSION and not target.gguf_filename and Path(target.model_path).is_dir():
+        # The pipeline itself is present; only a dependency living outside it can still be
+        # fetched, and the planner cannot be asked about an absolute path at all.
+        return _missing_external_encoder(target)
     try:
         ordinal = _plan_gpu_ordinal()
         plans = [
@@ -920,14 +976,23 @@ async def _gated_start_load(
     """
     from core.inference.media_keepwarm import admission_gate
     try:
-        async with admission_gate(owner):
+        # BOTH media gates, always image first so two switches cannot deadlock on each other.
+        # The arbiter's handoff unloads whichever backend owns the GPU, so a request admitted
+        # to the other one between the drain and registration would be cancelled by this load.
+        async with admission_gate(DIFFUSION), admission_gate(VIDEO):
             # Re-resolved under the gate: a concurrent load can activate the other image engine
             # while this request drains, leaving the earlier reference on the idle one.
             backend = _backend_for(owner)
             # What the drain waited out may have been the very load this request wanted.
             if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
                 return True
-            if not await _drain(owner, backend, time.monotonic(), count_pending = False):
+            if not await _drain(
+                owner,
+                backend,
+                time.monotonic(),
+                count_pending = False,
+                probe_deadline = deadline,
+            ):
                 raise _refuse(
                     _BUSY_MSG.format(kind = kind),
                     status_code = 409,
