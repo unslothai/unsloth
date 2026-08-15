@@ -292,6 +292,7 @@ class UnslothTrainer:
         self.training_thread = None
         self.training_progress = TrainingProgress()
         self.progress_callbacks = []
+        self.checkpoint_callbacks = []
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
@@ -485,6 +486,10 @@ class UnslothTrainer:
         """Add callback for training progress updates"""
         self.progress_callbacks.append(callback)
 
+    def add_checkpoint_callback(self, callback: Callable[[int, str], None]):
+        """Register a notification that runs after Trainer completes a checkpoint save."""
+        self.checkpoint_callbacks.append(callback)
+
     def _update_progress(self, **kwargs):
         """Update training progress and notify callbacks"""
         with self._lock:
@@ -639,6 +644,11 @@ class UnslothTrainer:
 
             def on_epoch_end(self, args, state, control, **kwargs):
                 trainer_ref._update_progress(epoch = state.epoch, step = state.global_step)
+
+            def on_save(self, args, state, control, **kwargs):
+                checkpoint_path = str(Path(args.output_dir) / f"checkpoint-{state.global_step}")
+                for callback in trainer_ref.checkpoint_callbacks:
+                    callback(int(state.global_step), checkpoint_path)
 
             def on_step_end(self, args, state, control, **kwargs):
                 if trainer_ref.should_stop:

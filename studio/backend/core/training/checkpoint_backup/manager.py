@@ -52,6 +52,15 @@ class CheckpointBackupManager:
     def on_checkpoint_saved(self, run_id: str, global_step: int, checkpoint_path: Path) -> bool:
         if not self.config.enabled or global_step % self.effective_backup_steps:
             return False
+        return self._enqueue(run_id, global_step, checkpoint_path)
+
+    def on_run_finished(self, run_id: str, global_step: int, checkpoint_path: Path) -> bool:
+        """Queue the final saved checkpoint regardless of the periodic cadence."""
+        if not self.config.enabled:
+            return False
+        return self._enqueue(run_id, global_step, checkpoint_path)
+
+    def _enqueue(self, run_id: str, global_step: int, checkpoint_path: Path) -> bool:
         path = Path(checkpoint_path).resolve()
         try:
             path.relative_to(self.output_root)
