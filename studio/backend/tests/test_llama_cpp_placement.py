@@ -1166,7 +1166,6 @@ def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
     assert backend._launch_host_shortfall_message([*argv, "--rpc", "  "], [(0, 4877)]) is not None
 
 
-
 def test_an_rpc_env_launch_abstains(tmp_path, monkeypatch):
     """llama.cpp reads LLAMA_ARG_RPC as the environment twin of --rpc, so the guard has
     to see the child environment or it refuses the same distributed launch."""
