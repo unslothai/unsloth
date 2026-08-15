@@ -15282,9 +15282,13 @@ class LlamaCppBackend:
                         mtp_draft_path = (
                             None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
                         ),
-                        dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
+                        dspark_draft_path = (
+                            launch_mtp_draft_path if _spec_canon == "dspark" else None
+                        ),
                         dspark_fit_sized = not use_fit,
-                        dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
+                        dflash_draft_path = (
+                            launch_mtp_draft_path if _spec_canon == "dflash" else None
+                        ),
                         dflash_fit_sized = not use_fit,
                         drafter_no_vram = _spec_dropped_no_vram,
                         draft_device = _draft_device,

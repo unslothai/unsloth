@@ -510,7 +510,10 @@ def test_resolve_gguf_embedding_pooling_defaults_by_name(tmp_path: Path):
         tmp_path / "nomic-embed.gguf",
         {"general.architecture": "nomic-bert"},
     )
-    assert resolve_gguf_embedding_pooling(str(p), "nomic-bert", "nomic-ai/nomic-embed-text-v1.5-GGUF") == "mean"
+    assert (
+        resolve_gguf_embedding_pooling(str(p), "nomic-bert", "nomic-ai/nomic-embed-text-v1.5-GGUF")
+        == "mean"
+    )
     p2 = _write_synthetic_gguf(
         tmp_path / "bge.gguf",
         {"general.architecture": "bert"},

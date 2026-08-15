@@ -632,7 +632,6 @@ def is_gguf_embedding_model(
         if ident:
             try:
                 from utils.models.model_config import is_embedding_model
-
                 if is_embedding_model(ident):
                     return True
             except Exception:
