@@ -631,7 +631,10 @@ def test_effective_packing_decides_the_opt_out():
     # value, so those runs pack for real and keep the opt-out.
     for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
         assert effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is True
-        assert max_train_rows_for_config({**text, **raw, "packing": True}, branch_never_packs = True) is None
+        assert (
+            max_train_rows_for_config({**text, **raw, "packing": True}, branch_never_packs = True)
+            is None
+        )
         # Without packing they are bounded like anything else.
         assert effective_packing({**text, **raw}, branch_never_packs = True) is False
         assert max_train_rows_for_config({**text, **raw}, branch_never_packs = True) == 1024
