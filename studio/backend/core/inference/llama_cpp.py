@@ -13883,16 +13883,26 @@ class LlamaCppBackend:
                         # then the build's own default. The rollback reserve scales by
                         # this number, so carrying a request field of 2 into a build
                         # that drafts 16 under-reserves by a factor of eight.
-                        _env_n_max = _spec_env.get("LLAMA_ARG_SPEC_DRAFT_N_MAX")
-                        if _is_positive_int(_env_n_max):
+                        try:
+                            _depth_caps = _launch_caps(binary) or {}
+                        except Exception:
+                            _depth_caps = {}
+                        # The env twin of whichever depth flag this build carries: a
+                        # legacy build spells the pair --draft-max / LLAMA_ARG_DRAFT_MAX.
+                        # Unprobed, read both, since only one of them can be in force.
+                        _env_names = (
+                            ("LLAMA_ARG_DRAFT_MAX",)
+                            if _depth_caps.get("spec_draft_n_max_flag") == "--draft-max"
+                            else ("LLAMA_ARG_SPEC_DRAFT_N_MAX", "LLAMA_ARG_DRAFT_MAX")
+                        )
+                        _env_n_max = next(
+                            (v for v in map(_spec_env.get, _env_names) if _is_positive_int(v)),
+                            None,
+                        )
+                        if _env_n_max is not None:
                             _mtp_eff_n_max = int(str(_env_n_max).strip())
                         else:
-                            try:
-                                _mtp_eff_n_max = (_launch_caps(binary) or {}).get(
-                                    "spec_draft_n_max_default"
-                                )
-                            except Exception:
-                                _mtp_eff_n_max = None
+                            _mtp_eff_n_max = _depth_caps.get("spec_draft_n_max_default")
                     elif _mtp_eff_n_max is None:
                         _mtp_eff_n_max = spec_draft_n_max
                     if _mtp_eff_n_max is None:
@@ -14451,15 +14461,23 @@ class LlamaCppBackend:
                         # recurrent rollback snapshots for verification, and those sit
                         # in the TARGET context, so pinning the drafter to the CPU does
                         # not move them. Charge those alone rather than nothing. Flat in
-                        # ctx, the state being per-slot rather than per-token.
-                        _cpu_draft_target_state = (
-                            self._mamba_recurrent_state_bytes(n_parallel) * _mtp_eff_n_max
-                            if _target_rollback and _mtp_eff_n_max > 0
-                            else 0
-                        )
+                        # ctx, the state being per-slot rather than per-token -- hence
+                        # the same _np/_n_ubatch keywords the replaced callback takes,
+                        # so _mtp_bytes can still re-price each slot candidate.
+                        def _cpu_draft_target_state(
+                            _ctx: int,
+                            _np: int = n_parallel,
+                            _n_ubatch: Optional[int] = _effective_ubatch,
+                            _n: int = _mtp_eff_n_max,
+                            _rollback: bool = _target_rollback,
+                        ) -> int:
+                            if not _rollback or _n <= 0:
+                                return 0
+                            return self._mamba_recurrent_state_bytes(_np) * _n
+
                         mtp_overhead_fn = (
-                            (lambda _ctx, _bytes = _cpu_draft_target_state: _bytes)
-                            if _cpu_draft_target_state > 0
+                            _cpu_draft_target_state
+                            if _cpu_draft_target_state(effective_ctx) > 0
                             else None
                         )
                         _mtp_kv_unsized = False
@@ -14474,8 +14492,14 @@ class LlamaCppBackend:
                     )
                     # MTP reserves GPU VRAM unless its only drafter is a separate
                     # CPU-offloaded one (an embedded head stays on GPU). The tensor
-                    # path reserves like the layer path; gate both on this.
-                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                    # path reserves like the layer path; gate both on this. The
+                    # exception is the target state the block above keeps: it is the
+                    # TARGET's, so the CPU pin does not move it and the tensor floor
+                    # has to hold it -- tensor mode has no --fit valve and no amount
+                    # of context shrinking can free a per-slot allocation.
+                    _mtp_reserves_gpu = _mtp_will_engage and (
+                        not _draft_cpu_no_embedded or mtp_overhead_fn is not None
+                    )
                     _flat_mtp_reserve = (
                         _MTP_VRAM_RESERVE_FRAC
                         if (_flat_mtp_engages and not _draft_cpu_no_embedded)

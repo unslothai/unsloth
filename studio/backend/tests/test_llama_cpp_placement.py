@@ -671,18 +671,26 @@ def _hybrid_reserve_backend(tmp_path: Path, *, caps = None):
 
 def _recorded_mtp_reserve(backend, gguf, **load_kwargs):
     """The bytes the fit was asked to hold back for speculation."""
+    charged, _fns = _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs)
+    return charged
+
+
+def _recorded_mtp_reserve_and_callbacks(backend, gguf, **load_kwargs):
+    """The reserve the fit saw, plus the callback objects it was handed."""
     charged = []
+    callbacks = []
     _fit = backend._fit_context_to_vram
 
     def recording_fit(requested, *args, **kwargs):
         fn = kwargs.get("mtp_overhead_fn")
+        callbacks.append(fn)
         charged.append(0 if fn is None else int(fn(requested) or 0))
         return _fit(requested, *args, **kwargs)
 
     backend._fit_context_to_vram = recording_fit
     _launch(backend, gguf, **load_kwargs)
     assert charged, "the fit never ran, so this proves nothing"
-    return charged
+    return charged, callbacks
 
 
 def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
@@ -706,6 +714,33 @@ def test_a_cpu_pinned_drafter_still_pays_the_hybrid_target_rollback(tmp_path):
     expected = backend._mamba_recurrent_state_bytes(n_parallel = 4) * 2
     assert expected > 0
     assert set(charged) == {expected}
+
+
+def test_the_cpu_drafter_reserve_still_reprices_per_slot_candidate(tmp_path):
+    # _slots_that_fit_on_gpu re-prices the reserve for each candidate slot count
+    # through the callback's _np / _n_ubatch keywords. A replacement that takes
+    # neither raises TypeError there, and the broad GPU-selection handler swallows
+    # it into --fit on, throwing the whole placement plan away.
+    backend, gguf, sidecar = _hybrid_reserve_backend(tmp_path)
+
+    _charged, callbacks = _recorded_mtp_reserve_and_callbacks(
+        backend,
+        gguf,
+        dflash_draft_path = str(sidecar),
+        speculative_type = "dflash",
+        n_ctx = 8192,
+        n_parallel = 4,
+        extra_args = ["--spec-draft-ngl", "0"],
+    )
+
+    fn = callbacks[0]
+    assert fn is not None
+    for slots in (1, 2, 4):
+        assert fn(8192, _np = slots, _n_ubatch = 512) == (
+            backend._mamba_recurrent_state_bytes(n_parallel = slots) * 2
+        )
+    # Per-slot state, not per-token: context does not move it.
+    assert fn(2048, _np = 4, _n_ubatch = 512) == fn(131072, _np = 4, _n_ubatch = 512)
 
 
 @pytest.mark.parametrize(
@@ -772,6 +807,36 @@ def test_a_pass_through_spec_block_budgets_the_depth_the_build_defaults_to(
     base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
     assert base > 0
     assert set(charged) == {16 * base}
+
+
+def test_a_legacy_build_inherits_its_own_draft_depth_variable(tmp_path, monkeypatch):
+    # A legacy build spells the pair --draft-max / LLAMA_ARG_DRAFT_MAX. Reading only
+    # the post-rename name budgets the build default while the child drafts at the
+    # inherited one.
+    backend, gguf, _sidecar = _hybrid_reserve_backend(
+        tmp_path,
+        caps = {
+            "mtp_token": "draft-mtp",
+            "supports_ngram_mod": True,
+            "spec_draft_n_max_flag": "--draft-max",
+            "spec_draft_n_max_default": 8,
+            "supports_kv_unified": True,
+        },
+    )
+    monkeypatch.setenv("LLAMA_ARG_DRAFT_MAX", "32")
+
+    charged = _recorded_mtp_reserve(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 8192,
+        n_parallel = 4,
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
+    assert base > 0
+    assert set(charged) == {32 * base}
 
 
 def test_auto_stands_down_for_an_explicit_pin_the_vram_probe_cannot_see(tmp_path):

@@ -1112,8 +1112,14 @@ class TestExtraArgsMtpDetection:
         # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the
         # tensor reserve must be suppressed like the layer path -- else tensor mode
         # subtracts a phantom flat MTP reserve and under-advertises context (#6312).
+        # The flat fraction is the part that must stay suppressed outright; the
+        # byte reserve now has one exception, a Hybrid Mamba target's own rollback
+        # state, which the CPU pin does not move off the GPU.
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_mtp_will_engageandnot_draft_cpu_no_embedded" in load
+        assert "if(_flat_mtp_engagesandnot_draft_cpu_no_embedded)" in load
+        assert (
+            "_mtp_will_engageand(not_draft_cpu_no_embeddedormtp_overhead_fnisnotNone)" in load
+        )
         assert "ifnot_mtp_reserves_gpu:" in load
         assert "mtp_engaged=_mtp_reserves_gpu" in load
 
