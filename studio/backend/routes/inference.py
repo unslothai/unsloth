@@ -3354,24 +3354,32 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     return nudge + " " + _RAG_GROUNDING_NUDGE
 
 
-def _states_a_date(text: str) -> bool:
-    """Whether a system prompt already names a date, whoever put it there.
+def _states_a_date(content: Any) -> bool:
+    """Whether system content already names a date, whoever put it there.
 
     Durable research stamps its own date at run creation and then posts the prompt back through
-    this route, so a second one would contradict the first once the run crosses midnight.
+    this route, so a second one would contradict the first once the run crosses midnight. Text
+    parts are read as well as plain strings, since a date in one counts just the same.
     """
-    return CURRENT_DATE_PROMPT_PREFIX in text
+    if isinstance(content, str):
+        return CURRENT_DATE_PROMPT_PREFIX in content
+    if isinstance(content, list):
+        return any(
+            isinstance(part, dict) and CURRENT_DATE_PROMPT_PREFIX in str(part.get("text") or "")
+            for part in content
+        )
+    return False
 
 
 def _wants_current_date(request: Any) -> bool:
-    """Whether this caller's prompt is Studio's to compose.
+    """Whether this caller's prompt is Studio's to compose: an interactive session, nothing else.
 
     The router is also mounted at /v1, so a third party's sk-unsloth key reaches the same
-    handlers. Their request is theirs verbatim: a Studio preference must not add a system turn
-    they never sent and break a deterministic eval. Internal workflow keys are Studio itself,
-    so Deep Research still gets the date.
+    handlers, and their request is theirs verbatim. Studio's own workflow keys are excluded too:
+    a data recipe generates a dataset, and Deep Research decides once at run creation and stamps
+    the answer into its config, so injecting here would override the state the run started in.
     """
-    return not _request_used_api_key(request)
+    return not _request_has_api_key(request)
 
 
 def _apply_current_date_prompt(system_prompt: str, request: Any = None) -> str:
@@ -3403,9 +3411,7 @@ def _prepend_current_date_to_messages(messages: list[dict], request: Any = None)
     # Scanned across every system turn before anything is inserted: a request whose date sits on
     # a later turn than the first would otherwise get a second, contradictory one.
     if any(
-        msg.get("role") in ("system", "developer")
-        and isinstance(msg.get("content"), str)
-        and _states_a_date(msg["content"])
+        msg.get("role") in ("system", "developer") and _states_a_date(msg.get("content"))
         for msg in messages
     ):
         return messages
