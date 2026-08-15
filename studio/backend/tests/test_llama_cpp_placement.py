@@ -1013,3 +1013,54 @@ def test_the_guard_reads_the_model_the_child_opens(tmp_path, monkeypatch):
         _launch(backend, gguf)
 
     assert str(gguf) in seen
+
+
+def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
+    """The arch gate empties the pool AND masks every card, so the child is knowingly
+    on the CPU rather than unprobed. Abstaining there ran an oversized GGUF wholly from
+    RAM with no preflight, which is the OOM this guard exists to stop."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    assert (
+        backend._launch_host_shortfall_message(
+            ["llama-server", "-m", str(gguf)], [], gpu_masked_off = True
+        )
+        is not None
+    )
+
+
+def test_a_masked_off_child_takes_no_vram_credit(tmp_path, monkeypatch):
+    """Manual zero-offload masks the child off cards the planner still probed. Crediting
+    that VRAM would offset a spill the child cannot place there."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 20_000, 24_000)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    assert backend._launch_host_shortfall_message(argv, [(0, 20_000)]) is None
+    assert (
+        backend._launch_host_shortfall_message(argv, [(0, 20_000)], gpu_masked_off = True)
+        is not None
+    )
+
+
+def test_an_unprobed_pool_still_abstains_when_nothing_was_masked(tmp_path, monkeypatch):
+    """The abstention survives: only the launch saying it masked the child off every
+    card prices the full model, not a pool that merely came back empty."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    assert backend._launch_host_shortfall_message(["llama-server", "-m", str(gguf)], []) is None

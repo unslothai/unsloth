@@ -6820,7 +6820,7 @@ class LlamaCppBackend:
     _ARGV_MODEL = frozenset({"-m", "--model"})
 
     def _launch_host_shortfall_message(
-        self, cmd: Iterable[str], detected_gpus: Iterable[tuple]
+        self, cmd: Iterable[str], detected_gpus: Iterable[tuple], *, gpu_masked_off: bool = False
     ) -> Optional[str]:
         """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
 
@@ -6832,7 +6832,10 @@ class LlamaCppBackend:
         a floor with no placement modelling to keep in step with llama.cpp.
 
         Read from the finished argv, so the model path is the one the child opens. An
-        unsized model or an unprobed GPU pool abstains rather than guessing.
+        unsized model abstains rather than guessing, and so does an empty GPU pool,
+        which means the probe threw. ``gpu_masked_off`` is the launch saying the child
+        is masked off every card, which is a known placement rather than an unknown
+        one: there the whole model is host-resident and takes no VRAM credit.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
@@ -6844,9 +6847,9 @@ class LlamaCppBackend:
             model_bytes = self._get_gguf_size_bytes(model_path)
         except Exception:
             return None
+        gpus = [] if gpu_masked_off else list(detected_gpus or ())
         # an empty pool means the probe threw, not that the child has no gpu
-        gpus = list(detected_gpus or ())
-        if not model_bytes or not gpus:
+        if not model_bytes or (not gpus and not gpu_masked_off):
             return None
         free_vram_mib = sum(max(0, row[1]) for row in gpus)
         return self._host_offload_shortfall_message(
@@ -16008,7 +16011,11 @@ class LlamaCppBackend:
                         self._pin_visible_gpu_order_for_split(env)
 
                 # reads the argv the child gets, not the mid-fit state that produced it
-                _offload_msg = self._launch_host_shortfall_message(cmd, _detected_gpus)
+                _offload_msg = self._launch_host_shortfall_message(
+                    cmd,
+                    _detected_gpus,
+                    gpu_masked_off = _cpu_only_zero_offload or _arch_gate_forced_cpu,
+                )
                 if _offload_msg:
                     raise RuntimeError(_offload_msg)
 
