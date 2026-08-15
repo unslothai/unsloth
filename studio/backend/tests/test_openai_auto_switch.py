@@ -2405,7 +2405,7 @@ def test_local_servable_model_reads_files_not_model_format(tmp_path):
     (st / "model.safetensors").write_bytes(b"x" * 32)
     (st / "tokenizer.json").write_text("{}")
     assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) is None
-    (st / "config.json").write_text("{}")
+    (st / "config.json").write_text(_CHAT_CONFIG)
     assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) == (
         False,
         (),
@@ -7959,6 +7959,11 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
 # ── non-GGUF discovery and switching ──
 
 
+# Chat generation is the only route these entries feed, so the classifier requires a
+# generative architecture; every fixture below is a plain causal LM unless it says otherwise.
+_CHAT_CONFIG = '{"architectures": ["Qwen3ForCausalLM"]}'
+
+
 def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
     """An on-disk non-GGUF checkpoint: config.json and a tokenizer beside safetensors.
 
@@ -7967,7 +7972,7 @@ def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
     """
     path = root / name
     path.mkdir()
-    (path / "config.json").write_text("{}")
+    (path / "config.json").write_text(_CHAT_CONFIG)
     (path / "model.safetensors").write_bytes(b"x" * 32)
     (path / "tokenizer.json").write_text("{}")
     return path
@@ -8013,7 +8018,9 @@ def test_an_installed_mlx_model_is_indexed_and_resolves(tmp_path, monkeypatch):
     from utils.hardware import hardware as hw
 
     path = _local_checkpoint(tmp_path)
-    (path / "config.json").write_text('{"quantization": {"group_size": 64, "bits": 4}}')
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "quantization": {"group_size": 64, "bits": 4}}'
+    )
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
     monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
@@ -8189,7 +8196,9 @@ def test_a_custom_code_checkpoint_is_not_switchable(tmp_path):
     from types import SimpleNamespace
 
     path = _local_checkpoint(tmp_path, "CustomCode")
-    (path / "config.json").write_text('{"auto_map": {"AutoModel": "modeling.MyModel"}}')
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "auto_map": {"AutoModel": "modeling.MyModel"}}'
+    )
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
 
@@ -8262,7 +8271,7 @@ def test_a_checkpoint_without_tokenizer_assets_is_not_switchable(tmp_path):
 
     path = tmp_path / "WeightsOnly"
     path.mkdir()
-    (path / "config.json").write_text("{}")
+    (path / "config.json").write_text(_CHAT_CONFIG)
     (path / "model.safetensors").write_bytes(b"x" * 32)
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
@@ -8277,7 +8286,9 @@ def test_mlx_quantized_weights_are_offered_only_on_an_mlx_host(tmp_path, monkeyp
     from utils.hardware import hardware as hw
 
     path = _local_checkpoint(tmp_path)
-    (path / "config.json").write_text('{"quantization": {"group_size": 64, "bits": 4}}')
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "quantization": {"group_size": 64, "bits": 4}}'
+    )
     info = SimpleNamespace(id = str(path), path = str(path))
 
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
@@ -8288,7 +8299,7 @@ def test_mlx_quantized_weights_are_offered_only_on_an_mlx_host(tmp_path, monkeyp
     assert resolver.local_servable_model(info) == (False, ())
 
     # An unquantized conversion is ordinary safetensors and loads anywhere.
-    (path / "config.json").write_text("{}")
+    (path / "config.json").write_text(_CHAT_CONFIG)
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
     assert resolver.local_servable_model(info) == (False, ())
 
@@ -8302,7 +8313,8 @@ def test_auto_map_in_a_processor_config_is_not_switchable(tmp_path):
         path = _local_checkpoint(tmp_path, f"custom-{name}")
         info = SimpleNamespace(id = str(path), path = str(path))
         assert resolver.local_servable_model(info) is not None
-        (path / name).write_text('{"auto_map": {"AutoModel": "modeling.MyModel"}}')
+        blob = '{"architectures": ["Qwen3ForCausalLM"], "auto_map": {"A": "m.M"}}'
+        (path / name).write_text(blob)
         assert resolver.local_servable_model(info) is None, name
 
 
@@ -8342,3 +8354,84 @@ def test_a_case_variant_path_is_not_treated_as_the_resident_model(monkeypatch):
     _run_hook("/models/foo")
     assert calls, "the case-variant path was mistaken for the resident model"
     assert calls[0].model_path == "/models/foo"
+
+
+def test_a_non_generative_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: chat generation is the only route these entries feed, so an
+    # encoder-only or classifier checkpoint would fail in the language-model load.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "bert-base")
+    (path / "config.json").write_text('{"architectures": ["BertForSequenceClassification"]}')
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_lora_directory_with_a_copied_config_is_not_switchable(tmp_path):
+    # Codex P2: ModelConfig resolves an adapter's base_model_name_or_path, so the
+    # switch could fetch weights this resolver promises never to download.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "SomeLoRA")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is not None
+    (path / "adapter_config.json").write_text("{}")
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_processor_config_alone_is_not_a_tokenizer(tmp_path):
+    # Codex P2: preprocessor_config.json is image or audio preprocessing metadata and
+    # leaves the loader with no vocabulary to tokenize with.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoVocab")
+    (path / "tokenizer.json").unlink()
+    (path / "preprocessor_config.json").write_text("{}")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_transformers_quantization_is_not_offered_on_an_mlx_host(tmp_path, monkeypatch):
+    # Codex P2: the worker picks MLXInferenceBackend for every non-GGUF target on that
+    # host, and mlx-lm cannot load a bitsandbytes, GPTQ or AWQ layout.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "BnB")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"],'
+        ' "quantization_config": {"quant_method": "bitsandbytes"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_audio_only_request_does_not_demand_vision_from_a_non_gguf_target(monkeypatch):
+    # Codex P2: the chat route sets needs_vision for audio so a GGUF is asked for its
+    # projector. Applying that to a non-GGUF target refused the very audio checkpoints
+    # that can serve the request.
+    monkeypatch.setattr(inference_route, "_target_accepts_audio_input", lambda path: True)
+    monkeypatch.setattr(
+        inference_route, "_target_is_vision", lambda *_a: pytest.fail("vision probed")
+    )
+    assert (
+        inference_route._target_accepts_request_input(
+            "/srv/models/Whisper", False, True, True, None, False
+        )
+        is True
+    )
+
+
+def test_a_nested_non_gguf_row_is_not_marked_resident(monkeypatch):
+    # Codex P2: a non-GGUF model loads from its own directory, so a catalog row nested
+    # under the loaded one is different weights and must not read as loaded.
+    class _FakeOrchestrator:
+        active_model_name = "/models/A"
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resolves_to_resident("/models/A") is True
+    assert inference_route._resolves_to_resident("/models/A/sub/B") is False

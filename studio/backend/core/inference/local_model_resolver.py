@@ -153,13 +153,46 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 
 
 _WEIGHT_INDEXES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
-# One of these has to sit beside the weights or the loader has nothing to tokenize with.
+# Real tokenizer vocabulary. A processor config carries image or audio preprocessing
+# metadata and leaves the loader with nothing to tokenize with, so it does not count.
 _TOKENIZER_MARKERS = (
     "tokenizer.json",
     "tokenizer_config.json",
     "tokenizer.model",
-    "preprocessor_config.json",
+    "vocab.json",
 )
+# A LoRA directory can carry a copied config.json and tokenizer beside these, and
+# ModelConfig would then resolve its base model and fetch weights this resolver
+# promises never to download.
+_ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
+# Chat generation is the only route these entries feed. An encoder-only or classifier
+# checkpoint carries no generative head, so the language-model load would fail.
+_GENERATIVE_ARCHITECTURE_SUFFIXES = ("ForCausalLM", "ForConditionalGeneration")
+
+
+def _is_generative_chat_config(config: dict) -> bool:
+    """Whether a config.json describes a checkpoint the chat loader can generate with."""
+    architectures = config.get("architectures")
+    if not isinstance(architectures, list):
+        return False
+    return any(
+        isinstance(name, str) and name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES)
+        for name in architectures
+    )
+
+
+def _quantization_suits_host(config: dict) -> bool:
+    """Whether this host's backend can load the checkpoint's quantization, if any.
+
+    mlx-lm reads its own ``quantization`` block and nothing else, while the
+    Transformers backend reads ``quant_method`` layouts and not MLX's. Either
+    mismatch loads only after the resident model has already been unloaded.
+    """
+    mlx_host = _host_serves_mlx()
+    if isinstance(config.get("quantization"), dict) and "group_size" in config["quantization"]:
+        return mlx_host
+    method = (config.get("quantization_config") or {}).get("quant_method")
+    return not (mlx_host and isinstance(method, str) and method.strip())
 
 
 def _read_json(path):
@@ -170,17 +203,6 @@ def _read_json(path):
             return json.load(handle)
     except (OSError, ValueError):
         return None
-
-
-def _is_mlx_quantized(config: dict) -> bool:
-    """Whether a config.json describes mlx-lm quantized weights.
-
-    mlx-lm writes a top-level ``quantization`` block carrying ``group_size``. An
-    unquantized MLX conversion writes none and is ordinary safetensors, so it stays
-    loadable anywhere; bitsandbytes, GPTQ and AWQ declare ``quant_method`` instead.
-    """
-    quantization = config.get("quantization")
-    return isinstance(quantization, dict) and "group_size" in quantization
 
 
 def _host_serves_mlx() -> bool:
@@ -258,6 +280,8 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         # must not be able to execute one without an explicit load action.
         if not any(load_dir.glob("*.safetensors")) or not _weight_shards_all_present(load_dir):
             return None
+        if any((load_dir / name).is_file() for name in _ADAPTER_MARKERS):
+            return None
         # Weights alone cannot serve chat, and the swap has evicted the resident model
         # by the time the loader finds the tokenizer missing.
         if not any((load_dir / name).is_file() for name in _TOKENIZER_MARKERS):
@@ -280,9 +304,13 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             candidate = config if name == "config.json" else _read_json(load_dir / name)
             if isinstance(candidate, dict) and "auto_map" in candidate:
                 return None
-        # mlx-lm quantized weights load through MLXInferenceBackend alone, so on any
-        # other host the switch would evict the resident model and then fail.
-        if _is_mlx_quantized(config) and not _host_serves_mlx():
+        if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
+            return None
+        # Whisper and the TTS families need an audio request shape the switch cannot
+        # know about, so the chat route rejects them after the swap has already run.
+        from utils.models.model_config import detect_audio_type
+
+        if detect_audio_type(str(load_dir), local_files_only = True) is not None:
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)

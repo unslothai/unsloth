@@ -4929,7 +4929,10 @@ def _target_accepts_request_input(
         return _target_is_vision(load_path, gguf_variant, need_image)
     if needs_audio and not _target_accepts_audio_input(load_path):
         return False
-    return _target_is_vision(load_path) if needs_vision else True
+    # need_image, not needs_vision: an audio request sets needs_vision so a GGUF is
+    # asked for its projector, and demanding a vision tower here would refuse the
+    # audio checkpoints that can actually serve it.
+    return _target_is_vision(load_path) if (needs_vision and need_image) else True
 
 
 def _messages_have_image(messages) -> bool:
@@ -5377,6 +5380,9 @@ def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False)
         return False
     target = _norm_path(load_path)
     llama_backend = get_llama_cpp_backend()
+    orchestrator_model = (
+        None if llama_only else getattr(get_inference_backend(), "active_model_name", None)
+    )
     for candidate in (
         getattr(llama_backend, "gguf_path", None)
         if getattr(llama_backend, "is_loaded", False)
@@ -5384,13 +5390,18 @@ def _resolves_to_resident(load_path: Optional[str], *, llama_only: bool = False)
         getattr(llama_backend, "model_identifier", None)
         if getattr(llama_backend, "is_loaded", False)
         else None,
-        None if llama_only else getattr(get_inference_backend(), "active_model_name", None),
+        orchestrator_model,
     ):
         if not candidate:
             continue
         current = _norm_path(candidate)
         if current == target:
             return True
+        # A non-GGUF model loads from its own directory, so a catalog row nested under
+        # it is different weights. The llama branch keeps the prefix rule: there the
+        # loaded identifier is a .gguf file, which nothing can be nested under.
+        if candidate is orchestrator_model and orchestrator_model is not None:
+            continue
         if current.startswith(f"{target}/"):
             # A model directory holding the weights loaded from it. Nested entries
             # (/models/A alongside /models/A/sub/B) matched too, so a request for A was
