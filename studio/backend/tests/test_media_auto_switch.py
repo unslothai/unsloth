@@ -101,7 +101,6 @@ def enabled(monkeypatch):
 
 
 def test_a_diffusers_directory_resolves_as_a_kindless_pick(flux):
-
     pick = mas.resolve_local_media_model("black-forest-labs/FLUX.1-dev", task = mas.IMAGE_TASK)
 
     # No kind and no filename: the load route detects those, including the single-file case.
@@ -396,10 +395,7 @@ def test_the_switch_is_inert_unless_it_is_on_and_named(catalog, enabled, loads, 
     assert loads == []
 
 
-def test_an_unresolvable_name_is_refused_and_lists_what_is_downloaded(
-    flux, enabled, loads
-):
-
+def test_an_unresolvable_name_is_refused_and_lists_what_is_downloaded(flux, enabled, loads):
     with pytest.raises(HTTPException) as excinfo:
         _switch("someone/else")
 
@@ -430,9 +426,7 @@ def test_a_resident_model_is_not_reloaded(flux, enabled, backend, loads, residen
     assert loads == []
 
 
-def test_a_different_model_is_loaded_before_the_request_proceeds(
-    flux, enabled, backend, loads
-):
+def test_a_different_model_is_loaded_before_the_request_proceeds(flux, enabled, backend, loads):
     backend.repo_id = "Qwen/Qwen-Image"
 
     _switch("black-forest-labs/FLUX.1-dev")
@@ -457,9 +451,7 @@ def test_a_busy_backend_is_not_swapped_out_from_under_its_generation(
     assert loads == []
 
 
-def test_a_load_still_running_at_the_deadline_asks_for_a_retry(
-    flux, enabled, backend, monkeypatch
-):
+def test_a_load_still_running_at_the_deadline_asks_for_a_retry(flux, enabled, backend, monkeypatch):
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.0)
 
     async def _start(
@@ -480,7 +472,6 @@ def test_a_load_still_running_at_the_deadline_asks_for_a_retry(
 
 
 def test_a_failed_load_surfaces_its_error(flux, enabled, backend, monkeypatch):
-
     async def _start(
         owner,
         pick,
@@ -665,9 +656,7 @@ def test_the_drain_and_the_load_share_one_budget(flux, enabled, backend, monkeyp
     assert time.monotonic() - began < 2.0
 
 
-def test_a_load_that_lands_while_draining_is_not_repeated(
-    flux, enabled, backend, loads
-):
+def test_a_load_that_lands_while_draining_is_not_repeated(flux, enabled, backend, loads):
     # A retry can acquire the switch lock while the earlier attempt's load is still running.
     # Draining waits that out, and without a recheck the retry tears down what just landed.
     backend.repo_id = "Qwen/Qwen-Image"
@@ -842,9 +831,7 @@ def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
     assert seen == [("model.safetensors", "single_file")]
 
 
-def test_a_local_pipeline_is_complete_without_asking_the_hub(
-    flux, enabled, backend, loads
-):
+def test_a_local_pipeline_is_complete_without_asking_the_hub(flux, enabled, backend, loads):
     # The planner asks HfApi about an absolute path and fails, which now reads as unverifiable.
     # A directory on disk is what from_pretrained loads, so it needs no plan at all.
 
@@ -943,9 +930,7 @@ def test_the_native_fallback_is_only_verified_when_a_binary_must_be_installed(mo
     assert len(locality.planners_for(arb.DIFFUSION, pick)) == 2
 
 
-def test_load_setup_that_stalls_returns_inside_the_budget(
-    flux, enabled, backend, monkeypatch
-):
+def test_load_setup_that_stalls_returns_inside_the_budget(flux, enabled, backend, monkeypatch):
     # Preflight and a first-run sd.cpp install both run before begin_load registers, while the
     # admission gate is held, so an unbounded await blocks the backend as well as the caller.
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
@@ -1216,9 +1201,7 @@ def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
     assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
 
 
-def test_a_stalled_gate_does_not_pin_the_switch_lock(
-    flux, enabled, backend, monkeypatch
-):
+def test_a_stalled_gate_does_not_pin_the_switch_lock(flux, enabled, backend, monkeypatch):
     # A gate held elsewhere must not keep the setup task, and with it the switch lock, alive
     # past the budget: acquisition happens before the non-cancellable phase.
     import core.inference.media_keepwarm as keepwarm
@@ -1501,7 +1484,12 @@ def test_the_video_route_refuses_what_the_target_cannot_serve(
     generated: list = []
     path, filename = pick
 
-    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+    async def _switch_stub(
+        requested_model,
+        *,
+        before_switch = None,
+        **kwargs,
+    ):
         before_switch(index.MediaModelPick(requested_model, path, filename, "gguf"))
 
     monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
@@ -1564,8 +1552,6 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
 
     assert excinfo.value.status_code == 409
     assert loads == []
-
-
 
 
 def test_a_pipeline_is_planned_by_its_index_not_its_directory_name(
