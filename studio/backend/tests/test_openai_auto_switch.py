@@ -7954,6 +7954,8 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
         assert settings.normalize_model_override(
             {"llama_extra_args": ["--top-k", "40"]}, keep_empty_extra_args = keep
         ) == {"llama_extra_args": ["--top-k", "40"]}
+
+
 # ── non-GGUF discovery and switching ──
 
 
