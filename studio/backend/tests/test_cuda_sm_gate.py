@@ -74,8 +74,17 @@ class TestCudaComputeCaps:
 
     def test_honors_visible_devices_mask(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
         _fake_smi(monkeypatch, "0, 7.5\n1, 9.0\n")
         assert LlamaCppBackend._cuda_compute_caps() == {1: 90}
+
+    def test_numeric_mask_with_non_physical_order_fails_open(self, monkeypatch):
+        # CUDA ordinal 0 can name physical GPU 1 under FASTEST_FIRST, so filtering
+        # nvidia-smi's physical row 0 would risk rejecting a compatible launch.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        _fake_smi(monkeypatch, "0, 7.5\n1, 9.0\n")
+        assert LlamaCppBackend._cuda_compute_caps() == {}
 
     def test_bad_lines_are_skipped(self, monkeypatch):
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -129,6 +138,17 @@ class TestCudaSmGateError:
     def test_covered_gpu_passes(self, tmp_path, monkeypatch):
         self._caps(monkeypatch, {0: 90})
         binary = _binary_with_marker(tmp_path, {"supported_sms": ["86", "89", "90", "120"]})
+        assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
+
+    def test_fastest_first_numeric_mask_does_not_reject_a_supported_gpu(
+        self, tmp_path, monkeypatch
+    ):
+        # CUDA ordinal 0 selects the faster physical GPU 1 (sm_90), not the
+        # nvidia-smi row 0 (sm_75), so the physical mapping is unknown here.
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+        _fake_smi(monkeypatch, "0, 7.5\n1, 9.0\n")
+        binary = _binary_with_marker(tmp_path, {"supported_sms": ["90"]})
         assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
 
     def test_any_covered_gpu_passes_a_mixed_host(self, tmp_path, monkeypatch):

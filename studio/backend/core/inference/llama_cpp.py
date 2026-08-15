@@ -6024,6 +6024,12 @@ class LlamaCppBackend:
             if result.returncode != 0:
                 return {}
             allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+            if allowed is not None and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+                # Numeric CUDA visibility entries are ordinals in CUDA's configured
+                # order, while nvidia-smi reports physical indices in PCI-bus order.
+                # Without the shared ordering they cannot be mapped safely, so keep
+                # the compatibility gate's documented fail-open behavior.
+                return {}
             caps = {}
             for line in result.stdout.strip().splitlines():
                 parts = [p.strip() for p in line.split(",")]
