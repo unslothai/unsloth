@@ -8935,8 +8935,8 @@ def test_a_truncated_checkpoint_is_withheld(tmp_path):
         (path / "model.safetensors").write_bytes(broken)
         assert resolver.local_servable_model(info) is None, broken[:8]
 
-    # a truncated shard behind an index is withheld the same way.
-    (path / "model.safetensors").write_bytes(intact)
+    # a truncated shard behind an index is withheld the same way, once no singular file wins.
+    (path / "model.safetensors").unlink()
     (path / "model-00001-of-00001.safetensors").write_bytes(intact[:-8])
     (path / "model.safetensors.index.json").write_text(
         '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
@@ -9094,10 +9094,11 @@ def test_a_checkpoint_with_no_chat_template_is_withheld(tmp_path):
     assert resolver.local_servable_model(info) == (False, ())
 
 
-def test_a_fabricated_architecture_is_withheld(tmp_path):
+def test_a_fabricated_architecture_is_withheld(tmp_path, monkeypatch):
     # codex P2: the ForCausalLM suffix is a convention, not proof the loader implements it.
     from types import SimpleNamespace
 
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: True)
     path = _local_checkpoint(tmp_path, "MadeUp")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text(
@@ -9106,6 +9107,23 @@ def test_a_fabricated_architecture_is_withheld(tmp_path):
     assert resolver.local_servable_model(info) is None
     (path / "config.json").write_text(
         json.dumps({"architectures": ["MadeUpForCausalLM"], "model_type": "qwen3"})
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_saved_template_override_admits_a_base_checkpoint(tmp_path, monkeypatch):
+    # codex P2: the switch passes chat_template_override to the loader, so this can serve chat.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "OverrideTemplate")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "tokenizer_config.json").write_text('{"model_max_length": 4096}')
+    assert resolver.local_servable_model(info) is None
+
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a, **_k: ("key", {"chat_template_override": "{{ messages }}"}),
     )
     assert resolver.local_servable_model(info) == (False, ())
 
@@ -9136,20 +9154,20 @@ def test_the_resident_fast_paths_do_not_fold_a_path_alias(monkeypatch):
     assert inference_route._loaded_identity_satisfies("foo") is False
 
 
-def test_a_sidecar_model_type_is_not_withheld(tmp_path, monkeypatch):
-    # codex P2: the orchestrator loads these under a transformers this process cannot see.
+def test_transformers_families_are_not_architecture_gated(tmp_path, monkeypatch):
+    # codex P2: transformers module names are not derived from model_type (openai-gpt lives
+    # in transformers.models.openai) and a sidecar registry is invisible here, so probing it
+    # withheld loadable checkpoints twice. MLX keeps its probe, whose mapping is one per family.
     from types import SimpleNamespace
 
     monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
-    path = _local_checkpoint(tmp_path, "Sidecar")
+    path = _local_checkpoint(tmp_path, "OpenAIGPT")
     info = SimpleNamespace(id = str(path), path = str(path))
-    (path / "config.json").write_text(
-        json.dumps({"architectures": ["BrandNewForCausalLM"], "model_type": "brand_new"})
-    )
-    assert resolver.local_servable_model(info) is None
-
-    monkeypatch.setattr(resolver, "_routes_to_a_transformers_sidecar", lambda _p: True)
-    assert resolver.local_servable_model(info) == (False, ())
+    for model_type in ("openai-gpt", "brand_new_sidecar_family"):
+        (path / "config.json").write_text(
+            json.dumps({"architectures": ["OpenAIGPTLMHeadModel"], "model_type": model_type})
+        )
+        assert resolver.local_servable_model(info) == (False, ()), model_type
 
 
 def test_a_tensor_without_a_dtype_is_withheld(tmp_path):
@@ -9327,10 +9345,15 @@ def test_a_pickle_shard_named_by_a_safetensors_index_is_withheld(tmp_path):
 
     path = _local_checkpoint(tmp_path, "PickleShard")
     info = SimpleNamespace(id = str(path), path = str(path))
+    shard = _safetensors_bytes()
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00001.safetensors").write_bytes(shard)
     (path / "pytorch_model.bin").write_bytes(b"x" * 32)
     (path / "model.safetensors.index.json").write_text('{"weight_map": {"a": "pytorch_model.bin"}}')
     assert resolver.local_servable_model(info) is None
-    (path / "model.safetensors.index.json").write_text('{"weight_map": {"a": "model.safetensors"}}')
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}'
+    )
     assert resolver.local_servable_model(info) == (False, ())
 
 

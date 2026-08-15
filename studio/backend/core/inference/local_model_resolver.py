@@ -485,15 +485,33 @@ def _quantizer_runtime_present(quant_method: str) -> bool:
         return False
 
 
-def _has_a_chat_template(load_dir) -> bool:
+def _saved_chat_template_override(load_path: str, loader_id: str, variant: Optional[str]) -> bool:
+    """Whether the override the switch would apply supplies a chat template.
+
+    Resolved through the same helper the load uses, so the answer cannot disagree with
+    what is actually passed to the loader.
+    """
+    try:
+        from utils.openai_auto_switch_settings import resolve_override_for_load
+
+        _key, override = resolve_override_for_load(load_path, loader_id, variant)
+        return bool(isinstance(override, dict) and override.get("chat_template_override"))
+    except Exception:
+        return False
+
+
+def _has_a_chat_template(load_dir, loader_id: str, variant: Optional[str] = None) -> bool:
     """Whether chat generation will find a template for this checkpoint.
 
     ``generate_stream`` raises outright without one, so a base checkpoint would load,
-    evict the resident model and then refuse every message. Only what ships beside the
-    weights counts: the mapper generation also consults is keyed by ``active_model_name``,
-    which for an auto-switch is the concrete load path rather than the advertised alias,
-    so a mapper hit on the alias would not install a template at generate time.
+    evict the resident model and then refuse every message. What ships beside the weights
+    counts, and so does a saved ``chat_template_override``, which the switch resolves and
+    passes to the loader. The mapper generation also consults does not: it is keyed by
+    ``active_model_name``, which for an auto-switch is the concrete load path rather than
+    the advertised alias, so a hit there would not install a template at generate time.
     """
+    if _saved_chat_template_override(str(load_dir), loader_id, variant):
+        return True
     # readable, not merely present: an empty one is a copy in flight and installs no template.
     for name in ("chat_template.jinja", "chat_template.json"):
         if _asset_file_is_readable(load_dir / name):
@@ -505,47 +523,31 @@ def _has_a_chat_template(load_dir) -> bool:
     return False
 
 
-def _routes_to_a_transformers_sidecar(load_path) -> bool:
-    """Whether the orchestrator would load this checkpoint under a different transformers.
+def _loader_implements_architecture(config: dict) -> bool:
+    """Whether the MLX loader implements this checkpoint's model_type.
 
-    ``probe = False`` inside, so this never spawns the sidecar itself; a raise means the
-    tier is unknown, and treating that as routed leaves the verdict to the other gates
-    rather than withholding a model this process simply cannot judge.
+    A causal-looking class name is not enough: ``MadeUpForCausalLM`` satisfies every other
+    gate and then fails in the loader, once the swap has unloaded the resident model. The
+    MLX stacks keep one module per family, so the family's presence answers it, and they
+    are not interchangeable for a given load: MLXInferenceBackend passes ``text_only`` off
+    its vision verdict, reaching mlx-vlm for a multimodal checkpoint and mlx-lm otherwise.
+    That modality is read from the config keys this module already uses to require
+    processor files, rather than is_vision_model, which runs a subprocess.
+
+    Transformers is deliberately not probed the same way. Its module names are not derived
+    from model_type (``openai-gpt`` lives in ``transformers.models.openai``), and the
+    orchestrator may load a checkpoint under a sidecar whose registry this process cannot
+    see, so the probe withheld loadable models twice. Asking transformers itself would
+    mean importing it on the request path, which costs seconds per catalog row, and the
+    only checkpoints it would reject are fabricated ones nobody ships.
     """
-    try:
-        from utils.transformers_version import needs_transformers_5
-        return bool(needs_transformers_5(str(load_path)))
-    except Exception:
+    if not _host_serves_mlx():
         return True
-
-
-def _loader_implements_architecture(config: dict, load_path) -> bool:
-    """Whether the backend that would serve this checkpoint implements its model_type.
-
-    A causal-looking class name is not enough: ``MadeUpForCausalLM`` satisfies every
-    other gate and then fails in the loader, once the swap has unloaded the resident
-    model. Each backend keeps one module per family, so the family's presence answers it.
-
-    The MLX stacks are not interchangeable for a given load: MLXInferenceBackend passes
-    ``text_only`` off its vision verdict, so it reaches mlx-vlm for a multimodal
-    checkpoint and mlx-lm otherwise, and a family carried only by the other one fails the
-    same way. That modality is read from the config keys this module already uses to
-    require processor files, rather than is_vision_model, which runs a subprocess.
-
-    A checkpoint with no readable model_type is withheld rather than trusted: it is the
-    field the loader selects an implementation from, so there is nothing to load without it.
-    """
     model_type = config.get("model_type")
     if not isinstance(model_type, str) or not model_type.strip():
         return False
-    if _host_serves_mlx():
-        multimodal = any(key in config for key in _MULTIMODAL_CONFIG_KEYS)
-        package = "mlx_vlm" if multimodal else "mlx_lm"
-    else:
-        # a sidecar model would be judged against a registry this process does not have.
-        if _routes_to_a_transformers_sidecar(load_path):
-            return True
-        package = "transformers"
+    multimodal = any(key in config for key in _MULTIMODAL_CONFIG_KEYS)
+    package = "mlx_vlm" if multimodal else "mlx_lm"
     name = model_type.strip().lower().replace("-", "_")
     if not name.isidentifier():
         return False
@@ -629,6 +631,9 @@ def _weight_shards_all_present(load_dir) -> bool:
                 return False
     except OSError:
         return False
+    # the loader opens a complete model.safetensors, so a consolidation's leftover index is unread.
+    if (load_dir / "model.safetensors").is_file():
+        return True
     for name in _WEIGHT_INDEXES:
         index_file = load_dir / name
         if not index_file.is_file():
@@ -717,7 +722,7 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
         return False
     if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
         return False
-    if not _loader_implements_architecture(config, load_dir):
+    if not _loader_implements_architecture(config):
         return False
     # whisper and TTS need a request shape the chat route rejects only after the swap.
     from utils.models.model_config import detect_audio_type
@@ -754,7 +759,7 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         config = _read_json(load_dir / "config.json")
         if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
             return None
-        if not _has_a_chat_template(load_dir):
+        if not _has_a_chat_template(load_dir, loader_id):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
