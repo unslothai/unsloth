@@ -204,8 +204,9 @@ _MULTIMODAL_CONFIG_KEYS = (
     "projector_config",
     "audio_config",
 )
-# Families the chat loader has no branch for. Checked when architectures is absent,
-# which is optional in a config and cannot be read as "generative" on its own.
+# Fallback for when transformers is not already imported: the families the chat loader
+# has no branch for. A denylist cannot be complete, so the positive mapping is preferred
+# whenever it is free to read.
 _NON_CHAT_MODEL_TYPES = frozenset(
     {
         "bart",
@@ -223,6 +224,29 @@ _NON_CHAT_MODEL_TYPES = frozenset(
         "xlm-roberta",
     }
 )
+
+
+def _model_type_has_a_causal_head(model_type) -> bool:
+    """Whether the loader has a causal implementation for this model_type.
+
+    Read from transformers' own causal mapping when it is already imported, which is
+    authoritative and catches family variants such as deberta-v2 that no hand-written
+    list keeps up with. A cold transformers import would cost seconds on the request
+    path, so otherwise fall back to the denylist, matching the family prefix too.
+    """
+    if not isinstance(model_type, str) or not model_type.strip():
+        return True
+    name = model_type.strip().lower()
+    import sys
+
+    if "transformers" in sys.modules:
+        try:
+            from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
+
+            return name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
+        except Exception:
+            pass
+    return not (name in _NON_CHAT_MODEL_TYPES or name.split("-")[0] in _NON_CHAT_MODEL_TYPES)
 # The chat loader reaches these weights through causal and vision auto classes, so an
 # encoder-only or classifier checkpoint has no head it can generate with.
 _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
@@ -234,8 +258,7 @@ def _is_generative_chat_config(config: dict) -> bool:
     # The list is optional, so fall back to model_type: the loader resolves from it, and
     # a family with no causal branch must not slip through just by omitting the list.
     if not isinstance(architectures, list) or not architectures:
-        model_type = config.get("model_type")
-        return not (isinstance(model_type, str) and model_type.lower() in _NON_CHAT_MODEL_TYPES)
+        return _model_type_has_a_causal_head(config.get("model_type"))
     names = [name for name in architectures if isinstance(name, str)]
     # Not every causal checkpoint wears ForCausalLM: GPT2LMHeadModel and friends are
     # selected from model_type by the loader, and withholding them is the invisibility

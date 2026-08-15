@@ -5663,6 +5663,30 @@ async def _maybe_auto_switch_model(
     # requires the auto-switch toggle.
     # Configured, not effective: residency zeroes the TTL, and the stash still
     # has to be restorable after it is turned on.
+    def _refuse_non_gguf_endpoint() -> None:
+        """Refuse a target this endpoint cannot serve, loaded or not.
+
+        Hoisted above the resident fast paths so the answer does not depend on whether
+        the unsupported model happens to be resident already.
+        """
+        message = (
+            f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
+            "Use /v1/chat/completions for this model."
+        )
+        # error_body_for_path, not the OpenAI shape: the Anthropic routes reach this too
+        # and the global handler passes an already-formatted body through as is.
+        path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                error_body_for_path(
+                    path, message, status = 400, code = "invalid_value", param = "model"
+                )
+                if isinstance(path, str)
+                else message
+            ),
+        )
+
     if not auto_switch_on and not idle_unload_is_configured():
         # No switching to do, but a named model must still not be answered by another.
         await _reject_unservable_model(requested_model, fastapi_request)
@@ -5797,23 +5821,7 @@ async def _maybe_auto_switch_model(
         # Loading a non-GGUF model unloads the resident GGUF, and these endpoints read
         # llama.cpp alone, so the swap would strand them with nothing to serve.
         if gguf_only and not target_is_gguf and resolved is not None:
-            message = (
-                f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
-                "Use /v1/chat/completions for this model."
-            )
-            # error_body_for_path, not the OpenAI shape: the Anthropic routes reach this
-            # too and the global handler passes an already-formatted body through as is.
-            path = getattr(getattr(fastapi_request, "url", None), "path", None)
-            raise HTTPException(
-                status_code = 400,
-                detail = (
-                    error_body_for_path(
-                        path, message, status = 400, code = "invalid_value", param = "model"
-                    )
-                    if isinstance(path, str)
-                    else message
-                ),
-            )
+            _refuse_non_gguf_endpoint()
         # An image/audio request naming a different text-only target would load it
         # here and only 400 below, evicting the working model. Reject before the
         # swap. Only the resolver branch (an explicit new target); the reload-stash
@@ -8855,6 +8863,10 @@ async def _load_model_impl(
 
         # Load in a thread so the event loop stays free for download progress
         # polling and other requests.
+        # Cleared before the load, not after: load_model publishes active_model_name for
+        # the new weights, and a concurrent request matching the old alias in that window
+        # would be answered by them. Auto-switch sets the repo id once this returns.
+        backend._openai_advertised_id = None
         success = await asyncio.to_thread(
             backend.load_model,
             config = config,
@@ -8914,8 +8926,6 @@ async def _load_model_impl(
         from core.inference.llama_keepwarm import note_model_loaded
 
         note_model_loaded()
-        # Mirrors the GGUF branch: auto-switch sets the repo id right after this returns.
-        backend._openai_advertised_id = None
 
         # Load inference configuration parameters
         inference_config = load_inference_config(config.identifier)

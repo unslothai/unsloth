@@ -8598,3 +8598,28 @@ def test_a_seq2seq_model_type_without_architectures_is_not_switchable(tmp_path):
     assert resolver.local_servable_model(info) is None
     (path / "config.json").write_text('{"model_type": "qwen3"}')
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_family_variant_model_type_is_not_switchable(tmp_path):
+    # Codex P2: a denylist cannot be complete, and deberta-v2 slipped past one holding
+    # only deberta. The family prefix is matched too when transformers is not loaded.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "deberta-v2")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text('{"model_type": "deberta-v2"}')
+    assert resolver.local_servable_model(info) is None
+
+
+def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
+    # Codex P1: load_model publishes active_model_name for the new weights, so an alias
+    # cleared afterwards leaves a window where a request for the old model matches it
+    # and is answered by the new ones. The clear must precede the load call.
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    # Anchored on the line start: llama_backend.load_model appears earlier and would
+    # otherwise match as a substring of the orchestrator call this guards.
+    clear = src.index("\n        backend._openai_advertised_id = None")
+    load = src.index("\n            backend.load_model,")
+    assert clear < load, "the alias must be cleared before load_model publishes the new model"
