@@ -2049,7 +2049,12 @@ def test_setup_that_never_registers_gives_the_gates_back(flux, enabled, backend,
     monkeypatch.setattr(mas, "_SETUP_GRACE_S", 0.5)
     release = asyncio.Event()
 
-    async def _never_registers(owner, pick, current_subject, hf_token = None):
+    async def _never_registers(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
         await release.wait()
 
     monkeypatch.setattr(mas, "_start_load", _never_registers)
