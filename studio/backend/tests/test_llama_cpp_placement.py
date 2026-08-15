@@ -974,3 +974,46 @@ def test_manual_auto_fit_prices_the_kv_cache_it_will_actually_allocate(tmp_path,
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = -1, n_ctx = 0)
+
+
+def test_manual_zero_gpu_layers_charges_the_whole_model_to_host_ram(tmp_path, monkeypatch):
+    """Manual mode with an explicit layer count emits `--gpu-layers N --fit off`, but
+    that only clears use_fit while building the command, well after the guard. At 0
+    layers the GPUs hold nothing, so none of their free VRAM may be subtracted."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 12_000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)
+
+
+def test_manual_partial_offload_is_left_to_the_launch(tmp_path, monkeypatch):
+    """A concrete positive layer count cannot be sized per layer here, so the guard
+    abstains rather than pricing a placement it cannot compute. These numbers refuse
+    if the model-minus-all-VRAM spill is priced anyway."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 20, free_mib = 12_000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    assert "--gpu-layers" in _launch(
+        backend, gguf, gpu_memory_mode = "manual", gpu_layers = 10
+    )["cmd"]
+
+
+def test_cpu_resident_kv_is_not_offset_by_free_vram(tmp_path, monkeypatch):
+    """`--no-kv-offload` puts the whole KV cache in host RAM, so it cannot share the
+    VRAM subtraction with the weights. 12 GB of weights that fit 14 GB of VRAM leave
+    an 8 GB KV wholly on a 9 GB host. Shared with the weights the same figures price
+    as 6 GB and pass."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 12, free_mib = 14 * 1024)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(8 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 9 * 1024)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--no-kv-offload"])

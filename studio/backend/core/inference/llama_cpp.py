@@ -14846,11 +14846,14 @@ class LlamaCppBackend:
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)
 
+                # manual with an explicit count emits --fit off below, past this seeded use_fit
+                _manual_layers = gpu_memory_mode == "manual" and (gpu_layers or 0) >= 0
                 # same ceiling for a discrete gpu, where only the spill lands in host ram
                 if (
                     use_fit
                     and model_size is not None
                     and kv_cache_bytes is not None
+                    and not (_manual_layers and (gpu_layers or 0) > 0)
                     and not self._amd_apu_wants_unified_memory(gpu_indices)
                 ):
                     # manual + auto omits -c, so a zero context still allocates the fit floor
@@ -14871,7 +14874,13 @@ class LlamaCppBackend:
                     # a page-locked mapping is pinned whole and --device none holds no vram
                     _fit_vram_mib = (
                         0
-                        if (_paravirtual_cpu_forced or _arch_gate_forced_cpu or _guard_mlocked)
+                        if (
+                            _paravirtual_cpu_forced
+                            or _arch_gate_forced_cpu
+                            or _guard_mlocked
+                            # gated to 0 layers above, so the gpus hold nothing
+                            or _manual_layers
+                        )
                         else sum(
                             max(0, _free)
                             for _idx, _free in _detected_gpus
@@ -14880,11 +14889,18 @@ class LlamaCppBackend:
                             and not (is_vulkan_backend and not total_by_idx.get(_idx, 0))
                         )
                     )
-                    _offload_msg = self._host_offload_shortfall_message(
+                    # a cpu-resident kv is not fungible with weights the gpus can take
+                    _kv_on_host = not _kv_offload_from_args(extra_args)
+                    _host_bytes = (
                         model_size
-                        + _guard_kv_bytes
                         + _mtp_reserve_bytes
-                        - _fit_vram_mib * 1024 * 1024,
+                        + (0 if _kv_on_host else _guard_kv_bytes)
+                        - _fit_vram_mib * 1024 * 1024
+                    )
+                    if _kv_on_host:
+                        _host_bytes = max(0, _host_bytes) + _guard_kv_bytes
+                    _offload_msg = self._host_offload_shortfall_message(
+                        _host_bytes,
                         self._available_system_memory_mib(),
                     )
                     if _offload_msg:
