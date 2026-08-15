@@ -1697,6 +1697,41 @@ def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkey
     assert rows[0]["pipeline_tag"] == "text-to-speech"
 
 
+def test_active_cache_native_fork_loads_by_detected_snapshot(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core.inference.native_audio import is_native_audio_model
+    from hub.services.models import cache_inventory
+
+    repo_dir = _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"moss_tts_local"}',
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--acme--native-audio-fork",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    snapshot = repo_dir / "snapshots" / SNAPSHOT
+    assert rows[0]["repo_id"] == "acme/native-audio-fork"
+    assert rows[0]["audio_type"] == "moss_tts_local"
+    assert rows[0]["load_id"] == str(snapshot)
+    assert is_native_audio_model(rows[0]["load_id"])
+
+
 def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):
     """refs/main resolves while refs/stale dangles, so recovery fires but the default-ref test does
     not. The pinned snapshot is short a shard with no marker, manifest or .incomplete blob, so its

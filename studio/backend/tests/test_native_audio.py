@@ -21,6 +21,7 @@ from core.inference.native_audio import (
     _moss_transformers5_config_compat,
     is_native_audio_model,
     native_audio_download_plan,
+    native_audio_kv_memory_gb,
     native_audio_type_from_local_path,
     native_audio_security_targets,
 )
@@ -214,6 +215,94 @@ def test_download_plan_stages_missing_codec_when_main_repo_is_cached(monkeypatch
     }
     assert plan["required_bytes"] == 122
     assert plan["checkpoint_bytes"] == 100
+
+
+def test_download_plan_uses_selected_local_snapshot_companion(tmp_path, monkeypatch):
+    selected_codec = "acme/codec-from-selected-snapshot"
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "moss_tts_local"}), encoding = "utf-8"
+    )
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps({"audio_tokenizer_name_or_path": selected_codec}), encoding = "utf-8"
+    )
+
+    class HfApi:
+        def __init__(self, token = None):
+            assert token is None
+
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+        ):
+            assert repo_id == selected_codec
+            assert files_metadata is True
+            return SimpleNamespace(
+                sha = "codec-sha",
+                siblings = [SimpleNamespace(rfilename = "model.safetensors", size = 20)],
+            )
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached",
+        lambda *_args: False,
+    )
+
+    plan = native_audio_download_plan(str(tmp_path))
+
+    assert plan["entries"] == [
+        {
+            "repo_id": selected_codec,
+            "files": ["model.safetensors"],
+            "bytes": 20,
+            "gguf_filename": None,
+            "checkpoint": False,
+        }
+    ]
+    assert plan["checkpoint_bytes"] == 0
+
+
+@pytest.mark.parametrize(
+    ("audio_type", "config", "expected_gb"),
+    (
+        (
+            "moss_tts_local",
+            {
+                "qwen3_config": {
+                    "max_position_embeddings": 32768,
+                    "num_hidden_layers": 36,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                },
+                "gpt2_config": {
+                    "n_positions": 10240,
+                    "n_layer": 1,
+                    "n_head": 32,
+                    "n_embd": 2560,
+                },
+            },
+            4.59765625,
+        ),
+        (
+            "moss_tts_nano",
+            {
+                "gpt2_config": {
+                    "n_positions": 32768,
+                    "n_layer": 12,
+                    "n_head": 12,
+                    "n_embd": 768,
+                }
+            },
+            1.125,
+        ),
+    ),
+)
+def test_moss_kv_memory_uses_published_full_context(tmp_path, audio_type, config, expected_gb):
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert native_audio_kv_memory_gb(str(tmp_path), audio_type) == pytest.approx(expected_gb)
+    assert native_audio_kv_memory_gb(str(tmp_path), "higgs_tts2") == 0.0
 
 
 def test_download_plan_uses_full_snapshot_for_generic_hub_tts(monkeypatch):

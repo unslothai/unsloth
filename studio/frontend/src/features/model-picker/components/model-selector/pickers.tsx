@@ -3468,6 +3468,7 @@ export function HubModelPicker({
                   id: c.repo_id,
                   tags: c.tags,
                   libraryName: c.library_name,
+                  audioType: c.audio_type,
                 }) &&
                 macTtsHubRowIsRunnable({
                   isMac,
@@ -3479,6 +3480,7 @@ export function HubModelPicker({
                         (artifact) => artifact.format === "gguf",
                       ),
                   ),
+                  audioType: c.audio_type,
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
@@ -3699,6 +3701,8 @@ export function HubModelPicker({
                       : (meta.ggufVariant ?? undefined),
                     // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
                     task: pickedTask ?? undefined,
+                    audioType: meta.audioType ?? undefined,
+                    loadId: meta.loadId ?? undefined,
                   }
                 : diffusionRouteSearch(id, meta),
           });
@@ -6082,7 +6086,7 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                              resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6297,7 +6301,7 @@ export function HubModelPicker({
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
-                              resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}

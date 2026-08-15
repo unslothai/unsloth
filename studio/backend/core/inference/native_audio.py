@@ -205,6 +205,58 @@ def native_audio_security_targets(
     return targets
 
 
+def _kv_config_memory_gb(config: dict[str, Any]) -> float:
+    def positive_int(*names: str) -> int:
+        for name in names:
+            try:
+                value = int(config.get(name) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return 0
+
+    context = positive_int(
+        "max_position_embeddings",
+        "max_sequence_length",
+        "max_seq_length",
+        "n_positions",
+        "n_ctx",
+        "seq_length",
+    )
+    layers = positive_int("num_hidden_layers", "n_layer")
+    attention_heads = positive_int("num_attention_heads", "n_head")
+    kv_heads = positive_int("num_key_value_heads", "n_head") or attention_heads
+    head_dim = positive_int("head_dim")
+    if not head_dim:
+        hidden_size = positive_int("hidden_size", "n_embd")
+        if hidden_size and attention_heads:
+            head_dim = hidden_size // attention_heads
+    if not all((context, layers, kv_heads, head_dim)):
+        return 0.0
+    # One key and one value per layer. Native MOSS GPU runtimes use BF16/FP16.
+    return 2 * layers * kv_heads * head_dim * context * 2 / (1024**3)
+
+
+def native_audio_kv_memory_gb(
+    model_name: str,
+    audio_type: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> float:
+    """Full-context MOSS KV footprint omitted by the generic weight estimator."""
+    resolved_type = audio_type or _native_audio_type(model_name)
+    if resolved_type not in ("moss_tts_local", "moss_tts_nano"):
+        return 0.0
+    config = _read_audio_metadata(model_name, "config.json", hf_token)
+    if resolved_type == "moss_tts_local":
+        candidates = (config.get("qwen3_config"), config.get("gpt2_config"))
+    else:
+        candidates = (config.get("gpt2_config"),)
+    return sum(
+        _kv_config_memory_gb(candidate) for candidate in candidates if isinstance(candidate, dict)
+    )
+
+
 def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str, Any]) -> None:
     """Import a MOSS codec config with the pre-Transformers-5 subclass contract.
 
@@ -331,15 +383,15 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
     normalized = str(model_name or "").strip()
     if not normalized:
         raise ValueError("A model repository is required.")
-    if Path(normalized).expanduser().exists():
+    local_checkpoint = Path(normalized).expanduser().exists()
+    audio_type = _native_audio_type(normalized)
+    if local_checkpoint and audio_type is None:
         return {
             "entries": [],
             "total_bytes": 0,
             "required_bytes": 0,
             "checkpoint_bytes": 0,
         }
-
-    audio_type = _native_audio_type(normalized)
 
     from huggingface_hub import HfApi
 
@@ -355,6 +407,8 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
     )
     for index, repo_id in enumerate(targets):
         checkpoint = index == 0
+        if checkpoint and local_checkpoint:
+            continue
         info = api.model_info(repo_id, files_metadata = True)
         siblings = _native_audio_repo_files(
             audio_type,

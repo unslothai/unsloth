@@ -7089,7 +7089,10 @@ async def _preflight_native_audio_placement(
 
     def _resolve() -> tuple[Optional[List[int]], Optional[float]]:
         import utils.hardware as hardware
-        from core.inference.native_audio import native_audio_security_targets
+        from core.inference.native_audio import (
+            native_audio_kv_memory_gb,
+            native_audio_security_targets,
+        )
 
         device = hardware.get_device()
         if audio_type == "minimax_music3":
@@ -7106,10 +7109,11 @@ async def _preflight_native_audio_placement(
                 )
             return None, None
 
+        model_source = getattr(config, "path", None) or config.identifier
         targets = list(
             dict.fromkeys(
                 native_audio_security_targets(
-                    config.identifier,
+                    model_source,
                     audio_type,
                     request.hf_token,
                 )
@@ -7135,6 +7139,11 @@ async def _preflight_native_audio_placement(
                         f"Could not estimate GPU memory for native audio component '{target}'."
                     )
                 required_gb += target_required_gb
+            required_gb += native_audio_kv_memory_gb(
+                model_source,
+                audio_type,
+                request.hf_token,
+            )
         resolved, _metadata = hardware.prepare_gpu_selection(
             placement.requested_gpu_ids,
             model_name = config.identifier,

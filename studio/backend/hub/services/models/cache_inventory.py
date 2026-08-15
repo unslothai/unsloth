@@ -1139,6 +1139,11 @@ def _scan_cached_models(
                         stt_only = bool(is_whisper_stt),
                     )
                 )
+                # Native backend selection reads the load identity itself. A custom native
+                # fork addressed only by repo id is indistinguishable from an ordinary LLM,
+                # even though this inventory row detected its architecture from the snapshot.
+                if native_audio_type and load_snapshot is not None:
+                    row["load_id"] = str(load_snapshot)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):

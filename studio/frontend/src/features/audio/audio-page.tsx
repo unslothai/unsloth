@@ -1011,7 +1011,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         let plan;
         try {
           plan = await getAudioDownloadPlan(
-            repoId,
+            meta.loadId || repoId,
             hfApiToken(getHfToken()),
           );
         } catch (error) {
@@ -1033,10 +1033,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           return;
         }
         if (generation !== stagedTtsGeneration.current) return;
-        const plannedEntries =
-          meta.isDownloaded === true && meta.loadId
-            ? plan.entries.filter((entry) => !entry.checkpoint)
-            : plan.entries;
+        const plannedEntries = plan.entries;
         if (plannedEntries.length > 0) {
           pendingStagedTtsLoad.current = {
             repoId,
@@ -1427,6 +1424,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     quant?: string;
     ggufQuant?: string;
     task?: string;
+    audioType?: string;
+    loadId?: string;
   };
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
@@ -1436,7 +1435,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       handledRouteModel.current = null;
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}`;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}`;
     if (handledRouteModel.current === key) return;
     // The persistent Audio page may still be finishing hidden work. Keep the
     // handoff in the URL and retry it when that work releases the lifecycle.
@@ -1447,9 +1446,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       isLora: false,
       ggufFilename: routeSearch.quant ?? undefined,
       ggufVariant: routeSearch.ggufQuant ?? undefined,
+      loadId: routeSearch.loadId ?? undefined,
+      audioType: routeSearch.audioType ?? undefined,
       // Chat-to-Audio routing cannot preserve the inventory flag, so stage the
       // exact forwarded GGUF. An already-cached job completes immediately.
-      isDownloaded: routeSearch.quant ? false : undefined,
+      isDownloaded: routeSearch.loadId
+        ? true
+        : routeSearch.quant
+          ? false
+          : undefined,
       pipelineTag: routeSearch.task ?? null,
     });
     void navigateSelf({ to: "/audio", search: {}, replace: true });
@@ -1460,6 +1465,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     routeSearch.quant,
     routeSearch.ggufQuant,
     routeSearch.task,
+    routeSearch.audioType,
+    routeSearch.loadId,
     handleModelSelect,
     navigateSelf,
   ]);

@@ -4,6 +4,14 @@
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
+const NATIVE_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
+
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
 export function shouldDiscoverCommunityModels(
@@ -29,6 +37,7 @@ export function communityAudioRowIsRunnable({
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   isStt: boolean;
   isTts: boolean;
@@ -37,6 +46,7 @@ export function communityAudioRowIsRunnable({
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
   if (!isStt && !isTts) {
     return true;
@@ -50,6 +60,8 @@ export function communityAudioRowIsRunnable({
       return false;
     return evidence.some((value) => value.includes("whisper"));
   }
+
+  if (audioType && NATIVE_AUDIO_TYPES.has(audioType)) return true;
 
   // The main-slot TTS backend decodes only the four codec families below.
   // Hub's text-to-speech tag also covers Bark, VITS, SpeechT5, and many other
@@ -123,13 +135,25 @@ export function macTtsHubRowIsRunnable({
   isTts,
   isGguf,
   hasRunnableGgufSibling,
+  audioType,
 }: {
   isMac: boolean;
   isTts: boolean;
   isGguf: boolean;
   hasRunnableGgufSibling: boolean;
+  audioType?: string | null;
 }): boolean {
-  return !isMac || !isTts || isGguf || hasRunnableGgufSibling;
+  return (
+    !isMac ||
+    !isTts ||
+    isGguf ||
+    hasRunnableGgufSibling ||
+    Boolean(
+      audioType &&
+      NATIVE_AUDIO_TYPES.has(audioType) &&
+      audioType !== "minimax_music3",
+    )
+  );
 }
 
 export function taskCatalogFormatMatches(

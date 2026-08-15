@@ -13,6 +13,10 @@ const apiSource = readFileSync(
   new URL("../src/features/audio/api.ts", import.meta.url),
   "utf8",
 );
+const routeSource = readFileSync(
+  new URL("../src/app/routes/audio.tsx", import.meta.url),
+  "utf8",
+);
 
 test("uncached remote TTS GGUFs stage the exact file through the shared manager", () => {
   assert.match(source, /useStagedDownload\(\{\s*scopeId: "audio"/);
@@ -83,10 +87,7 @@ test("a cached Hub TTS model can still load when the metadata plan is offline", 
 });
 
 test("remembered-cache TTS rows stage companions without duplicating the checkpoint", () => {
-  assert.match(
-    source,
-    /const plannedEntries =\s*meta\.isDownloaded === true && meta\.loadId[\s\S]*plan\.entries\.filter\(\(entry\) => !entry\.checkpoint\)/,
-  );
+  assert.match(source, /getAudioDownloadPlan\([\s\S]*meta\.loadId \|\| repoId/);
   assert.match(
     source,
     /if \(plannedEntries\.length > 0\)[\s\S]*plannedEntries\.map\(\(entry\) => \(\{/,
@@ -127,7 +128,20 @@ test("switching to Transcribe invalidates a pending staged TTS auto-load", () =>
 test("a GGUF forwarded from Chat enters the managed staging path", () => {
   assert.match(
     source,
-    /ggufFilename: routeSearch\.quant \?\? undefined,[\s\S]*isDownloaded: routeSearch\.quant \? false : undefined/,
+    /ggufFilename: routeSearch\.quant \?\? undefined,[\s\S]*isDownloaded: routeSearch\.loadId[\s\S]*routeSearch\.quant[\s\S]*\? false/,
+  );
+});
+
+test("Chat handoffs preserve validated native type and exact cached snapshot", () => {
+  assert.match(routeSource, /NATIVE_AUDIO_TYPES\.has\(search\.audioType\)/);
+  assert.match(routeSource, /typeof search\.loadId === "string"/);
+  assert.match(
+    source,
+    /loadId: routeSearch\.loadId \?\? undefined,[\s\S]*audioType: routeSearch\.audioType \?\? undefined/,
+  );
+  assert.match(
+    source,
+    /isDownloaded: routeSearch\.loadId[\s\S]*\? true[\s\S]*routeSearch\.quant/,
   );
 });
 

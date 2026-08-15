@@ -359,6 +359,53 @@ test("cached runnable community audio survives the Audio on-device trust gate", 
     pickerSource,
     /communityAudioRowIsRunnable\(\{[\s\S]*macTtsHubRowIsRunnable\(\{[\s\S]*isMac,[\s\S]*isTts: c\.task === "text-to-speech",[\s\S]*hasRunnableGgufSibling/,
   );
+  assert.match(
+    pickerSource,
+    /communityAudioRowIsRunnable\(\{[\s\S]*audioType: c\.audio_type,[\s\S]*macTtsHubRowIsRunnable\(\{[\s\S]*audioType: c\.audio_type/,
+  );
+});
+
+test("cached native audio types bypass community family-name heuristics", () => {
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: false,
+      id: "local/arbitrary-checkpoint-name",
+      audioType: "moss_tts_local",
+    }),
+    true,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: false,
+      id: "local/arbitrary-checkpoint-name",
+      audioType: "unknown_tts",
+    }),
+    false,
+  );
+  assert.equal(
+    macTtsHubRowIsRunnable({
+      isMac: true,
+      isTts: true,
+      isGguf: false,
+      hasRunnableGgufSibling: false,
+      audioType: "moss_tts_local",
+    }),
+    true,
+  );
+  assert.equal(
+    macTtsHubRowIsRunnable({
+      isMac: true,
+      isTts: true,
+      isGguf: false,
+      hasRunnableGgufSibling: false,
+      audioType: "minimax_music3",
+    }),
+    false,
+  );
 });
 
 test("Chat-to-Audio handoff preserves the live Hub task", () => {
@@ -374,6 +421,10 @@ test("Chat-to-Audio handoff preserves the live Hub task", () => {
   assert.match(
     pickerSource,
     /page === "audio"[\s\S]*ggufQuant:\s*meta\.ggufFilename[\s\S]*meta\.ggufVariant/,
+  );
+  assert.match(
+    pickerSource,
+    /page === "audio"[\s\S]*audioType:\s*meta\.audioType \?\? undefined,[\s\S]*loadId:\s*meta\.loadId \?\? undefined/,
   );
   assert.match(
     pickerSource,

@@ -1020,14 +1020,19 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
                 "utils.hardware.estimate_required_model_memory_gb",
                 side_effect = [(4.0, {}), (2.5, {})],
             ),
+            patch(
+                "core.inference.native_audio.native_audio_kv_memory_gb",
+                return_value = 1.125,
+            ) as kv_memory,
             patch("utils.hardware.prepare_gpu_selection", return_value = ([0], {})) as prepare,
         ):
             result = asyncio.run(
                 self.route._preflight_native_audio_placement(config, request, placement)
             )
 
-        self.assertEqual(result.native_required_gb, 6.5)
-        self.assertEqual(prepare.call_args.kwargs["required_override_gb"], 6.5)
+        self.assertEqual(result.native_required_gb, 7.625)
+        self.assertEqual(prepare.call_args.kwargs["required_override_gb"], 7.625)
+        kv_memory.assert_called_once_with(config.identifier, config.audio_type, "token")
 
 
 # ── validate_model integration (early refusal, real settings) ────────────────
