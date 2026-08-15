@@ -556,7 +556,6 @@ def test_the_hidream_external_encoder_is_pinned_to_the_live_cache(monkeypatch, l
 
 def test_the_image_base_file_set_stages_the_transformer_config_but_not_its_shards():
     from core.inference.diffusion import _base_file_downloaded as keep
-
     assert keep("transformer/config.json", include_transformer = False)
     assert not keep(
         "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
@@ -587,9 +586,7 @@ def _sf_kwargs_keys(module_path: str) -> list[set[str]]:
     return found
 
 
-@pytest.mark.parametrize(
-    "module_path", ["core/inference/diffusion.py", "core/inference/video.py"]
-)
+@pytest.mark.parametrize("module_path", ["core/inference/diffusion.py", "core/inference/video.py"])
 def test_every_single_file_build_hands_over_the_flag(module_path):
     for keys in _sf_kwargs_keys(module_path):
         assert "local_files_only" in keys
