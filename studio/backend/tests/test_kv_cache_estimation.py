@@ -31,8 +31,13 @@ _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
-# structlog
+# structlog. Carries get_logger because this stub is process-wide: whichever test
+# module is imported first wins the setdefault, and utils/prebuilt/freshness_flow
+# calls structlog.get_logger at import time. A bare module here fails that import
+# for every later module on a runner without the real package, which is how this
+# file's stub was breaking test_llama_cpp_mtp_detection in the same pytest run.
 _structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
 # httpx -- only stub when the real library is missing. Unconditional stubbing
