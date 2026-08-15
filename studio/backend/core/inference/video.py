@@ -1274,6 +1274,7 @@ class VideoBackend:
         self,
         repo_id: str,
         *,
+        local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -1356,6 +1357,7 @@ class VideoBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
                 family_override = family_override,
@@ -3142,6 +3144,7 @@ class VideoBackend:
         self,
         repo_id: str,
         *,
+        local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -3235,6 +3238,7 @@ class VideoBackend:
             return self._load_h3_modular_pipeline(
                 diffusers = diffusers,
                 torch = torch,
+                local_files_only = local_files_only,
                 fam = fam,
                 target = target,
                 repo_id = repo_id,
@@ -3412,7 +3416,11 @@ class VideoBackend:
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         # cache_dir pins every loader call to the live cache root, so a mid-session change cannot split one model across roots.
-        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "cache_dir": hub_cache_dir()}
+        pipe_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "cache_dir": hub_cache_dir(),
+            "local_files_only": local_files_only,
+        }
         if getattr(fam, "vae_force_fp32", False):
             # Wan VAE must decode in float32: a scalar torch_dtype truncates its fp32 weights to bf16 and a later widen only
             # restores lossy values (banding / black frames). "default" MUST be set or unlisted components fall back to fp32.
@@ -3953,6 +3961,7 @@ class VideoBackend:
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -3983,6 +3992,7 @@ class VideoBackend:
         load_kwargs: dict[str, Any] = {
             "components_manager": manager,
             "cache_dir": hub_cache_dir(),
+            "local_files_only": local_files_only,
         }
         if hf_token:
             load_kwargs["token"] = hf_token
@@ -4306,6 +4316,7 @@ class VideoBackend:
             workflow = workflow,
             dtype = dtype,
             cache_dir = hub_cache_dir(),
+            local_files_only = local_files_only,
             **({"token": hf_token} if hf_token else {}),
         )
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both

@@ -2380,3 +2380,59 @@ def test_two_h3_partitions_of_one_quant_are_told_apart(catalog, enabled, tmp_pat
 
     # The resident partition is the one this checkpoint brings up, so nothing is reloaded.
     assert loads == []
+
+
+def _capture_begin_load(monkeypatch, route):
+    """Record the local_files_only begin_load is called with, for either media route."""
+    seen: list = []
+
+    class _Backend:
+        def validate_load_request(self, *a, **k):
+            return types.SimpleNamespace(name = "z-image", base_repo = None)
+
+        def begin_load(self, *a, **k):
+            seen.append(k.get("local_files_only"))
+            return {"loaded": False, "repo_id": None}
+
+    if route == "images":
+        import core.inference.diffusion_engine_router as router_module
+
+        monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: _Backend())
+        monkeypatch.setattr(router_module, "get_active_diffusion_engine", lambda: _Backend())
+    else:
+        import core.inference.video as video_module
+
+        monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+        monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
+        monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
+        monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
+        monkeypatch.setattr("routes.video._selected_gpu_ordinal", _async_none)
+    return seen
+
+
+@pytest.mark.parametrize("user_initiated", [False, True])
+def test_only_a_load_nobody_asked_for_is_kept_off_the_hub(monkeypatch, user_initiated):
+    # The switch verifies locality from the outside, and this is what makes that promise the
+    # loader's own rule rather than a prediction about which files it will open. The picker's
+    # own load is what downloads a model in the first place, so it keeps its access.
+    from models.inference import VideoLoadRequest
+    from routes.video import load_video_model_gated
+
+    seen = _capture_begin_load(monkeypatch, "video")
+    import core.inference.diffusion_device as device_module
+
+    monkeypatch.setattr(
+        device_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cpu"),
+    )
+
+    asyncio.run(
+        load_video_model_gated(
+            VideoLoadRequest(model_path = "unsloth/Wan2.2-GGUF", gguf_filename = "wan-Q4_K_M.gguf"),
+            "test-user",
+            user_initiated = user_initiated,
+        )
+    )
+
+    assert seen == [not user_initiated]

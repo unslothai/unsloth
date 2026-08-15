@@ -22819,6 +22819,9 @@ async def load_diffusion_model_gated(
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
+                # a load nobody asked for may not reach the hub: the switch verified locality
+                # from the outside, and this is what makes that promise the loader's own rule
+                local_files_only = not user_initiated,
                 gguf_filename = request.gguf_filename,
                 base_repo = request.base_repo,
                 family_override = request.family_override,

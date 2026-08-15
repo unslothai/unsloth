@@ -1752,6 +1752,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -1825,6 +1826,7 @@ class DiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
                 family_override = family_override,
@@ -3012,6 +3014,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -3824,6 +3827,7 @@ class DiffusionBackend:
                             pipe = load_ideogram4_pipeline(fetch_base, dtype, hf_token = hf_token)
                         else:
                             pipe_kwargs: dict[str, Any] = {
+                                "local_files_only": local_files_only,
                                 "torch_dtype": dtype,
                                 "cache_dir": hub_cache_dir(),
                             }
@@ -3838,6 +3842,7 @@ class DiffusionBackend:
                                         fam = fam,
                                         te_quant_mode = text_encoder_quant,
                                         target = target,
+                                        local_files_only = local_files_only,
                                     )
                                 )
                             # A hosted pre-cast fp8 text encoder skips the dense TE download; the cast re-applies idempotently.
@@ -3859,6 +3864,7 @@ class DiffusionBackend:
                     elif kind == "single_file" and fam.single_file_is_pipeline:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline class with ``config`` on the base repo.
                         sf_pipe_kwargs: dict[str, Any] = {
+                                "local_files_only": local_files_only,
                             "torch_dtype": dtype,
                             # ``config`` is a REPO FETCH ahead of the mirrored load, so a gated id
                             # would 401 here first.
@@ -3909,6 +3915,7 @@ class DiffusionBackend:
                             )
                         else:
                             pipe_kwargs = {
+                                "local_files_only": local_files_only,
                                 "torch_dtype": dtype,
                                 "transformer": transformer,
                                 "cache_dir": hub_cache_dir(),
@@ -3924,6 +3931,7 @@ class DiffusionBackend:
                                         fam = fam,
                                         te_quant_mode = text_encoder_quant,
                                         target = target,
+                                        local_files_only = local_files_only,
                                     )
                                 )
                             # Same pre-cast TE injection as above: the GGUF supplies the transformer, so the TE is the big download.
@@ -4388,6 +4396,7 @@ class DiffusionBackend:
                         te_quant_mode = text_encoder_quant,
                         target = target,
                         fetch_base = fetch_base,
+                        local_files_only = local_files_only,
                     )
                     return pipe, scheme
 
@@ -4421,6 +4430,7 @@ class DiffusionBackend:
             te_quant_mode = text_encoder_quant,
             target = target,
             fetch_base = fetch_base,
+            local_files_only = local_files_only,
         )
         if _has_active_lora(lora_specs):
             # Bake the adapters BEFORE quantize_: peft wraps the dense Linears (post-quant torchao dispatch would TypeError),
@@ -4468,6 +4478,7 @@ class DiffusionBackend:
         te_quant_mode: Optional[str] = None,
         target: Any = None,
         fetch_base: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions).
@@ -4499,6 +4510,7 @@ class DiffusionBackend:
             pipe.to(device)
             return pipe
         pipe_kwargs: dict[str, Any] = {
+            "local_files_only": local_files_only,
             "torch_dtype": dtype,
             "transformer": transformer,
             "cache_dir": hub_cache_dir(),
@@ -4514,6 +4526,7 @@ class DiffusionBackend:
                     fam = fam,
                     te_quant_mode = te_quant_mode,
                     target = target,
+                    local_files_only = local_files_only,
                 )
             )
         # Same pre-cast TE injection as the other branches: the dense path supplies only the transformer.
