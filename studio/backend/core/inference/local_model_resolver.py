@@ -177,10 +177,21 @@ _MAX_SAFETENSORS_HEADER_BYTES = 256 * 1024 * 1024
 
 # bytes per element, fixed-width dtypes only; sub-byte and unlisted ones skip the check.
 _SAFETENSORS_DTYPE_BYTES = {
-    "F64": 8, "I64": 8, "U64": 8,
-    "F32": 4, "I32": 4, "U32": 4,
-    "F16": 2, "BF16": 2, "I16": 2, "U16": 2,
-    "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1, "BOOL": 1,
+    "F64": 8,
+    "I64": 8,
+    "U64": 8,
+    "F32": 4,
+    "I32": 4,
+    "U32": 4,
+    "F16": 2,
+    "BF16": 2,
+    "I16": 2,
+    "U16": 2,
+    "F8_E4M3": 1,
+    "F8_E5M2": 1,
+    "I8": 1,
+    "U8": 1,
+    "BOOL": 1,
 }
 
 
