@@ -185,9 +185,10 @@ def _has_tokenizer_vocabulary(load_dir) -> bool:
     """
     if any(_vocabulary_file_is_readable(load_dir / name) for name in _TOKENIZER_MARKERS):
         return True
-    return _vocabulary_file_is_readable(load_dir / "vocab.json") and (
-        load_dir / "merges.txt"
-    ).is_file()
+    return (
+        _vocabulary_file_is_readable(load_dir / "vocab.json")
+        and (load_dir / "merges.txt").is_file()
+    )
 
 
 def _vocabulary_file_is_readable(path) -> bool:

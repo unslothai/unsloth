@@ -9049,9 +9049,7 @@ def test_unreadable_safetensors_metadata_is_withheld(tmp_path):
 
     def write(metadata):
         blob = json.dumps({"__metadata__": metadata, "a": tensor}).encode()
-        (path / "model.safetensors").write_bytes(
-            struct.pack("<Q", len(blob)) + blob + b"\0" * 16
-        )
+        (path / "model.safetensors").write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * 16)
 
     write({"format": "pt"})
     assert resolver.local_servable_model(info) == (False, ())
