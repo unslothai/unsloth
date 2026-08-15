@@ -584,6 +584,40 @@ test("every publish runs the whole tracker transition, not just the start", () =
   );
 });
 
+test("a group the gate never revealed is finished when it really ended", () => {
+  // The first <think>...</think> chunk can itself be gated, so the tracker has
+  // no group to close when the answer delta ends the reasoning. Finishing at
+  // the eventual publish charged the whole wait in between to the reasoning:
+  // a 1s pass followed by a 30s pause measured 31s.
+  let clock = 0;
+  const tracker = createReasoningDurationTracker(() => clock);
+
+  clock = 32_000;
+  tracker.startGroup(0, 1_000);
+  tracker.finishGroup(2_000);
+
+  const durations = (tracker.metadata() as { reasoningDurations?: number[] })
+    .reasoningDurations;
+  assert.deepEqual(durations, [1]);
+});
+
+test("the replay-only publish reconciles like the other two", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // It is a third publish path and can be the first to expose a held group.
+  const branch = loop.indexOf(
+    "if (replayStateChanged && !delta && !reasoning) {",
+  );
+  assert.notEqual(branch, -1, "the replay-only publish is gone");
+  const reconcile = loop.indexOf("reconcileReasoning(replayContent", branch);
+  const yielded = loop.indexOf("content: replayContent,", branch);
+  assert.notEqual(reconcile, -1, "the replay publish does not reconcile");
+  assert.ok(reconcile < yielded, "it must reconcile before it yields");
+});
+
 test("a scheduler that calls back synchronously does not throw", () => {
   const globals = globalThis as unknown as {
     requestAnimationFrame: (cb: () => void) => number;

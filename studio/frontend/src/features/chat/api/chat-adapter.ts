@@ -4509,6 +4509,11 @@ export function createOpenAIStreamAdapter(
       // without this a pass that arrived while the gate was closed would be
       // timed from the publish and measure as zero. Cleared on every publish.
       let gateHeldSince: number | undefined;
+      // When held reasoning ENDED, for the case where the gate has not revealed
+      // the group yet. hasActiveGroup is false until a publish parses it out, so
+      // the close below cannot record it, and finishing at the eventual publish
+      // would charge the whole wait in between to the reasoning.
+      let gateReasoningEndedAt: number | undefined;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -4554,9 +4559,10 @@ export function createOpenAIStreamAdapter(
             lastReasoningGroupTextLength(content),
           );
           if (!hasUnclosedThinkTag(cumulativeText)) {
-            reasoningDurationTracker.finishGroup();
+            reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
           }
         }
+        gateReasoningEndedAt = undefined;
       };
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
@@ -6153,6 +6159,11 @@ export function createOpenAIStreamAdapter(
               // happened to publish.
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
+                // Third publish path, so it owes the same reconciliation as the
+                // other two: this yield can be the first to expose a group the
+                // gate was holding.
+                reconcileReasoning(replayContent, gateHeldSince);
+                gateHeldSince = undefined;
                 if (replayContent.length > 0) {
                   yield {
                     content: replayContent,
@@ -6213,6 +6224,15 @@ export function createOpenAIStreamAdapter(
                 !hasUnclosedThinkTag(cumulativeText)
               ) {
                 reasoningDurationTracker.finishGroup();
+              } else if (
+                // Same transition, but for a group still behind the gate: the
+                // tracker has never heard of it, so only the timestamp is kept.
+                gateHeldSince !== undefined &&
+                !reasoningContentOpen &&
+                !structuredReasoningContinues &&
+                !hasUnclosedThinkTag(cumulativeText)
+              ) {
+                gateReasoningEndedAt ??= Date.now();
               }
               // A chunk the strip emptied has nothing to show and is skipped
               // below anyway; asking the gate would spend this cycle's publish

@@ -196,8 +196,14 @@ export function createReasoningDurationTracker(
       finishGroupAt(now());
       activeIndex = index;
     },
-    finishGroup() {
-      finishGroupAt(now());
+    /**
+     * `finishedAt` is when the reasoning actually ENDED, for a caller that
+     * learns of it later. The adapter can see a group close on a chunk whose
+     * group it has not parsed out yet, and finishing at that later discovery
+     * would charge the wait in between to the reasoning.
+     */
+    finishGroup(finishedAt?: number) {
+      finishGroupAt(finishedAt ?? now());
     },
     recordServerDuration(reasoningMs: unknown): boolean {
       if (
