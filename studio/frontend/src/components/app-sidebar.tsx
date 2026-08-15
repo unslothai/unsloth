@@ -24,6 +24,9 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuSub,
@@ -138,6 +141,13 @@ import {
   usePinnedProjectsStore,
   useChatPreferencesStore,
   usePromptQueueUI,
+  useSidebarOrganizationStore,
+  projectOrderScope,
+  reorderIds,
+  PINNED_ORDER_SCOPE,
+  RECENTS_ORDER_SCOPE,
+  type SidebarChatSort,
+  type SidebarOrganizeBy,
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
   type ProjectRecord,
@@ -256,8 +266,25 @@ type ConversationExportFormat =
   | "sharegpt-jsonl"
   | typeof CONVERSATION_MARKDOWN_FORMAT;
 
-// A pinned project shows this many recent chats before "Show more".
-const PINNED_PROJECT_CHAT_LIMIT = 4;
+// An expanded project shows this many recent chats before "Show more".
+const PROJECT_CHAT_LIMIT = 4;
+// And the Projects section shows this many folders before its own "Show more".
+const SIDEBAR_PROJECT_LIMIT = 5;
+
+// The shared radio item ticks on the right; these read as settings, so tick first.
+const menuRadioItemClass =
+  "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
+
+// Every list offers the same three orders.
+const CHAT_SORT_OPTIONS: Array<{ value: SidebarChatSort; label: string }> = [
+  { value: "priority", label: "Priority" },
+  { value: "updated", label: "Last updated" },
+  { value: "manual", label: "Manual order" },
+];
+const ORGANIZE_OPTIONS: Array<{ value: SidebarOrganizeBy; label: string }> = [
+  { value: "project", label: "By project" },
+  { value: "list", label: "In one list" },
+];
 
 const CHAT_EXPORT_OPTIONS: Array<{
   label: string;
@@ -883,37 +910,58 @@ export function AppSidebar() {
     (s) => s.confirmDeleteChats,
   );
   const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
+  const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
+  const pinnedSort = useSidebarOrganizationStore((s) => s.pinnedSort);
+  const manualOrder = useSidebarOrganizationStore((s) => s.manualOrder);
+  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
+  const setChatSort = useSidebarOrganizationStore((s) => s.setChatSort);
+  const setPinnedSort = useSidebarOrganizationStore((s) => s.setPinnedSort);
+  const setManualOrder = useSidebarOrganizationStore((s) => s.setManualOrder);
+  // Recents is the whole history, project chats included: filing a chat under a
+  // project used to drop it from here, so a new project chat went nowhere
+  // visible. Only pinned chats are held back; the Pinned section renders those.
   const recentChatItems = useMemo(
-    () =>
-      allChatItems.filter(
-        (item) => !item.projectId && !pinnedIdSet.has(item.id),
-      ),
+    () => allChatItems.filter((item) => !pinnedIdSet.has(item.id)),
     [allChatItems, pinnedIdSet],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
-  // Projects the user pinned, in pin order; the section appears once at least one is pinned.
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  // Pinning a project now sorts it to the top of Projects, not into its own section.
   const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
-  const unpinProject = usePinnedProjectsStore((s) => s.unpin);
-  const pinnedProjectRecords = useMemo(() => {
+  const toggleProjectPin = usePinnedProjectsStore((s) => s.togglePin);
+  const pinnedProjectIdSet = useMemo(
+    () => new Set(pinnedProjectIds),
+    [pinnedProjectIds],
+  );
+  // Every project gets a folder: pinned first in pin order, then by activity.
+  const sidebarProjectRecords = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
-    return pinnedProjectIds
+    const pinned = pinnedProjectIds
       .map((id) => byId.get(id))
       .filter((p): p is ProjectRecord => Boolean(p));
-  }, [projects, pinnedProjectIds]);
-  // Pinned chats, in pin order. Includes chats inside a project: pinning promotes a chat here
-  // and removes it from the project's nested list, so it never shows twice.
+    const rest = projects
+      .filter((p) => !pinnedProjectIdSet.has(p.id))
+      .sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt));
+    return [...pinned, ...rest];
+  }, [projects, pinnedProjectIds, pinnedProjectIdSet]);
+  const visibleProjectRecords = showAllProjects
+    ? sidebarProjectRecords
+    : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT);
+  // Pinned chats, in pin order. A pinned project chat also stays in its folder.
   const pinnedChatItems = useMemo(() => {
     const byId = new Map(allChatItems.map((item) => [item.id, item]));
     return pinnedIds
       .map((id) => byId.get(id))
       .filter((item): item is SidebarItem => Boolean(item));
   }, [allChatItems, pinnedIds]);
-  // A pinned project nests its recent chats; pinned chats are excluded (they render above).
+  // Chats per project, newest first. Pinned ones stay: a chat belongs to its
+  // project either way, and these rows are mirrored in Recents regardless.
   const chatsByProjectId = useMemo(() => {
     const map = new Map<string, SidebarItem[]>();
     for (const item of allChatItems) {
       if (!item.projectId) continue;
-      if (pinnedIdSet.has(item.id)) continue;
       const list = map.get(item.projectId);
       if (list) list.push(item);
       else map.set(item.projectId, [item]);
@@ -921,7 +969,7 @@ export function AppSidebar() {
     for (const list of map.values())
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
-  }, [allChatItems, pinnedIdSet]);
+  }, [allChatItems]);
   // Default expanded; the row toggles this. Show-more reveals chats past the limit.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),
@@ -1002,6 +1050,93 @@ export function AppSidebar() {
     return activeItem ? getSidebarItemThreadIds(activeItem) : [activeThreadId];
   }, [activeThreadId, allChatItems]);
   const activeVisibleThreadIdKey = activeVisibleThreadIds.join("\n");
+
+  // "Priority" lifts rows wanting attention (generating, queued, unread), then
+  // falls back to recency, which "Last updated" sorts by outright.
+  const chatPriorityRank = useCallback(
+    (item: SidebarItem) => {
+      const ids = getSidebarItemThreadIds(item);
+      if (ids.some((id) => runningByThreadId[id])) return 0;
+      if (ids.some((id) => queueByThreadId[id])) return 1;
+      if (ids.some((id) => unreadThreadIds.has(id))) return 2;
+      return 3;
+    },
+    [runningByThreadId, queueByThreadId, unreadThreadIds],
+  );
+  const sortChatItems = useCallback(
+    (
+      items: SidebarItem[],
+      scope: string,
+      mode: SidebarChatSort,
+    ): SidebarItem[] => {
+      if (mode === "manual") {
+        const order = manualOrder[scope];
+        if (!order?.length) return items;
+        const rank = new Map(order.map((id, index) => [id, index]));
+        // Never dragged means no saved place, so it lands on top, newest first.
+        return [...items].sort((a, b) => {
+          const rankA = rank.get(a.id);
+          const rankB = rank.get(b.id);
+          if (rankA === undefined && rankB === undefined)
+            return b.updatedAt - a.updatedAt;
+          if (rankA === undefined) return -1;
+          if (rankB === undefined) return 1;
+          return rankA - rankB;
+        });
+      }
+      if (mode === "priority") {
+        return [...items].sort(
+          (a, b) =>
+            chatPriorityRank(a) - chatPriorityRank(b) ||
+            b.updatedAt - a.updatedAt,
+        );
+      }
+      return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
+    },
+    [manualOrder, chatPriorityRank],
+  );
+  const sortedRecentChatItems = useMemo(
+    () => sortChatItems(recentChatItems, RECENTS_ORDER_SCOPE, chatSort),
+    [recentChatItems, sortChatItems, chatSort],
+  );
+  const sortedPinnedChatItems = useMemo(
+    () => sortChatItems(pinnedChatItems, PINNED_ORDER_SCOPE, pinnedSort),
+    [pinnedChatItems, sortChatItems, pinnedSort],
+  );
+  const sortedChatsByProjectId = useMemo(() => {
+    const map = new Map<string, SidebarItem[]>();
+    for (const [projectId, items] of chatsByProjectId) {
+      map.set(
+        projectId,
+        sortChatItems(items, projectOrderScope(projectId), chatSort),
+      );
+    }
+    return map;
+  }, [chatsByProjectId, sortChatItems, chatSort]);
+
+  // A row must know which list it is dragged within: the same chat can sit in
+  // its project and in Recents, and each list keeps its own order.
+  const [draggingChat, setDraggingChat] = useState<{
+    id: string;
+    scope: string;
+  } | null>(null);
+  const [dropTargetChatId, setDropTargetChatId] = useState<string | null>(null);
+  const manualDragEnabled = chatSort === "manual";
+  const pinnedDragEnabled = pinnedSort === "manual";
+
+  function commitChatDrop(
+    scope: string,
+    orderedIds: string[],
+    targetId: string,
+  ) {
+    const dragged = draggingChat;
+    setDraggingChat(null);
+    setDropTargetChatId(null);
+    // Cross-list drops are ignored: the row is not in this list's order.
+    if (!dragged || dragged.scope !== scope) return;
+    const next = reorderIds(orderedIds, dragged.id, targetId);
+    if (next !== orderedIds) setManualOrder(scope, next);
+  }
 
   useEffect(() => {
     const activeVisibleThreadIdSet = new Set(
@@ -1630,9 +1765,80 @@ export function AppSidebar() {
     });
   }
 
+  // The "..." every list header carries. Only chat lists regroup, so that half
+  // is opt-in; Pinned takes the sort half alone.
+  function renderSidebarHeaderMenu(options: {
+    ariaLabel: string;
+    sortLabel: string;
+    sortValue: SidebarChatSort;
+    onSortChange: (next: SidebarChatSort) => void;
+    includeOrganize?: boolean;
+  }) {
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={options.ariaLabel}
+            className="sidebar-header-action"
+          >
+            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="bottom"
+          align="end"
+          sideOffset={2}
+          className="unsloth-plus-menu w-56"
+        >
+          {options.includeOrganize && (
+            <>
+              <DropdownMenuLabel>Organize sidebar</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={organizeBy}
+                onValueChange={(value) =>
+                  setOrganizeBy(value as SidebarOrganizeBy)
+                }
+              >
+                {ORGANIZE_OPTIONS.map(({ value, label }) => (
+                  <DropdownMenuRadioItem
+                    key={value}
+                    value={value}
+                    className={menuRadioItemClass}
+                  >
+                    {label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </>
+          )}
+          <DropdownMenuLabel>{options.sortLabel}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={options.sortValue}
+            onValueChange={(value) =>
+              options.onSortChange(value as SidebarChatSort)
+            }
+          >
+            {CHAT_SORT_OPTIONS.map(({ value, label }) => (
+              <DropdownMenuRadioItem
+                key={value}
+                value={value}
+                className={menuRadioItemClass}
+              >
+                {label}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
   function renderChatSidebarItem(
     item: SidebarItem,
     variant: "project" | "recent",
+    // Manual order only: the list this row drags within, and its ids to reorder.
+    drag?: { scope: string; orderedIds: string[] },
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
@@ -1732,8 +1938,64 @@ export function AppSidebar() {
       );
     }
 
+    const isDragging = draggingChat?.id === item.id;
+    const isDropTarget =
+      Boolean(drag) &&
+      dropTargetChatId === item.id &&
+      draggingChat !== null &&
+      draggingChat.scope === drag?.scope &&
+      draggingChat.id !== item.id;
+
     return (
-      <SidebarMenuItem key={item.id} className={itemClass}>
+      <SidebarMenuItem
+        key={item.id}
+        className={cn(
+          itemClass,
+          isDragging && "opacity-50",
+          // Insertion cue on the row the drop lands on, inset to the pill.
+          isDropTarget &&
+            "before:absolute before:inset-x-2 before:-top-px before:h-0.5 before:rounded-full before:bg-primary/70 before:content-['']",
+        )}
+        draggable={drag !== undefined || undefined}
+        onDragStart={
+          drag &&
+          ((event) => {
+            // Firefox needs a payload to drag at all.
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", item.id);
+            setDraggingChat({ id: item.id, scope: drag.scope });
+          })
+        }
+        onDragEnd={
+          drag &&
+          (() => {
+            setDraggingChat(null);
+            setDropTargetChatId(null);
+          })
+        }
+        onDragOver={
+          drag &&
+          ((event) => {
+            if (draggingChat?.scope !== drag.scope) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            if (dropTargetChatId !== item.id) setDropTargetChatId(item.id);
+          })
+        }
+        onDragLeave={
+          drag &&
+          (() => {
+            setDropTargetChatId((prev) => (prev === item.id ? null : prev));
+          })
+        }
+        onDrop={
+          drag &&
+          ((event) => {
+            event.preventDefault();
+            commitChatDrop(drag.scope, drag.orderedIds, item.id);
+          })
+        }
+      >
         <SidebarMenuButton
           data-testid="recent-thread"
           data-thread-type={item.type}
@@ -2455,31 +2717,101 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Pinned: pinned projects (with their chats) and pinned chats */}
+        {/* Pinned chats */}
+        {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
+          <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+                <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
+                  Pinned
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                </CollapsibleTrigger>
+                {/* Pinning is the grouping, so no organize half and no "+". */}
+                {renderSidebarHeaderMenu({
+                  ariaLabel: "Sort pinned chats",
+                  sortLabel: "Sort pinned by",
+                  sortValue: pinnedSort,
+                  onSortChange: setPinnedSort,
+                })}
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent className={scrollRowPadding}>
+                  <SidebarMenu>
+                    {sortedPinnedChatItems.map((item) =>
+                      renderChatSidebarItem(
+                        item,
+                        "recent",
+                        pinnedDragEnabled
+                          ? {
+                              scope: PINNED_ORDER_SCOPE,
+                              orderedIds: sortedPinnedChatItems.map(
+                                (row) => row.id,
+                              ),
+                            }
+                          : undefined,
+                      ),
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+        )}
+
+        {/* Projects: one folder per project, its chats nested underneath */}
         {!isStudioRoute &&
           !showTrainingRecents &&
-          (pinnedProjectRecords.length > 0 ||
-            pinnedChatItems.length > 0) && (
-            <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
+          sidebarProjectRecords.length > 0 && (
+            <Collapsible
+              open={projectsOpen}
+              onOpenChange={setProjectsOpen}
+              asChild
+            >
               <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                  <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                    Pinned
+                {/* Trigger takes the free space; the actions reveal beside it. */}
+                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1", scrolled && "is-scrolled")}>
+                  <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
+                    {t("shell.navigation.projects")}
                     <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                   </CollapsibleTrigger>
+                  {renderSidebarHeaderMenu({
+                    ariaLabel: "Organize projects",
+                    includeOrganize: true,
+                    sortLabel: "Sort chats by",
+                    sortValue: chatSort,
+                    onSortChange: setChatSort,
+                  })}
+                  <button
+                    type="button"
+                    aria-label="New project"
+                    onClick={() => {
+                      setProjectCreateMoveTarget(null);
+                      setCreatingProject(true);
+                    }}
+                    className="sidebar-header-action"
+                  >
+                    <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
+                  </button>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
                   <SidebarGroupContent className={scrollRowPadding}>
                     <SidebarMenu>
-                      {pinnedProjectRecords.map((project) => {
+                      {visibleProjectRecords.map((project) => {
                         const projectChats =
-                          chatsByProjectId.get(project.id) ?? [];
-                        const expanded = !collapsedProjectIds.has(project.id);
+                          sortedChatsByProjectId.get(project.id) ?? [];
+                        // "In one list" keeps the folders but stops nesting
+                        // their chats, leaving Recents as the single list.
+                        const expanded =
+                          organizeBy === "project" &&
+                          !collapsedProjectIds.has(project.id);
                         const showAll = expandedChatProjectIds.has(project.id);
                         const visibleChats =
                           expanded && !showAll
-                            ? projectChats.slice(0, PINNED_PROJECT_CHAT_LIMIT)
+                            ? projectChats.slice(0, PROJECT_CHAT_LIMIT)
                             : projectChats;
+                        const isProjectPinned = pinnedProjectIdSet.has(
+                          project.id,
+                        );
                         return (
                         <Fragment key={project.id}>
                         <SidebarMenuItem
@@ -2488,7 +2820,12 @@ export function AppSidebar() {
                           <SidebarMenuButton
                             // Highlight the folder only on the project home; with a chat open, only that row is active.
                             isActive={activeProjectId === project.id && !activeThreadId}
-                            onClick={() => toggleProjectCollapsed(project.id)}
+                            // Nothing to disclose with nesting off, so open it.
+                            onClick={() =>
+                              organizeBy === "project"
+                                ? toggleProjectCollapsed(project.id)
+                                : openProject(project.id)
+                            }
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
                           >
                             <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon! shrink-0" />
@@ -2550,9 +2887,9 @@ export function AppSidebar() {
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename project</span>
                               </DropdownMenuItem>
-                              <DropdownMenuItem onSelect={() => unpinProject(project.id)}>
-                                <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
-                                <span>Unpin project</span>
+                              <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
+                                <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                                <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem
@@ -2570,10 +2907,21 @@ export function AppSidebar() {
                         </SidebarMenuItem>
                         {expanded &&
                           visibleChats.map((chat) =>
-                            renderChatSidebarItem(chat, "project"),
+                            renderChatSidebarItem(
+                              chat,
+                              "project",
+                              manualDragEnabled
+                                ? {
+                                    scope: projectOrderScope(project.id),
+                                    // Whole list, not the visible slice: a drop
+                                    // must not lose what "Show more" hides.
+                                    orderedIds: projectChats.map((c) => c.id),
+                                  }
+                                : undefined,
+                            ),
                           )}
                         {expanded &&
-                          projectChats.length > PINNED_PROJECT_CHAT_LIMIT && (
+                          projectChats.length > PROJECT_CHAT_LIMIT && (
                             <SidebarMenuItem>
                               <SidebarMenuButton
                                 onClick={() => toggleProjectShowAll(project.id)}
@@ -2590,8 +2938,18 @@ export function AppSidebar() {
                         </Fragment>
                         );
                       })}
-                      {pinnedChatItems.map((item) =>
-                        renderChatSidebarItem(item, "recent"),
+                      {/* Long project lists stay one row deep until asked. */}
+                      {sidebarProjectRecords.length > SIDEBAR_PROJECT_LIMIT && (
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            onClick={() => setShowAllProjects((prev) => !prev)}
+                            className="sidebar-nav-btn h-[30px] rounded-full pl-3 pr-4 font-medium text-nav-fg-muted!"
+                          >
+                            <span className="text-ui-13 leading-ui-18 tracking-nav">
+                              {showAllProjects ? "Show less" : "Show more"}
+                            </span>
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
                       )}
                     </SidebarMenu>
                   </SidebarGroupContent>
@@ -2605,27 +2963,53 @@ export function AppSidebar() {
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel
                 className={cn(
-                  "sidebar-sticky-label sidebar-sticky-label-following",
+                  "sidebar-sticky-label sidebar-sticky-label-following group/sidebar-header gap-1",
                   scrolled && "is-scrolled",
                   usesDesktopTitlebar && "translate-x-[2px]",
                 )}
-                asChild
               >
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                <CollapsibleTrigger className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
+                {renderSidebarHeaderMenu({
+                  ariaLabel: "Organize chats",
+                  includeOrganize: true,
+                  sortLabel: "Sort chats by",
+                  sortValue: chatSort,
+                  onSortChange: setChatSort,
+                })}
+                {/* Starts a chat outside any project, whatever page is open. */}
+                <button
+                  type="button"
+                  aria-label={t("shell.navigation.newChat")}
+                  onClick={() => openNewChat(null)}
+                  className="sidebar-header-action"
+                >
+                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                </button>
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className={scrollRowPadding}>
                   <SidebarMenu>
-                    {recentChatItems.map((item) =>
-                      renderChatSidebarItem(item, "recent"),
+                    {sortedRecentChatItems.map((item) =>
+                      renderChatSidebarItem(
+                        item,
+                        "recent",
+                        manualDragEnabled
+                          ? {
+                              scope: RECENTS_ORDER_SCOPE,
+                              orderedIds: sortedRecentChatItems.map(
+                                (row) => row.id,
+                              ),
+                            }
+                          : undefined,
+                      ),
                     )}
                   </SidebarMenu>
                   {/* "No chats yet" only when there is truly no history:
-                      project-scoped and archived threads leave Recents empty
-                      but still count as existing chats. */}
+                      archived threads leave Recents empty but still count as
+                      existing chats. */}
                   {chatItemsLoaded &&
                     allChatItems.length === 0 &&
                     archivedChatItems.length === 0 && (

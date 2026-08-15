@@ -1108,6 +1108,26 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
 	}
+	/* Pinned/Projects/Recents header actions. They sit in the label's flex row,
+	   not over a pill, so they reveal on the header's hover. */
+	.sidebar-header-action {
+		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 pointer-events-none outline-none transition-opacity duration-150;
+		color: inherit;
+	}
+	.group\/sidebar-header:hover .sidebar-header-action,
+	.sidebar-header-action:focus-visible,
+	.sidebar-header-action[data-state="open"] {
+		@apply opacity-100 pointer-events-auto;
+	}
+	.sidebar-header-action:hover {
+		background-color: var(--nav-surface-hover);
+	}
+	@media (pointer: coarse) {
+		/* No hover to reveal them on touch. */
+		.sidebar-header-action {
+			@apply opacity-100 pointer-events-auto;
+		}
+	}
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
