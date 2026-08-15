@@ -77,7 +77,9 @@ def _drive_h3_conditioner(monkeypatch, *, local_files_only):
     RECORD is the result: the artifact fetch and the config read are the only two calls that can
     leave the process, and a stub that raises after recording stops the 62 GB meta-init below.
     """
-    import transformers
+    # The bare CI runners ship neither, and this driver reaches the real library rather than
+    # a stub, so the honest answer there is a skip.
+    transformers = pytest.importorskip("transformers")
 
     import utils.hf_xet_fallback as xet
 
@@ -330,6 +332,8 @@ def test_every_krea_call_site_hands_over_the_flag():
 def test_the_ltx23_extras_fetch_is_a_cache_lookup_offline(monkeypatch):
     """The text projections, the video VAE and the audio VAE/vocoder: the switch's locality gate
     clears these three by name, so a miss here is a promise it cannot keep."""
+    # monkeypatched by dotted path below, which imports the module to patch it.
+    pytest.importorskip("safetensors")
     import utils.hf_xet_fallback as xet
     from core.inference import video_ltx2
 
@@ -351,7 +355,7 @@ def test_the_ltx23_extras_fetch_is_a_cache_lookup_offline(monkeypatch):
 
 def _drive_ltx23(monkeypatch, *, local_files_only):
     """Assemble a 2.3 pipeline against fakes, recording what the base repo reads were asked for."""
-    import diffusers
+    diffusers = pytest.importorskip("diffusers")
 
     from core.inference import video_ltx2
 
