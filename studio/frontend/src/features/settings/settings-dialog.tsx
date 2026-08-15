@@ -482,7 +482,7 @@ export function SettingsDialog() {
               </button>
               <div
                 ref={mainScrollRef}
-                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable_both-edges]"
               >
                 {renderTab(panelTab)}
               </div>
