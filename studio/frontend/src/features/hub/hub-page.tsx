@@ -1335,6 +1335,11 @@ export function ModelsPage() {
         keepSpeculative: hasAppliedConfig,
         throwOnError: true,
         previousConfig,
+        // The runtime store is not enough: applyPerModelConfigToRuntime has no field
+        // for the launch flags, and /load only inherits them from the SAME resident
+        // model, so a cold launch or a switch from another model ran without the
+        // arguments this model was remembered with.
+        ...(rememberedConfig ? { config: rememberedConfig } : {}),
       })
         .then(() => {
           // Read fresh: the load is async, so the checkpoint may have changed.
@@ -1483,6 +1488,11 @@ export function ModelsPage() {
         isLora: target.meta.isLora,
         keepSpeculative: true,
         forceReload: true,
+        // The submitted config, not only its echo in the runtime store: the store
+        // does not carry llamaExtraArgs, so without this the load omits the field
+        // and the route keeps the resident server's old list. Applying an edit, or
+        // clearing the box, would then do nothing on this page.
+        config,
         previousConfig,
       }).catch(() => undefined);
     },
