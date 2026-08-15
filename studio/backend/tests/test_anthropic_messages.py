@@ -2065,6 +2065,70 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
+    def test_the_process_tool_default_alone_is_not_a_server_tool_selection(self, monkeypatch):
+        """`unsloth studio run` resolves the policy to on unless --disable-tools. Reading that
+        as "this request selected server tools" rejected every plain Messages request on a
+        default server, and routing on it ran the local tool loop with terminal/python and no
+        way to confirm them. A default is not a selection, in either direction."""
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        backend = _mock_backend(monkeypatch)
+
+        async def _passthrough(*args, **kwargs):
+            return JSONResponse({"type": "message", "content": []})
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        set_tool_policy(True)
+
+        _drive(anthropic_messages(_basic_payload(), request = None, current_subject = "t"))
+        assert backend.calls, "a plain chat request must still be served"
+        path, kwargs = backend.calls[0]
+        assert path == "plain", (
+            "a tool-free request took the server-tool loop on the process default alone, so "
+            "the model can call terminal/python with no confirmation channel"
+        )
+        assert not kwargs.get("tools")
+
+        # An explicit ask still routes to the loop, with the mode that permits it.
+        backend = _mock_backend(monkeypatch)
+        _drive(
+            anthropic_messages(
+                _basic_payload(enable_tools = True, permission_mode = "off"),
+                request = None,
+                current_subject = "t",
+            )
+        )
+        assert backend.calls[0][0] == "tools"
+
+        # mcp_enabled is an ask on the OpenAI routes, which wire MCP discovery. This one does
+        # not, and the request model is extra="allow" so the key does arrive: honouring it
+        # would answer an MCP-only request with ALL_TOOLS' terminal/python under an MCP name.
+        reset_tool_policy()
+        backend = _mock_backend(monkeypatch)
+        _drive(
+            anthropic_messages(
+                _basic_payload(mcp_enabled = True, permission_mode = "off"),
+                request = None,
+                current_subject = "t",
+            )
+        )
+        assert backend.calls[0][0] == "plain"
+        assert not backend.calls[0][1].get("tools")
+
+        # The same default must not stop gating a request that does ask for server tools.
+        for fields in (
+            {"enable_tools": True},
+            {"enable_tools": True, "permission_mode": "ask"},
+            {"tools": [{"type": "terminal", "name": "terminal"}]},
+        ):
+            with pytest.raises(HTTPException) as exc:
+                _drive(
+                    anthropic_messages(_basic_payload(**fields), request = None, current_subject = "t")
+                )
+            assert exc.value.status_code == 400
+            assert "no confirmation channel" in exc.value.detail["error"]["message"]
+
     def test_render_html_gated_for_server_tools(self, monkeypatch):
         # render_html is no longer unconditionally safe: a networked canvas prompts
         # in auto and this channel cannot present that gate, so selecting it under

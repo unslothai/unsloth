@@ -9,12 +9,18 @@ import {
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
 import {
   GPU_LAYERS_AUTO,
   recoverDroppedDiffusionSplit,
+  shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
-import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import {
+  externalModelSupportsStudioTools,
+  isExternalModelId,
+  parseExternalModelId,
+} from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
@@ -32,6 +38,16 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import {
+  loadShadowOwnsMirroredSetting,
+  normalizeStoredRagAutoInject,
+} from "../utils/mirrored-chat-settings";
+import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "../utils/model-lifecycle-gate";
+import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -86,9 +102,10 @@ export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
-// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
-// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
-// choice would silently no-op on models without an MTP head. Unknown -> auto.
+// Persist only the model-agnostic intents (auto/ngram/off). The model-specific
+// drafter modes (mtp/mtp+ngram/dspark/dflash) and spec_draft_n_max stay session-only:
+// a persisted choice would silently no-op on a model with no MTP head or no
+// DSpark sidecar. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
@@ -137,15 +154,7 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
 }
 
 function saveResearchWebsitePolicy(policy: ResearchWebsitePolicy): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
-      JSON.stringify(policy),
-    );
-  } catch {
-    // Keep the in-memory setting when storage is unavailable.
-  }
+  persistSetting(CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY, JSON.stringify(policy));
 }
 
 function loadRagSource(): RagSource {
@@ -165,12 +174,7 @@ function loadRagSource(): RagSource {
 }
 
 function saveRagSource(value: RagSource): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
-  } catch {
-    // Ignore storage failures; the default RAG source still works for this session.
-  }
+  persistSetting(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
 }
 
 function loadRagMode(): RagMode {
@@ -179,10 +183,9 @@ function loadRagMode(): RagMode {
 }
 
 function loadRagAutoInject(): RagAutoInject {
-  const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
-  if (raw === "auto" || raw === "on" || raw === "off") return raw;
-  // Legacy boolean migration: false -> Off, else Auto.
-  return raw === "false" ? "off" : "auto";
+  return normalizeStoredRagAutoInject(
+    loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT),
+  );
 }
 
 function loadRagTopK(): number {
@@ -318,11 +321,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Discriminated unions, not partial patches: merging a `thread` pick into a
+// stored `kb` one keeps `kbId`, which the backend's thread variant forbids.
+const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
+
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
   for (const [key, value] of Object.entries(more)) {
     const intoAny = into as Record<string, unknown>;
     const prev = intoAny[key];
-    if (isPlainObject(prev) && isPlainObject(value)) {
+    if (
+      !ATOMIC_SETTING_KEYS.has(key) &&
+      isPlainObject(prev) &&
+      isPlainObject(value)
+    ) {
       intoAny[key] = { ...prev, ...value };
     } else {
       intoAny[key] = value;
@@ -336,17 +347,29 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   pendingPatch = {};
   try {
     await savePersistedChatSettingsPatch(patch, { keepalive });
-  } catch {
+  } catch (error) {
+    // A rejected patch is NOT requeued as it stands. The endpoint is
+    // extra="forbid" and refuses the whole body on one bad field, so a patch the
+    // server will never accept, requeued forever, makes every later save fail
+    // too and the tab can no longer persist any chat setting. Keep the fields
+    // the server did not name, drop the ones it did, and only reschedule when
+    // the patch actually got smaller so the retry chain is bounded.
+    const { patch: retryable, progressed } = retryablePatchAfterFailure(
+      patch,
+      error,
+    );
     const retryPatch: SettingsPatch = {};
-    mergePatch(retryPatch, patch);
+    mergePatch(retryPatch, retryable);
     mergePatch(retryPatch, pendingPatch);
     pendingPatch = retryPatch;
     warnSettingsPersistenceFailure();
+    if (progressed && !keepalive && Object.keys(pendingPatch).length > 0) {
+      scheduleSettingsFlush();
+    }
   }
 }
 
-function saveSettingsPatch(patch: SettingsPatch): void {
-  mergePatch(pendingPatch, patch);
+function scheduleSettingsFlush(): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
   pendingTimer = setTimeout(() => {
     pendingTimer = null;
@@ -356,21 +379,296 @@ function saveSettingsPatch(patch: SettingsPatch): void {
   }, SETTINGS_DEBOUNCE_MS);
 }
 
-// Best-effort flush of any pending patch on tab close. keepalive lets the PUT
-// outlive the unload; without it the browser cancels the fetch and the user's
-// last slider drag is dropped.
+function saveSettingsPatch(patch: SettingsPatch): void {
+  mergePatch(pendingPatch, patch);
+  scheduleSettingsFlush();
+}
+
+// Best-effort flush of any pending patch when the page is going away. keepalive
+// lets the PUT outlive the unload; without it the browser cancels the fetch and
+// the user's last slider drag is dropped.
+function flushSettingsOnPageHidden(): void {
+  if (pendingTimer !== null) clearTimeout(pendingTimer);
+  // An edit still waiting on hydration is a user edit like any other, and the
+  // tab is going away, so send it rather than let the next session hydrate over it.
+  drainPreHydrationPatch();
+  if (Object.keys(pendingPatch).length === 0) return;
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch(true));
+}
+
 if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", () => {
-    if (pendingTimer !== null) clearTimeout(pendingTimer);
-    if (Object.keys(pendingPatch).length === 0) return;
-    inflightFlush = inflightFlush
-      .catch(() => undefined)
-      .then(() => flushSettingsPatch(true));
+  window.addEventListener("beforeunload", flushSettingsOnPageHidden);
+  // beforeunload is not the end of a page's life on every platform: mobile
+  // Safari and backgrounded Android tabs are routinely discarded without it, and
+  // a page restored from the back/forward cache never unloaded at all. pagehide
+  // and the hidden transition of visibilitychange are the two the platform does
+  // guarantee, so the debounced patch is normally already gone by the time an
+  // unload would have run. Safe to add rather than replace: the pending patch is
+  // swapped out before the request, so a second call with nothing queued returns
+  // immediately and the two never send the same edit twice.
+  window.addEventListener("pagehide", flushSettingsOnPageHidden);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSettingsOnPageHidden();
   });
 }
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
+}
+
+function readStorageValue(key: string): string | null {
+  if (!canUseStorage()) return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorageValue(key: string, raw: string): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(key, raw);
+  } catch {
+    // Keep the in-memory setting when storage is unavailable.
+  }
+}
+
+type MirroredSettingCodec = {
+  encode: (value: unknown) => string;
+  decode: (raw: string) => unknown;
+  /** Value to seed the backend with, for a setting stored under older keys. */
+  readForBackfill?: () => unknown;
+};
+
+const BOOLEAN_SETTING: MirroredSettingCodec = {
+  encode: (value) => (value ? "true" : "false"),
+  decode: (raw) => (raw === "true" ? true : raw === "false" ? false : undefined),
+};
+
+const STRING_SETTING: MirroredSettingCodec = {
+  encode: (value) => String(value),
+  decode: (raw) => raw,
+};
+
+const NUMBER_SETTING: MirroredSettingCodec = {
+  encode: (value) => String(value),
+  decode: (raw) => {
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  },
+};
+
+const JSON_SETTING: MirroredSettingCodec = {
+  encode: (value) => JSON.stringify(value),
+  decode: (raw) => {
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+const RAG_AUTOINJECT_SETTING: MirroredSettingCodec = {
+  encode: STRING_SETTING.encode,
+  decode: normalizeStoredRagAutoInject,
+};
+
+/**
+ * Settings that describe the installation rather than the browser holding them.
+ * Each entry pairs a localStorage slot with the /api/chat/settings field that
+ * carries it to another browser or a remote session.
+ */
+const MIRRORED_SETTINGS = {
+  reasoningEnabled: {
+    storageKey: CHAT_REASONING_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  toolsEnabled: { storageKey: CHAT_TOOLS_ENABLED_KEY, ...BOOLEAN_SETTING },
+  codeToolsEnabled: {
+    storageKey: CHAT_CODE_TOOLS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  imageToolsEnabled: {
+    storageKey: CHAT_IMAGE_TOOLS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  webFetchToolsEnabled: {
+    storageKey: CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  deepResearchEnabled: {
+    storageKey: CHAT_DEEP_RESEARCH_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  researchWebsitePolicy: {
+    storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
+    ...JSON_SETTING,
+  },
+  artifactsEnabled: {
+    storageKey: CHAT_ARTIFACTS_ENABLED_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  showCanvasMenuItem: {
+    storageKey: CHAT_SHOW_CANVAS_MENU_ITEM_KEY,
+    ...BOOLEAN_SETTING,
+    // A profile predating the visibility flag keeps Canvas shown through an
+    // explicit plus-menu pin, which loadShowCanvasMenuItem reads.
+    readForBackfill: () =>
+      readStorageValue(CHAT_SHOW_CANVAS_MENU_ITEM_KEY) !== null ||
+      readStorageValue(PLUS_MENU_PINS_STORAGE_KEY) !== null
+        ? loadShowCanvasMenuItem()
+        : undefined,
+  },
+  collapseHtmlArtifacts: {
+    storageKey: CHAT_COLLAPSE_HTML_ARTIFACTS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  allowArtifactNetworkAccess: {
+    storageKey: CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  mcpEnabledForChat: { storageKey: CHAT_MCP_ENABLED_KEY, ...BOOLEAN_SETTING },
+  confirmToolCalls: {
+    storageKey: CHAT_CONFIRM_TOOL_CALLS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  permissionMode: {
+    storageKey: CHAT_PERMISSION_MODE_KEY,
+    ...STRING_SETTING,
+    // A profile predating permission levels holds only the confirm toggle, and
+    // loadPermissionMode derives the level from it.
+    readForBackfill: () =>
+      readStorageValue(CHAT_PERMISSION_MODE_KEY) !== null ||
+      loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY) !== null
+        ? loadPermissionMode()
+        : undefined,
+  },
+  ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
+  ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
+  ragTopK: { storageKey: CHAT_RAG_TOP_K_KEY, ...NUMBER_SETTING },
+  ragAutoInject: {
+    storageKey: CHAT_RAG_AUTOINJECT_KEY,
+    ...RAG_AUTOINJECT_SETTING,
+  },
+  ragAutoInjectMinScore: {
+    storageKey: CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+    ...NUMBER_SETTING,
+  },
+  ragOcrScanned: { storageKey: CHAT_RAG_OCR_KEY, ...BOOLEAN_SETTING },
+  ragCaptionFigures: { storageKey: CHAT_RAG_CAPTION_KEY, ...BOOLEAN_SETTING },
+  speculativeType: { storageKey: CHAT_SPECULATIVE_TYPE_KEY, ...STRING_SETTING },
+  gpuMemoryMode: { storageKey: CHAT_GPU_MEMORY_MODE_KEY, ...STRING_SETTING },
+  expandQuantizations: {
+    storageKey: CHAT_EXPAND_QUANTIZATIONS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  showAllQuantizations: {
+    storageKey: CHAT_SHOW_ALL_QUANTIZATIONS_KEY,
+    ...BOOLEAN_SETTING,
+  },
+  fitOnDeviceOnly: {
+    storageKey: MODELS_FIT_ON_DEVICE_ONLY_KEY,
+    ...BOOLEAN_SETTING,
+  },
+} satisfies Partial<
+  Record<ScalarSettingKey, { storageKey: string } & MirroredSettingCodec>
+>;
+
+type MirroredSettingKey = keyof typeof MIRRORED_SETTINGS;
+
+const MIRRORED_SETTING_BY_STORAGE_KEY: ReadonlyMap<
+  string,
+  { field: MirroredSettingKey } & MirroredSettingCodec
+> = new Map(
+  Object.entries(MIRRORED_SETTINGS).map(([field, setting]) => [
+    setting.storageKey,
+    { field: field as MirroredSettingKey, ...setting },
+  ]),
+);
+
+let mirroredSettingsHydrated = false;
+let preHydrationPatch: SettingsPatch | null = null;
+
+/**
+ * Send a changed mirrored setting to the backend. An edit made before the
+ * initial GET lands is held rather than dropped: the request would race the
+ * hydrating value, so it is replayed once hydration has applied the server's.
+ * The mutation version is bumped straight away either way, so hydration leaves
+ * a field the user has just set alone.
+ */
+function mirrorSettingToBackend(key: string, raw: string): void {
+  const setting = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
+  if (!setting) return;
+  const value = setting.decode(raw);
+  if (value === undefined) return;
+  scalarSettingMutationVersions[setting.field] += 1;
+  const patch = { [setting.field]: value } as SettingsPatch;
+  if (!mirroredSettingsHydrated) {
+    preHydrationPatch ??= {};
+    mergePatch(preHydrationPatch, patch);
+    return;
+  }
+  saveSettingsPatch(patch);
+}
+
+/** Move any held startup edits onto the outgoing patch. */
+function drainPreHydrationPatch(): void {
+  if (!preHydrationPatch) return;
+  mergePatch(pendingPatch, preHydrationPatch);
+  preHydrationPatch = null;
+}
+
+/** Replay the edits made while the initial GET was still in flight. */
+function flushPreHydrationSettings(): void {
+  if (!preHydrationPatch) return;
+  const patch = preHydrationPatch;
+  preHydrationPatch = null;
+  saveSettingsPatch(patch);
+}
+
+/**
+ * Write a setting to its localStorage slot and, for the settings mirrored to
+ * /api/chat/settings, to the backend as well. Storage is the synchronous boot
+ * cache; the backend copy is what a second browser or a remote session reads.
+ */
+function persistSetting(key: string, raw: string): void {
+  // Before hydration the cache says nothing about the server's value, so an
+  // explicit write is recorded even where it changes nothing locally. A
+  // constraint write (deep research turning the tool pills off) has to reach
+  // the backend, or hydration restores the toggle it was there to clear.
+  if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
+    mirrorSettingToBackend(key, raw);
+  }
+  writeStorageValue(key, raw);
+}
+
+/**
+ * Persist a value a model load applied rather than one the user picked. Before
+ * hydration such a write only reflects this browser's cache, so treating it as
+ * an edit would both block the stored preference from hydrating and replay the
+ * load's default over it. It reaches the cache and waits for the server's.
+ *
+ * `stillCurrent` says the value matches the live store. A load captures its
+ * settings up front and persists them on success, so one that started before
+ * hydration and finished after it would otherwise write the stale capture over
+ * the preference that just arrived.
+ */
+function persistLoadDerivedSetting(
+  key: string,
+  raw: string,
+  stillCurrent: boolean,
+): void {
+  if (!mirroredSettingsHydrated) {
+    writeStorageValue(key, raw);
+    return;
+  }
+  // Dropped outright: the cache now holds the hydrated preference too.
+  if (!stillCurrent) return;
+  persistSetting(key, raw);
 }
 
 function loadBool(key: string, fallback: boolean): boolean {
@@ -379,14 +677,9 @@ function loadBool(key: string, fallback: boolean): boolean {
 }
 
 export function loadOptionalBool(key: string): boolean | null {
-  if (!canUseStorage()) return null;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return null;
-    return raw === "true";
-  } catch {
-    return null;
-  }
+  const raw = readStorageValue(key);
+  if (raw === null) return null;
+  return raw === "true";
 }
 
 /**
@@ -409,12 +702,7 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
 }
 
 function saveBool(key: string, value: boolean): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(key, value ? "true" : "false");
-  } catch {
-    // ignore
-  }
+  persistSetting(key, value ? "true" : "false");
 }
 
 // The visibility flag shipped after the menu pins, so when it is absent,
@@ -443,49 +731,30 @@ function loadShowCanvasMenuItem(): boolean {
  * off -> "off", i.e. no prompts); fresh installs default to "auto".
  */
 function loadPermissionMode(): PermissionMode {
-  if (!canUseStorage()) return "auto";
-  try {
-    const raw = localStorage.getItem(CHAT_PERMISSION_MODE_KEY);
-    if (raw === "ask" || raw === "auto" || raw === "off") return raw;
-  } catch {
-    // ignore
-  }
+  const raw = readStorageValue(CHAT_PERMISSION_MODE_KEY);
+  if (raw === "ask" || raw === "auto" || raw === "off") return raw;
   const legacyConfirm = loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY);
   if (legacyConfirm === null) return "auto";
   return legacyConfirm ? "ask" : "off";
 }
 
 function savePermissionMode(mode: PermissionMode): void {
-  if (!canUseStorage() || mode === "full") return;
-  try {
-    localStorage.setItem(CHAT_PERMISSION_MODE_KEY, mode);
-  } catch {
-    // ignore
-  }
+  if (mode === "full") return;
+  persistSetting(CHAT_PERMISSION_MODE_KEY, mode);
 }
 
 const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
 function loadString(key: string, fallback: string): string {
-  if (!canUseStorage()) return fallback;
-  try {
-    return localStorage.getItem(key) ?? fallback;
-  } catch {
-    return fallback;
-  }
+  return readStorageValue(key) ?? fallback;
 }
 
 function saveString(key: string, value: string): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // ignore
-  }
+  persistSetting(key, value);
 }
 
 // Canonicalises any backend value onto the Speculative Decoding dropdown's
-// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// modes ("auto"/"mtp"/"dspark"/"dflash"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
 // legacy aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
   v: string | null | undefined,
@@ -496,6 +765,8 @@ export function normalizeSpeculativeType(
   if (s === "auto" || s === "default") return "auto";
   if (s === "off") return "off";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "dspark" || s === "draft-dspark") return "dspark";
+  if (s === "dflash" || s === "draft-dflash") return "dflash";
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
@@ -548,7 +819,11 @@ export function readPersistedSpeculativeType(): string {
 // unapplied dropdown edit the user might Reset or abandon before Apply.
 export function saveSpeculativeType(value: string | null): void {
   if (value && PERSISTED_SPEC_MODES.has(value)) {
-    saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
+    persistLoadDerivedSetting(
+      CHAT_SPECULATIVE_TYPE_KEY,
+      value,
+      useChatRuntimeStore.getState().speculativeType === value,
+    );
   }
 }
 
@@ -559,7 +834,11 @@ export function readPersistedGpuMemoryMode(): "auto" | "manual" {
 }
 
 export function saveGpuMemoryMode(value: "auto" | "manual"): void {
-  saveString(CHAT_GPU_MEMORY_MODE_KEY, value);
+  persistLoadDerivedSetting(
+    CHAT_GPU_MEMORY_MODE_KEY,
+    value,
+    useChatRuntimeStore.getState().gpuMemoryMode === value,
+  );
 }
 
 /** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF:
@@ -674,6 +953,7 @@ export function loadedGpuMemoryFields(resp: {
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
+  cpu_fallback_reason?: "vulkan_startup_crash" | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -698,6 +978,7 @@ export function loadedGpuMemoryFields(resp: {
       loadedGpuIds: null,
       loadedGpuIndexKind: null,
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
@@ -709,6 +990,9 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
+  const hydratePlacementControls = shouldHydrateGpuPlacementControls(
+    resp.cpu_fallback_reason,
+  );
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
   const reportedGpuIds = requestedGpuIdsFromResponse(resp);
@@ -742,9 +1026,13 @@ export function loadedGpuMemoryFields(resp: {
           loadedGpuLayers: resp.gpu_layers ?? null,
           loadedNCpuMoe: resp.n_cpu_moe ?? null,
           loadedSplitRatio: resp.tensor_split ?? null,
-          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
-          nCpuMoe: resp.n_cpu_moe ?? 0,
-          splitRatio: resp.tensor_split ?? null,
+          ...(hydratePlacementControls
+            ? {
+                gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
+                nCpuMoe: resp.n_cpu_moe ?? 0,
+                splitRatio: resp.tensor_split ?? null,
+              }
+            : {}),
         }
       : {
           loadedGpuLayers: null,
@@ -771,12 +1059,15 @@ export function loadedGpuMemoryFields(resp: {
     // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
     // manual preference must survive it. But "manual" means a split was actually applied
     // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
-    ...(resp.is_diffusion && mode !== "manual"
-      ? droppedSplit != null
-        ? { gpuMemoryMode: "manual" as const }
-        : {}
-      : { gpuMemoryMode: mode }),
+    ...(hydratePlacementControls
+      ? resp.is_diffusion && mode !== "manual"
+        ? droppedSplit != null
+          ? { gpuMemoryMode: "manual" as const }
+          : {}
+        : { gpuMemoryMode: mode }
+      : {}),
     loadedGpuMemoryMode: mode,
+    loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
@@ -889,6 +1180,14 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /**
+   * What /api/inference/status says is resident, as opposed to what the picker
+   * has selected. undefined until the first status read, so the header does not
+   * flash "not loaded" before anything is known. Loading an image or video
+   * model evicts the chat model (one GPU owner at a time), which is otherwise
+   * invisible here: the selection survives it.
+   */
+  residentCheckpoint: string | null | undefined;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
   ggufContextLength: number | null;
@@ -1027,14 +1326,27 @@ type ChatRuntimeStore = {
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
+  mlxKvBits: number | null;
+  /** Width the backend was last asked for; the verdict belongs beside it. */
+  loadedMlxKvBitsRequested: number | null;
+  mlxKvQuantReason: string | null;
+  chatTemplateOverrideReason: string | null;
+  mlxKvQuantNote: string | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   /**
-   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Why speculative decoding was disabled despite being requested, or null.
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /**
+   * Which drafter the loaded model's speculative resolution was about: "mtp",
+   * "dspark" or "dflash". Paired with specFallbackReason: the reason alone cannot name the
+   * file to fix, since Auto resolves the kind server-side and the requested mode
+   * still reads "auto".
+   */
+  specDrafterKind: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
@@ -1044,6 +1356,23 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); the rollback
    *  re-sends it so a failed switch can't lose the override. */
   loadedNParallel: number | null;
+  /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
+  nBatch: number | null;
+  /** batch size the last successful load sent (null = default) */
+  loadedNBatch: number | null;
+  /**
+   * Pass-through llama-server arguments the resident model is running, as far as
+   * this client knows (null = none, or never told). Kept so a rollback after a
+   * failed switch can put the previous model back with them: by then the target
+   * load has already replaced the backend's inheritance source, so omitting the
+   * field on that rollback reads as a cross-model pickup and restores the model
+   * without the arguments it was running.
+   */
+  loadedLlamaExtraArgs: string[] | null;
+  /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
+  nUbatch: number | null;
+  /** micro-batch size the last successful load sent (null = default) */
+  loadedNUbatch: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -1054,6 +1383,8 @@ type ChatRuntimeStore = {
   gpuMemoryMode: "auto" | "manual";
   /** Backend-reported gpu memory mode; null until first hydrated. */
   loadedGpuMemoryMode: "auto" | "manual" | null;
+  /** The active model must use the staged CPU-only runtime when it is reloaded. */
+  loadedCpuFallback: boolean;
   /** Manual mode: layers to offload to GPU. -1 = Auto (--fit); >= model layer
    *  count = all. */
   gpuLayers: number;
@@ -1104,6 +1435,8 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeThreadEpoch: number;
+  queuedSettingsEpoch: number;
   activeProjectId: string | null;
   /**
    * Temporary / incognito chat toggle. When on, the active conversation
@@ -1136,11 +1469,15 @@ type ChatRuntimeStore = {
   // re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
-  setModelLoading: (loading: boolean) => void;
+  beginModelLoading: () => ModelLifecycleLease | null;
+  endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
-  setParams: (params: InferenceParams) => void;
+  setParams: (
+    params: InferenceParams,
+    options?: { persist?: boolean; trackQueuedSettings?: boolean },
+  ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
@@ -1172,14 +1509,18 @@ type ChatRuntimeStore = {
      */
   runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
-  clearThreadCancel: (threadId: string) => void;
+  clearThreadCancel: (threadId: string, cancel?: () => void) => void;
   registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
   clearThreadServerCancel: (threadId: string, cancel?: () => void) => void;
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setLastModelLoadError: (error: string | null) => void;
-  setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
+  setCheckpoint: (
+    modelId: string,
+    ggufVariant?: string | null,
+    options?: { trackQueuedSettings?: boolean },
+  ) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
@@ -1283,7 +1624,7 @@ type ChatRuntimeStore = {
 
 type PersistedChatSettings = Awaited<
   ReturnType<typeof loadChatSettingsWithLegacyImport>
->;
+>["settings"];
 type PersistedInferenceParams = NonNullable<
   PersistedChatSettings["inferenceParams"]
 >;
@@ -1297,7 +1638,31 @@ type ScalarSettingKey =
   | "autoHealToolCalls"
   | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
-  | "toolCallTimeout";
+  | "toolCallTimeout"
+  | "reasoningEnabled"
+  | "toolsEnabled"
+  | "codeToolsEnabled"
+  | "imageToolsEnabled"
+  | "webFetchToolsEnabled"
+  | "deepResearchEnabled"
+  | "researchWebsitePolicy"
+  | "artifactsEnabled"
+  | "showCanvasMenuItem"
+  | "mcpEnabledForChat"
+  | "confirmToolCalls"
+  | "permissionMode"
+  | "ragSource"
+  | "ragMode"
+  | "ragTopK"
+  | "ragAutoInject"
+  | "ragAutoInjectMinScore"
+  | "ragOcrScanned"
+  | "ragCaptionFigures"
+  | "expandQuantizations"
+  | "showAllQuantizations"
+  | "fitOnDeviceOnly"
+  | "speculativeType"
+  | "gpuMemoryMode";
 
 type PresetHydrationVersions = {
   customPresets: number;
@@ -1336,6 +1701,30 @@ const SCALAR_SETTING_KEYS = [
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
+  "reasoningEnabled",
+  "toolsEnabled",
+  "codeToolsEnabled",
+  "imageToolsEnabled",
+  "webFetchToolsEnabled",
+  "deepResearchEnabled",
+  "researchWebsitePolicy",
+  "artifactsEnabled",
+  "showCanvasMenuItem",
+  "mcpEnabledForChat",
+  "confirmToolCalls",
+  "permissionMode",
+  "ragSource",
+  "ragMode",
+  "ragTopK",
+  "ragAutoInject",
+  "ragAutoInjectMinScore",
+  "ragOcrScanned",
+  "ragCaptionFigures",
+  "expandQuantizations",
+  "showAllQuantizations",
+  "fitOnDeviceOnly",
+  "speculativeType",
+  "gpuMemoryMode",
 ] as const satisfies readonly ScalarSettingKey[];
 
 const inferenceParamMutationVersions = Object.fromEntries(
@@ -1359,6 +1748,50 @@ function getSettingsHydrationVersions(): SettingsHydrationVersions {
       activePresetSource: activePresetSourceMutationVersion,
     },
   };
+}
+
+/** Refresh the localStorage cache from the values hydration just applied. */
+function cacheHydratedSettings(
+  settings: PersistedChatSettings,
+  versions: SettingsHydrationVersions,
+): void {
+  for (const [name, setting] of Object.entries(MIRRORED_SETTINGS)) {
+    const field = name as MirroredSettingKey;
+    const value = settings[field];
+    if (value === undefined) continue;
+    if (
+      scalarSettingMutationVersions[field] !== versions.scalarSettings[field]
+    ) {
+      continue;
+    }
+    writeStorageValue(setting.storageKey, setting.encode(value));
+  }
+}
+
+/**
+ * Seed the backend from this browser for mirrored settings it has never stored.
+ * Without it an existing install would keep its preferences local until each
+ * one is next changed.
+ */
+function readStoredSettingValue(
+  setting: { storageKey: string } & MirroredSettingCodec,
+): unknown {
+  const raw = readStorageValue(setting.storageKey);
+  return raw === null ? undefined : setting.decode(raw);
+}
+
+function backfillMirroredSettings(settings: PersistedChatSettings): void {
+  const patch: SettingsPatch = {};
+  for (const [name, setting] of Object.entries(MIRRORED_SETTINGS)) {
+    const field = name as MirroredSettingKey;
+    if (settings[field] !== undefined) continue;
+    const value = setting.readForBackfill
+      ? setting.readForBackfill()
+      : readStoredSettingValue(setting);
+    if (value === undefined) continue;
+    (patch as Record<string, unknown>)[field] = value;
+  }
+  if (hasKeys(patch)) saveSettingsPatch(patch);
 }
 
 function setInferenceParam(
@@ -1436,6 +1869,23 @@ function getHydratedPresetState(
   return nextState;
 }
 
+/**
+ * Whether the active checkpoint is an external model that cannot run deep
+ * research, matching the composer's own rule. An unresolved provider is left
+ * alone: the connection list may not have loaded, and refusing on that would
+ * drop a Codex user's stored preference.
+ */
+function externalCheckpointRefusesDeepResearch(
+  checkpoint: string | null | undefined,
+): boolean {
+  const parsed = parseExternalModelId(checkpoint);
+  if (!parsed) return false;
+  const provider = useExternalProvidersStore
+    .getState()
+    .providers.find((candidate) => candidate.id === parsed.providerId);
+  return provider != null && provider.providerType !== "openai_codex";
+}
+
 function getHydratedSettingsState(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
@@ -1455,6 +1905,41 @@ function getHydratedSettingsState(
   nextState.params = params;
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
+    // Full access is session-only, so a stored level must not silently drop the
+    // sandbox bypass the user accepted a warning for, and Full access never
+    // confirms a tool call whatever the saved toggle says.
+    if (
+      state.permissionMode === "full" &&
+      (key === "permissionMode" || key === "confirmToolCalls")
+    ) {
+      continue;
+    }
+    // Both describe the running model through a loaded* shadow this loop cannot
+    // set, so skip them while a shadow owns them. With none resident the store
+    // field is what the next load reads and then persists back, so the server's
+    // preference has to land here or the load overwrites it with a default.
+    if (loadShadowOwnsMirroredSetting(key, state)) {
+      continue;
+    }
+    // A load sets this from the model's own capability, and only a load sets
+    // reasoningAlwaysOn, so a stored false would ask a model that cannot stop
+    // thinking to stop thinking.
+    if (
+      key === "reasoningEnabled" &&
+      value === false &&
+      state.reasoningAlwaysOn
+    ) {
+      continue;
+    }
+    // Only a local model or an openai_codex provider can run deep research, so a
+    // stored true must not arm the pill for any other external checkpoint.
+    if (
+      key === "deepResearchEnabled" &&
+      value === true &&
+      externalCheckpointRefusesDeepResearch(state.params.checkpoint)
+    ) {
+      continue;
+    }
     if (
       value !== undefined &&
       scalarSettingMutationVersions[key] === versions.scalarSettings[key]
@@ -1503,6 +1988,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  residentCheckpoint: undefined,
   activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
@@ -1572,18 +2058,30 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
+  mlxKvBits: null,
+  loadedMlxKvBitsRequested: null,
+  mlxKvQuantReason: null,
+  chatTemplateOverrideReason: null,
+  mlxKvQuantNote: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  nBatch: null,
+  loadedNBatch: null,
+  loadedLlamaExtraArgs: null,
+  nUbatch: null,
+  loadedNUbatch: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
+  loadedCpuFallback: false,
   gpuLayers: GPU_LAYERS_AUTO,
   loadedGpuLayers: null,
   nCpuMoe: 0,
@@ -1608,6 +2106,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeThreadEpoch: 0,
+  queuedSettingsEpoch: 0,
   activeProjectId: null,
   incognito: false,
   settingsPanelOpen: false,
@@ -1632,11 +2132,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     settingsHydrationPromise = (async () => {
       const hydrationVersions = getSettingsHydrationVersions();
       try {
-        const settings = await loadChatSettingsWithLegacyImport();
+        const { settings, fromServer } = await loadChatSettingsWithLegacyImport();
+        let applied = false;
         set((state) => {
           if (state.settingsHydrated) {
             return state;
           }
+          applied = true;
           const nextState: Partial<ChatRuntimeStore> = {
             settingsHydrated: true,
             ...getHydratedPresetState(
@@ -1648,10 +2150,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           };
           return nextState;
         });
+        if (applied) {
+          cacheHydratedSettings(settings, hydrationVersions);
+          mirroredSettingsHydrated = true;
+          // Only an authoritative read says a mirrored field is unset on the
+          // server. A GET that fell back to legacy storage knows nothing about
+          // it, and backfilling then pushes this browser's stale values over
+          // whatever another browser wrote.
+          if (fromServer) backfillMirroredSettings(settings);
+          // After the backfill, so a startup edit wins over the stored value.
+          flushPreHydrationSettings();
+        }
       } catch {
         // Hydrate failed: treat as hydrated-with-defaults so future setParams
         // calls reach saveSettingsPatch (which toasts on real network failure).
         warnSettingsPersistenceFailure();
+        mirroredSettingsHydrated = true;
+        flushPreHydrationSettings();
         set({ settingsHydrated: true });
       } finally {
         settingsHydrationPromise = null;
@@ -1659,7 +2174,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  setModelLoading: (loading) => set({ modelLoading: loading }),
+  beginModelLoading: () => {
+    const lease = chatModelLifecycleGate.tryAcquire();
+    if (lease !== null) {
+      set({ modelLoading: true });
+    }
+    return lease;
+  },
+  endModelLoading: (lease) => {
+    if (chatModelLifecycleGate.release(lease)) {
+      set({ modelLoading: false });
+    }
+  },
   setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
   clearLoadingModelPick: (expected) =>
     set((state) => {
@@ -1676,12 +2202,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
-  setParams: (params) =>
+  setParams: (params, options) =>
     set((state) => {
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(params, state.params);
-      if (state.settingsHydrated && hasKeys(changedParams)) {
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        state.params,
+        params,
+        options?.trackQueuedSettings !== false,
+      );
+      if (
+        options?.persist !== false &&
+        state.settingsHydrated &&
+        hasKeys(changedParams)
+      ) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
@@ -1690,6 +2225,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
         ...(checkpointChanged
           ? { contextUsage: null, contextUsageByThreadId: {} }
           : {}),
@@ -1809,9 +2347,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next[threadId] = cancel;
       return { cancelByThreadId: next };
     }),
-  clearThreadCancel: (threadId) =>
+  clearThreadCancel: (threadId, cancel) =>
     set((state) => {
       if (!(threadId in state.cancelByThreadId)) return state;
+      if (cancel && state.cancelByThreadId[threadId] !== cancel) return state;
       const next = { ...state.cancelByThreadId };
       delete next[threadId];
       return { cancelByThreadId: next };
@@ -1847,14 +2386,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
-  setCheckpoint: (modelId, ggufVariant) =>
+  setCheckpoint: (modelId, ggufVariant, options) =>
     set((state) => {
       // Persist external selections so they survive a refresh. Local ids are
       // NOT persisted -- they're re-derived from the backend on mount, and a
       // stale persisted local id would race the freshly-loaded model. See
       // LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      if (isExternalModelId(modelId)) {
+      // Only disarm research for a connection that cannot drive it. Gating on the id
+      // prefix alone silently switched it off for capable providers too, and saveBool
+      // now reaches the backend, so that would write the preference off for every
+      // browser on the install. Hoisted because all three writes below share it.
+      const clampsDeepResearch =
+        isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId);
+      if (clampsDeepResearch) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       }
       // Clear stale per-turn usage on model change; the relaxed external-provider
@@ -1871,21 +2416,49 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               .getState()
               .providers.find((p) => p.id === parsed.providerId)
           : null;
-        const cap = getExternalMaxOutputTokens(
-          provider?.providerType,
-          parsed?.modelId,
-        );
-        if (nextMaxTokens > cap) {
-          nextMaxTokens = cap;
+        // Only when the connection is known. A checkpoint restored before the
+        // provider store hydrates would otherwise read the 32,768 fallback and lower
+        // a value nothing puts back. No provider means unknown, not 32,768.
+        if (provider) {
+          const cap = getExternalMaxOutputTokens(
+            provider.providerType,
+            parsed?.modelId,
+            provider.maxOutputTokens,
+          );
+          if (nextMaxTokens > cap) {
+            nextMaxTokens = cap;
+          }
         }
       }
+      const nextGgufVariant = ggufVariant ?? null;
+      const nextDeepResearchEnabled = clampsDeepResearch
+        ? false
+        : state.deepResearchEnabled;
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        {
+          checkpoint: state.params.checkpoint,
+          maxTokens: state.params.maxTokens,
+          ggufVariant: state.activeGgufVariant,
+          deepResearchEnabled: state.deepResearchEnabled,
+        },
+        {
+          checkpoint: modelId,
+          maxTokens: nextMaxTokens,
+          ggufVariant: nextGgufVariant,
+          deepResearchEnabled: nextDeepResearchEnabled,
+        },
+        options?.trackQueuedSettings !== false,
+      );
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
           maxTokens: nextMaxTokens,
         },
-        activeGgufVariant: ggufVariant ?? null,
+        activeGgufVariant: nextGgufVariant,
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
         // Provenance and the spec-fallback reason both describe the model
         // being replaced, so they go together on a real change. Dropping only
         // one leaves the settings sheet pairing a stale reason with the wrong
@@ -1896,11 +2469,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               contextUsageByThreadId: {},
               activeModelIsLocal: false,
               specFallbackReason: null,
+              specDrafterKind: null,
             }
           : {}),
-        // Switching to an external provider disables Deep Research, which only
-        // applies to the local base model.
-        ...(isExternalModelId(modelId) ? { deepResearchEnabled: false } : {}),
+        // Switching to a connection whose provider cannot run Studio's tool
+        // loop disables Deep Research; a capable one keeps the user's choice.
+        ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
     }),
   // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished
@@ -1909,6 +2483,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveThreadId: (activeThreadId) =>
     set((state) => ({
       activeThreadId,
+      activeThreadEpoch: state.activeThreadEpoch + 1,
       contextUsage: activeThreadId
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null,
@@ -1931,11 +2506,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveLastExternalCheckpoint(null);
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       params: {
         ...state.params,
         checkpoint: "",
       },
       activeGgufVariant: null,
+      // Nothing is picked, so there is nothing for residency to describe. Back
+      // to unknown rather than null: null would be read as "was evicted".
+      residentCheckpoint: undefined,
       activeModelIsLocal: false,
       activeLoadId: null,
       activeNativePathToken: null,
@@ -1972,19 +2551,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
+      mlxKvBits: null,
+      loadedMlxKvBitsRequested: null,
+      mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
+      mlxKvQuantNote: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      nBatch: null,
+      loadedNBatch: null,
+      loadedLlamaExtraArgs: null,
+      nUbatch: null,
+      loadedNUbatch: null,
       tensorParallel: false,
       loadedTensorParallel: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
+      loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
       nCpuMoe: 0,
@@ -2008,15 +2599,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }));
   },
   setReasoningEnabled: (reasoningEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
       }
-      return { reasoningEnabled };
+      return {
+        reasoningEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
     set({ lastOpenRouterChosenModel }),
-  setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
+  setReasoningStyle: (reasoningStyle) =>
+    set((state) => ({
+      reasoningStyle,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setReasoningEffort: (reasoningEffort) =>
     set((state) => {
       setScalarSettingVersion(
@@ -2024,7 +2622,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         reasoningEffort,
         state.reasoningEffort,
       );
-      return { reasoningEffort };
+      return {
+        reasoningEffort,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPreserveThinking: (preserveThinking) =>
     set((state) => {
@@ -2033,34 +2634,48 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         state.preserveThinking,
       );
-      return { preserveThinking };
+      return {
+        preserveThinking,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
       }
       if (toolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return toolsEnabled ? { toolsEnabled, deepResearchEnabled: false } : { toolsEnabled };
+      return {
+        ...(toolsEnabled
+          ? { toolsEnabled, deepResearchEnabled: false }
+          : { toolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return codeToolsEnabled
-        ? { codeToolsEnabled, deepResearchEnabled: false }
-        : { codeToolsEnabled };
+      return {
+        ...(codeToolsEnabled
+          ? { codeToolsEnabled, deepResearchEnabled: false }
+          : { codeToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setImageToolsEnabled: (imageToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       if (imageToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return imageToolsEnabled
-        ? { imageToolsEnabled, deepResearchEnabled: false }
-        : { imageToolsEnabled };
+      return {
+        ...(imageToolsEnabled
+          ? { imageToolsEnabled, deepResearchEnabled: false }
+          : { imageToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setDeepResearchEnabled: (deepResearchEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
       const permissionMode = loadPermissionMode();
       if (deepResearchEnabled) {
@@ -2084,23 +2699,33 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             permissionMode,
             confirmToolCalls:
               permissionMode === "ask" || permissionMode === "auto",
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           }
-        : { deepResearchEnabled };
+        : {
+            deepResearchEnabled,
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+          };
     }),
   setResearchWebsitePolicy: (researchWebsitePolicy) =>
-    set(() => {
+    set((state) => {
       saveResearchWebsitePolicy(researchWebsitePolicy);
-      return { researchWebsitePolicy };
+      return {
+        researchWebsitePolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setArtifactsEnabled: (artifactsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       if (artifactsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return artifactsEnabled
-        ? { artifactsEnabled, deepResearchEnabled: false }
-        : { artifactsEnabled };
+      return {
+        ...(artifactsEnabled
+          ? { artifactsEnabled, deepResearchEnabled: false }
+          : { artifactsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setShowCanvasMenuItem: (showCanvasMenuItem) =>
     set(() => {
@@ -2108,35 +2733,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
-    set((state) => {
+    set(() => {
       saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
-      setScalarSettingVersion(
-        "collapseHtmlArtifacts",
-        collapseHtmlArtifacts,
-        state.collapseHtmlArtifacts,
-      );
       return { collapseHtmlArtifacts };
     }),
   setAllowArtifactNetworkAccess: (allowArtifactNetworkAccess) =>
-    set((state) => {
+    set(() => {
       saveBool(
         CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
         allowArtifactNetworkAccess,
       );
-      setScalarSettingVersion(
-        "allowArtifactNetworkAccess",
-        allowArtifactNetworkAccess,
-        state.allowArtifactNetworkAccess,
-      );
       return { allowArtifactNetworkAccess };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return mcpEnabledForChat
-        ? { mcpEnabledForChat, deepResearchEnabled: false }
-        : { mcpEnabledForChat };
+      return {
+        ...(mcpEnabledForChat
+          ? { mcpEnabledForChat, deepResearchEnabled: false }
+          : { mcpEnabledForChat }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setConfirmToolCalls: (confirmToolCalls) =>
     set((state) => {
@@ -2144,13 +2762,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // The legacy toggle is a view over the permission level: on -> "ask",
       // off -> "off" (no prompts). While "full" is active the level is left
       // alone (the toggle is disabled in the UI anyway).
-      if (state.permissionMode === "full") return { confirmToolCalls };
+      if (state.permissionMode === "full") {
+        return {
+          confirmToolCalls,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+        };
+      }
       const permissionMode: PermissionMode = confirmToolCalls ? "ask" : "off";
       savePermissionMode(permissionMode);
-      return { confirmToolCalls, permissionMode };
+      return {
+        confirmToolCalls,
+        permissionMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPermissionMode: (permissionMode) =>
-    set(() => {
+    set((state) => {
       // "full" is session-only (never persisted, see init); ask/auto/off
       // persist and keep the legacy confirm toggle in sync (the gate is
       // requested for both ask and auto).
@@ -2164,18 +2791,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
-      return { permissionMode, bypassPermissions: false, confirmToolCalls };
+      return {
+        permissionMode,
+        bypassPermissions: false,
+        confirmToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setBypassPermissions: (bypassPermissions) =>
     // Deliberately not persisted (see init): a reload must not silently keep
     // the sandbox/confirmation bypass active without re-accepting the warning.
     // Turning bypass off returns to the last persisted ask/auto level.
-    set(() => {
+    set((state) => {
       if (bypassPermissions) {
         // Full access never prompts; mirror confirm_tool_calls=false in the
         // store so metadata does not report confirmations as enabled.
@@ -2185,6 +2818,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const permissionMode = loadPermissionMode();
@@ -2192,6 +2826,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
@@ -2226,38 +2861,60 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolConfirmations: next };
     }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
-      return { webFetchToolsEnabled };
+      return {
+        webFetchToolsEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
-  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagEnabled: (ragEnabled) =>
+    set((state) => ({
+      ragEnabled,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setRagSource: (ragSource) =>
-    set(() => {
+    set((state) => {
       saveRagSource(ragSource);
-      return { ragSource };
+      return {
+        ragSource,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagMode: (ragMode) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_MODE_KEY, ragMode);
-      return { ragMode };
+      return {
+        ragMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagTopK: (ragTopK) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
-      return { ragTopK };
+      return {
+        ragTopK,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInject: (ragAutoInject) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
-      return { ragAutoInject };
+      return {
+        ragAutoInject,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
-    set(() => {
+    set((state) => {
       saveString(
         CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
         String(ragAutoInjectMinScore),
       );
-      return { ragAutoInjectMinScore };
+      return {
+        ragAutoInjectMinScore,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagOcrScanned: (ragOcrScanned) =>
     set(() => {
@@ -2354,7 +3011,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         autoHealToolCalls,
         state.autoHealToolCalls,
       );
-      return { autoHealToolCalls };
+      return {
+        autoHealToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setNudgeToolCalls: (nudgeToolCalls) =>
     set((state) => {
@@ -2363,7 +3023,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nudgeToolCalls,
         state.nudgeToolCalls,
       );
-      return { nudgeToolCalls };
+      return {
+        nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
@@ -2372,7 +3035,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         maxToolCallsPerMessage,
         state.maxToolCallsPerMessage,
       );
-      return { maxToolCallsPerMessage };
+      return {
+        maxToolCallsPerMessage,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
     set((state) => {
@@ -2381,7 +3047,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         toolCallTimeout,
         state.toolCallTimeout,
       );
-      return { toolCallTimeout };
+      return {
+        toolCallTimeout,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   // Standing preference, but persisted only on a successful load (see
   // use-chat-model-runtime), not on selection -- so an unapplied pick the user
@@ -2461,7 +3130,8 @@ export function resolveSpeculativeSettingsForLoad({
     speculativeType,
     specDraftNMax:
       !usePersistedPreference &&
-      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+      speculativeType != null &&
+      DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
         ? state.specDraftNMax
         : null,
   };

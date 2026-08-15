@@ -3,9 +3,17 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { useMonitorOverlayStore } from "@/features/settings";
+import {
+  useMonitorFrameStore,
+  useMonitorOverlayStore,
+} from "@/features/settings";
+import { resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
+import {
+  useFloatingPanelOrderStore,
+  useFloatingPanelZIndex,
+} from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -13,6 +21,7 @@ import {
   type PointerEvent,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -36,6 +45,9 @@ interface DragSession {
   maxTop: number;
   constraintsWidth: number;
   constraintsHeight: number;
+  /** The committed left/top the drag's transform offsets from. */
+  baseLeft: number;
+  baseTop: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -86,10 +98,15 @@ function naturalWidth(monitor: HTMLDivElement): number {
 }
 
 function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
+  // This panel's claim on the shared frame. Reopening the monitor mid-exit
+  // mounts the replacement while the old panel is still animating out, and the
+  // old one unmounts last, so its cleanup must only clear its own frame.
+  const publisher = useMemo(() => ({}), []);
   const monitorRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
+  const dragFrameRef = useRef(0);
   const hasDraggedRef = useRef(false);
   const preferredWidthRef = useRef<number | null>(null);
   const preferredHeightRef = useRef<number | null>(null);
@@ -167,14 +184,28 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
         session.constraintsHeight = constraintsBox.height;
       }
 
+      // Publish the real box so the overlay stack can keep clear of it.
+      useMonitorFrameStore.getState().setFrame(publisher, {
+        left: monitorBox.left,
+        top: monitorBox.top,
+        right: monitorBox.right,
+        bottom: monitorBox.bottom,
+      });
+
       setLayout((current) => {
+        // Mid-drag the offset lives in a transform, and the measured box
+        // already includes it, so committing left/top here would apply it
+        // twice. finishDrag lands the position instead.
+        const held = session && current ? current : null;
+        const restLeft = held?.left ?? left;
+        const restTop = held?.top ?? top;
         const next = {
-          left,
-          top,
+          left: restLeft,
+          top: restTop,
           minWidth: preferredWidthRef.current ?? monitorBox.width,
           minHeight: preferredHeightRef.current ?? monitorBox.height,
-          maxWidth: constraintsBox.width - left,
-          maxHeight: constraintsBox.height - top,
+          maxWidth: constraintsBox.width - restLeft,
+          maxHeight: constraintsBox.height - restTop,
         };
         return current && sameLayout(current, next) ? current : next;
       });
@@ -191,12 +222,37 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     }
     return () => {
       observer.disconnect();
+      useMonitorFrameStore.getState().clearFrame(publisher);
       if (remeasureRef.current) {
         cancelAnimationFrame(remeasureRef.current);
         remeasureRef.current = 0;
       }
+      if (dragFrameRef.current) {
+        cancelAnimationFrame(dragFrameRef.current);
+        dragFrameRef.current = 0;
+      }
     };
-  }, [constraintsElement]);
+  }, [constraintsElement, publisher]);
+
+  // ResizeObserver never fires for a position-only change, so dragging alone
+  // would leave the published frame at the monitor's old corner and the overlay
+  // stack dodging where it used to be. Re-publish once each layout is committed,
+  // which after a drag is on release: the frames in between are a transform, and
+  // republishing through them would re-render every overlay in the stack for
+  // each one, which is most of what made dragging feel heavy.
+  useLayoutEffect(() => {
+    const monitor = monitorRef.current;
+    if (!(monitor && constraintsElement)) {
+      return;
+    }
+    const box = monitor.getBoundingClientRect();
+    useMonitorFrameStore.getState().setFrame(publisher, {
+      left: box.left,
+      top: box.top,
+      right: box.right,
+      bottom: box.bottom,
+    });
+  }, [layout, constraintsElement, publisher]);
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     const monitor = monitorRef.current;
@@ -239,8 +295,26 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       maxTop: Math.max(0, constraintsBox.height - monitorBox.height),
       constraintsWidth: constraintsBox.width,
       constraintsHeight: constraintsBox.height,
+      baseLeft: left,
+      baseTop: top,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  // One paint per frame, and through a transform rather than left/top. The
+  // panel is backdrop-blurred, so every layout-driven move re-sampled what is
+  // behind it; a trackpad also reports moves faster than the display refreshes,
+  // so most of those renders were never shown.
+  function paintDrag() {
+    dragFrameRef.current = 0;
+    const session = dragSessionRef.current;
+    const monitor = monitorRef.current;
+    if (!(session && monitor)) {
+      return;
+    }
+    monitor.style.transform = `translate3d(${session.left - session.baseLeft}px, ${
+      session.top - session.baseTop
+    }px, 0)`;
   }
 
   function updateDrag(event: PointerEvent<HTMLDivElement>) {
@@ -263,6 +337,30 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     session.startY = event.clientY;
     session.left = left;
     session.top = top;
+    if (!dragFrameRef.current) {
+      dragFrameRef.current = requestAnimationFrame(paintDrag);
+    }
+  }
+
+  function finishDrag(event: PointerEvent<HTMLDivElement>) {
+    const session = dragSessionRef.current;
+    if (session?.pointerId !== event.pointerId) {
+      return;
+    }
+    if (dragFrameRef.current) {
+      cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = 0;
+    }
+    const { left, top, constraintsWidth, constraintsHeight } = session;
+    dragSessionRef.current = null;
+    // Written to the node as well as to state, in this order, so handing the
+    // offset back to left/top cannot show a frame at the spot it started from.
+    const monitor = monitorRef.current;
+    if (monitor) {
+      monitor.style.left = `${left}px`;
+      monitor.style.top = `${top}px`;
+      monitor.style.transform = "";
+    }
     setLayout((current) =>
       !current || (current.left === left && current.top === top)
         ? current
@@ -270,16 +368,10 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
             ...current,
             left,
             top,
-            maxWidth: session.constraintsWidth - left,
-            maxHeight: session.constraintsHeight - top,
+            maxWidth: constraintsWidth - left,
+            maxHeight: constraintsHeight - top,
           },
     );
-  }
-
-  function finishDrag(event: PointerEvent<HTMLDivElement>) {
-    if (dragSessionRef.current?.pointerId === event.pointerId) {
-      dragSessionRef.current = null;
-    }
   }
 
   return {
@@ -346,6 +438,15 @@ function FloatingMonitorPanel({
     finishDrag,
   } = useMonitorLayout(constraintsElement);
 
+  const zIndex = useFloatingPanelZIndex("resource-monitor");
+  const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
+
+  // Opening the monitor puts it in front of the API monitor panel; touching
+  // either afterwards brings that one forward instead.
+  useEffect(() => {
+    raisePanel("resource-monitor");
+  }, [raisePanel]);
+
   const ramTotal = systemInfo.memory?.total_gb ?? 0;
   const ramAvailable = systemInfo.memory?.available_gb ?? 0;
   const ramUsed = Math.max(0, ramTotal - ramAvailable);
@@ -365,14 +466,11 @@ function FloatingMonitorPanel({
     : 0;
   const devices = displayedGpu?.devices ?? [];
   const vramTotal = aggregateGpuMemoryTotalGb(devices);
-  // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
-  // fabricates a 0-used readout, so the aggregate is unknown if any device is.
-  const vramUsageKnown =
-    devices.length > 0 &&
-    devices.every((device) => Number.isFinite(device.vram_used_gb));
-  const vramUsed = vramUsageKnown
-    ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
-    : 0;
+  // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+  // readout. The host figure can still be known when no device's is (#7452).
+  const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
+  const vramUsageKnown = resolvedVramUsed !== null;
+  const vramUsed = resolvedVramUsed ?? 0;
   const vramPercent = clampPercent(
     vramUsageKnown && vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
   );
@@ -380,13 +478,26 @@ function FloatingMonitorPanel({
 
   const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
 
+  // The container sits on the floating panel layer, above the bottom-right
+  // overlay stack. That stack normally dodges this monitor, but the dodge has a
+  // floor: drag the monitor to the corner and resize it to fill the viewport and
+  // there is nowhere left to dodge to, so stackBottomInset clamps at
+  // MIN_STACK_ROOM and parks the stack at the top of the screen, directly over
+  // this monitor's title bar and Close button. The stack is passive status; this
+  // is a window the user is dragging, resizing and closing, so it wins. Still
+  // below the startup screen and tooltips. See lib/z-layers.
+  //
+  // The API monitor panel shares this layer rather than sitting under it, and
+  // whichever of the two the user touched last is the one in front.
   return (
     <div
       ref={setConstraintsElement}
-      className="pointer-events-none fixed inset-4 z-50"
+      className="pointer-events-none fixed inset-4"
+      style={{ zIndex }}
     >
       <motion.div
         ref={monitorRef}
+        onPointerDownCapture={() => raisePanel("resource-monitor")}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}

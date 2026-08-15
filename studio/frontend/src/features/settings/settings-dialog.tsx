@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { FloatingMonitor } from "@/components/floating-monitor";
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Dialog,
   DialogContent,
@@ -9,12 +10,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
+import { cn } from "@/lib/utils";
 import {
   BotIcon,
   Cancel01Icon,
   CloudIcon,
+  ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
   Globe02Icon,
@@ -36,8 +39,8 @@ import {
   useState,
 } from "react";
 import {
-  SETTINGS_SEARCH_INDEX,
   SETTINGS_SEARCH_KEYWORDS,
+  createSettingsSearchIndex,
 } from "./settings-search";
 import {
   type SettingsTab,
@@ -50,6 +53,7 @@ import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
 import { DataTab } from "./tabs/data-tab";
+import { DebuggingTab } from "./tabs/debugging-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
@@ -115,8 +119,23 @@ const TABS: TabDef[] = [
     icon: DatabaseSettingIcon,
     badgeKey: "common.new",
   },
+  {
+    id: "debugging",
+    labelKey: "settings.tabs.debugging",
+    icon: ComputerTerminal01Icon,
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
+
+const clientPlatform = getClientPlatform();
+const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
+  desktop: isTauri,
+  closeToTray:
+    isTauri &&
+    (clientPlatform.startsWith("win") ||
+      clientPlatform.includes("windows") ||
+      clientPlatform.includes("linux")),
+});
 
 function renderTab(tab: SettingsTab) {
   switch (tab) {
@@ -140,6 +159,8 @@ function renderTab(tab: SettingsTab) {
       return <ApiKeysTab />;
     case "agents":
       return <AgentsTab />;
+    case "debugging":
+      return <DebuggingTab />;
     case "about":
       return <AboutTab />;
   }
@@ -252,6 +273,7 @@ export function SettingsDialog() {
     data: null,
     "api-keys": null,
     agents: null,
+    debugging: null,
     about: null,
   });
 
@@ -282,11 +304,14 @@ export function SettingsDialog() {
             // Cap at 960px but shrink to the viewport so it doesn't clip on
             // iPad-portrait widths where a fixed width overflows. Height caps
             // the same way so short viewports don't get a clipped dialog.
-            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(680px,calc(100dvh-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
+            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
-            "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Same chrome-subtracted height the shared DialogContent uses at this
+            // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
+            // (and its overflow-hidden bottom edge) below the window. 0px on web.
+            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
           )}
         >
           <DialogTitle className="sr-only">
@@ -389,6 +414,8 @@ export function SettingsDialog() {
                   return (
                     <button
                       key={tab.id}
+                      // Stable handle for UI tests: the label is translated.
+                      data-testid={`settings-tab-${tab.id}`}
                       ref={(node) => {
                         tabButtonRefs.current[tab.id] = node;
                       }}

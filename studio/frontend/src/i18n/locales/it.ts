@@ -50,6 +50,14 @@ export const it = {
       projects: "Progetti",
       train: "Addestra",
       recipes: "Ricette",
+      images: "Immagini",
+      video: "Video",
+      audio: "Audio",
+      trainChecking: "Verifica del supporto all'addestramento su questa macchina...",
+      videoChecking: "Verifica del supporto video su questa macchina...",
+      more: "Altro",
+      customizeSidebar: "Personalizza la barra laterale",
+      newBadge: "Novità",
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
@@ -114,7 +122,32 @@ export const it = {
       data: "Dati",
       apiKeys: "API",
       agents: "Agenti",
+      debugging: "Log",
       about: "Informazioni",
+    },
+    debugging: {
+      logSection: "File di log",
+      source: "File di log",
+      sourceHint: "I runner dei modelli scrivono i propri log, quindi un caricamento o una generazione non riusciti sono spesso spiegati lì anziché nel log del server.",
+      path: "Posizione",
+      pathCopy: "Copia il percorso",
+      refreshSection: "Aggiornamento",
+      mode: "Modalità",
+      modeLive: "In tempo reale",
+      modeInterval: "Ogni 3 secondi",
+      modeManual: "Manuale",
+      refreshNow: "Aggiorna ora",
+      privacyNote: "In questa vista le credenziali sono mascherate. Nel file su disco non lo sono.",
+      copyVisible: "Copia il log visibile",
+      empty: "Non è stato ancora registrato nulla.",
+      disabled: "La registrazione su file è disattivata (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Nessun file di log trovato.",
+      unreadable: "Non è stato possibile leggere il file di log.",
+      timeout: "La richiesta del log e scaduta. Il server potrebbe non essere raggiungibile.",
+      droppedNotice: "Alcune righe sono state saltate: il log è stato scritto più velocemente di quanto potesse essere letto.",
+      morePending: "Altre righe sono ancora in lettura; arriveranno al prossimo aggiornamento.",
+      staleSession: "La registrazione su file e disattivata, quindi questa e una sessione precedente e non verra aggiornata.",
+      keywords: "debug log logs registro registri errore errori crash traccia diagnostica risoluzione dei problemi",
     },
     voice: {
       title: "Voce",
@@ -153,10 +186,20 @@ export const it = {
         sttNotDownloaded: "Non scaricato",
         sttDownloadStatusFailed: "Impossibile verificare lo stato del download",
         sttDownload: "Scarica",
+        sttDownloadConfirmTitle: "Vuoi scaricare {model}?",
+        sttDownloadConfirmBody:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Occupa circa {size} e viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttOpenVoiceSettings: "Apri le impostazioni Voce",
+        sttDownloadStarted: "Download di {model} in corso",
         sttDownloading: "Download in corso… {progress}%",
         sttCancelDownload: "Annulla",
         sttCancellingDownload: "Annullamento…",
+        sttCancelDownloadFailed: "Impossibile annullare il download",
         sttDownloadComplete: "Modello di riconoscimento vocale scaricato",
+        sttModelReady: "{model} è pronto per la dettatura",
+        sttRecommended: "Consigliato",
         sttDownloadFailed:
           "Impossibile scaricare il modello di riconoscimento vocale",
         sttLoad: "Carica",
@@ -278,6 +321,13 @@ export const it = {
         title: "Cambia password",
         description:
           "Inserisci la password attuale e scegline una nuova (almeno {minLength} caratteri).",
+        setTrigger: "Imposta la password remota",
+        setTitle: "Imposta la password remota",
+        setDescription:
+          "Scegli la password con cui i browser remoti accedono come unsloth (almeno {minLength} caratteri). L'app desktop di Unsloth continua ad accedere automaticamente.",
+        setSubmit: "Imposta la password",
+        setting: "Impostazione...",
+        setDone: "Password impostata.",
         currentPassword: "Password attuale",
         newPassword: "Nuova password",
         confirmPassword: "Conferma la nuova password",
@@ -323,6 +373,14 @@ export const it = {
           "Libera la VRAM dopo il numero indicato di secondi di inattività. 0 mantiene il modello in memoria; il minimo è 60.",
         idleSecondsAriaLabel:
           "Secondi di inattività prima dello scaricamento automatico",
+        mediaIdleUnload:
+          "Scaricamento automatico dalla memoria per inattività di immagini e video",
+        mediaIdleUnloadDescription:
+          "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. È un'impostazione a sé: quella qui sopra riguarda solo il modello di chat. 0 li mantiene in memoria; il minimo è 60.",
+        mediaIdleSecondsAriaLabel:
+          "Secondi di inattività prima dello scaricamento automatico di immagini e video",
+        mediaIdlePaused:
+          "In pausa finché «Mantieni il modello nella memoria della GPU» o «Scarica solo i modelli caricati dall'API» è attivo.",
         idleNeedsEnable:
           "Attiva prima «Cambia modello in base alla richiesta».",
         idleActiveViaEnv: "Attivo tramite UNSLOTH_MODEL_IDLE_TTL.",
@@ -336,6 +394,9 @@ export const it = {
           "Mantieni il contesto della chat dopo lo scaricamento dalla memoria per inattività",
         keepKvDescription:
           "Salva la cache KV prima dello scaricamento dalla memoria per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+        apiOnly: "Scarica solo i modelli caricati dall'API",
+        apiOnlyDescription:
+          "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Studio e libera solo quelli caricati da una richiesta API.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",
@@ -369,12 +430,25 @@ export const it = {
         showLlamaUpdates: "Notifiche di aggiornamento di llama.cpp",
         showLlamaUpdatesDescription:
           "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva le notifiche se usi Unsloth solo per l'addestramento.",
+        showLoadedModels: "Indicatore dei modelli caricati",
+        showLoadedModelsDescription:
+          "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
       },
-      gettingStarted: "Per iniziare",
-      startOnboarding: "Avvia la configurazione guidata",
-      startOnboardingDescription:
-        "Riapri la procedura di configurazione senza modificare il tuo account.",
-      startOnboardingAction: "Avvia la configurazione guidata",
+      startup: {
+        sectionTitle: "Avvio",
+        launchAtLogin: "Avvia Unsloth all'accesso",
+        launchAtLoginDescription:
+          "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
+
+        closeToTray: "Chiudi nell'area di notifica",
+        closeToTrayDescription:
+          "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
+        closeToTraySaveError:
+          "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
+        loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
+        saveError:
+          "Impossibile aggiornare l'impostazione di avvio all'accesso.",
+      },
       uploads: {
         sectionTitle: "Caricamenti",
         maxUploadSize: "Limite di caricamento del dataset di addestramento",
@@ -616,6 +690,14 @@ export const it = {
         compactSidebarDescription:
           "Mantieni la barra laterale espansa invece di ridurla a icone.",
       },
+      sidebarNav: {
+        title: "Navigazione della barra laterale",
+        description:
+          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+        dragToReorder: "Trascina per riordinare",
+        pinToSidebar: "Fissa {name} nella barra laterale",
+        moreHolds: "Altro ({count})",
+      },
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
@@ -662,14 +744,64 @@ export const it = {
         free: "Disponibili: {value}",
         total: "Totale: {value}",
       },
+      llamaBackend: {
+        title: "Motore di inferenza GGUF",
+        label: "Backend di calcolo",
+        description: "Il backend che llama.cpp usa per eseguire i modelli GGUF.",
+        runningOn: "llama.cpp è in esecuzione su {backend}.",
+        hint: "Installa la build di llama.cpp per questo backend e la mantiene tra un aggiornamento e l'altro. Utile se la scelta automatica va in crash o se il driver della GPU non la supporta. Sono elencati solo i backend con una build per questa macchina; l'addestramento non cambia.",
+        autoWith: "Automatico ({backend})",
+        apply: "Applica",
+        applying: "Installazione...",
+        applyHint: "Scarica la nuova build e riavvia llama.cpp. Il modello caricato verrà scaricato.",
+        applyHintWithSize: "Scarica {size} e riavvia llama.cpp. Il modello caricato verrà scaricato.",
+        switchedTo: "Ora llama.cpp è in esecuzione su {backend}.",
+        switchFailed: "Impossibile cambiare il backend di llama.cpp.",
+        switchInterrupted: "Il cambio è stato interrotto prima del completamento.",
+        envLocked: "Impostato su {backend} dalla variabile d'ambiente UNSLOTH_LLAMA_CPP_BACKEND, che ha la precedenza su questa opzione.",
+        backends: {
+          auto: "Automatico",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "Nessuna installazione di llama.cpp gestita da Unsloth, quindi non c'è un backend da cambiare.",
+          localLink: "llama.cpp è una cartella locale collegata da te, quindi Unsloth non la sostituirà.",
+          sourceBuild: "Questo llama.cpp è stato compilato dai sorgenti, quindi il backend non è modificabile da qui.",
+          unresolved: "Non è stato possibile controllare i backend disponibili. Verifica la connessione e riprova.",
+        },
+        // Non visualizzato: termini aggiuntivi per la ricerca nelle impostazioni.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inferenza cuda rocm hip vulkan metal cpu gpu acceleratore prebuilt cambiare motore",
+      },
+      modelMemory: {
+        title: "Memoria del modello",
+        keepResident: "Mantieni il modello nella memoria della GPU",
+        keepResidentDescription: "Resta nella VRAM tra un prompt e l'altro.",
+        keepResidentHint: "Non restituisce i pesi alla RAM di sistema finché il modello resta caricato. Disattiva lo scaricamento automatico in inattività e, quando i pesi risiedono davvero nella RAM host (memoria unificata o offload parziale sulla GPU), passa anche --mlock, così il sistema operativo non li pagina per ricaricarli al prompt successivo.",
+        noRamReserve: "Non riservare RAM di sistema per il modello",
+        noRamReserveDescription: "Non tiene una copia completa in RAM.",
+        noRamReserveHint: "Trasferisce i pesi nella VRAM invece di tenerne una copia completa in RAM. Mantiene il caricamento mappato in memoria di llama.cpp e rimuove --no-mmap e --mlock.",
+        mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
+        memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
+        reloadRequired: "Ricarica il modello per applicare le nuove opzioni di memoria.",
+        loadError: "Impossibile caricare le impostazioni di memoria del modello",
+        saveError: "Impossibile salvare le impostazioni di memoria del modello",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
+      },
       storage: {
         title: "Archiviazione",
         systemDisk: "Disco di sistema",
         diskUsage: "In uso: {used} / Totale: {total}",
         diskFree: "Disponibili: {free}",
         modelsFolder: "Cartella dei modelli",
-        modelsFolderDescription:
-          "Dove vengono salvati i modelli scaricati. Cambiala per tenere i modelli fuori dal disco di sistema.",
+        modelsFolderDescription: "Dove vengono salvati i modelli scaricati.",
+        modelsFolderHint: "Dove vengono salvati i modelli scaricati. Cambialo per tenere i modelli fuori dall'unità di sistema. Vale solo per i nuovi download: i modelli che hai già restano dove sono.",
         // Non visualizzato: termini extra su cui la ricerca delle impostazioni trova questa riga.
         modelsFolderKeywords:
           "cartella modelli directory percorso posizione download scaricati cache archiviazione disco unità spostare sposta hugging face models folder path storage",
@@ -805,15 +937,15 @@ export const it = {
     chat: {
       title: "Chat",
       description:
-        "Gestisci la cronologia delle chat memorizzata su questo dispositivo.",
+        "Personalizza il comportamento della chat su questo dispositivo.",
       modelSelection: {
         title: "Impostazioni di selezione del modello",
         expandQuantizations: "Espandi le quantizzazioni",
         expandQuantizationsDescription:
-          "Attivata: i modelli GGUF presenti sul dispositivo mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
+          "Attivata: i modelli GGUF in «On Device» mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
         showAllQuantizations: "Mostra tutte le quantizzazioni",
         showAllQuantizationsDescription:
-          "Attivata: elenca tutte le quantizzazioni presenti sul dispositivo, incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
+          "Attivata: elenca tutte le quantizzazioni in «On Device», incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
       },
       menu: {
         title: "Menu della chat",
@@ -831,6 +963,11 @@ export const it = {
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      thinking: {
+        collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
+        collapseByDefaultDescription:
+          "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Comprimi i blocchi HTML",
@@ -839,6 +976,9 @@ export const it = {
         allowNetworkAccess: "Consenti a Canvas di accedere alla rete",
         allowNetworkAccessDescription:
           "Consenti alle anteprime di Canvas di caricare script, stili, font, contenuti multimediali e risorse di rete dalle CDN. Lascia l'opzione disattivata per anteprime completamente offline.",
+        blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
+        blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
+        blockedBannerAction: "Consenti per questo Canvas",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",
@@ -855,11 +995,13 @@ export const it = {
       exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
-        "Importa nei Recenti un'esportazione JSONL, NDJSON o CSV.",
+        "Importa un export Open WebUI, JSONL, NDJSON o CSV in Recenti.",
       importChatsAction: "Importa",
       importNoConversations: "Nessuna conversazione trovata nel file.",
       importedOneChat: "1 conversazione importata nei Recenti.",
       importedChatCount: "{count} conversazioni importate nei Recenti.",
+      importingChats: "Importazione chat: {count} finora ({percent}%)...",
+      importedChatCountPartial: "Importate {count} conversazioni in Recenti; {failed} non sono state salvate.",
       importFailed: "Importazione non riuscita.",
       clearHistory: "Cancella la cronologia delle chat",
       clearHistoryDescription:
@@ -907,6 +1049,10 @@ export const it = {
       archivedChats: "Chat archiviate",
       archivedChatsDescription:
         "Visualizza e gestisci le chat che hai archiviato.",
+      archivedImages: "Immagini archiviate",
+      archivedImagesDescription: "Visualizza e gestisci le immagini che hai archiviato.",
+      archivedVideos: "Video archiviati",
+      archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
       manageAction: "Gestisci",
       exportArchivedChats: "Esporta",
       exportingArchivedChats: "Esportazione...",
@@ -987,7 +1133,7 @@ export const it = {
       osWindows: "Windows",
       secureHttps: "HTTPS sicuro",
       secureHttpsHint:
-        "La porta su 0.0.0.0 resta raggiungibile da tutta la rete. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
+        "La porta su 0.0.0.0 resta raggiungibile da ovunque. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
       copyTunnelUrl: "Copia l'URL del tunnel",
       copySnippet: "Copia lo snippet",
       copy: "Copia",
@@ -1076,7 +1222,7 @@ export const it = {
           "Se hai ancora il checkout del repository, esegui l'installer locale da lì:",
         restartAfterUpdate: "Riavvia Unsloth dopo l'aggiornamento.",
         desktopManaged:
-          "L'app desktop mantiene aggiornato il backend integrato e avvisa quando è disponibile una nuova versione.",
+          "L'app desktop verifica automaticamente la presenza di nuove versioni. Puoi anche controllare o aggiornare qui in qualsiasi momento.",
         desktopReady: "Aggiornamenti dell'app desktop",
         desktopReadyDescription:
           "Verifica se è disponibile una versione più recente dell'app desktop.",
@@ -1115,9 +1261,222 @@ export const it = {
       },
     },
   },
+  picker: {
+    onDevice: "Sul dispositivo",
+    huggingFace: "Hugging Face",
+    retry: "Riprova",
+    loadMore: "Carica altri",
+    offlineTitle: "Sei offline",
+    offlineBody:
+      "Passa a Dispositivo per usare {noun} nella cache o in locale.",
+    offlineSwitchDevice: "Dispositivo",
+    searchAriaLabel: "Cerca {noun}",
+    modelSourceAriaLabel: "Origine del modello",
+    hubSectionAriaLabel: "Sezione Hub",
+    modelDropped: "Non più offerto",
+    modelDroppedByProvider: "{provider} · non più offerto",
+    modelDisabled: "Non attivato",
+    modelDisabledByProvider: "{provider} · non attivato",
+    multipleMatches:
+      "Sono stati trovati più {noun} corrispondenti. Scegline uno dall'elenco.",
+    rateLimitedTitle: "Limite di richieste di Hugging Face raggiunto",
+    rateLimitedBody: "Attendi un momento, poi riprova a cercare {noun}.",
+    hfToken: {
+      label: "Token HF",
+      saved: "Salvato",
+      add: "Non impostato",
+      savedAriaLabel: "Token Hugging Face salvato",
+      addAriaLabel: "Imposta il token Hugging Face",
+      savedHint:
+        "Token salvato. L'accesso viene verificato quando lo utilizzi.",
+      addHint:
+        "Imposta un token per accedere ai repository privati e con accesso limitato.",
+    },
+  },
   studio: {
+    imageTraining: "Addestramento immagini",
+    goToImageTraining: "Vai all'addestramento immagini",
     routeTitle: "Addestra",
-    title: "Studio di fine-tuning",
+    wizard: {
+      modelTitle: "Modello",
+      modelDescription: "Seleziona il modello e il metodo di addestramento",
+      datasetTitle: "Dataset",
+      datasetDescription: "Seleziona o carica i dati di addestramento",
+      paramsTitle: "Parametri",
+      paramsDescription: "Configura i parametri di addestramento",
+      configTitle: "Configurazione",
+      configDescription: "Salva e carica le configurazioni",
+      modelLabel: "Modello",
+      modelTooltip: "Il modello di base che vuoi sottoporre a fine-tuning.",
+      methodLabel: "Metodo",
+      methodTooltip:
+        "Il modo in cui viene addestrato il modello. LoRA e QLoRA aggiornano piccoli adattatori anziché tutti i pesi.",
+      datasetLabel: "Dataset",
+      datasetTooltip:
+        "I dati di addestramento usati per il fine-tuning del modello.",
+      hfTokenDescription:
+        "Necessario per modelli e dataset privati o con accesso limitato.",
+      uploadLocalLabel: "Oppure carica un file locale",
+      sourceBrowse: "Sfoglia",
+      releaseToUpload: "Rilascia per caricare",
+      loadYaml: "Carica YAML",
+      saveYaml: "Salva YAML",
+      resetDefaults: "Ripristina i valori predefiniti",
+      cachedModelGoneTitle: "Il modello nella cache non è più disponibile",
+      cachedModelGoneDescription:
+        "I file del modello non sono più sul dispositivo, quindi l'addestramento li scaricherà di nuovo.",
+      cachedDatasetGoneTitle: "Il dataset nella cache non è più disponibile",
+      cachedDatasetGoneDescription:
+        "I file del dataset non sono più sul dispositivo, quindi l'addestramento li scaricherà di nuovo.",
+    },
+    preview: {
+      title: "Anteprima del run",
+      ready: "Pronto",
+      notReady: "Non pronto",
+      modelPending: "Modello in attesa",
+      datasetPending: "Dataset in attesa",
+      method: "Metodo",
+      length: "Durata",
+      stepZero: "{count} step",
+      step: "{count} step",
+      stepTwo: "{count} step",
+      stepFew: "{count} step",
+      stepMany: "{count} step",
+      steps: "{count} step",
+      epochZero: "{count} epoche",
+      epoch: "{count} epoca",
+      epochTwo: "{count} epoche",
+      epochFew: "{count} epoche",
+      epochMany: "{count} epoche",
+      epochs: "{count} epoche",
+      batch: "Batch",
+      context: "Contesto",
+      lr: "LR",
+      hardware: "Hardware",
+      noGpu: "Nessuna GPU rilevata",
+      hfToken: "Token HF",
+      saved: "Salvato",
+      notSet: "Non impostato",
+      files: "File",
+      model: "Modello",
+      dataset: "Dataset",
+      downloadsOnStart: "Download all'avvio",
+      continuesOnStart: "Continua all'avvio",
+      noticeModelDownload:
+        "Questo modello non è ancora presente sul dispositivo. L'addestramento lo scaricherà automaticamente.",
+      noticeModelPartial:
+        "L'addestramento completerà il download parziale del modello prima di caricarlo.",
+      noticeDatasetDownload:
+        "Questo dataset non è ancora presente sul dispositivo. L'addestramento lo scaricherà automaticamente.",
+      noticeDatasetPartial:
+        "L'addestramento completerà il download parziale del dataset prima di leggerlo.",
+      noticeTransformersUpgrade:
+        "Nessuna versione installata di transformers supporta ancora questa architettura. All'avvio verrà proposto di installare prima transformers {version}.",
+      noticeSixteenBitOnly:
+        "Questa architettura si addestra in LoRA a 16 bit: i 4 bit non sono disponibili, quindi l'esecuzione richiede molta più VRAM di QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installare quella versione invece di mantenere il codice del modello porta questa esecuzione a LoRA a 16 bit, che richiede molta più VRAM di QLoRA.",
+      advancedSettings: "Impostazioni avanzate",
+      defaultAdvancedSettings: "Predefinite",
+      nonDefaultAdvancedSettings: "{count} non predefinite",
+    },
+    datasetPicker: {
+      noun: "dataset",
+      selectDataset: "Seleziona un dataset",
+      hubPlaceholder: "Cerca dataset su Hugging Face...",
+      devicePlaceholder: "Cerca dataset locali...",
+      useAsHubDataset: "Usa come dataset Hugging Face",
+      hfCacheLabel: "Cache HF",
+      scanningLocal: "Analisi dei dataset sul dispositivo…",
+      couldntScan: "Impossibile analizzare i dataset locali",
+      someLocationsUnscanned:
+        "Non è stato possibile analizzare alcune posizioni dei dataset.",
+      noLocalDatasets:
+        "Non c'è ancora nulla sul dispositivo. Scarica un dataset dall'Hub, creane uno in Ricette oppure carica un file.",
+      openDataRecipes: "Apri le ricette per i dati",
+      searchingHub: "Ricerca su Hugging Face…",
+      noDatasetsFound: "Nessun dataset trovato.",
+      tokenRejectedTitle: "Token Hugging Face rifiutato",
+      tokenRejectedBody:
+        "Aggiorna il token in Impostazioni → Generali, quindi riprova.",
+      hubUnreachable: "Impossibile raggiungere Hugging Face",
+      cantUseDataset: "Impossibile usare il dataset",
+      reasonInvalidHubId:
+        "Inserisci un ID dataset Hugging Face valido: repo oppure proprietario/repo, senza punti o trattini consecutivi e senza il suffisso .git (massimo 96 caratteri per parte).",
+      sourceRecipe: "Ricetta",
+      sourceUpload: "Caricamento",
+      sourceLocal: "Locale",
+    },
+    modelPicker: {
+      noun: "modelli",
+      selectModel: "Seleziona un modello",
+      hubPlaceholder: "Cerca o incolla un ID Hugging Face...",
+      devicePlaceholder:
+        "Cerca modelli locali o incolla il percorso di una cartella...",
+      useAsHubModel: "Usa come modello Hugging Face",
+      useAsLocalPath: "Usa come percorso locale",
+      hfCacheLabel: "Cache HF",
+      scanningLocal: "Analisi dei modelli locali…",
+      couldntScan: "Impossibile analizzare i modelli locali",
+      someLocationsUnscanned:
+        "Non è stato possibile analizzare alcune posizioni locali.",
+      noLocalModels: "Nessun modello locale trovato.",
+      noLocalModelsHint:
+        "Incolla qui sopra il percorso di una cartella oppure passa a Hugging Face.",
+      searchingHub: "Ricerca su Hugging Face…",
+      noModelsFound: "Nessun modello trovato.",
+      tokenRejectedTitle: "Token Hugging Face rifiutato",
+      tokenRejectedBody:
+        "Aggiorna il token in Impostazioni → Generali, quindi riprova.",
+      hubUnreachable: "Impossibile raggiungere Hugging Face",
+      cantUseModel: "Impossibile usare il modello per l'addestramento",
+      reasonTypeMismatch:
+        "Questo modello non corrisponde al tipo di addestramento selezionato nel passaggio precedente.",
+      reasonEmptyId: "Inserisci l'ID di un modello o un percorso locale.",
+      reasonGguf:
+        "I modelli GGUF non possono essere usati per l'addestramento.",
+      reasonAdapter:
+        "Gli output degli adattatori non possono essere usati come modelli di base per l'addestramento.",
+      reasonNotTrainable:
+        "Questo modello presente sul dispositivo non è addestrabile.",
+      reasonUnsupportedFormat:
+        "Questo formato di modello non è supportato per l'addestramento.",
+      reasonInvalidHubId:
+        "Inserisci un ID modello Hugging Face valido: repo oppure proprietario/repo, senza punti o trattini consecutivi e senza il suffisso .git (massimo 96 caratteri per parte).",
+      sourceModelsFolder: "Cartella dei modelli",
+      sourceHfCache: "Cache HF",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "Cartella personalizzata",
+      sourceLocalModel: "Modello locale",
+      vramOomBadge: "OOM",
+      vramTightBadge: "Al limite",
+      vramNeeds: "Richiede ~{est} GB di VRAM (GPU: {total} GB)",
+      vramTight: "~{est} GB di VRAM (al limite su {total} GB)",
+      vramApprox: "~{est} GB di VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "Quantizzazione a 4 bit. VRAM minima e avvio più rapido.",
+        note: "4 bit",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "Adattatori a 16 bit. Equilibrio tra qualità e memoria.",
+        note: "16 bit",
+      },
+      full: {
+        label: "Fine-tuning completo",
+        hint: "Addestra tutti i pesi. Qualità massima, ma richiede più VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Preaddestramento continuato",
+        hint: "Preaddestramento continuato per nuovi domini o nuove lingue.",
+        note: "continuato",
+      },
+    },
     subtitles: {
       configure: "Configura e avvia l'addestramento",
       trainingInProgress: "Addestramento in corso",
@@ -1130,86 +1489,70 @@ export const it = {
       history: "Cronologia",
     },
     loadingRuntime: "Caricamento del runtime di addestramento...",
+    checkingSupport: "Verifica del supporto all'addestramento su questa macchina...",
     backToHistory: "Torna alla cronologia",
-    sections: {
-      model: "Modello",
-      dataset: "Dataset",
-      params: "Parametri",
-      training: "Addestramento",
-      charts: "Grafici",
-      progress: "Avanzamento dell'addestramento",
-    },
-    configure: {
-      title: "Configura",
-      description: "Scegli modello, dataset e impostazioni di addestramento.",
-      startTraining: "Avvia l'addestramento",
-      starting: "Avvio...",
-      loadingModel: "Caricamento del modello...",
-      checkingDataset: "Verifica del dataset...",
-      trainingConfig: "Configurazione di addestramento",
-    },
-    model: {
-      title: "Modello",
-      description: "Scegli il modello base e il metodo di addestramento",
-      fasterTrainingBadge: "Addestramento 2 volte più rapido",
-      baseModel: "Modello base",
-      localModel: "Modello locale",
-      localModelTooltip:
-        "Percorso di un modello scaricato in locale o di un repo HF personalizzato.",
-      scanningLocalAndCachedModels:
-        "Scansione dei modelli locali e in cache...",
-      scanning: "Scansione...",
-      scanningLocalModels: "Scansione dei modelli locali...",
-      noLocalModelsFound: "Nessun modello locale trovato",
-      noLocalModelsFoundManual:
-        "Nessun modello locale trovato. Inserisci il percorso a mano.",
-      failedToLoadLocalModels: "Impossibile caricare i modelli locali",
-      hfCache: "Cache HF",
-      customFolders: "Cartelle personalizzate",
-      localDir: "Cartella locale",
-      huggingFaceModel: "Modello Hugging Face",
-      huggingFaceModelTooltip:
-        "Cerca fra i modelli Hugging Face o scegli dal nostro elenco consigliato.",
-      searchModels: "Cerca modelli...",
-      searching: "Ricerca...",
-      noModelsFound: "Nessun modello trovato",
-      needsVram: "Serve ~{vram} GB di VRAM (GPU: {gpu} GB)",
-      tightVram: "~{vram} GB di VRAM (al limite con {gpu} GB)",
-      vramEstimate: "~{vram} GB di VRAM",
-      method: "Metodo",
-      methodTooltip:
-        "QLoRA usa la quantizzazione a 4 bit per ridurre al minimo l'uso della VRAM. LoRA usa una precisione a 16 bit. Il fine-tuning completo aggiorna tutti i pesi. CPT (preaddestramento continuo) addestra il modello su testo grezzo per adattarlo a un nuovo dominio senza formattazione in stile chat.",
-      readMore: "Scopri di più",
-      fullFineTune: "Fine-tuning completo",
-      checkingToken: "Verifica del token...",
-      getOrUpdateToken: "Ottieni o aggiorna il token",
-      huggingFaceTokenOptional: "Token Hugging Face (facoltativo)",
-      continuedPretraining: "Preaddestramento continuo",
-      localModels: "Modelli locali",
-      localModelsFound: "Modelli locali o in cache trovati: {count}",
-      loadingLocalModels: "Caricamento dei modelli locali...",
-    },
     dataset: {
-      title: "Dataset",
-      description: "Scegli o carica i dati di addestramento",
-      source: "Origine del dataset",
-      chooseDataset: "Scegli un dataset",
-      chooseDatasetTooltip:
-        "Usa le schede del popup per passare fra Hugging Face e gli output delle ricette locali.",
-      localTab: "Locale",
-      searchHuggingFaceDatasets: "Cerca dataset su Hugging Face...",
-      searchLocalDatasets: "Cerca dataset locali...",
-      searching: "Ricerca...",
-      noDatasetsFound: "Nessun dataset trovato",
-      loadingLocalDatasets: "Caricamento dei dataset locali...",
-      failedToLoadLocalDatasets: "Impossibile caricare i dataset locali.",
-      noLocalDatasetsYet: "Nessun dataset locale.",
-      noLocalDatasetsMatchSearch:
-        "Nessun dataset locale corrisponde alla ricerca.",
-      openDataRecipes: "Apri Ricette",
-      browsingSource:
-        "Stai esplorando {browsing}. La selezione attuale resta {current}.",
-      localDatasets: "Dataset locali",
+      selectors: {
+        subset: "Sottoinsieme",
+        subsetTooltip:
+          "Seleziona il sottoinsieme (configurazione) del dataset da usare.",
+        trainSplit: "Split di addestramento",
+        trainSplitTooltip: "Seleziona lo split da usare per l'addestramento.",
+        evaluationSplit: "Split di valutazione",
+        evaluationSplitTooltip:
+          "Seleziona lo split da usare per la valutazione. Nessuno significa che non verrà eseguita alcuna valutazione durante l'addestramento.",
+        selectSubset: "Seleziona un sottoinsieme...",
+        selectSplit: "Seleziona uno split...",
+        none: "Nessuno",
+        loading:
+          "Caricamento delle configurazioni e degli split del dataset...",
+        manualTitle: "Inserisci manualmente le opzioni del dataset",
+        manualDescription:
+          "Inserisci i nomi esatti della configurazione e degli split Hugging Face da usare.",
+        manualSubsetPlaceholder: "Nome configurazione facoltativo",
+        manualRequired: "È richiesto uno split di addestramento.",
+        manualTooLong: "Usa al massimo 128 caratteri.",
+        manualInvalid: "Questo valore contiene caratteri non supportati.",
+      },
+      sourceAriaLabel: "Origine del dataset",
+      streamingInfoAriaLabel: "Informazioni sullo streaming del dataset",
+      uploadDetails: "Dettagli del caricamento",
+      uploadDetailsTooltip:
+        "Fino a {limit} per file. PDF, DOCX e TXT non sono dataset pronti per l'addestramento: convertili prima nelle Ricette di apprendimento.",
+      fileTooLarge: "File troppo grande",
+      fileTooLargeDescription:
+        "{file} occupa {size}. I caricamenti per l'addestramento supportano fino a {limit}.",
+      documentRedirect: {
+        title: "Questo file deve prima essere convertito",
+        genericFile: "Questo file",
+        description:
+          "{file} è materiale di origine, non un dataset pronto per l'addestramento. Usa le Ricette per i dati per trasformare il documento in un dataset, quindi torna qui per eseguire il fine-tuning.",
+        nextStepTitle: "Passaggio successivo consigliato",
+        nextStepDescription:
+          "Apri le Ricette di apprendimento e inizia con una ricetta basata su documenti, come le domande e risposte fondate su PDF.",
+        openAction: "Apri le Ricette di apprendimento",
+      },
+      previewLoadingHuggingFace:
+        "Recupero dell'anteprima del dataset da Hugging Face...",
+      previewLoading: "Caricamento dell'anteprima...",
+      mappingRequirements: {
+        audioAndText: "audio e testo",
+        imageAndText: "immagine e testo",
+        instructionAndOutput: "istruzione e output",
+        humanAndGpt: "umano e GPT",
+        userAndAssistant: "utente e assistente",
+      },
+      mappingStatus: {
+        heuristicTitle: "Mappatura rilevata con metodi euristici",
+        readyTitle: "Mappatura pronta",
+        requiredTitle: "Mappa le colonne del dataset",
+        heuristicDescription:
+          "Abbiamo rilevato automaticamente la mappatura delle colonne qui sotto usando metodi euristici. Controllala e modificala tramite i menu nelle intestazioni delle colonne oppure usa l'assistenza IA per una mappatura più precisa.",
+        readyDescription:
+          "È tutto corretto. Convertiremo automaticamente questo dataset.",
+        requiredDescription:
+          "Assegna i ruoli alle colonne tramite i menu nelle intestazioni. Assegna almeno {required}.",
+      },
       localDataset: "Dataset locale",
       localDatasetRows: " / {count} righe",
       huggingFaceDataset: "Dataset Hugging Face",
@@ -1221,7 +1564,6 @@ export const it = {
       updated: "Aggiornato",
       evalDataset: "Dataset di valutazione",
       uploading: "Caricamento...",
-      upload: "Carica",
       uploadEvalFile: "Carica il file di valutazione",
       evalDatasetDescription:
         "Facoltativo. Se non lo fornisci, una piccola parte verrà separata dai dati di addestramento.",
@@ -1250,11 +1592,50 @@ export const it = {
       uploadOneFileAtATime: "Carica un file alla volta",
       uploadSingleFileDescription:
         "Puoi caricare un solo file come dataset di addestramento.",
-      checkingToken: "Verifica del token...",
-      getOrUpdateToken: "Ottieni o aggiorna il token",
-      preview: "Anteprima del dataset",
-      split: "Split",
-      subset: "Sottoinsieme",
+      streaming: {
+        label: "Attiva lo streaming",
+        description:
+          "Esegui lo streaming dei dataset di testo di Hugging Face invece di scaricarli.",
+        unavailable: "Streaming non disponibile. Per attivarlo:",
+        completionsUnavailable:
+          "Non disponibile mentre lo streaming del dataset è attivo.",
+        blockers: {
+          source:
+            "Usa un dataset Hugging Face, non un caricamento locale o un'origine S3.",
+          maxSteps:
+            "Imposta Step massimi > 0: la lunghezza dei dataset in streaming non è nota.",
+          trainOnCompletions: 'Disattiva "Solo completamenti dell’assistente".',
+          evalSplit:
+            "Scegli uno split di valutazione distinto: la valutazione è attiva, ma non è impostato uno split separato.",
+          visionModel: "I modelli di visione non supportano lo streaming.",
+          audioModel: "I modelli audio non supportano lo streaming.",
+          embeddingModel:
+            "I modelli di embedding non supportano lo streaming: l'addestramento richiede l'intero dataset.",
+          imageDataset:
+            "Questo dataset sembra contenere immagini, che non possono essere trasmesse in streaming.",
+          audioDataset:
+            "Questo dataset sembra contenere audio, che non può essere trasmesso in streaming.",
+          appleSilicon:
+            "Lo streaming non è ancora supportato su Apple Silicon (MLX).",
+        },
+        options: {
+          trainOnCompletions: "solo completamenti dell'assistente",
+          evaluation:
+            "valutazione (richiede uno split di valutazione separato)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "Streaming disattivato: richiede un numero fisso di Step massimi > 0.",
+          adjusted:
+            "Impostazioni adattate per lo streaming. Opzioni incompatibili disattivate: {options}.",
+          needsMaxSteps:
+            "Lo streaming richiede un numero fisso di Step massimi perché la lunghezza dei dataset in streaming non è nota. Imposta prima Step massimi > 0.",
+          enabledAdjusted:
+            "Streaming attivato. Opzioni incompatibili disattivate: {options}.",
+          disabledForDetectedModality:
+            "Lo streaming è stato disattivato perché i dataset di immagini e audio richiedono un download completo. Controlla l'impostazione, quindi avvia di nuovo.",
+        },
+      },
       s3: {
         title: "Configurazione S3",
         description:
@@ -1265,26 +1646,20 @@ export const it = {
         regionPlaceholder: "us-east-1",
         prefix: "Prefisso del percorso",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip:
-          "Percorso facoltativo dei file del dataset all'interno del bucket",
         accessKeyId: "ID chiave di accesso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Chiave di accesso segreta",
         secretAccessKeyPlaceholder: "La tua chiave di accesso segreta AWS",
         useIamRole: "Usa un ruolo IAM",
-        useIamRoleTooltip:
-          "Usa le credenziali di un ruolo IAM invece delle chiavi di accesso (consigliato su EC2/SageMaker)",
-        testConnection: "Prova la connessione",
-        connectionSuccess: "Connessione al bucket S3 riuscita",
-        connectionFailed: "Connessione al bucket S3 non riuscita",
-        comingSoon: "Integrazione S3 in arrivo",
-        comingSoonDescription:
-          "Il caricamento dei dataset da S3 richiede boto3. La funzione è in fase di sviluppo.",
       },
     },
     params: {
-      title: "Parametri",
-      description: "Configura gli iperparametri di addestramento",
+      mode: {
+        simple: "Semplice",
+        advanced: "Avanzata",
+        ariaLabel: "Modalità dei parametri",
+      },
+      notSupportedAppleSilicon: "Non supportato su Apple Silicon",
       projectName: "Nome del progetto",
       optional: "Facoltativo",
       projectNameDescription:
@@ -1298,15 +1673,10 @@ export const it = {
       maxStepsTooltip:
         "Sovrascrive il numero totale di step dell'ottimizzatore.",
       epochsTooltip: "Numero di passaggi completi sul dataset.",
-      epochsDescription: "Ogni epoca è un passaggio completo sul tuo dataset.",
-      maxStepsDescription:
-        "Limita l'addestramento a un numero fisso di step dell'ottimizzatore.",
       contextLength: "Lunghezza di contesto",
       contextLengthTooltip:
         "Numero massimo di token per campione di addestramento.",
       customContextLength: "Inserisci un valore personalizzato",
-      contextLengthDescription:
-        "Lunghezza massima di sequenza per i campioni di addestramento",
       learningRate: "Tasso di apprendimento",
       learningRateTooltip:
         "Ampiezza del passo negli aggiornamenti dei pesi. Con valori più bassi, l'addestramento è più lento ma più stabile.",
@@ -1315,8 +1685,6 @@ export const it = {
       embeddingLearningRate: "Tasso di apprendimento degli embedding",
       embeddingLearningRateTooltip:
         "Usato solo quando il CPT addestra embed_tokens. Gli embedding si destabilizzano più facilmente dei pesi LoRA, quindi di solito richiedono un tasso di apprendimento più basso. Lascia vuoto per usare lr/10; in genere si usa un valore compreso tra lr/2 e lr/10. Aumentalo solo se l'adattamento del vocabolario o dei token specifici del dominio è troppo lento.",
-      embeddingLearningRateDescription:
-        "Lascia vuoto per usare lr/10 (consigliato). In genere si usa un valore compreso tra lr/2 e lr/10.",
       rank: "Rank",
       rankTooltip:
         "Dimensione delle matrici a rango ridotto. Più alto = più capacità.",
@@ -1388,21 +1756,62 @@ export const it = {
       readMore: "Scopri di più",
     },
     training: {
-      title: "Addestramento",
-      description: "Monitora e controlla l'addestramento",
-      chartNoDataTitle: "Nessun dato di addestramento",
-      chartNoDataDescription:
-        "Avvia l'addestramento per vedere l'andamento della loss",
+      chooseModel: "Scegli un modello",
+      chooseDataset: "Scegli un dataset",
+      chooseModelAndDataset: "Scegli modello e dataset",
+      validation: {
+        s3MultimodalUnsupported:
+          "I dataset S3 non sono ancora supportati per l'addestramento visivo o audio.",
+        s3BucketRequired: "Inserisci prima il nome di un bucket S3.",
+        s3CredentialsRequired:
+          "Fornisci le chiavi di accesso S3 oppure attiva il ruolo IAM.",
+        modelRequired: "Seleziona prima un modello di base.",
+        learningRatePositive:
+          "Inserisci un tasso di apprendimento maggiore di zero.",
+        embeddingLearningRateRange:
+          "Inserisci un tasso di apprendimento degli embedding maggiore di 0 e minore di 1.",
+        hfDatasetRequired: "Seleziona prima un dataset Hugging Face.",
+        hfDatasetSplitRequired:
+          "Seleziona o inserisci prima uno split di addestramento.",
+        localDatasetRequired: "Seleziona prima un dataset locale.",
+        unsupportedDatasetSource: "Origine del dataset non supportata.",
+      },
+      startFailed: "Avvio dell'addestramento non riuscito",
+      startUnconfirmed:
+        "Unsloth non ha potuto confermare l'avvio dell'addestramento. La verifica dello stato continua in background.",
+      stopFailed: "Arresto dell'addestramento non riuscito",
+      trainingStillActiveTitle: "Addestramento ancora attivo",
+      stopBeforeConfig:
+        "Ferma prima l'addestramento, quindi torna alla configurazione.",
+      resumeFailed: "Ripresa dell'addestramento non riuscita",
+      resumeFailedTitle: "Impossibile riprendere l'addestramento",
+      resumeUnavailable:
+        "È possibile riprendere solo i run fermati o con errori che dispongono di un checkpoint salvato.",
+      modelUnverified:
+        "Impossibile verificare le impostazioni del modello. Controlla la connessione o il token Hugging Face, quindi riprova.",
+      legacyDatasetScriptUnsupported:
+        "Questo dataset dell'Hub dipende da uno script personalizzato obsoleto e non è supportato in questo flusso di addestramento.",
+      hfModelAccessDenied:
+        "Hugging Face ha negato l'accesso a questo modello. Aggiungi un token Hugging Face valido con accesso al repository, accetta gli eventuali termini richiesti e riprova.",
+      hfModelVerificationRateLimited:
+        "La verifica del modello su Hugging Face è soggetta a un limite di richieste. Riprova tra poco.",
+      hfModelVerificationFailed:
+        "Impossibile verificare il modello Hugging Face. Controlla l'ID del repository e il token di accesso.",
+      hfModelMetadataUnavailable:
+        "I metadati del modello Hugging Face non sono temporaneamente disponibili. Riprova prima di avviare l'addestramento.",
+      datasetUnverified:
+        "Impossibile verificare che il dataset sia compatibile con questo modello. Controlla la connessione o il token Hugging Face: all'avvio, l'addestramento riproverà la verifica.",
+      setupChanged:
+        "La configurazione dell'addestramento è cambiata durante la verifica. Controllala e avvia di nuovo.",
+      configTooLarge:
+        "La configurazione dell'addestramento è troppo grande (massimo 1 MiB).",
+      failedToSaveConfig: "Salvataggio della configurazione non riuscito",
       startTraining: "Avvia l'addestramento",
       starting: "Avvio...",
       loadingModel: "Caricamento del modello...",
       checkingDataset: "Verifica del dataset...",
-      configLabel: "Configurazione di addestramento",
-      upload: "Carica",
       uploadConfigTooltip: "Carica una configurazione YAML salvata",
-      save: "Salva",
       saveConfigTooltip: "Scarica la configurazione attuale in YAML",
-      reset: "Ripristina",
       resetConfigTooltip: "Torna ai valori predefiniti del modello",
       configLoaded: "Configurazione caricata",
       failedToLoadConfig: "Impossibile caricare la configurazione",
@@ -1419,7 +1828,7 @@ export const it = {
       cancelAction: "Annulla l'addestramento",
       stopTitle: "Ferma l'addestramento",
       stopDescription:
-        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; con «Ferma» non potrai riprendere l'addestramento.",
+        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; se lo fermi senza salvare non potrai riprendere l'addestramento.",
       stopAction: "Ferma",
       stopping: "Arresto in corso...",
       stopAndSave: "Ferma e salva",
@@ -1431,8 +1840,21 @@ export const it = {
         "Addestramento completato. Passo successivo: confronta gli output del modello base con quelli del modello sottoposto a fine-tuning.",
     },
     history: {
+      filesDeleted: "File eliminati",
+      deleteArtifactsLabel: "Elimina anche i file degli adattatori dal disco",
+      deleteArtifactsDescription:
+        "Rimuove la cartella di output del run, inclusi gli adattatori e i checkpoint salvati.",
+      deleteArtifactsSharedNote:
+        "Un altro run condivide questa cartella di output. I file verranno conservati finché non sarà eliminato l'ultimo run che li usa.",
+      artifactsKeptShared:
+        "Run eliminato. I file degli adattatori sono stati conservati perché un altro run usa la stessa cartella.",
+      deleteArtifactsActiveError:
+        "Questi file sono usati dal run di addestramento in corso. Ferma l'addestramento prima di eliminarli.",
+      deleteArtifactsFailed:
+        "Il run è stato eliminato, ma non è stato possibile rimuoverne i file.",
+      deleteArtifactsRetainedError:
+        "Non è stato possibile rimuovere i file dell’adattatore, quindi il run è stato mantenuto nella cronologia.",
       title: "Cronologia",
-      emptyTitle: "Nessun run di addestramento",
       emptyDescription:
         "Nessun run di addestramento. Avvia il tuo primo run nella scheda Configura.",
       loadError: "Impossibile caricare i run di addestramento",
@@ -1445,9 +1867,6 @@ export const it = {
       deleteTitle: "Eliminare il run di addestramento?",
       deleteDescription:
         "Questo run di addestramento e tutte le sue metriche verranno eliminati definitivamente. L'operazione è irreversibile.",
-      runCount: "{count} run",
-      oneRun: "1 run",
-      resume: "Riprendi",
       resumeTraining: "Riprendi l'addestramento",
       resuming: "Ripresa in corso...",
       deleteRun: "Elimina il run",
@@ -1564,6 +1983,7 @@ export const it = {
         loadingDataset: "Caricamento del dataset",
         configuring: "Configurazione",
         training: "Addestramento",
+        finalizing: "Salvataggio del modello",
         completed: "Completato",
         error: "Errore",
         stopped: "Fermato",
@@ -1584,9 +2004,6 @@ export const it = {
       dataset: "Dataset",
       datasetStreaming: "Dataset: in streaming (nessun download completo)",
       modelWeights: "Pesi del modello",
-    },
-    tour: {
-      guidedTour: "Tour guidato",
     },
   },
 } as const;

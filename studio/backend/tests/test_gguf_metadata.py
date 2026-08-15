@@ -12,6 +12,7 @@ from typing import Iterable, Mapping
 
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
+    mmproj_accepts_image,
     pairing_score,
     read_gguf_context_length,
     read_gguf_general_metadata,
@@ -414,3 +415,42 @@ def test_mmproj_audio_capability_missing_or_non_gguf(tmp_path: Path):
     junk = tmp_path / "garbage.gguf"
     junk.write_bytes(b"not a gguf header at all")
     assert read_mmproj_audio_capability(str(junk)) is None
+
+
+# --- mmproj_accepts_image ----------------------------------------------
+
+
+def _projector(tmp_path: Path, **bools) -> str:
+    return str(
+        _write_synthetic_gguf(
+            tmp_path / "mmproj.gguf", {"general.type": "mmproj"}, extra_bools = bools
+        )
+    )
+
+
+def test_accepts_image_when_vision_declared(tmp_path: Path):
+    """A projector declaring vision accepts images, whatever it says about audio."""
+    assert mmproj_accepts_image(_projector(tmp_path, **{"clip.has_vision_encoder": True})) is True
+
+
+def test_audio_only_projector_is_not_a_vision_tower(tmp_path: Path):
+    """ultravox / Voxtral / Qwen3-ASR: audio declared, vision key absent."""
+    assert mmproj_accepts_image(_projector(tmp_path, **{"clip.has_audio_encoder": True})) is False
+
+
+def test_dual_projector_still_accepts_images(tmp_path: Path):
+    """Qwen2.5-Omni declares both, which is what makes a lone audio claim evidence."""
+    p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": True})
+    assert mmproj_accepts_image(p) is True
+
+
+def test_projector_declaring_neither_stays_image_capable(tmp_path: Path):
+    """An unreadable or older convert must not be refused: the load decides."""
+    assert mmproj_accepts_image(_projector(tmp_path)) is True
+    assert mmproj_accepts_image(str(tmp_path / "nope.gguf")) is True
+
+
+def test_declared_audio_false_is_not_an_audio_claim(tmp_path: Path):
+    """A vision projector writing audio=False is still a vision tower."""
+    p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": False})
+    assert mmproj_accepts_image(p) is True

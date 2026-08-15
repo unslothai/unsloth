@@ -260,11 +260,16 @@ def test_config_normalized_krea2_requires_bf16_compute():
 
 
 def test_force_bf16_families_matches_trainer_specs():
-    # The route-level bf16-only preflight set must list exactly the DiT families whose trainer spec sets force_bf16. A missing
+    # The route-level bf16-only preflight set must list every family whose trainer refuses fp16. A missing
     # one lets an fp16 start pass the preflight, reserve training and evict residents, with only the child trainer raising.
+    # The DiT families declare it on their spec; MiniMax-H3 has its own trainer and declares it there, so the set is
+    # the union rather than the _SPECS projection alone.
     from core.training.diffusion_dit_trainer import _SPECS
     from core.training.diffusion_train_common import _FORCE_BF16_FAMILIES
-    assert _FORCE_BF16_FAMILIES == {fam for fam, spec in _SPECS.items() if spec.force_bf16}
+
+    dit_bf16_only = {fam for fam, spec in _SPECS.items() if spec.force_bf16}
+    assert dit_bf16_only <= _FORCE_BF16_FAMILIES
+    assert _FORCE_BF16_FAMILIES - dit_bf16_only == {"minimax-h3"}
 
 
 def _cfg(**kw):

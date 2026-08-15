@@ -91,7 +91,7 @@ def _store_reducers() -> str:
     text = read(STORE)
     checkpoint = slice_between(
         text,
-        "setCheckpoint: (modelId, ggufVariant) =>",
+        "setCheckpoint: (modelId, ggufVariant, options) =>",
         "  // Re-apply the incoming thread's own usage",
     )
     active = slice_between(text, "setActiveThreadId: (activeThreadId) =>", "setActiveProjectId:")
@@ -178,8 +178,23 @@ function parseExternalModelId(id: string): any {
   return rest.length > 0 ? { providerId, modelId: rest.join(":") } : null;
 }
 const useExternalProvidersStore: any = { getState: () => ({ providers: [] }) };
-function getExternalMaxOutputTokens(_providerType: any, _modelId: any): number {
+function getExternalMaxOutputTokens(
+  _providerType: any,
+  _modelId: any,
+  _maxOutputTokens?: any,
+): number {
   return 8192;
+}
+function shouldAdvanceQueuedSettingsEpoch(
+  currentValues: Readonly<object>,
+  nextValues: Readonly<object>,
+  trackQueuedSettings = true,
+): boolean {
+  if (!trackQueuedSettings) return false;
+  const keys = new Set([...Object.keys(currentValues), ...Object.keys(nextValues)]);
+  return Array.from(keys).some(
+    (key) => !Object.is((currentValues as any)[key], (nextValues as any)[key]),
+  );
 }
 
 const actions: any = {
@@ -262,6 +277,9 @@ async function countChatInputTokens(payload: any): Promise<any> {
 }
 
 const requestPromptQueueStop = (_opts: any): void => {
+  world.promptQueueStops += 1;
+};
+const requestTemporaryPromptQueueStop = (): void => {
   world.promptQueueStops += 1;
 };
 

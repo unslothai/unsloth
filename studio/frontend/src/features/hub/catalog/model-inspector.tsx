@@ -510,7 +510,7 @@ export const ModelInspector = memo(function ModelInspector({
 
   if (!model) {
     return (
-      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 py-16 text-center">
+      <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 py-16 text-center">
         <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>

@@ -735,7 +735,7 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
     killed = []
     monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
     monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
-    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 1024, 2048)])
     monkeypatch.setattr(
         backend,
         "_download_gguf",
@@ -794,7 +794,9 @@ def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatc
 
         monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
         monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
-        monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+        monkeypatch.setattr(
+            backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 1024, 2048)]
+        )
         monkeypatch.setattr(backend, "_download_gguf", _download)
         monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
         monkeypatch.setattr(backend, "_kill_process", lambda: order.append("kill"))
@@ -826,7 +828,7 @@ def test_local_vulkan_diffusion_rejection_keeps_active_server(monkeypatch, tmp_p
     killed = []
     monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
     monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
-    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 1024, 2048)])
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: True)
     monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
 
@@ -875,7 +877,7 @@ def _vulkan_pinned_backend(monkeypatch, killed: list) -> LlamaCppBackend:
     backend = LlamaCppBackend()
     monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
     monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
-    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 1024, 2048)])
     monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
     return backend
 
@@ -1119,6 +1121,20 @@ def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
     LlamaCppBackend._emit_child_gpu_visibility(env, "-1", prefer_rocr = True)
     assert env["HIP_VISIBLE_DEVICES"] == "-1"
     assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_cpu_only_pin_keeps_an_inherited_rocr_mask(monkeypatch):
+    # The anti-stacking clear exists for a POSITIVE pin (ROCR re-indexes from 0,
+    # then a non-zero HIP pin points out of range). "-1" hides every device
+    # whatever ROCR says, so clearing it only re-exposes agents the parent hid to
+    # the HSA enumeration that dies on an uncovered arch (#7624). Same rule the
+    # embedding CPU launch follows.
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "1"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "-1")
+    assert env["HIP_VISIBLE_DEVICES"] == "-1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "-1"
+    assert env["ROCR_VISIBLE_DEVICES"] == "1"
 
 
 def _amd_sdk_torch_stub(monkeypatch):

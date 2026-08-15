@@ -37,7 +37,7 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
 }
 
 # bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What they occupy on device after the dtype
-# cast, NOT the download size (Z-Image ships fp32: 24.6 GB of shards -> 12.3 GB bf16). From HF sibling metadata.
+# cast, NOT the download size (Z-Image-Turbo ships fp32: 24.6 GB of shards -> 12.3 GB bf16). From HF sibling metadata.
 _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),
@@ -59,7 +59,7 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
 
 # Hub DOWNLOAD bytes relative to the bf16-resident sizes above, for families whose published checkpoints are not stored at
 # bf16. The free-disk gate needs what lands in the HF cache, which differs by 2x in either direction here. From HF metadata:
-#   z-image     transformer/ 23,479 MiB fp32 -> 11,730 MiB resident (2.00x)
+#   z-image     Turbo transformer/ 23,479 MiB fp32 -> 11,730 MiB resident (2.00x)
 #   lumina-2    transformer/  9,956 MiB fp32 ->  4,959 MiB resident (2.01x)
 #   ideogram-4  transformer/ + unconditional_transformer/ 17,718 MiB fp8 -> 35,477 MiB resident (0.50x)
 # Anything absent ships bf16 and downloads what it occupies (measured 0.99-1.07x).
@@ -69,10 +69,55 @@ _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
     "ideogram-4": 0.5,
 }
 
-# Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
-_BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
-    "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
+# Per-base overrides of the factor above, for a checkpoint stored at a different precision from its
+# family default. Only Tongyi-MAI/Z-Image needs one: the family key exists because the distilled
+# Turbo publishes fp32 (23,479 MiB), while the undistilled base ships bf16 (11,740 MiB) and so
+# downloads exactly what it occupies. Without it the free-disk gate demands twice the real size.
+_BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
+    "tongyi-mai/z-image": 1.0,
 }
+
+
+def _base_key(base_repo: Optional[str]) -> str:
+    """The key both per-base tables below are written against: canonical upstream id, lowercased.
+
+    ``canonical_base`` maps a mirror back to its upstream but preserves the caller's casing for
+    everything else, and a base repo reaches here however the user typed it: the trust gate and
+    every other base-keyed table compare case-insensitively, so these must too or a lowercase
+    custom base silently misses its override and gets sized as the family default.
+    """
+    from .diffusion_families import canonical_base
+    return canonical_base(base_repo).strip().lower()
+
+
+def hub_download_factor(fam: Any, base_repo: Optional[str] = None) -> float:
+    """Download bytes per bf16-resident byte for this pick, defaulting to 1.0."""
+    override = _BASE_REPO_HUB_DOWNLOAD_FACTOR.get(_base_key(base_repo)) if base_repo else None
+    if override is not None:
+        return override
+    return _FAMILY_HUB_DOWNLOAD_FACTOR.get(getattr(fam, "name", None), 1.0)
+
+
+# Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
+# flux.2-klein ships FOUR checkpoints under one entry: 4B / base-4B (the family default, Qwen3-4B encoder) and
+# 9B / base-9B (18.2 GB transformer, Qwen3-8B encoder). The 9B pair needs an override on BOTH ids: sizing
+# klein-BASE-9B off the family default understates it by 2.3x, and the base variants are the ones the upstream
+# guidance points fine-tuning at, so it is the likelier of the two to be loaded.
+_BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
+    "black-forest-labs/flux.2-klein-9b": (18.2, 16.4, 0.2),
+    "black-forest-labs/flux.2-klein-base-9b": (18.2, 16.4, 0.2),
+}
+
+
+def base_repo_bf16_components_gb(base_repo: Optional[str]) -> Optional[tuple[float, float, float]]:
+    """The per-base override for ``base_repo``, or None when it has none.
+
+    No family fallback, unlike ``family_bf16_components_gb``: a caller that already holds a
+    better number for the family default needs to know whether this particular base was
+    actually named in the table, not receive the family figure back."""
+    if not base_repo:
+        return None
+    return _BASE_REPO_BF16_GB.get(_base_key(base_repo))
 
 
 def family_bf16_components_gb(
@@ -80,10 +125,10 @@ def family_bf16_components_gb(
 ) -> Optional[tuple[float, float, float]]:
     """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
     in the table (callers fall back to file-size estimates)."""
-    if base_repo:
-        override = _BASE_REPO_BF16_GB.get(base_repo)
-        if override is not None:
-            return override
+    # A per-base miss falls through quietly to the coarser family table.
+    override = base_repo_bf16_components_gb(base_repo)
+    if override is not None:
+        return override
     name = getattr(fam, "name", None)
     return _FAMILY_BF16_GB.get(name) if name else None
 
@@ -95,8 +140,8 @@ class DenseQuantEstimate:
     ``transient_transformer_mib`` is the build peak (dense bf16 when quantising on the fly, or the
     quantised size when a prequant checkpoint loads via meta). ``steady_transformer_mib`` is what
     stays resident for generation. ``download_transformer_mib`` is what the base-repo transformer
-    costs on DISK, which is not the same number whenever the family publishes something other than
-    bf16 (see ``_FAMILY_HUB_DOWNLOAD_FACTOR``)."""
+    costs on DISK, which is not the same number whenever the checkpoint publishes something other
+    than bf16 (see ``hub_download_factor``)."""
 
     scheme: str
     steady_transformer_mib: int
@@ -104,6 +149,11 @@ class DenseQuantEstimate:
     companions_mib: int
     prequant: bool
     download_transformer_mib: int = 0
+    # The TEXT-ENCODER share of ``companions_mib``. The memory planner needs it to price the
+    # group tier that streams the encoders instead of keeping them resident, and this table is
+    # the only place the split exists on the dense-candidate path. Defaulted so any construction
+    # that predates it still works (the planner reads a 0 split as "no split", i.e. no new tier).
+    text_encoders_mib: int = 0
 
     @property
     def transient_total_mib(self) -> int:
@@ -131,7 +181,7 @@ def estimate_dense_quant(
     steady = int(transformer_gb * factor * _MIB_PER_GB)
     transient = steady if prequant_available else int(transformer_gb * _MIB_PER_GB)
     companions = int((text_encoders_gb + vae_gb) * _MIB_PER_GB)
-    hub_factor = _FAMILY_HUB_DOWNLOAD_FACTOR.get(getattr(fam, "name", None), 1.0)
+    hub_factor = hub_download_factor(fam, base_repo)
     return DenseQuantEstimate(
         scheme = scheme,
         steady_transformer_mib = steady,
@@ -139,6 +189,9 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
+        # Same conversion as `companions`, of which this is the text-encoder half, so the planner's
+        # `companions - text_encoders` is the VAE and nothing else.
+        text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
 
@@ -190,18 +243,35 @@ def resolve_dense_quant_candidate(
     if scheme is None:
         return None
     prequant_available = False
+    prequant_cached = False
     # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the candidate for the dense build.
     if not force_dense:
         try:
-            from .diffusion_prequant import usable_prequant_source
+            from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source
 
             # usable_ (not resolve_): a local path override counts only when the loader will accept it (allowlisted AND present), else it rebuilds dense after eviction.
             src = usable_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base_repo
             )
             prequant_available = src is not None
+            if src is not None and getattr(src, "kind", None) == "path":
+                # A local override is the operator's own file on disk: it downloads nothing, so the
+                # space gate has no claim on it. prequant_checkpoint_cached only answers for hosted
+                # repos (_cached_in_root returns None for any other kind), so asking it here would
+                # report False and re-apply the gate to a file that costs no bytes, which is the
+                # opposite of what the retry assumes about local paths.
+                prequant_cached = True
+            elif src is not None:
+                # Pin the ACTIVE root, as the retry and the loader both do. Unpinned,
+                # cached_checkpoint_path searches only huggingface_hub's import-time constant, so
+                # after a cache-folder change the retry proves the checkpoint cached in the live
+                # root and this would still call it uncached and re-apply the gate. Imported from
+                # utils rather than diffusion.hub_cache_dir, which would be a circular import.
+                from utils.hf_cache_settings import active_hf_hub_cache
+                prequant_cached = prequant_checkpoint_cached(src, cache_dir = active_hf_hub_cache())
         except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
             prequant_available = False
+            prequant_cached = False
     estimate = estimate_dense_quant(
         fam, scheme, base_repo = base_repo, prequant_available = prequant_available
     )
@@ -215,9 +285,12 @@ def resolve_dense_quant_candidate(
             estimate.companions_mib,
             prequant_available,
         )
-    if estimate is not None:
-        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk; a cached re-download is a no-op, so
-        # this only trips on an already-critical disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
+    # A cached prequant checkpoint downloads nothing, so the space gate has no claim on it. The
+    # gate used to run anyway, which discarded exactly the candidate the auto retry exists to find:
+    # that retry only ever proposes a rung whose checkpoint is already cached, so on a low-disk or
+    # moved-cache install every retry fell back to the GGUF despite a resident-fit local artifact.
+    if estimate is not None and not (estimate.prequant and prequant_cached):
+        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant
@@ -237,22 +310,114 @@ def resolve_dense_quant_candidate(
     return estimate
 
 
+# ── strict precision (fail closed on a declined EXPLICIT request) ────────────
+# An `auto` precision is a delegation, so falling back down the ladder is the feature working. An
+# EXPLICIT scheme is a contract: silently loading the GGUF (or a dense bf16 DiT) instead produced a
+# perfectly good image at a precision nobody asked for, which is exactly what made a successful
+# render worthless as proof that the requested precision ran. Escape hatch for anyone who relied on
+# the old behaviour; unset (the default) fails closed.
+_PRECISION_FALLBACK_ENV = "UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK"
+
+
+def precision_fallback_allowed() -> bool:
+    """Whether a declined EXPLICIT precision request may fall back silently (opt-in)."""
+    value = str(os.environ.get(_PRECISION_FALLBACK_ENV, "")).strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
+def precision_refusal_message(
+    control: str,
+    requested: str,
+    reason: str,
+    *,
+    off_label: str,
+    auto_available: bool = True,
+) -> str:
+    """The client-facing refusal for a declined explicit precision: what was asked, why it could
+    not run, and the settings that always work. ``off_label`` names this backend's "run the
+    checkpoint as-is" option, which differs between the image and video loaders.
+
+    ``auto_available`` is False for controls with no auto mode. ``text_encoder_quant`` is one:
+    both request models restrict it to fp8 / fp8_dynamic / int8 / nvfp4, so a user who followed a
+    "Choose Auto" instruction there got a 422 from request validation instead of a working load."""
+    remedy = (
+        "Choose Auto to let the backend pick the fastest precision this host can run, "
+        f"or {off_label}."
+        if auto_available
+        else f"{off_label[:1].upper()}{off_label[1:]}."
+    )
+    return f"{control}='{requested}' could not be used: {reason}. {remedy}"
+
+
 # ── resolved-record (status surface) ─────────────────────────────────────────
-def build_resolved_record(
-    controls: dict[str, tuple[Optional[Any], Any, str]],
-) -> dict[str, dict[str, Any]]:
+# How the engaged value relates to what the caller asked for. Additive on the status payload: every
+# honored request and every auto decision reports "applied", so a client that ignores the field sees
+# exactly today's behaviour.
+RESOLVED_APPLIED = "applied"  # the ask was honored (or there was no ask)
+RESOLVED_FELL_BACK = "fell_back"  # an explicit ask was declined and something ELSE engaged
+RESOLVED_UNSUPPORTED = "unsupported"  # an explicit ask cannot run on this host / model at all
+
+# Requests that mean "do not engage this control", so an "off" engagement HONORS them.
+_RESOLVED_OFF_VALUES = frozenset({"", "none", "off", "false", "0"})
+
+# Controls whose REQUEST and ENGAGED value share one vocabulary, so a mismatch is derivable here
+# rather than trusted from the call site (a decline site that forgets to classify itself still
+# reports the truth). memory_mode is deliberately absent: it requests a MODE ("low_vram") and
+# engages an offload POLICY ("sequential"), so comparing the two would report every honored
+# request as a fallback. attention_backend is absent for the same reason ("cudnn" engages as
+# "_native_cudnn").
+_RESOLVED_COMPARABLE = frozenset({"transformer_quant", "text_encoder_quant"})
+
+
+def _resolved_norm(value: Any) -> str:
+    """A control value folded to its comparison key; every "off" spelling folds to ""."""
+    if value is None:
+        return ""
+    text = str(value).strip().lower().replace("-", "_")
+    return "" if text in _RESOLVED_OFF_VALUES else text
+
+
+def _resolved_values_match(explicit: Any, engaged: Any) -> bool:
+    """Whether ``engaged`` is what ``explicit`` asked for (cpu_offload compares as a boolean)."""
+    if isinstance(explicit, bool) or isinstance(engaged, bool):
+        return bool(explicit) == bool(engaged)
+    return _resolved_norm(explicit) == _resolved_norm(engaged)
+
+
+def build_resolved_record(controls: dict[str, tuple]) -> dict[str, dict[str, Any]]:
     """The per-control ``resolved`` record for status: engaged value + provenance.
 
-    ``controls`` maps a control name to ``(explicit, engaged, reason)``, where ``explicit`` is the
-    raw request (None / "" / "auto" = left to the backend). Rendered as an "Auto: X" badge."""
+    ``controls`` maps a control name to ``(explicit, engaged, reason)`` or
+    ``(explicit, engaged, reason, status)``, where ``explicit`` is the raw request
+    (None / "" / "auto" = left to the backend) and ``status`` is one of the ``RESOLVED_*``
+    constants (omit it to let this derive one).
+
+    Each entry carries BOTH sides of the story: ``requested`` (what the caller asked for, verbatim,
+    ``null`` when they left it to us) and ``value`` (what actually engaged), plus the ``status``
+    saying whether those agree. A successful load whose requested precision was declined therefore
+    stays visible instead of being erased into a bare ``source: "explicit"``, which rendered no
+    badge at all while the dropdown kept advertising the request."""
     record: dict[str, dict[str, Any]] = {}
-    for name, (explicit, engaged, reason) in controls.items():
+    for name, entry in controls.items():
+        explicit, engaged, reason = entry[0], entry[1], entry[2]
+        status = entry[3] if len(entry) > 3 else None
         left_to_backend = explicit is None or (
             isinstance(explicit, str) and explicit.strip().lower() in ("", "auto")
         )
+        if left_to_backend:
+            # The backend chose it, so there is nothing to decline: this is the "Auto: X" badge.
+            status = RESOLVED_APPLIED
+        elif status is None:
+            status = (
+                RESOLVED_FELL_BACK
+                if name in _RESOLVED_COMPARABLE and not _resolved_values_match(explicit, engaged)
+                else RESOLVED_APPLIED
+            )
         record[name] = {
             "value": engaged,
+            "requested": None if left_to_backend else explicit,
             "source": "auto" if left_to_backend else "explicit",
+            "status": status,
             "reason": reason,
         }
     return record

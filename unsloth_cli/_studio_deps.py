@@ -72,11 +72,26 @@ def load_install_manifest_module(extra_roots: Sequence[Path] = ()):
 
 
 def _venv_root_for_module(module) -> Optional[Path]:
-    """Prefix owning a manifest module, which may be a venv other than ours."""
-    path = Path(getattr(module, "__file__", "") or "")
+    """Prefix owning a manifest module, which may be a venv other than ours.
+
+    A prefix only owns the module when the module actually lives in that
+    prefix's site-packages. An editable checkout (`./install.sh --local`) keeps
+    studio/install_manifest.py in the repo, so the first pyvenv.cfg above it is
+    whatever venv the clone happens to sit inside -- frequently an unrelated one
+    when the repo is cloned into a directory that is itself a virtualenv. Owning
+    it there would verify that venv's packages instead of the managed install and
+    report every managed dependency as missing.
+    """
+    path = _resolved(Path(getattr(module, "__file__", "") or ""))
     for parent in path.parents:
         if (parent / "pyvenv.cfg").is_file():
-            return parent
+            for site_packages in _venv_site_packages(parent):
+                try:
+                    path.relative_to(_resolved(site_packages))
+                except ValueError:
+                    continue
+                return parent
+            return None
     return None
 
 
@@ -217,6 +232,61 @@ def _scan_paths() -> Dict[str, list]:
     return {"path": paths} if paths else {}
 
 
+# Top-level dirs several wheels write into, so one uninstall deletes another's
+# files and the survivor's RECORD describes a file nothing recreates. einx and
+# torchao both ship test/conftest.py, and install_python_stack.py
+# force-reinstalls torchao every update; unsloth_zoo <= 2026.8.5 shipped
+# tests/ and scripts/ into the same squatted namespace.
+_SHARED_NON_RUNTIME_ROOTS = frozenset(
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+        "scripts",
+    )
+)
+
+# Rewritten in place by our own setup: setup.ps1/setup.sh run `npm install`
+# inside the installed tree, and npm dedupes hoisted entries under
+# legacy-peer-deps, shrinking the lockfile below its recorded size.
+_INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+
+
+def _shared_non_runtime(rel: str) -> bool:
+    """A row under a top-level dir several wheels write into.
+
+    Ownership of these is unreliable: whichever wheel installed last wins, and
+    any of them uninstalling takes the others' files with it. That is a property
+    of the path, not of the distribution claiming it, so it holds for what we
+    ship too: unsloth_zoo <= 2026.8.5 packaged a top-level tests/ and scripts/,
+    nothing imports either at runtime, and a clobbered copy wedged every update
+    with `unsloth_zoo: tests/conftest.py is 8107 bytes, expected 11429`. Our
+    runtime trees are unaffected, since none of them is named for a shared root.
+    Applied while reading RECORD, not when reporting, so the row also stays out
+    of the `limit` budget. Its claim is still counted: dropping a colliding row
+    before the tally is what made a retained row look singly owned, so another
+    distribution's file got measured against unsloth_zoo's RECORD.
+    """
+    parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
+    return len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS
+
+
+def _installer_rewritten(rel: str) -> bool:
+    """A file our own setup rewrites in place, so its recorded size drifts.
+
+    Only the size is unreliable. The file disappearing is still damage, so the
+    row is kept and only its size dropped.
+    """
+    return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
+
+
 def damaged_installed_files(limit: int = 8) -> List[str]:
     """Installed files that are gone, or shorter than pip recorded.
 
@@ -235,6 +305,11 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     landed is the one on disk, so its size says nothing about either RECORD --
     in EITHER direction. Sizes are therefore compared after the whole scan, once
     multiply-owned paths are known, rather than during it.
+
+    Rows that cannot be import-time damage are dropped up front, and a file our
+    own setup rewrites keeps its existence check but loses its size. The answer
+    to a finding is "reinstall over the top", so a file no reinstall would
+    change must not produce one. See _shared_non_runtime, _installer_rewritten.
 
     Scanned over the interpreter's own site-packages rather than all of
     sys.path. distributions() searches every sys.path entry, so a damaged
@@ -273,21 +348,24 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
-            # The size field is optional and real wheels do leave it blank. Keep
-            # the row anyway with an unknown size: existence is still checkable,
-            # and dropping the row meant a deletion went unreported.
-            recorded: Optional[int] = None
-            if len(row) >= 3 and row[2]:
-                try:
-                    recorded = int(row[2])
-                except ValueError:
-                    recorded = None
             try:
                 target = dist.locate_file(rel)
             except Exception:
                 continue
             key = os.path.normcase(str(target))
+            # Before the filter: a dropped row still owns the path it claims.
             owners[key] = owners.get(key, 0) + 1
+            if _shared_non_runtime(rel):
+                continue
+            # The size field is optional and real wheels do leave it blank. Keep
+            # the row anyway with an unknown size: existence is still checkable,
+            # and dropping the row meant a deletion went unreported.
+            recorded: Optional[int] = None
+            if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
+                try:
+                    recorded = int(row[2])
+                except ValueError:
+                    recorded = None
             entries.append((name, rel, recorded, target, key))
 
     found: List[str] = []

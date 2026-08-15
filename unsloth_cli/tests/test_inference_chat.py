@@ -146,6 +146,11 @@ def test_inference_exposes_gguf_runtime_options():
     extra = _option(inference, "llama_extra_args")
     assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
 
+    spec_type = _option(inference, "speculative_type")
+    assert "--speculative-type" in (getattr(spec_type, "param_decls", None) or [])
+    draft_n = _option(inference, "spec_draft_n_max")
+    assert "--spec-draft-n-max" in (getattr(draft_n, "param_decls", None) or [])
+
 
 def test_mlx_distributed_info_reads_launch_env(monkeypatch, tmp_path):
     _clear_mlx_distributed_env(monkeypatch)
@@ -205,6 +210,11 @@ def test_chat_command_is_registered_with_options():
 
     extra = _option(chatmod.chat, "llama_extra_args")
     assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
+
+    spec_type = _option(chatmod.chat, "speculative_type")
+    assert "--speculative-type" in (getattr(spec_type, "param_decls", None) or [])
+    draft_n = _option(chatmod.chat, "spec_draft_n_max")
+    assert "--spec-draft-n-max" in (getattr(draft_n, "param_decls", None) or [])
 
 
 class _FakeBackend:
@@ -477,6 +487,8 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         max_seq_length = 8192,
         load_in_4bit = False,
         tensor_parallel = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
         llama_extra_args = ["--top-k", "20"],
     )
 
@@ -490,6 +502,8 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
                 "max_seq_length": 8192,
                 "load_in_4bit": False,
                 "tensor_parallel": True,
+                "speculative_type": "dspark",
+                "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
             },
             None,
@@ -663,32 +677,9 @@ def test_deferred_error_helper_defaults_a_missing_status():
     assert excinfo.value.code == 500
 
 
-@pytest.mark.parametrize(
-    ("source", "expected_source"),
-    [
-        (
-            {"gguf_hf_repo": "org/model-GGUF"},
-            {"hf_repo": "org/model-GGUF", "hf_token": "hf_x"},
-        ),
-        (
-            {
-                "gguf_hf_repo": None,
-                "gguf_file": "/models/model.gguf",
-                "gguf_mmproj_file": "/models/mmproj.gguf",
-                "gguf_mtp_file": "/models/mtp.gguf",
-            },
-            {
-                "gguf_path": "/models/model.gguf",
-                "mmproj_path": "/models/mmproj.gguf",
-                "mtp_draft_path": "/models/mtp.gguf",
-            },
-        ),
-    ],
-    ids = ("hugging-face", "local"),
-)
-def test_load_gguf_backend_forwards_source_and_runtime_options(
-    monkeypatch, source, expected_source
-):
+def _stub_studio_gguf_load(monkeypatch):
+    """Stand in for the studio backend `_load_gguf_backend` imports in-venv, and
+    return the list the intents it builds land in."""
     import unsloth_cli._inference as inference
 
     calls = []
@@ -723,6 +714,42 @@ def test_load_gguf_backend_forwards_source_and_runtime_options(
     monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
     monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
     monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_source"),
+    [
+        (
+            {"gguf_hf_repo": "org/model-GGUF"},
+            {"hf_repo": "org/model-GGUF", "hf_token": "hf_x"},
+        ),
+        (
+            {
+                "gguf_hf_repo": None,
+                "gguf_file": "/models/model.gguf",
+                "gguf_mmproj_file": "/models/mmproj.gguf",
+                "gguf_mtp_file": "/models/mtp.gguf",
+                "gguf_dspark_file": "/models/dspark-model.gguf",
+                "gguf_dflash_file": "/models/dflash-kquant.gguf",
+            },
+            {
+                "gguf_path": "/models/model.gguf",
+                "mmproj_path": "/models/mmproj.gguf",
+                "mtp_draft_path": "/models/mtp.gguf",
+                "dspark_draft_path": "/models/dspark-model.gguf",
+                "dflash_draft_path": "/models/dflash-kquant.gguf",
+            },
+        ),
+    ],
+    ids = ("hugging-face", "local"),
+)
+def test_load_gguf_backend_forwards_source_and_runtime_options(
+    monkeypatch, source, expected_source
+):
+    import unsloth_cli._inference as inference
+
+    calls = _stub_studio_gguf_load(monkeypatch)
 
     config = SimpleNamespace(
         gguf_variant = "Q4_K_M",
@@ -736,6 +763,8 @@ def test_load_gguf_backend_forwards_source_and_runtime_options(
         hf_token = "hf_x",
         max_seq_length = 8192,
         tensor_parallel = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
         llama_extra_args = ["--top-k", "20"],
     )
 
@@ -746,11 +775,37 @@ def test_load_gguf_backend_forwards_source_and_runtime_options(
             "model_identifier": "org/model-GGUF",
             "is_vision": False,
             "n_ctx": 8192,
+            "speculative_type": "dspark",
+            "spec_draft_n_max": 3,
             "tensor_parallel": True,
             "extra_args": ["--top-k", "20"],
             **expected_source,
         }
     ]
+
+
+def test_load_gguf_backend_hands_a_local_dflash_sidecar_to_the_load(monkeypatch):
+    """The managed CLI resolves the sidecar next to a local weight exactly as Studio
+    does, and dropping it here is silent: the load simply comes up with no drafter and
+    nothing says the sidecar sitting beside the model was ever found."""
+    import unsloth_cli._inference as inference
+
+    calls = _stub_studio_gguf_load(monkeypatch)
+    config = SimpleNamespace(
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = None,
+        gguf_file = "/models/model.gguf",
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = "/models/dflash-kquant.gguf",
+    )
+
+    inference._load_gguf_backend(config, hf_token = None, max_seq_length = 8192)
+
+    assert [intent.dflash_draft_path for intent in calls] == ["/models/dflash-kquant.gguf"]
 
 
 def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):
@@ -916,6 +971,10 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
         [
             "fake-model",
             "--tensor-parallel",
+            "--speculative-type",
+            "dspark",
+            "--spec-draft-n-max",
+            "3",
             "--llama-extra-arg=--top-k",
             "--llama-extra-arg",
             "20",
@@ -932,6 +991,8 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
                 "max_seq_length": 4096,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
+                "speculative_type": "dspark",
+                "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
             },
         )
@@ -964,6 +1025,10 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             "hello",
             "--tensor-parallel",
+            "--speculative-type",
+            "dspark",
+            "--spec-draft-n-max",
+            "3",
             "--llama-extra-arg=--top-k",
             "--llama-extra-arg",
             "20",
@@ -979,6 +1044,8 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
                 "max_seq_length": 2048,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
+                "speculative_type": "dspark",
+                "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
             },
         )

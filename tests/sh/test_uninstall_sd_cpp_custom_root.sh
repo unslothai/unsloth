@@ -31,18 +31,34 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     sed -n '/^_remove_path() {/,/^}/p'      "$UNINSTALL_SH"
     sed -n '/^_is_studio_root() {/,/^}/p'   "$UNINSTALL_SH"
     sed -n '/^_is_unsafe_root() {/,/^}/p'   "$UNINSTALL_SH"
+    # The loop removes roots through this wrapper; without it and its marker helper the
+    # fragment dies with "command not found" and every assertion below is vacuous.
+    sed -n '/^_set_marker() {/,/^}/p'              "$UNINSTALL_SH"
+    sed -n '/^_remove_root_recording_db() {/,/^}/p' "$UNINSTALL_SH"
+    # The owned-root lister that decides which sd-servers are pkilled before a tree is deleted.
+    sed -n '/^_owned_sd_cpp_roots() {/,/^}/p'      "$UNINSTALL_SH"
+    # ... and the sibling-base lister it asks for the legacy <parent>/stable-diffusion.cpp paths.
+    sed -n '/^_sd_cpp_sibling_bases() {/,/^}/p'    "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
+grep -q '_owned_sd_cpp_roots' "$HELPERS_FILE" || { echo "FAIL: helpers missing _owned_sd_cpp_roots"; exit 1; }
+grep -q '_sd_cpp_sibling_bases() {' "$HELPERS_FILE" || { echo "FAIL: helpers missing _sd_cpp_sibling_bases"; exit 1; }
 # Both blocks sit inside the main removal function, so they are indented: anchor on optional
 # leading whitespace, never on column 0, or the range matches nothing and every assertion below
 # passes or fails vacuously against a fragment that was never extracted.
 LOOP_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/^[[:space:]]*_custom_studio_roots | while IFS= read -r _custom_root; do/,/^[[:space:]]*done/p' "$UNINSTALL_SH" > "$LOOP_FILE"
+# The follow-up block that clears the legacy sibling hanging off the LEXICAL parent.
+LEXICAL_FILE=$(mktemp -p "$_TMP_ROOT")
+sed -n '/^[[:space:]]*_custom_studio_roots lexical 2>\/dev\/null | while IFS= read -r _lex_root; do/,/^[[:space:]]*done/p' "$UNINSTALL_SH" > "$LEXICAL_FILE"
+# The real root resolver, for the symlinked-home cases at the end (the others stub it).
+REAL_ROOTS_FILE=$(mktemp -p "$_TMP_ROOT")
+sed -n '/^_custom_studio_roots() {/,/^}/p' "$UNINSTALL_SH" > "$REAL_ROOTS_FILE"
 # The real default-mode ~/.unsloth/stable-diffusion.cpp removal block (marker-guarded).
 DEFAULT_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/^[[:space:]]*_default_sd_cpp="\$HOME\/\.unsloth\/stable-diffusion\.cpp"/,/^[[:space:]]*fi/p' "$UNINSTALL_SH" > "$DEFAULT_FILE"
 
 # A silently empty extraction is what made this suite vacuous, so fail loudly instead.
-for _f in "$HELPERS_FILE" "$LOOP_FILE" "$DEFAULT_FILE"; do
+for _f in "$HELPERS_FILE" "$LOOP_FILE" "$DEFAULT_FILE" "$LEXICAL_FILE" "$REAL_ROOTS_FILE"; do
     [ -s "$_f" ] || { echo "FAIL: extracted an empty fragment from $UNINSTALL_SH"; exit 1; }
 done
 grep -q '_remove_path' "$LOOP_FILE" || { echo "FAIL: loop fragment missing _remove_path"; exit 1; }
@@ -69,6 +85,10 @@ run_loop() {
 run_default_removal() {
     # shellcheck disable=SC1090
     . "$DEFAULT_FILE"
+}
+run_lexical_removal() {
+    # shellcheck disable=SC1090
+    . "$LEXICAL_FILE"
 }
 
 # 1. Single custom root -> root AND its sibling stable-diffusion.cpp both removed.
@@ -129,6 +149,151 @@ mkdir -p "$HOME/.unsloth/stable-diffusion.cpp"
 : > "$HOME/.unsloth/stable-diffusion.cpp/main.cpp"  # user's own checkout, no owner marker
 run_default_removal
 assert_dir "default-mode unowned sd.cpp kept" "$HOME/.unsloth/stable-diffusion.cpp"
+
+
+# ── _owned_sd_cpp_roots: which sd-servers get stopped before their tree is deleted ────────────
+#
+# The install now lands at <root>/stable-diffusion.cpp, inside the custom root, and the custom
+# root is removed wholesale by the loop above. A resident sd-server survives unlinking its
+# binary, so if that nested path is not listed here the tree disappears while the server keeps
+# running and holding its port. The legacy <parent>/stable-diffusion.cpp sibling an older build
+# wrote still has to be listed too, since it is deleted separately.
+assert_lists() {
+    _l="$1"; _want="$2"
+    if _owned_sd_cpp_roots | grep -qxF "$_want"; then
+        echo "  PASS: $_l"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: $_l (not listed: $_want)"; FAIL=$((FAIL+1))
+    fi
+}
+assert_not_lists() {
+    _l="$1"; _want="$2"
+    if _owned_sd_cpp_roots | grep -qxF "$_want"; then
+        echo "  FAIL: $_l (listed anyway: $_want)"; FAIL=$((FAIL+1))
+    else
+        echo "  PASS: $_l"; PASS=$((PASS+1))
+    fi
+}
+
+# 7. The nested install under the custom root is listed, so its sd-server is stopped first.
+p7="$_TMP_ROOT/inst7/studioE"
+mkdir -p "$p7/stable-diffusion.cpp/build/bin"
+: > "$p7/stable-diffusion.cpp/build/bin/sd-server"
+: > "$p7/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p7"; }
+assert_lists "nested <root>/stable-diffusion.cpp is stopped before removal" "$p7/stable-diffusion.cpp"
+
+# 8. A root this run does NOT delete (no Studio sentinels) keeps its unowned nested build running.
+p8="$_TMP_ROOT/inst8/studioF"
+mkdir -p "$p8/stable-diffusion.cpp/build/bin"
+: > "$p8/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker: the user's own build
+_custom_studio_roots() { printf '%s\n' "$p8"; }
+assert_not_lists "unowned nested build under a non-Studio root is left running" "$p8/stable-diffusion.cpp"
+
+# 8b. But under a real Studio root, which the loop deletes wholesale, the unmarked nested build is
+#     stopped anyway: the current-root finder can select it without a marker, and deleting the tree
+#     around a live server just leaves it holding its port.
+p8b="$_TMP_ROOT/inst8b/studioF2"
+mkdir -p "$p8b/share" "$p8b/stable-diffusion.cpp/build/bin"
+: > "$p8b/share/studio.conf"
+: > "$p8b/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker
+_custom_studio_roots() { printf '%s\n' "$p8b"; }
+assert_lists "unmarked nested build under a doomed Studio root is stopped" "$p8b/stable-diffusion.cpp"
+
+# 9. The legacy sibling an older build installed is still listed (it is still deleted).
+p9="$_TMP_ROOT/inst9"
+mkdir -p "$p9/studioG" "$p9/stable-diffusion.cpp"
+: > "$p9/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p9/studioG"; }
+assert_lists "legacy <parent>/stable-diffusion.cpp still stopped" "$p9/stable-diffusion.cpp"
+
+# 10. Both locations at once: neither shadows the other.
+p10="$_TMP_ROOT/inst10"
+mkdir -p "$p10/studioH/stable-diffusion.cpp" "$p10/stable-diffusion.cpp"
+: > "$p10/studioH/stable-diffusion.cpp/.unsloth-studio-owned"
+: > "$p10/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p10/studioH"; }
+assert_lists "both locations: nested listed"  "$p10/studioH/stable-diffusion.cpp"
+assert_lists "both locations: sibling listed" "$p10/stable-diffusion.cpp"
+
+# 11. The nested tree goes away with the root it lives in.
+p11="$_TMP_ROOT/inst11"
+make_studio "$p11/studioI"
+mkdir -p "$p11/studioI/stable-diffusion.cpp/build/bin"
+: > "$p11/studioI/stable-diffusion.cpp/build/bin/sd-cli"
+: > "$p11/studioI/stable-diffusion.cpp/.unsloth-studio-owned"
+_custom_studio_roots() { printf '%s\n' "$p11/studioI"; }
+run_loop
+assert_nodir "nested stable-diffusion.cpp removed with its root" "$p11/studioI/stable-diffusion.cpp"
+assert_nodir "its custom root removed"                           "$p11/studioI"
+
+
+# ── A Studio home that is itself a symlink ────────────────────────────────────────────────────
+#
+# The old build derived the sd.cpp root with a plain `dirname "$UNSLOTH_STUDIO_HOME"`, so for
+# UNSLOTH_STUDIO_HOME=<link> the tree it installed sits beside the LINK. _custom_studio_roots
+# canonicalizes the home before this code takes its parent, which points every legacy consumer
+# beside the link's TARGET instead: the tree beside the link was never stopped and never deleted.
+# The real resolver from here on, since a stub cannot express the link at all.
+# shellcheck disable=SC1090
+. "$REAL_ROOTS_FILE"
+unset STUDIO_HOME
+
+# 12. The legacy sibling beside the link is listed, so its sd-server is stopped before removal.
+p12="$_TMP_ROOT/inst12"
+mkdir -p "$p12/real/studioJ/share" "$p12/stable-diffusion.cpp"
+: > "$p12/real/studioJ/share/studio.conf"
+ln -s "$p12/real/studioJ" "$p12/link"
+: > "$p12/stable-diffusion.cpp/sd-server"
+: > "$p12/stable-diffusion.cpp/.unsloth-studio-owned"
+UNSLOTH_STUDIO_HOME="$p12/link"
+export UNSLOTH_STUDIO_HOME
+assert_lists "symlinked home: sd.cpp beside the link is stopped" "$p12/stable-diffusion.cpp"
+
+# 13. ... and removed.
+run_lexical_removal
+assert_nodir "symlinked home: sd.cpp beside the link removed" "$p12/stable-diffusion.cpp"
+
+# 14. An unowned checkout beside the link is kept, exactly like the canonical pass keeps one.
+p14="$_TMP_ROOT/inst14"
+mkdir -p "$p14/real/studioK/share" "$p14/stable-diffusion.cpp"
+: > "$p14/real/studioK/share/studio.conf"
+ln -s "$p14/real/studioK" "$p14/link"
+: > "$p14/stable-diffusion.cpp/main.cpp"  # the user's own checkout, no owner marker
+UNSLOTH_STUDIO_HOME="$p14/link"
+run_lexical_removal
+assert_dir "symlinked home: unowned sd.cpp beside the link kept" "$p14/stable-diffusion.cpp"
+assert_not_lists "symlinked home: unowned sd.cpp beside the link is left running" "$p14/stable-diffusion.cpp"
+
+# 14b. A stale or mistyped home is not a Studio root, and the lexical pass must apply the same
+#      ownership check the canonical loop does: "<parent>/typo" must not take the marked
+#      <parent>/stable-diffusion.cpp belonging to a different, valid install.
+p14b="$_TMP_ROOT/inst14b"
+mkdir -p "$p14b/other/share" "$p14b/stable-diffusion.cpp"
+: > "$p14b/other/share/studio.conf"          # somebody else's Studio, sharing the parent
+: > "$p14b/stable-diffusion.cpp/sd-cli"
+: > "$p14b/stable-diffusion.cpp/.unsloth-studio-owned"
+UNSLOTH_STUDIO_HOME="$p14b/typo"             # never existed
+run_lexical_removal
+assert_dir "a mistyped home does not take a neighbour's legacy sd.cpp" "$p14b/stable-diffusion.cpp"
+
+# 15. The deny list is a string match, so the lexical path has to be canonicalized before it is
+#     applied: a home carrying ".." (or a symlinked ancestor) otherwise produces a sibling that
+#     misses the pattern while resolving straight into a protected tree. $HOME's parent is on that
+#     list, so point HOME inside the fixture to get a deterministic denied target.
+p15="$_TMP_ROOT/inst15"
+mkdir -p "$p15/sub" "$p15/studioL/share" "$p15/stable-diffusion.cpp"
+: > "$p15/studioL/share/studio.conf"
+: > "$p15/stable-diffusion.cpp/sd-cli"
+: > "$p15/stable-diffusion.cpp/.unsloth-studio-owned"
+_HOME_BEFORE="$HOME"
+HOME="$p15/stable-diffusion.cpp/home"  # so dirname "$HOME" is the denied path
+mkdir -p "$HOME"
+UNSLOTH_STUDIO_HOME="$p15/sub/../studioL"  # lexical parent "$p15/sub/.." -> misses the raw match
+run_lexical_removal
+assert_dir "lexical sibling resolving into a denied tree is refused" "$p15/stable-diffusion.cpp"
+HOME="$_HOME_BEFORE"
+unset UNSLOTH_STUDIO_HOME
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

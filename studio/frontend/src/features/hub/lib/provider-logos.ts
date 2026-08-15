@@ -12,6 +12,9 @@
  * NVIDIA's Nemotron/Minitron/Mistral-NeMo before meta-llama/mistralai, and
  * DeepSeek-R1-Distill- before Qwen/meta-llama. Repo names are case-sensitive -
  * match the publisher's exact casing (e.g. `phi-` for v1/v2 vs `Phi-` for v3+).
+ *
+ * A provider's own Hub orgs are listed in `owners` and take its mark directly,
+ * whatever the repo is named (meta-models/Muse-Glimmer-30B -> Meta).
  */
 
 /**
@@ -51,6 +54,11 @@ export interface ProviderLogo {
 	 * (`gemma` -> `diffusiongemma-`, `gemma-3n`, not `gemmafy`). Use stems unique to one provider.
 	 */
 	stems?: readonly string[];
+	/**
+	 * The provider's own Hub orgs. Matched in full and case-insensitively, never as
+	 * a prefix, so `metavoice` is not Meta.
+	 */
+	owners?: readonly string[];
 }
 
 export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
@@ -251,6 +259,9 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"llama-",
 			"meta-"
 		],
+		// "Meta Inc." / "Meta Llama" / "AI at Meta". Not facebookresearch, which is
+		// an unrelated account despite the name.
+		owners: ["meta-models", "meta-llama", "facebook"],
 	},
 ];
 
@@ -294,14 +305,31 @@ export function isProviderRelabeledOwner(
 	return RELABELED_OWNERS.has(owner.toLowerCase());
 }
 
+/** Hub org -> the provider publishing under it, or null. Full-string, case-insensitive. */
+export function matchProviderLogoByOwner(
+	owner: string | null | undefined,
+): ProviderLogo | null {
+	const needle = owner?.trim().toLowerCase();
+	if (!needle) return null;
+	for (const provider of PROVIDER_LOGOS) {
+		if (provider.owners?.some((org) => org.toLowerCase() === needle)) {
+			return provider;
+		}
+	}
+	return null;
+}
+
 /**
  * Provider logo to render in place of the owner's profile picture, or null.
- * Only owners in RELABELED_OWNERS are eligible.
+ * A provider's own org takes its mark; otherwise only RELABELED_OWNERS are
+ * eligible, by repo name.
  */
 export function resolveOwnerProviderLogo(
 	owner: string | null | undefined,
 	repoName: string | null | undefined,
 ): ProviderLogo | null {
+	const byOwner = matchProviderLogoByOwner(owner);
+	if (byOwner) return byOwner;
 	if (!isProviderRelabeledOwner(owner) || !repoName) return null;
 	return matchProviderLogo(repoName);
 }

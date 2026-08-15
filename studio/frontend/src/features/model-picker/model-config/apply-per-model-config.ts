@@ -49,12 +49,16 @@ export function applyPerModelConfigToRuntime(
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
+    mlxKvBits: config.mlxKvBits ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
+    // the diffusion runner ignores the llama-server batch flags
+    nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
+    nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
@@ -100,9 +104,12 @@ export function currentRuntimePerModelConfig(
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
+    mlxKvBits: s.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     nParallel: s.nParallel ?? null,
+    nBatch: s.nBatch ?? null,
+    nUbatch: s.nUbatch ?? null,
     tensorParallel: s.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
@@ -125,15 +132,28 @@ export function perModelConfigsEqual(
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
+    (a.mlxKvBits ?? null) === (b.mlxKvBits ?? null) &&
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
+    (a.nBatch ?? null) === (b.nBatch ?? null) &&
+    (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
+    extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
+}
+
+/**
+ * Compare on the launched command, so "not loaded" and "cleared" are equal here.
+ * They differ only in what a SAVE does, and treating them as different would make
+ * the row read as an unsaved change the moment it finished reading the server.
+ */
+function extraArgsSignature(value: string[] | null | undefined): string {
+  return (value ?? []).join("\u0000");
 }
 
 function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {

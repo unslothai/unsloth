@@ -715,13 +715,19 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "disable_dns_pinning,expected_url",
+    "disable_dns_pinning,proxied,expected_url",
     [
-        (False, "https://203.0.113.7:8443/page?q=1"),
-        (True, "https://example.com:8443/page?q=1"),
+        (False, False, "https://203.0.113.7:8443/page?q=1"),
+        (False, True, "https://203.0.113.7:8443/page?q=1"),
+        # The opt-out only applies to a proxied fetch: a direct one would resolve
+        # the hostname again, which is the DNS-rebinding hole it must not reopen.
+        (True, False, "https://203.0.113.7:8443/page?q=1"),
+        (True, True, "https://example.com:8443/page?q=1"),
     ],
 )
-def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinning, expected_url):
+def test_fetch_url_raw_dns_pinning_proxy_opt_out(
+    monkeypatch, disable_dns_pinning, proxied, expected_url
+):
     import email
     import urllib.request
 
@@ -757,6 +763,14 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinnin
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+    # Patch the lookups rather than the env: getproxies/proxy_bypass read system
+    # settings on macOS and Windows.
+    monkeypatch.setattr(
+        urllib.request,
+        "getproxies",
+        lambda: {"https": "http://proxy.corp:3128"} if proxied else {},
+    )
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
 
     # No embedded credentials: the web access policy rejects those outright
     # (see test_fetch_url_raw_rejects_embedded_credentials).
@@ -767,6 +781,132 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinnin
     assert resolved == [("example.com", 8443)]
     assert [req.full_url for req in requested] == [expected_url]
     assert requested[0].get_header("Host") == "example.com:8443"
+
+
+def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
+    # A Windows registry ProxyServer value keeps the case it was written in, so
+    # getproxies can return "HTTPS". ProxyHandler lowercases its keys, so an
+    # exact-case test here would disable a proxy that urllib would have used.
+    import email
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"ok"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    requested = []
+    built = []
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            requested.append(req)
+            return _FakeResp()
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1")
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"HTTPS": "http://proxy.corp:3128"})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *handlers: built.append(handlers) or _FakeOpener(),
+    )
+
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+
+    assert err is None
+    assert body == "ok"
+    assert [req.full_url for req in requested] == ["https://example.com:8443/page?q=1"]
+    assert not [h for h in built[0] if isinstance(h, urllib.request.ProxyHandler) and not h.proxies]
+
+
+@pytest.mark.parametrize(
+    "no_proxy,disable_dns_pinning,expected_url",
+    [
+        # urllib tests NO_PROXY against Request.host, so a port-qualified entry only
+        # matches with the port: probing the bare hostname would call this proxied,
+        # keep the hostname, and let the direct connect re-resolve it.
+        ("example.com:8443", True, "https://203.0.113.7:8443/page?q=1"),
+        ("example.com", True, "https://203.0.113.7:8443/page?q=1"),
+        ("other.example", True, "https://example.com:8443/page?q=1"),
+        ("example.com", False, "https://203.0.113.7:8443/page?q=1"),
+    ],
+)
+def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinning, expected_url):
+    # Real getproxies/proxy_bypass here, not stubs: both read the environment first
+    # on every platform, and the point is to agree with what urllib actually does.
+    import email
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"ok"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    requested = []
+    built = []
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            requested.append(req)
+            return _FakeResp()
+
+    def fake_build_opener(*handlers):
+        built.append(handlers)
+        return _FakeOpener()
+
+    for var in ("http_proxy", "https_proxy", "no_proxy", "all_proxy", "REQUEST_METHOD"):
+        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var.upper(), raising = False)
+    monkeypatch.setenv("https_proxy", "http://proxy.corp:3128")
+    monkeypatch.setenv("no_proxy", no_proxy)
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+
+    assert err is None
+    assert body == "ok"
+    assert [req.full_url for req in requested] == [expected_url]
+    # A bypassed host keeps its direct route: the pinned IP would never match the
+    # NO_PROXY entry, so the opener has to carry the decision instead.
+    bypassed = expected_url.startswith("https://203.0.113.7")
+    empty_proxy_handlers = [
+        h for h in built[0] if isinstance(h, urllib.request.ProxyHandler) and not h.proxies
+    ]
+    assert bool(empty_proxy_handlers) is bypassed
 
 
 def test_fetch_url_raw_rejects_embedded_credentials(monkeypatch):

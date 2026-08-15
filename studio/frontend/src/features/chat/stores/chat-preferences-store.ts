@@ -8,6 +8,8 @@ import { persist } from "zustand/middleware";
 // confirmDeleteChats: when off, deleting a chat skips the confirm dialog.
 // showModelDisclaimer: when off, hide the "LLMs can make mistakes" footer note.
 // showResponseModel: when on, assistant responses show the producing model.
+// collapseThinkingByDefault: when on, thinking stays collapsed instead of
+// streaming open.
 export interface ChatPreferencesState {
   confirmDeleteChats: boolean;
   setConfirmDeleteChats: (value: boolean) => void;
@@ -15,6 +17,8 @@ export interface ChatPreferencesState {
   setShowModelDisclaimer: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  collapseThinkingByDefault: boolean;
+  setCollapseThinkingByDefault: (value: boolean) => void;
 }
 
 export const useChatPreferencesStore = create<ChatPreferencesState>()(
@@ -29,6 +33,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) =>
         set({ showResponseModel }),
+      collapseThinkingByDefault: false,
+      setCollapseThinkingByDefault: (collapseThinkingByDefault) =>
+        set({ collapseThinkingByDefault }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -39,6 +46,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           showModelDisclaimer: saved?.showModelDisclaimer ?? true,
           showResponseModel: saved?.showResponseModel ?? false,
+          collapseThinkingByDefault: saved?.collapseThinkingByDefault ?? false,
         };
       },
     },

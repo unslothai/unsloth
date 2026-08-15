@@ -10,9 +10,25 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
     };
   }
   if (state.status === "attach") {
+    // Only documents are indexed; images and audio ride the next message.
+    const description =
+      state.kind === "images" || state.kind === "audio"
+        ? "Attached to your next message."
+        : state.kind === "mixed"
+          ? "Documents indexed, attachments sent with your next message."
+          : "Indexed for this chat.";
+    const noun =
+      state.kind === "images"
+        ? "image"
+        : state.kind === "audio"
+          ? "audio file"
+          : "file";
     return {
-      title: state.count === 1 ? "Drop to attach file" : `Drop to attach ${state.count} files`,
-      description: "Indexed for this chat.",
+      title:
+        state.count === 1
+          ? `Drop to attach ${noun}`
+          : `Drop to attach ${state.count} ${noun}s`,
+      description,
     };
   }
   if (state.status === "valid" && state.action === "replace") {

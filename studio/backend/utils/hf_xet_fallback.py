@@ -20,6 +20,7 @@ never triggers the heavy load.
 
 from __future__ import annotations
 
+import os
 import threading
 from functools import partial
 from pathlib import Path
@@ -35,6 +36,10 @@ DEFAULT_HEARTBEAT_INTERVAL = 30.0
 DEFAULT_STALL_TIMEOUT = 30.0
 DEFAULT_CONNECT_TIMEOUT = 90.0
 DEFAULT_HTTP_STALL_TIMEOUT = 180.0
+# Xet workers spent per download before the transport changes. A wedged transfer usually clears on a
+# fresh process, and the retry replays only the in-flight file: the worker runs
+# snapshot_download(max_workers=1), so every finished shard is already a blob and is skipped.
+DEFAULT_XET_ATTEMPTS = 2
 
 # --- lazy shared-backend loader ----------------------------------------------------------------
 _shared: Any = None
@@ -212,12 +217,7 @@ def _load_optional(module_name: str) -> Any:
         return module
 
 
-def xet_health(**kwargs: Any) -> Any:
-    """The machine's Xet verdict, or ``None`` when unsloth_zoo cannot answer.
-
-    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
-    """
-    module = _load_optional("unsloth_zoo.hf_xet_health")
+def _xet_health_from(module: Any, **kwargs: Any) -> Any:
     if module is None:
         return None
     try:
@@ -226,6 +226,27 @@ def xet_health(**kwargs: Any) -> Any:
         import logging as _logging
         _logging.getLogger(__name__).debug("xet_health failed: %s", exc)
         return None
+
+
+def cached_xet_health(**kwargs: Any) -> Any:
+    """Return Zoo's Xet verdict only when its health module is already loaded.
+
+    Capability reads use this path so opening Hub cannot initialize Unsloth Zoo. A real
+    download calls :func:`xet_health`, which loads the optional module and populates this cache.
+    """
+    with _load_lock:
+        module = _optional_modules.get("unsloth_zoo.hf_xet_health", _UNTRIED)
+    return None if module is _UNTRIED else _xet_health_from(module, **kwargs)
+
+
+def xet_health(**kwargs: Any) -> Any:
+    """Load and query Zoo's Xet verdict for an actual download decision.
+
+    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
+    Read-only capability requests use :func:`cached_xet_health` instead.
+    """
+    module = _load_optional("unsloth_zoo.hf_xet_health")
+    return _xet_health_from(module, **kwargs)
 
 
 def record_xet_outcome(ok: bool, reason: str = "") -> None:
@@ -284,6 +305,34 @@ def child_should_disable_xet(config: dict) -> bool:
     calling it must NOT pull in unsloth_zoo/transformers, so the worker can decide before activating
     the transformers sidecar (see the module docstring)."""
     return bool(config.get("disable_xet"))
+
+
+def is_data_phase_stall(message: str) -> bool:
+    """Whether a watchdog verdict fired AFTER bytes had flowed (mirrors
+    ``unsloth_zoo.hf_xet_fallback.is_data_phase_stall``).
+
+    "did not start" is the pre-first-byte trip, as likely slow metadata or a cache lock as a broken
+    Xet; the others mean the transfer moved and then wedged, which a fresh worker recovers from. The
+    lifecycle decides both whether to spend another Xet worker and whether to charge a health
+    failure on this one rule, so the two cannot disagree. Local for the same reason as
+    ``child_should_disable_xet``: the stall path must not depend on the heavy import."""
+    return "did not start" not in (message or "")
+
+
+def xet_attempts() -> int:
+    """Xet workers a download may spend before HTTP (mirrors
+    ``unsloth_zoo.hf_xet_fallback.xet_attempts``): ``UNSLOTH_XET_ATTEMPTS``, default 2, clamped to 8;
+    junk or non-positive falls back to the default. ``1`` restores the straight-to-HTTP ladder."""
+    raw = os.environ.get("UNSLOTH_XET_ATTEMPTS")
+    if not raw:
+        return DEFAULT_XET_ATTEMPTS
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_XET_ATTEMPTS
+    if value <= 0:
+        return DEFAULT_XET_ATTEMPTS
+    return min(value, 8)
 
 
 # --- degraded stubs (used only when unsloth_zoo is unavailable) -------------------------------
@@ -507,8 +556,12 @@ __all__ = [
     "DEFAULT_HEARTBEAT_INTERVAL",
     "DEFAULT_HTTP_STALL_TIMEOUT",
     "DEFAULT_STALL_TIMEOUT",
+    "DEFAULT_XET_ATTEMPTS",
     "DownloadStallError",
     "child_should_disable_xet",
+    "cached_xet_health",
+    "is_data_phase_stall",
+    "xet_attempts",
     "get_hf_download_state",
     "record_xet_outcome",
     "start_watchdog",
@@ -562,12 +615,38 @@ def hf_hub_download_with_xet_fallback(
     on_status: Optional[Callable[[str], None]] = None,
     force_download: bool = False,
     cache_dir: Optional[str] = None,
+    reuse_other_cache_root: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
-    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path)."""
+    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
+
+    ``reuse_other_cache_root`` (opt-in) resolves a file cached ONLY under huggingface_hub's
+    import-time root through that root. Studio's cache folder is a setting, so after it changes every
+    cached asset is invisible to a call pinned to the new root: GBs re-download, and a gated base with
+    no valid token 401s even though the bytes are there and the preflight (which checks both roots)
+    already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
+    resolves and a republished file is picked up; the blob is reused, and offline/401
+    hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
+    ``force_download``, whose point is to re-fetch."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
+    if reuse_other_cache_root and not force_download and cache_dir is not None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            # Only a str is a cached path; a miss is None and a known-absent file is a sentinel.
+            here = try_to_load_from_cache(
+                repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = cache_dir
+            )
+            if not isinstance(here, str):
+                elsewhere = try_to_load_from_cache(
+                    repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = None
+                )
+                if isinstance(elsewhere, str) and Path(elsewhere).is_file():
+                    cache_dir = None
+        except Exception:  # noqa: BLE001 — a cache we cannot read just keeps the live root
+            pass
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait(),
     # where None blocks forever and a hung Xet download never falls back. Omitting also lets the
     # shared layer pick its per-transport defaults.

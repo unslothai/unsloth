@@ -14,6 +14,7 @@ _TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
 _REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
+_SETUP_SH = _REPO_ROOT / "studio" / "setup.sh"
 _SETUP_PS1 = _REPO_ROOT / "studio" / "setup.ps1"
 _NO_TORCH_RT = _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 
@@ -165,6 +166,21 @@ class TestSetupPs1FastInstallIndex:
             assert var in self._ps1
         # Must truly remove the vars (child sees no value), not set them empty.
         assert 'Remove-Item "Env:$n"' in self._ps1
+
+
+def test_setup_sh_sidecar_installs_isolate_uv_override():
+    source = _read(_SETUP_SH)
+    helper = re.search(r"fast_install_sidecar\(\) \(\n.*?\n\)", source, re.S)
+    assert helper is not None
+    script = (
+        "UV_OVERRIDE=base\nfast_install() { printf 'child=%s\\n' \"${UV_OVERRIDE-unset}\"; }\n"
+        f"{helper.group()}\nfast_install_sidecar\nprintf 'parent=%s\\n' \"$UV_OVERRIDE\"\n"
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert result.returncode == 0 and result.stdout.splitlines() == ["child=unset", "parent=base"]
+    sidecars = source.split("# ── 6b.", 1)[1].split("# ── GPU detection", 1)[0]
+    assert sidecars.count("fast_install_sidecar --target") == 12
+    assert " fast_install --target" not in sidecars
 
 
 class TestInstallShUvDefaultIndex:

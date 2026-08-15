@@ -27,6 +27,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # (embedders, tests) a stale loopback default must not carry into a later
 # public bind, so we only ever take back a value we set ourselves.
 _auto_enabled = False
+_remote_connector_active = False
 
 
 def is_external_host(host: str) -> bool:
@@ -58,8 +59,8 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
     """Default stdio MCP servers on when bound to loopback.
 
     A loopback bind is the user's own machine -- the same trust boundary the
-    Tauri desktop app relies on (see main.py, which also binds 127.0.0.1 and
-    setdefaults this var). Colab is excluded: even its loopback is a hosted VM
+    Tauri desktop app relies on (see main.py, which uses this same helper).
+    Colab is excluded: even its loopback is a hosted VM
     reachable through Colab's proxy, so it stays off unless opted in. An explicit
     operator value wins: a pre-set `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=0`
     force-disables and `=1` opts in, including on a network bind. We only ever
@@ -92,7 +93,18 @@ def loopback_default_active() -> bool:
     return _auto_enabled
 
 
+def set_remote_connector_active(active: bool) -> None:
+    """Publish whether a connector may carry requests from beyond loopback."""
+    global _remote_connector_active
+    _remote_connector_active = bool(active)
+
+
+def remote_connector_active() -> bool:
+    return _remote_connector_active
+
+
 def _reset_loopback_default_state() -> None:
-    """Test hook: forget any auto-enable applied earlier in this process."""
-    global _auto_enabled
+    """Test hook: forget runtime trust state applied earlier in this process."""
+    global _auto_enabled, _remote_connector_active
     _auto_enabled = False
+    _remote_connector_active = False

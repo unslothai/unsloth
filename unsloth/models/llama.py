@@ -40,6 +40,7 @@ from ..utils.packing import (
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
+    HAS_XFORMERS,
     run_attention,
     SDPA,
     select_attention_backend,
@@ -127,7 +128,11 @@ except:
     from huggingface_hub.utils._token import get_token
 from triton import __version__ as triton_version
 
-HAS_XFORMERS = xformers is not None
+# Not `xformers is not None`: attention_dispatch probes the install and turns HAS_XFORMERS
+# off when the library imports but has no kernel that runs here. Recomputing it from the
+# import alone left the model code on the xFormers path the dispatcher had already left --
+# and Mistral answers "xFormers" by skipping the 4D sliding-window mask, so every sequence
+# longer than config.sliding_window attended to the whole causal history on SDPA instead.
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 

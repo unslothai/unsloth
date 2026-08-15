@@ -9,7 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import tools
+from core.inference.tool_loop_controller import is_tool_error
 from core.inference.web_access_policy import (
+    _normalized_domain_tuple,
     check_url_access,
     normalize_website_policy,
     scope_search_query,
@@ -87,6 +89,26 @@ def test_policy_normalizes_idna_deduplicates_and_rejects_urls():
     }
     with pytest.raises(ValueError, match = "without schemes or ports|Invalid website domain"):
         normalize_website_policy({"allowedDomains": ["https://arxiv.org"]})
+
+
+def test_oversized_raw_domains_normalize_without_entering_the_cache():
+    # Nameprep deletes U+00AD, so 100k soft hyphens still normalise to a valid domain. The
+    # memo key is the caller's raw tuple, so caching one would pin it for the life of the
+    # process; it must normalise on the uncached path instead.
+    normalize_website_policy({})  # warm the empty-list key so the counts below are exact
+    padded = "a" + "\u00ad" * 100_000 + ".com"
+    before = _normalized_domain_tuple.cache_info().currsize
+    assert normalize_website_policy({"allowedDomains": [padded]}) == {
+        "allowedDomains": ["a.com"],
+        "blockedDomains": [],
+    }
+    assert _normalized_domain_tuple.cache_info().currsize == before
+    # A domain of a plausible length still takes the cached path.
+    assert normalize_website_policy({"allowedDomains": ["cached.example"]}) == {
+        "allowedDomains": ["cached.example"],
+        "blockedDomains": [],
+    }
+    assert _normalized_domain_tuple.cache_info().currsize == before + 1
 
 
 def test_policy_is_injected_into_prompts_and_search_queries():
@@ -263,3 +285,47 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
     )
     assert "Blocked: website access policy disallows example.com" in result
     assert resolved == [("arxiv.org", 443)]
+
+
+def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            raise exc
+
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    return tools._web_search("q", timeout = 7)
+
+
+def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatch):
+    # Every engine refusing used to read as "Search failed: RatelimitException(...)", which told
+    # neither the model nor the user that waiting or reading a page directly would work.
+    # The real class, not a stand-in: ddgs is unpinned and has renamed these before, and the
+    # classifier matches on the class name, so a rename has to fail here rather than in a message.
+    from ddgs.exceptions import RatelimitException
+
+    result = _search_with_raising_ddgs(monkeypatch, RatelimitException("all engines"))
+    assert "rate limiting this machine" in result
+    assert is_tool_error(result) is True
+
+
+def test_search_timeout_reports_the_budget_it_exceeded(monkeypatch):
+    from ddgs.exceptions import TimeoutException
+    result = _search_with_raising_ddgs(monkeypatch, TimeoutException("timed out"))
+    assert result == "Search failed: the search engines did not respond within 7s."
+
+
+def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
+    # ddgs raises instead of returning [], so a search that simply matched nothing arrived
+    # prefixed "Search failed" and read like a broken tool.
+    from ddgs.exceptions import DDGSException
+
+    result = _search_with_raising_ddgs(monkeypatch, DDGSException("No results found."))
+    assert result == tools.EMPTY_SEARCH_RESULTS[0]
+    assert not is_tool_error(result)

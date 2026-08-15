@@ -73,14 +73,20 @@ def _engine_config() -> tuple[str, str, bool]:
     return forced, sd_cpp, mps
 
 
-def get_active_diffusion_engine() -> Any:
-    """The engine object the active selection points at (defaults to diffusers)."""
-    if _active_engine_name == ENGINE_SD_CPP:
+def engine_for(name: str) -> Any:
+    """The engine object a name refers to, WITHOUT activating it: activating unloads the resident
+    model, so /images/load's gated-repo preflight needs the pending engine before the switch."""
+    if name == ENGINE_SD_CPP:
         from core.inference.sd_cpp_backend import get_sd_cpp_backend
         return get_sd_cpp_backend()
     from core.inference.diffusion import get_diffusion_backend
 
     return get_diffusion_backend()
+
+
+def get_active_diffusion_engine() -> Any:
+    """The engine object the active selection points at (defaults to diffusers)."""
+    return engine_for(_active_engine_name)
 
 
 def active_engine_name() -> str:

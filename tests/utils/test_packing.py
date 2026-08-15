@@ -1191,7 +1191,8 @@ def sft_prepare_dataset(
     self, dataset, processing_class, args, packing, formatting_func, dataset_text_field
 ):
     do_truncation = True
-    max_seq_length = 4
+    max_seq_length = getattr(args, "max_length", 0)
+    if max_seq_length == 0: max_seq_length = getattr(args, "max_seq_length", 0)
     used_column_names = ["text"]
     map_kwargs = {}
     dataset = processing_class(dataset, truncation = do_truncation,)
@@ -1232,6 +1233,8 @@ def test_wrapped_packing_injection_is_drift_resistant(monkeypatch):
     assert patched.index("_unsloth_wrapped_packing = packing") < patched.index(
         "truncation = do_truncation and not _unsloth_wrapped_packing"
     )
+    # the max_length seed is normalised, or a padding-free None stops raw truncation
+    assert 'max_seq_length = getattr(args, "max_length", 0) or 0' in patched
     # the pack edit reuses the guarded flag (signature inspected exactly once, in setup)
     assert "if _unsloth_pack_has_strategy:" in patched
     assert patched.count("_inspect.signature(pack_dataset)") == 1

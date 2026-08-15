@@ -21,7 +21,10 @@ from core.inference.chat_template_helpers import (
     detect_reasoning_channel_markers,
     detect_reasoning_channel_markers_from_model_info,
     detect_think_prefill,
+    normalize_reasoning_snapshots,
+    prompt_opens_reasoning_channel,
     render_with_native_template_fallback,
+    trailing_assistant_text,
 )
 
 
@@ -260,3 +263,168 @@ def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():
     assert compact.feed("<|channel>thought<channel|>answer") + compact.finish() == (
         "<think></think>answer"
     )
+
+
+GEMMA_MARKERS = ("<|channel>thought", "<channel|>")
+GEMMA_TOOL_TAIL = '<|tool_response>response:web_search{value:<|"|>18C<|"|>}<tool_response|>'
+GEMMA_POST_TOOL_PROMPT = "<|turn>model\n" + GEMMA_TOOL_TAIL + "<|channel>thought\n"
+
+
+def test_prompt_opens_reasoning_channel_tracks_generation_prompt_state():
+    """Open only when nothing but whitespace follows the prompt's last opener."""
+    assert prompt_opens_reasoning_channel(GEMMA_POST_TOOL_PROMPT, GEMMA_MARKERS)
+    # History closes its own channel before the post-tool opener.
+    assert prompt_opens_reasoning_channel(
+        "<|turn>model\n<|channel>thought\nearlier\n<channel|>" + GEMMA_POST_TOOL_PROMPT,
+        GEMMA_MARKERS,
+    )
+    # Ordinary turn: the model emits the opener itself.
+    assert not prompt_opens_reasoning_channel(
+        "<|turn>user\nhi<turn|>\n<|turn>model\n", GEMMA_MARKERS
+    )
+    # Thinking disabled: no opener at all.
+    assert not prompt_opens_reasoning_channel("<|turn>model\n" + GEMMA_TOOL_TAIL, GEMMA_MARKERS)
+    assert not prompt_opens_reasoning_channel(
+        "<|turn>model\n<|channel>thought\nearlier\n<channel|>done<turn|>\n", GEMMA_MARKERS
+    )
+    assert not prompt_opens_reasoning_channel(GEMMA_POST_TOOL_PROMPT, None)
+    assert not prompt_opens_reasoning_channel(None, GEMMA_MARKERS)
+    assert not prompt_opens_reasoning_channel("", GEMMA_MARKERS)
+
+
+def test_unclosed_opener_in_history_cannot_forge_the_channel_state():
+    """An assistant turn keeps channel markup, so only the prompt tail may decide.
+
+    Neutralization strips these markers from user / system / tool turns but leaves
+    an assistant turn's own markup intact, so a template that renders assistant
+    content verbatim can carry a client-supplied unclosed opener into the prompt.
+    (Gemma's own template also strips it, but a marker-aware override need not.)
+    Trusting the last opener anywhere would start the parser inside reasoning on an
+    ordinary turn and hide the whole answer in a think block.
+    """
+    forged = "<|turn>model\nok <|channel>thought<turn|>\n<|turn>user\nagain?<turn|>\n<|turn>model\n"
+    assert not prompt_opens_reasoning_channel(forged, GEMMA_MARKERS)
+
+    parser = ReasoningChannelNormalizer(
+        *GEMMA_MARKERS, in_reasoning = prompt_opens_reasoning_channel(forged, GEMMA_MARKERS)
+    )
+    assert parser.feed("Plain answer.") + parser.finish() == "Plain answer."
+
+
+def test_continued_turn_never_reads_channel_state_from_its_tail():
+    """A continued turn ends inside the client's assistant text, not template markup.
+
+    ``continue_final_message`` splices the caller's partial onto the prompt, so a
+    partial ending on the opener would otherwise look exactly like a template that
+    opened the channel, and capture the entire continuation as reasoning.
+    """
+    for tail in ("<|channel>thought", "<|channel>thought\n", "<|channel>thought   "):
+        spliced = "<|turn>model\nLet me think. " + tail
+        assert not prompt_opens_reasoning_channel(spliced, GEMMA_MARKERS, True)
+        parser = ReasoningChannelNormalizer(
+            *GEMMA_MARKERS,
+            in_reasoning = prompt_opens_reasoning_channel(spliced, GEMMA_MARKERS, True),
+        )
+        assert parser.feed(" The answer is 18C.") + parser.finish() == " The answer is 18C."
+
+    assert prompt_opens_reasoning_channel(GEMMA_POST_TOOL_PROMPT, GEMMA_MARKERS, False)
+
+
+def test_tool_loop_pass_of_a_continued_turn_still_reads_the_prompt():
+    """The request flag outlives the continuation; the render it describes does not.
+
+    A continued turn that calls a tool keeps ``continue_final_message`` set for the
+    next pass, but that pass renders an ordinary post-tool generation prompt. Suppressing
+    detection on the request flag alone would put the post-tool reasoning back in the
+    visible answer, so the effective signal is whether a trailing assistant turn was
+    actually resumed.
+    """
+    resumed = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "partial"}]
+    post_tool = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "partial",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "18C"},
+    ]
+    effective = lambda msgs: bool(trailing_assistant_text(msgs))
+
+    assert effective(resumed) is True
+    # The tool result is the trailing turn now, so nothing was resumed.
+    assert effective(post_tool) is False
+    assert prompt_opens_reasoning_channel(
+        GEMMA_POST_TOOL_PROMPT, GEMMA_MARKERS, effective(post_tool)
+    )
+
+
+def test_prompt_opened_channel_normalizes_post_tool_reasoning():
+    """Post-tool generation emits only the closing marker; it is still reasoning."""
+    parser = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+    output = ""
+    snapshots = []
+    # Split across chunks, as a token stream splits it.
+    for chunk in ("The search ", "returned 18C.", "<chan", "nel|>", "It is 18C in Paris."):
+        delta = parser.feed(chunk)
+        if delta:
+            output += delta
+            snapshots.append(output)
+    output += parser.finish()
+
+    assert output == "<think>The search returned 18C.</think>It is 18C in Paris."
+    assert "<channel|>" not in output
+    assert all(later.startswith(earlier) for earlier, later in zip(snapshots, snapshots[1:]))
+
+    # Streaming X from a prompt-opened channel must match generating the opener plus X:
+    # a streamed leading newline is content, unlike the protocol newline after an opener.
+    for streamed, expected in (
+        ("reasoned<channel|>answer", "<think>reasoned</think>answer"),
+        ("\nreasoned<channel|>answer", "<think>\nreasoned</think>answer"),
+    ):
+        generated = ReasoningChannelNormalizer(*GEMMA_MARKERS)
+        prefilled = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+        assert (
+            generated.feed("<|channel>thought\n" + streamed) + generated.finish()
+            == prefilled.feed(streamed) + prefilled.finish()
+            == expected
+        )
+
+
+def test_prompt_opened_channel_without_generated_text_emits_no_think_block():
+    """A cancelled or empty post-tool turn must not emit an orphan </think>."""
+    empty = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+    assert empty.feed("") == ""
+    assert empty.finish() == ""
+
+    cancelled = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+    # Hold back a partial closing marker, so drain() has real buffered text.
+    assert cancelled.feed("partial reasoning<chan") == "<think>partial reasoning"
+    assert cancelled.drain() == "<chan"
+
+
+def test_normalize_reasoning_snapshots_derives_state_from_prompt():
+    def _stream(pieces):
+        cumulative = ""
+        for piece in pieces:
+            cumulative += piece
+            yield cumulative
+
+    post_tool = list(
+        normalize_reasoning_snapshots(
+            _stream(["reasoning", "<channel|>", "answer"]),
+            markers = GEMMA_MARKERS,
+            prompt = GEMMA_POST_TOOL_PROMPT,
+        )
+    )
+    assert post_tool[-1] == "<think>reasoning</think>answer"
+
+    # Without a prompt-opened channel the model supplies both markers as before.
+    first_turn = list(
+        normalize_reasoning_snapshots(
+            _stream(["<|channel>thought\n", "reasoning", "<channel|>", "answer"]),
+            markers = GEMMA_MARKERS,
+            prompt = "<|turn>model\n",
+        )
+    )
+    assert first_turn[-1] == "<think>reasoning</think>answer"

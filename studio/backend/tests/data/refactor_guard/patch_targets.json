@@ -1,0 +1,1559 @@
+{
+  "core.export.get_export_backend": [
+    "tests/test_diffusion_training.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_raw_support.py"
+  ],
+  "core.inference.chat_template_helpers.apply_chat_template_for_generation": [
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py"
+  ],
+  "core.inference.chat_template_helpers.detect_think_prefill": [
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py"
+  ],
+  "core.inference.chat_template_helpers.render_with_native_template_fallback": [
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py"
+  ],
+  "core.inference.defaults.get_default_models": [
+    "tests/test_warm_window_review_fixes.py",
+    "tests/test_warm_window_review_fixes.py",
+    "tests/test_warm_window_review_fixes.py",
+    "tests/test_warm_window_review_fixes.py"
+  ],
+  "core.inference.diffusion.Path": [
+    "tests/test_diffusion_gated_base.py"
+  ],
+  "core.inference.diffusion._assert_base_repo_accessible": [
+    "tests/test_diffusion_compat_preflight.py",
+    "tests/test_diffusion_compat_preflight.py",
+    "tests/test_diffusion_compat_preflight.py",
+    "tests/test_diffusion_compat_preflight.py"
+  ],
+  "core.inference.diffusion._hf_base_model": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion._is_trusted_diffusion_repo": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "core.inference.diffusion._resolve_base_repo": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_compat_preflight.py",
+    "tests/test_diffusion_compat_preflight.py",
+    "tests/test_diffusion_compat_preflight.py",
+    "tests/test_diffusion_compat_preflight.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py"
+  ],
+  "core.inference.diffusion._uncached_prequant_repo": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.apply_memory_plan": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.clear_gpu_cache": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_saved_image_metadata_precision_contract.py"
+  ],
+  "core.inference.diffusion.detect_family_for_pick": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py"
+  ],
+  "core.inference.diffusion.estimate_gguf_resident_mib": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.hub_cache_dir": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_h3_trainer.py",
+    "tests/test_diffusion_h3_trainer.py"
+  ],
+  "core.inference.diffusion.load_ideogram4_pipeline": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.plan_diffusion_memory": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.prequant_checkpoint_cached": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.restore_backend_flags": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.settled_snapshot_device_memory": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion.usable_prequant_source": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion_compat.flux2_inner_dim_for_pick": [
+    "tests/test_gguf_variant_dependency_key.py",
+    "tests/test_gguf_variant_dependency_key.py"
+  ],
+  "core.inference.diffusion_engine_router.get_active_diffusion_engine": [
+    "tests/test_diffusion_training.py"
+  ],
+  "core.inference.diffusion_families._upstream_is_cached": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_sd_cpp_backend.py"
+  ],
+  "core.inference.diffusion_families.detect_family_for_pick": [
+    "tests/test_gguf_variant_dependency_key.py"
+  ],
+  "core.inference.diffusion_families.family_pipeline_available": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_diffusion_dit_trainer_ltx2.py"
+  ],
+  "core.inference.diffusion_krea2.load_krea2_text_encoder": [
+    "tests/test_diffusion_krea2.py"
+  ],
+  "core.inference.diffusion_krea2.load_krea2_tokenizer": [
+    "tests/test_diffusion_krea2.py"
+  ],
+  "core.inference.diffusion_lora.loras_dir": [
+    "tests/test_diffusion_dit_trainer_ltx2.py"
+  ],
+  "core.inference.diffusion_te_prequant.te_prequant_budget_scale": [
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion_te_prequant.te_prequant_sources": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.diffusion_transformer_quant.apply_small_m_padding": [
+    "tests/test_diffusion_h3_trainer.py",
+    "tests/test_diffusion_prequant.py",
+    "tests/test_diffusion_prequant.py"
+  ],
+  "core.inference.diffusion_transformer_quant.auto_scheme_candidates": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py"
+  ],
+  "core.inference.get_inference_backend": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_raw_support.py"
+  ],
+  "core.inference.llama_cpp.LlamaCppBackend._is_vulkan_backend": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "core.inference.llama_cpp.LlamaCppBackend.vulkan_device_inventory": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "core.inference.llama_cpp._apply_igpu_host_reserve_mib": [
+    "tests/test_gpu_selection.py"
+  ],
+  "core.inference.llama_cpp._hub_download_blocks_gguf_load": [
+    "tests/test_gguf_load_cache_reuse.py"
+  ],
+  "core.inference.llama_cpp._llama_lib_dir": [
+    "tests/test_llama_cpp_placement.py",
+    "tests/test_llama_cpp_placement.py",
+    "tests/test_llama_cpp_placement.py"
+  ],
+  "core.inference.llama_cpp.begin_tool_decision": [
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py"
+  ],
+  "core.inference.llama_cpp.cached_gguf_for_load": [
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py"
+  ],
+  "core.inference.llama_cpp.child_env_without_native_path_secret": [
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py"
+  ],
+  "core.inference.llama_cpp.hf_hub_download_with_xet_fallback": [
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_xet_fallback_integration.py",
+    "tests/test_gguf_xet_fallback_integration.py",
+    "tests/test_gguf_xet_fallback_integration.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py"
+  ],
+  "core.inference.llama_cpp.httpx.get": [
+    "tests/test_offline_gguf_cache_fallback.py"
+  ],
+  "core.inference.llama_cpp.new_approval_id": [
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py"
+  ],
+  "core.inference.llama_cpp.shutil.disk_usage": [
+    "tests/test_gguf_load_cache_reuse.py"
+  ],
+  "core.inference.llama_cpp.subprocess.run": [
+    "tests/test_amd_apu_unified_memory.py",
+    "tests/test_amd_apu_unified_memory.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_metal_paravirtual_guard.py",
+    "tests/test_metal_paravirtual_guard.py",
+    "tests/test_metal_paravirtual_guard.py",
+    "tests/test_metal_paravirtual_guard.py",
+    "tests/test_metal_paravirtual_guard.py",
+    "tests/test_metal_paravirtual_guard.py",
+    "tests/test_metal_paravirtual_guard.py",
+    "tests/test_metal_paravirtual_guard.py"
+  ],
+  "core.inference.llama_cpp.sys.platform": [
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py"
+  ],
+  "core.inference.llama_cpp.time.monotonic": [
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py"
+  ],
+  "core.inference.llama_cpp.wait_tool_decision": [
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py"
+  ],
+  "core.inference.llama_keepwarm.other_inference_request_count": [
+    "tests/test_diffusion_training.py",
+    "tests/test_diffusion_training.py"
+  ],
+  "core.inference.local_model_resolver.resolve_local_gguf": [
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py"
+  ],
+  "core.inference.orchestrator.prepare_gpu_selection": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "core.inference.orchestrator.threading.Thread": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "core.inference.sd_cpp_backend.sd_cpp_text_encoders_for": [
+    "tests/test_diffusion_gated_base.py"
+  ],
+  "core.inference.stt_download_worker.reap_download": [
+    "tests/test_stt_http_downloads.py",
+    "tests/test_stt_http_downloads.py"
+  ],
+  "core.inference.stt_download_worker.spawn_download": [
+    "tests/test_stt_http_downloads.py",
+    "tests/test_stt_http_downloads.py",
+    "tests/test_stt_install_and_snapshot_validation.py",
+    "tests/test_stt_sidecar.py"
+  ],
+  "core.inference.stt_ggml_sidecar.get_ggml_stt_sidecar": [
+    "tests/test_stt_ggml_sidecar.py"
+  ],
+  "core.inference.stt_mtmd_sidecar.get_mtmd_stt_sidecar": [
+    "tests/test_stt_mtmd_sidecar.py",
+    "tests/test_stt_mtmd_sidecar.py"
+  ],
+  "core.inference.stt_sidecar._active_hf_hub_cache": [
+    "tests/test_stt_mtmd_sidecar.py"
+  ],
+  "core.inference.stt_sidecar.get_stt_sidecar": [
+    "tests/test_stt_ggml_sidecar.py"
+  ],
+  "core.inference.tool_stream_exec._WORKER_JOIN_TIMEOUT_S": [
+    "tests/test_tool_output_streaming.py",
+    "tests/test_tool_output_streaming.py"
+  ],
+  "core.inference.tools._fetch_url_raw": [
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py",
+    "tests/test_web_fetch_extraction.py"
+  ],
+  "core.inference.tools._validate_and_resolve_host": [
+    "tests/test_web_fetch_extraction.py"
+  ],
+  "core.inference.tools.build_rag_autoinject": [
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_safetensors_tool_loop.py",
+    "tests/test_safetensors_tool_loop.py"
+  ],
+  "core.inference.tools.execute_tool": [
+    "tests/test_gguf_route_cursor_reset.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_llama_cpp_tool_loop.py",
+    "tests/test_tool_output_streaming.py"
+  ],
+  "core.inference.video._detect_load_family": [
+    "tests/test_video_prequant.py"
+  ],
+  "core.inference.video._ensure_mp4_encoder_available": [
+    "tests/test_video_backend.py"
+  ],
+  "core.inference.video._is_trusted_video_repo": [
+    "tests/test_video_prequant.py"
+  ],
+  "core.inference.video.clear_gpu_cache": [
+    "tests/test_video_backend.py"
+  ],
+  "core.inference.video.contextlib": [
+    "tests/test_video_backend.py"
+  ],
+  "core.inference.video.get_video_backend": [
+    "tests/test_diffusion_training.py"
+  ],
+  "core.inference.video.hub_cache_dir": [
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py"
+  ],
+  "core.inference.video.precision_fallback_allowed": [
+    "tests/test_video_h3_te_quant.py"
+  ],
+  "core.inference.video.resolve_diffusion_device_target": [
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_prequant.py",
+    "tests/test_video_prequant.py",
+    "tests/test_video_prequant.py"
+  ],
+  "core.inference.video.settled_snapshot_device_memory": [
+    "tests/test_video_backend.py"
+  ],
+  "core.inference.video.te_quant_supported": [
+    "tests/test_video_h3_te_quant.py"
+  ],
+  "core.inference.video_families.detect_video_family": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "core.rag.parsers.parse_pdf_bytes": [
+    "tests/test_web_fetch_binary_guard.py",
+    "tests/test_web_fetch_binary_guard.py",
+    "tests/test_web_fetch_binary_guard.py"
+  ],
+  "core.training.diffusion_checkpoint.read_checkpoint": [
+    "tests/test_diffusion_train_perf.py"
+  ],
+  "core.training.diffusion_dit_trainer._assert_gated_access": [
+    "tests/test_diffusion_dit_trainer.py"
+  ],
+  "core.training.diffusion_train_common.discover_image_caption_pairs": [
+    "tests/test_diffusion_checkpoint_resume.py",
+    "tests/test_diffusion_training.py",
+    "tests/test_diffusion_training.py",
+    "tests/test_diffusion_training.py"
+  ],
+  "core.training.diffusion_train_common.training_precision_preflight_error": [
+    "tests/test_diffusion_training.py",
+    "tests/test_diffusion_training.py"
+  ],
+  "core.training.diffusion_training_service.get_diffusion_training_service": [
+    "tests/test_diffusion_checkpoint_resume.py",
+    "tests/test_diffusion_train_perf.py",
+    "tests/test_diffusion_training.py",
+    "tests/test_diffusion_training.py",
+    "tests/test_diffusion_training.py",
+    "tests/test_video_routes.py"
+  ],
+  "core.training.get_training_backend": [
+    "tests/test_gpu_selection.py"
+  ],
+  "core.training.provenance.normalize_worker_provenance_event": [
+    "tests/test_training_provenance.py"
+  ],
+  "core.training.provenance.os.walk": [
+    "tests/test_training_provenance.py"
+  ],
+  "core.training.resume.get_resume_checkpoint_path": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_history_delete.py"
+  ],
+  "core.training.trainer.format_and_template_dataset": [
+    "tests/test_training_preflight.py"
+  ],
+  "core.training.trainer.load_dataset": [
+    "tests/test_training_preflight.py",
+    "tests/test_training_preflight.py",
+    "tests/test_training_preflight.py",
+    "tests/test_training_preflight.py",
+    "tests/test_training_preflight.py",
+    "tests/test_training_preflight.py",
+    "tests/test_training_preflight.py",
+    "tests/test_training_preflight.py"
+  ],
+  "core.training.training._CTX.Process": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_start_idempotency.py",
+    "tests/test_training_start_idempotency.py",
+    "tests/test_training_start_idempotency.py"
+  ],
+  "core.training.training._CTX.Queue": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_start_idempotency.py",
+    "tests/test_training_start_idempotency.py",
+    "tests/test_training_start_idempotency.py"
+  ],
+  "core.training.training._resolve_model_snapshot": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "core.training.training.get_device": [
+    "tests/test_training_cached_start.py"
+  ],
+  "core.training.training.prepare_gpu_selection": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_start_idempotency.py",
+    "tests/test_training_start_idempotency.py",
+    "tests/test_training_start_idempotency.py"
+  ],
+  "core.training.training.threading.Thread": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_raw_support.py",
+    "tests/test_training_start_idempotency.py"
+  ],
+  "core.training.training.time.sleep": [
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py"
+  ],
+  "hub.services.models.deletion.delete_cached_model_response": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.services.models.downloads.get_download_progress_response": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.services.models.downloads.get_gguf_download_progress_response": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.services.models.gguf_variants.iter_hf_cache_snapshots": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.dataset_cache.latest_cached_dataset_path": [
+    "tests/test_training_cached_start.py"
+  ],
+  "hub.utils.dataset_cache.load_cached_hf_dataset": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "hub.utils.dataset_cache.training_dataset_cache_pin": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "hub.utils.download_manifest.build_variant_state_index": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.download_registry.existing_blob_bytes": [
+    "tests/test_openai_auto_download.py"
+  ],
+  "hub.utils.download_registry.get_models_registry": [
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py"
+  ],
+  "hub.utils.download_registry.prepare_cache_for_transport": [
+    "tests/test_hf_xet_fallback.py",
+    "tests/test_hf_xet_fallback.py"
+  ],
+  "hub.utils.gguf.iter_hf_cache_snapshots": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.hf_cache_root": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.hf_cache_roots": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.iter_repo_cache_dirs": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.latest_snapshot_from_cache_path": [
+    "tests/test_models_get_model_config_case_resolution.py"
+  ],
+  "hub.utils.inventory_scan.invalidate_hf_cache_scans": [
+    "tests/test_hf_cache_settings.py"
+  ],
+  "hub.utils.paths.hf_default_cache_dir": [
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_models_get_model_config_case_resolution.py"
+  ],
+  "hub.utils.paths.legacy_hf_cache_dir": [
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_models_get_model_config_case_resolution.py"
+  ],
+  "picker.service._build_browse_allowlist": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.active_hf_hub_cache": [
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.iter_snapshots_preferring_whole": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.read_gguf_chat_template": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.resolve_cached_repo_id_case": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
+  "routes.inference.get_llama_cpp_backend": [
+    "tests/test_consent_gate.py"
+  ],
+  "routes.models._cached_repo_task": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "routes.models._repo_gguf_task": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "routes.training_vram.summarize_resident_chat": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "storage.studio_db.add_scan_folder_with_status": [
+    "tests/test_openai_auto_switch.py"
+  ],
+  "storage.studio_db.finish_run": [
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py"
+  ],
+  "storage.studio_db.get_app_setting": [
+    "tests/test_hf_cache_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py"
+  ],
+  "storage.studio_db.list_scan_folders": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_openai_auto_switch.py"
+  ],
+  "storage.studio_db.mark_run_cancel_requested": [
+    "tests/test_training_status_terminal.py"
+  ],
+  "storage.studio_db.remove_scan_folder": [
+    "tests/test_openai_auto_switch.py",
+    "tests/test_openai_auto_switch.py",
+    "tests/test_openai_auto_switch.py"
+  ],
+  "storage.studio_db.update_run_config_json": [
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py"
+  ],
+  "storage.studio_db.upsert_app_settings": [
+    "tests/test_hf_cache_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py"
+  ],
+  "utils.coding_agents.shutil.which": [
+    "tests/test_coding_agents.py",
+    "tests/test_coding_agents.py",
+    "tests/test_coding_agents.py",
+    "tests/test_coding_agents.py"
+  ],
+  "utils.hardware.apple.read_gpu_power_w": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.apple.read_gpu_temperature_c": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.auto_select_gpu_ids": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_training_vram_coexistence.py"
+  ],
+  "utils.hardware.ensure_hardware_detected": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_start_offload.py"
+  ],
+  "utils.hardware.estimate_required_model_memory_gb": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_training_vram_coexistence.py"
+  ],
+  "utils.hardware.get_device": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.get_visible_gpu_utilization": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_training_vram_coexistence.py"
+  ],
+  "utils.hardware.hardware.DEVICE": [
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py",
+    "tests/test_training_before_spawn.py"
+  ],
+  "utils.hardware.hardware._determine_attention_impl_for_gpu_estimate": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._estimate_fp16_model_size_bytes_from_config": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._estimate_fp16_model_size_bytes_from_vllm_utils": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._get_hf_safetensors_total_params": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._get_local_weight_size_bytes": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._get_parent_visible_gpu_spec": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._has_mlx": [
+    "tests/test_utils.py",
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.hardware._has_torch": [
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.hardware._has_usable_mlx_stack": [
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.hardware._load_config_for_gpu_estimate": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._read_apple_gpu_stats": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate": [
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._smi_query": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._torch_get_device_inventory": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware._torch_get_physical_gpu_count": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware.auto_select_gpu_ids": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware.estimate_fp16_model_size_bytes": [
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_export_size_estimate.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py"
+  ],
+  "utils.hardware.hardware.estimate_required_model_memory_gb": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware.get_device": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.hardware.get_gpu_memory_info": [
+    "tests/test_gpu_selection.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.hardware.get_parent_visible_gpu_ids": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware.get_physical_gpu_count": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py",
+    "tests/test_gpu_selection_sandbox.py"
+  ],
+  "utils.hardware.hardware.get_visible_gpu_count": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware.get_visible_gpu_utilization": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.hardware.is_apple_silicon": [
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.hardware.platform": [
+    "tests/test_utils.py",
+    "tests/test_utils.py",
+    "tests/test_utils.py"
+  ],
+  "utils.hardware.hardware.resolve_requested_gpu_ids": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.nvidia.get_backend_visible_gpu_info": [
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.nvidia.subprocess.run": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py"
+  ],
+  "utils.hardware.resolve_requested_gpu_ids": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_training_vram_coexistence.py",
+    "tests/test_training_vram_coexistence.py"
+  ],
+  "utils.hardware.vram_estimation.compute_gradient_bytes": [
+    "tests/test_vram_estimation.py"
+  ],
+  "utils.hf_cache_settings.active_hf_hub_cache": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_rag_embeddings.py",
+    "tests/test_sd_cpp_backend.py",
+    "tests/test_sd_cpp_backend.py",
+    "tests/test_sd_cpp_backend.py",
+    "tests/test_third_party_source.py"
+  ],
+  "utils.hf_cache_settings.get_hf_cache_paths": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_diffusion_gated_base.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_variants_local_resolution.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_model_update_robustness.py",
+    "tests/test_model_update_robustness.py",
+    "tests/test_offline_embedding_minimal.py",
+    "tests/test_offline_embedding_minimal.py",
+    "tests/test_offline_embedding_minimal.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_stt_http_downloads.py"
+  ],
+  "utils.hf_cache_settings.known_hf_hub_caches": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_resolve_quant_gguf.py"
+  ],
+  "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback": [
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_diffusion_backend.py",
+    "tests/test_sd_cpp_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py"
+  ],
+  "utils.llama_cpp_freshness.read_install_marker": [
+    "tests/test_llama_cpp_mtp_detection.py"
+  ],
+  "utils.models.gguf_metadata.read_gguf_context_length": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "utils.models.gguf_metadata.read_gguf_general_metadata": [
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py",
+    "tests/test_video_backend.py"
+  ],
+  "utils.models.model_config._env_offline": [
+    "tests/test_vision_cache.py"
+  ],
+  "utils.models.model_config._is_vision_model_subprocess": [
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py"
+  ],
+  "utils.models.model_config._is_vision_model_uncached": [
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py"
+  ],
+  "utils.models.model_config._iter_gguf_files": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "utils.models.model_config._iter_hf_cache_snapshots": [
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py"
+  ],
+  "utils.models.model_config._raw_config_has_vision_config": [
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py"
+  ],
+  "utils.models.model_config.detect_audio_type": [
+    "tests/test_trained_model_scan.py"
+  ],
+  "utils.models.model_config.get_base_model_from_lora_identifier": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.models.model_config.is_audio_input_type": [
+    "tests/test_trained_model_scan.py"
+  ],
+  "utils.models.model_config.is_local_path": [
+    "tests/test_capability_detection.py",
+    "tests/test_capability_detection.py"
+  ],
+  "utils.models.model_config.is_vision_model": [
+    "tests/test_trained_model_scan.py"
+  ],
+  "utils.models.model_config.list_gguf_variants": [
+    "tests/test_batch_sizes_per_load.py",
+    "tests/test_batch_sizes_per_load.py",
+    "tests/test_batch_sizes_per_load.py",
+    "tests/test_batch_sizes_per_load.py",
+    "tests/test_batch_sizes_per_load.py",
+    "tests/test_batch_sizes_per_load.py"
+  ],
+  "utils.models.model_config.load_model_config": [
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py"
+  ],
+  "utils.models.model_config.subprocess.run": [
+    "tests/test_vision_cache.py"
+  ],
+  "utils.models.model_config.without_hf_auth": [
+    "tests/test_capability_detection.py"
+  ],
+  "utils.native_path_leases.run_without_native_path_secret": [
+    "tests/test_diffusion_training.py"
+  ],
+  "utils.native_tls.activate_native_tls": [
+    "tests/test_diffusion_training.py"
+  ],
+  "utils.openai_auto_switch_settings.get_openai_auto_download_enabled": [
+    "tests/test_openai_auto_switch.py"
+  ],
+  "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled": [
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py"
+  ],
+  "utils.paths.exports_root": [
+    "tests/test_export_size_estimate.py"
+  ],
+  "utils.paths.hf_default_cache_dir": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "utils.paths.is_local_path": [
+    "tests/test_file_security.py",
+    "tests/test_file_security.py",
+    "tests/test_file_security.py",
+    "tests/test_trc_approval_cache.py"
+  ],
+  "utils.paths.legacy_hf_cache_dir": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "utils.paths.lmstudio_model_dirs": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "utils.paths.normalize_path": [
+    "tests/test_consent_gate.py"
+  ],
+  "utils.paths.outputs_root": [
+    "tests/test_export_size_estimate.py"
+  ],
+  "utils.paths.resolve_cached_repo_id_case": [
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py"
+  ],
+  "utils.paths.storage_roots.cache_root": [
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_dataset_cache_paths.py",
+    "tests/test_export_size_estimate.py"
+  ],
+  "utils.paths.storage_roots.exports_root": [
+    "tests/test_export_absolute_paths.py",
+    "tests/test_export_absolute_paths.py"
+  ],
+  "utils.paths.studio_root": [
+    "tests/test_export_size_estimate.py"
+  ],
+  "utils.process_lifetime.adopt_pid": [
+    "tests/test_stt_http_downloads.py",
+    "tests/test_training_start_idempotency.py",
+    "tests/test_training_start_idempotency.py"
+  ],
+  "utils.process_lifetime.child_popen_kwargs": [
+    "tests/test_stt_http_downloads.py"
+  ],
+  "utils.process_lifetime.forget_pid": [
+    "tests/test_stt_mtmd_sidecar.py"
+  ],
+  "utils.security.consent._config_has_auto_map": [
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py",
+    "tests/test_openai_auto_download.py"
+  ],
+  "utils.security.evaluate_file_security": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.security.evaluate_remote_code_consent_for_targets": [
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.security.file_security._fetch_security_status": [
+    "tests/test_file_security.py",
+    "tests/test_file_security.py",
+    "tests/test_file_security.py"
+  ],
+  "utils.security.security_load_subdirs": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.security.trusted_org.is_local_path": [
+    "tests/test_consent_gate.py"
+  ],
+  "utils.transformers_version._check_config_needs_510": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._check_config_needs_550": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._check_tokenizer_config_needs_v5": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._ensure_venv_t5_510_exists": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._ensure_venv_t5_530_exists": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._ensure_venv_t5_550_exists": [
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._install_to_dir": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._load_config_json": [
+    "tests/test_capability_detection.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._probe_tier": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._resolve_base_model": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version._venv_dir_is_valid": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version.get_hf_cache_paths": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version.get_transformers_activation_tier": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.transformers_version.get_transformers_tier": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_vision_cache.py"
+  ],
+  "utils.transformers_version.latest_tier_active_for": [
+    "tests/test_chat_load_during_training.py",
+    "tests/test_chat_load_during_training.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.transformers_version.logger": [
+    "tests/test_transformers_version.py"
+  ],
+  "utils.transformers_version.needs_transformers_5": [
+    "tests/test_gpu_selection.py",
+    "tests/test_gpu_selection.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py",
+    "tests/test_vision_cache.py"
+  ],
+  "utils.transformers_version.sidecar_swap_in_progress": [
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.transformers_version.subprocess.run": [
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py",
+    "tests/test_transformers_version.py"
+  ],
+  "utils.utils.hf_cache_snapshot_dir": [
+    "tests/test_file_security.py"
+  ],
+  "utils.utils.hf_dns_dead": [
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py"
+  ],
+  "utils.utils.hf_env_offline": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "utils.utils.hf_proxy_configured": [
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py"
+  ],
+  "utils.utils.hf_tcp_reachable": [
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py",
+    "tests/test_offline_gguf_cache_fallback.py"
+  ],
+  "utils.utils.hf_unreachable": [
+    "tests/test_offline_gguf_cache_fallback.py"
+  ]
+}

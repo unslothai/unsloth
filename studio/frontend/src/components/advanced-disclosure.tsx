@@ -15,10 +15,17 @@ import { cn } from "@/lib/utils";
 export function AdvancedDisclosure({
   open,
   onOpenChange,
+  description = (
+    <>
+      Load-time tuning. Changes apply on the next load; Reapply reloads the
+      current model.
+    </>
+  ),
   children,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  description?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -28,7 +35,7 @@ export function AdvancedDisclosure({
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg px-1 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {/* Icon and label sized to the slider rows above, so it reads as one of them. */}
         <HugeiconsIcon
@@ -48,8 +55,7 @@ export function AdvancedDisclosure({
       {open && (
         <div className="flex flex-col gap-3">
           <p className="text-ui-11 leading-snug text-muted-foreground">
-            Load-time tuning. Changes apply on the next load; Reapply reloads
-            the current model.
+            {description}
           </p>
           {children}
         </div>

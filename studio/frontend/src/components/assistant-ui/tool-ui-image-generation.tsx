@@ -341,7 +341,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                     "block rounded-2xl object-contain",
                     imageDimensions
                       ? "size-full"
-                      : "h-auto max-h-[min(70vh,620px)] max-w-full",
+                      : "h-auto max-h-[min(70dvh,620px)] max-w-full",
                   )}
                 />
               </button>
