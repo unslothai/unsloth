@@ -165,6 +165,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.unforgettable.store.title",
     "settings.unforgettable.store.path",
   ],
+  debugging: [
+    "settings.debugging.logSection",
+    "settings.debugging.source",
+    "settings.debugging.path",
+    "settings.debugging.refreshSection",
+    "settings.debugging.mode",
+    "settings.debugging.keywords",
+  ],
   about: [
     "settings.about.updates",
     "settings.about.releaseNotes",

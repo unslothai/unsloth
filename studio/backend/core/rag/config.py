@@ -76,6 +76,62 @@ OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
 # the vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 
+# ``documents.embedding_model`` records the embedder that produced a document's
+# vectors, not just the configured model name. The name alone is not the embedding
+# space: llama-server ignores it and embeds through the GGUF companion, which pools
+# its own way, so one name can mean two spaces on the same machine.
+EMBEDDING_IDENTITY_TAGS = ("sentence-transformers", "llama-server")
+
+
+def _escape_identity_segment(value: str) -> str:
+    """Colons separate the segments, and a model can be a local path that contains one
+    (``C:\\models\\bge``), which would otherwise read back as ``C``. A repo id contains
+    neither character, so the identity of a normal model is unchanged."""
+    return value.replace("%", "%25").replace(":", "%3A")
+
+
+def _unescape_identity_segment(value: str) -> str:
+    return value.replace("%3A", ":").replace("%25", "%")
+
+
+def embedding_identity(
+    backend: str,
+    model: str,
+    *,
+    gguf_repo: str | None = None,
+) -> str:
+    """Tagged identity for ``documents.embedding_model``.
+
+    The configured model comes first so a row written before identities carried a tag
+    still compares equal on it. llama-server appends the GGUF repo it actually embeds
+    through, which is the part that can differ from the model's ST form."""
+    model = _escape_identity_segment(model)
+    if gguf_repo is None:
+        return f"{backend}:{model}"
+    return f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+
+
+def embedding_identity_model(identity: str | None) -> str | None:
+    """The configured model inside a tagged identity, or None when untagged."""
+    for tag in EMBEDDING_IDENTITY_TAGS:
+        if identity and identity.startswith(f"{tag}:"):
+            return _unescape_identity_segment(identity[len(tag) + 1 :].split(":", 1)[0])
+    return None
+
+
+def embedding_identity_matches(stored: str | None, current: str) -> bool:
+    """Whether ``stored``'s vectors can answer a query embedded under ``current``.
+
+    NULL is still assumed current. An untagged row predates the tag and we cannot know
+    which backend wrote it, so it matches on the model name alone, exactly as it did
+    before: dropping those would empty dense search over every corpus indexed so far.
+    They are reported instead (``store.count_untagged_documents``)."""
+    if stored is None:
+        return True
+    if embedding_identity_model(stored) is not None:
+        return stored == current
+    return stored == (embedding_identity_model(current) or current)
+
 
 def effective_embedding_model() -> str:
     """The embedding model actually in use: the persisted Settings override when
@@ -125,7 +181,44 @@ def effective_gguf_repo() -> str:
 # tiny model) and exact vs fp32, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")
 EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
+# Read by BOTH backends, and "auto" means something different to each, because the
+# cost of a GPU is different. llama-server offloads inside its own subprocess, so
+# "auto" there means GPU when there is room. sentence-transformers loads inside the
+# backend process, where the first CUDA allocation pins a primary context for the life
+# of the process (712 MiB on a B200, against 74 MiB of weights), so "auto" there means
+# CPU. Set "gpu" to offload either one; "cpu" keeps both off the GPU.
 EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")  # "auto" | "gpu" | "cpu"
+
+
+def embed_device_preference() -> str:
+    """``EMBED_DEVICE`` normalized to exactly ``gpu``, ``cpu`` or ``auto``.
+
+    One reader for both backends, because they used to disagree about the same
+    string: the llama path compared a bare ``.lower()``, so ``" gpu "`` fell through
+    to auto, and an Intel user writing the accelerator's own name (``xpu``) got CPU
+    from a setting that named their device. Anything that is not recognizably a
+    request for CPU or for an accelerator is ``auto``, so a typo degrades to each
+    backend's default rather than to silence.
+    """
+    value = (EMBED_DEVICE or "").strip().lower()
+    if value in ("gpu", "cuda", "rocm", "hip", "xpu", "mps", "metal"):
+        return "gpu"
+    if value == "cpu":
+        return "cpu"
+    return "auto"
+
+
+def embed_device_requires_gpu() -> bool:
+    """True when a failed GPU start must raise instead of retrying on CPU.
+
+    Only the literal documented value is that hard a request, which is what it has
+    always meant. The spellings we newly began honoring above -- padding, or the
+    accelerator's own name -- used to fall through to ``auto``, and ``auto`` falls
+    back, so reading them as fatal would take RAG away from hosts it worked on. They
+    still opt into the GPU; they just do not insist on it."""
+    return (EMBED_DEVICE or "").lower() == "gpu"
+
+
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")
 EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))  # 0 = auto-pick a free port
 EMBED_BATCH = int(os.environ.get("RAG_EMBED_BATCH", "64"))

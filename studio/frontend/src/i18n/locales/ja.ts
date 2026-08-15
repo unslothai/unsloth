@@ -159,6 +159,31 @@ export const ja = {
       data: "データ",
       unforgettable: "Unforgettable",
       agents: "エージェント",
+      debugging: "ログ",
+    },
+    debugging: {
+      logSection: "ログファイル",
+      source: "ログファイル",
+      sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
+      path: "場所",
+      pathCopy: "パスをコピー",
+      refreshSection: "更新",
+      mode: "モード",
+      modeLive: "ライブ",
+      modeInterval: "3 秒ごと",
+      modeManual: "手動",
+      refreshNow: "今すぐ更新",
+      privacyNote: "この表示では認証情報をマスクしています。ディスク上のファイルはマスクされません。",
+      copyVisible: "表示中のログをコピー",
+      empty: "まだ何も記録されていません。",
+      disabled: "ファイルへのログ出力は無効です (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
+      missing: "ログファイルが見つかりませんでした。",
+      unreadable: "ログファイルを読み取れませんでした。",
+      timeout: "ログの取得がタイムアウトしました。サーバーに接続できない可能性があります。",
+      droppedNotice: "一部の行がスキップされました。ログの書き込みが読み取りに追いつきませんでした。",
+      morePending: "さらに行を読み込み中です。次回の更新時に表示されます。",
+      staleSession: "ファイルへのログ出力が無効なため、これは以前のセッションであり更新されません。",
+      keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     unforgettable: {
       title: "Unforgettable",
@@ -428,6 +453,13 @@ export const ja = {
         idleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         idleSecondsAriaLabel: "アイドル時の自動アンロードまでの秒数",
+        mediaIdleUnload: "画像と動画のアイドル時の自動アンロード",
+        mediaIdleUnloadDescription:
+          "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。これは独立した設定です。上の設定はチャットモデルのみが対象です。0 にすると読み込んだままになります。最小値は 60 秒です。",
+        mediaIdleSecondsAriaLabel:
+          "画像と動画のアイドル時の自動アンロードまでの秒数",
+        mediaIdlePaused:
+          "「モデルを GPU メモリに保持」または「API が読み込んだモデルのみアンロード」がオンの間は一時停止します。",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
@@ -1331,6 +1363,12 @@ export const ja = {
         "このデータセットはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
       noticeDatasetPartial:
         "トレーニングでは、データセットを読み込む前に未完了のダウンロードを完了します。",
+      noticeTransformersUpgrade:
+        "インストール済みの transformers はこのアーキテクチャに未対応です。実行を開始すると、まず transformers {version} のインストールを確認します。",
+      noticeSixteenBitOnly:
+        "このアーキテクチャは 16 ビット LoRA で学習します。4 ビットは利用できないため、QLoRA より大幅に多い VRAM が必要です。",
+      noticeInstallSwitchesSixteenBit:
+        "モデル独自のコードを使う代わりにそのリリースをインストールすると、この実行は 16 ビット LoRA に切り替わり、QLoRA より大幅に多い VRAM が必要になります。",
       advancedSettings: "詳細設定",
       defaultAdvancedSettings: "デフォルト",
       nonDefaultAdvancedSettings: "デフォルト以外の設定: {count} 件",

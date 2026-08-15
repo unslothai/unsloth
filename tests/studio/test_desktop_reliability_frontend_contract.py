@@ -41,6 +41,7 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+AUDIO_PAGE = FRONTEND / "features/audio/audio-page.tsx"
 
 DIFFUSION_TRAIN_PANEL = FRONTEND / "features/images/train/diffusion-train-panel.tsx"
 MEDIA_PAGE_LINK = FRONTEND / "components/media-page-link.tsx"
@@ -800,6 +801,43 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
     assert "border-t border-foreground/10 px-10 py-3" in section
 
 
+def test_audio_page_matches_the_image_rail_header_and_action_footer():
+    source = AUDIO_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0")
+    assert marker
+    header_opening = before.rsplit('<div className="', 1)[1] + marker + after.split(">", 1)[0]
+    header = header_opening + after.split("Below 50rem", 1)[0]
+    layout = source.split("Below 50rem", 1)[1]
+
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
+    assert "pointer-events-none" in header_opening
+    assert "relative" in header_opening
+    assert "z-40" in header_opening
+    assert "@[50rem]:border-r" in header
+    assert (
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+    )
+    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "col-start-2 justify-self-end pr-3" in header
+    assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
+    assert "absolute" not in header.split("<PillTabs", 1)[0]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "@[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert 'mode === "speak"' in layout
+    assert '"panel-scroll-fade-action"' in layout
+    assert '"panel-scroll-fade"' in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4" in layout
+    assert "btn-float-action" not in layout
+    assert "absolute inset-x-0 bottom-0" not in layout
+    assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
+
+
 def test_image_train_rail_matches_create_and_header():
     source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
@@ -830,7 +868,12 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
     assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
     assert "data-tauri-drag-region" in navbar
 
-    for page in (IMAGES_PAGE, VIDEO_PAGE):
+    # (page, end of the header band, clickable control groups expected inside it)
+    for page, band_end, min_groups in (
+        (IMAGES_PAGE, "MediaPageLink", 3),
+        (VIDEO_PAGE, "MediaPageLink", 2),
+        (AUDIO_PAGE, "PillTabs", 2),
+    ):
         source = page.read_text(encoding = "utf-8")
         # matched on the band's size alone: Images lays its header out as a grid and Video as a
         # flex row, so the stacking contract below is what this pins, not one layout's utilities.
@@ -840,11 +883,12 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
         for token in ("pointer-events-none", "relative", "z-40"):
             assert token in opening, (page.name, token)
 
-        band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'"([^"]*pointer-events-auto flex[^"]*items-center gap-[^"]*)"', band)
-        assert len(groups) >= 2, (page.name, groups)
-        for group in groups:
-            assert "pointer-events-auto" in group, (page.name, group)
+        band = band.split(band_end, 1)[0]
+        # every control group in the band has to opt back in, whatever utilities lay it out:
+        # Audio and Images seat their mode pills in a grid cell, Video in a flex row, so
+        # matching on the opt-in alone is what keeps this honest across all three.
+        groups = re.findall(r'"([^"]*pointer-events-auto[^"]*)"', band)
+        assert len(groups) >= min_groups, (page.name, groups)
 
 
 def test_images_header_tracks_preview_and_preserves_titlebar_controls():
@@ -855,17 +899,20 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     header = opening + after.split("{/* Train mode", 1)[0]
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
-    assert "@[50rem]:grid-cols-[408px_minmax(0,1fr)]" in opening
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
-    assert 'className="!h-[34px] max-w-full overflow-hidden"' in header
-    assert "contents @[50rem]:grid" in header
-    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "@[50rem]:col-start-2" in header
-    assert "@[50rem]:col-start-3" in header
+    assert (
+        'className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 '
+        '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
+    )
+    assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
+    assert "col-start-2" in header
+    assert "col-start-3" in header
     assert 'labelClassName="hidden @[50rem]:inline"' in header
     assert 'arrowClassName="hidden @[50rem]:block"' in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]

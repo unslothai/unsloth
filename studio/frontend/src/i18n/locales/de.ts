@@ -160,7 +160,32 @@ export const de = {
       data: "Daten",
       unforgettable: "Unforgettable",
       agents: "Agenten",
+      debugging: "Protokolle",
       voice: "Sprachfunktionen",
+    },
+    debugging: {
+      logSection: "Protokolldatei",
+      source: "Protokolldatei",
+      sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
+      path: "Speicherort",
+      pathCopy: "Pfad kopieren",
+      refreshSection: "Aktualisierung",
+      mode: "Modus",
+      modeLive: "Live",
+      modeInterval: "Alle 3 Sekunden",
+      modeManual: "Manuell",
+      refreshNow: "Jetzt aktualisieren",
+      privacyNote: "Zugangsdaten werden in dieser Ansicht maskiert. In der Datei auf dem Datenträger sind sie nicht maskiert.",
+      copyVisible: "Sichtbares Protokoll kopieren",
+      empty: "Es wurde noch nichts protokolliert.",
+      disabled: "Die Protokollierung in eine Datei ist deaktiviert (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "Es wurde keine Protokolldatei gefunden.",
+      unreadable: "Die Protokolldatei konnte nicht gelesen werden.",
+      timeout: "Die Protokollanfrage hat das Zeitlimit uberschritten. Der Server ist moglicherweise nicht erreichbar.",
+      droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
+      morePending: "Weitere Zeilen werden noch gelesen; sie erscheinen bei der nachsten Aktualisierung.",
+      staleSession: "Die Protokollierung in Dateien ist deaktiviert, daher ist dies eine fruhere Sitzung und wird nicht aktualisiert.",
+      keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     unforgettable: {
       title: "Unforgettable",
@@ -447,6 +472,14 @@ export const de = {
           "Gibt VRAM nach der angegebenen Anzahl von Sekunden ohne Aktivität frei. Bei 0 bleibt das Modell geladen; der Mindestwert ist 60.",
         idleSecondsAriaLabel:
           "Inaktivitätsdauer bis zum automatischen Entladen in Sekunden",
+        mediaIdleUnload:
+          "Automatisches Entladen bei Inaktivität für Bild und Video",
+        mediaIdleUnloadDescription:
+          "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Eine eigene Einstellung: Die Einstellung darüber gilt nur für das Chat-Modell. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
+        mediaIdleSecondsAriaLabel:
+          "Inaktivitätsdauer bis zum automatischen Entladen von Bild und Video in Sekunden",
+        mediaIdlePaused:
+          "Pausiert, solange „Modell im GPU-Speicher behalten“ oder „Nur über die API geladene Modelle entladen“ aktiv ist.",
         idleNeedsEnable: "Aktivieren Sie zuerst „Modell je Anfrage wechseln“.",
         idleActiveViaEnv:
           "Automatisches Entladen bei Inaktivität ist über die Umgebungsvariable UNSLOTH_MODEL_IDLE_TTL aktiv.",
@@ -1403,6 +1436,12 @@ export const de = {
         "Dieser Datensatz befindet sich noch nicht auf dem Gerät. Beim Start des Trainings wird er automatisch heruntergeladen.",
       noticeDatasetPartial:
         "Vor dem Einlesen wird der unvollständige Datensatz-Download abgeschlossen.",
+      noticeTransformersUpgrade:
+        "Keine installierte transformers-Version unterstützt diese Architektur bereits. Beim Start wird zuerst die Installation von transformers {version} angeboten.",
+      noticeSixteenBitOnly:
+        "Diese Architektur trainiert als 16-Bit-LoRA: 4 Bit ist dafür nicht verfügbar, der Lauf braucht also deutlich mehr VRAM als QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Wird diese Version installiert, statt den modelleigenen Code zu behalten, wechselt dieser Lauf zu 16-Bit-LoRA und braucht deutlich mehr VRAM als QLoRA.",
       advancedSettings: "Erweiterte Einstellungen",
       defaultAdvancedSettings: "Standardwerte",
       nonDefaultAdvancedSettings: "{count} abweichend",
