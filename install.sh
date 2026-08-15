@@ -4151,6 +4151,38 @@ _persist_rocm_wsl_dropin() {
     fi
 }
 
+# Open torch's AOTriton SDPA gate for EVERY ROCm install, not just the WSL Strix Halo
+# drop-in above. Unset, torch's flash and mem-efficient backends both decline and SDPA falls
+# to MATH, whose score matrix grows with the SQUARE of the context -- on a 16 GB card that is
+# a 4-8k context instead of 32k. Measured on gfx1200: flash 17.3 ms / 0.18 GiB against math
+# 387.2 ms / 12.14 GiB, agreeing to fp16 rounding.
+# unsloth/__init__.py sets it too, but only for code that reaches `import unsloth`; a plain
+# `import torch` script never does, so persist it for the whole host as well.
+# Any pre-existing value wins, including "0": that is the opt-out for someone who hits an
+# AOTriton bug and wants the math fallback. /etc/profile.d is root-owned, so sudo-tee when not
+# root. Best-effort throughout -- ALWAYS returns 0, never aborts the installer.
+_persist_rocm_aotriton_env() {
+    if [ -n "${TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL:-}" ]; then
+        return 0
+    fi
+    export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+    # The WSL drop-in already exports it; a second file would be dead weight.
+    [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && return 0
+    [ -r /etc/profile.d/unsloth-rocm-aotriton.sh ] && return 0
+    _aot_dropin="$(
+        printf '# >>> Unsloth ROCm AOTriton attention >>>\n'
+        printf '# Unset or set to 0 to fall back to torch'"'"'s MATH SDPA kernel.\n'
+        printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
+        printf '# <<< Unsloth ROCm AOTriton attention <<<\n'
+    )"
+    if [ "$(id -u)" = "0" ]; then
+        printf '%s\n' "$_aot_dropin" > /etc/profile.d/unsloth-rocm-aotriton.sh 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+        printf '%s\n' "$_aot_dropin" | sudo tee /etc/profile.d/unsloth-rocm-aotriton.sh >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
 # _wsl_amd_gpu_name is defined earlier so both the reroute and this bootstrap can use it.
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
@@ -4399,6 +4431,8 @@ esac
 # merely STARTING with "rocm" isn't force-repaired from the wrong path.
 if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then
     _torch_index_is_rocm_family=true
+    # Confirmed ROCm wheels: open the AOTriton SDPA gate host-wide (see the helper).
+    _persist_rocm_aotriton_env || true
 else
     _torch_index_is_rocm_family=false
 fi
