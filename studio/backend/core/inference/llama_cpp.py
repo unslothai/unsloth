@@ -15483,6 +15483,15 @@ class LlamaCppBackend:
                 if gpu_ids is not None:
                     _spec_placement_extras = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_spec_placement_env)
+                # A device the launch really carries, and not the CPU spelling of it.
+                # Only consulted where the probe found nothing: it is the one remaining
+                # way the child can still be pointed at a GPU.
+                _spec_device_pick = _extra_args_main_device(
+                    [*cmd, *(_spec_placement_extras or [])]
+                ) or _spec_placement_env.get("LLAMA_ARG_DEVICE")
+                _spec_extras_pick_a_gpu = bool(_spec_device_pick) and not _device_selection_is_cpu(
+                    [*cmd, *(_spec_placement_extras or [])], _spec_placement_env
+                )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -15513,8 +15522,12 @@ class LlamaCppBackend:
                         # CPU-only rather than partial. Those keep the CPU MTP policy.
                         # gpu_indices counts too: an explicit pick the VRAM probe could
                         # not enumerate still pins the child to those devices, so the
-                        # launch offloads to them whatever the probe returned.
-                        and (_detected_gpus or gpu_indices)
+                        # launch offloads to them whatever the probe returned. So does
+                        # a device named in the extras, which is the same flag
+                        # _device_selection_is_cpu reads for the CPU answer: a failed
+                        # probe is not evidence of no GPU when the child is pointed at
+                        # one by hand.
+                        and (_detected_gpus or gpu_indices or _spec_extras_pick_a_gpu)
                         and self._partially_offloads_layers(
                             [*cmd, *(_spec_placement_extras or [])],
                             _spec_placement_env,

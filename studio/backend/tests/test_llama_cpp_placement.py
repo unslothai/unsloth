@@ -534,6 +534,28 @@ def test_auto_keeps_embedded_hybrid_mtp_when_the_device_selection_is_cpu(tmp_pat
     assert backend.spec_fallback_reason is None
 
 
+def test_a_hand_pinned_device_is_gpu_evidence_when_the_probe_found_none(tmp_path):
+    # A failed probe is not evidence of no GPU: the extras can still point the
+    # child at one and ask for a partial count, which is the placement this
+    # fallback exists for. Same flag _device_selection_is_cpu reads for the CPU
+    # answer, so the two sides agree.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        extra_args = ["--device", "Vulkan0", "--gpu-layers", "42"],
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--device") + 1] == "Vulkan0"
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
+
+
 def test_partial_offload_stand_down_records_the_draft_depth_it_decided_at(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
 
