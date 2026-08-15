@@ -1583,13 +1583,20 @@ class VideoBackend:
         """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
         from huggingface_hub import HfApi
 
-        from .sd_cpp_args import SdCppModelFiles, device_backend_flags, offload_flags
+        from .sd_cpp_args import (
+            GRAPH_CUT_STREAM_FLAGS,
+            GRAPH_CUT_VRAM_FLAGS,
+            SdCppModelFiles,
+            device_backend_flags,
+            offload_flags,
+        )
         from .diffusion_engine_router import _install_accelerator_for
         from .sd_cpp_backend import (
             _install_allowed,
             ensure_h3_sd_cpp_binary,
             sd_cpp_device_name_for_ordinal,
             sd_cpp_lists_accelerator_device,
+            sd_cpp_supports_graph_cut,
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
@@ -1806,6 +1813,8 @@ class VideoBackend:
                     "again."
                 )
             binary_identity = _sd_cli_identity(binary)
+            # Under the claim like every other probe here, and never on CPU, which allocates from system RAM.
+            supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
             # Dropped with the accelerator: the CPU fallback runs on no card, so a recorded ordinal
             # would outlive the decision and be committed against a runtime that never used it.
             native_ordinal = None if native_device == "cpu" else gpu_ordinal
@@ -1844,6 +1853,12 @@ class VideoBackend:
         native_offload = tuple(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
+        # H3 allocates each module WHOLE on the device (20.5 GB DiT, 17 GB encoder), so --offload-to-cpu alone still cudaMallocs; not gated on memory mode because auto and fast are what OOM.
+        # --max-vram segments on its own, but upstream ignores --stream-layers unless the params are on the CPU, so it only rides along with --offload-to-cpu.
+        if supports_graph_cut:
+            native_offload += GRAPH_CUT_VRAM_FLAGS
+            if "--offload-to-cpu" in native_offload:
+                native_offload += GRAPH_CUT_STREAM_FLAGS
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0 whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
         from .video_minimax_h3 import MiniMaxH3NativeRuntime

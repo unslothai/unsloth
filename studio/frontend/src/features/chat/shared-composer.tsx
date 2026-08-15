@@ -96,6 +96,9 @@ import {
   resolveInitialConfig,
   type PerModelConfig,
 } from "@/features/model-picker";
+import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
+import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
+import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -1266,6 +1269,62 @@ export function SharedComposer({
           resolvedIsDiffusion = staged.isDiffusion;
           diffusionUnknown = staged.diffusionUnknown;
         }
+        // Pass-through arguments can live only in the server's override map (set
+        // through the API, or from another browser), and this config comes from
+        // local storage. /load's omission path inherits them from a RESIDENT
+        // instance of the same model, which a compare pane starting cold or
+        // switching away from the other model does not have, so without this the
+        // experiment runs a different command from the one that was saved.
+        if (
+          targetIsGguf &&
+          // Not for the diffusion runner, which appends none of them.
+          resolvedIsDiffusion !== true
+        ) {
+          try {
+            // Sanitised for the same reason the panel sanitises what it hydrates:
+            // either list becomes an EXPLICIT /load argument, which is validated
+            // strictly rather than going through the carry-over paths that drop a
+            // newly denied flag quietly. A pane on an install upgraded across a
+            // denylist change would otherwise answer 400 on a comparison that ran
+            // the day before, whether the list came from the server or from this
+            // browser's own storage.
+            const managed = await loadManagedLlamaFlags();
+            const clean = (tokens: readonly string[]) =>
+              sanitizeStoredExtraArgs(
+                tokens,
+                managed?.managed ?? new Set<string>(),
+                {
+                  maxBytes: managed?.maxBytes,
+                  windowsCommandBudget: managed?.windowsCommandBudget,
+                },
+              );
+            const local = ownConfig.llamaExtraArgs;
+            if (local === undefined) {
+              const resolvedArgs = await fetchLoadExtraArgs(
+                sel.id,
+                sel.id,
+                sel.ggufVariant ?? null,
+              );
+              const cleaned = clean(resolvedArgs.tokens);
+              if (cleaned.length > 0) {
+                ownConfig.llamaExtraArgs = cleaned;
+              } else if (resolvedArgs.explicit) {
+                // An explicit empty row is a cleared box, and this pane has to send
+                // it as one: left undefined the field is omitted and /load carries
+                // the resident model's arguments into the comparison, so the panes
+                // would not be running the command they are compared on.
+                ownConfig.llamaExtraArgs = [];
+              }
+            } else if (local !== null && local.length > 0) {
+              const cleaned = clean(local);
+              if (cleaned.length !== local.length) {
+                ownConfig.llamaExtraArgs = cleaned.length > 0 ? cleaned : [];
+              }
+            }
+          } catch {
+            // The load still works; a real overrides outage surfaces there.
+          }
+        }
         // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
         // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
         // which would silently shrink the shown context.
@@ -1370,6 +1429,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                // Only when this panel has read the stored value: omitted, the load
+                // inherits it, which is what keeps CLI-set flags working.
+                ...(ownConfig.llamaExtraArgs !== undefined
+                  ? // biome-ignore lint/style/useNamingConvention: API schema
+                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
+                  : {}),
                 // omitted when blank: a null counts as set and strips inherited -b / -ub
                 ...(ownConfig.nBatch != null
                   ? { n_batch: ownConfig.nBatch }
@@ -1452,6 +1517,12 @@ export function SharedComposer({
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 n_parallel: ownConfig.nParallel ?? null,
+                // Only when this panel has read the stored value: omitted, the load
+                // inherits it, which is what keeps CLI-set flags working.
+                ...(ownConfig.llamaExtraArgs !== undefined
+                  ? // biome-ignore lint/style/useNamingConvention: API schema
+                    { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
+                  : {}),
                 ...(ownConfig.nBatch != null
                   ? { n_batch: ownConfig.nBatch }
                   : {}),
@@ -1520,6 +1591,13 @@ export function SharedComposer({
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          // What this pane's launch is running, for a later rollback: the status
+          // applier is held off for the whole load, so nothing else records it, and
+          // a switch straight after would snapshot the other model's list.
+          loadedLlamaExtraArgs:
+            resp.requested_llama_extra_args !== undefined
+              ? (resp.requested_llama_extra_args ?? [])
+              : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,

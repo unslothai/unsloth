@@ -682,6 +682,544 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
     assert not any('"name"' in t for t in content_before_tool)
 
 
+def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(monkeypatch):
+    """llama-server sends reasoning in delta.reasoning_content, so content
+    alone drops it, meaning history must carry it or iteration 2 can't see it."""
+    tool_stream = [
+        _sse({"reasoning_content": "I should search "}),
+        _sse({"reasoning_content": "for the weather."}),
+        _sse({"content": "Let me check that.\n\n"}),
+    ] + _structured_tool_call("web_search", {"query": "weather"}, "call_r")
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    first_assistant = next(
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert first_assistant["content"] == "Let me check that.\n\n"
+    assert first_assistant["reasoning_content"] == "I should search for the weather."
+
+
+def test_mixed_execute_and_noop_batch_keeps_structured_reasoning(monkeypatch):
+    calls_delta = {
+        "tool_calls": [
+            {
+                "index": index,
+                "id": f"call_mixed_{index}",
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": json.dumps({"query": "weather"}),
+                },
+            }
+            for index in range(2)
+        ]
+    }
+    tool_stream = [
+        _sse({"reasoning_content": "Search <|channel>thought safely<channel|>."}),
+        _sse({"content": "Checking."}),
+        _sse(calls_delta),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "sunny"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "weather"})]
+    messages = payloads[1]["messages"]
+    assistant_index, assistant = next(
+        (index, message)
+        for index, message in enumerate(messages)
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    tool_index = next(
+        index for index, message in enumerate(messages) if message.get("role") == "tool"
+    )
+    no_op_index, result_with_feedback = next(
+        (index, message)
+        for index, message in enumerate(messages)
+        if message.get("role") == "tool" and "identical call" in message.get("content", "")
+    )
+    assert assistant_index < tool_index == no_op_index
+    assert assistant["content"] == "Checking."
+    assert assistant["reasoning_content"] == "Search < |channel>thought safely< channel|>."
+    assert len(assistant["tool_calls"]) == 1
+    assert result_with_feedback["tool_call_id"] == "call_mixed_0"
+    assert not any(message.get("role") == "user" for message in messages[1:])
+
+
+def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(monkeypatch):
+    """A reasoning only tool turn has empty content, so without the field the
+    trace left the conversation entirely."""
+    tool_stream = [
+        _sse({"reasoning_content": "I must search before answering."}),
+        _sse(
+            {
+                "content": '<tool_call>{"name":"web_search","arguments":{"query":"weather"}}</tool_call>'
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    first_assistant = next(
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert first_assistant["content"] == ""
+    assert first_assistant["reasoning_content"] == "I must search before answering."
+
+
+def test_tool_call_turn_without_reasoning_adds_no_reasoning_content(monkeypatch):
+    """Non-reasoning models keep their history unchanged."""
+    tool_stream = _structured_tool_call("web_search", {"query": "weather"}, "call_plain")
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    first_assistant = next(
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert "reasoning_content" not in first_assistant
+
+
+def test_tool_call_turn_with_blank_reasoning_adds_no_reasoning_content(monkeypatch):
+    """Whitespace split from a closed thinking prefill is not a trace."""
+    tool_stream = [_sse({"reasoning_content": "\n\n"})] + _structured_tool_call(
+        "web_search", {"query": "weather"}, "call_blank"
+    )
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    first_assistant = next(
+        message
+        for message in payloads[1]["messages"]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert "reasoning_content" not in first_assistant
+
+
+def test_blank_reasoning_noop_turn_adds_no_empty_assistant_message(monkeypatch):
+    """A blank trace on a suppressed call must not open an empty model turn."""
+    tool_stream = [
+        _sse({"reasoning_content": "\n\n"}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_blank_noop",
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "arguments": json.dumps({"code": "print(1)"}),
+                        },
+                    }
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert not [
+        message
+        for message in payloads[1]["messages"]
+        if message.get("role") == "assistant"
+        and not message.get("tool_calls")
+        and not str(message.get("content") or "").strip()
+    ]
+    assert any(
+        message.get("role") == "user" and "not enabled" in message.get("content", "")
+        for message in payloads[1]["messages"]
+    )
+
+
+def test_noop_reasoning_continuation_separates_partial_from_inlined_trace(monkeypatch):
+    """A suppressed call must not weld inlined reasoning onto a resumed partial."""
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    for partial in ("PARTIAL_TEXT", "PARTIAL_TEXT\n"):
+        tool_stream = [_sse({"reasoning_content": "TRACE_ABC"})] + _structured_tool_call(
+            "python", {"code": "print(1)"}, "call_continued_noop"
+        )
+        final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [
+                    {"role": "user", "content": "continue"},
+                    {"role": "assistant", "content": partial},
+                ],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                continue_final_message = True,
+                max_tool_iterations = 1,
+            )
+        )
+
+        continued = next(
+            message for message in payloads[1]["messages"] if message.get("role") == "assistant"
+        )
+        assert continued == {"role": "assistant", "content": "PARTIAL_TEXT\nTRACE_ABC"}
+
+
+def test_noop_reasoning_without_continuation_adds_clean_assistant_turn(monkeypatch):
+    """A trailing assistant turn is not merged unless continuation is requested."""
+    tool_stream = [_sse({"reasoning_content": "TRACE_ABC"})] + _structured_tool_call(
+        "python", {"code": "print(1)"}, "call_separate_noop"
+    )
+    final_stream = [_sse({"content": "I cannot run Python here."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        raise AssertionError(f"unexpected tool execution: {name} {arguments}")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "new turn"},
+                {"role": "assistant", "content": "EARLIER_ANSWER"},
+            ],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            continue_final_message = False,
+            max_tool_iterations = 1,
+        )
+    )
+
+    assistant_messages = [
+        message for message in payloads[1]["messages"] if message.get("role") == "assistant"
+    ]
+    assert assistant_messages == [
+        {"role": "assistant", "content": "EARLIER_ANSWER"},
+        {"role": "assistant", "content": "TRACE_ABC"},
+    ]
+
+
+def test_noop_feedback_is_not_folded_into_another_tool_s_result(monkeypatch):
+    """Feedback about tool A must never ride tool B's result.
+
+    Templates label the whole block with the result's OWN tool name (gemma-4.jinja
+    resolves tool_call_id -> name and wraps the body), so a note about a suppressed
+    ``python`` call folded into a ``web_search`` result reads as web_search's output.
+    Only a same-tool result may carry it; otherwise the user turn is the lesser loss.
+    """
+    tool_stream = [
+        _sse({"reasoning_content": "Plan the batch."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_mixed_{index}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args)},
+                    }
+                    for index, (name, args) in enumerate(
+                        [
+                            ("web_search", {"query": "a"}),
+                            ("python", {"code": "print(1)"}),  # disabled -> internal no-op
+                            ("web_search", {"query": "b"}),
+                        ]
+                    )
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: f"RESULT_OF_{name}",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    for message in messages:
+        if message.get("role") == "tool":
+            assert "not executed" not in message["content"], message
+            assert message["content"] == "RESULT_OF_web_search"
+    assert [
+        message
+        for message in messages
+        if message.get("role") == "user" and "not executed" in message.get("content", "")
+    ]
+
+
+def test_noop_feedback_for_multiple_tools_is_not_folded_by_partial_name_match(monkeypatch):
+    """Every no-op tool must match the fold target, not merely one of them."""
+    tool_stream = [
+        _sse({"reasoning_content": "Plan the batch."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_multi_noop_{index}",
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(args)},
+                    }
+                    for index, (name, args) in enumerate(
+                        [
+                            ("web_search", {"query": "a"}),
+                            ("web_search", {"query": "a"}),  # duplicate -> internal no-op
+                            ("python", {"code": "print(1)"}),  # disabled -> internal no-op
+                            ("web_search", {"query": "b"}),
+                        ]
+                    )
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: f"RESULT_OF_{name}",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    assert all(
+        message["content"] == "RESULT_OF_web_search"
+        for message in messages
+        if message.get("role") == "tool"
+    )
+    feedback = [message for message in messages if message.get("role") == "user"][1:]
+    assert len(feedback) == 1
+    assert "identical call" in feedback[0]["content"]
+    assert "not enabled" in feedback[0]["content"]
+
+
+def test_same_tool_noop_feedback_still_rides_its_own_result(monkeypatch):
+    """The fold is kept where attribution is unambiguous: a duplicate names the
+    same tool as the result it lands on, so no newer user turn is opened."""
+    tool_stream = [
+        _sse({"reasoning_content": "Plan the batch."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_dup_{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps(args),
+                        },
+                    }
+                    for index, args in enumerate([{"query": "a"}, {"query": "a"}, {"query": "b"}])
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    assert not [m for m in messages[1:] if m.get("role") == "user"]
+    assert any(m.get("role") == "tool" and "not executed" in m["content"] for m in messages)
+
+
+def test_tool_loop_does_not_mutate_the_caller_s_messages(monkeypatch):
+    """The caller's own message dicts stay untouched across a fold.
+
+    ``conversation`` copies the list, not the dicts. Every fold target is a result this
+    loop just built, so nothing caller-owned is reachable today; pinning it matters
+    because /v1/messages passes a client's own history through, and a fold that moved
+    to a different target would leave the hidden instruction in that client's list.
+    """
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "earlier",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "name": "web_search", "tool_call_id": "earlier", "content": "cloudy"},
+    ]
+    before = copy.deepcopy(messages)
+
+    tool_stream = [
+        _sse({"reasoning_content": "One search is enough."}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": index,
+                        "id": f"call_own_{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": "weather"}),
+                        },
+                    }
+                    for index in range(2)  # the second is a duplicate -> internal no-op
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "It is sunny."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = messages,
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert messages == before
+
+
 def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     tool_stream = [
         _sse({"reasoning_content": "Need a render."}),
@@ -1331,19 +1869,18 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
     ]
 
     # The next generation's conversation must be well-formed: the assistant lists
-    # only the executed calls (no orphan for the duplicate), the two tool results
-    # follow contiguously, and the no-op nudge lands after them, never between.
+    # only the executed calls (no orphan for the duplicate), and the two tool results
+    # follow contiguously. Hidden feedback is attached to the final result so it does
+    # not create a newer user turn that can suppress this assistant's reasoning.
     conv = payloads[1]["messages"]
     asst = next(m for m in conv if m["role"] == "assistant" and m.get("tool_calls"))
     assert [tc.get("id") for tc in asst["tool_calls"]] == ["call_a1", "call_b"]
     after = conv[conv.index(asst) + 1 :]
     assert [m["role"] for m in after[:2]] == ["tool", "tool"]
     assert [m.get("tool_call_id") for m in after[:2]] == ["call_a1", "call_b"]
-    assert after[2]["role"] == "user"  # deferred duplicate nudge, after the results
-    assert after[2]["content"].startswith(
-        "One earlier request to call tool 'web_search' in this batch was not executed"
-    )
-    assert "previous tool request" not in after[2]["content"].lower()
+    assert len(after) == 2
+    assert "One earlier request to call tool 'web_search'" in after[1]["content"]
+    assert "previous tool request" not in after[1]["content"].lower()
 
 
 def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):
@@ -1408,17 +1945,25 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
     ]
     assert len(payloads) == 2
     assert "tools" not in payloads[1]
-    render_nudges = [
+    render_feedback = [
         message
         for message in payloads[1]["messages"]
-        if message.get("role") == "user"
+        if message.get("role") == "tool"
         and "Do not call render_html again" in message.get("content", "")
     ]
-    assert len(render_nudges) == 1
+    assert len(render_feedback) == 1
 
 
 def test_disabled_tool_call_is_internal_noop(monkeypatch):
     disabled_python = [
+        _sse(
+            {
+                "reasoning_content": (
+                    "Python needs <tool_call>{...}</tool_call> and "
+                    "<|channel>thought x<channel|> before <|turn>user"
+                )
+            }
+        ),
         _sse(
             {
                 "tool_calls": [
@@ -1461,6 +2006,24 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
         if message.get("role") == "user" and "not enabled" in message.get("content", "")
     ]
     assert len(disabled_nudges) == 1
+    reasoning_turn_index, reasoning_turn = next(
+        (index, message)
+        for index, message in enumerate(payloads[1]["messages"])
+        if message.get("role") == "assistant"
+        and message.get("content")
+        == (
+            "Python needs < tool_call>{...}< /tool_call> and "
+            "< |channel>thought x< channel|> before < |turn>user"
+        )
+    )
+    nudge_index = next(
+        index
+        for index, message in enumerate(payloads[1]["messages"])
+        if message.get("role") == "user" and "not enabled" in message.get("content", "")
+    )
+    assert reasoning_turn_index < nudge_index
+    assert "reasoning_content" not in reasoning_turn
+    assert "tool_calls" not in reasoning_turn
 
 
 def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
@@ -4168,10 +4731,11 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     # Exactly two executed tool rounds, then one final-answer pass.
     assert len(calls) == 2, calls
     assert len(payloads) == 3, len(payloads)
-    # The final pass is the budget-exhausted nudge and carries no tools.
+    # The final pass carries no tool schemas. Its controller feedback stays in
+    # the latest tool result rather than opening a newer user turn.
     assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
     assert any(
-        m.get("role") == "user" and "used all available tool calls" in m.get("content", "")
+        m.get("role") == "tool" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
     ), payloads[2]["messages"]
 
