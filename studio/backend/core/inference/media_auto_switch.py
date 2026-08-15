@@ -71,6 +71,10 @@ _UNVERIFIED_MSG = (
     "Could not verify that '{model}' is fully downloaded, so it was not switched in. "
     "Auto-switch never downloads; load it once from the {kind} page and retry."
 )
+_EDIT_ONLY_MSG = (
+    "'{model}' is an edit-only model: it requires an input image, which this endpoint cannot "
+    "supply. Name a text-to-image model instead."
+)
 _UNSIZED_MSG = (
     "'{model}' is missing some of its weights. Auto-switch never downloads, so load it once "
     "from the {kind} page and retry."
@@ -158,16 +162,20 @@ def _name_keys(info) -> tuple[str, ...]:
     )
 
 
-def _gguf_load_path(info, load_dir: Path) -> str:
+def _gguf_load_path(info, on_disk: Path, load_dir: Path) -> str:
     """What ``/images/load`` takes as ``model_path`` for a GGUF under *info*.
 
     An HF cache repo is named by its repo id, as the picker names a Hub pick. Its snapshot
     entries are symlinks into ``blobs/``, and the loader's local branch resolves a symlink
     before its containment check, so a snapshot directory refuses its own file. Anything else
     is a real directory and loads by path.
+
+    Keyed on the layout rather than the scanner's ``source``, which is rewritten to ``custom``
+    for a cache tree sitting inside a user-added scan folder while the symlinks stay exactly
+    as fragile.
     """
     repo_id = getattr(info, "model_id", None)
-    if getattr(info, "source", None) == "hf_cache" and isinstance(repo_id, str) and repo_id:
+    if load_dir != on_disk and isinstance(repo_id, str) and repo_id:
         return repo_id
     return str(load_dir)
 
@@ -191,7 +199,7 @@ def _variant_label(filename: str) -> Optional[str]:
 
 
 def _add_gguf_picks(
-    index: dict[str, MediaModelPick], info, keys: tuple[str, ...], load_dir: Path
+    index: dict[str, MediaModelPick], info, keys: tuple[str, ...], on_disk: Path, load_dir: Path
 ) -> bool:
     """Index every GGUF quant under *info*, bare and as ``<id>:<QUANT>``; False if it holds none.
 
@@ -221,7 +229,7 @@ def _add_gguf_picks(
     by_quant = {v.quant: v for v in variants if v.quant}
     if not by_quant:
         return False
-    load_path = _gguf_load_path(info, load_dir)
+    load_path = _gguf_load_path(info, on_disk, load_dir)
     for quant, variant in by_quant.items():
         # model_id stays the bare id so a "not found" error lists models, not one row per quant.
         _register(
@@ -250,6 +258,9 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
         return index
     for info in candidates:
         try:
+            # A cancelled or incomplete pull still lists, and loading it fails predictably.
+            if getattr(info, "partial", False):
+                continue
             if _local_model_task(info) != task:
                 continue
             keys = _name_keys(info)
@@ -257,8 +268,9 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
                 continue
             # Unwrapped once for both kinds: an HF cache repo keeps its weights, and its
             # model_index.json, one level down under snapshots/<sha>.
-            load_dir = _resolve_load_dir(Path(info.path).expanduser())
-            if _add_gguf_picks(index, info, keys, load_dir):
+            on_disk = Path(info.path).expanduser()
+            load_dir = _resolve_load_dir(on_disk)
+            if _add_gguf_picks(index, info, keys, on_disk, load_dir):
                 continue
             # Not a GGUF, so the load route detects the kind: a diffusers directory loads as a
             # pipeline, and a bare single-file directory is reinterpreted by the route itself.
@@ -514,18 +526,41 @@ def _normalized_pick(pick: MediaModelPick) -> MediaModelPick:
     return replace(pick, gguf_filename = sole, model_kind = "single_file")
 
 
+def _is_edit_only(pick: MediaModelPick) -> bool:
+    """Whether *pick* is an instruction-editing family, which has no text-to-image mode.
+
+    The local catalog tags these text-to-image, so without this the switch would evict a working
+    model for a multi-GB pipeline that /v1/images/generations then refuses for lacking txt2img.
+    """
+    from core.inference.diffusion import _family_workflows
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    try:
+        fam = detect_family_for_pick(pick.model_path, pick.gguf_filename, None)
+    except Exception:  # noqa: BLE001 -- a detection miss must not refuse a loadable pick
+        return False
+    if fam is None:
+        return False
+    return "txt2img" not in _family_workflows(fam)
+
+
 def _planners_for(owner: str, pick: MediaModelPick) -> list:
     """Every engine whose plan this pick could end up loading through.
 
     Usually one. ``predict_engine`` treats an absent sd.cpp binary as available whenever its
     installation is allowed, while ``select_and_activate_engine`` falls back to diffusers when
     that install produces nothing runnable, and the two engines read different companion sets.
-    Both are verified in that case, so a fallback cannot load through an unchecked file list.
+    Both are verified only in that case: with a runnable binary already on disk the load stays
+    native, and demanding the diffusers shards too would refuse a model sd.cpp can serve.
     """
     if owner != DIFFUSION:
         return [_backend_for(owner)]
     from core.inference.diffusion import resolve_model_kind
-    from core.inference.diffusion_engine_router import engine_for, predict_engine
+    from core.inference.diffusion_engine_router import (
+        engine_for,
+        native_binary_installed,
+        predict_engine,
+    )
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
 
@@ -535,7 +570,7 @@ def _planners_for(owner: str, pick: MediaModelPick) -> list:
     kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
     predicted = predict_engine(fam, model_kind = kind)
     names = [predicted]
-    if predicted == ENGINE_SD_CPP:
+    if predicted == ENGINE_SD_CPP and not native_binary_installed():
         names.append(ENGINE_DIFFUSERS)
     return [engine_for(name) for name in names]
 
@@ -685,6 +720,16 @@ async def maybe_auto_switch_media_model(
             status_code = 404,
             openai_errors = openai_errors,
             code = "model_not_found",
+        )
+
+    # Before anything is evicted: this endpoint only generates from text, and the load would
+    # otherwise finish and then be refused for lacking txt2img, with the useful model gone.
+    if owner == DIFFUSION and await asyncio.to_thread(_is_edit_only, pick):
+        raise _refuse(
+            _EDIT_ONLY_MSG.format(model = pick.model_id),
+            status_code = 400,
+            openai_errors = openai_errors,
+            code = "invalid_value",
         )
 
     if _satisfied_by(resident, name, pick):

@@ -905,6 +905,78 @@ def test_a_native_prediction_also_verifies_the_diffusers_fallback(catalog, tmp_p
     assert mas._missing_download_bytes(arb.DIFFUSION, pick) == 9_000
 
 
+def test_a_partial_download_is_not_an_available_model(catalog, tmp_path):
+    # A cancelled pull still lists; loading it fails predictably, and the 404 listing should not
+    # advertise it either.
+    pipeline = tmp_path / "half"
+    pipeline.mkdir()
+    row = _info("org/half", pipeline, task = mas.IMAGE_TASK)
+    row.partial = True
+    catalog.append(row)
+
+    assert mas.resolve_local_media_model("org/half", task = mas.IMAGE_TASK) is None
+    assert mas.available_media_model_ids(mas.IMAGE_TASK) == []
+
+
+def test_a_cache_tree_inside_a_scan_folder_still_loads_by_repo_id(catalog, tmp_path):
+    # collect_local_models rewrites such a row's source to "custom" while the snapshot entries
+    # stay symlinks into blobs/, which the loader's containment check refuses.
+    repo, _snapshot = _hf_cache_repo(
+        tmp_path, "unsloth/Z-Image-Turbo-GGUF", files = ["z-Q4_K_S.gguf"]
+    )
+    catalog.append(
+        _info(
+            "unsloth/Z-Image-Turbo-GGUF",
+            repo,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "custom",
+        )
+    )
+
+    pick = mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
+
+    assert pick.model_path == "unsloth/Z-Image-Turbo-GGUF"
+
+
+def test_an_edit_only_model_is_refused_before_anything_is_evicted(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # The catalog tags edit families text-to-image, so the load would finish and only then be
+    # refused for lacking txt2img, with the previously useful model already gone.
+    pipeline = tmp_path / "kontext"
+    pipeline.mkdir()
+    catalog.append(_info("black-forest-labs/FLUX.1-Kontext-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+    monkeypatch.setattr(mas, "_is_edit_only", lambda pick: True)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-Kontext-dev")
+
+    assert excinfo.value.status_code == 400
+    assert loads == []
+
+
+def test_the_native_fallback_is_only_verified_when_a_binary_must_be_installed(monkeypatch):
+    # With a runnable sd.cpp binary the load stays native, so demanding the diffusers shards
+    # would refuse a model the selected engine can serve.
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    pick = mas.MediaModelPick("x/y", "x/y", "y-Q4_K_M.gguf", "gguf", quant = "Q4_K_M")
+    monkeypatch.setattr(mas, "_backend_for", lambda owner: object())
+    router = __import__("core.inference.diffusion_engine_router", fromlist = ["x"])
+    families = __import__("core.inference.diffusion_families", fromlist = ["x"])
+    monkeypatch.setattr(families, "detect_family_for_pick", lambda *a, **k: object())
+    monkeypatch.setattr(router, "predict_engine", lambda fam, model_kind = None: ENGINE_SD_CPP)
+    monkeypatch.setattr(router, "engine_for", lambda name: name)
+
+    monkeypatch.setattr(router, "native_binary_installed", lambda: True)
+    assert mas._planners_for(arb.DIFFUSION, pick) == [ENGINE_SD_CPP]
+
+    monkeypatch.setattr(router, "native_binary_installed", lambda: False)
+    assert len(mas._planners_for(arb.DIFFUSION, pick)) == 2
+
+
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module
