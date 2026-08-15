@@ -6768,9 +6768,7 @@ def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     """
     try:
         resolved = os.path.normcase(os.path.realpath(temp_dir))
-        literal = os.path.normcase(
-            os.path.join(os.path.realpath(workdir), _SANDBOX_TEMP_DIRNAME)
-        )
+        literal = os.path.normcase(os.path.join(os.path.realpath(workdir), _SANDBOX_TEMP_DIRNAME))
     except OSError:
         return False
     if resolved != literal or not os.path.isdir(temp_dir):
