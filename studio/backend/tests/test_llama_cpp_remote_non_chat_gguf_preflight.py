@@ -796,8 +796,8 @@ def test_an_incomplete_shard_set_after_config_resolution_is_not_reused(monkeypat
 def test_a_shard_truncated_after_config_resolution_is_not_reused(monkeypatch, tmp_path):
     """A shard that shrinks is as unusable as one that disappears.
 
-    The shard set alone only proves the siblings still exist, so the carried
-    value records every shard's byte count and Phase 2 rechecks all of them.
+    The shard set alone only proves the siblings exist, so the carried value records
+    every shard's byte count and Phase 2 rechecks all of them.
     """
     _hub_cache(monkeypatch, tmp_path)
     main = _cached_gguf(tmp_path, "model-Q4_K_M-00001-of-00003.gguf", b"first shard")

@@ -146,8 +146,7 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
-    # A cached file, and the byte count of every shard beside it, already verified
-    # for this repo and variant.
+    # A cached file and every shard's byte count, already verified for this repo and variant.
     verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
@@ -1492,13 +1491,11 @@ def _cached_variant_candidates(
 def _cached_variant_sizes(
     repo_id: str, hf_variant: str, main_path: str
 ) -> Optional[tuple[tuple[str, int], ...]]:
-    """Byte counts for every file of the cached variant copy rooted at ``main_path``.
+    """Sorted ``(filename, size)`` pairs for the cached variant copy at ``main_path``.
 
-    Sorted ``(filename, size)`` pairs covering the main GGUF and its shards, or
-    None when no complete cached copy of the variant resolves to that path. The
-    shard set comes from ``_cached_variant_candidates`` so one function owns it,
-    and every read is local: recording this and comparing it later catches a file
-    truncated, resized or dropped in between without a Hub lookup.
+    None when no complete cached copy resolves to that path. ``_cached_variant_candidates``
+    owns the shard set and every read is local, so recording this and comparing it later
+    catches a truncated, resized or dropped file without a Hub lookup.
     """
     target = os.path.abspath(main_path)
     for cached_main, main, shards, snap in _cached_variant_candidates(repo_id, hf_variant):
