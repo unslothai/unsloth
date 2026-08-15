@@ -115,6 +115,26 @@ const plainLine = (content: string): TokenLine =>
 const themeName = (theme: ThemeInput): string =>
   typeof theme === "string" ? theme : (theme.name ?? "custom");
 
+// Two custom themes can share a name, or carry none, so a cache key built from
+// names alone would serve one theme's tokens for another. Reduce each distinct
+// definition to a short id once: the key is compared on every lookup.
+const themeIds = new Map<string, string>();
+const themeIdByInput = new WeakMap<object, string>();
+
+const themeKey = (theme: ThemeInput): string => {
+  if (typeof theme === "string") return theme;
+  const known = themeIdByInput.get(theme);
+  if (known !== undefined) return known;
+  const definition = JSON.stringify(theme);
+  let id = themeIds.get(definition);
+  if (id === undefined) {
+    id = `${themeName(theme)}#${themeIds.size}`;
+    themeIds.set(definition, id);
+  }
+  themeIdByInput.set(theme, id);
+  return id;
+};
+
 const stripTokens = (result: HighlightResult): ResultMeta => ({
   bg: result.bg,
   fg: result.fg,
@@ -129,8 +149,9 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
 // Markdown reports a closing fence as body until it recognizes it, so all a
-// fence can lose is indentation, a backtick or tilde run, and whitespace.
-const CLOSING_DELIMITER = /^[\s`~]*$/;
+// fence can lose is a backtick or tilde run plus surrounding whitespace. The
+// run has to be there: whitespace alone never closes a fence.
+const CLOSING_DELIMITER = /^[\s`~]*[`~][\s`~]*$/;
 
 /** Whether `code` is the fence's own body with just its closing delimiter gone. */
 const isClosingReparse = (fence: Fence, code: string): boolean =>
@@ -395,7 +416,7 @@ export function createCodePlugin(
         light: themeName(opts.themes[0]),
         dark: themeName(opts.themes[1]),
       };
-      const key = `${language} ${themes.light} ${themes.dark}`;
+      const key = `${language} ${themeKey(opts.themes[0])} ${themeKey(opts.themes[1])}`;
       const fence = findFence(key, opts.code);
 
       if (fence.result && fence.code === opts.code && !fence.approximate) {

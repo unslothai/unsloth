@@ -430,6 +430,60 @@ test("a shorter prefix sibling fence keeps the longer one highlighted", async ()
   );
 });
 
+test("a sibling that differs only by trailing spaces keeps its own entry", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "json" as HighlightOptions["language"];
+  const shorter = `{"values": [${Array.from({ length: 300 }, (_, i) => `"item-${i}"`).join(", ")}`;
+  // Whitespace alone never closes a fence, so this is a separate block.
+  const longer = `${shorter}   `;
+
+  await highlightOnce(plugin, { code: longer, language, themes: THEMES });
+  await highlightOnce(plugin, { code: shorter, language, themes: THEMES });
+
+  let rendered: HighlightResult | null = null;
+  for (let frame = 0; frame < 3; frame += 1) {
+    rendered = plugin.highlight({ code: longer, language, themes: THEMES });
+    plugin.highlight({ code: shorter, language, themes: THEMES });
+  }
+
+  assert.deepEqual(
+    rendered?.tokens,
+    (await reference(longer, "json")).tokens,
+    "the longer fence must not be left as an unhighlighted plain tail",
+  );
+});
+
+test("a changed theme definition is not answered from the old theme's cache", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const code = "value = 1\n";
+  // Same names, different definitions: only the definitions tell them apart.
+  const pair = (background: string): [ThemeInput, ThemeInput] =>
+    (["swap-light", "swap-dark"] as const).map(
+      (name) =>
+        ({
+          name,
+          settings: [{ settings: { foreground: "#101010", background } }],
+        }) as unknown as ThemeInput,
+    ) as [ThemeInput, ThemeInput];
+
+  const first = await highlightOnce(plugin, {
+    code,
+    language,
+    themes: pair("#111111"),
+  });
+  const second = await highlightOnce(plugin, {
+    code,
+    language,
+    themes: pair("#eeeeee"),
+  });
+  assert.notEqual(
+    second.bg,
+    first.bg,
+    "a redefined theme must not reuse the previous definition's tokens",
+  );
+});
+
 test("shedding a closing delimiter drops the refresh queued for it", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
