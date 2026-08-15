@@ -562,10 +562,12 @@ class TrainingStartRequest(BaseModel):
             "Physical GPU indices to use, for example [0, 1]. Omit or pass "
             "[] to use automatic selection. Explicit gpu_ids are unsupported "
             "when the parent visibility mask uses non-numeric or subdevice "
-            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
-            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
-            "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
-            "Intel XPU."
+            "entries that can't be resolved to physical IDs -- this includes "
+            "CUDA_VISIBLE_DEVICES with a MIG entry or an ambiguous UUID/prefix "
+            "on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens (e.g. "
+            "'0.0,0.1') or FLAT-hierarchy (default) tile handles on Intel XPU. "
+            "A CUDA_VISIBLE_DEVICES UUID mask that nvidia-smi can resolve to "
+            "root GPU UUIDs is supported."
         ),
     )
 

@@ -2726,7 +2726,15 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         # CUDA hosts get a resolution attempt; anything nvidia-smi can't match
         # (MIG instance UUIDs, nvidia-smi missing) keeps the prior unresolved
         # behaviour so relative ordinals are used instead.
-        if not _is_rocm_spec:
+        #
+        # nvidia-smi always numbers by PCI bus id (see the "GPU index ordering"
+        # note above) regardless of CUDA_DEVICE_ORDER, so its indices are only
+        # safe to hand back as explicit-selectable physical IDs while the app's
+        # own PCI_BUS_ID pin is actually in effect. If something upstream opted
+        # back into FASTEST_FIRST, index N from nvidia-smi and index N under
+        # FASTEST_FIRST can be two different cards, so stay unresolved instead
+        # of risking a CUDA_VISIBLE_DEVICES write that selects the wrong GPU.
+        if not _is_rocm_spec and os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
             from . import nvidia
             resolved_ids = nvidia.resolve_gpu_uuid_mask(tokens)
             if resolved_ids is not None:

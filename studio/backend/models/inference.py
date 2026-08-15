@@ -102,10 +102,11 @@ class LoadRequest(BaseModel):
             "automatic selection. CUDA/ROCm values are physical GPU indices; "
             "Vulkan values are ggml device ordinals. Explicit selection is not "
             "supported on XPU, and physical IDs are unsupported when the parent "
-            "visibility mask uses "
-            "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
-            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
-            "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
+            "visibility mask uses non-numeric or subdevice entries that can't be "
+            "resolved to physical IDs: MIG entries, an ambiguous UUID/prefix, or "
+            "ZE_AFFINITY_MASK with subdevice tokens (for example '0.0,0.1') or "
+            "FLAT-hierarchy tile handles. A CUDA_VISIBLE_DEVICES UUID mask that "
+            "nvidia-smi can resolve to root GPU UUIDs is supported. For GGUF "
             "models the fitter may pin the smallest subset of this pool that fits."
         ),
     )

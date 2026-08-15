@@ -48,12 +48,10 @@ def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[di
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
 
 
-def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
-    """Resolve a CUDA_VISIBLE_DEVICES UUID mask (e.g. ["GPU-<uuid>", ...]) to
-    physical indices via nvidia-smi. Order is preserved to match the mask, since
-    it defines the visible-ordinal mapping downstream. Returns None -- and the
-    caller falls back to relative ordinals -- if nvidia-smi is unavailable or
-    any token doesn't match a physical device (e.g. a MIG instance UUID)."""
+_uuid_mask_resolution_cache: dict[tuple[str, ...], Optional[list[int]]] = {}
+
+
+def _query_uuid_to_index() -> Optional[dict[str, int]]:
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
@@ -81,13 +79,50 @@ def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
         except (ValueError, TypeError):
             continue
         uuid_to_index[parts[1]] = idx
+    return uuid_to_index
+
+
+def _resolve_one(token: str, uuid_to_index: dict[str, int]) -> Optional[int]:
+    exact = uuid_to_index.get(token)
+    if exact is not None:
+        return exact
+    # NVIDIA accepts an unambiguous UUID prefix (e.g. "GPU-abcdef12") as a
+    # device identifier -- resolve one only if exactly one device matches it,
+    # since a prefix shared by more than one card can't be trusted either way.
+    prefix_matches = [idx for uuid, idx in uuid_to_index.items() if uuid.startswith(token)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    return None
+
+
+def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
+    """Resolve a CUDA_VISIBLE_DEVICES UUID mask (e.g. ["GPU-<uuid>", ...]) to
+    physical indices via nvidia-smi. Order is preserved to match the mask, since
+    it defines the visible-ordinal mapping downstream. Returns None -- and the
+    caller falls back to relative ordinals -- if nvidia-smi is unavailable, or
+    any token doesn't match exactly one physical device (a MIG instance UUID,
+    or a UUID/prefix ambiguous across cards). Cached per token tuple: the mask
+    is only re-queried once per distinct CUDA_VISIBLE_DEVICES value a process
+    sees, not on every poll -- a hung or missing nvidia-smi would otherwise cost
+    its full timeout on every caller of _get_parent_visible_gpu_spec()."""
+    cache_key = tuple(tokens)
+    if cache_key in _uuid_mask_resolution_cache:
+        return _uuid_mask_resolution_cache[cache_key]
+
+    uuid_to_index = _query_uuid_to_index()
+    if uuid_to_index is None:
+        _uuid_mask_resolution_cache[cache_key] = None
+        return None
 
     resolved = []
     for token in tokens:
-        idx = uuid_to_index.get(token)
+        idx = _resolve_one(token, uuid_to_index)
         if idx is None:
+            _uuid_mask_resolution_cache[cache_key] = None
             return None
         resolved.append(idx)
+
+    _uuid_mask_resolution_cache[cache_key] = resolved
     return resolved
 
 
