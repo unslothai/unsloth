@@ -14864,7 +14864,6 @@ class LlamaCppBackend:
                         _guard_kv_bytes = _kv_bytes(_AUTO_FIT_MIN_CTX)
                     try:
                         from utils.model_memory_settings import should_mlock
-
                         _guard_mlocked = should_mlock()
                     except Exception:
                         # settings unavailable: price the spill, the pre-guard behaviour
