@@ -237,7 +237,11 @@ def _add_gguf_picks(
             [f"{key}:{quant}" for key in keys],
             MediaModelPick(keys[0], load_path, variant.filename, "gguf", quant = quant),
         )
-    best = preferred_quant(list(by_quant)) or next(iter(by_quant))
+    # Root checkpoints alone when there are any: a plain local load resolves non-recursively and
+    # always takes the root, so ranking a qualified `distilled/...` build alongside them would
+    # let one id mean different weights here than in the picker and the chat resolver.
+    unqualified = [quant for quant in by_quant if "/" not in quant]
+    best = preferred_quant(unqualified or list(by_quant)) or next(iter(unqualified or by_quant))
     _register(
         index,
         keys,
@@ -250,13 +254,18 @@ def _loadable_directory(load_dir: Path) -> bool:
     """Whether a non-GGUF directory is something the load routes can actually open.
 
     Either a full diffusers pipeline, or a directory holding exactly one checkpoint, which both
-    routes reinterpret as a single_file load. Several checkpoints and no ``model_index.json``
-    is ambiguous, and the routes reject it rather than choose.
+    routes reinterpret as a single_file load. Several checkpoints and no index is ambiguous, and
+    the routes reject it rather than choose.
+
+    Both index layouts count: a Modular Diffusers pipeline (a dense MiniMax-H3) carries
+    ``modular_model_index.json`` instead, and the video loader opens either.
     """
     from core.inference.diffusion import resolve_local_single_file
 
     try:
-        if (load_dir / "model_index.json").is_file():
+        if any(
+            (load_dir / name).is_file() for name in ("model_index.json", "modular_model_index.json")
+        ):
             return True
     except OSError:
         return False
@@ -437,10 +446,30 @@ def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -
     )
     if resident not in aliases and not same_path:
         return False
+    # A modular MiniMax-H3 build is its partition too: an auto-load of this name selects the
+    # default keyframe denoiser, so a resident ref2va does not answer for it.
+    if not _partition_matches(status):
+        return False
     if pick.model_kind != "gguf":
         return True
     loaded_quant = str(status.get("gguf_variant") or "").strip().lower()
     return loaded_quant == _published_token(pick)
+
+
+def _partition_matches(status: dict[str, Any]) -> bool:
+    """Whether the resident MiniMax-H3 partition is the one a switch would bring up.
+
+    The switch sends no ``h3_task``, so the load takes the family default; anything else
+    resident is a different denoiser that this request did not ask for.
+    """
+    resident = str(status.get("h3_task") or "").strip().lower()
+    if not resident:
+        return True
+    try:
+        from core.inference.video_minimax_h3 import H3_TASK_KEYFRAMES
+    except Exception:  # noqa: BLE001 -- no h3 support here means nothing to compare
+        return True
+    return resident == H3_TASK_KEYFRAMES
 
 
 def _backend_busy(backend: Any) -> bool:
@@ -492,6 +521,16 @@ async def _await_loaded(backend: Any, name: str, pick: MediaModelPick, deadline:
         if time.monotonic() >= deadline:
             return False
         await asyncio.sleep(_POLL_S)
+
+
+@contextlib.asynccontextmanager
+async def _held_within(lock: asyncio.Lock, deadline: float, kind: str, openai_errors: bool):
+    """Hold *lock*, refusing rather than queueing for it past the switch budget."""
+    await _bounded(lock.acquire(), deadline, kind = kind, openai_errors = openai_errors)
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 async def _bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
@@ -778,7 +817,10 @@ async def maybe_auto_switch_media_model(
     from core.inference.media_keepwarm import admission_gate
 
     with _note_waiter(owner):
-        async with _switch_lock(owner):
+        # Acquired within the budget: a request that spent most of it resolving would otherwise
+        # queue behind another full switch and blow past the response window before any of the
+        # inner waits could notice.
+        async with _held_within(_switch_lock(owner), deadline, kind, openai_errors):
             backend = _backend_for(owner)
             # Re-read under the lock: a concurrent request may have just loaded this model.
             if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
@@ -852,8 +894,14 @@ async def maybe_auto_switch_media_model(
                 # run before begin_load registers, and this holds the admission gate meanwhile.
                 # A timeout frees the request and the gate; the setup itself finishes on its
                 # own thread, which is the same contract begin_load already gives the UI.
+                # Shielded: the timeout must free the caller and the gate, never abandon setup
+                # half-done. select_and_activate_engine unloads the resident engine as it
+                # switches, so a cancelled task that never reaches begin_load would leave the
+                # backend empty with no load coming.
                 await _bounded(
-                    _start_load(owner, pick, current_subject),
+                    asyncio.shield(
+                        asyncio.ensure_future(_start_load(owner, pick, current_subject))
+                    ),
                     deadline,
                     kind = kind,
                     openai_errors = openai_errors,

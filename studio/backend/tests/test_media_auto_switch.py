@@ -217,10 +217,12 @@ class _FakeMediaBackend:
         repo_id = None,
         gguf_variant = None,
         model_kind = None,
+        h3_task = None,
     ):
         self.repo_id = repo_id
         self.gguf_variant = gguf_variant
         self.model_kind = model_kind
+        self.h3_task = h3_task
         self.loading: tuple[str, ...] = ()
         self.active = False
         self.phase = "ready" if repo_id else None
@@ -234,6 +236,7 @@ class _FakeMediaBackend:
             "base_repo": None,
             "gguf_variant": self.gguf_variant,
             "model_kind": self.model_kind,
+            "h3_task": self.h3_task,
         }
 
     def loading_repo_ids(self):
@@ -269,6 +272,8 @@ def loads(monkeypatch, backend):
         # The real backends publish extract_quant_token, not the lister label.
         backend.gguf_variant = mas._published_token(pick) or None
         backend.model_kind = pick.model_kind
+        # A switch sends no h3_task, so the load comes up on the family default.
+        backend.h3_task = None
         backend.phase = "ready"
         mk.note_load_origin(owner, pick.model_path, user_action = False)
 
@@ -1061,6 +1066,48 @@ def test_load_setup_that_stalls_returns_inside_the_budget(
 
     assert excinfo.value.status_code == 503
     assert time.monotonic() - began < 3.0
+
+
+def test_a_modular_pipeline_index_is_discoverable(catalog, tmp_path):
+    # A dense MiniMax-H3 directory carries modular_model_index.json, which the video loader
+    # opens; rejecting it here 404'd every named request for a fully downloaded model.
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    assert mas.resolve_local_media_model("MiniMaxAI/MiniMax-H3", task = mas.VIDEO_TASK) is not None
+
+
+def test_a_resident_h3_reference_partition_does_not_answer_a_plain_request(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # An auto-load of this name takes the default keyframe denoiser, so a resident ref2va is a
+    # different build; serving it accepts a generation that then fails for missing references.
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+    backend.repo_id = str(modular)
+    backend.h3_task = "ref2va"
+
+    _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert [pick.model_id for _owner, pick in loads] == ["MiniMaxAI/MiniMax-H3"]
+
+
+def test_a_bare_id_takes_a_root_variant_over_a_qualified_one(catalog, tmp_path):
+    # A plain local load resolves non-recursively and always takes the root, so a bare id must
+    # not select a distilled subdirectory build the picker and chat resolver never would.
+    repo = tmp_path / "flux-gguf"
+    (repo / "distilled").mkdir(parents = True)
+    (repo / "flux1-Q4_K_M.gguf").write_bytes(b"")
+    (repo / "distilled" / "flux1-Q8_0.gguf").write_bytes(b"")
+    catalog.append(_info("city96/FLUX.1-dev-gguf", repo, task = mas.IMAGE_TASK))
+
+    bare = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
+
+    assert bare.gguf_filename == "flux1-Q4_K_M.gguf"
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

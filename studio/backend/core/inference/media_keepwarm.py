@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
 import threading
 import time
@@ -110,7 +111,10 @@ def _origin_key(target: Optional[str], variant: Optional[str]) -> tuple[str, str
     user-loaded and sparing it. Keying on more would never match what the resident model
     publishes, and would spare everything.
     """
-    return (str(target or "").strip().lower(), str(variant or "").strip().lower())
+    text = str(target or "").strip()
+    # A repo id folds case; a path does not, or /models/Foo and /models/foo share an origin.
+    key = os.path.normcase(text) if os.path.isabs(text) else text.lower()
+    return (key, str(variant or "").strip().lower())
 
 
 def note_load_origin(

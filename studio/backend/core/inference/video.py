@@ -2883,11 +2883,14 @@ class VideoBackend:
                     entry["gguf_filename"] = filename
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback
             logger.warning("video.h3_native_download_plan_failed: %s", exc)
+            # Flagged like the outer planner's failure: zero here means "unknown", and a caller
+            # that must not download (media auto-switch) has to tell the two apart.
             return {
                 "entries": [],
                 "total_bytes": 0,
                 "required_bytes": 0,
                 "checkpoint_bytes": 0,
+                "plan_failed": True,
             }
         entries = []
         for repo, entry in grouped.items():
