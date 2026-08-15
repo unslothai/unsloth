@@ -623,6 +623,17 @@ def test_effective_packing_decides_the_opt_out():
     # An epoch-bounded run is unbounded whatever packing says.
     assert max_train_rows_for_config({"max_steps": 0, "packing": False}) is None
 
+    # Raw-text and CPT take the text path however the dataset is flagged -- the
+    # vision branch is gated on `not raw_text_mode` -- and that path honours the
+    # requested value, so those runs pack for real and keep the opt-out.
+    for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
+        assert effective_packing({**text, **raw, "packing": True, "is_dataset_image": True}) is True
+        assert effective_packing({**text, **raw, "packing": True, "is_dataset_audio": True}) is True
+        assert max_train_rows_for_config({**text, **raw, "packing": True}) is None
+        # Without packing they are bounded like anything else.
+        assert effective_packing({**text, **raw, "is_dataset_image": True}) is False
+        assert max_train_rows_for_config({**text, **raw, "is_dataset_image": True}) == 1024
+
 
 def test_bound_dataset_rows_edges():
     from core.training.dataset_bounds import bound_dataset_rows
@@ -727,6 +738,49 @@ def test_row_bound_marker_round_trips_through_a_resume(tmp_path):
     unbounded.mkdir()
     record_row_bound(str(unbounded), None, 3407)
     assert row_bound_for_resume(str(unbounded / "checkpoint-5"), 1024, 3407) == (None, 3407)
+
+
+def test_row_bound_marker_survives_a_run_directory_named_like_a_checkpoint(tmp_path):
+    from core.training.dataset_bounds import record_row_bound, row_bound_for_resume
+
+    # Trainer writes checkpoint-<global_step>. A run directory whose own name
+    # merely starts with the prefix is not one, and taking its parent would file
+    # the marker one level above where the resume looks for it.
+    run_dir = tmp_path / "checkpoint-model__project-x"
+    (run_dir / "checkpoint-30").mkdir(parents = True)
+    record_row_bound(str(run_dir), 4096, 3407)
+
+    assert (run_dir / "unsloth_row_bound.json").exists()
+    assert not (tmp_path / "unsloth_row_bound.json").exists()
+    assert row_bound_for_resume(str(run_dir / "checkpoint-30"), 40960, 99) == (4096, 3407)
+
+
+def test_row_bound_marker_is_replaced_atomically(tmp_path):
+    import os
+
+    from core.training.dataset_bounds import record_row_bound, row_bound_for_resume
+
+    # A resume rewrites a marker that is already valid. Truncating in place and
+    # then failing -- a full disk is the ordinary way -- would leave an empty
+    # file, which reads as "no marker" and resumes over the whole dataset.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    record_row_bound(str(run_dir), 4096, 3407)
+
+    real_replace = os.replace
+
+    def _fail_replace(src, dst):
+        raise OSError(28, "No space left on device")
+
+    os.replace = _fail_replace
+    try:
+        record_row_bound(str(run_dir), 8192, 99)
+    finally:
+        os.replace = real_replace
+
+    assert row_bound_for_resume(str(run_dir), 40960, 99) == (4096, 3407)
+    # And the temporary file it wrote instead is cleaned up.
+    assert [p.name for p in run_dir.iterdir()] == ["unsloth_row_bound.json"]
 
 
 def test_row_bound_is_dropped_for_a_checkpoint_that_predates_it(tmp_path):

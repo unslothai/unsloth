@@ -14,6 +14,8 @@ stack that need not exist.
 
 import json
 import os
+import re
+import tempfile
 from typing import Any, Optional
 
 # Slack on the row bound. Rows are consumed by things that never produce a step:
@@ -28,6 +30,8 @@ MIN_MAX_STEPS_ROWS = 1024
 # Written into a run's output directory at its first start; read back on resume.
 # Its absence is the signal that a checkpoint predates the bound.
 ROW_BOUND_MARKER_FILE = "unsloth_row_bound.json"
+# transformers writes checkpoint-<global_step> and nothing else under that prefix.
+_CHECKPOINT_DIR_RE = re.compile(r"^checkpoint-\d+$")
 
 
 def _int_or(value: Any, default: int) -> int:
@@ -78,11 +82,23 @@ def effective_packing(config: dict, is_vlm: bool = False) -> bool:
     Packing opts the bound out because one packed sample spans an unknown number
     of source rows. The stored value alone overshoots: the frontend hides the
     packing control for image VLMs without resetting it, API clients can submit
-    the combination directly, and the image, audio-codec and audio-VLM branches
-    all train without packing whatever the config says.
+    the combination directly, and the vision, audio-VLM and audio-codec branches
+    all train without packing whatever the config says -- csm and snac on a plain
+    HF Trainer, whisper on Seq2SeqTrainer, none of which take a packing argument,
+    and bicodec/dac forced off on the SFTTrainer path.
+
+    Raw-text and CPT are the exception to that: the vision/audio-VLM branch is
+    gated on `not raw_text_mode`, so those runs take the text path and it honours
+    the requested value however the dataset is flagged.
     """
     if not config.get("packing", False):
         return False
+    raw_text_mode = (
+        config.get("training_type") == "Continued Pretraining"
+        or config.get("format_type") == "raw"
+    )
+    if raw_text_mode:
+        return True
     if is_vlm or config.get("is_dataset_image", False) or config.get("is_dataset_audio", False):
         return False
     return True
@@ -106,7 +122,11 @@ def max_train_rows_for_config(config: dict, is_vlm: bool = False) -> Optional[in
 def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
     """The run directory a checkpoint lives in, or None when there is none.
 
-    Checkpoints are written as ``<output_dir>/checkpoint-<step>``; a caller that
+    Trainer writes ``<output_dir>/checkpoint-<global_step>`` (transformers'
+    PREFIX_CHECKPOINT_DIR, always followed by the step number), so only that
+    exact shape is a checkpoint. Matching the bare prefix would take the parent
+    of a RUN directory that happens to start with it, and the marker would then
+    be written one level above where a later resume looks for it. A caller that
     names the run directory itself gets it back unchanged.
     """
     if not checkpoint_path:
@@ -115,7 +135,7 @@ def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
     if not path:
         return None
     head, tail = os.path.split(path)
-    if tail.startswith("checkpoint-") and head:
+    if head and _CHECKPOINT_DIR_RE.match(tail):
         return head
     return path
 
@@ -137,21 +157,40 @@ def record_row_bound(
     Best effort by design. A run must never fail over a marker; a marker that
     could not be written costs the optimization on the next resume and nothing
     else.
+
+    Written through a temporary file and moved into place, because a resume
+    rewrites a marker that is already valid: truncating in place and then failing
+    -- a full disk is the ordinary way -- would leave an empty file, which reads
+    as "no marker" and resumes the run over the whole dataset. os.replace is
+    atomic on POSIX and on Windows.
     """
     run_dir = run_dir_for_checkpoint(output_dir)
     if not run_dir:
         return
+    marker = os.path.join(run_dir, ROW_BOUND_MARKER_FILE)
+    tmp_path = None
     try:
-        with open(os.path.join(run_dir, ROW_BOUND_MARKER_FILE), "w", encoding = "utf-8") as handle:
-            json.dump(
-                {
-                    "max_train_rows": _positive_int(max_train_rows, 0) or None,
-                    "seed": _seed_int(seed, 3407),
-                },
-                handle,
-            )
+        payload = json.dumps(
+            {
+                "max_train_rows": _positive_int(max_train_rows, 0) or None,
+                "seed": _seed_int(seed, 3407),
+            }
+        )
+        handle, tmp_path = tempfile.mkstemp(dir = run_dir, prefix = ".row_bound_", suffix = ".tmp")
+        with os.fdopen(handle, "w", encoding = "utf-8") as tmp_file:
+            tmp_file.write(payload)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.replace(tmp_path, marker)
+        tmp_path = None
     except (OSError, UnicodeError, TypeError, ValueError):
         return
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def row_bound_for_resume(
