@@ -7911,6 +7911,13 @@ class LlamaCppBackend:
     _CUDA_CONTEXT_RESERVE_BYTES = 320 * 1024 * 1024  # CUDA ctx + cuBLAS workspace (~330 MiB)
     _MMPROJ_VRAM_SAFETY = 1.4  # mmproj worst-case buffer vs file size (runtime ~1.3x)
     _MTP_DRAFT_COMPUTE_BYTES = 224 * 1024 * 1024  # MTP draft decode graph beyond its KV
+    # Draft depth to budget when the extras own the spec block and the probe cannot
+    # read the build's own default off its --help. Shipped values are 3
+    # (common_params_speculative_draft::n_max) and 16; take the deeper, since the
+    # Hybrid Mamba rollback copies scale by this and under-reserving them OOMs the
+    # load while over-reserving only costs context. Zero cost on any other model,
+    # where the recurrent state is nil.
+    _UNKNOWN_SPEC_DRAFT_N_MAX = 16
     # The flash-attn KQ mask + attention scratch grow ~linearly with context; the flat
     # _estimate_compute_buffer_bytes term only covers ctx -> 0. The per-token rate
     # depends on the KV cache type: a QUANTIZED cache (q8_0/q5/q4/iq4) needs a
@@ -13913,7 +13920,14 @@ class LlamaCppBackend:
                         if _env_n_max is not None:
                             _mtp_eff_n_max = int(str(_env_n_max).strip())
                         else:
-                            _mtp_eff_n_max = _depth_caps.get("spec_draft_n_max_default")
+                            # Never fall through to Studio's platform default here:
+                            # the child is drafting at the build's number, and a
+                            # probe that timed out or printed no default still leaves
+                            # it drafting. Assume the deepest llama.cpp has shipped.
+                            _mtp_eff_n_max = (
+                                _depth_caps.get("spec_draft_n_max_default")
+                                or self._UNKNOWN_SPEC_DRAFT_N_MAX
+                            )
                     elif _mtp_eff_n_max is None:
                         _mtp_eff_n_max = spec_draft_n_max
                     if _mtp_eff_n_max is None:
