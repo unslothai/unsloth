@@ -493,14 +493,17 @@ def _saved_chat_template_override(load_path: str, loader_id: str, variant: Optio
     """
     try:
         from utils.openai_auto_switch_settings import resolve_override_for_load
-
         _key, override = resolve_override_for_load(load_path, loader_id, variant)
         return bool(isinstance(override, dict) and override.get("chat_template_override"))
     except Exception:
         return False
 
 
-def _has_a_chat_template(load_dir, loader_id: str, variant: Optional[str] = None) -> bool:
+def _has_a_chat_template(
+    load_dir,
+    loader_id: str,
+    variant: Optional[str] = None,
+) -> bool:
     """Whether chat generation will find a template for this checkpoint.
 
     ``generate_stream`` raises outright without one, so a base checkpoint would load,
