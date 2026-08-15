@@ -1975,6 +1975,9 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 
+# --fit-ctx floor under manual + auto, shared so the guard cannot drift from the flag
+_AUTO_FIT_MIN_CTX = 8192
+
 
 def _vram_reserve_floor_mib(total_mib: float) -> float:
     """Smallest margin a card keeps: 512 MiB, or the default's own reserve if smaller.
@@ -14850,19 +14853,37 @@ class LlamaCppBackend:
                     and kv_cache_bytes is not None
                     and not self._amd_apu_wants_unified_memory(gpu_indices)
                 ):
-                    # a cpu-forced launch carries --device none, so it holds no vram
+                    # manual + auto omits -c, so a zero context still allocates the fit floor
+                    _guard_kv_bytes = kv_cache_bytes
+                    if (
+                        not _guard_kv_bytes
+                        and effective_ctx <= 0
+                        and gpu_memory_mode == "manual"
+                        and (gpu_layers or 0) < 0
+                    ):
+                        _guard_kv_bytes = _kv_bytes(_AUTO_FIT_MIN_CTX)
+                    try:
+                        from utils.model_memory_settings import should_mlock
+
+                        _guard_mlocked = should_mlock()
+                    except Exception:
+                        # settings unavailable: price the spill, the pre-guard behaviour
+                        _guard_mlocked = False
+                    # a page-locked mapping is pinned whole and --device none holds no vram
                     _fit_vram_mib = (
                         0
-                        if (_paravirtual_cpu_forced or _arch_gate_forced_cpu)
+                        if (_paravirtual_cpu_forced or _arch_gate_forced_cpu or _guard_mlocked)
                         else sum(
                             max(0, _free)
                             for _idx, _free in _detected_gpus
-                            if gpu_indices is None or _idx in gpu_indices
+                            # a vulkan igpu (total 0) reports the very ram this charges against
+                            if (gpu_indices is None or _idx in gpu_indices)
+                            and not (is_vulkan_backend and not total_by_idx.get(_idx, 0))
                         )
                     )
                     _offload_msg = self._host_offload_shortfall_message(
                         model_size
-                        + kv_cache_bytes
+                        + _guard_kv_bytes
                         + _mtp_reserve_bytes
                         - _fit_vram_mib * 1024 * 1024,
                         self._available_system_memory_mib(),
@@ -19058,7 +19079,7 @@ class LlamaCppBackend:
             elif auto_fit:
                 # Manual + Auto omits -c, so floor at 8192 so --fit doesn't
                 # shrink the window below a usable size.
-                flags.extend(["--fit-ctx", "8192"])
+                flags.extend(["--fit-ctx", str(_AUTO_FIT_MIN_CTX)])
         if use_fit and caps.get("supports_fit_target"):
             # Each path keeps its own starting margin: the tighter 512 under Manual
             # + Auto, so llama.cpp packs more on before spilling to system RAM, and

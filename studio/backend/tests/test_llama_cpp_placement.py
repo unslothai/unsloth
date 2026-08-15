@@ -910,3 +910,67 @@ def test_fit_spill_a_large_ram_host_can_hold_still_launches(tmp_path, monkeypatc
     )
 
     assert "--fit" in _launch(backend, gguf)["cmd"]
+
+
+def test_page_locked_launch_prices_the_whole_mapping_not_the_spill(tmp_path, monkeypatch):
+    """`mmap+mlock` pins the whole mapping in host RAM, so GPU-resident layers free
+    none of it. A 13.3 GB model with 4877 MiB on the card fits a 24 GB host by spill
+    but not once the lock holds all 13.3 GB."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14_000)
+    )
+    import utils.model_memory_settings as mms
+
+    monkeypatch.setattr(mms, "should_mlock", lambda: False)
+    assert "--fit" in _launch(backend, gguf)["cmd"]
+
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
+    monkeypatch.setattr(mms, "should_mlock", lambda: True)
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
+def test_vulkan_igpu_free_memory_is_not_subtracted_from_its_own_ram(tmp_path, monkeypatch):
+    """A Vulkan iGPU reports shared system RAM as free VRAM and total 0. Subtracting it
+    and then charging the remainder against that same RAM counts the pool twice, so a
+    20 GB model on a 14 GB host reads as a 6 GB requirement and is allowed."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 14_000, 0)])
+    backend._get_gguf_size_bytes = lambda _path: int(20 * 1024**3)
+    backend._select_gpus = lambda *args, **kwargs: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
+def test_vulkan_discrete_card_still_offsets_the_spill(tmp_path, monkeypatch):
+    """The iGPU rule keys on total 0; a discrete Vulkan card reports a real total and
+    keeps reducing the host footprint."""
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 14_000, 16_000)])
+    backend._get_gguf_size_bytes = lambda _path: int(20 * 1024**3)
+    backend._select_gpus = lambda *args, **kwargs: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14_000)
+    )
+
+    assert "--fit" in _launch(backend, gguf)["cmd"]
+
+
+def test_manual_auto_fit_prices_the_kv_cache_it_will_actually_allocate(tmp_path, monkeypatch):
+    """Manual + Auto layers omits -c and leaves effective_ctx at 0, so `_kv_bytes(0)`
+    is zero while the launch still floors --fit-ctx at 8192 and allocates that KV. The
+    weights alone fit this host; the KV the server really takes does not."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 4877, 6141)])
+    backend._get_gguf_size_bytes = lambda _path: int(9 * 1024**3)
+    backend._can_estimate_kv = lambda: True
+    # 4 GB at the fit floor, which is the term the zero context dropped.
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(4 * 1024**3) if ctx else 0
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = -1, n_ctx = 0)
