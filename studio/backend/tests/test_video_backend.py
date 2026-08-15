@@ -2098,10 +2098,15 @@ def test_base_download_files_scopes_pipeline_pull():
 
 
 def test_base_download_files_gguf_drops_transformer():
-    # A GGUF/single-file checkpoint replaces the DiT: the base transformer never pulls.
+    # A GGUF/single-file checkpoint replaces the DiT: the base transformer WEIGHTS never pull.
     info = types.SimpleNamespace(siblings = _LTX2_SIBLINGS)
     names = [n for n, _ in VideoBackend._base_download_files(info, "gguf")]
-    assert not any(n.startswith("transformer/") for n in names)
+    transformer = [n for n in names if n.startswith("transformer/")]
+    # config.json is the one exception, and it is not an oversight: from_single_file resolves
+    # config = <repo id> through the Hub, so an API load that promised to download nothing needs
+    # this ~1 KB file staged, and the locality gate needs to count it. Everything else under
+    # transformer/ is supplied by the checkpoint itself.
+    assert transformer == ["transformer/config.json"]
     assert "text_encoder/model-00001-of-00002.safetensors" in names
 
 

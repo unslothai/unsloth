@@ -538,3 +538,61 @@ def test_the_hidream_external_encoder_is_pinned_to_the_live_cache(monkeypatch, l
     for tag, kwargs in seen.items():
         assert kwargs.get("cache_dir") == live_cache_root, tag
         assert kwargs.get("local_files_only") is True, tag
+
+
+# ── [E] the transformer-only single-file build ───────────────────────────────
+# from_single_file(config = <repo id>, subfolder = "transformer") is not a local read: diffusers
+# forwards local_files_only into the load_config() that resolves that id (single_file_model.py in
+# 0.39 pops the kwarg and passes it on), and an unset flag is None, which is falsy, which permits
+# the network. The pipeline assembly after it was already guarded, so this one call was the last
+# unguarded Hub read on the GGUF/safetensors path -- and it runs AFTER eviction.
+#
+# The flag alone would not have been enough. transformer/config.json was deliberately excluded from
+# the staged base file set on both paths (the shards come from the checkpoint), so the locality gate
+# cleared picks that had never cached it and local_files_only would have turned a silent ~1 KB fetch
+# into a hard failure on essentially every API-initiated GGUF load. Admitting the config -- and only
+# the config -- is what makes the promise keepable, and lets the gate refuse up front instead.
+
+
+def test_the_image_base_file_set_stages_the_transformer_config_but_not_its_shards():
+    from core.inference.diffusion import _base_file_downloaded as keep
+
+    assert keep("transformer/config.json", include_transformer = False)
+    assert not keep(
+        "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+        include_transformer = False,
+    )
+
+
+def _sf_kwargs_keys(module_path: str) -> list[set[str]]:
+    """The literal keys of every ``sf_kwargs = {...}`` in *module_path*, one set per assignment.
+
+    Read from the source, like the call-site checks above: reaching this branch needs a real
+    multi-GB GGUF plus its base repo, which no unit test can stage. The call itself is
+    ``from_single_file(path, **sf_kwargs)``, so the keyword lives in the dict, not the call.
+    """
+    backend_root = pathlib.Path(diffusion_mod.__file__).resolve().parents[2]
+    tree = ast.parse((backend_root / module_path).read_text(encoding = "utf-8"))
+    found: list[set[str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(getattr(t, "id", None) == "sf_kwargs" for t in targets):
+            continue
+        if isinstance(node.value, ast.Dict):
+            found.append({k.value for k in node.value.keys if isinstance(k, ast.Constant)})
+    if not found:
+        raise AssertionError(f"no sf_kwargs dict literal in {module_path}")
+    return found
+
+
+@pytest.mark.parametrize(
+    "module_path", ["core/inference/diffusion.py", "core/inference/video.py"]
+)
+def test_every_single_file_build_hands_over_the_flag(module_path):
+    for keys in _sf_kwargs_keys(module_path):
+        assert "local_files_only" in keys
+        # cache_dir is set here too, but diffusers does NOT forward it to the config lookup, so it
+        # pins only the checkpoint read. The flag is what keeps the config resolution off the Hub.
+        assert "config" in keys

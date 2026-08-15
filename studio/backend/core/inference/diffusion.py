@@ -3974,6 +3974,11 @@ class DiffusionBackend:
                             "subfolder": "transformer",
                             "token": hf_token,
                             "cache_dir": hub_cache_dir(),
+                            # config is a REPO ID, and diffusers forwards this into the
+                            # load_config() that resolves it (single_file_model.py), so without the
+                            # flag this branch reaches the Hub on a load nobody asked for. The
+                            # pipeline assembly below was already guarded; this call was not.
+                            "local_files_only": local_files_only,
                         }
                         if kind == "gguf":
                             # Dequantise the GGUF transformer on-device at the compute dtype.
@@ -6169,6 +6174,15 @@ def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) 
     ``include_transformer`` admits the ``transformer/`` shards for loads where the
     dense transformer-quant path will fetch them anyway (see
     ``_dense_quant_prefetch_needed``)."""
+    if rfilename == "transformer/config.json":
+        # The one transformer/ file that is ALWAYS needed, shards or not: from_single_file(config =
+        # <repo id>, subfolder = "transformer") resolves it through the Hub, so a load that promised
+        # to download nothing cannot keep that promise unless this ~1 KB file is already on disk.
+        # Excluding it made the locality gate pass and the load fetch it afterwards, AFTER the
+        # resident pipeline was evicted. Counting it here is what lets the gate refuse up front
+        # (cleanly, before eviction) or clear a pick that really can load offline. Video keeps the
+        # same exception at video.py's snapshot filter.
+        return True
     if rfilename.startswith("transformer/"):
         return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched

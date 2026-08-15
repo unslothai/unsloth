@@ -2599,7 +2599,15 @@ class VideoBackend:
                 continue
             if "/" not in name and name.endswith(".safetensors"):
                 continue
-            if kind != "pipeline" and name.startswith("transformer/"):
+            if (
+                kind != "pipeline"
+                and name.startswith("transformer/")
+                # transformer/config.json is the exception: from_single_file(config = <repo id>,
+                # subfolder = "transformer") reads it off the Hub, so a load that promised to
+                # download nothing needs it staged. Without it the locality gate cleared the pick
+                # and the fetch happened after eviction.
+                and name != "transformer/config.json"
+            ):
                 continue
             # is_prequant_covered_weight is component-agnostic (it matches "<component>/" against a
             # weight suffix), so the encoder helper serves the denoiser verbatim.
@@ -3643,6 +3651,10 @@ class VideoBackend:
                 "subfolder": "transformer",
                 "token": hf_token,
                 "cache_dir": hub_cache_dir(),
+                # base is a REPO ID that diffusers resolves through load_config(), so the flag has
+                # to ride along or the non-LTX single-file path fetches the config after eviction.
+                # The LTX 2.3 branch below takes local_files_only through its own assembler.
+                "local_files_only": local_files_only,
             }
             if kind == "gguf":
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
