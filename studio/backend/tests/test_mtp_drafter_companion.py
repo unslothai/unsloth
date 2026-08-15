@@ -1370,7 +1370,9 @@ def test_companion_search_root_falls_back_when_weight_outside_selection(tmp_path
     weight.write_bytes(b"x")
     model_dir.joinpath("model-Q4_K_M.gguf").symlink_to(weight)
 
-    assert _local_gguf_companion_search_root(str(scan_root), str(model_dir / "model-Q4_K_M.gguf")) == str(scan_root)
+    assert _local_gguf_companion_search_root(
+        str(scan_root), str(model_dir / "model-Q4_K_M.gguf")
+    ) == str(scan_root)
 
 
 def test_custom_scan_folder_variant_finds_nested_mmproj(tmp_path):
