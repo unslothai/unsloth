@@ -153,21 +153,25 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 
 
 _WEIGHT_INDEXES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
-# Real tokenizer vocabulary. A processor config carries image or audio preprocessing
-# metadata and leaves the loader with nothing to tokenize with, so it does not count.
-_TOKENIZER_MARKERS = (
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "tokenizer.model",
-    "vocab.json",
-)
+# Real tokenizer vocabulary. tokenizer_config.json and the processor configs carry
+# metadata, not the vocabulary the loader needs, so neither counts on its own.
+_TOKENIZER_MARKERS = ("tokenizer.json", "tokenizer.model", "vocab.json")
 # A LoRA directory can carry a copied config.json and tokenizer beside these, and
 # ModelConfig would then resolve its base model and fetch weights this resolver
 # promises never to download.
 _ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
-# Chat generation is the only route these entries feed. An encoder-only or classifier
-# checkpoint carries no generative head, so the language-model load would fail.
-_GENERATIVE_ARCHITECTURE_SUFFIXES = ("ForCausalLM", "ForConditionalGeneration")
+# The multimodal sub-configs the repo's own vision detector reads, which is what tells
+# a served VLM apart from a plain seq2seq wearing the same architecture suffix.
+_MULTIMODAL_CONFIG_KEYS = (
+    "vision_config",
+    "img_processor",
+    "image_token_index",
+    "projector_config",
+    "audio_config",
+)
+# The chat loader reaches these weights through causal and vision auto classes, so an
+# encoder-only or classifier checkpoint has no head it can generate with.
+_AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
 
 
 def _is_generative_chat_config(config: dict) -> bool:
@@ -175,9 +179,13 @@ def _is_generative_chat_config(config: dict) -> bool:
     architectures = config.get("architectures")
     if not isinstance(architectures, list):
         return False
-    return any(
-        isinstance(name, str) and name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES)
-        for name in architectures
+    names = [name for name in architectures if isinstance(name, str)]
+    if any(name.endswith("ForCausalLM") for name in names):
+        return True
+    # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving
+    # path has no AutoModelForSeq2SeqLM branch, so require a multimodal sub-config.
+    return any(name.endswith("ForConditionalGeneration") for name in names) and any(
+        key in config for key in _MULTIMODAL_CONFIG_KEYS
     )
 
 
@@ -307,10 +315,12 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
             return None
         # Whisper and the TTS families need an audio request shape the switch cannot
-        # know about, so the chat route rejects them after the swap has already run.
+        # know about, so the chat route rejects them after the swap has already run. An
+        # audio VLM is a chat model that also takes audio, and the backend serves it.
         from utils.models.model_config import detect_audio_type
 
-        if detect_audio_type(str(load_dir), local_files_only = True) is not None:
+        audio_type = detect_audio_type(str(load_dir), local_files_only = True)
+        if audio_type is not None and audio_type not in _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES:
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)

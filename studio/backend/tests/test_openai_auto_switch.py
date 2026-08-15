@@ -8435,3 +8435,45 @@ def test_a_nested_non_gguf_row_is_not_marked_resident(monkeypatch):
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
     assert inference_route._resolves_to_resident("/models/A") is True
     assert inference_route._resolves_to_resident("/models/A/sub/B") is False
+
+
+def test_an_audio_vlm_stays_switchable(tmp_path, monkeypatch):
+    # Codex P2: MLXInferenceBackend serves audio_vlm as a chat model that also takes
+    # audio, so excluding every detected audio type withheld Gemma 3n and its kin.
+    from types import SimpleNamespace
+    from utils.models import model_config
+
+    path = _local_checkpoint(tmp_path, "gemma-3n")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    for audio_type, servable in (("audio_vlm", True), ("whisper", False), ("csm", False)):
+        monkeypatch.setattr(model_config, "detect_audio_type", lambda *_a, **_kw: audio_type)
+        assert (resolver.local_servable_model(info) is not None) is servable, audio_type
+
+
+def test_a_text_seq2seq_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: ForConditionalGeneration is overloaded. T5 and BART wear it, and the
+    # serving path has no seq2seq branch, so only a multimodal sub-config qualifies.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "t5-base")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text('{"architectures": ["T5ForConditionalGeneration"]}')
+    assert resolver.local_servable_model(info) is None
+    (path / "config.json").write_text(
+        '{"architectures": ["Gemma3ForConditionalGeneration"], "vision_config": {}}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_tokenizer_metadata_alone_is_not_a_vocabulary(tmp_path):
+    # Codex P2: tokenizer_config.json carries settings, not the vocabulary the loader
+    # needs, so it cannot make a checkpoint eligible on its own.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "MetadataOnly")
+    (path / "tokenizer.json").unlink()
+    (path / "tokenizer_config.json").write_text("{}")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+    (path / "vocab.json").write_text("{}")
+    assert resolver.local_servable_model(info) == (False, ())
