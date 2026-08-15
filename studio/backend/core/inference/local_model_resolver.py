@@ -205,6 +205,8 @@ _MULTIMODAL_CONFIG_KEYS = (
     "projector_config",
     "audio_config",
 )
+
+
 def _model_type_has_a_causal_head(model_type) -> bool:
     """Whether the loader has a causal implementation for this model_type.
 
