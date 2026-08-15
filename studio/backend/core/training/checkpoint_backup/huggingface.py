@@ -49,6 +49,11 @@ class HuggingFaceCheckpointTransport:
         checkpoint_path: Path,
         progress: Optional[Callable[[int, int, int, int], None]] = None,
     ) -> None:
+        """Upload under the checkpoint name, retaining ``run_id`` for the transport API.
+
+        Because the remote layout does not include ``run_id``, checkpoints with the same
+        directory name from different runs target the same remote directory.
+        """
         from huggingface_hub import HfApi
 
         files = upload_files(checkpoint_path)
@@ -58,7 +63,7 @@ class HuggingFaceCheckpointTransport:
         for index, path in enumerate(files, 1):
             api.upload_file(
                 path_or_fileobj = str(path),
-                path_in_repo = f"runs/{run_id}/checkpoints/{checkpoint_path.name}/{path.relative_to(checkpoint_path).as_posix()}",
+                path_in_repo = f"{checkpoint_path.name}/{path.relative_to(checkpoint_path).as_posix()}",
                 repo_id = self.repo_id,
             )
             uploaded += path.stat().st_size

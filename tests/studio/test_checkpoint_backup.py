@@ -189,6 +189,23 @@ def test_public_and_private_repositories_use_the_same_upload(fake_hub, visibilit
     assert "create_repo" not in call_names
 
 
+def test_checkpoint_upload_uses_flat_directory_and_preserves_subdirectories(fake_hub, tmp_path):
+    path = checkpoint(tmp_path, 1)
+    nested = path / "rng"
+    nested.mkdir()
+    (nested / "state.json").write_text("{}")
+
+    HuggingFaceCheckpointTransport("token", "owner/backups").upload_checkpoint("run", path)
+
+    uploads = {
+        Path(call["path_or_fileobj"]).relative_to(path).as_posix(): call["path_in_repo"]
+        for name, call in RecordingApi.calls
+        if name == "upload_file"
+    }
+    assert uploads["trainer_state.json"] == "checkpoint-1/trainer_state.json"
+    assert uploads["rng/state.json"] == "checkpoint-1/rng/state.json"
+
+
 def test_missing_repository_is_not_created(fake_hub):
     RecordingApi.info_error = FakeRepositoryNotFoundError()
     transport = HuggingFaceCheckpointTransport("token", "owner/missing")
