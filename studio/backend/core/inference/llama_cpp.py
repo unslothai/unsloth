@@ -13887,14 +13887,18 @@ class LlamaCppBackend:
                             _depth_caps = _launch_caps(binary) or {}
                         except Exception:
                             _depth_caps = {}
-                        # The env twin of whichever depth flag this build carries: a
-                        # legacy build spells the pair --draft-max / LLAMA_ARG_DRAFT_MAX.
-                        # Unprobed, read both, since only one of them can be in force.
-                        _env_names = (
-                            ("LLAMA_ARG_DRAFT_MAX",)
-                            if _depth_caps.get("spec_draft_n_max_flag") == "--draft-max"
-                            else ("LLAMA_ARG_SPEC_DRAFT_N_MAX", "LLAMA_ARG_DRAFT_MAX")
-                        )
+                        # The env twin of whichever depth flag this build carries, and
+                        # only that one: a legacy build spells the pair --draft-max /
+                        # LLAMA_ARG_DRAFT_MAX, and a post-rename build ignores the
+                        # legacy name, so a stale value there must not price its
+                        # rollback. Both names only where the probe named no flag.
+                        _depth_flag = _depth_caps.get("spec_draft_n_max_flag")
+                        if _depth_flag == "--draft-max":
+                            _env_names = ("LLAMA_ARG_DRAFT_MAX",)
+                        elif _depth_flag:
+                            _env_names = ("LLAMA_ARG_SPEC_DRAFT_N_MAX",)
+                        else:
+                            _env_names = ("LLAMA_ARG_SPEC_DRAFT_N_MAX", "LLAMA_ARG_DRAFT_MAX")
                         _env_n_max = next(
                             (v for v in map(_spec_env.get, _env_names) if _is_positive_int(v)),
                             None,
@@ -14492,14 +14496,16 @@ class LlamaCppBackend:
                     )
                     # MTP reserves GPU VRAM unless its only drafter is a separate
                     # CPU-offloaded one (an embedded head stays on GPU). The tensor
-                    # path reserves like the layer path; gate both on this. The
-                    # exception is the target state the block above keeps: it is the
-                    # TARGET's, so the CPU pin does not move it and the tensor floor
-                    # has to hold it -- tensor mode has no --fit valve and no amount
-                    # of context shrinking can free a per-slot allocation.
-                    _mtp_reserves_gpu = _mtp_will_engage and (
-                        not _draft_cpu_no_embedded or mtp_overhead_fn is not None
-                    )
+                    # path reserves like the layer path; gate both on this.
+                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                    # Narrower than that: whether ANY byte reserve survives on the GPU.
+                    # A CPU-pinned drafter leaves the target's own rollback state behind
+                    # (the block above keeps it), and the tensor floor has to hold it,
+                    # tensor mode having no --fit valve and no amount of context
+                    # shrinking freeing a per-slot allocation. It stays out of
+                    # _mtp_reserves_gpu because that also charges the draft decode
+                    # graph, which follows the drafter onto the CPU.
+                    _mtp_gpu_bytes_remain = _mtp_reserves_gpu or mtp_overhead_fn is not None
                     _flat_mtp_reserve = (
                         _MTP_VRAM_RESERVE_FRAC
                         if (_flat_mtp_engages and not _draft_cpu_no_embedded)
@@ -14532,8 +14538,9 @@ class LlamaCppBackend:
                             sum(_gpu_usable(g) for g in tp_gpus) - len(tp_gpus) * reserve_mib
                         )
                         _tp_flat_mtp = 2 * 1024**3  # flat reserve when dims unavailable
-                        if not _mtp_reserves_gpu:
-                            # No MTP, or its only drafter is CPU-offloaded (no GPU).
+                        if not _mtp_gpu_bytes_remain:
+                            # No MTP, or its only drafter is CPU-offloaded and the
+                            # target keeps no state of its own (no GPU bytes at all).
                             _tp_mtp_floor = 0
                         elif mtp_overhead_fn is not None and not _mtp_kv_unsized:
                             _tp_mtp_floor = _mtp_bytes(

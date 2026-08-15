@@ -1117,9 +1117,12 @@ class TestExtraArgsMtpDetection:
         # state, which the CPU pin does not move off the GPU.
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "if(_flat_mtp_engagesandnot_draft_cpu_no_embedded)" in load
-        assert "_mtp_will_engageand(not_draft_cpu_no_embeddedormtp_overhead_fnisnotNone)" in load
-        assert "ifnot_mtp_reserves_gpu:" in load
+        assert "_mtp_reserves_gpu=_mtp_will_engageandnot_draft_cpu_no_embedded" in load
         assert "mtp_engaged=_mtp_reserves_gpu" in load
+        # The tensor floor asks the narrower question, so the target state it keeps
+        # is held there without also re-charging the CPU-resident draft graph.
+        assert "_mtp_gpu_bytes_remain=_mtp_reserves_gpuormtp_overhead_fnisnotNone" in load
+        assert "ifnot_mtp_gpu_bytes_remain:" in load
 
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,

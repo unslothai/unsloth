@@ -839,6 +839,37 @@ def test_a_legacy_build_inherits_its_own_draft_depth_variable(tmp_path, monkeypa
     assert set(charged) == {32 * base}
 
 
+def test_a_post_rename_build_ignores_the_legacy_depth_variable(tmp_path, monkeypatch):
+    # LLAMA_ARG_DRAFT_MAX is the twin of the removed --draft-max, so a build that
+    # advertises the modern flag never reads it. Pricing a stale value there would
+    # budget a depth the child does not draft at.
+    backend, gguf, _sidecar = _hybrid_reserve_backend(
+        tmp_path,
+        caps = {
+            "mtp_token": "draft-mtp",
+            "supports_ngram_mod": True,
+            "spec_draft_n_max_flag": "--spec-draft-n-max",
+            "spec_draft_n_max_default": 16,
+            "supports_kv_unified": True,
+        },
+    )
+    monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_N_MAX", raising = False)
+    monkeypatch.setenv("LLAMA_ARG_DRAFT_MAX", "32")
+
+    charged = _recorded_mtp_reserve(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        n_ctx = 8192,
+        n_parallel = 4,
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
+
+    base = backend._mamba_recurrent_state_bytes(n_parallel = 4)
+    assert base > 0
+    assert set(charged) == {16 * base}
+
+
 def test_auto_stands_down_for_an_explicit_pin_the_vram_probe_cannot_see(tmp_path):
     # The probe answered nothing, but the pick still pins the child to those
     # devices, so the launch does offload to them and --fit on can leave part of
