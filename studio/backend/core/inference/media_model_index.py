@@ -288,34 +288,38 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
     return index
 
 
-def _collision_key(pick: MediaModelPick) -> tuple[str, str, str]:
-    """What the backend publishes about a build, which is all a resident model can be matched on.
-
-    The partition counts: two MiniMax-H3 denoisers in one directory share a quant token, and
-    without it both read as indistinguishable and every request reloads a multi-GB checkpoint
-    that status already identifies through ``h3_task``.
-    """
-    return (
-        identity_key(pick.model_path),
-        published_token(pick),
-        str(expected_partition(pick) or ""),
-    )
+def _partition_of(pick: MediaModelPick) -> Optional[str]:
+    """The MiniMax-H3 partition this pick brings up, or None when it is not an H3 build."""
+    return expected_partition(pick)
 
 
 def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaModelPick]:
-    """Flag every GGUF pick whose published token another build under its path also publishes.
+    """Flag every GGUF pick another build under its path cannot be told apart from.
 
-    A token no build shares identifies its pick, including the empty one an unlabelled file
-    publishes: the backend publishes the same empty token for it, so the resident model can
-    still be recognised. Only a token two builds answer to is ambiguous, and marking a lone
-    build would reload a multi-GB pipeline on every request naming it.
+    Grouped on what the backend publishes about a resident model, which is the path and the
+    quant token. The H3 partition then splits a group, because status publishes ``h3_task`` and
+    ``resident_is_pick`` compares it: two H3 denoisers sharing a quant are distinguishable, and
+    marking them ambiguous reloads a multi-GB checkpoint on every request.
+
+    It splits nothing else. A non-H3 sibling has no partition to be told apart by, and
+    ``partition_matches`` reads a resident ``fl2va`` as answering for it, so it has to stay in
+    the group with everything else that shares its token.
     """
-    seen: dict[tuple[str, str, str], set] = {}
+    groups: dict[tuple[str, str], list[MediaModelPick]] = {}
     for pick in index.values():
         if pick is _AMBIGUOUS or pick.model_kind != "gguf":
             continue
-        seen.setdefault(_collision_key(pick), set()).add(pick.gguf_filename)
-    collides = {key for key, files in seen.items() if len(files) > 1}
+        groups.setdefault((identity_key(pick.model_path), published_token(pick)), []).append(pick)
+    collides = set()
+    for key, picks in groups.items():
+        files = {pick.gguf_filename for pick in picks}
+        if len(files) < 2:
+            continue
+        partitions = [_partition_of(pick) for pick in picks]
+        # every member an H3 build with a partition of its own: status tells them apart
+        if all(partitions) and len(set(partitions)) == len(files):
+            continue
+        collides.add(key)
     if not collides:
         return index
     return {
@@ -323,7 +327,7 @@ def _mark_ambiguous_builds(index: dict[str, MediaModelPick]) -> dict[str, MediaM
             pick
             if pick is _AMBIGUOUS
             or pick.model_kind != "gguf"
-            or _collision_key(pick) not in collides
+            or (identity_key(pick.model_path), published_token(pick)) not in collides
             else replace(pick, ambiguous = True)
         )
         for name, pick in index.items()
