@@ -714,7 +714,9 @@ def validate_video_reference_conditioning(
         )
     policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
     if policy not in (H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX):
-        raise ValueError(f"reference_image_size must be '{H3_REF_SIZE_MATCH}' or '{H3_REF_SIZE_MAX}'.")
+        raise ValueError(
+            f"reference_image_size must be '{H3_REF_SIZE_MATCH}' or '{H3_REF_SIZE_MAX}'."
+        )
     if policy == H3_REF_SIZE_MAX and engine == "sd_cpp":
         raise ValueError(
             "stable-diffusion.cpp scales every reference to the generation's pixel area, so "

@@ -1793,9 +1793,7 @@ def test_a_load_route_refusal_still_carries_the_openai_envelope(monkeypatch):
     assert resp.json()["error"]["message"] == "'x/y' is not a supported diffusion model."
 
 
-def test_a_component_holding_only_its_config_is_refused(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_a_component_holding_only_its_config_is_refused(catalog, enabled, tmp_path, backend, loads):
     # A partially copied pipeline leaves the component directory in place with its config and
     # none of its weights, which the nonempty-directory test alone accepted.
     pipeline = tmp_path / "z-image"
@@ -1880,7 +1878,12 @@ def test_a_native_h3_target_refuses_max_reference_sizing(monkeypatch):
 
     generated: list = []
 
-    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+    async def _switch_stub(
+        requested_model,
+        *,
+        before_switch = None,
+        **kwargs,
+    ):
         before_switch(
             index.MediaModelPick(
                 requested_model,
