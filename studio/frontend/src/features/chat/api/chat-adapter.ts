@@ -4550,6 +4550,11 @@ export function createOpenAIStreamAdapter(
       const reconcileReasoning = (
         content: readonly { type?: unknown; text?: unknown }[],
         firstSeenAt?: number,
+        // At the end of the stream there is no later publish to close the
+        // group, so the unclosed-tag guard below has to be lifted: a provider
+        // that never emits the closing tag would otherwise leave the group
+        // open and unmeasured.
+        final = false,
       ) => {
         adoptGatedReasoningGroups(content, firstSeenAt);
         const groups = countReasoningGroups(content);
@@ -4565,7 +4570,7 @@ export function createOpenAIStreamAdapter(
             groups - 1,
             lastReasoningGroupTextLength(content),
           );
-          if (!hasUnclosedThinkTag(cumulativeText)) {
+          if (final || !hasUnclosedThinkTag(cumulativeText)) {
             reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
           }
         }
@@ -6095,6 +6100,18 @@ export function createOpenAIStreamAdapter(
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
+                    if (
+                      call.extra_content !== undefined &&
+                      JSON.stringify(call.extra_content) !==
+                        JSON.stringify(prevExtra)
+                    ) {
+                      // Gemini carries the thought signature per tool call, not
+                      // only at message level, and the next turn is rejected
+                      // outright without it. Same rule as the message-level
+                      // ledger: gate the previews, never a publish that carries
+                      // state a Stop would persist without.
+                      replayStateChanged = true;
+                    }
                     const updated: PositionedToolCallPart = {
                       ...(existing as PositionedToolCallPart),
                       toolName: nextName,
@@ -6254,6 +6271,13 @@ export function createOpenAIStreamAdapter(
                 ) !== -1;
               if (reasoning || thinkOpenedNow) {
                 gateHeldSince ??= Date.now();
+                // A provider can emit several complete <think>...</think>
+                // blocks in a row, which the panel coalesces into one group.
+                // Keeping the first block's close would finish the whole group
+                // there and drop every later block's time, so a new block
+                // invalidates it. Answer-only arrivals leave it alone, which is
+                // what keeps a pause after the reasoning out of the duration.
+                gateReasoningEndedAt = undefined;
               }
               // Closing a group reads only pre-gate state, so it runs on every
               // arrival: deferring it to the next publish let a pause after the
@@ -6277,12 +6301,17 @@ export function createOpenAIStreamAdapter(
                   reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
                 }
               }
-              // A chunk the strip emptied has nothing to show and is skipped
+              // A chunk the strip left with nothing new to show is skipped
               // below anyway; asking the gate would spend this cycle's publish
-              // on it and hold the next real chunk.
+              // on it and hold the next real chunk. Both shapes count: the
+              // reply emptied entirely, and a nonempty reply the strip returned
+              // to exactly its previous length, which is the ${...} fragment
+              // the Mistral path targets arriving mid-reply.
               if (
-                mergeContinuation(cumulativeText).length === 0 &&
-                toolCallParts.length === 0
+                (mergeContinuation(cumulativeText).length === 0 ||
+                  cumulativeText.length === textLenBeforeChunk) &&
+                toolCallParts.length === 0 &&
+                !replayStateChanged
               ) {
                 continue;
               }
@@ -6426,10 +6455,13 @@ export function createOpenAIStreamAdapter(
         const finalContent = buildAssistantContent(
           mergeContinuation(cumulativeText),
         );
-        adoptGatedReasoningGroups(finalContent, gateHeldSince);
-        // At the end the reasoning was seen to reach, not at stream close: any
-        // pause or trailing control frames in between are not reasoning.
-        reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
+        // Adoption alone is not enough: reasoning held by the gate can extend
+        // a group that ALREADY exists, where there is nothing to adopt and the
+        // group was closed by the previous publish, so its duration would stay
+        // frozen there. resumeGroup reopens it on the grown text. Finishing at
+        // the recorded end keeps any pause or trailing control frames before
+        // stream close out of the reasoning.
+        reconcileReasoning(finalContent, gateHeldSince, true);
         yield {
           content: [
             ...finalContent,
@@ -6508,10 +6540,7 @@ export function createOpenAIStreamAdapter(
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             // This partial can render a group the gate hid from the tracker.
-            adoptGatedReasoningGroups(partialContent, gateHeldSince);
-            // At the end the reasoning was seen to reach, not at stream close: any
-            // pause or trailing control frames in between are not reasoning.
-            reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
+            reconcileReasoning(partialContent, gateHeldSince, true);
             const partialTiming = buildTiming(
               streamStartTime,
               totalChunks,

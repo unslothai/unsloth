@@ -364,16 +364,16 @@ test("the gate is fed a counter that only grows", () => {
 test("a reasoning group the gate skipped is adopted before the final metadata", () => {
   const source = withoutComments(ADAPTER);
 
-  const adopt = source.indexOf("adoptGatedReasoningGroups(finalContent,");
+  const adopt = source.indexOf("reconcileReasoning(finalContent,");
   assert.notEqual(adopt, -1, "a group revealed only by skipped chunks is lost");
-  // Scoped to the finalizer, so a finishGroup() belonging to some later path
-  // cannot stand in for the one that has to follow the adoption here.
-  const finalizer = source.slice(adopt, adopt + 400);
-  const finalize = finalizer.search(/reasoningDurationTracker\.finishGroup\(/);
-  assert.notEqual(
-    finalize,
-    -1,
-    "the group must be adopted before the run finalizes durations",
+  // Scoped to the finalizer, so a metadata() belonging to some later path
+  // cannot stand in for the one that has to follow the adoption here. The
+  // finish itself now lives inside reconcileReasoning, which is what makes it
+  // impossible for a caller to adopt and then forget to close.
+  const finalizer = source.slice(adopt, adopt + 600);
+  assert.ok(
+    finalizer.includes("reasoningDurationTracker.metadata()"),
+    "the group must be adopted before the run persists durations",
   );
 });
 
@@ -384,7 +384,7 @@ test("the interrupted-stream partial adopts skipped groups too", () => {
   // needs the same adoption; otherwise an interrupted reply renders a reasoning
   // group with no duration entry behind it.
   assert.ok(
-    source.includes("adoptGatedReasoningGroups(partialContent,"),
+    source.includes("reconcileReasoning(partialContent,"),
     "the non-abort failure path does not adopt gate-hidden reasoning groups",
   );
 });
@@ -656,6 +656,58 @@ test("the arrival stamp survives a publish that adopted no group", () => {
   );
 });
 
+test("a per-call thought signature forces a publish", () => {
+  const source = withoutComments(ADAPTER);
+
+  // Gemini carries the signature on the tool call itself, not only at message
+  // level, and the next turn is rejected outright without it. Updating an
+  // EXISTING call adds no part, so addedToolCall is false and the message-level
+  // latch never sees it; a Stop while the gate holds it persists a turn that
+  // cannot be replayed.
+  const update = source.indexOf("const prevExtra =");
+  assert.notEqual(update, -1, "the existing-call update path is gone");
+  const window = source.slice(update, update + 700);
+  assert.ok(
+    window.includes("replayStateChanged = true"),
+    "a changed per-call extra_content does not force a publish",
+  );
+  assert.ok(
+    window.includes("call.extra_content !== undefined"),
+    "the latch fires on calls that carry no extra_content at all",
+  );
+
+  // And the latch has to be honoured where the tool-call publish is decided.
+  const decide = source.indexOf("addedToolCall ||", update);
+  assert.ok(
+    decide !== -1 &&
+      source.slice(decide, decide + 120).includes("replayStateChanged"),
+    "the tool-call publish ignores the replay latch",
+  );
+});
+
+test("a chunk the strip left unchanged does not spend a gate cycle", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // The ${...} strip can return a nonempty reply to exactly its previous
+  // length. Checking only for an EMPTY reply lets that chunk consume the open
+  // cycle on an identical publish, and the next real token then waits for a
+  // frame, the timer or the cap.
+  const guard = loop.indexOf("cumulativeText.length === textLenBeforeChunk");
+  const gate = loop.indexOf("!canPublish(streamedChars)");
+  assert.notEqual(guard, -1, "an unchanged reply still reaches the gate");
+  assert.ok(guard < gate, "the skip must come before the gate is asked");
+
+  // Skipping must never swallow a publish that carries replay state.
+  const skip = loop.slice(guard, gate);
+  assert.ok(
+    skip.includes("!replayStateChanged"),
+    "the skip can drop a state-bearing publish",
+  );
+});
+
 test("a server reasoning summary is assigned to the gated group", () => {
   const source = withoutComments(ADAPTER);
 
@@ -718,30 +770,52 @@ test("an opening think tag split across arrivals still stamps", () => {
   assert.deepEqual(opensOn(["<think>a", "b", "c"]), [0]);
 });
 
-test("the terminal adoption finishes at the recorded end", () => {
+test("the terminal publishes run the full reasoning transition", () => {
   const source = withoutComments(ADAPTER);
 
-  // Every adoption is a group the gate hid from the tracker, so the finish that
-  // follows it must be given the time the reasoning was last seen. Finishing at
-  // "now" would charge the wait between the last reasoning arrival and stream
-  // close to the reasoning.
-  const adoptions = [...source.matchAll(/adoptGatedReasoningGroups\(/g)].filter(
-    (m) => !source.startsWith("const adoptGatedReasoningGroups", m.index ?? 0),
+  // Adoption alone only covers a group the gate hid ENTIRELY. Reasoning held by
+  // the gate can also extend a group that already exists and was closed by the
+  // previous publish, where there is nothing to adopt and the duration stays
+  // frozen there. Both terminal paths need resume as well, which is what
+  // reconcileReasoning does, and the terminal flag lifts its unclosed-tag guard
+  // because no later publish is coming.
+  const terminal = [...source.matchAll(/reconcileReasoning\([^;]*?true\)/gs)];
+  assert.equal(
+    terminal.length,
+    2,
+    "the success finalizer and the interrupted partial must both finalize",
   );
-  assert.ok(adoptions.length >= 2, "the terminal adoptions are gone");
-
-  for (const match of adoptions) {
-    const after = source.slice(match.index ?? 0, (match.index ?? 0) + 400);
-    const finish = after.indexOf("reasoningDurationTracker.finishGroup(");
-    if (finish === -1) continue;
+  for (const match of terminal) {
     assert.ok(
-      after.startsWith(
-        "reasoningDurationTracker.finishGroup(gateReasoningEndedAt)",
-        finish,
-      ),
-      "an adoption is followed by a finish that ignores the recorded end",
+      match[0].includes("gateHeldSince"),
+      "a terminal reconcile drops the arrival stamp",
     );
   }
+  assert.ok(
+    source.includes("if (final || !hasUnclosedThinkTag(cumulativeText)) {"),
+    "the terminal flag no longer lifts the unclosed-tag guard",
+  );
+});
+
+test("a new reasoning block invalidates the recorded end", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // Several complete <think>...</think> blocks in a row render as one group.
+  // Holding the FIRST block's close would finish the whole group there and drop
+  // every later block's time, so an arriving block has to clear it. Answer-only
+  // arrivals must not, or a pause after the reasoning re-enters the duration.
+  const arrival = loop.indexOf("if (reasoning || thinkOpenedNow) {");
+  const clear = loop.indexOf("gateReasoningEndedAt = undefined;", arrival);
+  const close = loop.indexOf("gateReasoningEndedAt ??= Date.now();");
+  assert.ok(arrival !== -1 && clear !== -1, "the invalidation is gone");
+  assert.ok(clear < close, "the stamp is cleared after the close records it");
+  assert.ok(
+    close !== -1,
+    "the close no longer records an end time at all",
+  );
 });
 
 test("an active group records its close time as well", () => {
