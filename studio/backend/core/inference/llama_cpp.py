@@ -13637,6 +13637,13 @@ class LlamaCppBackend:
                 # the same reason as _detected_gpus: the except path (--fit on) falls
                 # through to the launch, which reads it.
                 _arch_gate_forced_cpu = False
+                # Whether Studio's placement planner actually RAN and came back
+                # unable to fit the model. `use_fit` alone cannot answer that: it
+                # starts True at its declaration below and is also what the except
+                # path restores, so an unfitted `--fit on` is indistinguishable
+                # from the default unless the verdict is recorded on its own.
+                # Bound before the try for the same reason as _detected_gpus.
+                _placement_verdict_partial = False
                 total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -15049,9 +15056,17 @@ class LlamaCppBackend:
                         # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
+                    # The planner ran to completion over a real device list and
+                    # left --fit on, i.e. it could not prove the model fits. THAT
+                    # is a partial-placement verdict. Set last, so any early
+                    # return or raise above leaves it False.
+                    _placement_verdict_partial = bool(_detected_gpus) and bool(use_fit)
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
+                    # Not a verdict: this arm never priced anything. Explicit, so
+                    # the flag cannot survive from a previous load.
+                    _placement_verdict_partial = False
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
@@ -15599,8 +15614,18 @@ class LlamaCppBackend:
                             # Manual mode skips Studio's placement planner (gpus is
                             # emptied above), so its --fit on is the default this
                             # function starts at, not a finding that the model does
-                            # not fit. Only Auto's fitter carries that evidence.
-                            fit_implies_partial = gpu_memory_mode != "manual",
+                            # not fit. Only Auto's fitter carries that evidence --
+                            # and only when it actually ran and actually failed to
+                            # fit, which is what _placement_verdict_partial records.
+                            # Auto alone is not enough: an empty VRAM probe with a
+                            # hand-pinned device (Metal0, Vulkan0) satisfies the GPU
+                            # guard above while every planner branch stayed gated on
+                            # the empty `gpus`, and the except path restores --fit on
+                            # having priced nothing. A concrete --gpu-layers count is
+                            # unaffected; it is independent evidence inside the helper.
+                            fit_implies_partial = (
+                                gpu_memory_mode != "manual" and _placement_verdict_partial
+                            ),
                         )
                     ),
                     draft_device = _draft_device,

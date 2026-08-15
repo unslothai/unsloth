@@ -964,10 +964,18 @@ def test_an_unreadable_help_budgets_the_deepest_shipped_draft_depth(tmp_path):
     assert set(charged) == {LlamaCppBackend._UNKNOWN_SPEC_DRAFT_N_MAX * base}
 
 
-def test_auto_stands_down_for_an_explicit_pin_the_vram_probe_cannot_see(tmp_path):
+def test_an_explicit_pin_the_probe_cannot_see_is_not_a_partial_verdict(tmp_path):
     # The probe answered nothing, but the pick still pins the child to those
-    # devices, so the launch does offload to them and --fit on can leave part of
-    # the model behind. The probe-only view read this as a CPU-only box.
+    # devices, so the launch does offload to them: the probe-only view read this
+    # as a CPU-only box, and the GPU-evidence guard is right to accept the pin.
+    #
+    # That is where the pin's authority stops. Every planner branch is gated on a
+    # non-empty `gpus`, so with an empty probe none of them ran and the `--fit on`
+    # below is the default use_fit starts at, not a finding that the model does
+    # not fit -- the same reasoning _partially_offloads_layers already applies to
+    # Manual mode. Standing MTP down here would cost the drafting win on a card
+    # that may well hold every layer, so Auto keeps MTP until something actually
+    # says the placement is partial.
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
 
     result = _launch(
@@ -981,6 +989,26 @@ def test_auto_stands_down_for_an_explicit_pin_the_vram_probe_cannot_see(tmp_path
 
     cmd = result["cmd"]
     assert cmd[cmd.index("--fit") + 1] == "on"
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
+    assert backend.spec_fallback_reason != "mtp_partial_offload"
+
+
+def test_an_unseen_pin_with_a_concrete_layer_count_still_stands_down(tmp_path):
+    # The other half: a fixed 42 of 65 blocks is partial placement on its own
+    # evidence, so the empty probe costs the stand-down nothing here.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        gpu_ids = [0],
+        n_ctx = 4096,
+        n_parallel = 4,
+        extra_args = ["--gpu-layers", "42"],
+    )
+
+    cmd = result["cmd"]
     assert cmd[cmd.index("--spec-type") + 1] == "none"
     assert backend.spec_fallback_reason == "mtp_partial_offload"
 
