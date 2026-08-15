@@ -4504,6 +4504,11 @@ export function createOpenAIStreamAdapter(
       // What the gate bounds. Only grows, unlike cumulativeText, which the
       // ${...} strip can shorten, and it counts tool-argument deltas too.
       let streamedChars = 0;
+      // When the reasoning the next publish will reveal actually ARRIVED. The
+      // gate can only parse a group out of the text on a publishing chunk, so
+      // without this a pass that arrived while the gate was closed would be
+      // timed from the publish and measure as zero. Cleared on every publish.
+      let gateHeldSince: number | undefined;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -4523,11 +4528,12 @@ export function createOpenAIStreamAdapter(
       // renders a group. Both terminal publishes call this before metadata().
       const adoptGatedReasoningGroups = (
         content: readonly { type?: unknown; text?: unknown }[],
+        firstSeenAt?: number,
       ) => {
         const groups = countReasoningGroups(content);
         if (groups > reasoningDurationTracker.groupCount) {
           // startGroup back-fills the indexes it skips, so one call is enough.
-          reasoningDurationTracker.startGroup(groups - 1);
+          reasoningDurationTracker.startGroup(groups - 1, firstSeenAt);
         }
       };
       // Every streamed yield carries the repaired text, not just the terminal ones:
@@ -6145,8 +6151,12 @@ export function createOpenAIStreamAdapter(
               // Coalesce text arriving before the next frame; cumulativeText
               // keeps it, and the cap publishes before a stop could drop it.
               if (!canPublish(streamedChars)) {
+                // Earliest moment the text this publish will carry was here.
+                gateHeldSince ??= Date.now();
                 continue;
               }
+              const reasoningSeenAt = gateHeldSince;
+              gateHeldSince = undefined;
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
@@ -6158,6 +6168,7 @@ export function createOpenAIStreamAdapter(
               ) {
                 reasoningDurationTracker.startGroup(
                   parsedReasoningGroupCount - 1,
+                  reasoningSeenAt,
                 );
               }
               if (parsedReasoningGroupCount > 0) {
@@ -6309,7 +6320,7 @@ export function createOpenAIStreamAdapter(
         const finalContent = buildAssistantContent(
           mergeContinuation(cumulativeText),
         );
-        adoptGatedReasoningGroups(finalContent);
+        adoptGatedReasoningGroups(finalContent, gateHeldSince);
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
@@ -6389,7 +6400,7 @@ export function createOpenAIStreamAdapter(
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             // This partial can render a group the gate hid from the tracker.
-            adoptGatedReasoningGroups(partialContent);
+            adoptGatedReasoningGroups(partialContent, gateHeldSince);
             reasoningDurationTracker.finishGroup();
             const partialTiming = buildTiming(
               streamStartTime,

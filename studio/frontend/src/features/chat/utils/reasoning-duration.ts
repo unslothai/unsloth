@@ -143,23 +143,31 @@ export function createReasoningDurationTracker(
     get hasActiveGroup() {
       return activeIndex !== null;
     },
-    startGroup(index = groupCount) {
+    /**
+     * `firstSeenAt` is when the reasoning ARRIVED, for a caller that learns of
+     * the group later than that. The adapter coalesces publishes, so it can
+     * only parse a group out of the text on a publishing chunk; without this
+     * the timer would start there and a pass that arrived seconds earlier would
+     * measure as zero.
+     */
+    startGroup(index = groupCount, firstSeenAt?: number) {
       if (activeIndex === index) {
         return;
       }
       const at = now();
+      const from = firstSeenAt ?? at;
       finishGroupAt(at);
       // A single delta can reveal more than one group at once. Any index we
       // skipped became visible and closed within this same chunk, so give it a
       // measured zero rather than leaving a hole in the persisted array.
       for (let skipped = groupCount; skipped < index; skipped += 1) {
         if (startedAt[skipped] === undefined) {
-          startedAt[skipped] = at;
+          startedAt[skipped] = from;
         }
         measure(skipped, at);
       }
       if (startedAt[index] === undefined) {
-        startedAt[index] = at;
+        startedAt[index] = from;
       }
       activeIndex = index;
       groupCount = Math.max(groupCount, index + 1);

@@ -9,6 +9,7 @@ import {
   MAX_HELD_CHARS,
   createStreamPublishGate,
 } from "../src/features/chat/utils/stream-pacing.ts";
+import { createReasoningDurationTracker } from "../src/features/chat/utils/reasoning-duration.ts";
 
 type Scheduled = {
   frames: Array<() => void>;
@@ -361,7 +362,7 @@ test("the gate is fed a counter that only grows", () => {
 test("a reasoning group the gate skipped is adopted before the final metadata", () => {
   const source = withoutComments(ADAPTER);
 
-  const adopt = source.indexOf("adoptGatedReasoningGroups(finalContent);");
+  const adopt = source.indexOf("adoptGatedReasoningGroups(finalContent,");
   assert.notEqual(adopt, -1, "a group revealed only by skipped chunks is lost");
   // Scoped to the finalizer, so a finishGroup() belonging to some later path
   // cannot stand in for the one that has to follow the adoption here.
@@ -381,7 +382,7 @@ test("the interrupted-stream partial adopts skipped groups too", () => {
   // needs the same adoption; otherwise an interrupted reply renders a reasoning
   // group with no duration entry behind it.
   assert.ok(
-    source.includes("adoptGatedReasoningGroups(partialContent);"),
+    source.includes("adoptGatedReasoningGroups(partialContent,"),
     "the non-abort failure path does not adopt gate-hidden reasoning groups",
   );
 });
@@ -454,6 +455,42 @@ test("a cap-forced publish resets the baseline for the next one", () => {
       assert.equal(canPublish(at), true, `cycle ${cycle} published at the cap`);
     }
   });
+});
+
+test("a gated reasoning group is timed from when it arrived", () => {
+  // The gate can only parse a group out of the text on a publishing chunk. A
+  // pass shorter than the cap, in a window that produces no frames, is revealed
+  // only at the terminal adoption, so without the arrival stamp it would start
+  // and finish there and persist 0s for a pass that really took seconds.
+  let clock = 0;
+  const tracker = createReasoningDurationTracker(() => clock);
+
+  clock = 1_000;
+  const arrivedAt = clock;         // the reasoning lands here, gate closed
+  clock = 11_000;                  // ...and is only parsed out ten seconds later
+  tracker.startGroup(0, arrivedAt);
+  tracker.finishGroup();
+
+  const durations = (tracker.metadata() as { reasoningDurations?: number[] })
+    .reasoningDurations;
+  assert.deepEqual(durations, [10], "the group must span its real arrival");
+});
+
+test("the stream loop stamps when a held chunk arrived", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  const gate = loop.indexOf("if (!canPublish(streamedChars)) {");
+  const stamp = loop.indexOf("gateHeldSince ??= Date.now();", gate);
+  const skip = loop.indexOf("continue;", gate);
+  assert.notEqual(stamp, -1, "a held chunk's arrival time is not recorded");
+  assert.ok(stamp < skip, "the stamp must be taken before the chunk is skipped");
+  assert.ok(
+    loop.includes("reasoningSeenAt,"),
+    "the publish does not hand the arrival time to the tracker",
+  );
 });
 
 test("a scheduler that calls back synchronously does not throw", () => {
