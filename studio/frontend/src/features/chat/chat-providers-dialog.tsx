@@ -50,6 +50,7 @@ import {
 } from "./api/providers-api";
 
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
+import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -193,7 +194,7 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
-  // a connection being created has no stored type yet, so pass none and let it infer
+  // a connection being created has no stored type yet, so only the UI type can decide
   const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
     providerType,
     editingProviderId ? editingBackendProviderType : null,
@@ -499,9 +500,14 @@ export function ChatProvidersSettings({
     if (!Number.isSafeInteger(value)) {
       throw new Error("Max Tokens limit must be a safe integer.");
     }
-    if (value < PROVIDER_MAX_OUTPUT_TOKENS_MIN) {
+    // getExternalMaxOutputTokens raises a sub-floor cap anyway, so say so instead of storing it
+    const floor = Math.max(
+      PROVIDER_MAX_OUTPUT_TOKENS_MIN,
+      getExternalMinOutputTokens(providerType),
+    );
+    if (value < floor) {
       throw new Error(
-        `Max Tokens limit must be at least ${PROVIDER_MAX_OUTPUT_TOKENS_MIN.toLocaleString()}.`,
+        `Max Tokens limit must be at least ${floor.toLocaleString()}.`,
       );
     }
     return value;

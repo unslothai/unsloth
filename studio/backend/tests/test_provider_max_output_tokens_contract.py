@@ -9,9 +9,8 @@ Three things a happy-path test cannot reach:
 * the same database opened AGAIN by a build that has never heard of the column,
   which is what a user who reverts to the previous release does;
 * the route contract, where an explicit null has to be accepted on every provider
-  type. The dialog sends null for a blank field, and it renders that field from the
-  UI provider type, which is "custom" for rows STORED as `openai` with a custom name
-  or base URL -- so rejecting the null broke every unrelated edit of those rows.
+  type. The dialog sends null for a blank field rather than omitting it, so rejecting
+  the null broke every unrelated edit of a row that carries no override.
 
 No network, no GPU, no server: the routes are driven as plain coroutines and every
 database is a per-test temporary file.
@@ -278,14 +277,11 @@ def _update(provider_id: str, payload: ProviderUpdate):
 def test_a_non_custom_provider_accepts_an_explicit_null_override(
     provider_routes: Path, provider_type: str
 ):
-    """The regression this fix targets.
+    """A blank Max Tokens limit field serialises as null rather than as an omission.
 
-    The dialog renders the Max Tokens limit row from the UI provider type, and
-    `resolveUiProviderTypeFromConfig` reports "custom" for rows stored as `openai`
-    with a custom name or base URL. A blank field serialises as null rather than as
-    an omission, so rejecting the null made every unrelated edit of such a row -- a
-    rename, a model change, a key rotation -- fail with an error about a field the
-    user never touched. Clearing an override that cannot exist is a no-op.
+    So an unrelated edit of a row that carries no override -- a rename, a model
+    change, a key rotation -- sends the null along, and rejecting it failed with an
+    error about a field the user never touched.
     """
     providers_db.create_provider(
         id = f"{provider_type}-1",

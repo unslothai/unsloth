@@ -31,6 +31,12 @@ test("all max-output cap callers pass the selected connection override", () => {
     adapter,
     /getExternalMaxOutputTokens\([\s\S]*?externalProvider\?\.maxOutputTokens/,
   );
+
+  // re-gating this on the UI provider type makes the feature a no-op on the next sync
+  assert.match(
+    source("sync-external-providers.ts"),
+    /maxOutputTokens: config\.max_output_tokens \?\? undefined,/,
+  );
 });
 
 test("the connection editor exposes a bounded optional cap and warning", () => {
@@ -66,7 +72,11 @@ test("the connection editor exposes a bounded optional cap and warning", () => {
     dialog,
     /id="provider-max-output-tokens"\s+type="number"/,
   );
-  assert.match(dialog, /value < PROVIDER_MAX_OUTPUT_TOKENS_MIN/);
+  // the floor is per provider, so Kimi's 16,000 outranks the generic 64
+  assert.match(
+    dialog,
+    /const floor = Math\.max\(\s*PROVIDER_MAX_OUTPUT_TOKENS_MIN,\s*getExternalMinOutputTokens\(providerType\),\s*\);\s*if \(value < floor\)/,
+  );
   assert.match(dialog, /Number\.isSafeInteger\(value\)/);
   assert.match(dialog, /\/\^\\d\+\$\/\.test\(trimmed\)/);
 });
@@ -96,7 +106,7 @@ test("lowering an active external cap immediately clamps live Max Tokens", () =>
   const settings = source("chat-settings-sheet.tsx");
 
   // The decision itself lives in `resolveExternalMaxTokensClamp` (unit-tested in
-  // external-max-tokens-clamp.test.ts). What this asserts is that the effect still
+  // provider-max-output-tokens-guards.test.ts). What this asserts is that the effect still
   // asks it, still passes the availability inputs rather than assuming them, and
   // still writes the result back through the preset-source bookkeeping.
   assert.match(

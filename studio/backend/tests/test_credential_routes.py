@@ -257,18 +257,17 @@ def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
             )
         )
     assert error.value.status_code == 400
+    # on the detail, not the status: a Codex create with no models 400s on the auth contract too
+    assert error.value.detail == "ChatGPT subscriptions use a fixed Max Tokens limit."
 
 
 def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_override():
     """A blank Max Tokens limit field serialises as null, not as an omission.
 
-    The dialog renders that field from the UI provider type, which resolves to
-    "custom" for a connection STORED as `openai` once the user has renamed it or
-    pointed it at another base URL. Rejecting the null as well as a real value meant
-    every unrelated edit of such a connection -- a rename, a model change, a key
-    rotation -- failed with an error about a field the user never touched. Clearing
-    an override that cannot exist is a no-op, so the null is accepted everywhere and
-    only a non-null value is refused.
+    So the null has to be accepted on every provider type, ChatGPT subscriptions
+    included: an unrelated edit of a connection -- a rename, a model change, a key
+    rotation -- carries the blank field along, and clearing an override that cannot
+    exist is a no-op. Only a non-null value on a subscription is refused.
     """
     for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
         created = asyncio.run(

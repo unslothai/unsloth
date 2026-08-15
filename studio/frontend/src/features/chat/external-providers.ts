@@ -24,7 +24,7 @@ export interface ExternalProviderConfig {
    * custom name or base URL as "custom". Absent means unknown, not custom.
    */
   backendProviderType?: string;
-  /** Optional maximum Max Tokens cap for a generic Custom connection. */
+  /** Optional Max Tokens cap for this connection, replacing the undocumented-model fallback. */
   maxOutputTokens?: number;
 
   /** Whether the backend has an installation-saved key. */
@@ -262,6 +262,7 @@ export function externalModelSupportsStudioTools(
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
+const OPENAI_CODEX_PROVIDER_TYPE = "openai_codex";
 export const PROVIDER_MAX_OUTPUT_TOKENS_MIN = 64;
 
 export function normalizeProviderMaxOutputTokens(
@@ -280,25 +281,22 @@ export function normalizeProviderMaxOutputTokens(
 /**
  * Whether a connection may carry a per-connection Max Tokens limit.
  *
- * Every type may except ChatGPT subscriptions, whose routing, model list and output
+ * Every type may, except ChatGPT subscriptions, whose routing, model list and output
  * cap are all fixed, so an override there would be stored and never read.
  *
- * Both provider types are checked: the UI type decides what the dialog draws, the
- * stored type decides what the server accepts, and they differ for a row saved as
- * `openai` with a custom name or base URL. An unknown stored type (synced before this
- * field, or a connection with no server row yet) falls back to what the create call
- * will send.
+ * Both provider types are checked. The stored type is what the server validates
+ * against; the UI type covers a connection being created, which has no server row
+ * yet, and is the only one the dialog has before the first save.
  */
 export function supportsProviderMaxOutputTokens(
   uiProviderType: string | null | undefined,
   backendProviderType: string | null | undefined,
 ): boolean {
   if (!uiProviderType) return false;
-  const effective =
-    typeof backendProviderType === "string" && backendProviderType.length > 0
-      ? backendProviderType
-      : toExternalBackendProviderType(uiProviderType);
-  return uiProviderType !== "openai_codex" && effective !== "openai_codex";
+  return (
+    uiProviderType !== OPENAI_CODEX_PROVIDER_TYPE &&
+    backendProviderType !== OPENAI_CODEX_PROVIDER_TYPE
+  );
 }
 
 export const CUSTOM_PROVIDER_PRESETS = [

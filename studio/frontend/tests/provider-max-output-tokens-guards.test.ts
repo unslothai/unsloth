@@ -25,6 +25,7 @@ const {
 const {
   EXTERNAL_MAX_OUTPUT_TOKENS,
   getExternalMaxOutputTokens,
+  getExternalMinOutputTokens,
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
@@ -44,8 +45,7 @@ test("the override is offered on every connection except a ChatGPT subscription"
   assert.equal(supportsProviderMaxOutputTokens("openai", "openai_codex"), false);
 
   // Unknown backend type: a connection being created has no server row yet, and an
-  // entry synced before the field existed carries no value. Both fall back to the
-  // outgoing mapping.
+  // entry synced before the field existed carries no value. The UI type decides both.
   assert.equal(supportsProviderMaxOutputTokens("custom", null), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", undefined), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", ""), true);
@@ -66,8 +66,7 @@ test("a stored override is dropped unless it is a usable value", () => {
   }
 });
 
-test("a documented per-model cap outranks the connection override", () => {
-  // a router connection fronts models of every size, so one limit must not raise them all
+test("a documented per-model cap bounds the connection override", () => {
   const cases: Array<[string, string, number]> = [
     ["openai", "gpt-5.6", 128000],
     ["openai", "gpt-5.3", 16384],
@@ -76,11 +75,16 @@ test("a documented per-model cap outranks the connection override", () => {
     ["openrouter", "deepseek/deepseek-reasoner", 384000],
     ["openai_codex", "gpt-5.3-codex", 128000],
   ];
-  for (const [providerType, modelId, expected] of cases) {
-    assert.equal(getExternalMaxOutputTokens(providerType, modelId), expected);
-    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 1024), expected);
-    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 999999), expected);
-    assert.equal(getExternalMaxOutputTokens(providerType, modelId, null), expected);
+  for (const [providerType, modelId, documented] of cases) {
+    assert.equal(getExternalMaxOutputTokens(providerType, modelId), documented);
+    assert.equal(getExternalMaxOutputTokens(providerType, modelId, null), documented);
+    // a router connection fronts models of every size, so one limit must not raise them all
+    assert.equal(
+      getExternalMaxOutputTokens(providerType, modelId, 999999),
+      documented,
+    );
+    // lowering is the whole point of a limit, so that half is honoured
+    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 8192), 8192);
   }
 });
 
@@ -107,6 +111,22 @@ test("a model with no documented cap takes the connection override", () => {
       EXTERNAL_MAX_OUTPUT_TOKENS,
     );
   }
+});
+
+/** Kimi is the one provider with an output floor of its own (16,000, so a thinking
+ * model's reasoning_content and answer both fit) and has no documented per-model cap.
+ * Without this, its override would decide the slider's max alone and could land below
+ * the slider's own min. */
+test("a provider's own output floor outranks a lower connection override", () => {
+  const kimiFloor = getExternalMinOutputTokens("kimi");
+  assert.equal(kimiFloor, 16000);
+
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6", 8000), kimiFloor);
+  assert.equal(getExternalMaxOutputTokens("kimi", "kimi-k2.6", 262144), 262144);
+  assert.equal(
+    getExternalMaxOutputTokens("kimi", "kimi-k2.6"),
+    EXTERNAL_MAX_OUTPUT_TOKENS,
+  );
 });
 
 // The settings panel PERSISTS what this returns, and it only ever lowers, so the
@@ -140,12 +160,13 @@ test("a live Max Tokens is only lowered when the cap is actually known", () => {
   assert.equal(resolveExternalMaxTokensClamp({ ...base, maxTokens: once as number }), null);
 });
 
+// deliberately not a Custom row: that one type round-trips the same with or without the gate
 test("an entry saved by an older install loads without gaining a cap", () => {
   const legacy = [
     {
       id: "legacy-1",
-      providerType: "custom",
-      name: "Old Custom",
+      providerType: "openrouter",
+      name: "Old Router",
       baseUrl: "https://example.com/v1",
       models: ["vendor/model"],
       createdAt: 1,

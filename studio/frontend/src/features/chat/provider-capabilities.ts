@@ -136,28 +136,45 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
 ];
 
 /**
- * Documented per-model output cap; an id with no documented cap falls back to the
- * connection's own Max Tokens limit, then to `EXTERNAL_MAX_OUTPUT_TOKENS` (32k).
- * No table entry targets a generic Custom connection, so those resolve to the
- * override alone whatever model id they carry. OpenRouter `provider/model` ids
- * have the prefix stripped before matching.
+ * The connection's effective Max Tokens ceiling for one model.
  *
- * The override replaces the fallback and never a documented cap: one connection
- * fronts many models on a router, so a limit set for a 256k-output model would
- * otherwise raise the slider past what a smaller model on the same connection
- * accepts.
+ * A documented per-model cap bounds the connection's own Max Tokens limit rather
+ * than replacing it: the override may lower the ceiling but never raise it past
+ * what the model documents, because one connection fronts many models on a router
+ * and a limit set for a 256k-output model must not raise the slider past what a
+ * smaller model on the same connection accepts. A model with no documented cap
+ * takes the override outright, then `EXTERNAL_MAX_OUTPUT_TOKENS` (32k).
+ *
+ * The provider's own output floor wins over both, so the Max Tokens slider can
+ * never be handed a max below its min.
  */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
   connectionMaxOutputTokens?: number | null,
 ): number {
-  const undocumentedCap =
-    normalizeProviderMaxOutputTokens(connectionMaxOutputTokens) ??
-    EXTERNAL_MAX_OUTPUT_TOKENS;
-  if (!providerType || !modelId) return undocumentedCap;
+  const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
+  const documented = _documentedMaxOutputTokens(providerType, modelId);
+  const resolved =
+    documented != null
+      ? Math.min(documented, override ?? documented)
+      : (override ?? EXTERNAL_MAX_OUTPUT_TOKENS);
+  return Math.max(resolved, getExternalMinOutputTokens(providerType));
+}
+
+/**
+ * The published per-model cap, or null when nothing documents this id. No table
+ * entry targets a generic Custom connection, so those always read as undocumented
+ * whatever model id they carry. OpenRouter `provider/model` ids have the prefix
+ * stripped before matching.
+ */
+function _documentedMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  if (!providerType || !modelId) return null;
   const normalized = modelId.trim().toLowerCase();
-  if (!normalized) return undocumentedCap;
+  if (!normalized) return null;
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -176,7 +193,7 @@ export function getExternalMaxOutputTokens(
       return entry.cap;
     }
   }
-  return undocumentedCap;
+  return null;
 }
 
 /**
