@@ -922,13 +922,18 @@ def test_page_locked_launch_prices_the_whole_mapping_not_the_spill(tmp_path, mon
     )
     import utils.model_memory_settings as mms
 
-    monkeypatch.setattr(mms, "should_mlock", lambda: False)
+    monkeypatch.setattr(mms, "get_model_memory_settings", lambda: (False, False))
     assert "--fit" in _launch(backend, gguf)["cmd"]
 
     backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
-    monkeypatch.setattr(mms, "should_mlock", lambda: True)
+    monkeypatch.setattr(mms, "get_model_memory_settings", lambda: (True, False))
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(backend, gguf)
+
+    # "Don't reserve system RAM" strips the lock, so only the spill is charged again
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
+    monkeypatch.setattr(mms, "get_model_memory_settings", lambda: (True, True))
+    assert "--fit" in _launch(backend, gguf)["cmd"]
 
 
 def test_vulkan_igpu_free_memory_is_not_subtracted_from_its_own_ram(tmp_path, monkeypatch):
@@ -1124,3 +1129,52 @@ def test_an_inherited_mlock_env_prices_the_whole_mapping(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(backend, gguf)
+
+
+def test_an_explicit_gpu_pick_supersedes_a_stale_cpu_device_override(tmp_path, monkeypatch):
+    """gpu_ids owns placement and the command builder strips the device arguments, so a
+    leftover `--device none` must not zero the VRAM credit and refuse a fitting load."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 12_000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    assert _launch(backend, gguf, gpu_ids = [0], extra_args = ["--device", "none"])["cmd"]
+
+
+def test_page_locking_leaves_gpu_resident_kv_on_the_card(tmp_path, monkeypatch):
+    """mlock duplicates the weight mapping in host RAM, not the KV cache. A locked 6 GB
+    model fits a 14 GB host even with a large GPU-resident KV, which must not be charged
+    to RAM as well."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 6, free_mib = 24 * 1024)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(10 * 1024**3)
+    import utils.model_memory_settings as mms
+
+    monkeypatch.setattr(mms, "get_model_memory_settings", lambda: (True, False))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
+    )
+
+    assert "--fit" in _launch(backend, gguf)["cmd"]
+
+
+def test_a_pass_through_fit_ctx_is_priced_over_the_floor(tmp_path, monkeypatch):
+    """A user --fit-ctx is appended after Studio's and wins, so the guard must price
+    that context rather than the 8192 floor."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 9, free_mib = 4877)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx / 8192 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 9 * 1024)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend,
+            gguf,
+            gpu_memory_mode = "manual",
+            gpu_layers = -1,
+            n_ctx = 0,
+            extra_args = ["--fit-ctx", "65536"],
+        )

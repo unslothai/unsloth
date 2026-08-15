@@ -2998,6 +2998,17 @@ def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str
     return _extra_args_device(extra_args, {"--device", "-dev"})
 
 
+def _extra_args_fit_ctx(extra_args: Optional[Iterable[str]]) -> Optional[int]:
+    """The last pass-through ``--fit-ctx``, which is appended after Studio's own and
+    therefore wins. None when absent or unparseable, so callers keep their floor."""
+    value = _extra_args_device(extra_args, {"--fit-ctx"})
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     """``tokens`` with the first contiguous occurrence of ``run`` removed.
 
@@ -13466,6 +13477,8 @@ class LlamaCppBackend:
                 kv_cache_bytes: Optional[int] = None
                 _mtp_reserve_bytes = 0
                 _cpu_draft_weights = 0
+                _cpu_draft_path: Optional[str] = None
+                _guard_kv_override: Optional[int] = None
                 # manual + auto layers omits -c and lets --fit size the window from the floor
                 _manual_auto_fit = gpu_memory_mode == "manual" and (gpu_layers or 0) < 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -13799,27 +13812,8 @@ class LlamaCppBackend:
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
-                    if _draft_on_cpu and _mtp_draft_for_budget:
-                        # off the gpu budget, but weights and kv still sit in host ram
-                        try:
-                            _cpu_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
-                        except Exception:
-                            _cpu_draft_weights = 0
-                        try:
-                            # the fit floor the main kv guard uses, for the same zero context
-                            _draft_kv_ctx = effective_ctx
-                            if _draft_kv_ctx <= 0 and _manual_auto_fit:
-                                _draft_kv_ctx = _AUTO_FIT_MIN_CTX
-                            _cpu_draft_weights += (
-                                self._mtp_draft_kv_bytes(
-                                    _draft_kv_ctx,
-                                    drafter_path = _mtp_draft_for_budget,
-                                    n_parallel = n_parallel,
-                                )
-                                or 0
-                            )
-                        except Exception:
-                            pass
+                    # sized at the tail of this block, where the draft KV options exist
+                    _cpu_draft_path = _mtp_draft_for_budget if _draft_on_cpu else None
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
                     _mtp_draft_weights = 0
@@ -14797,6 +14791,36 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
+                    # the context the host guard prices: manual + auto omits -c, so the
+                    # launch floors --fit-ctx unless the extras pass their own.
+                    _guard_ctx = effective_ctx
+                    if _guard_ctx <= 0 and _manual_auto_fit:
+                        _guard_ctx = _extra_args_fit_ctx(extra_args) or _AUTO_FIT_MIN_CTX
+                    if _guard_ctx != effective_ctx:
+                        _guard_kv_override = _kv_bytes(_guard_ctx)
+                        _mtp_reserve_bytes = _mtp_bytes(_guard_ctx) if _mtp_will_engage else 0
+                    if _cpu_draft_path:
+                        try:
+                            _cpu_draft_weights = self._get_gguf_size_bytes(_cpu_draft_path)
+                        except Exception:
+                            _cpu_draft_weights = 0
+                        try:
+                            _cpu_draft_weights += (
+                                self._mtp_draft_kv_bytes(
+                                    _guard_ctx,
+                                    drafter_path = _cpu_draft_path,
+                                    draft_cache_type_k = _mtp_draft_ck,
+                                    draft_cache_type_v = _mtp_draft_cv,
+                                    n_parallel = n_parallel,
+                                    swa_full = swa_full,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = _effective_ubatch,
+                                    flash_attn = planned_flash_attn,
+                                )
+                                or 0
+                            )
+                        except Exception:
+                            pass
                     mmproj_note = (
                         f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
                     )
@@ -14888,8 +14912,8 @@ class LlamaCppBackend:
 
                 # manual with an explicit count emits --fit off below, past this seeded use_fit
                 _manual_layers = gpu_memory_mode == "manual" and (gpu_layers or 0) >= 0
-                # a --device naming no gpu offloads nothing, fit or no fit
-                _guard_cpu_only = _device_selection_is_cpu(extra_args, os.environ)
+                # a --device naming no gpu offloads nothing, unless an explicit pick strips it
+                _guard_cpu_only = not gpu_ids and _device_selection_is_cpu(extra_args, os.environ)
                 # same ceiling for a discrete gpu, where only the spill lands in host ram
                 if (
                     (use_fit or _guard_cpu_only)
@@ -14903,27 +14927,29 @@ class LlamaCppBackend:
                         else [_i for _i, _f in _detected_gpus]
                     )
                 ):
-                    # manual + auto omits -c, so a zero context still allocates the fit floor
-                    _guard_kv_bytes = kv_cache_bytes
-                    if not _guard_kv_bytes and effective_ctx <= 0 and _manual_auto_fit:
-                        _guard_kv_bytes = _kv_bytes(_AUTO_FIT_MIN_CTX)
+                    # recomputed at the guard context when the launch floors --fit-ctx
+                    _guard_kv_bytes = (
+                        kv_cache_bytes if _guard_kv_override is None else _guard_kv_override
+                    )
                     try:
-                        from utils.model_memory_settings import should_mlock
-                        _guard_mlocked = should_mlock()
+                        from utils.model_memory_settings import get_model_memory_settings
+
+                        _keep_resident, _no_ram_reserve = get_model_memory_settings()
                     except Exception:
                         # settings unavailable: price the spill, the pre-guard behaviour
-                        _guard_mlocked = False
-                    # both toggles off preserves a hand-typed --mlock / --no-mmap
-                    _guard_mlocked = _guard_mlocked or any(
-                        resolve_effective_memory_state(extra_args, os.environ)
+                        _keep_resident, _no_ram_reserve = False, False
+                    # no-reserve strips every locking flag, so nothing keeps a full host copy
+                    _guard_mlocked = not _no_ram_reserve and (
+                        _keep_resident
+                        # both toggles off preserves a hand-typed --mlock / --no-mmap
+                        or any(resolve_effective_memory_state(extra_args, os.environ))
                     )
-                    # a page-locked mapping is pinned whole and --device none holds no vram
+                    # --device none holds no vram, unless an explicit pick supersedes it
                     _fit_vram_mib = (
                         0
                         if (
                             _paravirtual_cpu_forced
                             or _arch_gate_forced_cpu
-                            or _guard_mlocked
                             or _guard_cpu_only
                             # gated to 0 layers above, so the gpus hold nothing
                             or _manual_layers
@@ -14938,11 +14964,21 @@ class LlamaCppBackend:
                     )
                     # a cpu-resident kv is not fungible with weights the gpus can take
                     _kv_on_host = not _kv_offload_from_args(extra_args)
-                    _gpu_side_bytes = (
-                        model_size + _mtp_reserve_bytes + (0 if _kv_on_host else _guard_kv_bytes)
-                    )
-                    # clamped first, so spare vram cannot absorb what is pinned to the host
-                    _host_bytes = max(0, _gpu_side_bytes - _fit_vram_mib * 1024 * 1024)
+                    _gpu_kv_bytes = 0 if _kv_on_host else _guard_kv_bytes
+                    # mlock duplicates the WEIGHT mapping in ram; kv and mtp stay on the card
+                    if _guard_mlocked:
+                        _host_bytes = model_size + max(
+                            0, _mtp_reserve_bytes + _gpu_kv_bytes - _fit_vram_mib * 1024 * 1024
+                        )
+                    else:
+                        # clamped first, so spare vram cannot absorb what is pinned to the host
+                        _host_bytes = max(
+                            0,
+                            model_size
+                            + _mtp_reserve_bytes
+                            + _gpu_kv_bytes
+                            - _fit_vram_mib * 1024 * 1024,
+                        )
                     if _kv_on_host:
                         _host_bytes += _guard_kv_bytes
                     # a cpu-pinned drafter left the vram budget but still occupies ram
