@@ -150,6 +150,30 @@ test("superseded provider backfills are not launched", async () => {
 });
 
 
+test("provider backfills are finished, not merely started, when the batch resolves", async () => {
+  // The credential bootstrap gate releases app content on this promise, so a batch that is
+  // only started leaves the writes racing an immediate close. Timer-backed tasks are the
+  // only way to tell "awaited" from "fired and forgotten": a task that counts synchronously
+  // is already done by the time the helper returns either way.
+  const finished: string[] = [];
+  const delayed = (name: string, ms: number) => () =>
+    new Promise((resolve) => {
+      setTimeout(() => {
+        finished.push(name);
+        resolve(null);
+      }, ms);
+    });
+
+  // The rejection in the middle must not sink the two around it, which is why the batch
+  // settles rather than rejecting on the first failure.
+  await settleTasksIfCurrent(
+    [delayed("first", 20), () => Promise.reject(new Error("backfill failed")), delayed("last", 40)],
+    () => true,
+  );
+  assert.deepEqual(finished, ["first", "last"]);
+});
+
+
 test("authoritative provider cleanup removes only orphaned legacy keys", async () => {
   const { store } = installLocalStorageFake();
   store.set(
@@ -413,6 +437,26 @@ test("HF store hydrates from the API without recreating plaintext storage", asyn
 });
 
 
+/**
+ * Wait for the store's write to finish, on a deadline rather than a tick budget.
+ *
+ * A fixed number of setImmediate turns is a bet on how many the runtime needs, and a
+ * two-core runner running the suite in parallel loses that bet: the write is a real
+ * promise chain, so under load it settles a few turns later and the assertion below
+ * reads a store that is still persisting.
+ */
+async function settled(
+  hfStore: { useHfTokenStore: { getState: () => { isPersisting: boolean } } },
+): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (hfStore.useHfTokenStore.getState().isPersisting) {
+    if (Date.now() > deadline) {
+      throw new Error("the HF token write never settled");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 test("HF hydration does not overwrite an in-flight user edit", async () => {
   const { store } = installLocalStorageFake();
   store.set("unsloth_auth_token", "session-token");
@@ -452,10 +496,7 @@ test("HF hydration does not overwrite an in-flight user edit", async () => {
         headers: { "Content-Type": "application/json" },
       }),
     );
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    await settled(hfStore);
     assert.equal(hfStore.getHfToken(), "hf_user_edit");
     assert.equal(hfStore.useHfTokenStore.getState().isPersisting, false);
   } finally {
@@ -537,10 +578,7 @@ test("a delayed HF write response reconciles a newer cross-tab commit", async ()
       status: 200,
       headers: { "Content-Type": "application/json" },
     }));
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    await settled(hfStore);
 
     assert.equal(reads, 2);
     assert.equal(hfStore.getHfToken(), "hf_new_tab");
@@ -617,10 +655,7 @@ test("a superseded successful HF write advances the rollback baseline", async ()
     resolveSecond(new Response(JSON.stringify({ detail: "failed" }), {
       status: 500, headers: { "Content-Type": "application/json" },
     }));
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    await settled(hfStore);
     assert.equal(hfStore.getHfToken(), "hf_first");
     assert.match(hfStore.useHfTokenStore.getState().persistenceError ?? "", /failed/);
   } finally {

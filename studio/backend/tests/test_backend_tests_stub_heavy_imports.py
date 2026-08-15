@@ -1,105 +1,399 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""No test module in this tree may import the LLM trainer without stubbing its heavy deps first.
+"""No test module in this tree may import a backend module that needs unsloth without stubbing first.
 
-``core/training/trainer.py`` imports ``unsloth`` (and through it ``unsloth_zoo``) and ``trl`` at
-module scope. The ``pytest`` matrix in ``.github/workflows/studio-backend-ci.yml`` installs
-studio.txt plus torch and transformers and deliberately stops there. The heavier
-``repo-cpu-tests`` job beside it does install ``unsloth_zoo``, but it runs the REPO-ROOT
-``tests/`` tree, not this one, so nothing here can lean on that.
+``core/training/trainer.py`` and ``core/inference/inference.py`` import ``unsloth`` (and through
+it ``unsloth_zoo``) and ``trl`` at module scope. The ``pytest`` matrix in
+``.github/workflows/studio-backend-ci.yml`` installs studio.txt plus torch and transformers and
+deliberately stops there: the ``repo-cpu-tests`` job beside it is the one that installs
+``unsloth_zoo``, and it runs the REPO-ROOT ``tests/`` tree, not this one.
 
-The consequence is worse than one skipped test: an unstubbed module fails COLLECTION, and a
-collection error takes down the entire job on all four Python versions. That is what happened
-when ``test_trainer_stdout_quiet.py`` landed, and every open PR went red until it was fixed.
+An unstubbed module fails COLLECTION, which takes the entire job down on all four Python
+versions, as ``test_trainer_stdout_quiet.py`` and then ``test_audio_type_inconclusive.py`` did.
 
-Three modules import the trainer today and each stubs first. This asserts the rule so a fourth
-cannot arrive without it, and it is a source check rather than a runtime one because on a box
-where the real packages ARE installed the import succeeds and proves nothing.
+The earlier version of this guard hardcoded ``core.training.trainer``, so a test reaching the
+same ``import unsloth`` through any other backend module was invisible to it. The set is now
+derived from the backend sources: every module importing a heavy package at module scope, closed
+transitively over the backend's own module-scope imports. Source check rather than runtime,
+because where the real packages ARE installed the import succeeds and proves nothing.
 """
 
 from __future__ import annotations
 
 import ast
+import warnings
+from functools import lru_cache
 from pathlib import Path
 
 _TESTS_DIR = Path(__file__).resolve().parent
+_BACKEND = _TESTS_DIR.parent
 
-# The import that pulls the heavy chain in. Matched on the module path, so
-# `from core.training import trainer` and `import core.training.trainer` both count.
-_TRAINER_MODULE = "core.training.trainer"
-# What a module must stub before that import. Naming `unsloth` is enough to prove intent: a
-# module that stubs it and forgets `trl` fails loudly at collection on CI, whereas a module that
-# stubs nothing is the silent case this guard exists to catch.
+# Top-level packages the backend pytest job does not install. `unsloth` is the one that raises
+# (its _gpu_init insists on unsloth_zoo); the other two are unimportable there for the same reason.
+_HEAVY_PACKAGES = ("unsloth", "unsloth_zoo", "trl")
+
+# Outside the backend's own import graph (unsloth_compiled_cache is a gitignored artifact dir).
+_SKIP_TOP_LEVEL = frozenset({"tests", "vendor", "unsloth_compiled_cache"})
+
+# Naming `unsloth` is enough to prove intent: a module that stubs it and forgets `trl` fails
+# loudly at collection, whereas one that stubs nothing is the silent case this guard catches.
 _REQUIRED_STUB = "unsloth"
 
 
-def _imports_trainer_at_module_scope(tree: ast.Module) -> bool:
-    for node in tree.body:  # module scope only: an import inside a test function is already lazy
-        if isinstance(node, ast.Import):
-            if any(a.name == _TRAINER_MODULE for a in node.names):
-                return True
-        elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
-            if mod == _TRAINER_MODULE:
-                return True
-            if mod == "core.training" and any(a.name == "trainer" for a in node.names):
-                return True
-    return False
+def _parse(source: str) -> ast.Module:
+    """``ast.parse`` without re-reporting warnings the file's own import already emits.
+
+    Every test module is parsed here, and a few carry an invalid escape sequence in a docstring,
+    which would otherwise add a SyntaxWarning per run that belongs to those files, not to this
+    guard.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return ast.parse(source)
 
 
-def _stubs_before_that_import(source: str, tree: ast.Module) -> bool:
-    """Whether a stub call naming ``unsloth`` appears at module scope BEFORE the trainer import.
+def _module_name(path: Path) -> str:
+    rel = path.relative_to(_BACKEND)
+    parts = list(rel.parts)
+    parts[-1] = parts[-1][: -len(".py")]
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
 
-    Order is the whole point. A stub registered afterwards is registered after the real import
-    has already been attempted and raised, so it changes nothing."""
-    trainer_line = None
+
+def _module_scope_imports(tree: ast.Module, package: str) -> set[str]:
+    """Absolute dotted names imported at module scope only.
+
+    An import inside a function or a ``try`` is already lazy or guarded and cannot break
+    collection, so only ``tree.body`` is walked. Both the module and the module.attr form of a
+    ``from X import Y`` are recorded, since either can be the one naming the module.
+    """
+    names: set[str] = set()
     for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)) and _imports_trainer_at_module_scope(
-            ast.Module(body = [node], type_ignores = [])
-        ):
-            trainer_line = node.lineno
-            break
-    if trainer_line is None:
-        return True
-    head = "\n".join(source.splitlines()[: trainer_line - 1])
-    return _REQUIRED_STUB in head and ("stub" in head or "sys.modules" in head)
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:  # relative: resolve against the containing package
+                anchor = package.split(".") if package else []
+                anchor = anchor[: len(anchor) - (node.level - 1)]
+                base = ".".join([*anchor, base]) if base else ".".join(anchor)
+            if not base:
+                continue
+            names.add(base)
+            names.update(f"{base}.{alias.name}" for alias in node.names)
+    return names
 
 
-def test_no_test_module_imports_the_trainer_unstubbed():
-    offenders = []
-    for path in sorted(_TESTS_DIR.glob("test_*.py")):
-        source = path.read_text(encoding = "utf-8")
-        if _TRAINER_MODULE not in source and "core.training import trainer" not in source:
+def _needs_heavy(names: set[str]) -> bool:
+    return any(n == h or n.startswith(f"{h}.") for n in names for h in _HEAVY_PACKAGES)
+
+
+@lru_cache(maxsize = 1)
+def _heavy_backend_modules() -> frozenset[str]:
+    """Backend modules unimportable unless unsloth/unsloth_zoo/trl are installed.
+
+    Seeded with the direct module-scope importers, then closed over the backend's own
+    module-scope imports so a module that merely re-exports one is caught too.
+    """
+    imports: dict[str, set[str]] = {}
+    for path in sorted(_BACKEND.rglob("*.py")):
+        rel = path.relative_to(_BACKEND)
+        if rel.parts[0] in _SKIP_TOP_LEVEL:
             continue
         try:
-            tree = ast.parse(source)
-        except SyntaxError:  # not this guard's job to report
+            tree = _parse(path.read_text(encoding = "utf-8"))
+        except (SyntaxError, UnicodeDecodeError):  # not this guard's job to report
             continue
-        if not _imports_trainer_at_module_scope(tree):
-            continue
-        if not _stubs_before_that_import(source, tree):
-            offenders.append(path.name)
+        name = _module_name(path)
+        package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+        imports[name] = _module_scope_imports(tree, package)
 
-    assert not offenders, (
-        f"{len(offenders)} test module(s) import {_TRAINER_MODULE} at module scope without "
-        f"stubbing its heavy deps first, so they fail COLLECTION on the backend pytest matrix "
-        f"(which installs neither unsloth nor trl) and take the whole job down: {offenders}. "
-        f"Copy the _stub_if_missing block from test_trainer_stdout_quiet.py, above the import."
+    tainted = {name for name, names in imports.items() if _needs_heavy(names)}
+    changed = True
+    while changed:
+        changed = False
+        for name, names in imports.items():
+            if name not in tainted and names & tainted:
+                tainted.add(name)
+                changed = True
+    return frozenset(tainted)
+
+
+def _first_heavy_import_line(tree: ast.Module, heavy: frozenset[str]) -> int | None:
+    """Line of the first module-scope import of a heavy backend module, or None."""
+    for node in tree.body:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if _module_scope_imports(ast.Module(body = [node], type_ignores = []), "") & heavy:
+            return node.lineno
+    return None
+
+
+def _runtime_nodes(node: ast.AST):
+    """``node`` and every descendant that runs when the module is imported.
+
+    Bodies of ``def``/``class`` are not walked into: a stub call in a helper that nothing
+    calls before the import installs nothing, and the ``def _stub_if_missing`` block itself
+    would otherwise read as its own proof.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _runtime_nodes(child)
+
+
+def _names_required_stub(nodes: list[ast.AST]) -> bool:
+    """Whether any node is the string ``unsloth`` (or a submodule of it)."""
+    return any(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and (node.value == _REQUIRED_STUB or node.value.startswith(f"{_REQUIRED_STUB}."))
+        for node in nodes
     )
 
 
-def test_the_guard_would_catch_an_unstubbed_module(tmp_path):
-    """The guard above passes trivially if its matching is wrong, so pin both answers here."""
-    unstubbed = tmp_path / "test_unstubbed.py"
-    unstubbed.write_text("from core.training import trainer as t\n", encoding = "utf-8")
-    tree = ast.parse(unstubbed.read_text(encoding = "utf-8"))
-    assert _imports_trainer_at_module_scope(tree)
-    assert not _stubs_before_that_import(unstubbed.read_text(encoding = "utf-8"), tree)
+def _reads_a_named_stub(nodes: list[ast.AST], named: frozenset[str]) -> bool:
+    """Whether any node reads a module-level name that was bound to the required stub."""
+    return any(isinstance(node, ast.Name) and node.id in named for node in nodes)
 
-    stubbed_source = '_stub_if_missing("unsloth", ())\n' "from core.training import trainer as t\n"
-    assert _stubs_before_that_import(stubbed_source, ast.parse(stubbed_source))
+
+def _bound_names(statement: ast.AST) -> set[str]:
+    """Module-level names this statement assigns to."""
+    targets: list[ast.AST] = []
+    if isinstance(statement, ast.Assign):
+        targets = list(statement.targets)
+    elif isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
+        targets = [statement.target]
+    return {
+        node.id for target in targets for node in ast.walk(target) if isinstance(node, ast.Name)
+    }
+
+
+def _callee_name(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _is_sys_modules(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "modules"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+    )
+
+
+def _writes_sys_modules(nodes: list[ast.AST]) -> bool:
+    """``sys.modules[...] = ...`` or a call that adds to it, rather than a read of it.
+
+    ``sys.modules.get(...)`` and ``"unsloth" in sys.modules`` are how a file CHECKS for the
+    real package, which is the opposite of installing a stub.
+    """
+    for node in nodes:
+        targets: list[ast.AST] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("setdefault", "update", "__setitem__")
+        ):
+            targets = [node.func.value]
+        if any(
+            _is_sys_modules(target)
+            or (isinstance(target, ast.Subscript) and _is_sys_modules(target.value))
+            for target in targets
+        ):
+            return True
+    return False
+
+
+def _installs_stub(nodes: list[ast.AST]) -> bool:
+    """Whether the nodes call a stub helper or write ``sys.modules`` themselves."""
+    calls_stub = any(
+        isinstance(node, ast.Call) and "stub" in _callee_name(node).lower() for node in nodes
+    )
+    return calls_stub or _writes_sys_modules(nodes)
+
+
+def _stubs_before(tree: ast.Module, line: int | None) -> bool:
+    """Whether a stub naming ``unsloth`` is INSTALLED at module scope before ``line``.
+
+    Structural, not textual. The text form of this check ("the word stub or sys.modules
+    appears above the import, and so does the word unsloth") is satisfied by a docstring that
+    merely discusses stubbing, and by a helper that is defined but never called, so a module
+    could lose its stubs and stay green. What is read here is the code that actually RUNS
+    before the import: the module-scope statements above it, minus the ``def``/``class`` bodies
+    that only run when something calls them. It counts when those name ``unsloth`` as a string
+    and either call a stub helper or write ``sys.modules``.
+
+    The name and the operation have to meet in ONE statement, or the guard goes green on a
+    file that stubs something else while ``unsloth`` merely appears above
+    (``sys.modules["fake"] = ...`` next to an unrelated ``"unsloth"`` string). The name is
+    allowed to arrive through a module-level table the statement reads, because that is how
+    the real files are written (``test_training_progress_callback.py`` keeps ``_STUBS`` above
+    the loop that feeds it to the helper), so a table naming ``unsloth`` marks the names it
+    binds and a later statement reading one of them counts as naming it.
+
+    Order is the whole point: a stub registered afterwards lands after the real import has
+    already been attempted and raised.
+    """
+    if line is None:
+        return True
+    named: frozenset[str] = frozenset()
+    for statement in tree.body:
+        if statement.lineno >= line:
+            break
+        nodes = list(_runtime_nodes(statement))
+        names_it = _names_required_stub(nodes) or _reads_a_named_stub(nodes, named)
+        if not names_it:
+            continue
+        if _installs_stub(nodes):
+            return True
+        named |= _bound_names(statement)
+    return False
+
+
+def _is_offender(source: str, heavy: frozenset[str]) -> bool:
+    """Whether ``source`` imports a heavy backend module at module scope unstubbed.
+
+    Every candidate is parsed. A textual prefilter on the dotted module names looks like a
+    cheap skip but is wrong: ``from core.training import trainer`` never spells the contiguous
+    string ``core.training.trainer``, so the file it was meant to skip is the collection-killing
+    one, and the guard reported no offender while the job died.
+    """
+    try:
+        tree = _parse(source)
+    except SyntaxError:  # not this guard's job to report
+        return False
+    return not _stubs_before(tree, _first_heavy_import_line(tree, heavy))
+
+
+def _offenders() -> list[str]:
+    heavy = _heavy_backend_modules()
+    return [
+        path.name
+        for path in sorted(_TESTS_DIR.glob("test_*.py"))
+        if _is_offender(path.read_text(encoding = "utf-8"), heavy)
+    ]
+
+
+def test_the_heavy_module_set_is_derived_from_the_backend_sources():
+    """A derivation that quietly returned nothing would make the guard below pass on anything."""
+    heavy = _heavy_backend_modules()
+    assert "core.training.trainer" in heavy
+    # The one the hardcoded version of this guard could never have seen.
+    assert "core.inference.inference" in heavy
+    assert not any(name.startswith("tests.") for name in heavy)
+
+
+def test_no_test_module_imports_an_unsloth_backed_module_unstubbed():
+    offenders = _offenders()
+    assert not offenders, (
+        f"{len(offenders)} test module(s) import a backend module that needs unsloth at module "
+        f"scope without stubbing its heavy deps first, so they fail COLLECTION on the backend "
+        f"pytest matrix (which installs neither unsloth nor trl) and take the whole job down: "
+        f"{offenders}. Copy the _stub_if_missing block from test_trainer_stdout_quiet.py, above "
+        f"the import."
+    )
+
+
+def test_the_guard_would_catch_an_unstubbed_module():
+    """The guard above passes trivially if its matching is wrong, so pin both answers here."""
+    heavy = _heavy_backend_modules()
+
+    for source in (
+        # Split form: the source never spells "core.training.trainer". Asserted through
+        # _is_offender, the same entry point _offenders uses, so no textual prefilter can be
+        # reintroduced in front of it.
+        "from core.training import trainer as t\n",
+        "from core.training.trainer import UnslothTrainer\n",
+        "import core.training.trainer\n",
+        # The shape the hardcoded guard was blind to.
+        "from core.inference.inference import InferenceEngine\n",
+        "from core.inference import inference\n",
+    ):
+        assert _first_heavy_import_line(ast.parse(source), heavy) == 1, source
+        assert not _stubs_before(ast.parse(source), 1), source
+        assert _is_offender(source, heavy), source
+
+    for stubbed in (
+        '_stub_if_missing("unsloth", ())\nfrom core.training import trainer as t\n',
+        # The loop form the preflight tests use: the package names sit in the iterable, not in
+        # the call, so the whole module-scope statement has to be read, not just the call node.
+        'for _n, _a in (("unsloth", ()),):\n'
+        "    _stub_if_missing(_n, _a)\n"
+        "from core.training import trainer as t\n",
+        # No helper at all, just the assignment the helper would have made.
+        'import sys\nsys.modules["unsloth"] = object()\n'
+        "from core.training import trainer as t\n",
+        # The shape of the real files: the table sits above the loop that feeds it to the
+        # helper, so the name reaches the call through ``_STUBS`` rather than in it.
+        'import sys\n_STUBS = {"unsloth": ()}\n'
+        "for _n, _a in _STUBS.items():\n"
+        "    _stub_if_missing(_n, _a)\n"
+        "from core.training import trainer as t\n",
+    ):
+        assert _stubs_before(
+            _parse(stubbed), _first_heavy_import_line(_parse(stubbed), heavy)
+        ), stubbed
+        assert not _is_offender(stubbed, heavy), stubbed
 
     # And a stub that lands too late does not count.
-    too_late = "from core.training import trainer as t\n" '_stub_if_missing("unsloth", ())\n'
-    assert not _stubs_before_that_import(too_late, ast.parse(too_late))
+    too_late = 'from core.training import trainer as t\n_stub_if_missing("unsloth", ())\n'
+    assert not _stubs_before(_parse(too_late), _first_heavy_import_line(_parse(too_late), heavy))
+
+    # An import inside a function is lazy already, so it is not an offence.
+    lazy = "def test_x():\n    from core.training.trainer import UnslothTrainer\n"
+    assert _first_heavy_import_line(ast.parse(lazy), heavy) is None
+
+
+def test_only_an_installed_stub_counts_as_stubbing():
+    """What the textual form of this check accepted and the structural one does not.
+
+    Each source below reads as stubbed to a substring match over the lines above the import
+    (the words ``unsloth`` and ``stub``/``sys.modules`` are all present) while installing
+    nothing, so a module could lose its stubs and the guard would stay green.
+    """
+    heavy = _heavy_backend_modules()
+
+    for source in (
+        # Prose about stubbing unsloth, in the module docstring.
+        '"""Stubs unsloth before importing, or it would need sys.modules surgery."""\n'
+        "from core.training import trainer as t\n",
+        # The names in a module-level table and a stub helper that is never called, which is
+        # what a file looks like the moment its one call site is dropped.
+        "import sys\n"
+        '_STUBS = {"unsloth": ()}\n'
+        "def _stub_if_missing(name, attrs):\n"
+        "    sys.modules[name] = attrs\n"
+        "from core.training import trainer as t\n",
+        # The same, with the call parked inside a fixture that runs long after collection.
+        "import sys\n"
+        '_STUBS = {"unsloth": ()}\n'
+        "def fixture():\n"
+        "    for _n, _a in _STUBS.items():\n"
+        "        _stub_if_missing(_n, _a)\n"
+        "from core.training import trainer as t\n",
+        # Reading sys.modules is not writing it.
+        'import sys\nassert "unsloth" not in sys.modules\n'
+        "from core.training import trainer as t\n",
+        # A stub of something ELSE, with the required name loose in the file rather than in
+        # the operation. Both halves are present, so a prefix-wide pairing reads this as
+        # stubbed while unsloth is not stubbed at all.
+        'import sys\n_HEAVY = "unsloth"\nsys.modules["fake_backend"] = object()\n'
+        "from core.training import trainer as t\n",
+        '_stub_if_missing("trl", ())\n_HEAVY = ("unsloth",)\n'
+        "from core.training import trainer as t\n",
+    ):
+        assert not _stubs_before(_parse(source), 1), source
+        assert _is_offender(source, heavy), source

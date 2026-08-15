@@ -70,7 +70,6 @@ import {
   NativeAttachmentTargetContext,
   NativeModelChip,
   NativeModelDropOverlay,
-  useChooseNativeModel,
   useNativeIntentStore,
   useNativeModelDrop,
   useNativePathLeasesSupported,
@@ -87,6 +86,7 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
+  BookOpen01Icon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
@@ -119,6 +119,7 @@ import {
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { notifyChatHistoryUpdated } from "./api/chat-api";
+import { codeToolCanRun } from "./api/code-tool-placement";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
@@ -166,6 +167,7 @@ import {
   clampReasoningEffortToLevels,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
@@ -207,6 +209,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { attachmentsSample } from "./utils/pasted-text";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
@@ -318,8 +321,11 @@ const SingleContent = memo(function SingleContent({
       useResearchRunStore.getState().sessions[openResearchRunId]?.run;
     if (openRun && openRun.threadId !== activeThreadId) closeResearchPanel();
   }, [activeThreadId, openResearchRunId, closeResearchPanel]);
-  const openResearchRun = useResearchRunStore((state) =>
-    openResearchRunId ? state.sessions[openResearchRunId]?.run : undefined,
+  // A string, not the run: report deltas replace the run ~12x/s, and this owns the thread pane.
+  const openResearchThreadId = useResearchRunStore((state) =>
+    openResearchRunId
+      ? state.sessions[openResearchRunId]?.run.threadId
+      : undefined,
   );
   const artifactPanelRef = useRef<PanelImperativeHandle | null>(null);
   const hasInitializedArtifactPanelRef = useRef(false);
@@ -330,8 +336,8 @@ const SingleContent = memo(function SingleContent({
   const [isArtifactSurfaceVisible, setIsArtifactSurfaceVisible] =
     useState(false);
   const researchMatchesThread = Boolean(
-    openResearchRun &&
-      openResearchRun.threadId === (threadId ?? activeThreadId),
+    openResearchThreadId &&
+      openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
   // Without a URL threadId the artifact must belong to the active thread.
@@ -1071,6 +1077,16 @@ async function exportProjectChatItem(
   for (const id of ids) await exportProjectConversation(id, format);
 }
 
+async function saveProjectChatItemAsSource(
+  item: SidebarItem,
+  projectId: string,
+): Promise<void> {
+  const { saveChatItemAsProjectSource } = await import(
+    "./prompt-storage/prompt-storage-dialog"
+  );
+  await saveChatItemAsProjectSource(item, projectId);
+}
+
 function extractMessageText(content: MessageRecord["content"]): string {
   if (typeof content === "string") {
     return content;
@@ -1311,6 +1327,17 @@ function ProjectLanding({
     [],
   );
 
+  const handleSaveAsSource = useCallback(
+    async (item: SidebarItem) => {
+      try {
+        await saveProjectChatItemAsSource(item, projectId);
+      } catch {
+        toast.error("Failed to save to project sources.");
+      }
+    },
+    [projectId],
+  );
+
   useEffect(() => {
     if (!activeThreadId) {
       // Leaving a created chat for a new one: rotate the nonce so the runtime
@@ -1350,8 +1377,11 @@ function ProjectLanding({
           return [
             item.id,
             {
+              // A paste-only message carries its text in the attachment, so
+              // the row would otherwise be blank.
               snippet: firstUserMessage
-                ? extractMessageText(firstUserMessage.content)
+                ? extractMessageText(firstUserMessage.content) ||
+                  attachmentsSample(firstUserMessage.attachments)
                 : "",
               date: formatProjectChatDate(item.createdAt),
             },
@@ -1686,6 +1716,16 @@ function ProjectLanding({
                               )}
                             </DropdownMenuSubContent>
                           </DropdownMenuSub>
+                          <DropdownMenuItem
+                            onSelect={() => void handleSaveAsSource(item)}
+                          >
+                            <HugeiconsIcon
+                              icon={BookOpen01Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Save to project sources</span>
+                          </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             onSelect={() => void handleArchive(item)}
@@ -1878,6 +1918,7 @@ export function ChatPage({
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
+  const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -1959,8 +2000,12 @@ export function ChatPage({
   const latestResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
   );
-  const latestResearchRun = useResearchRunStore((state) =>
-    latestResearchRunId ? state.sessions[latestResearchRunId]?.run : undefined,
+  // Status, not the run: this subscribes in ChatPage itself, so a run selector re-rendered the
+  // whole page on every streamed research delta.
+  const latestResearchRunStatus = useResearchRunStore((state) =>
+    latestResearchRunId
+      ? state.sessions[latestResearchRunId]?.run.status
+      : undefined,
   );
   const openResearchPanel = useResearchRunStore((state) => state.openPanel);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
@@ -2218,16 +2263,28 @@ export function ChatPage({
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
     // A Connection points at someone else's endpoint, and the local tool runtime runs
-    // Search / Code / MCP on this machine and feeds the output back to that endpoint. So
-    // the pills start off for it and are never seeded from the shared
-    // CHAT_TOOLS_ENABLED_KEY / CHAT_CODE_TOOLS_ENABLED_KEY, which a local GGUF chat may
-    // have set: selecting a remote model must not silently start shipping local tool
-    // output off-box. The user turns the pill on per model.
-    const nextToolsEnabled = supportsBuiltinWebSearch
-      ? isKimi
-        ? false
-        : (storedToolsEnabled ?? searchOnByDefault)
-      : false;
+    // Search / Code / MCP on this machine and feeds the output back to that endpoint.
+    // Studio also runs Search and Code for providers that advertise the capability.
+    const supportsStudioToolsHere =
+      providerModelSupportsStudioTools(
+        provider?.providerType,
+        selection.modelId,
+      ) === true;
+    const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
+    const canRunCode = codeToolCanRun({
+      hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
+      providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
+      supportsStudioTools: supportsStudioToolsHere,
+    });
+    // Local-runtime Connections opt in per model: don't inherit shared toggles a
+    // local GGUF chat may have set, or tool output leaves the box silently.
+    const nextToolsEnabled = supportsLocalToolRuntime
+      ? false
+      : canSearch
+        ? isKimi
+          ? false
+          : (storedToolsEnabled ?? searchOnByDefault)
+        : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -2243,20 +2300,13 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      supportsTools:
-        supportsLocalToolRuntime ||
-        providerModelSupportsStudioTools(
-          provider?.providerType,
-          selection.modelId,
-        ) === true,
+      supportsTools: supportsLocalToolRuntime || supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
       supportsBuiltinWebFetch,
       toolsEnabled: nextToolsEnabled,
-      codeToolsEnabled: supportsBuiltinCodeExecution
-        ? (storedCodeToolsEnabled ?? false)
-        : false,
+      codeToolsEnabled: canRunCode ? (storedCodeToolsEnabled ?? false) : false,
       imageToolsEnabled: supportsBuiltinImageGeneration
         ? (storedImageToolsEnabled ?? false)
         : false,
@@ -2269,7 +2319,10 @@ export function ChatPage({
       // In-memory only: a reload restores the user's local-model preference.
       ...(supportsLocalToolRuntime ? { mcpEnabledForChat: false } : {}),
     });
-  }, [externalProvidersForChat, inferenceParams.checkpoint]);
+    // Reruns once settings hydrate: this normalization reads the stored pills
+    // and clamps them to the model, and hydration refreshes what it reads, so
+    // it has to be the one applied last.
+  }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
   const canCompare = useMemo(() => {
     return Boolean(inferenceParams.checkpoint) && !isExternalModel;
   }, [inferenceParams.checkpoint, isExternalModel]);
@@ -2612,26 +2665,6 @@ export function ChatPage({
       ),
     [hasActiveModel, loadNativeModelIntent],
   );
-  const handleNativeModelPickerAutoLoad = useCallback(
-    (intent: NativeIntent) =>
-      loadNativeModelIntent(intent, "Loading chosen local GGUF model."),
-    [loadNativeModelIntent],
-  );
-  const canAutoLoadPickedNativeModel = useCallback(() => {
-    const store = useChatRuntimeStore.getState();
-    return (
-      view.mode === "single" &&
-      nativePathLeasesSupported &&
-      !loadingModel &&
-      !modelLoading &&
-      !store.modelLoading &&
-      !store.params.checkpoint
-    );
-  }, [loadingModel, modelLoading, nativePathLeasesSupported, view.mode]);
-  const chooseNativeModel = useChooseNativeModel({
-    shouldAutoLoad: canAutoLoadPickedNativeModel,
-    onAutoLoad: handleNativeModelPickerAutoLoad,
-  });
   // Dropped documents go to the thread bar, which owns the RAG upload and can
   // materialize a thread id for a chat that hasn't been sent to yet.
   const handleNativeAttachmentDrop = useCallback(
@@ -2777,11 +2810,26 @@ export function ChatPage({
         // Same opt-in rule as the initial-selection block above: a Connection never
         // inherits the shared tool toggles, because its local tool output leaves the
         // machine. See the comment there.
-        const nextToolsEnabled = supportsBuiltinWebSearch
-          ? isKimi
-            ? false
-            : (storedToolsEnabled ?? searchOnByDefault)
-          : false;
+        const supportsStudioToolsHere =
+          providerModelSupportsStudioTools(
+            selectedProvider?.providerType,
+            selectedExternal?.modelId,
+          ) === true;
+        const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
+        const canRunCode = codeToolCanRun({
+          hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
+          providerHostsCodeExecution: providerHostsCodeExecution(
+            selectedProvider?.providerType,
+          ),
+          supportsStudioTools: supportsStudioToolsHere,
+        });
+        const nextToolsEnabled = supportsLocalToolRuntime
+          ? false
+          : canSearch
+            ? isKimi
+              ? false
+              : (storedToolsEnabled ?? searchOnByDefault)
+            : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -2807,18 +2855,13 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          supportsTools:
-            supportsLocalToolRuntime ||
-            providerModelSupportsStudioTools(
-              selectedProvider?.providerType,
-              selectedExternal?.modelId,
-            ) === true,
+          supportsTools: supportsLocalToolRuntime || supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
           supportsBuiltinWebFetch,
           toolsEnabled: nextToolsEnabled,
-          codeToolsEnabled: supportsBuiltinCodeExecution
+          codeToolsEnabled: canRunCode
             ? (storedCodeToolsEnabled ?? false)
             : false,
           imageToolsEnabled: supportsBuiltinImageGeneration
@@ -3209,13 +3252,16 @@ export function ChatPage({
           const previousConfig = currentRuntimePerModelConfig({
             includeMaxSeqLength: true,
           });
-          const hasAppliedConfig = applyModelLoadConfigToRuntime(
-            rememberedConfigFor(selection),
-          );
+          const remembered = rememberedConfigFor(selection);
+          const hasAppliedConfig = applyModelLoadConfigToRuntime(remembered);
           await selectModelRef.current({
             ...selection,
             ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
             previousConfig,
+            // As on the Hub launch: the runtime mirror carries no launch flags, and
+            // the handoff arrives from training with another model resident (or
+            // none), so there is nothing for /load to inherit them from.
+            ...(remembered ? { config: remembered } : {}),
           });
         };
         if (targetLora) {
@@ -3384,7 +3430,6 @@ export function ChatPage({
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
-                onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
@@ -3507,30 +3552,32 @@ export function ChatPage({
                 </TooltipContent>
               </Tooltip>
             )}
-            {view.mode === "single" && latestResearchRun ? (
+            {view.mode === "single" &&
+            latestResearchRunId &&
+            latestResearchRunStatus ? (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
                     onClick={() => {
-                      if (openResearchRunId === latestResearchRun.id) {
+                      if (openResearchRunId === latestResearchRunId) {
                         closeResearchPanel();
                         return;
                       }
                       setSettingsOpen(false);
                       closeArtifactSurface();
-                      openResearchPanel(latestResearchRun.id);
+                      openResearchPanel(latestResearchRunId);
                     }}
                     className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
-                    aria-pressed={openResearchRunId === latestResearchRun.id}
+                    aria-pressed={openResearchRunId === latestResearchRunId}
                   >
                     <HugeiconsIcon
                       icon={Telescope02Icon}
                       className="size-icon"
                       strokeWidth={1.75}
                     />
-                    {!['completed', 'failed', 'cancelled'].includes(latestResearchRun.status) ? (
+                    {!['completed', 'failed', 'cancelled'].includes(latestResearchRunStatus) ? (
                       <span className="absolute right-1 top-1 size-1.5 rounded-full bg-primary ring-2 ring-background" />
                     ) : null}
                   </button>

@@ -334,6 +334,15 @@ class ValidateModelRequest(BaseModel):
         None, description = "Frontend-visible signed native path grant"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server args the follow-up /load will send. Sized with, "
+            "not validated here: a --ctx-size or cache override changes the memory this "
+            "preflight estimates, so omitting it would approve a different command from "
+            "the one that runs."
+        ),
+    )
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
@@ -441,6 +450,94 @@ class TransformersUpgradeInfo(BaseModel):
         False,
         description = "True if transformers GitHub main ships this model_type (dev-only; "
         "not installable through Unsloth yet).",
+    )
+
+
+class TransformersUpgradeCheckRequest(BaseModel):
+    """Ask whether loading a model needs a newer transformers than any installed overlay."""
+
+    model_name: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 1024,
+        description = "Model identifier, local path or checkpoint directory to check.",
+    )
+    hf_token: Optional[str] = Field(
+        None, description = "HuggingFace token, so gated repos resolve their config.json"
+    )
+    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by
+    # the same precedence: a cached model loads from its pinned snapshot, whose
+    # config.json can name a different architecture than the repo's current one.
+    prefer_local_cache: bool = Field(
+        False,
+        description = "Inspect the cached snapshot rather than the Hub repo, when one is pinned.",
+    )
+    model_local_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Cache directory the caller selected for this model, if any.",
+    )
+    model_snapshot_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Exact snapshot the load is pinned to; takes precedence over "
+        "model_local_path, as it does for the remote-code scan.",
+    )
+    model_snapshot_repo_id: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "Repository the pinned snapshot belongs to, when it differs from model_name.",
+    )
+    resume_run_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Run this check precedes a resume of. Lets the answer say whether "
+        "installing would strand that checkpoint's exact 4-bit resume.",
+    )
+
+
+class TransformersUpgradeCheckResponse(BaseModel):
+    """Upgrade + quantization preflight for a load that does not run /validate.
+
+    /validate answers this for a chat load as part of a much larger check (GGUF
+    placement, VRAM coexistence, security review). Training needs the same two answers
+    on their own, before starting a worker that would die at model load with an
+    unrecognized-architecture error.
+    """
+
+    model_name: str = Field(..., description = "The identifier that was checked")
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the architecture is unknown to every installed transformers "
+        "but a newer transformers ships it; the caller should raise the install consent "
+        "dialog before starting the load.",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the consent dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+    requires_trust_remote_code: bool = Field(
+        False,
+        description = "Whether the model can load on the CURRENT transformers through its own "
+        "repo code, so a declined (or unavailable) install still has a path forward.",
+    )
+    latest_tier_active: bool = Field(
+        False,
+        description = "Whether the latest-transformers sidecar already routes this model.",
+    )
+    forces_16bit: bool = Field(
+        False,
+        description = "Whether a run started now would load 16-bit rather than bnb 4-bit: true "
+        "when the latest sidecar already routes the model, and when an install-only upgrade "
+        "would put it there. Lets the UI state the real precision before the run starts.",
+    )
+    install_breaks_exact_resume: bool = Field(
+        False,
+        description = "Set only for a resume_run_id: installing the offered release would "
+        "activate the latest sidecar, which permanently refuses that checkpoint's attested "
+        "4-bit model load mode. The caller must not offer the install when the run can "
+        "start without it.",
     )
 
 
@@ -769,6 +866,17 @@ class _InferenceRuntimeFields(BaseModel):
             "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
     )
+    requested_llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server arguments the running load was INVOKED "
+            "with, or None for a non-GGUF load and for a load that passed none. "
+            "Published so a client that attached to an already-running server "
+            "(a fresh tab, or another browser) knows what it is running: without "
+            "it, a rollback after a failed switch restores the previous model "
+            "without the arguments it had."
+        ),
+    )
 
 
 class LoadResponse(_InferenceRuntimeFields):
@@ -820,6 +928,71 @@ class LoadProgressResponse(BaseModel):
         description = "Total bytes across all GGUF shards for the active model.",
     )
     fraction: float = Field(0.0, description = "bytes_loaded / bytes_total, clamped to 0..1.")
+
+
+class LlamaFlagCatalogResponse(BaseModel):
+    """Every llama-server flag THIS build documents, for validating pass-through args.
+
+    Read from the installed binary's ``--help`` rather than a list bundled with
+    Unsloth: a custom or newer llama.cpp is exactly the case where a bundled list
+    would reject a flag that works, or accept one that does not exist.
+    """
+
+    flags: dict[str, str] = Field(
+        default_factory = dict,
+        description = "Flag name -> its help text, e.g. {'--top-k': 'top-k sampling ...'}",
+    )
+    managed: list[str] = Field(
+        default_factory = list,
+        description = "Flags Unsloth Studio owns; validate_extra_args rejects these outright",
+    )
+    switch_flags: list[str] = Field(
+        default_factory = list,
+        description = (
+            "Flags this build documents as taking no value, so an editor can tell "
+            "'--verbose foo' (which llama-server refuses) from '--numa distribute'"
+        ),
+    )
+    max_bytes: int = Field(
+        0,
+        description = (
+            "Size limit validate_extra_args applies on THIS host; smaller on Windows, "
+            "where the whole command line shares one 32767-character budget"
+        ),
+    )
+    windows_command_budget: int = Field(
+        0,
+        description = (
+            "Characters the quoted command may take on Windows, or 0 elsewhere. An "
+            "editor mirrors it because the quoting can double a backslash-heavy value."
+        ),
+    )
+    default_parallel_slots: int = Field(
+        1,
+        description = (
+            "Serving slots a load gets when it names none, the server-wide "
+            "--parallel. An editor needs it to judge a pass-through --batch-size: "
+            "llama-server aborts on a batch below the slots it serves, and with the "
+            "Slots field blank this is the number the launch will use."
+        ),
+    )
+    parallel_slots_clamped: bool = Field(
+        False,
+        description = (
+            "True when this build serves ONE slot however many are asked for, because "
+            "it has no --kv-unified and load_model falls back. The default above is "
+            "already effective, but an EXPLICIT Slots value is not: without this an "
+            "editor sizes its batch floor from a count the launch will not use, and "
+            "refuses a --batch-size the backend accepts."
+        ),
+    )
+    probe_ok: bool = Field(
+        False,
+        description = (
+            "False when --help could not be read. `flags` is then empty and callers "
+            "must not report a flag as unknown, only as unverified."
+        ),
+    )
 
 
 class InferenceStatusResponse(_InferenceRuntimeFields):
@@ -1330,6 +1503,18 @@ class ChatCompletionRequest(BaseModel):
         300,
         ge = 1,
         description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
+    )
+    run_tools_locally: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Execute the selected tools on the Studio host instead of "
+            "asking the provider to run its own hosted builtins. Only meaningful "
+            "for providers that ship hosted tools of the same name (OpenAI, "
+            "Gemini, Kimi, OpenRouter), where 'web_search' alone is ambiguous: "
+            "the same request means hosted search to a client written before "
+            "Studio ran tools for external providers. Omitted keeps the hosted "
+            "behaviour, so an older client is unaffected."
+        ),
     )
     session_id: Optional[str] = Field(
         None,
@@ -2648,6 +2833,13 @@ class DiffusionLoadRequest(BaseModel):
         "quality). null auto-picks 0.08 (0.12 when the transformer is quantised, which "
         "shifts the residual distribution).",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a diffusion checkpoint, so a selection of several cards resolves "
+        "to the one with the most free VRAM. Refused with a 400 when an index does not exist "
+        "here; ignored on XPU / MPS / CPU, which have no applicator for a physical index.",
+    )
 
     @field_validator("attention_backend", mode = "before")
     @classmethod
@@ -3427,6 +3619,14 @@ class VideoLoadRequest(BaseModel):
         "and first/last-frame video, the default) or ref2va (omni-reference video). They are "
         "separate ~62 GB partitions, so a load serves one of them. Ignored for a GGUF pick, "
         "whose filename already names the partition; rejected if it contradicts that filename.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "CUDA / ROCm physical indices this load may use, or null for automatic. "
+        "Neither engine shards a video checkpoint, so a selection of several cards resolves to "
+        "the one with the most free VRAM. Refused with a 400 when an index does not exist here; "
+        "ignored on XPU / MPS / CPU, which have no applicator for a physical index. Mirrors the "
+        "image backend's field.",
     )
 
     @field_validator("attention_backend", mode = "before")

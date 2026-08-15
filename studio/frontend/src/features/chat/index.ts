@@ -34,6 +34,7 @@ export {
   type ScanFolderInfo,
 } from "./api/chat-api";
 export type {
+  ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
   InferenceStatusResponse,
@@ -144,13 +145,31 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
+export { extractYoutubeVideoId } from "./utils/youtube-url";
+export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
+export {
+  PASTED_TEXT_PREVIEW_MAX_CHARS,
+  attachmentContentText,
+  attachmentsPastedText,
+  createPastedTextFile,
+  isPastedTextContent,
+  isPastedTextFile,
+  pasteLongTextAsFile,
+  pastedTextContentBytes,
+  pastedTextContentPreview,
+  pastedTextOf,
+  pastedTextPreview,
+  shouldAttachPastedText,
+} from "./utils/pasted-text";
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   isThreadIncognito,
+  listStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
+export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
   removeChatThreadTombstones,
@@ -180,8 +199,11 @@ export {
 export {
   clearNewChatDraft,
   composerDraftKey,
+  composerPasteDraftKey,
   readComposerDraft,
+  readPasteDraft,
   writeComposerDraft,
+  writePasteDraft,
 } from "./utils/composer-draft";
 export {
   CONVERSATION_MARKDOWN_FORMAT,
@@ -192,9 +214,17 @@ export {
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
   exportFineTuneJsonl,
-  importConversationsFromFile,
   type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
+export {
+  fileImportSource,
+  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  type ImportProgress,
+  type ImportResult,
+  type ImportSource,
+} from "./utils/chat-import";
 export {
   archiveAllChatItems,
   archiveChatItem,
