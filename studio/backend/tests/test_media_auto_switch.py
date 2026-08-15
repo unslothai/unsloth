@@ -2258,9 +2258,7 @@ def test_a_local_component_source_is_checked_without_a_subfolder(
     assert loads == []
 
 
-def test_a_shard_index_declaring_nothing_is_not_proof(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_a_shard_index_declaring_nothing_is_not_proof(catalog, enabled, tmp_path, backend, loads):
     # An empty weight_map names no shard, so nothing is missing by that reading, and the mere
     # presence of the index was being taken as the component being complete.
     pipeline = tmp_path / "z-image"
@@ -2307,6 +2305,5 @@ def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path
     mas.invalidate_index()
 
     assert (
-        mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
-        is not None
+        mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is not None
     )
