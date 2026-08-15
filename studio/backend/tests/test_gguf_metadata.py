@@ -416,6 +416,8 @@ def test_mmproj_audio_capability_missing_or_non_gguf(tmp_path: Path):
     junk = tmp_path / "garbage.gguf"
     junk.write_bytes(b"not a gguf header at all")
     assert read_mmproj_audio_capability(str(junk)) is None
+
+
 # read_gguf_architecture
 
 
@@ -522,6 +524,8 @@ def test_architecture_matches_the_general_metadata_reader(tmp_path: Path):
         )
         expected = (read_gguf_general_metadata(str(p)) or {}).get("general.architecture")
         assert read_gguf_architecture(str(p)) == expected == arch
+
+
 # --- mmproj_accepts_image ----------------------------------------------
 
 
