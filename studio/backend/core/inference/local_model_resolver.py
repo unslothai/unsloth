@@ -183,15 +183,14 @@ def _has_tokenizer_vocabulary(load_dir) -> bool:
     only half a BPE tokenizer and needs merges.txt, while the slow-tokenizer vocabularies
     vocab.txt and spiece.model stand on their own.
     """
-    if any(_vocabulary_file_is_readable(load_dir / name) for name in _TOKENIZER_MARKERS):
+    if any(_asset_file_is_readable(load_dir / name) for name in _TOKENIZER_MARKERS):
         return True
-    return (
-        _vocabulary_file_is_readable(load_dir / "vocab.json")
-        and (load_dir / "merges.txt").is_file()
+    return _asset_file_is_readable(load_dir / "vocab.json") and _asset_file_is_readable(
+        load_dir / "merges.txt"
     )
 
 
-def _vocabulary_file_is_readable(path) -> bool:
+def _asset_file_is_readable(path) -> bool:
     """Whether a vocabulary file is present and not obviously unusable.
 
     A copy still in flight leaves a zero-byte or truncated file that AutoTokenizer rejects
@@ -259,7 +258,11 @@ def _tensor_span_matches_shape(entry: dict, span: int) -> bool:
         if not _is_index(dimension):
             return False
         elements *= dimension
-    width = _SAFETENSORS_DTYPE_BYTES.get(entry.get("dtype"))
+    dtype = entry.get("dtype")
+    # an absent or non-string dtype is malformed, unlike a well-formed name this predates.
+    if not isinstance(dtype, str) or not dtype:
+        return False
+    width = _SAFETENSORS_DTYPE_BYTES.get(dtype)
     return True if width is None else elements * width == span
 
 
@@ -482,30 +485,42 @@ def _quantizer_runtime_present(quant_method: str) -> bool:
         return False
 
 
-def _has_a_chat_template(load_dir, loader_id: str) -> bool:
+def _has_a_chat_template(load_dir) -> bool:
     """Whether chat generation will find a template for this checkpoint.
 
-    ``generate_stream`` raises outright when neither the mapper nor the tokenizer supplies
-    one, so a base checkpoint would load, evict the resident model and then refuse every
-    message. Checked against the same three sources the loader reads: Unsloth's model-to-
-    template mapper, a ``chat_template`` key in the tokenizer or processor config, and the
-    standalone template file newer saves write.
+    ``generate_stream`` raises outright without one, so a base checkpoint would load,
+    evict the resident model and then refuse every message. Only what ships beside the
+    weights counts: the mapper generation also consults is keyed by ``active_model_name``,
+    which for an auto-switch is the concrete load path rather than the advertised alias,
+    so a mapper hit on the alias would not install a template at generate time.
     """
+    # readable, not merely present: an empty one is a copy in flight and installs no template.
     for name in ("chat_template.jinja", "chat_template.json"):
-        if (load_dir / name).is_file():
+        if _asset_file_is_readable(load_dir / name):
             return True
     for name in ("tokenizer_config.json", "processor_config.json", "preprocessor_config.json"):
         entry = _read_json(load_dir / name)
         if isinstance(entry, dict) and entry.get("chat_template"):
             return True
+    return False
+
+
+def _routes_to_a_transformers_sidecar(load_path) -> bool:
+    """Whether the orchestrator would load this checkpoint under a different transformers.
+
+    ``probe = False`` inside, so this never spawns the sidecar itself; a raise means the
+    tier is unknown, and treating that as routed leaves the verdict to the other gates
+    rather than withholding a model this process simply cannot judge.
+    """
     try:
-        from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
-        return str(loader_id).strip().lower() in MODEL_TO_TEMPLATE_MAPPER
+        from utils.transformers_version import needs_transformers_5
+
+        return bool(needs_transformers_5(str(load_path)))
     except Exception:
-        return False
+        return True
 
 
-def _loader_implements_architecture(config: dict) -> bool:
+def _loader_implements_architecture(config: dict, load_path) -> bool:
     """Whether the backend that would serve this checkpoint implements its model_type.
 
     A causal-looking class name is not enough: ``MadeUpForCausalLM`` satisfies every
@@ -528,6 +543,9 @@ def _loader_implements_architecture(config: dict) -> bool:
         multimodal = any(key in config for key in _MULTIMODAL_CONFIG_KEYS)
         package = "mlx_vlm" if multimodal else "mlx_lm"
     else:
+        # a sidecar model would be judged against a registry this process does not have.
+        if _routes_to_a_transformers_sidecar(load_path):
+            return True
         package = "transformers"
     name = model_type.strip().lower().replace("-", "_")
     if not name.isidentifier():
@@ -692,14 +710,15 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     # A VLM builds an AutoProcessor, which tokenizer files alone cannot supply. Same
     # pair unsloth.models.loader_utils._has_local_processor_files reads, checked here
     # rather than imported so the request path stays clear of the unsloth package.
+    # readable, not merely present: the processor is built by parsing it, after the swap.
     if any(key in config for key in _MULTIMODAL_CONFIG_KEYS) and not any(
-        (load_dir / name).is_file()
+        isinstance(_read_json(load_dir / name), dict)
         for name in ("processor_config.json", "preprocessor_config.json")
     ):
         return False
     if not _quantization_suits_host(config) or not _is_generative_chat_config(config):
         return False
-    if not _loader_implements_architecture(config):
+    if not _loader_implements_architecture(config, load_dir):
         return False
     # whisper and TTS need a request shape the chat route rejects only after the swap.
     from utils.models.model_config import detect_audio_type
@@ -736,7 +755,7 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         config = _read_json(load_dir / "config.json")
         if not isinstance(config, dict) or not _config_is_servable_here(load_dir, config):
             return None
-        if not _has_a_chat_template(load_dir, loader_id):
+        if not _has_a_chat_template(load_dir):
             return None
         # No quants: quantization is baked in, so there is no ":<quant>" to pin.
         return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)

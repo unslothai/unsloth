@@ -5321,7 +5321,14 @@ def _loaded_satisfies(requested: str) -> bool:
             )
             if candidate
         ]
-        if not _matches_any(base, candidates):
+        # a path-loaded model's public id is a basename, so folding it crosses two directories.
+        if not _matches_any(
+            base,
+            candidates,
+            fold_case = not _looks_like_local_path(
+                getattr(llama_backend, "model_identifier", None) or ""
+            ),
+        ):
             return False
         if not looks_like_quant(variant):
             # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
@@ -5336,7 +5343,9 @@ def _loaded_satisfies(requested: str) -> bool:
         return False
     # The alias too: auto-switch records the repo id there, not in active_model_name.
     return _matches_any(
-        base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
+        base,
+        [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)],
+        fold_case = not _looks_like_local_path(active),
     )
 
 
@@ -5362,7 +5371,9 @@ def _loaded_identity_satisfies(requested: str) -> bool:
         # alias it recorded and land here.
         if advertised is None and identifier and _looks_like_local_path(identifier):
             return False
-        return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
+        return _matches_any(
+            base, (identifier, advertised), fold_case = not _looks_like_local_path(identifier)
+        ) and _loaded_satisfies(requested)
     backend = get_inference_backend()
     active = getattr(backend, "active_model_name", None)
     if not active:
@@ -5371,7 +5382,10 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     # Same rule as the llama branch: answering from the path alone skips the recording.
     if advertised is None and _looks_like_local_path(active):
         return False
-    return _matches_any(base, (active, advertised)) and _loaded_satisfies(requested)
+    # a path-derived alias is a bare basename, so folding it answers one directory with another.
+    return _matches_any(
+        base, (active, advertised), fold_case = not _looks_like_local_path(active)
+    ) and _loaded_satisfies(requested)
 
 
 def _raise_still_indexing(requested_model: str, fastapi_request) -> None:

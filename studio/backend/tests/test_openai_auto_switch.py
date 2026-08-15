@@ -8526,7 +8526,10 @@ def test_tokenizer_metadata_alone_is_not_a_vocabulary(tmp_path):
     # A bare vocab.json is only half a BPE tokenizer; it needs its merges.
     (path / "vocab.json").write_text("{}")
     assert resolver.local_servable_model(info) is None
+    # an empty merges.txt is a copy still in flight, like an empty vocabulary.
     (path / "merges.txt").write_text("")
+    assert resolver.local_servable_model(info) is None
+    (path / "merges.txt").write_text("#version: 0.2\ng h\n")
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -9104,6 +9107,94 @@ def test_a_fabricated_architecture_is_withheld(tmp_path):
     (path / "config.json").write_text(
         json.dumps({"architectures": ["MadeUpForCausalLM"], "model_type": "qwen3"})
     )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_empty_chat_template_file_does_not_count(tmp_path):
+    # found by sweeping the same presence-only class Codex raised for the tokenizer.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "EmptyTemplate")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "tokenizer_config.json").write_text('{"model_max_length": 4096}')
+    (path / "chat_template.jinja").write_text("")
+    assert resolver.local_servable_model(info) is None
+    (path / "chat_template.jinja").write_text("{{ messages }}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_the_resident_fast_paths_do_not_fold_a_path_alias(monkeypatch):
+    # found by sweeping every _matches_any call: this one runs before both corrected checks.
+    resident = "/models/Foo"
+    backend = types.SimpleNamespace(
+        active_model_name = resident, _openai_advertised_id = "Foo", models = {}
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None)
+    )
+    assert inference_route._loaded_satisfies("Foo") is True
+    assert inference_route._loaded_satisfies("foo") is False
+    assert inference_route._loaded_identity_satisfies("foo") is False
+
+
+def test_a_sidecar_model_type_is_not_withheld(tmp_path, monkeypatch):
+    # codex P2: the orchestrator loads these under a transformers this process cannot see.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(resolver, "_host_serves_mlx", lambda: False)
+    path = _local_checkpoint(tmp_path, "Sidecar")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps({"architectures": ["BrandNewForCausalLM"], "model_type": "brand_new"})
+    )
+    assert resolver.local_servable_model(info) is None
+
+    monkeypatch.setattr(resolver, "_routes_to_a_transformers_sidecar", lambda _p: True)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_tensor_without_a_dtype_is_withheld(tmp_path):
+    # codex P2: an absent dtype is malformed metadata, not a width this table predates.
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "NoDtype")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(tensor):
+        blob = json.dumps({"w": tensor}).encode()
+        (path / "model.safetensors").write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * 4)
+
+    write({"shape": [1], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) is None
+    write({"dtype": 4, "shape": [1], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) is None
+    # a well-formed name this table has not learned yet still skips the width check alone.
+    write({"dtype": "F4_NEW", "shape": [1], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_unreadable_processor_config_is_withheld(tmp_path):
+    # codex P2: the processor is built by parsing it, after the swap has already run.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadProcessor")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Gemma3ForConditionalGeneration"],
+                "model_type": "gemma3",
+                "vision_config": {},
+            }
+        )
+    )
+    (path / "preprocessor_config.json").write_text("")
+    assert resolver.local_servable_model(info) is None
+    (path / "preprocessor_config.json").write_text("{not json")
+    assert resolver.local_servable_model(info) is None
+    (path / "preprocessor_config.json").write_text("{}")
     assert resolver.local_servable_model(info) == (False, ())
 
 
