@@ -9130,9 +9130,7 @@ def test_the_resident_fast_paths_do_not_fold_a_path_alias(monkeypatch):
         active_model_name = resident, _openai_advertised_id = "Foo", models = {}
     )
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None)
-    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
     assert inference_route._loaded_satisfies("Foo") is True
     assert inference_route._loaded_satisfies("foo") is False
     assert inference_route._loaded_identity_satisfies("foo") is False

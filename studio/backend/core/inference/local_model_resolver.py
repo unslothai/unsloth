@@ -514,7 +514,6 @@ def _routes_to_a_transformers_sidecar(load_path) -> bool:
     """
     try:
         from utils.transformers_version import needs_transformers_5
-
         return bool(needs_transformers_5(str(load_path)))
     except Exception:
         return True
