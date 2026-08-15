@@ -133,6 +133,10 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
     scanner hands one over already unwrapped for a non-active cache, where naming the repo id
     instead would only send the loader to the active cache and download the model again.
 
+    A split checkpoint counts as openable only when its whole set is beside it: the loader opens
+    the siblings implicitly, and the planners read a local checkpoint as already present, so a
+    half-copied set would evict the resident model and then fail.
+
     Advertising a name the loader then refuses costs a 400 on every request for a model the
     lister shows as downloaded, so an unopenable build is left out of the index.
     """
@@ -141,11 +145,15 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
         return True
     from core.inference.diffusion_families import resolve_local_gguf_child
 
+    from utils.models.model_config import colocated_split_shards
+
     try:
-        resolve_local_gguf_child(root, filename)
+        child = resolve_local_gguf_child(root, filename)
     except Exception:  # noqa: BLE001 -- whatever the loader refuses, the index does not advertise
         return False
-    return True
+    # a split checkpoint opens its siblings implicitly, so an incomplete set fails at load time
+    _shards, complete = colocated_split_shards(child)
+    return bool(complete)
 
 
 def _add_gguf_picks(

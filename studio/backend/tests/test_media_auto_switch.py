@@ -2038,3 +2038,124 @@ def test_a_stalled_load_probe_still_answers_inside_the_budget(flux, enabled, bac
         assert time.monotonic() - began < 2.0
 
     asyncio.run(_drive())
+
+
+def test_setup_that_never_registers_gives_the_gates_back(flux, enabled, backend, monkeypatch):
+    # A first-run native install runs for minutes before begin_load, and holding both media
+    # admission gates and chat's that long blocks every unrelated request.
+    import core.inference.media_keepwarm as keepwarm
+
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
+    monkeypatch.setattr(mas, "_SETUP_GRACE_S", 0.5)
+    release = asyncio.Event()
+
+    async def _never_registers(owner, pick, current_subject, hf_token = None):
+        await release.wait()
+
+    monkeypatch.setattr(mas, "_start_load", _never_registers)
+
+    async def _drive():
+        with pytest.raises(HTTPException) as excinfo:
+            await mas.maybe_auto_switch_media_model(
+                "black-forest-labs/FLUX.1-dev",
+                owner = arb.DIFFUSION,
+                current_subject = "test-user",
+                openai_errors = True,
+            )
+        assert excinfo.value.status_code == 503
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if not keepwarm._TRACKERS[arb.DIFFUSION].gate.locked():
+                break
+        assert not keepwarm._TRACKERS[arb.DIFFUSION].gate.locked()
+        assert not mas.switch_lock(arb.DIFFUSION).locked()
+        release.set()
+
+    asyncio.run(_drive())
+
+
+def test_a_superseded_snapshot_does_not_vouch_for_the_active_one(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # refs/main names the revision from_pretrained resolves to, so a complete component in an
+    # older snapshot must not answer for the partial one the load will actually read.
+    import core.inference.diffusion as diffusion_module
+
+    cache = tmp_path / "hub"
+    repo = cache / "models--unsloth--MiniMax-H3"
+    old = repo / "snapshots" / ("a" * 40) / "vae"
+    old.mkdir(parents = True)
+    (old / "config.json").write_text("{}")
+    (old / "model.safetensors").write_bytes(b"")
+    (repo / "snapshots" / ("b" * 40)).mkdir(parents = True)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("b" * 40)
+    monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
+
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text(
+        '{"vae": ["diffusers", "AutoencoderKLMiniMaxH3",'
+        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3", "subfolder": "vae"}]}'
+    )
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_root_level_hosted_component_needs_more_than_one_shard(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # A component named as a whole repo went through _upstream_is_cached, whose no-manifest
+    # branch is satisfied by a single weight file an interrupted sharded pull leaves behind.
+    import core.inference.diffusion as diffusion_module
+
+    cache = tmp_path / "hub"
+    snapshot = cache / "models--unsloth--MiniMax-H3-VAE" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model-00001-of-00002.safetensors").write_bytes(b"")
+    (snapshot / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
+        ' "b": "model-00002-of-00002.safetensors"}}'
+    )
+    monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
+
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text(
+        '{"vae": ["diffusers", "AutoencoderKLMiniMaxH3",'
+        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3-VAE"}]}'
+    )
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path):
+    # The loader opens the sibling shards implicitly and the planners read a local checkpoint as
+    # present, so half a split set would evict the resident model and then fail at startup.
+    (tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf").write_bytes(b"")
+    catalog.append(
+        _info(
+            "z-image",
+            tmp_path / "z-image-Q4_K_M-00001-of-00002.gguf",
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+        )
+    )
+
+    assert mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK) is None
+
+    (tmp_path / "z-image-Q4_K_M-00002-of-00002.gguf").write_bytes(b"")
+    mas.invalidate_index()
+
+    assert mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK) is not None

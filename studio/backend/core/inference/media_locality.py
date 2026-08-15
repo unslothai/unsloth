@@ -323,12 +323,26 @@ def _hosted_source(spec: Any) -> Optional[tuple[str, str]]:
 
 
 def _cached_snapshot_root(repo_id: str) -> Optional[Path]:
-    """The cached snapshot directory for *repo_id*, or None when nothing of it is downloaded."""
+    """The cached snapshot a load of *repo_id* would read, or None when it is not downloaded.
+
+    The revision ``refs/main`` names, the one from_pretrained resolves to, rather than whichever
+    snapshot sorts first: a superseded revision can hold a complete component while the active
+    one is partial, and approving the old copy is how the load ends up fetching the new one.
+    """
     from core.inference.diffusion import hub_cache_dir
 
-    repo_dir = Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+    repo_dir = Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
+    snapshots = repo_dir / "snapshots"
     try:
-        return next((child for child in sorted(repo_dir.iterdir()) if child.is_dir()), None)
+        ref = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
+    except OSError:
+        ref = ""
+    if ref:
+        active = snapshots / ref
+        return active if active.is_dir() else None
+    try:
+        # no ref file means a commit-pinned download, where any cached revision is the one
+        return next((child for child in sorted(snapshots.iterdir()) if child.is_dir()), None)
     except OSError:
         return None
 
@@ -340,8 +354,6 @@ def _hosted_component_cached(source: str, subfolder: str) -> bool:
     base manifest whenever the selected path exists, so a local modular directory with a missing
     hosted component would otherwise verify clean and download it after the eviction.
     """
-    from core.inference.diffusion_families import _upstream_is_cached
-
     local = Path(source).expanduser()
     try:
         if local.is_dir():
@@ -351,12 +363,9 @@ def _hosted_component_cached(source: str, subfolder: str) -> bool:
     snapshot = _cached_snapshot_root(source)
     if snapshot is None:
         return False
-    if subfolder:
-        return _component_present(snapshot / subfolder)
-    try:
-        return bool(_upstream_is_cached(source))
-    except Exception:  # noqa: BLE001 -- an unreadable cache is not proof of locality
-        return False
+    # the same component rules either way: _upstream_is_cached's no-manifest branch is satisfied
+    # by a single weight file, which an interrupted sharded pull leaves behind
+    return _component_present(snapshot / subfolder if subfolder else snapshot)
 
 
 def _component_present(component: Path) -> bool:

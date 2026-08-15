@@ -83,6 +83,9 @@ _SWITCH_BUDGET_S = 90.0
 # a generation the caller cannot see is yielded to rather than cut short, capped inside the budget
 _DRAIN_WAIT_S = 30.0
 
+# how long the gates are kept for a load that has not reached begin_load yet
+_SETUP_GRACE_S = 120.0
+
 
 def _resident_answers_exactly(resident: dict[str, Any], name: str) -> bool:
     """Whether the resident model is this exact name, needing no discovery at all.
@@ -265,6 +268,10 @@ async def _gated_start_load(
     activation unloads the resident pipeline on its way, so anything admitted before
     registration would be cut short by a load that no longer has a request behind it.
 
+    Ownership is bounded all the same: a load that has not registered within ``_SETUP_GRACE_S``
+    gives the gates back and carries on without them, since an installer running for minutes
+    behind them costs more than the race they close.
+
     The gates held are the ones this load could evict behind, entered in a fixed order so two
     switches cannot deadlock, and one at a time under the budget: a stalled holder elsewhere
     would otherwise pin this task, and with it the switch lock, indefinitely. Cancelling during
@@ -318,7 +325,13 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
                 hf_token = hf_token,
             )
-            await _start_load(owner, pick, current_subject, hf_token)
+            # given its own task and waited on with a cap: a first-run native install runs for
+            # minutes before begin_load, and holding both media gates and chat's that long
+            # blocks every unrelated request. On expiry the load keeps going without them.
+            setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
+            setup.add_done_callback(_consume_detached_error)
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
             return False
     finally:
         for held in reversed(locks):
