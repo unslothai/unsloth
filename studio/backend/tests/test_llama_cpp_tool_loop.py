@@ -4504,3 +4504,59 @@ def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
     ]
     asst = next(m for m in payloads[1]["messages"] if m.get("tool_calls"))
     assert [tc["id"] for tc in asst["tool_calls"]] == ["call_a", "call_b", "call_c"]
+
+
+def test_parallel_disabled_suppresses_provisional_for_reused_index(monkeypatch):
+    """A later call at reused index 0 is not the first accumulated call.
+
+    ``parallel_tool_calls=false`` permits a provisional card only for the call
+    that can execute. Checking the raw index admitted every fork at index 0,
+    leaving a card for the truncated call that could only close empty.
+    """
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    big_cmd = "echo start\n" + "\n".join(f"echo line {i}" for i in range(60))
+    python_args = json.dumps({"code": big_code})
+    terminal_args = json.dumps({"command": big_cmd})
+    stream = [
+        _tool_call_opening(0, "call_py", "python", python_args[:-1]),
+        _tool_call_fragment(0, python_args[-1]),
+        _tool_call_opening(0, "call_term", "terminal", terminal_args[:-1]),
+        _tool_call_fragment(0, terminal_args[-1]),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "do the first only"}],
+            tools = [
+                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+            disable_parallel_tool_use = True,
+            permission_mode = "off",
+        )
+    )
+
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
+    assert [e["tool_call_id"] for e in provisional] == ["call_py"]
+    assert calls == [("python", {"code": big_code})]
+    assert not [
+        e
+        for e in events
+        if e.get("tool_call_id") == "call_term"
+        and e.get("type") in {"tool_start", "tool_args", "tool_end"}
+    ]
