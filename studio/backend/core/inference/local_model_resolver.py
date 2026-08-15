@@ -235,7 +235,8 @@ def _safetensors_file_is_intact(path) -> bool:
     ``is_file`` check and then fails in the loader, by which point the swap has unloaded
     the resident model. ``partial`` only covers Studio's own downloads, so weights a user
     put in a scan folder by hand are checked here instead. Reads the header, never the
-    tensors: 8 bytes of length, then the JSON, then one size comparison.
+    tensors: 8 bytes of length, then the JSON, then the declared layout. Verified against
+    safetensors 0.8.0, which rejects an overlap, a gap and trailing bytes alike.
     """
     import json
     import struct
@@ -253,8 +254,7 @@ def _safetensors_file_is_intact(path) -> bool:
             header = json.loads(handle.read(header_len))
         if not isinstance(header, dict):
             return False
-        end = 0
-        tensors = 0
+        spans = []
         for name, entry in header.items():
             if name == "__metadata__":
                 continue
@@ -270,12 +270,17 @@ def _safetensors_file_is_intact(path) -> bool:
                 return False
             if not _tensor_span_matches_shape(entry, stop - start):
                 return False
-            tensors += 1
-            end = max(end, stop)
-        # a __metadata__-only header passes the extent check at end 0 and loads random weights.
-        if tensors == 0:
+            spans.append((start, stop))
+        # a __metadata__-only header would otherwise load a model of random weights.
+        if not spans:
             return False
-        return 8 + header_len + end <= size
+        # an exact partition: safetensors rejects an overlap, a gap and a trailing byte alike.
+        cursor = 0
+        for start, stop in sorted(spans):
+            if start != cursor:
+                return False
+            cursor = stop
+        return 8 + header_len + cursor == size
     except (OSError, ValueError, struct.error):
         return False
 

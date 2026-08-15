@@ -8921,7 +8921,10 @@ def test_a_tensor_span_that_contradicts_its_shape_is_withheld(tmp_path):
     path = _local_checkpoint(tmp_path, "BadSpan")
     info = SimpleNamespace(id = str(path), path = str(path))
 
-    def write(entry, payload = 64):
+    def write(entry, payload = None):
+        # sized to the declared span by default, since trailing bytes are their own rejection.
+        if payload is None:
+            payload = max(entry["data_offsets"])
         blob = json.dumps({"w": entry}).encode()
         (path / "model.safetensors").write_bytes(
             struct.pack("<Q", len(blob)) + blob + b"\0" * payload
@@ -8938,6 +8941,37 @@ def test_a_tensor_span_that_contradicts_its_shape_is_withheld(tmp_path):
     write({"dtype": "F32", "shape": [8], "data_offsets": [0, 32]})
     assert resolver.local_servable_model(info) == (False, ())
     write({"dtype": "F4_SOMETHING_NEW", "shape": [8], "data_offsets": [0, 4]})
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_data_layout_that_is_not_an_exact_partition_is_withheld(tmp_path):
+    # codex P2: safetensors 0.8.0 rejects an overlap, a gap and trailing bytes alike (verified).
+    import struct
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "BadLayout")
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    def write(tensors, payload):
+        blob = json.dumps(tensors).encode()
+        (path / "model.safetensors").write_bytes(
+            struct.pack("<Q", len(blob)) + blob + b"\0" * payload
+        )
+
+    def tensor(start, stop):
+        return {"dtype": "F32", "shape": [(stop - start) // 4], "data_offsets": [start, stop]}
+
+    write({"a": tensor(0, 16), "b": tensor(0, 16)}, 16)      # overlap
+    assert resolver.local_servable_model(info) is None
+    write({"a": tensor(0, 16), "b": tensor(32, 48)}, 48)     # gap
+    assert resolver.local_servable_model(info) is None
+    write({"a": tensor(0, 16)}, 64)                          # trailing bytes
+    assert resolver.local_servable_model(info) is None
+    write({"a": tensor(4, 20)}, 20)                          # does not start at 0
+    assert resolver.local_servable_model(info) is None
+
+    # a contiguous partition covering the buffer exactly is accepted, in any header order.
+    write({"b": tensor(16, 32), "a": tensor(0, 16)}, 32)
     assert resolver.local_servable_model(info) == (False, ())
 
 
