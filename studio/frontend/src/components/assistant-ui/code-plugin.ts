@@ -128,6 +128,17 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     ? line
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
+// Markdown reports a closing fence as body until it recognizes it, so the only
+// text a fence can lose is indentation, a run of backticks or tildes, and
+// trailing whitespace.
+const CLOSING_DELIMITER = /^[\s`~]*$/;
+
+/** Whether `code` is the fence's own body with just its closing delimiter gone. */
+const isClosingReparse = (fence: Fence, code: string): boolean =>
+  fence.code.startsWith(code) &&
+  code.length >= fence.committedLength &&
+  CLOSING_DELIMITER.test(fence.code.slice(code.length));
+
 export function createCodePlugin(
   options: CodePluginOptions = {},
 ): CodeHighlighterPlugin {
@@ -218,10 +229,9 @@ export function createCodePlugin(
         continue;
       }
       const anchor = fence.code;
-      // Closing backticks can briefly make Markdown return a shorter body.
-      const reaches =
-        code.startsWith(anchor) ||
-        (anchor.startsWith(code) && code.length >= fence.committedLength);
+      // A fence that lost more than its closing delimiter is a different block
+      // sharing a prefix, and reusing this entry would cancel its refresh.
+      const reaches = code.startsWith(anchor) || isClosingReparse(fence, code);
       const reach = Math.min(anchor.length, code.length);
       if (!anchor || reach <= matchLength || !reaches) continue;
       match = fence;

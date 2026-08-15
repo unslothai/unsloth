@@ -403,6 +403,57 @@ test("a single line past the throttle keeps its text and settles exact", async (
   assert.deepEqual(settled.tokens, full.tokens);
 });
 
+test("a shorter prefix sibling fence keeps the longer one highlighted", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "json" as HighlightOptions["language"];
+  // Single-line, so the longer fence commits no line and its whole body stays
+  // reachable by a prefix match.
+  const shorter = `{"values": [${Array.from({ length: 300 }, (_, i) => `"item-${i}"`).join(", ")}`;
+  const longer = `${shorter}, "only-in-the-longer-fence"]}`;
+
+  await highlightOnce(plugin, { code: longer, language, themes: THEMES });
+  await highlightOnce(plugin, { code: shorter, language, themes: THEMES });
+
+  // A thread re-renders every block in document order, so the shorter fence
+  // follows the longer one inside one refresh interval.
+  let rendered: HighlightResult | null = null;
+  for (let frame = 0; frame < 3; frame += 1) {
+    rendered = plugin.highlight({ code: longer, language, themes: THEMES });
+    plugin.highlight({ code: shorter, language, themes: THEMES });
+  }
+
+  assert.deepEqual(
+    rendered?.tokens,
+    (await reference(longer, "json")).tokens,
+    "the longer fence must not be left as an unhighlighted plain tail",
+  );
+  assert.deepEqual(
+    plugin.highlight({ code: shorter, language, themes: THEMES })?.tokens,
+    (await reference(shorter, "json")).tokens,
+  );
+});
+
+test("shedding a closing delimiter drops the refresh queued for it", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const language = "python" as HighlightOptions["language"];
+  const body = `${Array.from(
+    { length: 120 },
+    (_, index) => `value_${index} = ${index}  # a completed Python line`,
+  ).join("\n")}\n`;
+  // Markdown reports the closing run as body until it closes the fence.
+  await highlightOnce(plugin, { code: `${body}\`\``, language, themes: THEMES });
+
+  const stale: HighlightResult[] = [];
+  plugin.highlight({ code: `${body}\`\`\``, language, themes: THEMES }, (result) =>
+    stale.push(result),
+  );
+  const closed = plugin.highlight({ code: body, language, themes: THEMES });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  assert.equal(stale.length, 0, "the closed fence must cancel the delimiter refresh");
+  assert.deepEqual(closed?.tokens, (await reference(body, "python")).tokens);
+});
+
 test("a throttled multiline tail matches the previous plugin", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "python" as HighlightOptions["language"];
