@@ -223,38 +223,123 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     )
 
 
-def test_compat_local_inventory_classifies_off_the_event_loop(monkeypatch, tmp_path):
-    model = models_route.LocalModelInfo(
-        id = "model",
+def _compat_inventory_row(tmp_path, name = "model"):
+    return models_route.LocalModelInfo(
+        id = name,
         display_name = "Model",
-        path = str(tmp_path / "model.gguf"),
+        path = str(tmp_path / f"{name}.gguf"),
         source = "models_dir",
         model_format = "gguf",
     )
-    sources = models_route._CompatLocalInventorySources(
+
+
+def _compat_inventory_sources(tmp_path):
+    return models_route._CompatLocalInventorySources(
         tmp_path,
         tmp_path / "legacy",
         tmp_path / "default",
         (),
         (),
     )
+
+
+def test_compat_local_inventory_classifies_inside_the_shared_scan(monkeypatch, tmp_path):
+    """Classification belongs to the coalesced flight, and runs off the event loop.
+
+    Producing classified rows inside the flight is what lets overlapping callers reuse one
+    result instead of each repeating the GGUF header reads on the shared executor."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
     classifier_threads: list[int] = []
+    shared: list[list] = []
+    real_shared_scan = hf_cache_scan.shared_scan
 
-    async def scan(*_args):
-        return [model]
+    async def recording_shared_scan(flights, key, factory):
+        models = await real_shared_scan(flights, key, factory)
+        shared.append(models)
+        return models
 
-    def classify(_model):
-        classifier_threads.append(threading.get_ident())
-        return "text-generation"
-
-    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
-    monkeypatch.setattr(models_route, "_shared_compat_local_inventory_scan", scan)
-    monkeypatch.setattr(models_route, "_local_model_task", classify)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(
+        models_route, "collect_local_models", lambda *_a, **_kw: [_compat_inventory_row(tmp_path)]
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_local_model_task",
+        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
+    )
+    monkeypatch.setattr(hf_cache_scan, "shared_scan", recording_shared_scan)
 
     async def run():
-        loop_thread = threading.get_ident()
-        listed = await models_route.list_local_models(str(tmp_path), "subject")
-        return loop_thread, listed
+        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
+
+    loop_thread, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["text-generation"]
+    # The flight resolves to classified rows, so waiters on it never reclassify.
+    assert [[row.task for row in models] for models in shared] == [["text-generation"]]
+    assert classifier_threads and loop_thread not in classifier_threads
+
+
+def test_compat_local_inventory_rescans_when_the_cache_changes_during_classification(
+    monkeypatch, tmp_path
+):
+    """A deletion landing during the classification hop must not be answered with old rows."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    epoch = [0]
+    scans: list[int] = []
+
+    def collect(*_args, **_kwargs):
+        scans.append(epoch[0])
+        return [_compat_inventory_row(tmp_path, f"scan{len(scans)}")]
+
+    def classify(_model):
+        # The cache is invalidated while the first scan's rows are being classified.
+        if len(scans) == 1:
+            epoch[0] += 1
+        return "text-generation"
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(models_route, "collect_local_models", collect)
+    monkeypatch.setattr(models_route, "_local_model_task", classify)
+    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    listed = asyncio.run(models_route.list_local_models(str(tmp_path), "subject"))
+    assert scans == [0, 1], scans
+    assert [row.id for row in listed.models] == ["scan2"]
+
+
+def test_compat_local_inventory_classifies_a_superseded_result(monkeypatch, tmp_path):
+    """The give-up path serves the freshest scan it has, classified like any other."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    epoch = [0]
+    classifier_threads: list[int] = []
+
+    def collect(*_args, **_kwargs):
+        epoch[0] += 1  # every walk is invalidated before it returns
+        return [_compat_inventory_row(tmp_path)]
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(models_route, "collect_local_models", collect)
+    monkeypatch.setattr(
+        models_route,
+        "_local_model_task",
+        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
+    )
+    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
 
     loop_thread, listed = asyncio.run(run())
     assert [row.task for row in listed.models] == ["text-generation"]
