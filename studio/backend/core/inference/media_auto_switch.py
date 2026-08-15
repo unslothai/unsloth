@@ -480,17 +480,25 @@ def _expected_partition(pick: MediaModelPick) -> Optional[str]:
     the partition its filename names, and a modular pipeline takes the keyframe default.
     """
     try:
+        from core.inference.video_families import detect_video_family
         from core.inference.video_minimax_h3 import H3_TASK_KEYFRAMES, h3_transformer_task
-        from hub.utils.gguf import is_h3_bundle_repo
     except Exception:  # noqa: BLE001 -- no h3 support here means no partition to name
         return None
-    name = (pick.gguf_filename or "").strip().lower()
+    # The basename, since a qualified variant lives at ref2va/minimax_h3_ref2va-*.gguf and the
+    # loader derives the task the same way.
+    name = Path(pick.gguf_filename or "").name.lower()
     if name.startswith("minimax_h3_"):
         return h3_transformer_task(name)
     try:
-        return H3_TASK_KEYFRAMES if is_h3_bundle_repo(pick.model_path) else None
+        # Keyed on the family, not the path: a modular pipeline resolves to a local directory
+        # or a snapshot, neither of which is one of the two GGUF bundle repo ids.
+        for needle in (pick.model_id, pick.model_path):
+            fam = detect_video_family(needle) if needle else None
+            if fam is not None and getattr(fam, "name", "") == _H3_FAMILY:
+                return H3_TASK_KEYFRAMES
     except Exception:  # noqa: BLE001 -- a probe failure must not name a partition
         return None
+    return None
 
 
 def _partition_matches(status: dict[str, Any], pick: Optional[MediaModelPick] = None) -> bool:
@@ -511,6 +519,33 @@ def _partition_matches(status: dict[str, Any], pick: Optional[MediaModelPick] = 
     filename = (pick.gguf_filename if pick else None) or ""
     expected = h3_transformer_task(filename) if filename else H3_TASK_KEYFRAMES
     return resident == str(expected or "").strip().lower()
+
+
+def _other_owner(owner: str) -> str:
+    """The media backend this one would take the GPU from."""
+    return VIDEO if owner == DIFFUSION else DIFFUSION
+
+
+def _other_backend_busy(owner: str) -> bool:
+    """Whether the other media backend is loading or generating, off the loop.
+
+    Guarded and lazy: a Studio that never opened the other page has no backend to ask, and
+    importing one just to find that out would drag torch in for nothing.
+    """
+    import sys
+
+    other = _other_owner(owner)
+    wanted = (
+        {"core.inference.video"}
+        if other == VIDEO
+        else {"core.inference.diffusion", "core.inference.sd_cpp_backend"}
+    )
+    if not wanted & set(sys.modules):
+        return False
+    try:
+        return _backend_busy(_backend_for(other))
+    except Exception:  # noqa: BLE001 -- an unavailable backend is not busy work
+        return False
 
 
 def _backend_busy(backend: Any) -> bool:
@@ -547,7 +582,12 @@ async def _drain(
         # Every recorded waiter is another request parked on the lock: this one left the marker
         # when it acquired the lock, so nothing here belongs to it.
         others -= _waiter_count(owner)
-        if others <= 0 and not await asyncio.to_thread(_backend_busy, backend):
+        # The other media backend counts too: the load route takes the GPU through the arbiter,
+        # whose cross-owner handoff unloads whatever holds it, cancelling a generation that has
+        # nothing to do with this request.
+        others += other_request_count(_other_owner(owner), count_pending = count_pending)
+        idle = others <= 0 and not await asyncio.to_thread(_backend_busy, backend)
+        if idle and not await asyncio.to_thread(_other_backend_busy, owner):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -640,6 +680,35 @@ def _refuse(
         detail = detail,
         headers = {"Retry-After": str(retry_after)} if retry_after else None,
     )
+
+
+# The image family whose pipeline loads a separate encoder repo, and the video family whose
+# partitions are a load-time choice. Both make a directory on disk an incomplete answer.
+_EXTERNAL_ENCODER_FAMILIES = frozenset({"hidream-i1"})
+_H3_FAMILY = "minimax-h3"
+
+
+def _needs_external_encoder(pick: MediaModelPick) -> bool:
+    """Whether this pick's pipeline fetches an encoder that its own directory cannot hold.
+
+    HiDream-I1 loads unsloth/Meta-Llama-3.1-8B-Instruct unconditionally, around 16 GB, so a
+    local directory is not evidence that nothing will be downloaded.
+    """
+    from core.inference.diffusion_families import detect_family_for_pick
+
+    # Both needles: the on-disk directory is often named nothing like the model, and a
+    # recognised family is what decides. An unrecognised one keeps the shortcut, since
+    # planning a local path always fails and refusing every on-device model is worse.
+    for needle in (pick.model_id, pick.model_path):
+        if not needle:
+            continue
+        try:
+            fam = detect_family_for_pick(needle, pick.gguf_filename, None)
+        except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
+            continue
+        if fam is not None:
+            return getattr(fam, "name", "") in _EXTERNAL_ENCODER_FAMILIES
+    return False
 
 
 def _normalized_pick(pick: MediaModelPick) -> MediaModelPick:
@@ -752,7 +821,12 @@ def _missing_download_bytes(
     # unverifiable and would refuse every on-device model. Video is excluded: a local MiniMax-H3
     # modular pipeline still substitutes a hosted quantized conditioner, tens of GB the loader
     # fetches during assembly, so it has to be planned like any other pick.
-    if owner == DIFFUSION and not target.gguf_filename and Path(target.model_path).is_dir():
+    if (
+        owner == DIFFUSION
+        and not target.gguf_filename
+        and Path(target.model_path).is_dir()
+        and not _needs_external_encoder(target)
+    ):
         return 0
     try:
         ordinal = _plan_gpu_ordinal()

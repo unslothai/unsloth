@@ -1364,6 +1364,56 @@ async def _async_none(*args, **kwargs):
     return None
 
 
+def test_a_switch_waits_for_the_other_media_backend(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # The load route takes the GPU through the arbiter, whose cross-owner handoff unloads
+    # whatever holds it, so a video generation must not be cancelled by an image switch.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
+    monkeypatch.setattr(mas, "_other_backend_busy", lambda owner: True)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_nested_ref2va_checkpoint_names_its_own_partition():
+    # A qualified variant lives at ref2va/minimax_h3_ref2va-*.gguf, and the loader derives the
+    # task from the basename, so the whole relative path must not decide it.
+    pick = mas.MediaModelPick(
+        "unsloth/MiniMax-H3-GGUF",
+        "unsloth/MiniMax-H3-GGUF",
+        "ref2va/minimax_h3_ref2va-Q4_K_M.gguf",
+        "gguf",
+    )
+
+    assert mas._expected_partition(pick) == "ref2va"
+
+
+def test_a_hidream_pipeline_is_planned_despite_being_local(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # HiDream loads a separate ~16 GB encoder repo, so a directory on disk is not evidence
+    # that nothing will be downloaded.
+    pipeline = tmp_path / "hidream"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
+    backend.missing_bytes = 16_000_000_000
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("HiDream-ai/HiDream-I1-Dev")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module
