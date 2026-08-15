@@ -187,6 +187,8 @@ def _has_canonical_safetensors(load_dir) -> bool:
         )
     except OSError:
         return False
+
+
 # A LoRA directory can carry a copied config.json and tokenizer beside these, and
 # ModelConfig would then resolve its base model and fetch weights this resolver
 # promises never to download.
