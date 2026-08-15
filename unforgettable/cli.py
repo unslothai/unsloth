@@ -26,14 +26,13 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from unforgettable.agents.retriever import DEFAULT_RETRIEVE_KINDS
-from unforgettable.constants import ADMIT_FROM_STATUSES, KINDS, STATUSES
+from unforgettable.constants import KINDS, STATUSES
 from unforgettable.eyes.gate import contradictions
 from unforgettable.eyes.probes import list_probes, run_probes
 from unforgettable.store.compact import run_compact
 from unforgettable.store.compile import (
     get_compiled,
     list_compiled,
-    pin_compiled,
     unpin_compiled,
 )
 from unforgettable.store.db import default_db_path
@@ -41,18 +40,15 @@ from unforgettable.store.records import (
     ROLLOUT_CONTACTS,
     ROLLOUT_OUTCOMES,
     get_record,
-    insert_record,
     list_admissions,
     list_inject_stats,
     list_records,
     list_rollouts,
-    set_record_status,
 )
 from unforgettable.sidecar.adapters import (
     ADAPTER_STATUSES,
     get_adapter,
     list_adapters,
-    promote_adapter,
     rollback_adapter,
 )
 from unforgettable.sidecar.eval import eval_adapter
@@ -63,16 +59,23 @@ from unforgettable.sidecar.pack import (
 )
 from unforgettable.sidecar.train import FAKE_BASE_MODEL, FakeTrainBackend, train_pack
 from unforgettable.store.search import search_records
-from unforgettable.supervisor import (
-    SKIP_VOTE_KINDS,
-    VOTER_OFF,
-    Vote,
-    config_from_env,
-    request_mine_sync,
-    request_vote_sync,
-    resolve_supervisor_host,
-    voter_blocks,
+from unforgettable.operators import (
+    CLI_ADMIT_REASON,
+    CLI_REJECT_REASON,
+    ERROR_BLOCKED,
+    ERROR_INVALID,
+    ERROR_NO_HOST,
+    ERROR_REFUSED,
+    ERROR_UNKNOWN,
+    ERROR_VOTER_OFF,
+    admit_record,
+    compile_record,
+    mine_store,
+    promote_adapter_record,
+    reject_record,
+    review_proposed,
 )
+from unforgettable.supervisor import resolve_supervisor_host
 
 DEFAULT_SEARCH_TOP = 20
 DEFAULT_LIST_LIMIT = 20
@@ -85,8 +88,6 @@ CLI_ADAPTER_PATH_CHARS = 56
 TRAIN_RECIPES = ("sft", "distill", "preference")
 TRAIN_BACKENDS = ("fake", "unsloth")
 UNSLOTH_BASE_REQUIRED = "--base is required when --backend is unsloth"
-CLI_ADMIT_REASON = "cli admit"
-CLI_REJECT_REASON = "cli reject"
 UNKNOWN_ID_EXIT = 2
 APPLY_CONFLICT_EXIT = 2
 MISSING_DB_EXIT = 2
@@ -272,61 +273,49 @@ def _supervisor_host():
     return resolve_supervisor_host()
 
 
-def _maybe_vote(
-    candidate: dict[str, Any],
-    *,
-    db_path: Path,
-    force: bool,
-) -> tuple[int, Vote | None]:
-    cfg = config_from_env()
-    if cfg.voter == VOTER_OFF:
-        return 0, None
-    vote = request_vote_sync(
-        candidate,
-        host=_supervisor_host(),
-        config=cfg,
-        db_path=db_path,
-    )
+def _print_vote(outcome) -> None:
+    if outcome.vote is None:
+        return
     print(
-        f"voter {vote.decision}: {vote.reason}",
+        f"voter {outcome.vote.decision}: {outcome.vote.reason}",
         file=sys.stderr,
     )
-    if voter_blocks(vote, force=force, config=cfg):
-        print(VOTER_DENIED.format(reason=vote.reason), file=sys.stderr)
-        return UNKNOWN_ID_EXIT, vote
-    return 0, vote
 
 
 def _cmd_admit(args: argparse.Namespace, db_path: Path) -> int:
-    existing = get_record(args.id, db_path=db_path)
-    if existing is None:
+    outcome = admit_record(
+        args.id,
+        force=args.force,
+        db_path=db_path,
+        host=_supervisor_host(),
+        reason=CLI_ADMIT_REASON,
+    )
+    _print_vote(outcome)
+    if outcome.error_kind == ERROR_UNKNOWN:
         return _unknown_id(args.id)
-    if not args.force and existing["status"] not in ADMIT_FROM_STATUSES:
+    if outcome.error_kind == ERROR_REFUSED:
         print(
-            ADMIT_STATUS_REFUSED.format(status=existing["status"]),
+            ADMIT_STATUS_REFUSED.format(status=outcome.error_detail),
             file=sys.stderr,
         )
         return UNKNOWN_ID_EXIT
-    code, _vote = _maybe_vote(existing, db_path=db_path, force=args.force)
-    if code:
-        return code
-    try:
-        rec = set_record_status(
-            args.id, "active", reason=CLI_ADMIT_REASON, db_path=db_path
-        )
-    except KeyError:
-        return _unknown_id(args.id)
-    _print_json(rec)
+    if outcome.error_kind == ERROR_BLOCKED:
+        print(VOTER_DENIED.format(reason=outcome.error_detail), file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    if not outcome.ok or outcome.record is None:
+        return UNKNOWN_ID_EXIT
+    _print_json(outcome.record)
     return 0
 
 
 def _cmd_reject(args: argparse.Namespace, db_path: Path) -> int:
     reason = args.reason if args.reason else CLI_REJECT_REASON
-    try:
-        rec = set_record_status(args.id, "rejected", reason=reason, db_path=db_path)
-    except KeyError:
+    outcome = reject_record(args.id, reason=reason, db_path=db_path)
+    if outcome.error_kind == ERROR_UNKNOWN:
         return _unknown_id(args.id)
-    _print_json(rec)
+    if not outcome.ok or outcome.record is None:
+        return UNKNOWN_ID_EXIT
+    _print_json(outcome.record)
     return 0
 
 
@@ -366,18 +355,23 @@ def _cmd_compiled(_args: argparse.Namespace, db_path: Path) -> int:
 
 
 def _cmd_compile(args: argparse.Namespace, db_path: Path) -> int:
-    existing = get_record(args.id, db_path=db_path)
-    if existing is None:
+    outcome = compile_record(
+        args.id,
+        db_path=db_path,
+        host=_supervisor_host(),
+    )
+    _print_vote(outcome)
+    if outcome.error_kind == ERROR_UNKNOWN:
         return _unknown_id(args.id)
-    code, _vote = _maybe_vote(existing, db_path=db_path, force=False)
-    if code:
-        return code
-    try:
-        row = pin_compiled(args.id, explicit=True, db_path=db_path)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+    if outcome.error_kind == ERROR_BLOCKED:
+        print(VOTER_DENIED.format(reason=outcome.error_detail), file=sys.stderr)
         return UNKNOWN_ID_EXIT
-    _print_json(row)
+    if outcome.error_kind == ERROR_INVALID:
+        print(outcome.error_detail, file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    if not outcome.ok or outcome.record is None:
+        return UNKNOWN_ID_EXIT
+    _print_json(outcome.record)
     return 0
 
 
@@ -556,127 +550,55 @@ def _cmd_eval(args: argparse.Namespace, db_path: Path) -> int:
 
 
 def _cmd_promote(args: argparse.Namespace, db_path: Path) -> int:
-    adapter = get_adapter(args.id, db_path=db_path)
-    if adapter is None:
+    outcome = promote_adapter_record(
+        args.id,
+        force=args.force,
+        db_path=db_path,
+        host=_supervisor_host(),
+    )
+    _print_vote(outcome)
+    if outcome.error_kind == ERROR_UNKNOWN:
         return _unknown_id(args.id)
-    candidate = {
-        "id": adapter.get("id"),
-        "kind": "adapter",
-        "status": adapter.get("status"),
-        "title": f"adapter {adapter.get('id')}",
-        "body": adapter.get("metrics") or "",
-        "provenance": "mixed",
-        "extra": {
-            "pack_id": adapter.get("pack_id"),
-            "backend": adapter.get("backend"),
-            "recipe": adapter.get("recipe"),
-        },
-    }
-    code, _vote = _maybe_vote(candidate, db_path=db_path, force=args.force)
-    if code:
-        return code
-    try:
-        row = promote_adapter(args.id, force=args.force, db_path=db_path)
-    except KeyError:
-        return _unknown_id(args.id)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+    if outcome.error_kind == ERROR_BLOCKED:
+        print(VOTER_DENIED.format(reason=outcome.error_detail), file=sys.stderr)
         return UNKNOWN_ID_EXIT
-    _print_json(row)
+    if outcome.error_kind == ERROR_INVALID:
+        print(outcome.error_detail, file=sys.stderr)
+        return UNKNOWN_ID_EXIT
+    if not outcome.ok or outcome.record is None:
+        return UNKNOWN_ID_EXIT
+    _print_json(outcome.record)
     return 0
 
 
-def _proposed_for_review(db_path: Path) -> list[dict[str, Any]]:
-    rows = list_records(statuses=["proposed"], db_path=db_path)
-    return [row for row in rows if row.get("kind") not in SKIP_VOTE_KINDS]
-
-
 def _cmd_review(args: argparse.Namespace, db_path: Path) -> int:
-    cfg = config_from_env()
-    if cfg.voter == VOTER_OFF:
+    outcome = review_proposed(
+        apply=args.apply,
+        limit=args.limit,
+        db_path=db_path,
+        host=_supervisor_host(),
+    )
+    if outcome.error_kind == ERROR_VOTER_OFF:
         print("voter off; set UNFORGETTABLE_VOTER=advisory|binding", file=sys.stderr)
         return UNKNOWN_ID_EXIT
-    rows = _proposed_for_review(db_path)[: args.limit]
-    host = _supervisor_host()
-    report = []
-    for rec in rows:
-        vote = request_vote_sync(rec, host=host, config=cfg, db_path=db_path)
-        applied = None
-        if args.apply and vote.decision == "allow":
-            set_record_status(rec["id"], "active", reason="review allow", db_path=db_path)
-            applied = "active"
-        elif args.apply and vote.decision == "deny":
-            set_record_status(
-                rec["id"], "rejected", reason="review deny", db_path=db_path
-            )
-            applied = "rejected"
-        report.append(
-            {
-                "id": rec["id"],
-                "kind": rec["kind"],
-                "title": rec["title"],
-                "decision": vote.decision,
-                "reason": vote.reason,
-                "applied": applied,
-            }
-        )
-    _print_json(report)
+    _print_json(outcome.items or [])
     return 0
 
 
 def _cmd_mine(args: argparse.Namespace, db_path: Path) -> int:
-    cfg = config_from_env()
-    if cfg.voter == VOTER_OFF:
+    outcome = mine_store(
+        apply=args.apply,
+        limit=args.limit,
+        db_path=db_path,
+        host=_supervisor_host(),
+    )
+    if outcome.error_kind == ERROR_VOTER_OFF:
         print(MINE_NEEDS_VOTER, file=sys.stderr)
         return UNKNOWN_ID_EXIT
-    host = _supervisor_host()
-    if host is None:
+    if outcome.error_kind == ERROR_NO_HOST:
         print("mine needs UNFORGETTABLE_SUPERVISOR_URL", file=sys.stderr)
         return UNKNOWN_ID_EXIT
-    proposed = _proposed_for_review(db_path)[: args.limit]
-    rollouts = list_rollouts(limit=args.limit, db_path=db_path)
-    admissions = list_admissions(limit=args.limit, db_path=db_path)
-    items = request_mine_sync(
-        host,
-        proposed=proposed,
-        rollouts=rollouts,
-        admissions=admissions,
-        config=cfg,
-    )
-    report = []
-    for item in items:
-        rec_id = item.get("id")
-        applied = None
-        if rec_id:
-            existing = get_record(rec_id, db_path=db_path)
-            if existing is None:
-                report.append({**item, "applied": None, "error": "unknown id"})
-                continue
-            if args.apply and item.get("decision") == "allow":
-                set_record_status(
-                    rec_id, "active", reason="mine allow", db_path=db_path
-                )
-                applied = "active"
-            elif args.apply and item.get("decision") == "deny":
-                set_record_status(
-                    rec_id, "rejected", reason="mine deny", db_path=db_path
-                )
-                applied = "rejected"
-            report.append({**item, "applied": applied})
-            continue
-        inserted = None
-        if args.apply and item.get("title") and item.get("kind"):
-            inserted = insert_record(
-                kind=item["kind"],
-                title=item["title"],
-                body=item.get("body") or "",
-                provenance="infer",
-                status="proposed",
-                db_path=db_path,
-            )
-            applied = "proposed"
-        report.append({**item, "id": (inserted or {}).get("id"), "applied": applied})
-    _print_json(report)
+    _print_json(outcome.items or [])
     return 0
 
 

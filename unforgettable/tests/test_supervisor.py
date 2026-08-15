@@ -30,6 +30,7 @@ from unforgettable.supervisor import (
     SupervisorConfig,
     coerce_planner_flag,
     config_from_env,
+    config_from_mapping,
     parse_mine,
     parse_vote,
     planner_block,
@@ -231,3 +232,17 @@ def test_resolve_supervisor_host(monkeypatch):
     host = resolve_supervisor_host()
     assert isinstance(host, HttpSupervisor)
     assert host.url.endswith("/s")
+
+
+def test_config_from_mapping_overlays_env(monkeypatch):
+    monkeypatch.setenv("UNFORGETTABLE_VOTER", "advisory")
+    monkeypatch.delenv("UNFORGETTABLE_SUPERVISOR_URL", raising=False)
+    overlaid = config_from_mapping(
+        {"voter": "binding", "supervisor_url": "http://127.0.0.1/s"}
+    )
+    assert overlaid.voter == VOTER_BINDING
+    assert overlaid.url == "http://127.0.0.1/s"
+    kept = config_from_mapping({})
+    assert kept.voter == VOTER_ADVISORY
+    empty = config_from_mapping(None)
+    assert empty.voter == VOTER_ADVISORY

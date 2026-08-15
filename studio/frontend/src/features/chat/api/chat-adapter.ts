@@ -21,6 +21,8 @@ import { resolveInitialConfig } from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
+import { loadUnforgettableSettings } from "@/features/settings/api/unforgettable";
+import { mergeUnforgettableChatExtras } from "@/features/unforgettable/lib/merge-extras";
 import {
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
@@ -5214,10 +5216,15 @@ export function createOpenAIStreamAdapter(
             };
           }
 
+          const unforgettableExtras = mergeUnforgettableChatExtras(
+            params.checkpoint,
+            await loadUnforgettableSettings().catch(() => null),
+          );
           return {
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
+            ...unforgettableExtras,
             ...(continuation ? { continue_final_message: true } : {}),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).

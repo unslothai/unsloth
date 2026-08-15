@@ -38,7 +38,7 @@ These are **not** new architecture. They are leftovers the phase docs parked on 
 |----------|---------------------|
 | `StudioHost.generate` does not load a LoRA | `EpisodeRequest.adapter_id` shrinks standing and sets `GenerateRequest.adapter_path`. FakeHost records the path. StudioHost **ignores** it. Operator path: load the saved LoRA as an ordinary Studio adapter. |
 | Unsloth DPO | Fake backend writes `pairs.jsonl`. `UnslothTrainBackend` with `--recipe preference` raises `NotImplementedError("Unsloth DPO training is not wired")`. |
-| No memory / adapter UI | Inspect is `python -m unforgettable …`. No frontend tests for Unforgettable. |
+| Live LoRA attach still a hole | Settings can set `adapter_id` (shrinks standing). `StudioHost.generate` still ignores `adapter_path`. |
 | Compact is explicit-only | CLI / `memory_compact`. Never at episode end, never on a timer. |
 | Extract stays proposed | Naive `error_fix` and `llm_extract` drafts do not auto-admit. Operator `admit` is the promote path. |
 | No `console_scripts` | Entry is `python -m unforgettable`. |
@@ -112,7 +112,7 @@ MemoryWheels §15. CLI `contradictions` already exists. Next fruit: print a warn
 MemPhase2 A7: write the note only; “no calibration loop, no numeric drift estimate, no auto-distrust of prior sim claims.” Next step that is still small: if an episode writes a `twin_note`, force-propose same-episode sim `procedure` / `claim` rows (or exclude them from sim-biased retrieve). Auto-calibration science stays Phase 6.
 
 **16. Frontend memory browser**
-Parked by every MemPhase as “use the CLI.” Highest-leverage UI: list / search / get / proposed queue / admit-reject / load char split / adapter registry. No new brains — wrap Apache store + CLI semantics. First Studio Unforgettable frontend test would land here.
+**Shipped as first Studio face.** Settings tab + `/unforgettable` dashboard wrap Apache store + `operators.py` (queue, admit/reject, review/mine, compact, compile, adapter registry). Live LoRA attach remains item 8.
 
 **17. Headless / TUI Host**
 MemPhase1 / `TECHNICAL.md` §2.2: “A future TUI implements `Host` and is done.” The protocol is already the contract (`generate`, `complete`, `run_action`, `confirm`). No Studio import required. Good relocatable proof.

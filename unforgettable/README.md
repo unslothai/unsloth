@@ -39,6 +39,7 @@ The inspect CLI and the Apache test suite do not need a GPU.
 1. Load a real inner model as usual (GGUF, safetensors, or a catalog LoRA).
 2. Send chat completions with `model` set to `unforgettable` or `unforgettable/<inner-id>`.
 3. The route strips the alias, runs `unforgettable.loop.episode.run`, and streams tokens plus Studio tool frames (`tool_start` / `tool_end`, …).
+4. **Settings → Unforgettable** holds episode defaults and the approver. **Unforgettable** in the sidebar (under More) opens the dashboard at `/unforgettable` for the proposed queue, notebook, standing, hygiene, and adapter registry.
 
 ```http
 POST /v1/chat/completions

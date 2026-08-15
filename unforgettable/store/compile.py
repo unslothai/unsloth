@@ -223,6 +223,16 @@ def _load_members(db_path=None) -> list[dict[str, Any]]:
     return members
 
 
+def count_compiled(db_path=None) -> int:
+    """Membership count only. Does not refresh or unpin."""
+    conn = get_connection(db_path)
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM compiled").fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
 def list_compiled(db_path=None) -> list[dict[str, Any]]:
     refresh_compiled(db_path)
     return _load_members(db_path)

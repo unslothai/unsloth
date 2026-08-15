@@ -604,6 +604,16 @@ export interface OpenAIChatCompletionsRequest {
    * sends it so the context-usage bar and tok/s readout populate.
    */
   stream_options?: { include_usage?: boolean } | null;
+  planner?: string;
+  planner_model?: string;
+  stakes?: string;
+  confirm_retry?: boolean;
+  skip_standing?: boolean;
+  adapter_id?: string;
+  test_command?: string;
+  max_clones?: number;
+  max_sim_turns?: number;
+  voter_model?: string;
 }
 
 export interface OpenAIChatDelta {

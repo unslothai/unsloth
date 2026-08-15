@@ -3,6 +3,7 @@
 
 import {
   AudioWave01Icon,
+  Bookmark02Icon,
   ChefHatIcon,
   DashboardCircleIcon,
   DownloadSquare01Icon,
@@ -37,6 +38,10 @@ const ITEM_META: Record<
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: DownloadSquare01Icon, labelKey: "shell.navigation.export" },
   api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
+  unforgettable: {
+    icon: Bookmark02Icon,
+    labelKey: "shell.navigation.unforgettable",
+  },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

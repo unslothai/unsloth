@@ -64,6 +64,7 @@ import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
   ArrowRight02Icon,
+  Bookmark02Icon,
   BadgeInfoIcon,
   BubbleChatIcon,
   ChefHatIcon,
@@ -1206,6 +1207,19 @@ export function AppSidebar() {
       },
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/api-monitor" }));
+      },
+    },
+    unforgettable: {
+      icon: Bookmark02Icon,
+      label: t("shell.navigation.unforgettable"),
+      active:
+        pathname === "/unforgettable" || pathname.startsWith("/unforgettable/"),
+      onClick: () => {
+        navigate({ to: "/unforgettable" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/unforgettable" }));
       },
     },
   };

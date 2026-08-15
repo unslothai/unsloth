@@ -18,6 +18,7 @@ import {
   Cancel01Icon,
   CloudIcon,
   CpuIcon,
+  Bookmark02Icon,
   DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
@@ -55,6 +56,7 @@ import { DataTab } from "./tabs/data-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
+import { UnforgettableTab } from "./tabs/unforgettable-tab";
 import { VoiceTab } from "./tabs/voice-tab";
 
 interface TabDef {
@@ -117,6 +119,12 @@ const TABS: TabDef[] = [
     icon: DatabaseSettingIcon,
     badgeKey: "common.new",
   },
+  {
+    id: "unforgettable",
+    labelKey: "settings.tabs.unforgettable",
+    icon: Bookmark02Icon,
+    badgeKey: "common.new",
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
@@ -152,6 +160,8 @@ function renderTab(tab: SettingsTab) {
       return <ApiKeysTab />;
     case "agents":
       return <AgentsTab />;
+    case "unforgettable":
+      return <UnforgettableTab />;
     case "about":
       return <AboutTab />;
   }
@@ -264,6 +274,7 @@ export function SettingsDialog() {
     data: null,
     "api-keys": null,
     agents: null,
+    unforgettable: null,
     about: null,
   });
 

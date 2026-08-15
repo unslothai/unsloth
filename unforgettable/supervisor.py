@@ -162,23 +162,50 @@ def coerce_planner_flag(value: Any) -> Optional[str]:
     return PLANNER_ON if flag_is_on(text) else PLANNER_OFF
 
 
-def config_from_env() -> SupervisorConfig:
-    timeout_raw = _env(SUPERVISOR_TIMEOUT_ENV)
+def _coerce_timeout(value: Any) -> float:
     timeout = DEFAULT_SUPERVISOR_TIMEOUT
-    if timeout_raw:
-        try:
-            timeout = float(timeout_raw)
-        except ValueError:
-            timeout = DEFAULT_SUPERVISOR_TIMEOUT
-        if timeout <= 0:
-            timeout = DEFAULT_SUPERVISOR_TIMEOUT
+    if value is None or value == "":
+        return timeout
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SUPERVISOR_TIMEOUT
+    if timeout <= 0:
+        return DEFAULT_SUPERVISOR_TIMEOUT
+    return timeout
+
+
+def config_from_env() -> SupervisorConfig:
     return SupervisorConfig(
         voter=_normalize_voter(_env(VOTER_ENV)),
         planner=_normalize_planner(_env(PLANNER_ENV)),
         voter_model=_env(VOTER_MODEL_ENV) or None,
         planner_model=_env(PLANNER_MODEL_ENV) or None,
         url=_env(SUPERVISOR_URL_ENV) or None,
-        timeout=timeout,
+        timeout=_coerce_timeout(_env(SUPERVISOR_TIMEOUT_ENV)),
+    )
+
+
+def config_from_mapping(data: dict[str, Any] | None) -> SupervisorConfig:
+    """Overlay a Studio/settings mapping on env defaults. Missing keys keep env."""
+    env = config_from_env()
+    if not data:
+        return env
+    voter = data.get("voter")
+    planner = data.get("planner")
+    voter_model = data.get("voter_model")
+    planner_model = data.get("planner_model")
+    url = data.get("supervisor_url")
+    timeout = data.get("supervisor_timeout")
+    return SupervisorConfig(
+        voter=_normalize_voter(voter) if voter is not None and str(voter).strip() else env.voter,
+        planner=_normalize_planner(planner) if planner is not None else env.planner,
+        voter_model=(str(voter_model).strip() or None) if voter_model is not None else env.voter_model,
+        planner_model=(
+            str(planner_model).strip() or None
+        ) if planner_model is not None else env.planner_model,
+        url=(str(url).strip() or None) if url is not None else env.url,
+        timeout=_coerce_timeout(timeout) if timeout is not None else env.timeout,
     )
 
 

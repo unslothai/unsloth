@@ -19,7 +19,10 @@ from unforgettable.store.records import (
     ensure_default_namespace,
     get_record,
     insert_record,
+    list_records,
+    summarize_records,
     supersede_record,
+    update_proposed_record,
 )
 from unforgettable.store.search import search_records
 
@@ -89,3 +92,91 @@ def test_search_prefers_world_over_infer(db_path):
     hits = search_records("friction steel", db_path=db_path)
     assert hits
     assert hits[0]["id"] == world["id"]
+
+
+def test_summarize_records_groups_status_kind_provenance(db_path):
+    insert_record(
+        kind="claim",
+        title="A",
+        body="a",
+        provenance="world",
+        db_path=db_path,
+    )
+    insert_record(
+        kind="procedure",
+        title="B",
+        body="b",
+        provenance="infer",
+        status="proposed",
+        db_path=db_path,
+    )
+    insert_record(
+        kind="claim",
+        title="C",
+        body="c",
+        provenance="world",
+        status="proposed",
+        db_path=db_path,
+    )
+    summary = summarize_records(db_path=db_path)
+    assert summary["total"] == 3
+    assert summary["by_status"]["active"] == 1
+    assert summary["by_status"]["proposed"] == 2
+    assert summary["by_kind"]["claim"] == 2
+    assert summary["by_kind"]["procedure"] == 1
+    assert summary["by_provenance"]["world"] == 2
+    assert summary["by_provenance"]["infer"] == 1
+    assert summary["by_status"]["rejected"] == 0
+
+
+def test_list_records_offset(db_path):
+    for index in range(3):
+        insert_record(
+            kind="claim",
+            title=f"Row {index}",
+            body=f"body {index}",
+            provenance="world",
+            db_path=db_path,
+        )
+    first = list_records(limit=1, db_path=db_path)
+    second = list_records(limit=1, offset=1, db_path=db_path)
+    assert len(first) == 1
+    assert len(second) == 1
+    assert first[0]["id"] != second[0]["id"]
+
+
+def test_update_proposed_record_edits_in_place(db_path):
+    rec = insert_record(
+        kind="claim",
+        title="Draft",
+        body="old",
+        provenance="infer",
+        status="proposed",
+        db_path=db_path,
+    )
+    updated = update_proposed_record(
+        rec["id"], title="Draft v2", body="new", db_path=db_path
+    )
+    assert updated["id"] == rec["id"]
+    assert updated["status"] == "proposed"
+    assert updated["title"] == "Draft v2"
+    assert updated["body"] == "new"
+    hits = search_records("new", statuses=["proposed"], db_path=db_path)
+    assert any(hit["id"] == rec["id"] for hit in hits)
+
+
+def test_update_proposed_record_refuses_active(db_path):
+    rec = insert_record(
+        kind="claim",
+        title="Live",
+        body="stays",
+        provenance="world",
+        db_path=db_path,
+    )
+    try:
+        update_proposed_record(rec["id"], body="nope", db_path=db_path)
+    except ValueError as exc:
+        assert "proposed" in str(exc)
+    else:
+        raise AssertionError("active rows must not edit in place")
+    assert get_record(rec["id"], db_path=db_path)["body"] == "stays"

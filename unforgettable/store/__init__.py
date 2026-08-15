@@ -25,7 +25,9 @@ from .records import (
     list_records,
     list_rollouts,
     set_record_status,
+    summarize_records,
     supersede_record,
+    update_proposed_record,
 )
 from .search import search_records
 
@@ -44,5 +46,7 @@ __all__ = [
     "list_rollouts",
     "search_records",
     "set_record_status",
+    "summarize_records",
     "supersede_record",
+    "update_proposed_record",
 ]

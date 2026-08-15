@@ -21,6 +21,7 @@ import { Route as projectsRoute } from "./routes/projects";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
 import { Route as studioRoute } from "./routes/studio";
+import { Route as unforgettableRoute } from "./routes/unforgettable";
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -29,6 +30,7 @@ const routeTree = rootRoute.addChildren([
   hubRoute,
   settingsRoute,
   studioRoute,
+  unforgettableRoute,
   chatRoute,
   projectsRoute,
   exportRoute,

@@ -159,6 +159,8 @@ Optional (`getattr` skip):
 | File | What it may do |
 |------|----------------|
 | `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, enabled-tool union, `supervise` one-shot |
+| `studio/backend/routes/unforgettable.py` | Thin HTTP face over `operators.py` + store inspect. No status math. |
+| `studio/backend/utils/unforgettable_settings.py` | Persisted episode defaults and voter knobs (`/api/settings/unforgettable`) |
 | `studio/backend/routes/inference.py` | If `is_virtual_model(model)` and not `in_inner_generate()` → `handle_chat_completions`; catalog entry |
 | `studio/backend/core/inference/tools.py` | `*MEMORY_TOOLS` + `*CONTACT_TOOLS` on `ALL_TOOLS` (inner generate only; `_select_request_tools` strips them when `not in_inner_generate()`); `execute_tool` dispatches `memory_*` / `rims_*` to Apache `dispatch` |
 | `studio/backend/core/inference/tool_stream_exec.py` | Copies ContextVars into the tool worker so episode bind survives the thread |
@@ -196,7 +198,8 @@ Production modules only. Tests are listed in §5. Plans under `plans/` are chart
 |------|-------------|
 | `__init__.py` | Version `0.1.0`; `VIRTUAL_MODEL_ID`, `is_virtual_model`, `inner_model_id` |
 | `__main__.py` | `python -m unforgettable` → `cli.main` |
-| `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback / review / mine. `compact` and `pack` preview unless `--apply`. |
+| `cli.py` | argparse inspect / compact / compile / pack / train / eval / promote / rollback / review / mine. `compact` and `pack` preview unless `--apply`. Thin wrap of `operators.py`. |
+| `operators.py` | Shared admit / reject / review / mine / compile / promote / `summarize_store` used by CLI and Studio. Does not change `admit()` predicates. |
 | `constants.py` | Kinds, statuses, provenances, namespace defaults, `PROVENANCE_WEIGHT` |
 | `host.py` | `Host` protocol, `GenerateRequest` / `GenerateResult` / `ToolTrace`, run-action / supervise constants |
 | `supervisor.py` | Approver (vote/mine) and planner: config, prompts, parse, `HttpSupervisor` |
@@ -406,7 +409,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **242** tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`.
+Apache suite: **255** tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`.
 
 | File | What it locks |
 |------|----------------|
@@ -442,7 +445,7 @@ Names that later phases must keep green: `test_episode_fail_sim_retry_writes_err
 
 `studio/backend/tests/test_unforgettable_stream.py` — `_rewrite_inner_frame` (tool frames unchanged, `finish_reason` nulled, inner `[DONE]` dropped), stream drain/`aclose`, enabled-tools union, `run_action`/`confirm` SSE, ContextVar copy through `stream_tool_execution`. Needs Studio backend on `PYTHONPATH` and Studio Python extras (`structlog`, …).
 
-There is no frontend Unforgettable test (no memory UI yet).
+Frontend: `studio/frontend/tests/unforgettable-merge-extras.test.ts` — virtual-model extras merge and settings search index. Studio settings/routes: `studio/backend/tests/test_unforgettable_settings.py`, `test_unforgettable_routes.py`.
 
 ---
 
@@ -492,7 +495,7 @@ python -m pytest unforgettable/tests -q --tb=short
 python -m pytest unforgettable/tests/test_episode.py -q
 ```
 
-Expect **242 passed**. Runtime is a few seconds on a laptop.
+Expect **255 passed**. Runtime is a few seconds on a laptop.
 
 If the environment has no `pytest` in the project venv:
 
@@ -535,7 +538,7 @@ python -m unforgettable --db "$STUDIO_HOME/memory/memory.db" promote <adapter-id
 
 - `unforgettable` imports with no Studio on `sys.path`.
 - `import unforgettable.sidecar` does not import `unsloth` or `torch`.
-- `pytest unforgettable/tests` 242 passed.
+- `pytest unforgettable/tests` 255 passed.
 - FakeHost happy path: world fail → sim → world ok → `error_fix` **proposed**, sim **removed**.
 - FakeHost drift path: sim ok + world retry fail → active `twin_note`, sim **kept**.
 - Empty adapter set / no `adapter_id` leaves Phase 4 inject unchanged.

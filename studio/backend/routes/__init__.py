@@ -22,6 +22,7 @@ from routes.openai_codex_auth import router as openai_codex_auth_router
 from routes.mcp_servers import router as mcp_servers_router
 from routes.rag import router as rag_router
 from routes.research_runs import router as research_runs_router
+from routes.unforgettable import router as unforgettable_router
 
 __all__ = [
     "training_router",
@@ -40,7 +41,8 @@ __all__ = [
     "mcp_servers_router",
     "rag_router",
     "research_runs_router",
+    "unforgettable_router",
 ]
 
 # Bind the re-export so the import-hoist verifier counts it as used.
-_ = (rag_router, video_router, research_runs_router)
+_ = (rag_router, video_router, research_runs_router, unforgettable_router)

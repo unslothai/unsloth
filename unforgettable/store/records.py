@@ -183,6 +183,7 @@ def list_records(
     statuses: Optional[Iterable[str]] = None,
     kinds: Optional[Iterable[str]] = None,
     limit: Optional[int] = None,
+    offset: Optional[int] = None,
     db_path=None,
 ) -> list[dict[str, Any]]:
     clauses = []
@@ -200,15 +201,106 @@ def list_records(
         args.extend(kind_list)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"SELECT * FROM records {where} ORDER BY updated_at DESC"
+    skip = int(offset or 0)
+    if skip < 0:
+        skip = 0
     if limit is not None:
         sql += " LIMIT ?"
         args.append(limit)
+        if skip:
+            sql += " OFFSET ?"
+            args.append(skip)
+    elif skip:
+        sql += " LIMIT -1 OFFSET ?"
+        args.append(skip)
     conn = get_connection(db_path)
     try:
         rows = conn.execute(sql, args).fetchall()
         return [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def summarize_records(
+    *,
+    namespace_id: Optional[str] = None,
+    db_path=None,
+) -> dict[str, Any]:
+    """Count records by status, kind, and provenance. Empty buckets stay 0."""
+    clauses = []
+    args: list[Any] = []
+    if namespace_id:
+        clauses.append("namespace_id = ?")
+        args.append(namespace_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT status, kind, provenance, COUNT(*) AS n "
+            f"FROM records {where} GROUP BY status, kind, provenance",
+            args,
+        ).fetchall()
+        total_row = conn.execute(f"SELECT COUNT(*) FROM records {where}", args).fetchone()
+    finally:
+        conn.close()
+    by_status = {name: 0 for name in STATUSES}
+    by_kind = {name: 0 for name in KINDS}
+    by_provenance = {name: 0 for name in PROVENANCES}
+    cells: list[dict[str, Any]] = []
+    for row in rows:
+        count = int(row["n"])
+        status = row["status"]
+        kind = row["kind"]
+        provenance = row["provenance"]
+        by_status[status] = by_status.get(status, 0) + count
+        by_kind[kind] = by_kind.get(kind, 0) + count
+        by_provenance[provenance] = by_provenance.get(provenance, 0) + count
+        cells.append(
+            {
+                "status": status,
+                "kind": kind,
+                "provenance": provenance,
+                "count": count,
+            }
+        )
+    return {
+        "total": int(total_row[0]) if total_row else 0,
+        "by_status": by_status,
+        "by_kind": by_kind,
+        "by_provenance": by_provenance,
+        "cells": cells,
+    }
+
+
+def update_proposed_record(
+    record_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    db_path=None,
+) -> dict[str, Any]:
+    """In-place title/body edit. Refuses anything that is not proposed."""
+    rec = get_record(record_id, db_path=db_path)
+    if rec is None:
+        raise KeyError(record_id)
+    if rec["status"] != "proposed":
+        raise ValueError("only proposed records can be edited in place")
+    new_title = _clip(title if title is not None else rec["title"], RECORD_TITLE_CHARS)
+    new_body = _clip(body if body is not None else rec["body"], RECORD_BODY_CHARS)
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE records SET title = ?, body = ?, updated_at = ? WHERE id = ?",
+            (new_title, new_body, _now(), record_id),
+        )
+        _rewrite_fts(conn, record_id, new_title, new_body)
+        conn.commit()
+    finally:
+        conn.close()
+    found = get_record(record_id, db_path=db_path)
+    if found is None:
+        raise RuntimeError("proposed update did not persist")
+    return found
 
 
 def _rewrite_fts(conn, record_id: str, title: str, body: str) -> None:
