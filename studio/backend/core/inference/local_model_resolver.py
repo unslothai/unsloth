@@ -311,17 +311,30 @@ def _fp8_suits_host(quant_method: str) -> bool:
     return major * 10 + minor >= 89
 
 
-def _bitsandbytes_suits_host() -> bool:
-    """Whether a prequantized bitsandbytes checkpoint can be built on this host.
+# The runtime each quantizer needs. Transformers builds the quantizer from the
+# checkpoint's own config, so a method whose package is absent fails the load outright.
+_QUANTIZER_RUNTIMES = {
+    "bitsandbytes": ("bitsandbytes",),
+    "gptq": ("gptqmodel", "auto_gptq"),
+    "awq": ("awq", "autoawq"),
+    "compressed-tensors": ("compressed_tensors",),
+}
 
-    Transformers constructs the quantizer from the checkpoint's own config, which fails
-    outright when the package is missing. find_spec keeps the probe off the import path.
+
+def _quantizer_runtime_present(quant_method: str) -> bool:
+    """Whether the package a recognized quantizer needs is installed.
+
+    find_spec keeps the probe off the import path. An unrecognized method has no known
+    runtime to look for, so it is withheld rather than guessed at.
     """
+    modules = _QUANTIZER_RUNTIMES.get(quant_method)
+    if not modules:
+        return False
     try:
         from importlib.util import find_spec
-        return find_spec("bitsandbytes") is not None
+        return any(find_spec(name) is not None for name in modules)
     except Exception:
-        return True
+        return False
 
 
 def _quantization_suits_host(config: dict) -> bool:
@@ -345,7 +358,7 @@ def _quantization_suits_host(config: dict) -> bool:
         return False
     if method in _FP8_QUANT_METHODS:
         return _fp8_suits_host(method)
-    return method != "bitsandbytes" or _bitsandbytes_suits_host()
+    return _quantizer_runtime_present(method)
 
 
 def _read_json(path):

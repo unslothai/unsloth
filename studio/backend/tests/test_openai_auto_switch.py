@@ -8419,9 +8419,9 @@ def test_a_transformers_quantization_is_not_offered_on_an_mlx_host(tmp_path, mon
     assert resolver.local_servable_model(info) is None
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
     # Transformers builds the quantizer from the checkpoint, so the package has to be here.
-    monkeypatch.setattr(resolver, "_bitsandbytes_suits_host", lambda: False)
+    monkeypatch.setattr(resolver, "_quantizer_runtime_present", lambda _m: False)
     assert resolver.local_servable_model(info) is None
-    monkeypatch.setattr(resolver, "_bitsandbytes_suits_host", lambda: True)
+    monkeypatch.setattr(resolver, "_quantizer_runtime_present", lambda _m: True)
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -8714,3 +8714,20 @@ def test_non_audio_bytes_are_rejected_before_the_switch(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert exc.value.status_code == 400
+
+
+def test_an_unknown_quantizer_is_withheld(tmp_path, monkeypatch):
+    # Codex P2: GPTQ, AWQ and anything unrecognized were accepted by the fallback even
+    # though Studio ships none of those runtimes, so the load failed after the swap.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    for method in ("gptq", "awq", "something-invented"):
+        path = _local_checkpoint(tmp_path, f"q-{method}")
+        (path / "config.json").write_text(
+            '{"architectures": ["Qwen3ForCausalLM"],'
+            f' "quantization_config": {{"quant_method": "{method}"}}}}'
+        )
+        info = SimpleNamespace(id = str(path), path = str(path))
+        assert resolver.local_servable_model(info) is None, method
