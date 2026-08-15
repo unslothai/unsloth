@@ -3742,6 +3742,7 @@ class DiffusionBackend:
                             lora_specs = loras,
                             text_encoder_quant = text_encoder_quant,
                             fetch_base = fetch_base,
+                            local_files_only = local_files_only,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -4324,6 +4325,7 @@ class DiffusionBackend:
         lora_specs: Optional[list[tuple[str, float]]] = None,
         text_encoder_quant: Optional[str] = None,
         fetch_base: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -4376,6 +4378,11 @@ class DiffusionBackend:
                     scheme = scheme,
                     # Reject a checkpoint with a different Linear filter so prequant matches runtime-quant.
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                    # A load nobody asked for may not fetch this checkpoint either: it is a
+                    # multi-GB download like any other, and the switch verified only what the
+                    # plan listed. A cache miss falls out to the dense path, which is refused
+                    # for the same reason a line below.
+                    local_files_only = local_files_only,
                     # Only enforced when the caller forces fp8 fast-accum; a checkpoint that baked the other choice falls to the dense path.
                     fast_accum = fast_accum,
                     # The root _uncached_prequant_repo cleared this load against, so its hit is
@@ -4417,6 +4424,9 @@ class DiffusionBackend:
             torch_dtype = dtype,
             token = hf_token,
             cache_dir = hub_cache_dir(),
+            # The dense bf16 transformer is the largest single fetch on this path, so an
+            # API-initiated load has to be refused here rather than allowed to pull it.
+            local_files_only = local_files_only,
         )
         pipe = self._assemble_pipe(
             pipeline_cls,
