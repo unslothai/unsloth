@@ -292,6 +292,8 @@ _QUANTIZER_RUNTIMES = {
     "gptq": ("gptqmodel", "auto_gptq"),
     "awq": ("awq", "autoawq"),
     "compressed-tensors": ("compressed_tensors",),
+    # this repo's own portable export path writes these, and transformers reloads them.
+    "torchao": ("torchao",),
 }
 
 
@@ -407,6 +409,9 @@ def _weight_shards_all_present(load_dir) -> bool:
                 or ".." in relative.parts
                 or any(":" in part for part in relative.parts)
             ):
+                return False
+            # the index is picked but its filenames are opened, so a .bin here loads a pickle.
+            if relative.suffix != ".safetensors":
                 return False
             if not (load_dir / relative).is_file():
                 return False

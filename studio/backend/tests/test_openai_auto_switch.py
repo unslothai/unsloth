@@ -8856,6 +8856,23 @@ def test_a_drive_qualified_shard_path_is_withheld(tmp_path):
         assert resolver.local_servable_model(info) is None, escape
 
 
+def test_a_pickle_shard_named_by_a_safetensors_index_is_withheld(tmp_path):
+    # codex P1: the index is selected but its filenames are opened, unpickling a .bin shard.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "PickleShard")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "pytorch_model.bin").write_bytes(b"x" * 32)
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "pytorch_model.bin"}}'
+    )
+    assert resolver.local_servable_model(info) is None
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) == (False, ())
+
+
 def test_the_n_refusal_names_n_not_the_endpoint(monkeypatch):
     # the default gguf_only wording sent the caller to the endpoint they were already on.
     from fastapi import HTTPException
