@@ -6821,17 +6821,22 @@ class LlamaCppBackend:
     _ARGV_RPC = frozenset({"--rpc"})
 
     @staticmethod
-    def _binary_ships_no_gpu_backend(binary: Optional[str] = None) -> bool:
+    def _binary_ships_no_gpu_backend(
+        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    ) -> bool:
         """Whether a split-library build beside ``binary`` carries no GPU backend at all.
 
         Stricter than ``_backend_lacks_gpu_lib``, which reads cuda, hip and vulkan only:
         a SYCL, MUSA, CANN or OpenCL build offloads too, and pricing its weights against
         host RAM would refuse a load the accelerator can hold. A static or unrecognised
-        layout, and any directory this cannot read, answer False so a custom GPU build
-        keeps its VRAM credit.
+        layout, a directory this cannot read, and a GGML_BACKEND_PATH pointing the child
+        at plugins elsewhere all answer False so a GPU build keeps its VRAM credit.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
+            return False
+        source = os.environ if env is None else env
+        if str(source.get("GGML_BACKEND_PATH", "") or "").strip():
             return False
         try:
             files = tuple(path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file())
@@ -6846,6 +6851,7 @@ class LlamaCppBackend:
         self,
         cmd: Iterable[str],
         detected_gpus: Iterable[tuple],
+        env: Optional[Mapping[str, str]] = None,
         *,
         child_has_no_gpu: bool = False,
     ) -> Optional[str]:
@@ -6870,8 +6876,11 @@ class LlamaCppBackend:
         model_path = _extra_args_device(argv, self._ARGV_MODEL)
         if not model_path:
             return None
-        # --rpc places layers on remote devices this cannot size
-        if (_extra_args_device(argv, self._ARGV_RPC) or "").strip():
+        # rpc places layers on remote devices this cannot size, in either spelling
+        _env = os.environ if env is None else env
+        if (_extra_args_device(argv, self._ARGV_RPC) or "").strip() or str(
+            _env.get("LLAMA_ARG_RPC", "") or ""
+        ).strip():
             return None
         try:
             model_bytes = self._get_gguf_size_bytes(model_path)
@@ -6937,8 +6946,7 @@ class LlamaCppBackend:
             f"{headroom_mib / 1024:.0f} GB of that is kept free for the rest of the "
             f"system, leaving about {usable_gb} GB usable. The weights are memory-mapped, "
             "so the machine pages them in and out until it stops responding and the OS "
-            "kills the app. Use a smaller or more quantized GGUF, lower the context "
-            "length, or free memory."
+            "kills the app. Use a smaller or more quantized GGUF, or free memory."
         )
 
     # Skip the wait when the last kill is older than this; the driver has
@@ -16050,10 +16058,11 @@ class LlamaCppBackend:
                 _offload_msg = self._launch_host_shortfall_message(
                     cmd,
                     _detected_gpus,
+                    env,
                     child_has_no_gpu = (
                         _cpu_only_zero_offload
                         or _arch_gate_forced_cpu
-                        or self._binary_ships_no_gpu_backend(binary)
+                        or self._binary_ships_no_gpu_backend(binary, env)
                     ),
                 )
                 if _offload_msg:

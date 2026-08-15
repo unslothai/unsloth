@@ -1085,7 +1085,7 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
     gpu_build, gguf = _offload_backend(
         tmp_path, gguf_gb = 20, free_mib = 16_384, avail_mib = 8_192, monkeypatch = monkeypatch
     )
-    gpu_build._binary_ships_no_gpu_backend = lambda _binary = None: False
+    gpu_build._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: False
     assert _launch(gpu_build, gguf)["cmd"]
 
     cpu_dir = tmp_path / "cpu"
@@ -1097,7 +1097,7 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
         avail_mib = 8_192,
         monkeypatch = monkeypatch,
     )
-    cpu_build._binary_ships_no_gpu_backend = lambda _binary = None: True
+    cpu_build._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: True
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(cpu_build, gguf2)
 
@@ -1164,3 +1164,42 @@ def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
         is None
     )
     assert backend._launch_host_shortfall_message([*argv, "--rpc", "  "], [(0, 4877)]) is not None
+
+
+
+def test_an_rpc_env_launch_abstains(tmp_path, monkeypatch):
+    """llama.cpp reads LLAMA_ARG_RPC as the environment twin of --rpc, so the guard has
+    to see the child environment or it refuses the same distributed launch."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    assert backend._launch_host_shortfall_message(argv, [(0, 4877)], {}) is not None
+    assert (
+        backend._launch_host_shortfall_message(
+            argv, [(0, 4877)], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}
+        )
+        is None
+    )
+
+
+def test_an_external_backend_path_keeps_its_vram_credit(tmp_path):
+    """GGML_BACKEND_PATH points the child at plugins outside the lib directory, so a
+    cpu-only layout beside the binary is no longer proof the child cannot offload."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"x")
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    prefix = "" if sys.platform == "win32" else "lib"
+    extension = "dll" if sys.platform == "win32" else "so"
+    (lib_dir / f"{prefix}ggml-cpu.{extension}").write_bytes(b"x")
+
+    with patch("core.inference.llama_cpp._llama_lib_dir", return_value = lib_dir):
+        assert LlamaCppBackend._binary_ships_no_gpu_backend(str(binary), {}) is True
+        assert (
+            LlamaCppBackend._binary_ships_no_gpu_backend(
+                str(binary), {"GGML_BACKEND_PATH": "/opt/ggml-cuda"}
+            )
+            is False
+        )

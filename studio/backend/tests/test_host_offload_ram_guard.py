@@ -26,6 +26,8 @@ class TestHostOffloadShortfall:
         # need rounds up and usable rounds down, so the pair never reads as a tie
         assert "12 GB" in msg and "10 GB" in msg and "8 GB usable" in msg
         assert "quantized GGUF" in msg
+        # the guard prices weights only, so context length cannot change its verdict
+        assert "context" not in msg
 
     def test_same_spill_on_a_large_ram_host_allows(self):
         # Deliberate CPU offload is a supported mode; only a shortfall refuses.
