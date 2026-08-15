@@ -100,16 +100,12 @@ def enabled(monkeypatch):
 # ── resolving a name ────────────────────────────────────────────────
 
 
-def test_a_diffusers_directory_resolves_as_a_kindless_pick(catalog, tmp_path):
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+def test_a_diffusers_directory_resolves_as_a_kindless_pick(flux):
 
     pick = mas.resolve_local_media_model("black-forest-labs/FLUX.1-dev", task = mas.IMAGE_TASK)
 
     # No kind and no filename: the load route detects those, including the single-file case.
-    assert pick == mas.MediaModelPick("black-forest-labs/FLUX.1-dev", str(pipeline))
+    assert pick == mas.MediaModelPick("black-forest-labs/FLUX.1-dev", str(flux))
 
 
 def test_a_gguf_repo_resolves_bare_and_per_quant(catalog, tmp_path):
@@ -194,22 +190,36 @@ def test_the_index_is_keyed_by_task(catalog, tmp_path):
     assert mas.resolve_local_media_model("unsloth/Wan2.2", task = mas.IMAGE_TASK) is None
 
 
-def test_an_unknown_name_resolves_to_nothing(catalog):
-    assert mas.resolve_local_media_model("someone/else", task = mas.IMAGE_TASK) is None
-    assert mas.resolve_local_media_model("", task = mas.IMAGE_TASK) is None
+def test_what_the_index_refuses_to_advertise(catalog, tmp_path):
+    # A cancelled pull still lists and fails predictably; several checkpoints with no
+    # model_index.json is a directory both load routes reject rather than choose between; and an
+    # absolute path is what the ./models and LM Studio scanners report as the id, not something
+    # an API caller should have to send.
+    half = tmp_path / "half"
+    half.mkdir()
+    (half / "model_index.json").write_text("{}")
+    partial = _info("org/half", half, task = mas.IMAGE_TASK)
+    partial.partial = True
+    catalog.append(partial)
 
+    ambiguous = tmp_path / "two-checkpoints"
+    ambiguous.mkdir()
+    for name in ("a.safetensors", "b.safetensors"):
+        (ambiguous / name).write_bytes(b"")
+    catalog.append(_info("org/ambiguous", ambiguous, task = mas.IMAGE_TASK))
 
-def test_an_absolute_path_is_not_an_advertised_name(catalog, tmp_path):
-    pipeline = tmp_path / "local-only"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    row = _info(str(pipeline), pipeline, task = mas.IMAGE_TASK, display_name = "Local Only")
-    row.model_id = None
-    catalog.append(row)
+    local = tmp_path / "local-only"
+    local.mkdir()
+    (local / "model_index.json").write_text("{}")
+    by_path = _info(str(local), local, task = mas.IMAGE_TASK, display_name = "Local Only")
+    by_path.model_id = None
+    catalog.append(by_path)
 
-    # The scanners report the on-disk path as the id; a caller should not have to send one.
-    assert mas.resolve_local_media_model(str(pipeline), task = mas.IMAGE_TASK) is None
+    for name in ("someone/else", "", "org/half", "org/ambiguous", str(local)):
+        assert mas.resolve_local_media_model(name, task = mas.IMAGE_TASK) is None
+    # The path-named model is still reachable by its label, which is a name a caller can send.
     assert mas.resolve_local_media_model("Local Only", task = mas.IMAGE_TASK) is not None
+    assert mas.available_media_model_ids(mas.IMAGE_TASK) == ["Local Only"]
 
 
 # ── the switch ──────────────────────────────────────────────────────
@@ -290,6 +300,77 @@ def loads(monkeypatch, backend):
     return started
 
 
+@pytest.fixture
+def flux(catalog, tmp_path):
+    """A local FLUX pipeline in the catalog: the stand-in target for most switch tests."""
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    return pipeline
+
+
+@pytest.fixture
+def cached_gguf(catalog, tmp_path):
+    """A GGUF repo in the HF cache, whose snapshot entries are symlinks into blobs/."""
+    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
+    catalog.append(
+        _info(
+            "city96/FLUX.1-dev-gguf",
+            repo,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
+    return repo
+
+
+@pytest.fixture
+def two_bpw(catalog, tmp_path):
+    """Two builds of one quant, which the backend's published token cannot tell apart."""
+    for bpw in ("3.53", "3.97"):
+        (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
+        catalog.append(
+            _info(
+                f"z-IQ4_XS-{bpw}bpw",
+                tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf",
+                task = mas.IMAGE_TASK,
+                model_format = "gguf",
+            )
+        )
+    return tmp_path
+
+
+@pytest.fixture
+def hidream(catalog, tmp_path):
+    """A local HiDream pipeline, whose Llama encoder lives outside its own directory."""
+    pipeline = tmp_path / "hidream"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
+    return pipeline
+
+
+@pytest.fixture
+def h3_modular(catalog, tmp_path):
+    """A dense MiniMax-H3 directory, which carries modular_model_index.json instead."""
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+    return modular
+
+
+def _client(router, prefix):
+    """A TestClient over one router, with the error handlers the real app installs."""
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(router, prefix = prefix)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    return TestClient(app)
+
+
 def _switch(
     name,
     *,
@@ -306,26 +387,18 @@ def _switch(
     )
 
 
-def test_the_switch_is_inert_while_the_setting_is_off(catalog, monkeypatch, loads):
+def test_the_switch_is_inert_unless_it_is_on_and_named(catalog, enabled, loads, monkeypatch):
+    _switch(None)
+    _switch("   ")
     monkeypatch.setattr(settings, "get_media_auto_switch_enabled", lambda: False)
     # Not even an unknown name is refused: `model` keeps its old informational meaning.
     _switch("someone/else")
     assert loads == []
 
 
-def test_no_model_named_is_a_no_op(catalog, enabled, loads):
-    _switch(None)
-    _switch("   ")
-    assert loads == []
-
-
 def test_an_unresolvable_name_is_refused_and_lists_what_is_downloaded(
-    catalog, enabled, tmp_path, loads
+    flux, enabled, loads
 ):
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
 
     with pytest.raises(HTTPException) as excinfo:
         _switch("someone/else")
@@ -346,25 +419,11 @@ def test_a_video_refusal_carries_a_plain_detail(catalog, enabled, loads):
     assert isinstance(excinfo.value.detail, str)
 
 
-def test_a_resident_model_is_not_reloaded(catalog, enabled, tmp_path, backend, loads):
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
-    backend.repo_id = "black-forest-labs/FLUX.1-dev"
-
-    _switch("black-forest-labs/FLUX.1-dev")
-
-    assert loads == []
-
-
-def test_a_model_loaded_by_path_still_counts_as_serving(catalog, enabled, tmp_path, backend, loads):
-    # A model this module loaded reports the local path it was given, not the repo id.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
-    backend.repo_id = str(pipeline)
+@pytest.mark.parametrize("resident", ["repo id", "path"])
+def test_a_resident_model_is_not_reloaded(flux, enabled, backend, loads, resident):
+    # A model loaded from the Images page reports its repo id while one this module loaded
+    # reports the local path it was given, and either has to count as already serving.
+    backend.repo_id = "black-forest-labs/FLUX.1-dev" if resident == "repo id" else str(flux)
 
     _switch("black-forest-labs/FLUX.1-dev")
 
@@ -372,12 +431,8 @@ def test_a_model_loaded_by_path_still_counts_as_serving(catalog, enabled, tmp_pa
 
 
 def test_a_different_model_is_loaded_before_the_request_proceeds(
-    catalog, enabled, tmp_path, backend, loads
+    flux, enabled, backend, loads
 ):
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     backend.repo_id = "Qwen/Qwen-Image"
 
     _switch("black-forest-labs/FLUX.1-dev")
@@ -388,13 +443,9 @@ def test_a_different_model_is_loaded_before_the_request_proceeds(
 
 
 def test_a_busy_backend_is_not_swapped_out_from_under_its_generation(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+    flux, enabled, backend, loads, monkeypatch
 ):
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.0)
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     backend.repo_id = "Qwen/Qwen-Image"
     backend.active = True
 
@@ -407,13 +458,9 @@ def test_a_busy_backend_is_not_swapped_out_from_under_its_generation(
 
 
 def test_a_load_still_running_at_the_deadline_asks_for_a_retry(
-    catalog, enabled, tmp_path, backend, monkeypatch
+    flux, enabled, backend, monkeypatch
 ):
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.0)
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
 
     async def _start(
         owner,
@@ -432,11 +479,7 @@ def test_a_load_still_running_at_the_deadline_asks_for_a_retry(
     assert excinfo.value.headers["Retry-After"] == "15"
 
 
-def test_a_failed_load_surfaces_its_error(catalog, enabled, tmp_path, backend, monkeypatch):
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+def test_a_failed_load_surfaces_its_error(flux, enabled, backend, monkeypatch):
 
     async def _start(
         owner,
@@ -501,11 +544,7 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
 
     monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
 
-    app = FastAPI()
-    install_api_error_handlers(app)
-    app.include_router(video_router, prefix = "/api/inference")
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    resp = TestClient(app).post(
+    resp = _client(video_router, "/api/inference").post(
         "/api/inference/video/generate",
         json = {"prompt": "a sloth", "model": "unsloth/Wan2.2"},
         headers = {"X-Unsloth-HF-Token": "hf_abc"},
@@ -544,42 +583,39 @@ def test_a_sibling_loose_gguf_is_not_treated_as_already_serving(
     assert loads == []
 
 
-def test_a_pick_whose_companions_are_missing_is_refused_rather_than_downloaded(
-    catalog, enabled, tmp_path, backend, loads
+@pytest.mark.parametrize(
+    ("plan", "fragment"),
+    [
+        # Sized companions the loader would fetch: the resolver indexes checkpoints only, and a
+        # GGUF still loads its encoders and VAE from a base repo.
+        ({"total_bytes": 4_300_000_000}, "4.3 GB"),
+        # Both planners coerce an unknown sibling size to zero while keeping the entry, so bytes
+        # alone would read a pending multi-GB fetch as nothing to do.
+        ({"total_bytes": 0, "entries": [{"repo_id": "x", "files": ["a"], "bytes": 0}]}, ""),
+        # Cached in full and still unloadable (a FLUX.2 GGUF on a different-size base). The
+        # route's cheap validation misses it, so only the background loader would have found out.
+        ({"total_bytes": 0, "entries": [], "incompatible_reason": "needs the 32B base"}, ""),
+    ],
+)
+def test_a_pick_the_plan_cannot_clear_is_refused_rather_than_downloaded(
+    cached_gguf, enabled, backend, loads, plan, fragment
 ):
-    # The resolver only indexes downloaded checkpoints; a GGUF still loads its encoders and VAE
-    # from a base repo the loader would fetch. Auto-switch promises it never downloads.
-    # A cached GGUF, not a local pipeline: the latter is complete by definition and never planned.
-    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
-    catalog.append(
-        _info(
-            "city96/FLUX.1-dev-gguf",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
-    backend.missing_bytes = 4_300_000_000
+    backend.download_plan = lambda model_path, **kw: plan
 
     with pytest.raises(HTTPException) as excinfo:
         _switch("city96/FLUX.1-dev-gguf")
 
     assert excinfo.value.status_code == 409
     assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
-    assert "4.3 GB" in excinfo.value.detail["error"]["message"]
+    assert fragment in excinfo.value.detail["error"]["message"]
     assert loads == []
 
 
 def test_a_request_queued_on_the_switch_lock_does_not_block_the_drain(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+    flux, enabled, backend, loads, monkeypatch
 ):
     # Two concurrent requests for the same absent model are both counted by the middleware.
     # Counting the queued one as work to drain made each wait the other out and both 409.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     backend.repo_id = "Qwen/Qwen-Image"
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.5)
     # Two tracked requests in flight, and both parked on the switch: only one holds the lock.
@@ -595,13 +631,9 @@ def test_a_request_queued_on_the_switch_lock_does_not_block_the_drain(
     assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
 
 
-def test_the_drain_and_the_load_share_one_budget(catalog, enabled, tmp_path, backend, monkeypatch):
+def test_the_drain_and_the_load_share_one_budget(flux, enabled, backend, monkeypatch):
     # Separate budgets added up past the ~100s tunnel window, so a slow switch lost the socket
     # instead of returning the retryable 503 the bounds exist to produce.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.6)
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 30.0)
     busy_until = [True]
@@ -634,20 +666,16 @@ def test_the_drain_and_the_load_share_one_budget(catalog, enabled, tmp_path, bac
 
 
 def test_a_load_that_lands_while_draining_is_not_repeated(
-    catalog, enabled, tmp_path, backend, loads
+    flux, enabled, backend, loads
 ):
     # A retry can acquire the switch lock while the earlier attempt's load is still running.
     # Draining waits that out, and without a recheck the retry tears down what just landed.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     backend.repo_id = "Qwen/Qwen-Image"
     backend.loading = ("black-forest-labs/FLUX.1-dev",)
 
     async def _drain_lands_the_model(_owner, _backend, _deadline, **kwargs):
         backend.loading = ()
-        backend.repo_id = str(pipeline)
+        backend.repo_id = str(flux)
         return True
 
     with pytest.MonkeyPatch.context() as mp:
@@ -658,14 +686,10 @@ def test_a_load_that_lands_while_draining_is_not_repeated(
 
 
 def test_a_replacement_load_is_not_reported_as_the_requested_model(
-    catalog, enabled, tmp_path, backend, monkeypatch
+    flux, enabled, backend, monkeypatch
 ):
     # A user load accepted between two polls supersedes ours. Returning success on "something
     # is resident" would generate on the replacement while naming the requested model.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
 
     async def _start(
         owner,
@@ -685,19 +709,9 @@ def test_a_replacement_load_is_not_reported_as_the_requested_model(
     assert "replaced" in excinfo.value.detail["error"]["message"]
 
 
-def test_the_download_plan_asks_the_engine_that_will_load_the_pick(catalog, tmp_path, monkeypatch):
+def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, monkeypatch):
     # The resident engine can be native sd.cpp while the target loads through diffusers; its
     # planner refuses the pick, and that refusal would read as nothing missing.
-    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
-    catalog.append(
-        _info(
-            "city96/FLUX.1-dev-gguf",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
     pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
     asked: list = []
 
@@ -712,27 +726,17 @@ def test_the_download_plan_asks_the_engine_that_will_load_the_pick(catalog, tmp_
     assert asked == [pick.model_path]
 
 
-def test_two_bpw_builds_of_one_quant_are_not_confused(catalog, enabled, tmp_path, backend, loads):
-    # The backend's published token collapses IQ4_XS-3.53bpw and -3.97bpw to IQ4_XS, so a token
-    # comparison would report either as serving the other. The full lister label does not.
-    for bpw in ("3.53", "3.97"):
-        (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
-        catalog.append(
-            _info(
-                f"z-IQ4_XS-{bpw}bpw",
-                tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf",
-                task = mas.IMAGE_TASK,
-                model_format = "gguf",
-            )
-        )
-    backend.repo_id = str(tmp_path)
+def test_two_bpw_builds_of_one_quant_are_not_confused(two_bpw, enabled, backend, loads):
+    # The backend's published token collapses IQ4_XS-3.53bpw and -3.97bpw to IQ4_XS, so a
+    # resident sibling can never be assumed to be ours and the skip stays refused. The load
+    # this request starts is its own, though, and rejecting that would 503 what just landed.
+    backend.repo_id = str(two_bpw)
     backend.gguf_variant = "IQ4_XS"
     backend.model_kind = "gguf"
 
     _switch("z-IQ4_XS-3.97bpw")
-
-    # The published token cannot separate them, so the resident one is never assumed to be ours.
     assert [pick.gguf_filename for _owner, pick in loads] == ["z-IQ4_XS-3.97bpw.gguf"]
+
     loads.clear()
     _switch("z-IQ4_XS-3.97bpw")
     assert [pick.gguf_filename for _owner, pick in loads] == ["z-IQ4_XS-3.97bpw.gguf"]
@@ -775,24 +779,6 @@ def test_an_exact_resident_match_does_not_need_the_index(catalog, enabled, backe
     assert loads == []
 
 
-def test_a_slow_resolve_refuses_inside_the_budget(catalog, enabled, monkeypatch):
-    # The budget has to cover the scan and the plan, not just the drain and the load: either can
-    # outlive the response window on its own.
-    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.2)
-
-    def _slow(name, *, task):
-        time.sleep(1.0)
-        return None
-
-    monkeypatch.setattr(mas, "resolve_local_media_model", _slow)
-
-    with pytest.raises(HTTPException) as excinfo:
-        _switch("black-forest-labs/FLUX.1-dev")
-
-    assert excinfo.value.status_code == 503
-    assert excinfo.value.detail["error"]["code"] == "model_loading"
-
-
 def test_an_alias_two_models_share_resolves_to_neither(catalog, tmp_path):
     # Cached repos advertise their final component, so org-a/model and org-b/model both offer
     # "model". Binding whichever the scan reached first would load arbitrary weights.
@@ -808,27 +794,6 @@ def test_an_alias_two_models_share_resolves_to_neither(catalog, tmp_path):
     assert mas.resolve_local_media_model("org-a/model", task = mas.IMAGE_TASK) is not None
     assert mas.resolve_local_media_model("org-b/model", task = mas.IMAGE_TASK) is not None
     assert mas.available_media_model_ids(mas.IMAGE_TASK) == ["org-a/model", "org-b/model"]
-
-
-def test_a_load_that_lands_is_accepted_even_when_the_token_is_ambiguous(
-    catalog, enabled, tmp_path, backend, loads
-):
-    # The skip check must stay conservative for builds sharing a token, but the load this
-    # request started is its own: rejecting it there would 503 the model that just loaded.
-    for bpw in ("3.53", "3.97"):
-        (tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"")
-        catalog.append(
-            _info(
-                f"z-IQ4_XS-{bpw}bpw",
-                tmp_path / f"z-IQ4_XS-{bpw}bpw.gguf",
-                task = mas.IMAGE_TASK,
-                model_format = "gguf",
-            )
-        )
-
-    _switch("z-IQ4_XS-3.53bpw")
-
-    assert [pick.gguf_filename for _owner, pick in loads] == ["z-IQ4_XS-3.53bpw.gguf"]
 
 
 def test_the_exact_resident_shortcut_never_answers_for_a_gguf(
@@ -851,30 +816,6 @@ def test_the_exact_resident_shortcut_never_answers_for_a_gguf(
     preferred = preferred_quant(["Q4_K_M", "Q8_0"])
     if preferred != "Q8_0":
         assert [p.gguf_filename for _o, p in loads] == [f"flux1-dev-{preferred}.gguf"]
-
-
-def test_a_plan_with_unsized_entries_is_refused(catalog, enabled, tmp_path, backend, loads):
-    # Both planners coerce an unknown sibling size to zero while keeping the entry, so bytes
-    # alone would read a pending multi-GB fetch as nothing to do.
-    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
-    catalog.append(
-        _info(
-            "city96/FLUX.1-dev-gguf",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
-    unsized = {"total_bytes": 0, "entries": [{"repo_id": "x", "files": ["a"], "bytes": 0}]}
-    backend.download_plan = lambda model_path, **kw: unsized
-
-    with pytest.raises(HTTPException) as excinfo:
-        _switch("city96/FLUX.1-dev-gguf")
-
-    assert excinfo.value.status_code == 409
-    assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
-    assert loads == []
 
 
 def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
@@ -902,17 +843,13 @@ def test_a_bare_single_file_directory_is_planned_as_the_load_reads_it(
 
 
 def test_a_local_pipeline_is_complete_without_asking_the_hub(
-    catalog, enabled, tmp_path, backend, loads
+    flux, enabled, backend, loads
 ):
     # The planner asks HfApi about an absolute path and fails, which now reads as unverifiable.
     # A directory on disk is what from_pretrained loads, so it needs no plan at all.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
 
     def _explode(model_path, **kwargs):
-        raise AssertionError("a local pipeline must not be planned against the Hub")
+        raise AssertionError("a local flux must not be planned against the Hub")
 
     backend.download_plan = _explode
 
@@ -924,38 +861,32 @@ def test_a_local_pipeline_is_complete_without_asking_the_hub(
 def test_paths_differing_only_in_case_are_different_models(
     catalog, enabled, tmp_path, backend, loads
 ):
-    # Case-sensitive filesystems allow /models/Foo and /models/foo side by side; folding them
-    # would report one as already serving the other.
+    # Case-sensitive filesystems allow /models/Foo and /models/foo side by side. Folding them
+    # would report one as already serving the other, and lowercasing the path in the ambiguity
+    # scan merged their builds into one quant token so neither could ever be reused.
     for name in ("Foo", "foo"):
         directory = tmp_path / name
         if not directory.exists():
             directory.mkdir()
-        (directory / "model_index.json").write_text("{}")
-        catalog.append(_info(f"org/{name}", directory, task = mas.IMAGE_TASK))
+        (directory / f"{name}-Q4_K_M.gguf").write_bytes(b"")
+        catalog.append(_info(f"org/{name}", directory, task = mas.IMAGE_TASK, model_format = "gguf"))
     upper = mas.resolve_local_media_model("org/Foo", task = mas.IMAGE_TASK)
     lower = mas.resolve_local_media_model("org/foo", task = mas.IMAGE_TASK)
     if upper is None or lower is None or upper.model_path == lower.model_path:
         pytest.skip("this filesystem folds case, so the two models cannot coexist")
+    assert not upper.ambiguous and not lower.ambiguous
     backend.repo_id = lower.model_path
+    backend.gguf_variant = "Q4_K_M"
+    backend.model_kind = "gguf"
 
     _switch("org/Foo")
 
     assert [pick.model_path for _owner, pick in loads] == [upper.model_path]
 
 
-def test_a_native_prediction_also_verifies_the_diffusers_fallback(catalog, tmp_path, monkeypatch):
+def test_a_native_prediction_also_verifies_the_diffusers_fallback(cached_gguf, monkeypatch):
     # predict_engine calls sd.cpp available whenever its install is allowed, while activation
     # falls back to diffusers when that install produces nothing runnable.
-    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.1-dev-gguf", files = ["f-Q4_K_M.gguf"])
-    catalog.append(
-        _info(
-            "city96/FLUX.1-dev-gguf",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
     pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
 
     class _Planner:
@@ -969,20 +900,6 @@ def test_a_native_prediction_also_verifies_the_diffusers_fallback(catalog, tmp_p
     monkeypatch.setattr(locality, "planners_for", lambda owner, p: [_Planner(0), _Planner(9_000)])
 
     assert mas.missing_download_bytes(arb.DIFFUSION, pick) == 9_000
-
-
-def test_a_partial_download_is_not_an_available_model(catalog, tmp_path):
-    # A cancelled pull still lists; loading it fails predictably, and the 404 listing should not
-    # advertise it either.
-    pipeline = tmp_path / "half"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    row = _info("org/half", pipeline, task = mas.IMAGE_TASK)
-    row.partial = True
-    catalog.append(row)
-
-    assert mas.resolve_local_media_model("org/half", task = mas.IMAGE_TASK) is None
-    assert mas.available_media_model_ids(mas.IMAGE_TASK) == []
 
 
 def test_a_cache_tree_inside_a_scan_folder_still_loads_by_repo_id(catalog, tmp_path):
@@ -1006,25 +923,6 @@ def test_a_cache_tree_inside_a_scan_folder_still_loads_by_repo_id(catalog, tmp_p
     assert pick.model_path == "unsloth/Z-Image-Turbo-GGUF"
 
 
-def test_an_edit_only_model_is_refused_before_anything_is_evicted(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
-):
-    # The catalog tags edit families text-to-image, so the load would finish and only then be
-    # refused for lacking txt2img, with the previously useful model already gone.
-    pipeline = tmp_path / "kontext"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-Kontext-dev", pipeline, task = mas.IMAGE_TASK))
-    backend.repo_id = "Qwen/Qwen-Image"
-    monkeypatch.setattr(mas, "is_edit_only", lambda pick: True)
-
-    with pytest.raises(HTTPException) as excinfo:
-        _switch("black-forest-labs/FLUX.1-Kontext-dev")
-
-    assert excinfo.value.status_code == 400
-    assert loads == []
-
-
 def test_the_native_fallback_is_only_verified_when_a_binary_must_be_installed(monkeypatch):
     # With a runnable sd.cpp binary the load stays native, so demanding the diffusers shards
     # would refuse a model the selected engine can serve.
@@ -1045,56 +943,11 @@ def test_the_native_fallback_is_only_verified_when_a_binary_must_be_installed(mo
     assert len(locality.planners_for(arb.DIFFUSION, pick)) == 2
 
 
-def test_a_directory_the_load_route_would_reject_is_not_advertised(catalog, tmp_path):
-    # Several checkpoints and no model_index.json is ambiguous; both routes reject it rather
-    # than choose, so offering it would only cost a failed switch.
-    ambiguous = tmp_path / "two-checkpoints"
-    ambiguous.mkdir()
-    for name in ("a.safetensors", "b.safetensors"):
-        (ambiguous / name).write_bytes(b"")
-    catalog.append(_info("org/ambiguous", ambiguous, task = mas.IMAGE_TASK))
-
-    assert mas.resolve_local_media_model("org/ambiguous", task = mas.IMAGE_TASK) is None
-    assert mas.available_media_model_ids(mas.IMAGE_TASK) == []
-
-
-def test_an_incompatible_plan_is_refused_before_the_resident_model_is_torn_down(
-    catalog, enabled, tmp_path, backend, loads
-):
-    # A FLUX.2 GGUF paired with a different-size base is fully cached and still unloadable; the
-    # route's cheap validation misses it, so only the background loader would find out.
-    repo, _snapshot = _hf_cache_repo(tmp_path, "city96/FLUX.2-gguf", files = ["f-Q4_K_M.gguf"])
-    catalog.append(
-        _info(
-            "city96/FLUX.2-gguf",
-            repo,
-            task = mas.IMAGE_TASK,
-            model_format = "gguf",
-            source = "hf_cache",
-        )
-    )
-    backend.download_plan = lambda model_path, **kw: {
-        "total_bytes": 0,
-        "entries": [],
-        "incompatible_reason": "this GGUF needs the 32B base",
-    }
-
-    with pytest.raises(HTTPException) as excinfo:
-        _switch("city96/FLUX.2-gguf")
-
-    assert excinfo.value.status_code == 409
-    assert loads == []
-
-
 def test_load_setup_that_stalls_returns_inside_the_budget(
-    catalog, enabled, tmp_path, backend, monkeypatch
+    flux, enabled, backend, monkeypatch
 ):
     # Preflight and a first-run sd.cpp install both run before begin_load registers, while the
     # admission gate is held, so an unbounded await blocks the backend as well as the caller.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
 
     async def _stalls(
@@ -1115,27 +968,20 @@ def test_load_setup_that_stalls_returns_inside_the_budget(
     assert time.monotonic() - began < 3.0
 
 
-def test_a_modular_pipeline_index_is_discoverable(catalog, tmp_path):
+def test_a_modular_pipeline_index_is_discoverable(h3_modular):
     # A dense MiniMax-H3 directory carries modular_model_index.json, which the video loader
     # opens; rejecting it here 404'd every named request for a fully downloaded model.
-    modular = tmp_path / "h3"
-    modular.mkdir()
-    (modular / "modular_model_index.json").write_text("{}")
-    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
-
     assert mas.resolve_local_media_model("MiniMaxAI/MiniMax-H3", task = mas.VIDEO_TASK) is not None
 
 
+@pytest.mark.parametrize("resident", ["repo id", "path"])
 def test_a_resident_h3_reference_partition_does_not_answer_a_plain_request(
-    catalog, enabled, tmp_path, backend, loads
+    h3_modular, enabled, backend, loads, resident
 ):
     # An auto-load of this name takes the default keyframe denoiser, so a resident ref2va is a
-    # different build; serving it accepts a generation that then fails for missing references.
-    modular = tmp_path / "h3"
-    modular.mkdir()
-    (modular / "modular_model_index.json").write_text("{}")
-    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
-    backend.repo_id = str(modular)
+    # different build and serving it accepts a generation that then fails for missing references.
+    # The pre-index shortcut returns before resident_is_pick runs, so it needs the same test.
+    backend.repo_id = "MiniMaxAI/MiniMax-H3" if resident == "repo id" else str(h3_modular)
     backend.h3_task = "ref2va"
 
     _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
@@ -1157,34 +1003,13 @@ def test_a_bare_id_takes_a_root_variant_over_a_qualified_one(catalog, tmp_path):
     assert bare.gguf_filename == "flux1-Q4_K_M.gguf"
 
 
-def test_the_resident_shortcut_also_checks_the_h3_partition(
-    catalog, enabled, tmp_path, backend, loads
-):
-    # The pre-index shortcut returns before _resident_is_pick runs, so it needs the same
-    # partition test or a resident ref2va answers a plain request.
-    modular = tmp_path / "h3"
-    modular.mkdir()
-    (modular / "modular_model_index.json").write_text("{}")
-    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
-    backend.repo_id = "MiniMaxAI/MiniMax-H3"
-    backend.h3_task = "ref2va"
-
-    _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
-
-    assert [pick.model_id for _owner, pick in loads] == ["MiniMaxAI/MiniMax-H3"]
-
-
 def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
-    catalog, enabled, tmp_path, backend, monkeypatch
+    flux, enabled, backend, monkeypatch
 ):
     # Shielding alone let the caller unwind both contexts while setup was still before
     # begin_load, so a newly admitted generation could be cut short by the orphaned switch.
     import core.inference.media_keepwarm as keepwarm
 
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1227,36 +1052,11 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
     asyncio.run(_drive())
 
 
-def test_an_expired_budget_refuses_instead_of_crashing(
-    catalog, enabled, tmp_path, backend, monkeypatch
-):
-    # _bounded receives a Future from shield(), which cancels rather than closes; calling
-    # close() on it raised AttributeError instead of the intended retryable 503.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
-
-    async def _expired(coro):
-        return await mas.bounded(coro, time.monotonic() - 1, kind = "image", openai_errors = True)
-
-    async def _drive():
-        with pytest.raises(HTTPException) as excinfo:
-            await _expired(asyncio.shield(asyncio.ensure_future(asyncio.sleep(0))))
-        assert excinfo.value.status_code == 503
-
-    asyncio.run(_drive())
-
-
 def test_a_request_parked_on_the_held_gate_does_not_abort_the_switch(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+    flux, enabled, backend, loads, monkeypatch
 ):
     # A newcomer arriving while the gated task owns the gate is counted pending and then blocks
     # on that gate, so counting it aborted an otherwise idle switch.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     backend.repo_id = "Qwen/Qwen-Image"
     tracker = mk._TRACKERS[arb.DIFFUSION]
     monkeypatch.setattr(tracker, "_pending", 1)
@@ -1264,23 +1064,6 @@ def test_a_request_parked_on_the_held_gate_does_not_abort_the_switch(
     _switch("black-forest-labs/FLUX.1-dev")
 
     assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
-
-
-def test_paths_differing_only_in_case_are_not_merged_by_the_ambiguity_scan(catalog, tmp_path):
-    # Lowercasing the path merged two directories whose builds publish the same quant token,
-    # marking both ambiguous so the resident one could never be reused.
-    for name in ("Foo", "foo"):
-        directory = tmp_path / name
-        if not directory.exists():
-            directory.mkdir()
-        (directory / f"{name}-Q4_K_M.gguf").write_bytes(b"")
-        catalog.append(_info(f"org/{name}", directory, task = mas.IMAGE_TASK, model_format = "gguf"))
-    upper = mas.resolve_local_media_model("org/Foo", task = mas.IMAGE_TASK)
-    lower = mas.resolve_local_media_model("org/foo", task = mas.IMAGE_TASK)
-    if upper is None or lower is None or upper.model_path == lower.model_path:
-        pytest.skip("this filesystem folds case, so the two directories cannot coexist")
-
-    assert not upper.ambiguous and not lower.ambiguous
 
 
 def test_a_ref2va_checkpoint_expects_its_own_partition(catalog, enabled, tmp_path, backend, loads):
@@ -1306,13 +1089,9 @@ def test_a_ref2va_checkpoint_expects_its_own_partition(catalog, enabled, tmp_pat
     assert loads == []
 
 
-def test_a_local_video_pipeline_is_still_planned(catalog, enabled, tmp_path, backend, loads):
+def test_a_local_video_pipeline_is_still_planned(h3_modular, enabled, backend, loads):
     # A local MiniMax-H3 modular pipeline substitutes a hosted quantized conditioner during
     # assembly, so the image shortcut's "on disk means complete" does not hold for video.
-    modular = tmp_path / "h3"
-    modular.mkdir()
-    (modular / "modular_model_index.json").write_text("{}")
-    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
     backend.missing_bytes = 27_000_000_000
 
     with pytest.raises(HTTPException) as excinfo:
@@ -1348,11 +1127,7 @@ def test_the_video_load_route_records_provenance_without_raising(monkeypatch):
         lambda: types.SimpleNamespace(device = "cpu"),
     )
 
-    app = FastAPI()
-    install_api_error_handlers(app)
-    app.include_router(video_router, prefix = "/api/inference")
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    resp = TestClient(app).post(
+    resp = _client(video_router, "/api/inference").post(
         "/api/inference/video/load",
         json = {
             "model_path": "unsloth/Wan2.2-GGUF",
@@ -1373,17 +1148,17 @@ async def _lock_is_held(owner):
     return mas.switch_lock(owner).locked()
 
 
-def test_a_switch_waits_for_the_other_media_backend(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+@pytest.mark.parametrize("busy", ["other media backend", "chat"])
+def test_a_switch_waits_for_work_the_gpu_handoff_would_cancel(
+    flux, enabled, backend, loads, monkeypatch, busy
 ):
-    # The load route takes the GPU through the arbiter, whose cross-owner handoff unloads
-    # whatever holds it, so a video generation must not be cancelled by an image switch.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    # The load takes the GPU through the arbiter, whose cross-owner handoff unloads whoever
+    # holds it, cancelling a video generation or a streaming completion this request never met.
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
-    monkeypatch.setattr(backends, "other_backend_busy", lambda owner: True)
+    if busy == "chat":
+        monkeypatch.setattr(backends, "chat_busy", lambda: True)
+    else:
+        monkeypatch.setattr(backends, "other_backend_busy", lambda owner: True)
 
     with pytest.raises(HTTPException) as excinfo:
         _switch("black-forest-labs/FLUX.1-dev")
@@ -1392,29 +1167,12 @@ def test_a_switch_waits_for_the_other_media_backend(
     assert loads == []
 
 
-def test_a_nested_ref2va_checkpoint_names_its_own_partition():
-    # A qualified variant lives at ref2va/minimax_h3_ref2va-*.gguf, and the loader derives the
-    # task from the basename, so the whole relative path must not decide it.
-    pick = mas.MediaModelPick(
-        "unsloth/MiniMax-H3-GGUF",
-        "unsloth/MiniMax-H3-GGUF",
-        "ref2va/minimax_h3_ref2va-Q4_K_M.gguf",
-        "gguf",
-    )
-
-    assert index.expected_partition(pick) == "ref2va"
-
-
-def test_a_hidream_pipeline_is_planned_despite_being_local(
-    catalog, enabled, tmp_path, backend, loads
+def test_a_local_hidream_is_refused_while_its_encoder_is_incomplete(
+    hidream, enabled, backend, loads, monkeypatch
 ):
-    # HiDream loads a separate ~16 GB encoder repo, so a directory on disk is not evidence
-    # that nothing will be downloaded.
-    pipeline = tmp_path / "hidream"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
-    backend.missing_bytes = 16_000_000_000
+    # HiDream loads a separate ~16 GB encoder repo, so a directory on disk is no evidence that
+    # nothing will be downloaded, and one linked shard is not the repository from_pretrained opens.
+    monkeypatch.setattr(locality, "encoder_repo_complete", lambda repo_id: False)
 
     with pytest.raises(HTTPException) as excinfo:
         _switch("HiDream-ai/HiDream-I1-Dev")
@@ -1423,32 +1181,11 @@ def test_a_hidream_pipeline_is_planned_despite_being_local(
     assert loads == []
 
 
-def test_a_switch_waits_for_chat(catalog, enabled, tmp_path, backend, loads, monkeypatch):
-    # The arbiter evicts whoever owns the GPU, so an image switch would terminate a streaming
-    # chat completion that has nothing to do with this request.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
-    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.3)
-    monkeypatch.setattr(backends, "chat_busy", lambda: True)
-
-    with pytest.raises(HTTPException) as excinfo:
-        _switch("black-forest-labs/FLUX.1-dev")
-
-    assert excinfo.value.status_code == 409
-    assert loads == []
-
-
 def test_a_local_hidream_is_accepted_once_its_encoder_is_cached(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+    hidream, enabled, backend, loads, monkeypatch
 ):
     # The planner cannot be handed an absolute pipeline path, so the dependency is checked
     # against the cache directly rather than by refusing the model outright.
-    pipeline = tmp_path / "hidream"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
     monkeypatch.setattr(locality, "encoder_repo_complete", lambda repo_id: True)
 
     def _explode(model_path, **kwargs):
@@ -1461,42 +1198,11 @@ def test_a_local_hidream_is_accepted_once_its_encoder_is_cached(
     assert [pick.model_id for _owner, pick in loads] == ["HiDream-ai/HiDream-I1-Dev"]
 
 
-def test_a_failed_api_load_of_an_indistinguishable_build_keeps_the_user_mark():
-    # Sibling GGUFs can share a quant token, so the two builds produce one provenance key; a
-    # failed API load must not reclassify the user's surviving model.
-    mk.note_load_origin(arb.DIFFUSION, "/models/x", "IQ4_XS", None, user_action = True)
-    mk.note_load_origin(arb.DIFFUSION, "/models/x", "IQ4_XS", None, user_action = False)
-
-    assert mk.loaded_by_user_action(arb.DIFFUSION, "/models/x", "IQ4_XS") is True
-
-
-def test_a_partially_downloaded_hidream_encoder_is_refused(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
-):
-    # One linked shard is not the repository from_pretrained opens, so the load would fetch the
-    # rest of roughly 16 GB.
-    pipeline = tmp_path / "hidream"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
-    monkeypatch.setattr(locality, "encoder_repo_complete", lambda repo_id: False)
-
-    with pytest.raises(HTTPException) as excinfo:
-        _switch("HiDream-ai/HiDream-I1-Dev")
-
-    assert excinfo.value.status_code == 409
-    assert loads == []
-
-
 def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+    flux, enabled, backend, loads, monkeypatch
 ):
     # A CPU diffusion device releases ownership instead of acquiring it, so such a switch
     # evicts nobody and owes no cross-owner wait.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     # both bindings: the drain sizes its wait with it, the switch decides on the gpu lock with it
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
@@ -1510,40 +1216,13 @@ def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
     assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
 
 
-def test_a_renamed_ltx23_checkpoint_is_refused_when_its_extras_are_absent(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
-):
-    # The planner judges 2.3 by name while the loader reads the header, so a renamed checkpoint
-    # plans as 2.0, reports nothing missing, and pulls the 2.3 extras during assembly.
-    (tmp_path / "generic-Q4_K_M.gguf").write_bytes(b"")
-    catalog.append(
-        _info(
-            "local/ltx",
-            tmp_path / "generic-Q4_K_M.gguf",
-            task = mas.VIDEO_TASK,
-            model_format = "gguf",
-        )
-    )
-    monkeypatch.setattr(locality, "hidden_ltx23_extras", lambda owner, pick: True)
-
-    with pytest.raises(HTTPException) as excinfo:
-        _switch("local/ltx", owner = arb.VIDEO, openai_errors = False)
-
-    assert excinfo.value.status_code == 409
-    assert loads == []
-
-
 def test_a_stalled_gate_does_not_pin_the_switch_lock(
-    catalog, enabled, tmp_path, backend, monkeypatch
+    flux, enabled, backend, monkeypatch
 ):
     # A gate held elsewhere must not keep the setup task, and with it the switch lock, alive
     # past the budget: acquisition happens before the non-cancellable phase.
     import core.inference.media_keepwarm as keepwarm
 
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
     keepwarm._TRACKERS[arb.VIDEO].gate.acquire()
     try:
@@ -1559,14 +1238,10 @@ def test_a_stalled_gate_does_not_pin_the_switch_lock(
 
 
 def test_two_switches_on_different_backends_do_not_refuse_each_other(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+    flux, enabled, backend, loads, monkeypatch
 ):
     # Each switcher is counted by the middleware on its own backend, so without discounting
     # them both saw the other as cross-owner work and both returned busy.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     backend.repo_id = "Qwen/Qwen-Image"
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.5)
     # A video switch is in flight and its request is tracked on the video backend.
@@ -1615,27 +1290,6 @@ def test_the_chat_probe_counts_a_parked_switcher_once(monkeypatch):
             assert backends.chat_busy() is True
 
 
-def test_a_cached_ltx23_repo_pick_is_still_header_checked(tmp_path, monkeypatch):
-    # A cached GGUF is represented by its repo id, so the path does not exist; the checkpoint
-    # is on disk all the same and the loader reads 2.3 straight out of its header.
-    import core.inference.diffusion_families as families
-    import core.inference.video_families as video_families
-    import core.inference.video_ltx2 as ltx2
-
-    checkpoint = tmp_path / "generic-Q4_K_M.gguf"
-    checkpoint.write_bytes(b"")
-    pick = mas.MediaModelPick("org/ltx", "org/ltx", checkpoint.name, "gguf")
-    monkeypatch.setattr(
-        video_families, "detect_video_family", lambda *a, **k: types.SimpleNamespace(name = "ltx-2")
-    )
-    monkeypatch.setattr(locality, "_cached_snapshot_file", lambda repo, name: str(checkpoint))
-    monkeypatch.setattr(ltx2, "is_ltx23_checkpoint", lambda path: True)
-    monkeypatch.setattr(ltx2, "ltx23_extras_files", lambda path: ("a.safetensors",))
-    monkeypatch.setattr(families, "cache_holds_files", lambda repo, files: False)
-
-    assert locality.hidden_ltx23_extras(arb.VIDEO, pick) is True
-
-
 def test_a_sharded_encoder_without_its_index_is_incomplete(monkeypatch):
     # One shard and no index is an interrupted pull of a repo that is always sharded, so
     # from_pretrained would fetch the index and the rest.
@@ -1665,42 +1319,13 @@ def test_an_edit_only_single_file_directory_is_refused(catalog, enabled, tmp_pat
     assert loads == []
 
 
-def test_a_spent_budget_reports_a_slow_switch_not_a_busy_model(
-    catalog, enabled, tmp_path, backend, monkeypatch
-):
-    # A probe with no time left knows nothing about the backend, and answering "busy" sent the
-    # caller after a generation that does not exist.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
-
-    async def _drive():
-        with pytest.raises(HTTPException) as excinfo:
-            await errors.probe(
-                lambda _arg: False,
-                object(),
-                time.monotonic() - 1,
-                kind = "image",
-                openai_errors = True,
-            )
-        assert excinfo.value.status_code == 503
-        assert excinfo.value.detail["error"]["code"] == "model_loading"
-
-    asyncio.run(_drive())
-
-
 def test_a_model_unloaded_during_resolution_is_not_reported_as_resident(
-    catalog, enabled, tmp_path, backend, loads, monkeypatch
+    flux, enabled, backend, loads, monkeypatch
 ):
     # The pre-resolution snapshot can be a whole budget old, so an idle unload landing during
     # the index build would otherwise leave the route 503ing on nothing.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     # Resident under its path, so the pre-index shortcut misses and resolution decides.
-    backend.repo_id = str(pipeline)
+    backend.repo_id = str(flux)
     original = mas.resolve_local_media_model
 
     def _unload_midway(name, *, task):
@@ -1755,11 +1380,7 @@ def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
         },
     )
 
-    app = FastAPI()
-    install_api_error_handlers(app)
-    app.include_router(router, prefix = "/v1")
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    resp = TestClient(app).post(
+    resp = _client(router, "/v1").post(
         "/v1/images/generations",
         json = {"prompt": "p", "size": "256x256", "model": "black-forest-labs/FLUX.1-dev"},
         headers = {"X-Unsloth-HF-Token": "hf_abc"},
@@ -1785,14 +1406,10 @@ def test_a_lone_unlabelled_gguf_is_not_reloaded_on_every_request(
 
 
 def test_a_setup_refusal_after_the_caller_gives_up_is_not_reported_as_unretrieved(
-    catalog, enabled, tmp_path, backend, monkeypatch, caplog
+    flux, enabled, backend, monkeypatch, caplog
 ):
     # Setup keeps running after the budget expires, and it refuses on ordinary paths, so its
     # exception has to be consumed or the loop reports a traceback for a handled 409.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
     release = asyncio.Event()
 
@@ -1829,13 +1446,9 @@ def test_a_setup_refusal_after_the_caller_gives_up_is_not_reported_as_unretrieve
     assert "never retrieved" not in caplog.text
 
 
-def test_a_pre_switch_refusal_evicts_nothing(catalog, enabled, tmp_path, backend, loads):
+def test_a_pre_switch_refusal_evicts_nothing(flux, enabled, backend, loads):
     # The caller's last say on the resolved pick runs while the resident model is still up, so
     # a request the target could never serve costs no eviction and no load.
-    pipeline = tmp_path / "my-flux"
-    pipeline.mkdir()
-    (pipeline / "model_index.json").write_text("{}")
-    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
     seen: list = []
 
     def _refuse(pick):
@@ -1858,24 +1471,38 @@ def test_a_pre_switch_refusal_evicts_nothing(catalog, enabled, tmp_path, backend
     assert loads == []
 
 
-def test_the_video_route_refuses_a_shape_the_target_family_cannot_render(monkeypatch):
-    # 512x512 is not one of the A14B presets, and begin_generate would only say so after the
-    # switch had already torn the resident model down and spent minutes loading the target.
+@pytest.mark.parametrize(
+    ("pick", "request_body", "status", "fragment"),
+    [
+        # 512x512 is not one of the A14B presets.
+        (
+            ("unsloth/Wan2.2-T2V-A14B-GGUF", None),
+            {"width": 512, "height": 512},
+            422,
+            "not a supported resolution",
+        ),
+        # Ref2VA conditions on references, so a first frame is unservable on it.
+        (
+            ("unsloth/MiniMax-H3-GGUF", "ref2va/minimax_h3_ref2va-Q4_K_M.gguf"),
+            {"first_frame": "data:image/png;base64,AAAA"},
+            400,
+            "Ref2VA partition",
+        ),
+    ],
+)
+def test_the_video_route_refuses_what_the_target_cannot_serve(
+    monkeypatch, pick, request_body, status, fragment
+):
+    # begin_generate would say the same thing, but only after the switch had evicted the
+    # resident model and spent minutes loading a target that was never going to serve this.
     import core.inference.video as video_module
     from routes.video import router as video_router
 
     generated: list = []
+    path, filename = pick
 
-    async def _switch_stub(
-        requested_model,
-        *,
-        owner,
-        current_subject,
-        openai_errors,
-        hf_token = None,
-        before_switch = None,
-    ):
-        before_switch(index.MediaModelPick(requested_model, "unsloth/Wan2.2-T2V-A14B-GGUF"))
+    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+        before_switch(index.MediaModelPick(requested_model, path, filename, "gguf"))
 
     monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
 
@@ -1885,22 +1512,13 @@ def test_the_video_route_refuses_a_shape_the_target_family_cannot_render(monkeyp
 
     monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
 
-    app = FastAPI()
-    install_api_error_handlers(app)
-    app.include_router(video_router, prefix = "/api/inference")
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    resp = TestClient(app).post(
+    resp = _client(video_router, "/api/inference").post(
         "/api/inference/video/generate",
-        json = {
-            "prompt": "a sloth",
-            "model": "unsloth/Wan2.2-T2V-A14B-GGUF",
-            "width": 512,
-            "height": 512,
-        },
+        json = {"prompt": "a sloth", "model": path, **request_body},
     )
 
-    assert resp.status_code == 422
-    assert "not a supported resolution" in resp.json()["detail"]
+    assert resp.status_code == status
+    assert fragment in resp.json()["detail"]
     assert generated == []
 
 
@@ -1948,53 +1566,3 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
     assert loads == []
 
 
-def test_the_video_route_refuses_conditioning_the_target_partition_cannot_take(monkeypatch):
-    # Ref2VA conditions on references, so a first frame is unservable however long the switch
-    # would have taken; the resident model must not be evicted to find that out.
-    import core.inference.video as video_module
-    from routes.video import router as video_router
-
-    generated: list = []
-
-    async def _switch_stub(
-        requested_model,
-        *,
-        owner,
-        current_subject,
-        openai_errors,
-        hf_token = None,
-        before_switch = None,
-    ):
-        before_switch(
-            index.MediaModelPick(
-                requested_model,
-                "unsloth/MiniMax-H3-GGUF",
-                "ref2va/minimax_h3_ref2va-Q4_K_M.gguf",
-                "gguf",
-            )
-        )
-
-    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
-
-    class _Backend:
-        def begin_generate(self, **kwargs):
-            generated.append(kwargs)
-
-    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
-
-    app = FastAPI()
-    install_api_error_handlers(app)
-    app.include_router(video_router, prefix = "/api/inference")
-    app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    resp = TestClient(app).post(
-        "/api/inference/video/generate",
-        json = {
-            "prompt": "a sloth",
-            "model": "unsloth/MiniMax-H3-GGUF",
-            "first_frame": "data:image/png;base64,AAAA",
-        },
-    )
-
-    assert resp.status_code == 400
-    assert "Ref2VA partition" in resp.json()["detail"]
-    assert generated == []
