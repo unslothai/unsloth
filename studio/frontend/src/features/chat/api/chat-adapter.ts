@@ -158,7 +158,7 @@ import {
   hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
-import { createFrameGate } from "../utils/stream-pacing";
+import { createStreamPublishGate } from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -5326,7 +5326,7 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
-            const canPublish = createFrameGate();
+            const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -5491,17 +5491,23 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      yield {
-                        content: liveAssistantContent(),
-                        metadata: {
-                          timing: buildTiming(
-                            streamStartTime,
-                            totalChunks,
-                            firstTokenTime,
-                          ),
-                          custom: liveCustom(),
-                        },
-                      };
+                      // Gated like the text path: this preview repeats per argument
+                      // delta and tool_start replaces it with the authoritative
+                      // parse. The tool events themselves are rare and carry the
+                      // card's state, so they publish ungated.
+                      if (canPublish(cumulativeText.length)) {
+                        yield {
+                          content: liveAssistantContent(),
+                          metadata: {
+                            timing: buildTiming(
+                              streamStartTime,
+                              totalChunks,
+                              firstTokenTime,
+                            ),
+                            custom: liveCustom(),
+                          },
+                        };
+                      }
                     }
                   }
                   continue;
@@ -6100,8 +6106,9 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              // Coalesce text received before the next frame; cumulativeText retains it.
-              if (!canPublish()) {
+              // Coalesce text received before the next frame; cumulativeText retains
+              // it. The gate publishes anyway once it holds more than a stop may drop.
+              if (!canPublish(cumulativeText.length)) {
                 continue;
               }
               const assistantContent = liveAssistantContent();
@@ -6130,6 +6137,9 @@ export function createOpenAIStreamAdapter(
               if (
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
+                // The publishing chunk's flag only: a coalesced chunk never reaches
+                // here. Every finish re-measures from the group's start, so the
+                // final one still lands the right duration.
                 !structuredReasoningContinues &&
                 !hasUnclosedThinkTag(cumulativeText)
               ) {
