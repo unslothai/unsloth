@@ -637,6 +637,41 @@ test("every publish path reconciles, including the backend tool events", () => {
   );
 });
 
+test("a server reasoning summary is assigned to the gated group", () => {
+  const source = withoutComments(ADAPTER);
+
+  // The summary frame is authoritative and is consumed by index. A pass short
+  // enough to fit inside one gate window is not yet known to the tracker when
+  // its summary lands, so the value would be dropped and replaced by a local
+  // measurement. Adoption has to come first.
+  const consume = source.indexOf(
+    "reasoningDurationTracker.recordServerDuration(",
+  );
+  assert.notEqual(consume, -1, "the summary frame is no longer consumed");
+  const before = source.slice(Math.max(0, consume - 600), consume);
+  assert.ok(
+    before.includes("reconcileReasoning("),
+    "the summary is consumed before the gated group is adopted",
+  );
+});
+
+test("the reconcile before the summary is skipped for ordinary chunks", () => {
+  const source = withoutComments(ADAPTER);
+
+  // Reconciling on EVERY chunk would re-parse the whole reply per chunk, which
+  // is exactly the cost the gate exists to remove. It must be conditional on a
+  // summary actually being present.
+  const consume = source.indexOf(
+    "reasoningDurationTracker.recordServerDuration(",
+  );
+  const before = source.slice(Math.max(0, consume - 600), consume);
+  const guard = before.lastIndexOf("if (reasoningMs !== undefined) {");
+  assert.ok(
+    guard !== -1 && guard < before.lastIndexOf("reconcileReasoning("),
+    "the pre-summary reconcile is unguarded and runs on every chunk",
+  );
+});
+
 test("an opening think tag split across arrivals still stamps", () => {
   // A provider can split the literal tag: "<thi" then "nk>reasoning". Testing
   // the delta alone misses it, and the group then starts only at the eventual

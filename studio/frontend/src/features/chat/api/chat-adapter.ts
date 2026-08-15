@@ -5402,6 +5402,15 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
+              if (reasoningMs !== undefined) {
+                // A reasoning pass short enough to fit inside one gate window
+                // is still unknown to the tracker when its summary lands, and
+                // the summary would then be consumed with nothing to assign it
+                // to, losing the authoritative duration in favour of a local
+                // measurement. Adopt what the text already shows first. Summary
+                // frames are one per pass, so this parse is not on the hot path.
+                reconcileReasoning(liveAssistantContent(), gateHeldSince);
+              }
               if (
                 reasoningDurationTracker.recordServerDuration(reasoningMs)
               ) {
