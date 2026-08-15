@@ -11651,6 +11651,17 @@ async def transcribe_audio_raw(
 # =====================================================================
 
 
+def _audio_decoder_is_available() -> bool:
+    """Whether _decode_audio_base64 can run here; it needs torchaudio, which a
+    GGUF-only install does not ship. find_spec keeps this off the import path."""
+    try:
+        from importlib.util import find_spec
+
+        return find_spec("torchaudio") is not None
+    except Exception:
+        return False
+
+
 def _decode_audio_base64(b64: str) -> "np.ndarray":
     """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
     import torchaudio
@@ -13326,7 +13337,10 @@ async def openai_chat_completions(
         # Decoded before any swap and carried to the audio branch below: valid base64
         # holding non-audio bytes is a deterministic 400, and paying it after the switch
         # costs the resident model. Decoding here rather than twice is why it is threaded.
-        if payload.audio_base64:
+        # Only where the decoder can run: it needs torchaudio, while the GGUF path is
+        # deliberately torch-free, so a GGUF-only host validates the encoding alone and
+        # leaves the bytes to _prepare_audio_for_llama.
+        if payload.audio_base64 and _audio_decoder_is_available():
             try:
                 _predecoded_audio = await asyncio.to_thread(
                     _decode_audio_base64, payload.audio_base64
@@ -13336,6 +13350,19 @@ async def openai_chat_completions(
                     status_code = 400,
                     detail = openai_error_body(
                         "The 'audio_base64' value could not be decoded as audio.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "audio_base64",
+                    ),
+                ) from None
+        elif payload.audio_base64:
+            try:
+                base64.b64decode(payload.audio_base64, validate = True)
+            except Exception:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "The 'audio_base64' value is not valid base64.",
                         status = 400,
                         code = "invalid_value",
                         param = "audio_base64",

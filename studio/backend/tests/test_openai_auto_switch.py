@@ -8710,10 +8710,34 @@ def test_non_audio_bytes_are_rejected_before_the_switch(monkeypatch):
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _unexpected)
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert exc.value.status_code == 400
+
+
+def test_a_gguf_only_host_does_not_need_torchaudio_to_accept_audio(monkeypatch):
+    # Codex P2: _decode_audio_base64 imports torchaudio, which a GGUF-only install does
+    # not ship, so requiring it in the preflight 400'd valid llama.cpp audio requests.
+    reached = {}
+
+    async def _capture(*_a, **_kw):
+        reached["switch"] = True
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: False)
+    monkeypatch.setattr(
+        inference_route,
+        "_decode_audio_base64",
+        lambda _b64: pytest.fail("torchaudio decoder ran on a GGUF-only host"),
+    )
+    payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
+    with pytest.raises(RuntimeError):
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert reached.get("switch")
 
 
 def test_an_unknown_quantizer_is_withheld(tmp_path, monkeypatch):
@@ -8731,3 +8755,39 @@ def test_an_unknown_quantizer_is_withheld(tmp_path, monkeypatch):
         )
         info = SimpleNamespace(id = str(path), path = str(path))
         assert resolver.local_servable_model(info) is None, method
+
+
+def test_fp8_is_withheld_on_rocm(tmp_path, monkeypatch):
+    # Codex P2: ROCm keeps DeviceType.CUDA, but the loader reads it as hip and refuses
+    # FP8, so the numeric capability checks alone let it through.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "FP8-ROCm")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"], "quantization_config": {"quant_method": "fp8"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True, raising = False)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_index_naming_shards_in_a_subdirectory_still_serves(tmp_path):
+    # Codex P2: shard paths resolve relative to the index, so a subdirectory is valid.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "SubdirShards")
+    (path / "model.safetensors").unlink()
+    (path / "weights").mkdir()
+    (path / "weights" / "model-00001-of-00001.safetensors").write_bytes(b"x" * 32)
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "weights/model-00001-of-00001.safetensors"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+    # A path climbing out of the checkpoint is still refused.
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "../escape.safetensors"}}'
+    )
+    assert resolver.local_servable_model(info) is None

@@ -296,7 +296,8 @@ def _fp8_suits_host(quant_method: str) -> bool:
     try:
         from utils.hardware import hardware as hw
 
-        if hw.DEVICE != hw.DeviceType.CUDA:
+        # ROCm keeps DeviceType.CUDA, but the loader reads it as hip and refuses FP8.
+        if hw.DEVICE != hw.DeviceType.CUDA or getattr(hw, "IS_ROCM", False):
             return False
         import sys
 
@@ -421,11 +422,16 @@ def _weight_shards_all_present(load_dir) -> bool:
         if not isinstance(weight_map, dict) or not weight_map:
             return False
         for shard in set(weight_map.values()):
-            # Index entries are plain filenames beside the index; anything else is
-            # malformed, and treating it as a path would follow it out of the repo.
-            if not isinstance(shard, str) or not shard or Path(shard).name != shard:
+            # Resolved relative to the index, so a subdirectory is valid; only a path
+            # escaping the checkpoint is not, and following one would leave the repo.
+            if not isinstance(shard, str) or not shard or Path(shard).is_absolute():
                 return False
-            if not (load_dir / shard).is_file():
+            try:
+                target = (load_dir / shard).resolve()
+                target.relative_to(load_dir.resolve())
+            except (OSError, ValueError):
+                return False
+            if not target.is_file():
                 return False
     return True
 
