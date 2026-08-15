@@ -1160,11 +1160,7 @@ def test_an_rpc_launch_abstains(tmp_path, monkeypatch):
 
     assert backend._launch_host_shortfall_message(argv, [(0, 4877)]) is not None
     assert (
-        backend._launch_host_shortfall_message(
-            [*argv, "--rpc", "10.0.0.2:50052"], [(0, 4877)]
-        )
+        backend._launch_host_shortfall_message([*argv, "--rpc", "10.0.0.2:50052"], [(0, 4877)])
         is None
     )
-    assert (
-        backend._launch_host_shortfall_message([*argv, "--rpc", "  "], [(0, 4877)]) is not None
-    )
+    assert backend._launch_host_shortfall_message([*argv, "--rpc", "  "], [(0, 4877)]) is not None
