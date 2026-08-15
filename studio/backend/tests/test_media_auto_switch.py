@@ -1627,7 +1627,12 @@ def test_the_video_route_refuses_a_flow_control_the_target_does_not_expose(monke
 
     generated: list = []
 
-    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+    async def _switch_stub(
+        requested_model,
+        *,
+        before_switch = None,
+        **kwargs,
+    ):
         before_switch(index.MediaModelPick(requested_model, "Lightricks/LTX-Video-2", None, None))
 
     monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
