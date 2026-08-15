@@ -39,6 +39,8 @@ def _live_cache_dir() -> str:
     avoid a circular import, the same way diffusion_auto_policy does."""
     from utils.hf_cache_settings import active_hf_hub_cache
     return active_hf_hub_cache()
+
+
 _EXTRAS_TEXT_PROJ = "text_encoders/ltx-2.3-22b-{variant}_embeddings_connectors.safetensors"
 _EXTRAS_VIDEO_VAE = "vae/ltx-2.3-22b-{variant}_video_vae.safetensors"
 _EXTRAS_AUDIO_VAE = "vae/ltx-2.3-22b-{variant}_audio_vae.safetensors"

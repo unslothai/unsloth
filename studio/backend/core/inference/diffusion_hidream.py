@@ -57,6 +57,7 @@ def hidream_te4_kwargs(
     # import-time root instead and fails under local_files_only for a 16 GB encoder that is
     # present, after the resident image pipeline was evicted.
     from utils.hf_cache_settings import active_hf_hub_cache
+
     cache_dir = active_hf_hub_cache()
 
     tokenizer_4 = AutoTokenizer.from_pretrained(
