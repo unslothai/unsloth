@@ -34,14 +34,27 @@ Measured on an RX 9060 XT (gfx1200, torch 2.11.0+rocm7.13.0) at B=1 H=16 N=9408 
 1.221e-04 is 2**-13, fp16 epsilon: these agree with the reference to rounding, so the gate
 is not buying accuracy. It is only costing the kernel.
 
-Stdlib only, and it MUST run before torch is imported: torch reads the variable once while
-loading its C++ extension, so setting it afterwards is dead code. `unsloth/__init__.py` calls
-this at the top for exactly that reason, which is also why the check cannot ask torch whether
-this is even a ROCm build.
+torch reads the variable when it selects an SDPA backend, NOT once at extension load, so this
+does not have to beat `import torch`; it has to beat the first attention call. Measured on
+gfx1200 with torch 2.11.0+rocm7.13.0, setting it after `import torch` enables the kernels just
+as well as setting it before, and unset and "0" both fail with "No available kernel":
 
-The Studio backend opens the same gate in its own process (unslothai#8323). The two are
-deliberately separate copies: this one has to stay importable with nothing but stdlib on the
-library path, and that one is vendored into a backend that never imports unsloth.
+    set before import torch   flash OK           mem_efficient OK
+    set after  import torch   flash OK           mem_efficient OK
+    never set                 flash No kernel    mem_efficient No kernel
+    set to "0"                flash No kernel    mem_efficient No kernel
+
+`unsloth/__init__.py` still calls this at the top, which is the earliest honest point and keeps
+it ahead of any import that might dispatch attention. Do not weaken that into a lazy call on
+the strength of the above: the read point is a torch implementation detail, not a documented
+guarantee, and a future build reading it earlier would silently cost a user their context
+length. It is stdlib only so it can run before anything else is importable, which is also why
+the check cannot ask torch whether this is even a ROCm build.
+
+This is a backstop, not the primary route. `install.ps1` persists the variable for every ROCm
+install, so it is already set before any process starts, whatever the user imports first --
+including a plain `import torch` script that never reaches unsloth. This copy covers whoever
+pip-installed without running that installer.
 """
 
 import os

@@ -16,11 +16,12 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Before anything below can pull torch: on ROCm, torch hides its AOTriton flash and
-# mem-efficient SDPA kernels behind an environment variable it reads once at import. With the
-# gate shut, SDPA falls to MATH and attention memory grows with the SQUARE of the context, so
-# finetuning OOMs at a fraction of the sequence length the card can actually hold. Stdlib only,
-# and inert on every non-ROCm build. See unsloth/_rocm_attention.py.
+# First, so it lands before anything below can dispatch attention: on ROCm, torch hides its
+# AOTriton flash and mem-efficient SDPA kernels behind an environment variable it reads when it
+# picks an SDPA backend. With the gate shut, SDPA falls to MATH and attention memory grows with
+# the SQUARE of the context, so finetuning OOMs at a fraction of the sequence length the card
+# can actually hold. Stdlib only, and inert on every non-ROCm build. Normally the installer has
+# already set it; this covers a pip install that skipped it. See unsloth/_rocm_attention.py.
 from ._rocm_attention import enable_rocm_aotriton_attention as _enable_rocm_aotriton_attention
 
 _enable_rocm_aotriton_attention()

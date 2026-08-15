@@ -4781,6 +4781,34 @@ exit 0
             if ($ROCmTorchFloor) {
                 substep "  enforcing $ROCmTorchFloor (known _grouped_mm bug in older wheels)" "Cyan"
             }
+            # ROCm torch hides its AOTriton flash / mem-efficient SDPA kernels behind this
+            # variable. Unset, every sub-quadratic backend declines and SDPA falls to MATH,
+            # whose score matrix grows with the SQUARE of the context -- on a 16 GB card that
+            # is a 4-8k context instead of 32k. Measured on gfx1200: flash 17.3 ms / 0.18 GiB
+            # against math 387.2 ms / 12.14 GiB, agreeing to fp16 rounding.
+            # Persisted to User scope, not just this process, because the desktop shell and
+            # every training child are launched long after the installer exits. unsloth's own
+            # __init__ sets it too, but only for code that reaches `import unsloth` -- a plain
+            # `import torch` script never does, and this covers it.
+            # Any pre-existing value wins, including "0": that is the opt-out for someone who
+            # hits an AOTriton bug and wants the math fallback. Mirrors
+            # unsloth/_rocm_attention.py::enable_rocm_aotriton_attention.
+            $aotritonVar = "TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"
+            $aotritonSet = $null -ne [Environment]::GetEnvironmentVariable($aotritonVar, "User") `
+                -or -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($aotritonVar))
+            if ($aotritonSet) {
+                substep "  $aotritonVar already set -- leaving it alone" "DarkGray"
+            } else {
+                try {
+                    [Environment]::SetEnvironmentVariable($aotritonVar, "1", "User")
+                    Set-Item -Path "Env:$aotritonVar" -Value "1"
+                    substep "  $aotritonVar=1 (AOTriton attention; unset it to fall back to MATH)" "Cyan"
+                } catch {
+                    # Advisory: a blocked User-scope write must not fail the install. The
+                    # process copy above still helps this run, and unsloth's __init__ remains.
+                    substep "  could not persist $aotritonVar : $($_.Exception.Message)" "Yellow"
+                }
+            }
         } elseif ($ROCmGfxArch) {
             substep "AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
         } elseif ($ROCmUnsupportedGfxArch) {
