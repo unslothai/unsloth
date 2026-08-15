@@ -374,12 +374,17 @@ export const ptBR = {
           "Libera a VRAM após esta quantidade de segundos de inatividade. 0 mantém o modelo carregado; o mínimo é 60.",
         idleSecondsAriaLabel:
           "Segundos até o descarregamento automático por inatividade",
+        mediaEnable: "Trocar de modelo de imagem e vídeo por requisição",
+        mediaEnableDescription:
+          "Carrega, antes de gerar, um modelo de imagem ou vídeo baixado indicado em uma requisição da API. É uma configuração própria: a de cima vale apenas para o modelo de chat. Desativado por padrão.",
         mediaIdleUnload:
           "Descarregamento automático por inatividade de imagem e vídeo",
         mediaIdleUnloadDescription:
           "Libera a VRAM descarregando os modelos de imagem e vídeo após esta quantidade de segundos de inatividade. É uma configuração própria: a de cima cobre apenas o modelo de chat. 0 os mantém carregados; o mínimo é 60.",
         mediaIdleSecondsAriaLabel:
           "Segundos até o descarregamento automático por inatividade de imagem e vídeo",
+        mediaIdlePaused:
+          "Pausado enquanto “Manter o modelo na memória da GPU” estiver ativado.",
         idleNeedsEnable: "Primeiro, ative Trocar de modelo por requisição.",
         idleActiveViaEnv: "Ativo por meio de UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",

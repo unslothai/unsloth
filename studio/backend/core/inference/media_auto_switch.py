@@ -246,6 +246,23 @@ def _add_gguf_picks(
     return True
 
 
+def _loadable_directory(load_dir: Path) -> bool:
+    """Whether a non-GGUF directory is something the load routes can actually open.
+
+    Either a full diffusers pipeline, or a directory holding exactly one checkpoint, which both
+    routes reinterpret as a single_file load. Several checkpoints and no ``model_index.json``
+    is ambiguous, and the routes reject it rather than choose.
+    """
+    from core.inference.diffusion import resolve_local_single_file
+
+    try:
+        if (load_dir / "model_index.json").is_file():
+            return True
+    except OSError:
+        return False
+    return resolve_local_single_file(str(load_dir)) is not None
+
+
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
     from routes.models import _local_model_task, collect_local_models
@@ -274,6 +291,10 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
                 continue
             # Not a GGUF, so the load route detects the kind: a diffusers directory loads as a
             # pipeline, and a bare single-file directory is reinterpreted by the route itself.
+            # Anything else (several checkpoints and no model_index.json) is one the route
+            # rejects outright, so advertising it would only cost a failed switch.
+            if not _loadable_directory(load_dir):
+                continue
             _register(index, keys, MediaModelPick(keys[0], str(load_dir)))
         except Exception as exc:  # noqa: BLE001 -- one unreadable model must not hide the rest
             logger.debug("media auto-switch: skipped %s: %s", getattr(info, "id", "?"), exc)
@@ -385,6 +406,20 @@ def _satisfied_by(status: dict[str, Any], name: str, pick: MediaModelPick) -> bo
         return False
     # Ambiguity only blocks the skip, never the "did my load land" check: the reload settles it.
     return not pick.ambiguous
+
+
+def _same_identity(requested: str, resident: str) -> bool:
+    """Whether two model identities name the same thing.
+
+    A repo id folds case; a filesystem path does not, since /models/Foo and /models/foo are
+    different models where the filesystem says so.
+    """
+    requested, resident = requested.strip(), resident.strip()
+    if not requested or not resident:
+        return False
+    if os.path.isabs(requested) or os.path.isabs(resident):
+        return os.path.normcase(requested) == os.path.normcase(resident)
+    return requested.lower() == resident.lower()
 
 
 def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -> bool:
@@ -632,6 +667,11 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
         return None
     if any(plan.get("plan_failed") for plan in plans):
         return None
+    # Cached in full and still unloadable (a FLUX.2 GGUF paired with a different-size base).
+    # The route's cheap validation misses it, so without this the mismatch surfaces only from
+    # the background loader, after the resident pipeline has already been torn down.
+    if any(plan.get("incompatible_reason") for plan in plans):
+        return None
     missing = max((max(0, int(plan.get("total_bytes") or 0)) for plan in plans), default = 0)
     # An entry whose sibling sizes could not be read still names a file the load will fetch, and
     # both planners coerce an unknown size to zero, so entries decide and bytes only describe.
@@ -701,7 +741,7 @@ async def maybe_auto_switch_media_model(
     if (
         resident.get("loaded")
         and resident.get("model_kind") != "gguf"
-        and name.lower() == str(resident.get("repo_id") or "").lower()
+        and _same_identity(name, str(resident.get("repo_id") or ""))
     ):
         return
 
@@ -808,7 +848,16 @@ async def maybe_auto_switch_media_model(
                         openai_errors = openai_errors,
                         code = "model_not_downloaded",
                     )
-                await _start_load(owner, pick, current_subject)
+                # Bounded like the other waits: preflight and a first-run sd.cpp install both
+                # run before begin_load registers, and this holds the admission gate meanwhile.
+                # A timeout frees the request and the gate; the setup itself finishes on its
+                # own thread, which is the same contract begin_load already gives the UI.
+                await _bounded(
+                    _start_load(owner, pick, current_subject),
+                    deadline,
+                    kind = kind,
+                    openai_errors = openai_errors,
+                )
             try:
                 # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
                 ready = await _await_loaded(_backend_for(owner), name, pick, deadline)

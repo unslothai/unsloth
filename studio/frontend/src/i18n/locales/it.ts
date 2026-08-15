@@ -348,12 +348,17 @@ export const it = {
           "Libera la VRAM dopo il numero indicato di secondi di inattività. 0 mantiene il modello in memoria; il minimo è 60.",
         idleSecondsAriaLabel:
           "Secondi di inattività prima dello scaricamento automatico",
+        mediaEnable: "Cambia modello di immagini e video in base alla richiesta",
+        mediaEnableDescription:
+          "Carica un modello di immagini o video già scaricato indicato in una richiesta API prima di generare. È un'impostazione a sé: quella sopra riguarda solo il modello di chat. Disattivato per impostazione predefinita.",
         mediaIdleUnload:
           "Scaricamento automatico dalla memoria per inattività di immagini e video",
         mediaIdleUnloadDescription:
           "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. È un'impostazione a sé: quella qui sopra riguarda solo il modello di chat. 0 li mantiene in memoria; il minimo è 60.",
         mediaIdleSecondsAriaLabel:
           "Secondi di inattività prima dello scaricamento automatico di immagini e video",
+        mediaIdlePaused:
+          "In pausa finché «Mantieni il modello nella memoria della GPU» è attivo.",
         idleNeedsEnable:
           "Attiva prima «Cambia modello in base alla richiesta».",
         idleActiveViaEnv: "Attivo tramite UNSLOTH_MODEL_IDLE_TTL.",
