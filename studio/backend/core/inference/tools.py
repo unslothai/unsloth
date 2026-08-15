@@ -6718,6 +6718,42 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
     return False
 
 
+# not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write.
+_SANDBOX_TEMP_DIRNAME = "tmp"
+
+
+def _sandbox_temp_dir(workdir: str) -> str:
+    """The scratch directory for a sandboxed child, created when missing.
+
+    Inside the workdir rather than the workdir itself. Git for Windows mounts
+    /tmp at %TEMP% (the msys2 ``usertemp`` fstab entry), so pointing TEMP at the
+    workdir made /tmp the shortest POSIX name for the session sandbox: ``pwd``
+    in the terminal tool printed /tmp, the model reported /tmp as its absolute
+    path, and the user had no way to find the real folder (#8892). One level
+    down keeps every temp write inside the session sandbox and leaves the
+    workdir with a name of its own, while staying somewhere the listings still
+    reach, so what a child writes to /tmp is offered exactly as before.
+
+    Falls back to the workdir on anything unexpected (a link or file already
+    holding the name, an unwritable workdir): handing a child a TMPDIR that does
+    not exist breaks every tempfile call, which is worse than the aliasing this
+    avoids. One level only, never os.makedirs, so a workdir deleted from under a
+    call is not brought back as an empty directory nothing knows about.
+    """
+    temp_dir = os.path.join(workdir, _SANDBOX_TEMP_DIRNAME)
+    try:
+        # tool code runs in the workdir and can replace this name with a link.
+        if os.path.islink(temp_dir):
+            return workdir
+        os.mkdir(temp_dir, 0o700)
+    except FileExistsError:
+        if not os.path.isdir(temp_dir):
+            return workdir
+    except OSError:
+        return workdir
+    return temp_dir
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
@@ -6725,8 +6761,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
     SystemRoot and a minimal PATHEXT) reach the child; all credential vars
     (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
-    operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
-    shim directory.
+    operator's cached creds, and the temp vars at _sandbox_temp_dir just inside
+    it. PYTHONPATH carries only the sandbox sitecustomize shim directory.
 
     PATH starts with the Studio interpreter / venv and OS system dirs so
     ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
@@ -6773,10 +6809,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
+    temp_dir = _sandbox_temp_dir(workdir)
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
-        "TMPDIR": workdir,
+        "TMPDIR": temp_dir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
@@ -6793,8 +6830,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
         # Windows tempfile / native SDKs honour TEMP/TMP, not TMPDIR; without
         # these a child falls back to GetTempPath and writes outside the workdir.
-        env["TEMP"] = workdir
-        env["TMP"] = workdir
+        env["TEMP"] = temp_dir
+        env["TMP"] = temp_dir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -6959,8 +6996,8 @@ def _is_secret_env_value(value: str) -> bool:
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
-    """Env for bypass exec: full host env minus credential vars, with HOME/TMPDIR
-    repointed at the workdir so SDKs cannot read cached creds.
+    """Env for bypass exec: full host env minus credential vars, with HOME at the
+    workdir and TMPDIR just inside it so SDKs cannot read cached creds.
 
     Stripping the child env is necessary but not sufficient (a same-UID child can
     read the parent's env via procfs), so callers also harden the parent (see
@@ -6973,12 +7010,13 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         and not _is_secret_env_value(v)
         and not _is_cred_location_env_name(k)
     }
+    temp_dir = _sandbox_temp_dir(workdir)
     env["HOME"] = workdir
-    env["TMPDIR"] = workdir
+    env["TMPDIR"] = temp_dir
     # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR; repoint all three so
     # the bypassed tool writes under the per-session sandbox dir on every OS.
-    env["TEMP"] = workdir
-    env["TMP"] = workdir
+    env["TEMP"] = temp_dir
+    env["TMP"] = temp_dir
     # sitecustomize path shim (see _build_safe_env). Bypass inherits the
     # operator's PYTHONPATH, so prepend rather than replace.
     inherited_pythonpath = env.get("PYTHONPATH", "")
@@ -9057,8 +9095,8 @@ def _to_full_access(description: str, tool_name: str) -> str:
     Handing a model the sandboxed text in that mode makes it answer "I am
     sandboxed and cannot see your files" to a question one tool call would have
     answered. Untouched clauses are the ones still true in both modes: the
-    workdir is the per-session dir either way (_build_bypass_env repoints HOME /
-    TMPDIR / TEMP / TMP at it), and so is the download-link note.
+    workdir is the per-session dir either way (_build_bypass_env repoints HOME at
+    it and TMPDIR / TEMP / TMP just inside it), and so is the download-link note.
     """
     clause = _FULL_ACCESS_CLAUSE[tool_name]
     for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:

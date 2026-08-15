@@ -80,8 +80,8 @@ def test_full_access_descriptions_drop_the_isolation_claim(tool):
     # must not claim the two are the same.
     assert "user's own machine" not in description
     # The workdir really is still the per-session dir in bypass mode
-    # (_build_bypass_env repoints HOME/TMPDIR/TEMP/TMP at it), so the relative
-    # path advice and the download-link note both have to survive.
+    # (_build_bypass_env repoints HOME at it and TMPDIR/TEMP/TMP just inside it),
+    # so the relative path advice and the download-link note both have to survive.
     assert "persists for this conversation" in description
     assert "download link" in description
 

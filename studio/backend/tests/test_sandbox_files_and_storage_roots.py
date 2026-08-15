@@ -695,7 +695,8 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
 
 def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     """Its scratch script lives outside the sandbox, so a chat whose tools only
-    printed is still an empty folder and removable without the opt-in."""
+    printed holds nothing but our own bookkeeping and the empty scratch dir the
+    child got for TMPDIR, and is removable without the opt-in."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
@@ -703,10 +704,35 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    assert [p.name for p in workdir.iterdir()] == [tools._SANDBOX_MARKER]
+    assert sorted(p.name for p in workdir.iterdir()) == [
+        tools._SANDBOX_MARKER,
+        tools._SANDBOX_TEMP_DIRNAME,
+    ]
+    assert list((workdir / tools._SANDBOX_TEMP_DIRNAME).iterdir()) == []
 
     assert tools.remove_session_sandbox("__LOCALID_scratch") is True
     assert not workdir.exists()
+
+
+def test_a_file_under_the_scratch_dir_is_listed_and_blocks_removal(tmp_path, monkeypatch):
+    """On Windows the scratch dir is what /tmp resolves to, so a model writing
+    /tmp/report.csv lands here. It has to stay listed and keep its delete
+    prompt, exactly as it did when /tmp aliased the workdir itself."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_scratch3"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "report.csv").write_text("x")
+
+    assert inference._sandbox_listing_names(str(workdir)) == ["tmp/report.csv"]
+    assert tools.session_sandbox_has_files(session) is True
+    assert tools.remove_session_sandbox(session) is False
+    assert (scratch / "report.csv").is_file()
 
 
 def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
@@ -1182,7 +1208,9 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # The executor left nothing of its own behind.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
@@ -1273,7 +1301,9 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     workdir = Path(tools.get_sandbox_workdir(session))
     # Only the user's file is left; the executor cleaned up after itself.
     assert sorted(
-        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+        p.name
+        for p in workdir.iterdir()
+        if p.name not in tools._INTERNAL_SANDBOX_FILES and p.name != tools._SANDBOX_TEMP_DIRNAME
     ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
