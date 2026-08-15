@@ -3237,19 +3237,24 @@ def _ensure_rocm_torch() -> None:
     # wheels. Keep an explicit user pin authoritative, and do not compete with
     # a selected Strix per-gfx index. A pre-existing older ROCm wheel is actively
     # repaired just like gfx906's broken generic-wheel combination.
-    _gfx_rocm64_floor = (
+    _gfx_rocm64_target = (
         _rocm_pin is None
         and _strix_override_url is None
-        and _gfx_needs_rocm64_generic_index(ver)
         and _runtime_target_needs_rocm64_generic_index()
     )
-    if _gfx_rocm64_floor:
+    _gfx_rocm64_floor = _gfx_rocm64_target and _gfx_needs_rocm64_generic_index(ver)
+    _gfx_rocm64_repair = (
+        _gfx_rocm64_target
+        and has_hip_torch
+        and _installed_rocm_wheel_is_below(_installed_torch_ver, (6, 4))
+    )
+    if _gfx_rocm64_floor or _gfx_rocm64_repair:
         _safe_print(
             "   gfx1102/gfx1200/gfx1201 needs the generic rocm6.4 wheel family; "
             "older generic ROCm wheels lack its kernels."
         )
-        if has_hip_torch and _installed_rocm_wheel_is_below(_installed_torch_ver, (6, 4)):
-            rocm_torch_ready = False
+    if _gfx_rocm64_repair:
+        rocm_torch_ready = False
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under

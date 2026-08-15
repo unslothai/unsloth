@@ -4506,7 +4506,9 @@ case "$_torch_index_leaf" in
         # runs (now that the case matches every rocm* index, not just rocm7.1).
         # A user-supplied UNSLOTH_ROCM_GFX_ARCH overrides probing (mirrors setup.sh
         # and the display block), so a Strix override still reaches the arch index.
-        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
+        _gfx_all=${_gfx_all%%:*}
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
             _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
@@ -4547,7 +4549,16 @@ case "$_torch_index_leaf" in
         fi
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
-            _vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+            # first-set-wins over hip/rocr/cuda, mirroring _pick_visible_index in studio/install_python_stack.py
+            if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
+                _vis="$HIP_VISIBLE_DEVICES"
+            elif [ -n "${ROCR_VISIBLE_DEVICES+x}" ]; then
+                _vis="$ROCR_VISIBLE_DEVICES"
+            elif [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
+                _vis="$CUDA_VISIBLE_DEVICES"
+            else
+                _vis=""
+            fi
             _idx=0
             if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
                 _first=${_vis%%,*}

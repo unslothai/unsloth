@@ -1952,6 +1952,8 @@ class TestGfx1102Rocm64Floor:
         monkeypatch,
         *,
         pinned: bool = False,
+        rocm_ver: tuple = (6, 1),
+        probe_stdout: str = "\n",  # CPU torch -> repair
     ):
         m = stack_mod
         for name in (
@@ -1966,9 +1968,11 @@ class TestGfx1102Rocm64Floor:
             monkeypatch.setenv(
                 "UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.1"
             )
-        probe = MagicMock(returncode = 0, stdout = "\n")  # CPU torch -> repair
+        probe = MagicMock(returncode = 0, stdout = probe_stdout)
         with (
             patch.object(m, "IS_WINDOWS", False),
+            patch.object(m, "IS_MACOS", False),
+            patch.object(m, "_TORCH_RUNTIME_PROBE", None),
             patch.object(m, "_TORCH_BACKEND", ""),
             patch.object(m, "_LAST_AMD_GFX_PROBE", None),
             patch.object(m, "pip_install") as pip,
@@ -1976,13 +1980,13 @@ class TestGfx1102Rocm64Floor:
             patch.object(m, "_has_usable_nvidia_gpu", return_value = False),
             patch.object(m, "_has_rocm_gpu", return_value = True),
             patch.object(m, "_infer_linux_amd_gfx_arch", return_value = None),
-            patch.object(m, "_detect_rocm_version", return_value = (6, 1)),
+            patch.object(m, "_detect_rocm_version", return_value = rocm_ver),
             patch.object(m, "_detect_amd_gfx_codes", return_value = [gfx]),
             patch("platform.machine", return_value = "x86_64"),
             patch("subprocess.run", return_value = probe),
         ):
             _ensure_rocm_torch()
-        return str(pip.call_args_list[0])
+        return pip
 
     def test_floor_helper_covers_only_the_affected_generic_leaves(self):
         assert stack_mod._gfx_needs_rocm64_generic_index((6, 0)) is True
@@ -1993,22 +1997,61 @@ class TestGfx1102Rocm64Floor:
 
     def test_debian_split_gfx1100_keeps_rocm61(self, monkeypatch):
         """A Debian split host resolving rocm6.1 must leave gfx1100 on rocm6.1."""
-        torch_call = self._ensure_for_gfx("gfx1100", monkeypatch)
+        torch_call = str(self._ensure_for_gfx("gfx1100", monkeypatch).call_args_list[0])
         assert "rocm6.1" in torch_call
         assert "rocm6.4" not in torch_call
 
     @pytest.mark.parametrize("gfx", ("gfx1102", "gfx1200", "gfx1201"))
     def test_debian_split_affected_gfx_floors_to_rocm64(self, gfx, monkeypatch):
         """A resolved Debian rocm6.1 host cannot install a kernel-less generic wheel."""
-        torch_call = self._ensure_for_gfx(gfx, monkeypatch)
+        torch_call = str(self._ensure_for_gfx(gfx, monkeypatch).call_args_list[0])
         assert "rocm6.4" in torch_call
         assert "rocm6.1" not in torch_call
 
     def test_explicit_rocm61_pin_remains_authoritative(self, monkeypatch):
         """The narrow auto-floor never overwrites an explicit user index pin."""
-        torch_call = self._ensure_for_gfx("gfx1102", monkeypatch, pinned = True)
+        torch_call = str(
+            self._ensure_for_gfx("gfx1102", monkeypatch, pinned = True).call_args_list[0]
+        )
         assert "rocm6.1" in torch_call
         assert "rocm6.4" not in torch_call
+
+    @pytest.mark.parametrize("host_ver", ((6, 4), (7, 2)))
+    def test_installed_pre64_wheel_repaired_on_newer_host(self, host_ver, monkeypatch):
+        """A host reading 6.4+ still carries a kernel-less wheel after an ROCm upgrade.
+
+        `_gfx_needs_rocm64_generic_index` is False here, so gating the repair on it
+        left the installed +rocm6.1 build in place and `studio update` was a no-op.
+        """
+        pip = self._ensure_for_gfx(
+            "gfx1200",
+            monkeypatch,
+            rocm_ver = host_ver,
+            probe_stdout = _MARK + "2.8.0+rocm6.1|6.1.40093|\n",
+        )
+        torch_call = str(pip.call_args_list[0])
+        assert f"rocm{host_ver[0]}.{host_ver[1]}" in torch_call
+        assert "rocm6.1" not in torch_call
+
+    def test_installed_64_wheel_left_alone_on_newer_host(self, monkeypatch):
+        """The widened repair must not reinstall a wheel that already has the kernels."""
+        pip = self._ensure_for_gfx(
+            "gfx1200",
+            monkeypatch,
+            rocm_ver = (6, 4),
+            probe_stdout = _MARK + "2.8.0+rocm6.4|6.4.43482|\n",
+        )
+        pip.assert_not_called()
+
+    def test_unaffected_arch_not_repaired_on_newer_host(self, monkeypatch):
+        """gfx1100 has kernels in the older families, so its wheel stays untouched."""
+        pip = self._ensure_for_gfx(
+            "gfx1100",
+            monkeypatch,
+            rocm_ver = (6, 4),
+            probe_stdout = _MARK + "2.8.0+rocm6.1|6.1.40093|\n",
+        )
+        pip.assert_not_called()
 
     def test_install_sh_floors_resolved_rocm61_by_runtime_gfx(self):
         """Exercise install.sh's existing generic-routing block with a resolved leaf.
@@ -2051,6 +2094,63 @@ class TestGfx1102Rocm64Floor:
             result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
             assert result.returncode == 0, result.stderr
             assert result.stdout.strip().endswith(f"/{expected} LEAF:{expected}"), result.stdout
+
+    @staticmethod
+    def _run_install_sh_routing(preamble: str) -> str:
+        """Execute install.sh's architecture-routing block over a rocm6.1 leaf."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute install.sh architecture routing")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        leaf_helper = _extract_sh_function_body(source, "_rocm_leaf_below")
+        start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
+        end = source.find("\nfi  # _torch_index_pinned guard", start)
+        assert leaf_helper and start >= 0 and end >= 0
+        script = (
+            "set -euo pipefail\n"
+            + leaf_helper
+            + "\n"
+            + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1"\n'
+            + '_torch_index_leaf="rocm6.1"\n'
+            + "_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n"
+            + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES\n"
+            + "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_PYTORCH_MIRROR\n"
+            + preamble
+            + "\n"
+            + source[start:end]
+            + '\nprintf "LEAF:%s\\n" "$_torch_index_leaf"\n'
+        )
+        result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip().rsplit("LEAF:", 1)[-1]
+
+    @pytest.mark.parametrize(
+        ("mask", "expected"),
+        (
+            ("CUDA_VISIBLE_DEVICES=1", "rocm6.4"),
+            ("HIP_VISIBLE_DEVICES=1", "rocm6.4"),
+            ("ROCR_VISIBLE_DEVICES=1", "rocm6.4"),
+            ("CUDA_VISIBLE_DEVICES=0", "rocm6.1"),
+            # a set-but-empty hip mask selects no gpu instead of deferring to cuda
+            ("HIP_VISIBLE_DEVICES= CUDA_VISIBLE_DEVICES=1", "rocm6.1"),
+        ),
+    )
+    def test_install_sh_runtime_target_honors_cuda_visible_devices(self, mask, expected):
+        """HIP exposes devices through CUDA_VISIBLE_DEVICES too, so it must select the target."""
+        preamble = (
+            "rocminfo() { printf 'Name: gfx1100\\nName: gfx1200\\n'; }\n"
+            + "".join(f"export {assignment}\n" for assignment in mask.split())
+        )
+        assert self._run_install_sh_routing(preamble) == expected
+
+    @pytest.mark.parametrize(
+        "override",
+        ("gfx1200:xnack-", "GFX1200:XNACK-", " gfx1200 ", "gfx1201:sramecc+:xnack-"),
+    )
+    def test_install_sh_normalizes_gcn_arch_name_override(self, override):
+        """UNSLOTH_ROCM_GFX_ARCH copied from a HIP gcnArchName still matches the floor."""
+        preamble = f'export UNSLOTH_ROCM_GFX_ARCH="{override}"'
+        assert self._run_install_sh_routing(preamble) == "rocm6.4"
 
 
 # TEST: install_python_stack.py -- torch-index MARKER mechanism (PR #6692)
