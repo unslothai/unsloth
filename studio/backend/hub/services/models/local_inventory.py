@@ -769,9 +769,7 @@ async def _collect_models_from_default_sources(
     # oMLX uses the same publisher/model layout, so the LM Studio walk is reused and
     # only the reported source differs. Every HF cache this scan already covers is passed
     # in so a model oMLX merely linked out of one is not reported a second time.
-    omlx_hf_caches = tuple(
-        dict.fromkeys((hf_cache_dir, legacy_hf, hf_default, *known_hf_caches))
-    )
+    omlx_hf_caches = tuple(dict.fromkeys((hf_cache_dir, legacy_hf, hf_default, *known_hf_caches)))
     for omlx_dir in omlx_dirs:
         local_models += await _scan_source(
             "oMLX",

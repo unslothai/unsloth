@@ -18,7 +18,13 @@ import hub.utils.paths as hub_paths
 import utils.paths.storage_roots as storage_roots
 
 
-def _write_mlx_model(root: Path, org: str, name: str, *, shards: int = 1) -> Path:
+def _write_mlx_model(
+    root: Path,
+    org: str,
+    name: str,
+    *,
+    shards: int = 1,
+) -> Path:
     """An MLX model as oMLX stores it: publisher/model with an MLX quantization block."""
     model_dir = root / org / name
     model_dir.mkdir(parents = True)
@@ -190,9 +196,7 @@ class TestClassification:
         assert len(as_omlx) == len(as_lmstudio) == 1
         omlx_row = as_omlx[0].model_dump()
         lmstudio_row = as_lmstudio[0].model_dump()
-        differing = {
-            key for key in omlx_row if omlx_row[key] != lmstudio_row.get(key)
-        }
+        differing = {key for key in omlx_row if omlx_row[key] != lmstudio_row.get(key)}
         # inventory_id is "<source>:<format>:<semantic id>", so it moves with the source
         # by construction -- that is what gives an oMLX row its own dedup identity.
         assert differing == {"source", "inventory_id"}

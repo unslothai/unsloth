@@ -525,11 +525,7 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
-def _scan_lmstudio_dir(
-    lm_dir: Path,
-    *,
-    source: str = "lmstudio",
-) -> List[LocalModelInfo]:
+def _scan_lmstudio_dir(lm_dir: Path, *, source: str = "lmstudio") -> List[LocalModelInfo]:
     """Scan an LM Studio models directory for model files.
 
     LM Studio uses a ``publisher/model-name`` folder structure with GGUF
