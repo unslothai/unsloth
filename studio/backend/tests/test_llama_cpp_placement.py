@@ -998,9 +998,7 @@ def test_manual_partial_offload_is_left_to_the_launch(tmp_path, monkeypatch):
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
     )
 
-    assert "--gpu-layers" in _launch(
-        backend, gguf, gpu_memory_mode = "manual", gpu_layers = 10
-    )["cmd"]
+    assert "--gpu-layers" in _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 10)["cmd"]
 
 
 def test_cpu_resident_kv_is_not_offset_by_free_vram(tmp_path, monkeypatch):
