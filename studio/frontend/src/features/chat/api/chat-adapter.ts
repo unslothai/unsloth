@@ -6137,9 +6137,8 @@ export function createOpenAIStreamAdapter(
               if (
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
-                // The publishing chunk's flag only: a coalesced chunk never reaches
-                // here. Every finish re-measures from the group's start, so the
-                // final one still lands the right duration.
+                // The publishing chunk's flag only. Every finish re-measures from
+                // the group's start, so a coalesced chunk's dropped flag cannot skew it.
                 !structuredReasoningContinues &&
                 !hasUnclosedThinkTag(cumulativeText)
               ) {

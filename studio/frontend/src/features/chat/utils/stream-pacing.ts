@@ -8,10 +8,9 @@ const UNPAINTED_REOPEN_MS = 500;
  * Text a closed gate may hold before it publishes regardless.
  *
  * assistant-ui drops whatever a run yields after an abort, so Stop keeps only the
- * last published text. Frames bound the hold in time, not in volume, and the
- * fallback above is what reopens a starved window, which is where the stream runs
- * fastest. This bounds it in characters instead: several frames of a fast local
- * stream, so it binds only once frames are already far apart.
+ * last published text, and frames bound that hold in time rather than in volume:
+ * the fallback above reopens a starved window, which is where the stream runs
+ * fastest. Several frames' worth, so it binds only once frames are far apart.
  */
 export const MAX_HELD_CHARS = 256;
 
