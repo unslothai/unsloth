@@ -258,6 +258,8 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
 }): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
@@ -297,6 +299,12 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // A --ctx-size or cache override in here changes the estimate, so a preflight
+      // that dropped them would approve a different command from the one that runs.
+      ...(payload.llama_extra_args !== undefined
+        ? // biome-ignore lint/style/useNamingConvention: API schema
+          { llama_extra_args: payload.llama_extra_args }
+        : {}),
       // batch sizes scale the same estimate; omitted when blank so they never read as set
       ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
       ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
