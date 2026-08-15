@@ -23,6 +23,7 @@ import {
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
 import {
+  isAlreadyGone,
   type RagDocument,
   type TerminalJobStatus,
   terminalJobStatus,
@@ -750,6 +751,19 @@ export function useRagDocuments(
         }
         return true;
       } catch (err) {
+      } catch (err) {
+        // 404 means someone else removed it first -- another client, or a replacement
+        // retiring the source it was edited from. The state this asked for is the state
+        // the server is in, so restoring the row would put back a document that does not
+        // exist and 404s on every action, on a completed project with no poll to correct
+        // it. Report it as the success it effectively is.
+        if (isAlreadyGone(err)) {
+          if (forCurrentScope) {
+            refreshSeq.current += 1;
+            refreshInFlight.current = false;
+          }
+          return true;
+        }
         // `restore` is only set for the mounted scope, so a stale batch's
         // rollback cannot insert its row into the list now on screen. The slice
         // clamps on its own if the list has shrunk since, which puts the row last

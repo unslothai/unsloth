@@ -729,6 +729,58 @@ def test_the_claim_and_the_replacement_row_commit_together(rag_home, stub_embedd
     _await_job(res.json()["jobId"])
 
 
+def test_a_settled_edit_leaves_no_pointer_and_keeps_its_file(rag_home, stub_embeddings):
+    """The retirement, the cleared pointer and the job's completion are one transaction.
+    A pointer still set would read to recovery as an edit that never finished, and it would
+    "finish" it by withdrawing a replacement that had in fact succeeded -- losing the source
+    and both files. The replacement's own file must survive, having just been published."""
+    _, doc_id, old_path = _ingest("notes.md", "before\n")
+    client = _client()
+
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "after\n"})
+    assert res.status_code == 200
+    new_id = res.json()["documentId"]
+    _await_job(res.json()["jobId"])
+
+    row = _document_row(new_id)
+    assert row["status"] == "completed"
+    assert row["replaces_document_id"] is None, "a settled edit still points at its original"
+    # The job is terminal, so recovery does not select it at all.
+    from core.rag import ingestion
+
+    assert ingestion.get_job_status(res.json()["jobId"])["status"] == "completed"
+    # The retired file is gone; the published one is not.
+    assert not os.path.exists(old_path)
+    assert os.path.exists(row["stored_path"])
+    assert _search(client, "after")
+
+
+def test_a_failed_publish_keeps_the_original_and_its_file(rag_home, stub_embeddings, monkeypatch):
+    """The retired file is deleted only after the commit. Removing it while the deletion of
+    its row was still uncommitted would leave a rollback restoring a document whose bytes
+    were already gone -- a source that previews and downloads as nothing."""
+    from core.rag import ingestion
+
+    _, doc_id, old_path = _ingest("notes.md", "kickoff is on the third\n")
+    client = _client()
+
+    real_commit_guard = ingestion.store.delete_document
+
+    def fail_after_deleting(conn, target, **kwargs):
+        real_commit_guard(conn, target, **kwargs)
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(ingestion.store, "delete_document", fail_after_deleting)
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "replacement\n"})
+    assert res.status_code == 200
+    _await_job(res.json()["jobId"], expect = "cancelled")
+
+    monkeypatch.setattr(ingestion.store, "delete_document", real_commit_guard)
+    assert _document_row(doc_id) is not None, "the original was lost"
+    assert os.path.exists(old_path), "the original's bytes were deleted before the commit"
+    assert _search(client, "kickoff third"), "the original is no longer retrievable"
+
+
 def test_a_refused_start_releases_the_claim(rag_home, stub_embeddings, monkeypatch):
     # If the replacement never starts, the source must not be left stuck reading
     # as indexing -- that would make it permanently uneditable.

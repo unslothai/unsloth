@@ -258,7 +258,6 @@ def create_document(
     embedding_model: str | None = None,
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
-    linked_relative_path: str | None = None,
     replaces_document_id: str | None = None,
     archive_messages: int | None = None,
     archive_ordinal: int | None = None,

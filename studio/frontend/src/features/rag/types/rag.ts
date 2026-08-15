@@ -217,3 +217,16 @@ export function isSupportedSourceName(name: string): boolean {
   if (dot <= 0) return false;
   return ACCEPTED_UPLOAD_EXTS.has(name.slice(dot).toLowerCase());
 }
+
+/** Whether a failed mutation means "the thing is already gone", which for a delete is the
+ * state the caller wanted. Restoring the row instead would put back a document that does
+ * not exist and 404s on every later action.
+ *
+ * Matches the error ``ragError`` builds -- an ``Error`` carrying the status -- rather than
+ * any object with a ``status`` field: a duck-typed check would also match an unrelated
+ * payload that happens to carry ``status: 404``. Kept here so the node:test runner can
+ * reach it, since ``rag-api`` pulls in an image asset the runner cannot load. */
+export function isAlreadyGone(err: unknown): boolean {
+  return err instanceof Error && (err as { status?: unknown }).status === 404;
+}
+}

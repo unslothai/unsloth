@@ -468,6 +468,13 @@ def reconcile_orphaned_ingestion_jobs() -> int:
             #   Unless the original is already gone: someone deleted it while the crashed
             #   job was unreconciled, and publishing would bring it back under a new id, so
             #   the delete wins exactly as it does in _replace_old_document.
+            #
+            # An absent original here always means that deletion, never a retirement this
+            # job already did: the worker retires the original, clears this pointer and
+            # completes the job in one transaction, so a settled edit leaves no pointer to
+            # follow and a terminal job this query does not select. Were that not so, a
+            # successful retirement would read exactly like a deletion and be "undone" by
+            # withdrawing the replacement -- losing the source and both files.
             # * anything else means the replacement never landed. The branch below fails it
             #   and drops its chunks, so the original is handed back to the user.
             replaced_id = doc["replaces_document_id"] if doc is not None else None
