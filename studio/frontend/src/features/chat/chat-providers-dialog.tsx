@@ -1329,8 +1329,9 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Replaces the 32,768-token default for models Unsloth has
-                      no documented limit for. Leave blank to keep it.
+                      Caps Max Tokens for this connection. Never raises it past a
+                      model's documented limit. Leave blank for the 32,768-token
+                      default.
                     </p>
                   </div>
                   <div className="flex min-w-0 flex-col gap-1.5">

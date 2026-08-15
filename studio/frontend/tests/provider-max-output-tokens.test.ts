@@ -53,7 +53,7 @@ test("the connection editor exposes a bounded optional cap and warning", () => {
   assert.match(dialog, /Max Tokens limit/);
   assert.match(
     dialog,
-    /Replaces the 32,768-token default for models Unsloth has\s+no documented limit for\. Leave blank to keep it\./,
+    /Caps Max Tokens for this connection\. Never raises it past a\s+model's documented limit\. Leave blank for the 32,768-token\s+default\./,
   );
   assert.match(
     dialog,
