@@ -938,20 +938,6 @@ def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
     assert "--fit" in _launch(backend, gguf)["cmd"]
 
 
-def test_an_unprobed_gpu_pool_abstains_rather_than_refusing(tmp_path, monkeypatch):
-    """An empty pool means the probe threw, not that the host has no GPU. Charging the
-    whole model against RAM there would refuse a load that fits in VRAM."""
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
-    _restore_host_guard(backend)
-    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
-    backend._select_gpus = lambda *args, **kw: (None, True)
-    monkeypatch.setattr(
-        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 4_000)
-    )
-
-    assert _launch(backend, gguf)["cmd"]
-
-
 def test_unknown_available_ram_abstains(tmp_path, monkeypatch):
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = None, monkeypatch = monkeypatch
@@ -1114,3 +1100,32 @@ def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch)
     cpu_build._backend_lacks_gpu_lib = lambda _binary = None: True
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(cpu_build, gguf2)
+
+
+def test_a_cpu_only_host_prices_the_whole_model(tmp_path, monkeypatch):
+    """_get_gpu_memory answers [] for "no supported GPU reachable", not only for a probe
+    that threw, so a plain CPU-only machine running a GPU-capable build reached the
+    abstention and skipped the guard entirely while the whole GGUF went to RAM."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
+def test_a_failed_enumeration_still_abstains(tmp_path, monkeypatch):
+    """The abstention survives for the case it was written for: when the probe raises,
+    the launch cannot vouch for the empty pool and must not price the full model."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    backend._get_gpu_memory = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("probe failed"))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 10_000)
+    )
+
+    assert _launch(backend, gguf)["cmd"]

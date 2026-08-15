@@ -6852,7 +6852,7 @@ class LlamaCppBackend:
         except Exception:
             return None
         gpus = [] if child_has_no_gpu else list(detected_gpus or ())
-        # an empty pool means the probe threw, not that the child has no gpu
+        # an empty pool the caller did not vouch for means the enumeration never ran
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
         free_vram_mib = sum(max(0, row[1]) for row in gpus)
@@ -13480,6 +13480,8 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
+                # tells an enumeration that found no gpu from one that never ran
+                _gpu_probe_ok = False
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls
@@ -13515,6 +13517,7 @@ class LlamaCppBackend:
                     # so the pin happens anyway. A pinned uncovered GPU is the user's
                     # call and already reports "device kernel image is invalid".
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
+                    _gpu_probe_ok = True
                     # Every present device gated out (#7624). Left alone the launch
                     # takes the `--fit on` arm with `gpu_indices` still None, so no
                     # mask is written, the child enumerates every unsupported card and
@@ -16022,6 +16025,8 @@ class LlamaCppBackend:
                         _cpu_only_zero_offload
                         or _arch_gate_forced_cpu
                         or self._backend_lacks_gpu_lib(binary)
+                        # _get_gpu_memory answers [] for "no gpu reachable", not only a throw
+                        or (_gpu_probe_ok and not _detected_gpus)
                     ),
                 )
                 if _offload_msg:
