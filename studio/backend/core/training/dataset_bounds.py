@@ -120,7 +120,11 @@ def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
     return path
 
 
-def record_row_bound(output_dir: Any, max_train_rows: Optional[int], seed: Any = 3407) -> None:
+def record_row_bound(
+    output_dir: Any,
+    max_train_rows: Optional[int],
+    seed: Any = 3407,
+) -> None:
     """Record the bound a run started with, beside its checkpoints.
 
     The subset a run trains on is training state: it has to be fixed at the first
@@ -138,9 +142,7 @@ def record_row_bound(output_dir: Any, max_train_rows: Optional[int], seed: Any =
     if not run_dir:
         return
     try:
-        with open(
-            os.path.join(run_dir, ROW_BOUND_MARKER_FILE), "w", encoding = "utf-8"
-        ) as handle:
+        with open(os.path.join(run_dir, ROW_BOUND_MARKER_FILE), "w", encoding = "utf-8") as handle:
             json.dump(
                 {
                     "max_train_rows": _positive_int(max_train_rows, 0) or None,
@@ -153,7 +155,9 @@ def record_row_bound(output_dir: Any, max_train_rows: Optional[int], seed: Any =
 
 
 def row_bound_for_resume(
-    checkpoint_path: Any, max_train_rows: Optional[int], seed: Any = 3407
+    checkpoint_path: Any,
+    max_train_rows: Optional[int],
+    seed: Any = 3407,
 ) -> tuple[Optional[int], int]:
     """The (rows, seed) a resume must use, or the freshly computed pair.
 
@@ -179,9 +183,7 @@ def row_bound_for_resume(
     if not run_dir:
         return max_train_rows, fallback_seed
     try:
-        with open(
-            os.path.join(run_dir, ROW_BOUND_MARKER_FILE), encoding = "utf-8"
-        ) as handle:
+        with open(os.path.join(run_dir, ROW_BOUND_MARKER_FILE), encoding = "utf-8") as handle:
             marker = json.load(handle)
         recorded = marker["max_train_rows"]
     except (OSError, UnicodeDecodeError, ValueError, TypeError, KeyError):
