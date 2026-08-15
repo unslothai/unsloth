@@ -428,9 +428,7 @@ def _quantizer_runtime_present(quant_method: str) -> bool:
         from core._torchao_stub import is_stubbed
 
         # find_spec succeeds against the Windows ROCm stubs, which cannot dequantize.
-        return any(
-            find_spec(name) is not None and not is_stubbed(name) for name in modules
-        )
+        return any(find_spec(name) is not None and not is_stubbed(name) for name in modules)
     except Exception:
         return False
 
