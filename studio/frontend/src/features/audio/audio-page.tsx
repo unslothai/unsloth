@@ -1955,6 +1955,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                   hint="What the model should say. Generation runs on the loaded TTS model and lands in the gallery on the right."
                 >
                   <Textarea
+                    data-type-to-activate="prompt"
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     placeholder="Type the sentence to speak…"

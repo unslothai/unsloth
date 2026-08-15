@@ -558,7 +558,10 @@ export function ClosingScreen() {
     // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
     // click-through onto the dialog it is hiding, so clicks meant for a screen that says
     // the app is closing would land on buttons the user can no longer see.
-    <div className="pointer-events-auto fixed inset-0 z-[9999]">
+    <div
+      data-slot="closing-screen"
+      className="pointer-events-auto fixed inset-0 z-[9999]"
+    >
       <StartupSurface>
         <div className="flex h-full w-full flex-col items-center justify-center text-center">
           <ClosingContent />

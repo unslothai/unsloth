@@ -3721,6 +3721,7 @@ const Composer: FC<{
                 overlay ? "Type your edits for your image" : "Ask anything"
               }
               ref={inputRef}
+              data-type-to-activate="composer"
               className="aui-composer-input unsloth-composer-input"
               minRows={1}
               maxRows={12}

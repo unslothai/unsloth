@@ -289,6 +289,7 @@ export function SettingsDialog() {
     <>
       <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
         <DialogContent
+          data-settings-dialog
           showCloseButton={false}
           overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
           onCloseAutoFocus={(e) => {
@@ -340,6 +341,7 @@ export function SettingsDialog() {
                       setQuery("");
                     }
                   }}
+                  data-type-to-activate="settings-search"
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
                   className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
