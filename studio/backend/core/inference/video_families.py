@@ -647,6 +647,21 @@ def validate_video_keyframe_conditioning(
         )
 
 
+def validate_video_flow_controls(
+    fam: VideoFamily, flow_shift: Optional[float], audio_flow_shift: Optional[float]
+) -> None:
+    """Raise ``ValueError`` when a family exposes no control the request is trying to set.
+
+    The family half of the backend's flow-shift resolution, split out so the generate route can
+    judge the checkpoint it is about to switch TO. The remaining rule there is the engine's, and
+    a target's engine is not chosen until the load runs.
+    """
+    if flow_shift is not None and fam.default_flow_shift is None:
+        raise ValueError(f"{fam.name} does not expose a video flow_shift control.")
+    if audio_flow_shift is not None and fam.default_audio_flow_shift is None:
+        raise ValueError(f"{fam.name} does not expose an audio_flow_shift control.")
+
+
 def validate_video_reference_conditioning(
     fam: VideoFamily, h3_task: Optional[str], *, has_references: bool
 ) -> None:

@@ -240,6 +240,7 @@ async def _gated_start_load(
     kind: str,
     openai_errors: bool,
     hf_token: Optional[str],
+    takes_the_gpu: bool,
 ) -> bool:
     """Run the final checks and start the load, owning the gates and *locks* throughout.
 
@@ -250,22 +251,28 @@ async def _gated_start_load(
     activation unloads the resident pipeline on its way, so anything admitted before
     registration would be cut short by a load that no longer has a request behind it.
 
-    The gates are every one the handoff can evict behind, entered in a fixed order so two
+    The gates held are the ones this load could evict behind, entered in a fixed order so two
     switches cannot deadlock, and one at a time under the budget: a stalled holder elsewhere
     would otherwise pin this task, and with it the switch lock, indefinitely. Cancelling during
     that acquisition is free, and the stack releases whatever was already entered; nothing past
     it may be interrupted.
+
+    A load that does not take the GPU holds its own backend's gate only. It cannot evict chat or
+    the other media backend, so waiting on their gates would let an unrelated chat teardown time
+    the switch out, and holding them would block new chat and video requests for as long as the
+    re-plan and the load registration take.
     """
     from core.inference.media_keepwarm import admission_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
+    needed = (
+        (admission_gate(DIFFUSION), admission_gate(VIDEO), inference_lifecycle_gate())
+        if takes_the_gpu
+        else (admission_gate(owner),)
+    )
     try:
         async with contextlib.AsyncExitStack() as gates:
-            for gate in (
-                admission_gate(DIFFUSION),
-                admission_gate(VIDEO),
-                inference_lifecycle_gate(),
-            ):
+            for gate in needed:
                 await bounded(
                     gates.enter_async_context(gate),
                     deadline,
@@ -388,7 +395,8 @@ async def maybe_auto_switch_media_model(
 
     lock = switch_lock(owner)
     # held only when the load takes the gpu, since a cpu-only switch takes it from nobody
-    gpu_lock = gpu_switch_lock() if await asyncio.to_thread(load_takes_the_gpu) else None
+    takes_the_gpu = await asyncio.to_thread(load_takes_the_gpu)
+    gpu_lock = gpu_switch_lock() if takes_the_gpu else None
     locks = [held for held in (gpu_lock, lock) if held is not None]
     with note_switcher(owner):
         # the marker covers only the wait: once this request holds the lock it is real work
@@ -430,6 +438,7 @@ async def maybe_auto_switch_media_model(
                     kind = kind,
                     openai_errors = openai_errors,
                     hf_token = hf_token,
+                    takes_the_gpu = takes_the_gpu,
                 )
             )
             setup.add_done_callback(_consume_detached_error)

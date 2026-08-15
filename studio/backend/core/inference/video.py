@@ -127,6 +127,7 @@ from .video_families import (
     snap_num_frames,
     snap_video_size,
     supported_video_family_names,
+    validate_video_flow_controls,
     validate_video_keyframe_conditioning,
     validate_video_reference_conditioning,
     validate_video_request_shape,
@@ -5366,10 +5367,7 @@ class VideoBackend:
 
         sd.cpp rejects non-default audio shifts because it cannot apply them.
         """
-        if flow_shift is not None and fam.default_flow_shift is None:
-            raise ValueError(f"{fam.name} does not expose a video flow_shift control.")
-        if audio_flow_shift is not None and fam.default_audio_flow_shift is None:
-            raise ValueError(f"{fam.name} does not expose an audio_flow_shift control.")
+        validate_video_flow_controls(fam, flow_shift, audio_flow_shift)
         shift = flow_shift if flow_shift is not None else fam.default_flow_shift
         audio_shift = (
             audio_flow_shift if audio_flow_shift is not None else fam.default_audio_flow_shift

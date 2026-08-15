@@ -378,6 +378,7 @@ async def generate_video(
         from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family
         from core.inference.video_families import (
+            validate_video_flow_controls,
             validate_video_keyframe_conditioning,
             validate_video_reference_conditioning,
             validate_video_request_shape,
@@ -398,6 +399,7 @@ async def generate_video(
                 request.reference_images or request.reference_videos or request.reference_audios
             ),
         )
+        validate_video_flow_controls(fam, request.flow_shift, request.audio_flow_shift)
 
     # Before the backend is resolved: the requested model may be the one this brings up.
     try:

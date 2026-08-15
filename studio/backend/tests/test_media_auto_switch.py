@@ -1593,3 +1593,60 @@ def test_a_gguf_the_loader_cannot_open_is_not_advertised(catalog, tmp_path):
 
     assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None
     assert mas.available_media_model_ids(mas.IMAGE_TASK) == []
+
+
+def test_a_cpu_switch_does_not_hold_the_gates_it_cannot_evict_behind(
+    flux, enabled, backend, loads, monkeypatch
+):
+    # A CPU load releases GPU ownership instead of taking it, so waiting on chat's lifecycle gate
+    # let an unrelated teardown time the switch out, and holding it blocked new chat requests for
+    # as long as the re-plan and the load registration took.
+    import core.inference.llama_keepwarm as chat
+
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
+    held: list = []
+
+    def _gate():
+        held.append(True)
+        raise AssertionError("a cpu switch must not wait on the chat lifecycle gate")
+
+    monkeypatch.setattr(chat, "inference_lifecycle_gate", _gate)
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+    assert held == []
+
+
+def test_the_video_route_refuses_a_flow_control_the_target_does_not_expose(monkeypatch):
+    # LTX-2 exposes no audio_flow_shift, and _resolve_flow_shifts would only say so after the
+    # switch had evicted the resident pipeline and loaded the target.
+    import core.inference.video as video_module
+    from routes.video import router as video_router
+
+    generated: list = []
+
+    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+        before_switch(index.MediaModelPick(requested_model, "Lightricks/LTX-Video-2", None, None))
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
+
+    class _Backend:
+        def begin_generate(self, **kwargs):
+            generated.append(kwargs)
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+
+    resp = _client(video_router, "/api/inference").post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "a sloth",
+            "model": "Lightricks/LTX-Video-2",
+            "audio_flow_shift": 3.0,
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "audio_flow_shift" in resp.json()["detail"]
+    assert generated == []
