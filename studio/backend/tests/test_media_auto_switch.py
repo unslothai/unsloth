@@ -1110,6 +1110,71 @@ def test_a_bare_id_takes_a_root_variant_over_a_qualified_one(catalog, tmp_path):
     assert bare.gguf_filename == "flux1-Q4_K_M.gguf"
 
 
+def test_the_resident_shortcut_also_checks_the_h3_partition(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # The pre-index shortcut returns before _resident_is_pick runs, so it needs the same
+    # partition test or a resident ref2va answers a plain request.
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+    backend.repo_id = "MiniMaxAI/MiniMax-H3"
+    backend.h3_task = "ref2va"
+
+    _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert [pick.model_id for _owner, pick in loads] == ["MiniMaxAI/MiniMax-H3"]
+
+
+def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
+    catalog, enabled, tmp_path, backend, monkeypatch
+):
+    # Shielding alone let the caller unwind both contexts while setup was still before
+    # begin_load, so a newly admitted generation could be cut short by the orphaned switch.
+    import core.inference.media_keepwarm as keepwarm
+
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _slow_setup(owner, pick, current_subject):
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(mas, "_start_load", _slow_setup)
+
+    async def _drive():
+        task = asyncio.ensure_future(
+            mas.maybe_auto_switch_media_model(
+                "black-forest-labs/FLUX.1-dev",
+                owner = arb.DIFFUSION,
+                current_subject = "test-user",
+                openai_errors = True,
+            )
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            await task
+        assert excinfo.value.status_code == 503
+        # The caller gave up, but setup owns the gate until it reaches registration.
+        assert started.is_set()
+        assert keepwarm._TRACKERS[arb.DIFFUSION].gate.locked()
+        assert mas._switch_lock(arb.DIFFUSION).locked()
+        release.set()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if not keepwarm._TRACKERS[arb.DIFFUSION].gate.locked():
+                break
+        assert not keepwarm._TRACKERS[arb.DIFFUSION].gate.locked()
+        assert not mas._switch_lock(arb.DIFFUSION).locked()
+
+    asyncio.run(_drive())
+
+
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module

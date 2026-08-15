@@ -748,6 +748,62 @@ async def _start_load(owner: str, pick: MediaModelPick, current_subject: str) ->
     logger.info("Media auto-switch: loading %s on the %s backend", pick.model_id, owner)
 
 
+async def _gated_start_load(
+    owner: str,
+    name: str,
+    pick: MediaModelPick,
+    current_subject: str,
+    lock: asyncio.Lock,
+    deadline: float,
+    *,
+    kind: str,
+    openai_errors: bool,
+) -> bool:
+    """Run the final checks and start the load, owning the gate and *lock* throughout.
+
+    Returns True when the resident model already answers the request, so the caller can stop.
+
+    Ownership is the point. The caller shields this and may stop waiting on it, and the work
+    from the last drain observation through ``begin_load`` must not be interruptible: engine
+    activation unloads the resident pipeline on its way, so anything admitted before
+    registration would be cut short by a load that no longer has a request behind it.
+    """
+    from core.inference.media_keepwarm import admission_gate
+    try:
+        async with admission_gate(owner):
+            # Re-resolved under the gate: a concurrent load can activate the other image engine
+            # while this request drains, leaving the earlier reference on the idle one.
+            backend = _backend_for(owner)
+            # What the drain waited out may have been the very load this request wanted.
+            if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
+                return True
+            if not await _drain(owner, backend, time.monotonic()):
+                raise _refuse(
+                    _BUSY_MSG.format(kind = kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_busy",
+                    retry_after = _RETRY_AFTER_S,
+                )
+            # Re-planned here because the drain can last 30 seconds, and a cache deletion during
+            # it sees a target that is neither loaded nor loading yet, so its guard allows the
+            # removal of files this already verified.
+            missing = await asyncio.to_thread(_missing_download_bytes, owner, pick)
+            if missing is None or missing:
+                raise _refuse(
+                    _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind)
+                    if missing is None
+                    else _incomplete_message(pick, missing, kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_not_downloaded",
+                )
+            await _start_load(owner, pick, current_subject)
+            return False
+    finally:
+        lock.release()
+
+
 async def maybe_auto_switch_media_model(
     requested_model: Optional[str], *, owner: str, current_subject: str, openai_errors: bool
 ) -> None:
@@ -780,6 +836,7 @@ async def maybe_auto_switch_media_model(
     if (
         resident.get("loaded")
         and resident.get("model_kind") != "gguf"
+        and _partition_matches(resident)
         and _same_identity(name, str(resident.get("repo_id") or ""))
     ):
         return
@@ -814,13 +871,14 @@ async def maybe_auto_switch_media_model(
     if _satisfied_by(resident, name, pick):
         return
 
-    from core.inference.media_keepwarm import admission_gate
-
     with _note_waiter(owner):
         # Acquired within the budget: a request that spent most of it resolving would otherwise
         # queue behind another full switch and blow past the response window before any of the
         # inner waits could notice.
-        async with _held_within(_switch_lock(owner), deadline, kind, openai_errors):
+        lock = _switch_lock(owner)
+        await _bounded(lock.acquire(), deadline, kind = kind, openai_errors = openai_errors)
+        handed_over = False
+        try:
             backend = _backend_for(owner)
             # Re-read under the lock: a concurrent request may have just loaded this model.
             if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
@@ -853,78 +911,48 @@ async def maybe_auto_switch_media_model(
                     code = "model_busy",
                     retry_after = _RETRY_AFTER_S,
                 )
-            # Held ACROSS the last drain observation, not after it: a request admitted between
-            # a passing drain and the gate is tracked but has not marked the backend active
-            # yet, so it would read as idle and be cancelled by the load's teardown.
-            async with admission_gate(owner):
-                # Re-resolved under the gate: a concurrent load can activate the other image
-                # engine while this request drains, leaving `backend` pointing at the idle one
-                # and both checks passing against a backend nothing is using.
-                backend = _backend_for(owner)
-                # What the drain waited out may have been the very load this request wanted.
-                if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
-                    return
-                if not await _drain(owner, backend, time.monotonic()):
-                    raise _refuse(
-                        _BUSY_MSG.format(kind = kind),
-                        status_code = 409,
-                        openai_errors = openai_errors,
-                        code = "model_busy",
-                        retry_after = _RETRY_AFTER_S,
-                    )
-                # Re-planned here because the drain can last 30 seconds, and a cache deletion
-                # during it sees a target that is neither loaded nor loading yet, so its guard
-                # allows the removal of files this already verified.
-                missing = await _bounded(
-                    asyncio.to_thread(_missing_download_bytes, owner, pick),
+            # The gated section runs as its own task holding the gate AND the switch lock, so
+            # a timeout below frees the caller without unwinding either: setup that has begun
+            # activating an engine must reach begin_load before anything else is admitted.
+            setup = asyncio.ensure_future(
+                _gated_start_load(
+                    owner,
+                    name,
+                    pick,
+                    current_subject,
+                    lock,
                     deadline,
                     kind = kind,
                     openai_errors = openai_errors,
                 )
-                if missing is None or missing:
-                    raise _refuse(
-                        _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind)
-                        if missing is None
-                        else _incomplete_message(pick, missing, kind),
-                        status_code = 409,
-                        openai_errors = openai_errors,
-                        code = "model_not_downloaded",
-                    )
-                # Bounded like the other waits: preflight and a first-run sd.cpp install both
-                # run before begin_load registers, and this holds the admission gate meanwhile.
-                # A timeout frees the request and the gate; the setup itself finishes on its
-                # own thread, which is the same contract begin_load already gives the UI.
-                # Shielded: the timeout must free the caller and the gate, never abandon setup
-                # half-done. select_and_activate_engine unloads the resident engine as it
-                # switches, so a cancelled task that never reaches begin_load would leave the
-                # backend empty with no load coming.
-                await _bounded(
-                    asyncio.shield(
-                        asyncio.ensure_future(_start_load(owner, pick, current_subject))
-                    ),
-                    deadline,
-                    kind = kind,
-                    openai_errors = openai_errors,
-                )
-            try:
-                # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
-                ready = await _await_loaded(_backend_for(owner), name, pick, deadline)
-            except RuntimeError as exc:
-                # The loader already redacts this text; a bare raise would 500 with it.
-                raise _refuse(
-                    f"'{pick.model_id}' could not be loaded: {exc}",
-                    status_code = 503,
-                    openai_errors = openai_errors,
-                    code = "model_load_failed",
-                )
-            if not ready:
-                raise _refuse(
-                    _LOADING_MSG.format(model = pick.model_id),
-                    status_code = 503,
-                    openai_errors = openai_errors,
-                    code = "model_loading",
-                    retry_after = _RETRY_AFTER_S,
-                )
+            )
+            handed_over = True
+            if await _bounded(
+                asyncio.shield(setup), deadline, kind = kind, openai_errors = openai_errors
+            ):
+                return
+        finally:
+            if not handed_over:
+                lock.release()
+        try:
+            # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
+            ready = await _await_loaded(_backend_for(owner), name, pick, deadline)
+        except RuntimeError as exc:
+            # The loader already redacts this text; a bare raise would 500 with it.
+            raise _refuse(
+                f"'{pick.model_id}' could not be loaded: {exc}",
+                status_code = 503,
+                openai_errors = openai_errors,
+                code = "model_load_failed",
+            )
+        if not ready:
+            raise _refuse(
+                _LOADING_MSG.format(model = pick.model_id),
+                status_code = 503,
+                openai_errors = openai_errors,
+                code = "model_loading",
+                retry_after = _RETRY_AFTER_S,
+            )
 
 
 # One switch at a time per backend, so two requests cannot race the single pipeline slot.
