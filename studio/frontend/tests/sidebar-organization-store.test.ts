@@ -6,6 +6,8 @@ import test from "node:test";
 
 import {
   applyManualOrder,
+  dropEdgeFor,
+  moveIdBy,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
@@ -37,6 +39,43 @@ test("a drop that cannot be resolved leaves the order alone", () => {
   assert.equal(reorderIds(ids, "b", "b"), ids);
   assert.equal(reorderIds(ids, "gone", "b"), ids);
   assert.equal(reorderIds(ids, "b", "gone"), ids);
+});
+
+test("the drop indicator names the edge the row actually lands on", () => {
+  // Painting the cue on the wrong edge is a lie about where the drop goes, so
+  // check every pair against what reorderIds really does.
+  const rows = ["a", "b", "c", "d"];
+  for (const dragged of rows) {
+    for (const target of rows) {
+      if (dragged === target) continue;
+      const next = reorderIds(rows, dragged, target);
+      const landed = next.indexOf(dragged);
+      const targetAt = next.indexOf(target);
+      const edge = dropEdgeFor(rows, dragged, target);
+      assert.equal(
+        landed,
+        edge === "bottom" ? targetAt + 1 : targetAt - 1,
+        `${dragged} onto ${target} drew ${edge} but landed at ${landed}`,
+      );
+    }
+  }
+});
+
+test("a row moves one slot at a time and stops at the ends", () => {
+  assert.deepEqual(moveIdBy(["a", "b", "c"], "a", 1), ["b", "a", "c"]);
+  assert.deepEqual(moveIdBy(["a", "b", "c"], "c", -1), ["a", "c", "b"]);
+  // Past either end, or a row the list lost, is a no-op.
+  const ids = ["a", "b", "c"];
+  assert.equal(moveIdBy(ids, "a", -1), ids);
+  assert.equal(moveIdBy(ids, "c", 1), ids);
+  assert.equal(moveIdBy(ids, "gone", 1), ids);
+});
+
+test("moving by menu matches dragging onto the neighbour", () => {
+  // The two paths must agree, or the same gesture gives two different orders.
+  const rows = ["a", "b", "c", "d"];
+  assert.deepEqual(moveIdBy(rows, "b", 1), reorderIds(rows, "b", "c"));
+  assert.deepEqual(moveIdBy(rows, "c", -1), reorderIds(rows, "c", "b"));
 });
 
 test("a saved order applies, and undragged rows stay on top in list order", () => {

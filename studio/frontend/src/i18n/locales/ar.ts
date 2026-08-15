@@ -108,6 +108,21 @@ export const ar = {
       description: "{path} غير موجود.",
       backToChat: "العودة إلى المحادثة",
     },
+    organize: {
+      sidebarHeading: "تنظيم الشريط الجانبي",
+      byProject: "حسب المشروع",
+      inOneList: "في قائمة واحدة",
+      sortChatsBy: "ترتيب المحادثات حسب",
+      sortPinnedBy: "ترتيب المثبتة حسب",
+      priority: "الأولوية",
+      lastUpdated: "آخر تحديث",
+      manualOrder: "ترتيب يدوي",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+      organizeChats: "تنظيم المحادثات",
+      organizeProjects: "تنظيم المشاريع",
+      sortPinnedChats: "ترتيب المحادثات المثبتة",
+    },
     dialog: {
       deleteChat: {
         title: "حذف المحادثة",

@@ -79,6 +79,8 @@ export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,
+  dropEdgeFor,
+  moveIdBy,
   PINNED_ORDER_SCOPE,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,

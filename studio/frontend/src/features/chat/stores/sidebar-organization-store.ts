@@ -54,6 +54,40 @@ export function reorderIds(
 }
 
 /**
+ * Which edge of the target row the drop indicator belongs on, matching where
+ * `reorderIds` actually lands the row: after the target when dragging down,
+ * before it when dragging up.
+ */
+export function dropEdgeFor(
+  ids: string[],
+  draggedId: string,
+  targetId: string,
+): "top" | "bottom" {
+  const from = ids.indexOf(draggedId);
+  const to = ids.indexOf(targetId);
+  return from !== -1 && to !== -1 && from < to ? "bottom" : "top";
+}
+
+/**
+ * Moves a row one slot up or down. The menu path to the same reorder that
+ * dragging does, for touch and keyboard, which never see a `dragstart`.
+ */
+export function moveIdBy(
+  ids: string[],
+  id: string,
+  delta: number,
+): string[] {
+  const from = ids.indexOf(id);
+  if (from === -1) return ids;
+  const to = from + delta;
+  if (to < 0 || to >= ids.length) return ids;
+  const next = [...ids];
+  next.splice(from, 1);
+  next.splice(to, 0, id);
+  return next;
+}
+
+/**
  * Applies a saved order to `items`, leaving rows it does not mention in their
  * incoming order and on top. A row the user never dragged is new to the list,
  * so it stays where the list's own rule put it rather than sinking.

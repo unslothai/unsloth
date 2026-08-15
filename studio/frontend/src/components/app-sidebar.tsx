@@ -66,7 +66,9 @@ import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
+  ArrowDown01Icon,
   ArrowRight02Icon,
+  ArrowUp01Icon,
   BadgeInfoIcon,
   BookOpen01Icon,
   BubbleChatIcon,
@@ -143,6 +145,8 @@ import {
   usePromptQueueUI,
   useSidebarOrganizationStore,
   applyManualOrder,
+  dropEdgeFor,
+  moveIdBy,
   projectOrderScope,
   reorderIds,
   PINNED_ORDER_SCOPE,
@@ -277,19 +281,27 @@ const SIDEBAR_PROJECT_LIMIT = 5;
 const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
-// Insertion cue on the row a drop lands on, inset to the pill.
-const DROP_CUE_CLASS =
-  "before:absolute before:inset-x-2 before:-top-px before:h-0.5 before:rounded-full before:bg-primary/70 before:content-['']";
+// Insertion cue on the edge the row will land on, inset to the pill.
+const DROP_CUE_BASE =
+  "before:absolute before:inset-x-2 before:h-0.5 before:rounded-full before:bg-primary/70 before:content-['']";
+const DROP_CUE_TOP = `${DROP_CUE_BASE} before:-top-px`;
+const DROP_CUE_BOTTOM = `${DROP_CUE_BASE} before:-bottom-px`;
 
 // Every list offers the same three orders.
-const CHAT_SORT_OPTIONS: Array<{ value: SidebarChatSort; label: string }> = [
-  { value: "priority", label: "Priority" },
-  { value: "updated", label: "Last updated" },
-  { value: "manual", label: "Manual order" },
+const CHAT_SORT_OPTIONS: Array<{
+  value: SidebarChatSort;
+  key: TranslationKey;
+}> = [
+  { value: "priority", key: "shell.organize.priority" },
+  { value: "updated", key: "shell.organize.lastUpdated" },
+  { value: "manual", key: "shell.organize.manualOrder" },
 ];
-const ORGANIZE_OPTIONS: Array<{ value: SidebarOrganizeBy; label: string }> = [
-  { value: "project", label: "By project" },
-  { value: "list", label: "In one list" },
+const ORGANIZE_OPTIONS: Array<{
+  value: SidebarOrganizeBy;
+  key: TranslationKey;
+}> = [
+  { value: "project", key: "shell.organize.byProject" },
+  { value: "list", key: "shell.organize.inOneList" },
 ];
 
 const CHAT_EXPORT_OPTIONS: Array<{
@@ -941,25 +953,6 @@ export function AppSidebar() {
     () => new Set(pinnedProjectIds),
     [pinnedProjectIds],
   );
-  // Every project gets a folder: pinned first in pin order, then by activity,
-  // then whatever the user dragged, which outranks both.
-  const sidebarProjectRecords = useMemo(() => {
-    const byId = new Map(projects.map((p) => [p.id, p]));
-    const pinned = pinnedProjectIds
-      .map((id) => byId.get(id))
-      .filter((p): p is ProjectRecord => Boolean(p));
-    const rest = projects
-      .filter((p) => !pinnedProjectIdSet.has(p.id))
-      .sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt));
-    return applyManualOrder(
-      [...pinned, ...rest],
-      manualOrder[PROJECT_ORDER_SCOPE],
-      (project) => project.id,
-    );
-  }, [projects, pinnedProjectIds, pinnedProjectIdSet, manualOrder]);
-  const visibleProjectRecords = showAllProjects
-    ? sidebarProjectRecords
-    : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT);
   // Pinned chats, in pin order. A pinned project chat also stays in its folder.
   const pinnedChatItems = useMemo(() => {
     const byId = new Map(allChatItems.map((item) => [item.id, item]));
@@ -981,6 +974,40 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems]);
+  // Every project gets a folder: pinned first in pin order, then by activity,
+  // then whatever the user dragged, which outranks both. Activity comes from
+  // the member chats, since a project's own updatedAt only moves when its name,
+  // instructions or archived flag are edited.
+  const sidebarProjectRecords = useMemo(() => {
+    const lastActivityAt = (project: ProjectRecord) => {
+      let latest = project.updatedAt ?? project.createdAt;
+      for (const chat of chatsByProjectId.get(project.id) ?? []) {
+        if (chat.updatedAt > latest) latest = chat.updatedAt;
+      }
+      return latest;
+    };
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const pinned = pinnedProjectIds
+      .map((id) => byId.get(id))
+      .filter((p): p is ProjectRecord => Boolean(p));
+    const rest = projects
+      .filter((p) => !pinnedProjectIdSet.has(p.id))
+      .sort((a, b) => lastActivityAt(b) - lastActivityAt(a));
+    return applyManualOrder(
+      [...pinned, ...rest],
+      manualOrder[PROJECT_ORDER_SCOPE],
+      (project) => project.id,
+    );
+  }, [
+    projects,
+    pinnedProjectIds,
+    pinnedProjectIdSet,
+    manualOrder,
+    chatsByProjectId,
+  ]);
+  const visibleProjectRecords = showAllProjects
+    ? sidebarProjectRecords
+    : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT);
   // Default expanded; the row toggles this. Show-more reveals chats past the limit.
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),
@@ -1114,6 +1141,54 @@ export function AppSidebar() {
     }
     return map;
   }, [chatsByProjectId, sortChatItems, chatSort]);
+  // One id array per list, shared by every row in it. Built per row, these
+  // would be N arrays of length N on each render.
+  const recentRowIds = useMemo(
+    () => sortedRecentChatItems.map((item) => item.id),
+    [sortedRecentChatItems],
+  );
+  const pinnedRowIds = useMemo(
+    () => sortedPinnedChatItems.map((item) => item.id),
+    [sortedPinnedChatItems],
+  );
+  // Whole lists, not the visible slices, so a drop cannot lose what a
+  // collapsed "Show more" is hiding.
+  const projectRowIds = useMemo(
+    () => sidebarProjectRecords.map((project) => project.id),
+    [sidebarProjectRecords],
+  );
+  const projectChatRowIds = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const [projectId, items] of sortedChatsByProjectId) {
+      map.set(
+        projectId,
+        items.map((item) => item.id),
+      );
+    }
+    return map;
+  }, [sortedChatsByProjectId]);
+  // How many nested rows the Projects section renders, so the bottom fade can
+  // re-measure when regrouping or a disclosure changes the list height.
+  const projectChatRowCount = useMemo(() => {
+    if (organizeBy !== "project") return 0;
+    let rows = 0;
+    for (const project of visibleProjectRecords) {
+      if (collapsedProjectIds.has(project.id)) continue;
+      const chats = sortedChatsByProjectId.get(project.id) ?? [];
+      rows += expandedChatProjectIds.has(project.id)
+        ? chats.length
+        : Math.min(chats.length, PROJECT_CHAT_LIMIT);
+      // The "Show more" row counts too.
+      if (chats.length > PROJECT_CHAT_LIMIT) rows += 1;
+    }
+    return rows;
+  }, [
+    organizeBy,
+    visibleProjectRecords,
+    collapsedProjectIds,
+    expandedChatProjectIds,
+    sortedChatsByProjectId,
+  ]);
 
   // A row must know which list it is dragged within: the same chat can sit in
   // its project and in Recents, and each list keeps its own order.
@@ -1125,12 +1200,55 @@ export function AppSidebar() {
   const manualDragEnabled = chatSort === "manual";
   const pinnedDragEnabled = pinnedSort === "manual";
 
-  function isRowDropTarget(scope: string | undefined, rowId: string): boolean {
+  /** The cue class for this row, or undefined when it is not the drop target. */
+  function dropCueClass(
+    scope: string | undefined,
+    orderedIds: string[] | undefined,
+    rowId: string,
+  ): string | undefined {
+    if (
+      scope === undefined ||
+      dropTargetRowId !== rowId ||
+      draggingRow?.scope !== scope ||
+      draggingRow.id === rowId
+    ) {
+      return undefined;
+    }
+    return dropEdgeFor(orderedIds ?? [], draggingRow.id, rowId) === "bottom"
+      ? DROP_CUE_BOTTOM
+      : DROP_CUE_TOP;
+  }
+
+  /**
+   * Menu path to the same reorder dragging does. Touch browsers never fire
+   * dragstart and a keyboard cannot drag, so a manually ordered list is
+   * unreorderable without this.
+   */
+  function renderMoveRowItems(
+    scope: string,
+    orderedIds: string[],
+    rowId: string,
+    // Passed in, not searched for: this runs for every row on every render.
+    at: number,
+  ) {
+    const move = (delta: number) => {
+      const next = moveIdBy(orderedIds, rowId, delta);
+      if (next !== orderedIds) setManualOrder(scope, next);
+    };
     return (
-      scope !== undefined &&
-      dropTargetRowId === rowId &&
-      draggingRow?.scope === scope &&
-      draggingRow.id !== rowId
+      <>
+        <DropdownMenuItem disabled={at <= 0} onSelect={() => move(-1)}>
+          <HugeiconsIcon icon={ArrowUp01Icon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.organize.moveUp")}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={at === -1 || at >= orderedIds.length - 1}
+          onSelect={() => move(1)}
+        >
+          <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.organize.moveDown")}</span>
+        </DropdownMenuItem>
+      </>
     );
   }
 
@@ -1257,6 +1375,11 @@ export function AppSidebar() {
     isStudioRoute,
     // The update card grows the footer, so the scroll area shrinks under it.
     showUpdateCard,
+    // Regrouping, collapsing a folder or revealing more adds and removes rows
+    // with no scroll and no collapsible animation to re-measure off.
+    projectsOpen,
+    projectChatRowCount,
+    visibleProjectRecords.length,
   ]);
 
   // Resizing changes clientHeight without firing onScroll, so the fade would
@@ -1825,20 +1948,22 @@ export function AppSidebar() {
         >
           {options.includeOrganize && (
             <>
-              <DropdownMenuLabel>Organize sidebar</DropdownMenuLabel>
+              <DropdownMenuLabel>
+                {t("shell.organize.sidebarHeading")}
+              </DropdownMenuLabel>
               <DropdownMenuRadioGroup
                 value={organizeBy}
                 onValueChange={(value) =>
                   setOrganizeBy(value as SidebarOrganizeBy)
                 }
               >
-                {ORGANIZE_OPTIONS.map(({ value, label }) => (
+                {ORGANIZE_OPTIONS.map((option) => (
                   <DropdownMenuRadioItem
-                    key={value}
-                    value={value}
+                    key={option.value}
+                    value={option.value}
                     className={menuRadioItemClass}
                   >
-                    {label}
+                    {t(option.key)}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -1851,13 +1976,13 @@ export function AppSidebar() {
               options.onSortChange(value as SidebarChatSort)
             }
           >
-            {CHAT_SORT_OPTIONS.map(({ value, label }) => (
+            {CHAT_SORT_OPTIONS.map((option) => (
               <DropdownMenuRadioItem
-                key={value}
-                value={value}
+                key={option.value}
+                value={option.value}
                 className={menuRadioItemClass}
               >
-                {label}
+                {t(option.key)}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
@@ -1869,8 +1994,9 @@ export function AppSidebar() {
   function renderChatSidebarItem(
     item: SidebarItem,
     variant: "project" | "recent",
-    // Manual order only: the list this row drags within, and its ids to reorder.
-    drag?: { scope: string; orderedIds: string[] },
+    // Manual order only: the list this row drags within, its ids to reorder,
+    // and this row's slot in them.
+    drag?: { scope: string; orderedIds: string[]; index: number },
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
@@ -1976,7 +2102,7 @@ export function AppSidebar() {
         className={cn(
           itemClass,
           draggingRow?.id === item.id && "opacity-50",
-          isRowDropTarget(drag?.scope, item.id) && DROP_CUE_CLASS,
+          dropCueClass(drag?.scope, drag?.orderedIds, item.id),
         )}
         {...(drag
           ? rowDragProps(drag.scope, drag.orderedIds, item.id)
@@ -2098,6 +2224,13 @@ export function AppSidebar() {
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
               <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
             </DropdownMenuItem>
+            {drag &&
+              renderMoveRowItems(
+                drag.scope,
+                drag.orderedIds,
+                item.id,
+                drag.index,
+              )}
             {sandboxSessionId ? (
               isTauri ? (
                 <DropdownMenuItem
@@ -2714,8 +2847,8 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
                 {/* Pinning is the grouping, so no organize half and no "+". */}
                 {renderSidebarHeaderMenu({
-                  ariaLabel: "Sort pinned chats",
-                  sortLabel: "Sort pinned by",
+                  ariaLabel: t("shell.organize.sortPinnedChats"),
+                  sortLabel: t("shell.organize.sortPinnedBy"),
                   sortValue: pinnedSort,
                   onSortChange: setPinnedSort,
                 })}
@@ -2723,16 +2856,15 @@ export function AppSidebar() {
               <CollapsibleContent>
                 <SidebarGroupContent className={scrollRowPadding}>
                   <SidebarMenu>
-                    {sortedPinnedChatItems.map((item) =>
+                    {sortedPinnedChatItems.map((item, index) =>
                       renderChatSidebarItem(
                         item,
                         "recent",
                         pinnedDragEnabled
                           ? {
                               scope: PINNED_ORDER_SCOPE,
-                              orderedIds: sortedPinnedChatItems.map(
-                                (row) => row.id,
-                              ),
+                              orderedIds: pinnedRowIds,
+                              index,
                             }
                           : undefined,
                       ),
@@ -2761,9 +2893,9 @@ export function AppSidebar() {
                     <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                   </CollapsibleTrigger>
                   {renderSidebarHeaderMenu({
-                    ariaLabel: "Organize projects",
+                    ariaLabel: t("shell.organize.organizeProjects"),
                     includeOrganize: true,
-                    sortLabel: "Sort chats by",
+                    sortLabel: t("shell.organize.sortChatsBy"),
                     sortValue: chatSort,
                     onSortChange: setChatSort,
                   })}
@@ -2782,9 +2914,11 @@ export function AppSidebar() {
                 <CollapsibleContent>
                   <SidebarGroupContent className={scrollRowPadding}>
                     <SidebarMenu>
-                      {visibleProjectRecords.map((project) => {
+                      {visibleProjectRecords.map((project, projectIndex) => {
                         const projectChats =
                           sortedChatsByProjectId.get(project.id) ?? [];
+                        const projectChatIds =
+                          projectChatRowIds.get(project.id) ?? [];
                         // "In one list" keeps the folders but stops nesting
                         // their chats, leaving Recents as the single list.
                         const expanded =
@@ -2805,16 +2939,15 @@ export function AppSidebar() {
                           className={cn(
                             "group/recent-item relative",
                             draggingRow?.id === project.id && "opacity-50",
-                            isRowDropTarget(
+                            dropCueClass(
                               PROJECT_ORDER_SCOPE,
+                              projectRowIds,
                               project.id,
-                            ) && DROP_CUE_CLASS,
+                            ),
                           )}
                           {...rowDragProps(
                             PROJECT_ORDER_SCOPE,
-                            // Whole list, not the visible slice, so a drop
-                            // cannot lose what "Show more" hides.
-                            sidebarProjectRecords.map((record) => record.id),
+                            projectRowIds,
                             project.id,
                           )}
                         >
@@ -2888,6 +3021,12 @@ export function AppSidebar() {
                                 <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                                 <span>Rename project</span>
                               </DropdownMenuItem>
+                              {renderMoveRowItems(
+                                PROJECT_ORDER_SCOPE,
+                                projectRowIds,
+                                project.id,
+                                projectIndex,
+                              )}
                               <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
                                 <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
                                 <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
@@ -2907,16 +3046,15 @@ export function AppSidebar() {
                           </DropdownMenu>
                         </SidebarMenuItem>
                         {expanded &&
-                          visibleChats.map((chat) =>
+                          visibleChats.map((chat, index) =>
                             renderChatSidebarItem(
                               chat,
                               "project",
                               manualDragEnabled
                                 ? {
                                     scope: projectOrderScope(project.id),
-                                    // Whole list, not the visible slice: a drop
-                                    // must not lose what "Show more" hides.
-                                    orderedIds: projectChats.map((c) => c.id),
+                                    orderedIds: projectChatIds,
+                                    index,
                                   }
                                 : undefined,
                             ),
@@ -2974,9 +3112,9 @@ export function AppSidebar() {
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
                 {renderSidebarHeaderMenu({
-                  ariaLabel: "Organize chats",
+                  ariaLabel: t("shell.organize.organizeChats"),
                   includeOrganize: true,
-                  sortLabel: "Sort chats by",
+                  sortLabel: t("shell.organize.sortChatsBy"),
                   sortValue: chatSort,
                   onSortChange: setChatSort,
                 })}
@@ -2993,16 +3131,15 @@ export function AppSidebar() {
               <CollapsibleContent>
                 <SidebarGroupContent className={scrollRowPadding}>
                   <SidebarMenu>
-                    {sortedRecentChatItems.map((item) =>
+                    {sortedRecentChatItems.map((item, index) =>
                       renderChatSidebarItem(
                         item,
                         "recent",
                         manualDragEnabled
                           ? {
                               scope: RECENTS_ORDER_SCOPE,
-                              orderedIds: sortedRecentChatItems.map(
-                                (row) => row.id,
-                              ),
+                              orderedIds: recentRowIds,
+                              index,
                             }
                           : undefined,
                       ),

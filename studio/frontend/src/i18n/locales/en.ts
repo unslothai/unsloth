@@ -106,6 +106,22 @@ export const en = {
       description: "{path} does not exist.",
       backToChat: "Back to chat",
     },
+    // Sidebar list headers: how chats are grouped and ordered.
+    organize: {
+      sidebarHeading: "Organize sidebar",
+      byProject: "By project",
+      inOneList: "In one list",
+      sortChatsBy: "Sort chats by",
+      sortPinnedBy: "Sort pinned by",
+      priority: "Priority",
+      lastUpdated: "Last updated",
+      manualOrder: "Manual order",
+      moveUp: "Move up",
+      moveDown: "Move down",
+      organizeChats: "Organize chats",
+      organizeProjects: "Organize projects",
+      sortPinnedChats: "Sort pinned chats",
+    },
     dialog: {
       deleteChat: {
         title: "Delete chat",

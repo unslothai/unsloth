@@ -111,6 +111,21 @@ export const hi = {
       description: "{path} मौजूद नहीं है।",
       backToChat: "चैट पर वापस जाएँ",
     },
+    organize: {
+      sidebarHeading: "साइडबार व्यवस्थित करें",
+      byProject: "प्रोजेक्ट के अनुसार",
+      inOneList: "एक ही सूची में",
+      sortChatsBy: "चैट क्रमबद्ध करें",
+      sortPinnedBy: "पिन किए गए क्रमबद्ध करें",
+      priority: "प्राथमिकता",
+      lastUpdated: "अंतिम अपडेट",
+      manualOrder: "मैन्युअल क्रम",
+      moveUp: "ऊपर ले जाएँ",
+      moveDown: "नीचे ले जाएँ",
+      organizeChats: "चैट व्यवस्थित करें",
+      organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
+      sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
+    },
     dialog: {
       deleteChat: {
         title: "चैट हटाएँ",

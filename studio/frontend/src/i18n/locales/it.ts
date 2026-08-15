@@ -75,6 +75,21 @@ export const it = {
       description: "{path} non esiste.",
       backToChat: "Torna alla chat",
     },
+    organize: {
+      sidebarHeading: "Organizza la barra laterale",
+      byProject: "Per progetto",
+      inOneList: "In un solo elenco",
+      sortChatsBy: "Ordina le chat per",
+      sortPinnedBy: "Ordina i fissati per",
+      priority: "Priorità",
+      lastUpdated: "Ultimo aggiornamento",
+      manualOrder: "Ordine manuale",
+      moveUp: "Sposta su",
+      moveDown: "Sposta giù",
+      organizeChats: "Organizza le chat",
+      organizeProjects: "Organizza i progetti",
+      sortPinnedChats: "Ordina le chat fissate",
+    },
     dialog: {
       deleteChat: {
         title: "Elimina la chat",

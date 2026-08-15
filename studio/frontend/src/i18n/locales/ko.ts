@@ -108,6 +108,21 @@ export const ko = {
       description: "{path} 경로가 존재하지 않습니다.",
       backToChat: "채팅으로 돌아가기",
     },
+    organize: {
+      sidebarHeading: "사이드바 정리",
+      byProject: "프로젝트별",
+      inOneList: "하나의 목록으로",
+      sortChatsBy: "채팅 정렬 기준",
+      sortPinnedBy: "고정됨 정렬 기준",
+      priority: "우선순위",
+      lastUpdated: "최근 업데이트",
+      manualOrder: "수동 정렬",
+      moveUp: "위로 이동",
+      moveDown: "아래로 이동",
+      organizeChats: "채팅 정리",
+      organizeProjects: "프로젝트 정리",
+      sortPinnedChats: "고정된 채팅 정렬",
+    },
     dialog: {
       deleteChat: {
         title: "채팅 삭제",

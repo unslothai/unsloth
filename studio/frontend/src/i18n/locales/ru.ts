@@ -110,6 +110,21 @@ export const ru = {
       description: "{path} не существует.",
       backToChat: "Вернуться к чату",
     },
+    organize: {
+      sidebarHeading: "Настроить боковую панель",
+      byProject: "По проектам",
+      inOneList: "Одним списком",
+      sortChatsBy: "Сортировать чаты по",
+      sortPinnedBy: "Сортировать закреплённые по",
+      priority: "Приоритету",
+      lastUpdated: "Последнему обновлению",
+      manualOrder: "Вручную",
+      moveUp: "Переместить вверх",
+      moveDown: "Переместить вниз",
+      organizeChats: "Настроить чаты",
+      organizeProjects: "Настроить проекты",
+      sortPinnedChats: "Сортировать закреплённые чаты",
+    },
     dialog: {
       deleteChat: {
         title: "Удалить чат",

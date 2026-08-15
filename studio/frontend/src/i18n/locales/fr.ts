@@ -111,6 +111,21 @@ export const fr = {
       description: "{path} n'existe pas.",
       backToChat: "Retour à la discussion",
     },
+    organize: {
+      sidebarHeading: "Organiser la barre latérale",
+      byProject: "Par projet",
+      inOneList: "Dans une seule liste",
+      sortChatsBy: "Trier les discussions par",
+      sortPinnedBy: "Trier les épinglés par",
+      priority: "Priorité",
+      lastUpdated: "Dernière mise à jour",
+      manualOrder: "Ordre manuel",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+      organizeChats: "Organiser les discussions",
+      organizeProjects: "Organiser les projets",
+      sortPinnedChats: "Trier les discussions épinglées",
+    },
     dialog: {
       deleteChat: {
         title: "Supprimer la discussion",
