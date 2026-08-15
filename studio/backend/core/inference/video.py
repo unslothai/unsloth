@@ -1479,9 +1479,7 @@ class VideoBackend:
                 # Mirrors _run_load_h3_native's derivation; for diffusers loads the workflow
                 # param is the task (None for non-H3 families).
                 h3_task = (
-                    h3_transformer_task(gguf_filename)
-                    if h3_native and gguf_filename
-                    else h3_task
+                    h3_transformer_task(gguf_filename) if h3_native and gguf_filename else h3_task
                 ),
                 asset_repos = claimed_assets,
             )
