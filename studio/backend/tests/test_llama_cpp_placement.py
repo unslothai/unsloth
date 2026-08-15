@@ -1323,3 +1323,31 @@ def test_a_full_host_memory_mode_is_guarded_even_on_a_proven_gpu_fit(tmp_path, m
 
     with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
         _launch(backend, gguf, extra_args = ["--mlock"])
+
+
+def test_an_unprobed_gpu_pool_abstains_rather_than_refusing(tmp_path, monkeypatch):
+    """An empty pool means the GPU probe threw, not that the child has no GPU. The
+    fallback still builds a --fit on command, so pricing zero VRAM would refuse a model
+    that fits on the card the probe failed to read."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    assert "--fit" in _launch(backend, gguf)["cmd"]
+
+
+def test_a_rocr_pin_is_not_intersected_with_its_own_cuda_ordinals(tmp_path, monkeypatch):
+    """prefer_rocr writes the ROCr mask as physical ids and CUDA as post-ROCr ordinals.
+    Intersecting the two numeric strings empties the pool and refuses a fitting load."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(2, 20_000, 24_000), (3, 20_000, 24_000)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    backend._select_gpus = lambda *args, **kwargs: ([2, 3], True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    assert "--fit" in _launch(backend, gguf, gpu_ids = [2, 3])["cmd"]

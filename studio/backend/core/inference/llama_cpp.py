@@ -6849,7 +6849,9 @@ class LlamaCppBackend:
     _ARGV_UBATCH = frozenset({"-ub", "--ubatch-size"})
     _ARGV_CTK = frozenset({"-ctk", "--cache-type-k"})
     _ARGV_CTV = frozenset({"-ctv", "--cache-type-v"})
-    _ARGV_VISIBILITY = ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+    # ROCr first: it names physical devices, and a prefer_rocr pin rewrites the CUDA
+    # mask to post-ROCr ordinals, so the two are not in the same space.
+    _ARGV_VISIBILITY = ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
     def _launch_host_shortfall_message(
         self,
@@ -6950,6 +6952,11 @@ class LlamaCppBackend:
         mlock, reserves_ram = resolve_effective_memory_state(argv, env)
         weights_on_host = no_gpu or ngl == 0 or mlock or reserves_ram
 
+        # An empty pool means the probe threw, not that the child has no GPU: the
+        # fallback still builds a --fit on command for whatever it discovers. Only a
+        # mask or device pin is authoritative about there being nothing to offload to.
+        if not no_gpu and not list(detected_gpus or ()):
+            return None
         free_vram_mib = (
             0
             if no_gpu
@@ -6996,12 +7003,15 @@ class LlamaCppBackend:
         A visibility mask or a --device pin narrows the pool the planner detected, and
         a Vulkan iGPU reports shared system RAM (total 0), which is the very memory the
         caller charges this against."""
+        # One mask only. Under prefer_rocr the ROCr mask names physical devices while
+        # CUDA_VISIBLE_DEVICES is rewritten to post-ROCr ordinals, so intersecting the
+        # two numeric strings compares different spaces and can empty the pool.
         allowed: Optional[set] = None
         for var in self._ARGV_VISIBILITY:
             raw = str(env.get(var, "")).strip()
             if raw and raw != "-1":
-                picked = {int(p) for p in re.findall(r"\d+", raw)}
-                allowed = picked if allowed is None else (allowed & picked)
+                allowed = {int(p) for p in re.findall(r"\d+", raw)}
+                break
         device = _extra_args_main_device(argv)
         if device:
             named = {int(d) for d in re.findall(r"\d+", device)}
