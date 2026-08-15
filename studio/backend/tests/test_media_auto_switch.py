@@ -173,9 +173,7 @@ def test_a_standalone_gguf_resolves_to_its_directory(catalog, tmp_path):
 
     pick = mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK)
 
-    assert pick == mas.MediaModelPick(
-        "z-image", str(tmp_path), "z-image-Q4_K_M.gguf", "gguf", quant = "Q4_K_M"
-    )
+    assert pick == mas.MediaModelPick("z-image", str(tmp_path), "z-image-Q4_K_M.gguf", "gguf")
 
 
 def test_the_index_is_keyed_by_task(catalog, tmp_path):
@@ -640,7 +638,7 @@ def test_a_load_that_lands_while_draining_is_not_repeated(
     backend.repo_id = "Qwen/Qwen-Image"
     backend.loading = ("black-forest-labs/FLUX.1-dev",)
 
-    async def _drain_lands_the_model(_owner, _backend, _deadline):
+    async def _drain_lands_the_model(_owner, _backend, _deadline, **kwargs):
         backend.loading = ()
         backend.repo_id = str(pipeline)
         return True
@@ -1025,7 +1023,7 @@ def test_the_native_fallback_is_only_verified_when_a_binary_must_be_installed(mo
     # would refuse a model the selected engine can serve.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
-    pick = mas.MediaModelPick("x/y", "x/y", "y-Q4_K_M.gguf", "gguf", quant = "Q4_K_M")
+    pick = mas.MediaModelPick("x/y", "x/y", "y-Q4_K_M.gguf", "gguf")
     monkeypatch.setattr(mas, "_backend_for", lambda owner: object())
     router = __import__("core.inference.diffusion_engine_router", fromlist = ["x"])
     families = __import__("core.inference.diffusion_families", fromlist = ["x"])
@@ -1640,6 +1638,71 @@ def test_a_sharded_encoder_without_its_index_is_incomplete(monkeypatch):
     assert mas._encoder_repo_complete("unsloth/Meta-Llama-3.1-8B-Instruct") is False
     # An unsharded repo keeps the single-file reading.
     assert mas._encoder_repo_complete("org/unsharded-encoder") is True
+
+
+def test_an_edit_only_single_file_directory_is_refused(catalog, enabled, tmp_path, backend, loads):
+    # The catalog identifies the family from the checkpoint name, and the load route
+    # reinterprets the directory as single_file, so the guard has to see that filename too.
+    directory = tmp_path / "mystuff"
+    directory.mkdir()
+    (directory / "qwen_image_edit_2509_fp8.safetensors").write_bytes(b"")
+    catalog.append(_info("local/edit", directory, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("local/edit")
+
+    assert excinfo.value.status_code == 400
+    assert loads == []
+
+
+def test_a_spent_budget_reports_a_slow_switch_not_a_busy_model(
+    catalog, enabled, tmp_path, backend, monkeypatch
+):
+    # A probe with no time left knows nothing about the backend, and answering "busy" sent the
+    # caller after a generation that does not exist.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+
+    async def _drive():
+        with pytest.raises(HTTPException) as excinfo:
+            await mas._probe(
+                lambda _arg: False,
+                object(),
+                time.monotonic() - 1,
+                kind = "image",
+                openai_errors = True,
+            )
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.detail["error"]["code"] == "model_loading"
+
+    asyncio.run(_drive())
+
+
+def test_a_model_unloaded_during_resolution_is_not_reported_as_resident(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # The pre-resolution snapshot can be a whole budget old, so an idle unload landing during
+    # the index build would otherwise leave the route 503ing on nothing.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    # Resident under its path, so the pre-index shortcut misses and resolution decides.
+    backend.repo_id = str(pipeline)
+    original = mas.resolve_local_media_model
+
+    def _unload_midway(name, *, task):
+        backend.repo_id = None
+        return original(name, task = task)
+
+    monkeypatch.setattr(mas, "resolve_local_media_model", _unload_midway)
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

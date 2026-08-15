@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import os
 import threading
 import time
@@ -97,9 +98,6 @@ class MediaModelPick:
     model_path: str
     gguf_filename: Optional[str] = None
     model_kind: Optional[str] = None
-    # The variant lister's full label, which distinguishes builds the backend's own quant token
-    # collapses (IQ4_XS-3.53bpw vs -3.97bpw, and unlabelled files that have no token at all).
-    quant: Optional[str] = None
     # True when another indexed build under the same model_path publishes the same quant token,
     # so a resident model cannot be proven to be this one and the switch must reload.
     ambiguous: bool = False
@@ -190,14 +188,6 @@ def _published_token(pick: MediaModelPick) -> str:
     return (token or "").strip().lower()
 
 
-def _variant_label(filename: str) -> Optional[str]:
-    """The variant lister's label for a loose checkpoint, so its identity matches an indexed one."""
-    from utils.models.model_config import _extract_quant_label
-
-    label = _extract_quant_label(filename)
-    return label or None
-
-
 def _add_gguf_picks(
     index: dict[str, MediaModelPick], info, keys: tuple[str, ...], on_disk: Path, load_dir: Path
 ) -> bool:
@@ -220,7 +210,6 @@ def _add_gguf_picks(
                 str(load_dir.parent),
                 load_dir.name,
                 "gguf",
-                quant = _variant_label(load_dir.name),
             ),
         )
         return True
@@ -235,7 +224,7 @@ def _add_gguf_picks(
         _register(
             index,
             [f"{key}:{quant}" for key in keys],
-            MediaModelPick(keys[0], load_path, variant.filename, "gguf", quant = quant),
+            MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
         )
     # Root checkpoints alone when there are any: a plain local load resolves non-recursively and
     # always takes the root, so ranking a qualified `distilled/...` build alongside them would
@@ -245,7 +234,7 @@ def _add_gguf_picks(
     _register(
         index,
         keys,
-        MediaModelPick(keys[0], load_path, by_quant[best].filename, "gguf", quant = best),
+        MediaModelPick(keys[0], load_path, by_quant[best].filename, "gguf"),
     )
     return True
 
@@ -521,17 +510,32 @@ def _partition_matches(status: dict[str, Any], pick: Optional[MediaModelPick] = 
     return resident == str(expected or "").strip().lower()
 
 
-async def _probe(fn, arg, deadline: float) -> bool:
-    """Run a blocking busy probe off the loop, treating an overrun as still busy."""
+async def _probe(fn, arg, deadline: float, *, kind: str, openai_errors: bool) -> bool:
+    """Run a blocking busy probe off the loop, refusing rather than guessing on an overrun.
+
+    A spent budget is not a busy backend: reporting one sends the caller after a generation
+    that does not exist, where the slow-switch 503 says what actually happened.
+    """
     remaining = deadline - time.monotonic()
     call = asyncio.to_thread(fn, arg) if arg is not None else asyncio.to_thread(fn)
     if remaining <= 0:
         call.close()
-        return True
+        raise _slow_switch(kind, openai_errors)
     try:
         return bool(await asyncio.wait_for(call, timeout = remaining))
     except asyncio.TimeoutError:
-        return True
+        raise _slow_switch(kind, openai_errors)
+
+
+def _slow_switch(kind: str, openai_errors: bool):
+    """The refusal for a switch that ran out of budget before it could answer."""
+    return _refuse(
+        _SLOW_MSG.format(kind = kind),
+        status_code = 503,
+        openai_errors = openai_errors,
+        code = "model_loading",
+        retry_after = _RETRY_AFTER_S,
+    )
 
 
 def _load_takes_the_gpu() -> bool:
@@ -610,6 +614,8 @@ async def _drain(
     count_pending: bool = True,
     probe_deadline: Optional[float] = None,
     check_chat: bool = True,
+    kind: str = "image",
+    openai_errors: bool = True,
 ) -> bool:
     """Wait out other tracked requests and any in-flight load or generation.
 
@@ -631,6 +637,10 @@ async def _drain(
     abort the switch; the chat lifecycle gate is held by then, which is what makes it safe.
     """
     from core.inference.media_keepwarm import other_request_count
+
+    # Device configuration, so it cannot change mid-drain: resolved once rather than on every
+    # 0.2s poll, which cost roughly 150 worker round-trips per switch.
+    cross_owner = await asyncio.to_thread(_load_takes_the_gpu)
     while True:
         # This request is itself tracked and itself a waiter, so it counts as neither.
         others = other_request_count(
@@ -639,8 +649,6 @@ async def _drain(
         # Every recorded waiter is another request parked on the lock: this one left the marker
         # when it acquired the lock, so nothing here belongs to it.
         others -= _waiter_count(owner)
-        # A CPU load never calls acquire_for, so it evicts nobody and owes no cross-owner wait.
-        cross_owner = await asyncio.to_thread(_load_takes_the_gpu)
         # The other media backend counts too: the load route takes the GPU through the arbiter,
         # whose cross-owner handoff unloads whatever holds it, cancelling a generation that has
         # nothing to do with this request.
@@ -654,11 +662,12 @@ async def _drain(
         # holds across pipeline assembly, so an unbounded probe outlives the response window.
         # Chat counts as well: the arbiter evicts whoever owns the GPU, streaming or not.
         probe_by = deadline if probe_deadline is None else probe_deadline
+        probe = functools.partial(_probe, kind = kind, openai_errors = openai_errors)
         if (
             others <= 0
-            and not await _probe(_backend_busy, backend, probe_by)
-            and not (cross_owner and await _probe(_other_backend_busy, owner, probe_by))
-            and not (cross_owner and check_chat and await _probe(_chat_busy, None, probe_by))
+            and not await probe(_backend_busy, backend, probe_by)
+            and not (cross_owner and await probe(_other_backend_busy, owner, probe_by))
+            and not (cross_owner and check_chat and await probe(_chat_busy, None, probe_by))
         ):
             return True
         if time.monotonic() >= deadline:
@@ -688,16 +697,6 @@ async def _await_loaded(backend: Any, name: str, pick: MediaModelPick, deadline:
         if time.monotonic() >= deadline:
             return False
         await asyncio.sleep(_POLL_S)
-
-
-@contextlib.asynccontextmanager
-async def _held_within(lock: asyncio.Lock, deadline: float, kind: str, openai_errors: bool):
-    """Hold *lock*, refusing rather than queueing for it past the switch budget."""
-    await _bounded(lock.acquire(), deadline, kind = kind, openai_errors = openai_errors)
-    try:
-        yield
-    finally:
-        lock.release()
 
 
 async def _bounded(coro, deadline: float, *, kind: str, openai_errors: bool):
@@ -859,13 +858,15 @@ def _cached_snapshot_file(repo_id: str, filename: str) -> Optional[str]:
     return hit if isinstance(hit, str) else None
 
 
-def _needs_external_encoder(pick: MediaModelPick) -> bool:
-    """Whether this pick's pipeline fetches an encoder that its own directory cannot hold."""
+def _detected_image_family(pick: MediaModelPick) -> Any:
+    """The diffusion family for *pick*, tried against its id and then its path.
+
+    The on-disk directory is often named nothing like the model, and a single-file pick is
+    identified by its checkpoint name, so every caller needs the same needles rather than
+    whichever one it happened to pass.
+    """
     from core.inference.diffusion_families import detect_family_for_pick
 
-    # Both needles: the on-disk directory is often named nothing like the model, and a
-    # recognised family is what decides. An unrecognised one keeps the shortcut, since
-    # planning a local path always fails and refusing every on-device model is worse.
     for needle in (pick.model_id, pick.model_path):
         if not needle:
             continue
@@ -874,8 +875,16 @@ def _needs_external_encoder(pick: MediaModelPick) -> bool:
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
             continue
         if fam is not None:
-            return getattr(fam, "name", "") in _EXTERNAL_ENCODER_FAMILIES
-    return False
+            return fam
+    return None
+
+
+def _needs_external_encoder(pick: MediaModelPick) -> bool:
+    """Whether this pick's pipeline fetches an encoder that its own directory cannot hold."""
+    # An unrecognised family keeps the shortcut, since planning a local path always fails and
+    # refusing every on-device model is worse.
+    fam = _detected_image_family(pick)
+    return fam is not None and getattr(fam, "name", "") in _EXTERNAL_ENCODER_FAMILIES
 
 
 def _normalized_pick(pick: MediaModelPick) -> MediaModelPick:
@@ -902,12 +911,8 @@ def _is_edit_only(pick: MediaModelPick) -> bool:
     model for a multi-GB pipeline that /v1/images/generations then refuses for lacking txt2img.
     """
     from core.inference.diffusion import _family_workflows
-    from core.inference.diffusion_families import detect_family_for_pick
 
-    try:
-        fam = detect_family_for_pick(pick.model_path, pick.gguf_filename, None)
-    except Exception:  # noqa: BLE001 -- a detection miss must not refuse a loadable pick
-        return False
+    fam = _detected_image_family(_normalized_pick(pick))
     if fam is None:
         return False
     return "txt2img" not in _family_workflows(fam)
@@ -930,10 +935,9 @@ def _planners_for(owner: str, pick: MediaModelPick) -> list:
         native_binary_installed,
         predict_engine,
     )
-    from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
 
-    fam = detect_family_for_pick(pick.model_path, pick.gguf_filename, None)
+    fam = _detected_image_family(pick)
     if fam is None:
         return [_backend_for(owner)]
     kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
@@ -1121,6 +1125,8 @@ async def _gated_start_load(
                 count_pending = False,
                 probe_deadline = deadline,
                 check_chat = False,
+                kind = kind,
+                openai_errors = openai_errors,
             ):
                 raise _refuse(
                     _BUSY_MSG.format(kind = kind),
@@ -1206,7 +1212,14 @@ async def maybe_auto_switch_media_model(
         openai_errors = openai_errors,
     )
     if pick is None:
-        available = _format_available(await asyncio.to_thread(available_media_model_ids, task))
+        available = _format_available(
+            await _bounded(
+                asyncio.to_thread(available_media_model_ids, task),
+                deadline,
+                kind = kind,
+                openai_errors = openai_errors,
+            )
+        )
         raise _refuse(
             f"No downloaded {kind} model matches '{name}'."
             + (f" Downloaded {kind} models: {available}." if available else ""),
@@ -1225,7 +1238,10 @@ async def maybe_auto_switch_media_model(
             code = "invalid_value",
         )
 
-    if _satisfied_by(resident, name, pick):
+    # Re-read rather than reusing the pre-resolution snapshot: the index build above can run
+    # for the whole budget, and an idle unload landing in that window would leave this
+    # reporting a model that is no longer there, for the route to 503 on immediately.
+    if _satisfied_by(await asyncio.to_thread(_backend_for(owner).status), name, pick):
         return
 
     # Acquired within the budget: a request that spent most of it resolving would otherwise
@@ -1276,7 +1292,16 @@ async def maybe_auto_switch_media_model(
                     openai_errors = openai_errors,
                     code = "model_not_downloaded",
                 )
-            if not await _drain(owner, backend, min(deadline, time.monotonic() + _DRAIN_WAIT_S)):
+            if not await _drain(
+                owner,
+                backend,
+                min(deadline, time.monotonic() + _DRAIN_WAIT_S),
+                # Probes answer to the switch budget, not this window: a backend that is genuinely
+                # busy for the whole drain is a 409, and only a spent budget is the slow-switch 503.
+                probe_deadline = deadline,
+                kind = kind,
+                openai_errors = openai_errors,
+            ):
                 raise _refuse(
                     _BUSY_MSG.format(kind = kind),
                     status_code = 409,
