@@ -4536,6 +4536,28 @@ export function createOpenAIStreamAdapter(
           reasoningDurationTracker.startGroup(groups - 1, firstSeenAt);
         }
       };
+      /**
+       * The whole tracker transition for a publish, not just the start: adopting
+       * a group and leaving it open publishes a group with no duration behind
+       * it, and leaves the timer running across whatever comes next. Every path
+       * that yields has to do all three, so they share one implementation.
+       */
+      const reconcileReasoning = (
+        content: readonly { type?: unknown; text?: unknown }[],
+        firstSeenAt?: number,
+      ) => {
+        adoptGatedReasoningGroups(content, firstSeenAt);
+        const groups = countReasoningGroups(content);
+        if (groups > 0) {
+          reasoningDurationTracker.resumeGroup(
+            groups - 1,
+            lastReasoningGroupTextLength(content),
+          );
+          if (!hasUnclosedThinkTag(cumulativeText)) {
+            reasoningDurationTracker.finishGroup();
+          }
+        }
+      };
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
@@ -6098,14 +6120,42 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
-                if (addedToolCall || canPublish(streamedChars)) {
+                if (
+                  addedToolCall ||
+                  replayStateChanged ||
+                  canPublish(streamedChars)
+                ) {
                   // This publish can be the first to expose a reasoning group
-                  // the gate was holding. Reconcile before yielding, or a Stop
-                  // during the tool run persists content with a group the
-                  // durations know nothing about.
-                  adoptGatedReasoningGroups(liveAssistantContent(), gateHeldSince);
+                  // the gate was holding. Starting it is not enough: left open
+                  // it yields with no duration and keeps timing across the tool
+                  // run, so run the full transition.
+                  reconcileReasoning(liveAssistantContent(), gateHeldSince);
+                  gateHeldSince = undefined;
                   yield {
                     content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
+              // A chunk whose ONLY payload is extra_content: Gemini 3 ships a
+              // content-free thoughtSignature fragment, and the Codex client
+              // puts its reasoning ledger on a text-free terminal delta. The
+              // skip below would drop both before the gate ever sees them, so
+              // the metadata would reach the message only if some later chunk
+              // happened to publish.
+              if (replayStateChanged && !delta && !reasoning) {
+                const replayContent = liveAssistantContent();
+                if (replayContent.length > 0) {
+                  yield {
+                    content: replayContent,
                     metadata: {
                       timing: buildTiming(
                         streamStartTime,
@@ -6189,28 +6239,10 @@ export function createOpenAIStreamAdapter(
               gateHeldSince = undefined;
               const assistantContent = liveAssistantContent();
 
-              // Fallback when no server-side reasoning_summary arrives.
-              const parsedReasoningGroupCount =
-                countReasoningGroups(assistantContent);
-              if (
-                parsedReasoningGroupCount >
-                reasoningDurationTracker.groupCount
-              ) {
-                reasoningDurationTracker.startGroup(
-                  parsedReasoningGroupCount - 1,
-                  reasoningSeenAt,
-                );
-              }
-              if (parsedReasoningGroupCount > 0) {
-                // Providers that close every reasoning block atomically
-                // (structured parts wrapped as <think>..</think>) end the group
-                // on each chunk. Reopen while the reasoning text is still
-                // growing so the timer spans the whole pass.
-                reasoningDurationTracker.resumeGroup(
-                  parsedReasoningGroupCount - 1,
-                  lastReasoningGroupTextLength(assistantContent),
-                );
-              }
+              // Fallback when no server-side reasoning_summary arrives. Shared
+              // with the forced tool-call publish, which needs the same three
+              // transitions and used to do only the first.
+              reconcileReasoning(assistantContent, reasoningSeenAt);
               if (assistantContent.length > 0) {
                 yield {
                   content: assistantContent,

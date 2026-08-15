@@ -402,7 +402,9 @@ test("streaming tool-call argument deltas are paced like the text path", () => {
   );
   assert.notEqual(count, -1, "tool-call argument deltas are not counted");
 
-  const gate = loop.indexOf("if (addedToolCall || canPublish(streamedChars)) {");
+  // Tolerant of extra forcing conditions (replay state), intolerant of the
+  // gate call going away.
+  const gate = loop.search(/addedToolCall \|\|[\s\S]{0,80}?canPublish\(streamedChars\)/);
   assert.notEqual(gate, -1, "the tool-call delta publish is not gated");
   assert.ok(gate > count, "the fragment must be counted before the gate");
 
@@ -537,8 +539,48 @@ test("the stream loop stamps when a held chunk arrived", () => {
   assert.notEqual(stamp, -1, "a held chunk's arrival time is not recorded");
   assert.ok(stamp < skip, "the stamp must be taken before the chunk is skipped");
   assert.ok(
-    loop.includes("reasoningSeenAt,"),
+    loop.includes("reconcileReasoning(assistantContent, reasoningSeenAt)"),
     "the publish does not hand the arrival time to the tracker",
+  );
+});
+
+test("a content-free replay delta still reaches the message", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // Gemini 3 ships a fragment whose only payload is a thoughtSignature, and the
+  // Codex client puts its reasoning ledger on a text-free terminal delta. The
+  // empty-content skip runs before the gate, so forcing a publish at the gate
+  // alone never sees either of them.
+  const replaySkip = loop.indexOf(
+    "if (replayStateChanged && !delta && !reasoning) {",
+  );
+  const emptySkip = loop.indexOf("if (!delta && !reasoning) {");
+  assert.notEqual(replaySkip, -1, "content-free replay metadata is dropped");
+  assert.ok(
+    replaySkip < emptySkip,
+    "replay state must be handled before the empty-content skip",
+  );
+});
+
+test("every publish runs the whole tracker transition, not just the start", () => {
+  const source = withoutComments(ADAPTER);
+
+  // Adopting a group and leaving it open yields a group with no duration behind
+  // it and keeps the timer running across whatever follows, so the forced
+  // tool-call publish and the normal publish share one reconciliation.
+  assert.ok(
+    source.includes("const reconcileReasoning = ("),
+    "the shared reasoning reconciliation is gone",
+  );
+  // Two CALL sites: the forced tool-call publish and the normal one. The
+  // definition uses `= (` and so does not match this.
+  const calls = source.match(/reconcileReasoning\(/g) ?? [];
+  assert.ok(
+    calls.length >= 2,
+    `both publish paths must reconcile; found ${calls.length} call sites`,
   );
 });
 
