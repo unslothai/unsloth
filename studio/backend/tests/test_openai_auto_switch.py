@@ -8416,6 +8416,10 @@ def test_a_transformers_quantization_is_not_offered_on_an_mlx_host(tmp_path, mon
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
     assert resolver.local_servable_model(info) is None
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    # Transformers builds the quantizer from the checkpoint, so the package has to be here.
+    monkeypatch.setattr(resolver, "_bitsandbytes_suits_host", lambda: False)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(resolver, "_bitsandbytes_suits_host", lambda: True)
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -8651,3 +8655,16 @@ def test_a_stale_alias_after_unload_is_not_a_resident_identity(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
     assert inference_route._resident_id_is_namespaced() is False
+
+
+def test_a_slow_tokenizer_vocabulary_is_accepted(tmp_path):
+    # Codex P2: unsloth.models.loader_utils._has_local_tokenizer_files accepts vocab.txt
+    # and spiece.model, so rejecting them hid loadable checkpoints.
+    from types import SimpleNamespace
+
+    for name in ("vocab.txt", "spiece.model"):
+        path = _local_checkpoint(tmp_path, f"slow-{name}")
+        (path / "tokenizer.json").unlink()
+        (path / name).write_text("")
+        info = SimpleNamespace(id = str(path), path = str(path))
+        assert resolver.local_servable_model(info) == (False, ()), name

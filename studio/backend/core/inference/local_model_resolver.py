@@ -157,14 +157,15 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 _WEIGHT_INDEXES = ("model.safetensors.index.json",)
 # Real tokenizer vocabulary. tokenizer_config.json and the processor configs carry
 # metadata, not the vocabulary the loader needs, so neither counts on its own.
-_TOKENIZER_MARKERS = ("tokenizer.json", "tokenizer.model")
+_TOKENIZER_MARKERS = ("tokenizer.json", "tokenizer.model", "vocab.txt", "spiece.model")
 
 
 def _has_tokenizer_vocabulary(load_dir) -> bool:
     """Whether a real tokenizer vocabulary sits beside the weights.
 
-    A bare vocab.json is only half a BPE tokenizer; Qwen2 and its kin need merges.txt
-    with it when no complete tokenizer.json is present.
+    Mirrors unsloth.models.loader_utils._has_local_tokenizer_files: a bare vocab.json is
+    only half a BPE tokenizer and needs merges.txt, while the slow-tokenizer vocabularies
+    vocab.txt and spiece.model stand on their own.
     """
     if any((load_dir / name).is_file() for name in _TOKENIZER_MARKERS):
         return True
@@ -326,6 +327,20 @@ def _fp8_suits_host(quant_method: str) -> bool:
     return major * 10 + minor >= 89
 
 
+def _bitsandbytes_suits_host() -> bool:
+    """Whether a prequantized bitsandbytes checkpoint can be built on this host.
+
+    Transformers constructs the quantizer from the checkpoint's own config, which fails
+    outright when the package is missing. find_spec keeps the probe off the import path.
+    """
+    try:
+        from importlib.util import find_spec
+
+        return find_spec("bitsandbytes") is not None
+    except Exception:
+        return True
+
+
 def _quantization_suits_host(config: dict) -> bool:
     """Whether this host's backend can load the checkpoint's quantization, if any.
 
@@ -345,7 +360,9 @@ def _quantization_suits_host(config: dict) -> bool:
         return True
     if mlx_host:
         return False
-    return method not in _FP8_QUANT_METHODS or _fp8_suits_host(method)
+    if method in _FP8_QUANT_METHODS:
+        return _fp8_suits_host(method)
+    return method != "bitsandbytes" or _bitsandbytes_suits_host()
 
 
 def _read_json(path):
