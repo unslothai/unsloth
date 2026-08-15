@@ -459,17 +459,38 @@ class TestSandboxEnvIsolation:
         monkeypatch.setattr(tools_mod.os.path, "islink", lambda path: False)
         assert _sandbox_temp_dir(str(workdir)) == str(workdir)
 
-    def test_temp_dir_keeps_a_link_that_stays_inside_the_workdir(self, tmp_path):
-        # containment is the rule, not the kind of entry: inside the sandbox is fine.
+    def test_temp_dir_refuses_a_link_even_inside_the_workdir(self, tmp_path):
+        """os.walk does not follow links, so `tmp -> .scratch` would send every
+        temporary artifact somewhere both artifact walks skip. Containment is not
+        the test; being the real directory is.
+        """
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
 
         workdir = tmp_path / "sandbox"
-        (workdir / "real").mkdir(parents = True)
+        (workdir / ".scratch").mkdir(parents = True)
         try:
-            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(workdir / "real", target_is_directory = True)
+            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(
+                workdir / ".scratch", target_is_directory = True
+            )
         except (OSError, NotImplementedError):
             pytest.skip("symlinks unavailable (Windows without developer mode)")
-        assert _sandbox_temp_dir(str(workdir)) == str(workdir / _SANDBOX_TEMP_DIRNAME)
+        assert _sandbox_temp_dir(str(workdir)) == str(workdir)
+
+    def test_temp_dir_refuses_an_unwritable_existing_directory(self, tmp_path):
+        """tempfile abandons an unwritable TMPDIR for the platform default, which
+        would put the child's temporary data outside the session sandbox.
+        """
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        scratch = tmp_path / _SANDBOX_TEMP_DIRNAME
+        scratch.mkdir()
+        scratch.chmod(0o500)
+        try:
+            if os.access(str(scratch), os.W_OK):
+                pytest.skip("mode bits not enforced here (running as root)")
+            assert _sandbox_temp_dir(str(tmp_path)) == str(tmp_path)
+        finally:
+            scratch.chmod(0o700)
 
     def test_the_scratch_dir_does_not_spend_a_path_segment(self, tmp_path):
         """/tmp/a/b/c/result.csv used to reach the workdir as a four-segment path

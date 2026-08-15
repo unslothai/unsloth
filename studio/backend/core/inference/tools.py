@@ -6745,12 +6745,38 @@ def _sandbox_temp_dir(workdir: str) -> str:
     try:
         os.mkdir(temp_dir, 0o700)
     except FileExistsError:
-        # resolved containment, not islink: a Windows junction is not a link.
-        if not os.path.isdir(temp_dir) or not _contained_in_root(temp_dir, workdir):
+        if not _reusable_sandbox_temp_dir(temp_dir, workdir):
             return workdir
     except OSError:
         return workdir
     return temp_dir
+
+
+def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
+    """Whether an existing entry may serve as the scratch directory.
+
+    Must be the real directory of that name, not a link or junction to one.
+    Containment alone is not enough: os.walk does not follow links, so a
+    ``tmp -> .scratch`` inside the workdir would take every temporary artifact
+    somewhere both artifact walks then skip. Resolving both sides also settles
+    the Windows case: an existing ``TMP`` resolves to its stored spelling, which
+    normcase matches there and leaves distinct on a case-sensitive filesystem.
+
+    Writability is probed because tempfile abandons an unwritable TMPDIR and
+    falls back to the platform default, putting the child's temporary data
+    outside the session sandbox entirely.
+    """
+    try:
+        resolved = os.path.normcase(os.path.realpath(temp_dir))
+        literal = os.path.normcase(
+            os.path.join(os.path.realpath(workdir), _SANDBOX_TEMP_DIRNAME)
+        )
+    except OSError:
+        return False
+    if resolved != literal or not os.path.isdir(temp_dir):
+        return False
+    # reads the posix bits and the windows read-only attribute, not acls.
+    return os.access(temp_dir, os.W_OK | os.X_OK)
 
 
 def _build_safe_env(workdir: str) -> dict[str, str]:
@@ -12397,7 +12423,10 @@ def _user_path_parts(parts: "list[str]") -> "list[str]":
     would drop one level of the /tmp artifacts that were served before the
     workdir stopped being %TEMP%, so it is not counted.
     """
-    return parts[1:] if parts and parts[0] == _SANDBOX_TEMP_DIRNAME else parts
+    # normcase: the walks report the stored spelling, which Windows may have cased.
+    if parts and os.path.normcase(parts[0]) == _SANDBOX_TEMP_DIRNAME:
+        return parts[1:]
+    return parts
 
 
 # The same allowlist the download route applies per segment, so a name that
