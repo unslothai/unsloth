@@ -15,6 +15,7 @@ rather than a multi-GB surprise on a user's connection. The mirror test proves t
 
 from __future__ import annotations
 
+import os
 import types
 
 import pytest
@@ -188,17 +189,21 @@ def test_the_base_preflight_reads_the_cache_and_never_the_hub_offline(monkeypatc
     monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _boom, raising = False)
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", _boom, raising = False)
     # Cached only under the import-time root: the live root misses, the fallback hits.
+    # Built with os.path.join rather than a "/" literal: the function strips the file's own
+    # relative path with os.path, so a POSIX spelling here would compare against a
+    # backslash-separated answer on Windows and fail for the separator alone.
+    snapshot = os.path.join(os.sep + "snap", *FLUX_BASE.split("/"))
     monkeypatch.setattr(
         huggingface_hub,
         "try_to_load_from_cache",
         lambda repo, name, cache_dir = None: (
-            None if cache_dir is not None else f"/snap/{repo}/{name}"
+            None if cache_dir is not None else os.path.join(snapshot, *name.split("/"))
         ),
         raising = False,
     )
     assert (
         diffusion_mod._assert_base_repo_accessible(FLUX_BASE, None, local_files_only = True)
-        == f"/snap/{FLUX_BASE}"
+        == snapshot
     )
 
 
