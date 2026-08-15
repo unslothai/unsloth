@@ -205,38 +205,17 @@ _MULTIMODAL_CONFIG_KEYS = (
     "projector_config",
     "audio_config",
 )
-# Fallback for when transformers is not already imported: the families the chat loader
-# has no branch for. A denylist cannot be complete, so the positive mapping is preferred
-# whenever it is free to read.
-_NON_CHAT_MODEL_TYPES = frozenset(
-    {
-        "bart",
-        "bert",
-        "blip",
-        "clip",
-        "deberta",
-        "distilbert",
-        "electra",
-        "longt5",
-        "mt5",
-        "pegasus",
-        "roberta",
-        "t5",
-        "xlm-roberta",
-    }
-)
-
-
 def _model_type_has_a_causal_head(model_type) -> bool:
     """Whether the loader has a causal implementation for this model_type.
 
-    Read from transformers' own causal mapping when it is already imported, which is
-    authoritative and catches family variants such as deberta-v2 that no hand-written
-    list keeps up with. A cold transformers import would cost seconds on the request
-    path, so otherwise fall back to the denylist, matching the family prefix too.
+    Read from transformers' own causal mapping when it is already imported. The
+    orchestrator imports transformers in a subprocess, so the parent usually has not,
+    and a cold import here would cost seconds per catalog row. With no mapping to
+    consult the answer is no: a denylist cannot be complete, and an encoder advertised
+    by mistake costs the resident model.
     """
     if not isinstance(model_type, str) or not model_type.strip():
-        return True
+        return False
     name = model_type.strip().lower()
     import sys
 
@@ -246,7 +225,10 @@ def _model_type_has_a_causal_head(model_type) -> bool:
             return name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
         except Exception:
             pass
-    return not (name in _NON_CHAT_MODEL_TYPES or name.split("-")[0] in _NON_CHAT_MODEL_TYPES)
+    # No mapping to consult and no architectures to read. Withholding a rare valid model
+    # is recoverable by loading it in Studio; advertising an encoder is not, since the
+    # swap unloads the resident model before the load can fail.
+    return False
 
 
 # The chat loader reaches these weights through causal and vision auto classes, so an

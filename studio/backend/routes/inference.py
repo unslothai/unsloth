@@ -13322,6 +13322,22 @@ async def openai_chat_completions(
         # avoid decoding a valid upload twice).
         if payload.audio_base64 and len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
             raise HTTPException(status_code = 413, detail = "Audio file is too large (max ~25 MB).")
+        # Structural check only, before any swap: a payload that is not base64 at all is a
+        # deterministic 400, and paying it after the switch costs the resident model. The
+        # real decode stays below so a valid upload is still only decoded once.
+        if payload.audio_base64:
+            try:
+                base64.b64decode(payload.audio_base64, validate = True)
+            except Exception:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        "The 'audio_base64' value is not valid base64.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "audio_base64",
+                    ),
+                ) from None
         # Reject streaming n>1 before the switch: only the non-streaming GGUF path
         # returns multiple choices, so stream=true + n>1 is invalid on every local
         # serving path (the external path already rejected it before its early

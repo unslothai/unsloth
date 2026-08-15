@@ -8555,9 +8555,12 @@ def test_a_causal_model_without_the_suffix_stays_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "gpt2")
     info = SimpleNamespace(id = str(path), path = str(path))
-    for blob in ('{"architectures": ["GPT2LMHeadModel"]}', '{"model_type": "gpt2"}'):
-        (path / "config.json").write_text(blob)
-        assert resolver.local_servable_model(info) == (False, ()), blob
+    (path / "config.json").write_text('{"architectures": ["GPT2LMHeadModel"]}')
+    assert resolver.local_servable_model(info) == (False, ())
+    # With no architectures the answer comes from transformers' causal mapping, and is
+    # a refusal when that mapping is not resident to consult.
+    (path / "config.json").write_text('{"model_type": "gpt2"}')
+    assert resolver.local_servable_model(info) is None
 
 
 def test_an_fp8_checkpoint_is_offered_only_on_cuda(tmp_path, monkeypatch):
@@ -8600,11 +8603,13 @@ def test_a_seq2seq_model_type_without_architectures_is_not_switchable(tmp_path):
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text('{"model_type": "t5"}')
     assert resolver.local_servable_model(info) is None
+    # Even a causal family is withheld without the mapping: the subprocess that imports
+    # transformers never populates this process, so guessing is what got encoders through.
     (path / "config.json").write_text('{"model_type": "qwen3"}')
-    assert resolver.local_servable_model(info) == (False, ())
+    assert resolver.local_servable_model(info) is None
 
 
-def test_a_family_variant_model_type_is_not_switchable(tmp_path):
+def test_a_family_variant_model_type_is_not_switchable(tmp_path, monkeypatch):
     # Codex P2: a denylist cannot be complete, and deberta-v2 slipped past one holding
     # only deberta. The family prefix is matched too when transformers is not loaded.
     from types import SimpleNamespace
@@ -8613,6 +8618,16 @@ def test_a_family_variant_model_type_is_not_switchable(tmp_path):
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "config.json").write_text('{"model_type": "deberta-v2"}')
     assert resolver.local_servable_model(info) is None
+    # And when the mapping is resident it decides, so a causal family still qualifies.
+    import sys
+    from types import ModuleType
+
+    module = ModuleType("transformers.models.auto.modeling_auto")
+    module.MODEL_FOR_CAUSAL_LM_MAPPING_NAMES = {"qwen3": "Qwen3ForCausalLM"}
+    monkeypatch.setitem(sys.modules, "transformers", ModuleType("transformers"))
+    monkeypatch.setitem(sys.modules, "transformers.models.auto.modeling_auto", module)
+    (path / "config.json").write_text('{"model_type": "qwen3"}')
+    assert resolver.local_servable_model(info) == (False, ())
 
 
 def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
