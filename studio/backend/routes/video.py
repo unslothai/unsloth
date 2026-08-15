@@ -310,7 +310,7 @@ async def load_video_model_gated(
         note_load_origin(
             VIDEO,
             request.model_path,
-            extract_quant_token(request.gguf_filename) if request.gguf_filename else None,
+            extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
             request.h3_task,
             user_action = user_initiated,
         )

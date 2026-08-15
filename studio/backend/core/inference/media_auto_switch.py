@@ -452,7 +452,7 @@ def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -
         return False
     # A modular MiniMax-H3 build is its partition too: an auto-load of this name selects the
     # default keyframe denoiser, so a resident ref2va does not answer for it.
-    if not _partition_matches(status):
+    if not _partition_matches(status, pick):
         return False
     if pick.model_kind != "gguf":
         return True
@@ -460,20 +460,24 @@ def _resident_is_pick(status: dict[str, Any], name: str, pick: MediaModelPick) -
     return loaded_quant == _published_token(pick)
 
 
-def _partition_matches(status: dict[str, Any]) -> bool:
-    """Whether the resident MiniMax-H3 partition is the one a switch would bring up.
+def _partition_matches(status: dict[str, Any], pick: Optional[MediaModelPick] = None) -> bool:
+    """Whether the resident MiniMax-H3 partition is the one this pick would bring up.
 
-    The switch sends no ``h3_task``, so the load takes the family default; anything else
-    resident is a different denoiser that this request did not ask for.
+    Derived from the checkpoint, not assumed: the native backend publishes ``ref2va`` for a
+    ``minimax_h3_ref2va`` denoiser, so hardcoding the keyframe default rejected the very
+    checkpoint that had just loaded. Absent a filename the switch sends no ``h3_task`` and the
+    load takes the family default.
     """
     resident = str(status.get("h3_task") or "").strip().lower()
     if not resident:
         return True
     try:
-        from core.inference.video_minimax_h3 import H3_TASK_KEYFRAMES
+        from core.inference.video_minimax_h3 import H3_TASK_KEYFRAMES, h3_transformer_task
     except Exception:  # noqa: BLE001 -- no h3 support here means nothing to compare
         return True
-    return resident == H3_TASK_KEYFRAMES
+    filename = (pick.gguf_filename if pick else None) or ""
+    expected = h3_transformer_task(filename) if filename else H3_TASK_KEYFRAMES
+    return resident == str(expected or "").strip().lower()
 
 
 def _backend_busy(backend: Any) -> bool:
@@ -507,7 +511,9 @@ async def _drain(
         others = other_request_count(
             owner, current_request_counted = True, count_pending = count_pending
         )
-        others -= max(0, _waiter_count(owner) - 1)
+        # Every recorded waiter is another request parked on the lock: this one left the marker
+        # when it acquired the lock, so nothing here belongs to it.
+        others -= _waiter_count(owner)
         if others <= 0 and not await asyncio.to_thread(_backend_busy, backend):
             return True
         if time.monotonic() >= deadline:
@@ -704,10 +710,12 @@ def _missing_download_bytes(owner: str, pick: MediaModelPick) -> Optional[int]:
     would allow exactly the download this exists to prevent, so the switch refuses instead.
     """
     target = _normalized_pick(pick)
-    # A local full pipeline is complete by definition: from_pretrained reads it off disk, and
-    # the planner would ask the Hub about an absolute path and fail, which now reads as
-    # unverifiable and would refuse every on-device model.
-    if not target.gguf_filename and Path(target.model_path).expanduser().is_dir():
+    # A local full IMAGE pipeline is complete by definition: from_pretrained reads it off disk,
+    # and the planner would ask the Hub about an absolute path and fail, which reads as
+    # unverifiable and would refuse every on-device model. Video is excluded: a local MiniMax-H3
+    # modular pipeline still substitutes a hosted quantized conditioner, tens of GB the loader
+    # fetches during assembly, so it has to be planned like any other pick.
+    if owner == DIFFUSION and not target.gguf_filename and Path(target.model_path).is_dir():
         return 0
     try:
         ordinal = _plan_gpu_ordinal()

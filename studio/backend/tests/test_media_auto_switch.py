@@ -1235,6 +1235,92 @@ def test_paths_differing_only_in_case_are_not_merged_by_the_ambiguity_scan(catal
     assert not upper.ambiguous and not lower.ambiguous
 
 
+def test_a_ref2va_checkpoint_expects_its_own_partition(catalog, enabled, tmp_path, backend, loads):
+    # The native backend publishes ref2va for a minimax_h3_ref2va denoiser, so assuming the
+    # keyframe default rejected the checkpoint that had just loaded.
+    (tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf").write_bytes(b"")
+    catalog.append(
+        _info(
+            "minimax_h3_ref2va-Q4_K_M",
+            tmp_path / "minimax_h3_ref2va-Q4_K_M.gguf",
+            task = mas.VIDEO_TASK,
+            model_format = "gguf",
+        )
+    )
+    backend.repo_id = str(tmp_path)
+    backend.gguf_variant = "Q4_K_M"
+    backend.model_kind = "gguf"
+    backend.h3_task = "ref2va"
+
+    _switch("minimax_h3_ref2va-Q4_K_M", owner = arb.VIDEO, openai_errors = False)
+
+    # Already serving: the resident partition is the one this checkpoint brings up.
+    assert loads == []
+
+
+def test_a_local_video_pipeline_is_still_planned(catalog, enabled, tmp_path, backend, loads):
+    # A local MiniMax-H3 modular pipeline substitutes a hosted quantized conditioner during
+    # assembly, so the image shortcut's "on disk means complete" does not hold for video.
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+    backend.missing_bytes = 27_000_000_000
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_the_video_load_route_records_provenance_without_raising(monkeypatch):
+    # The provenance call is made positionally from both load routes, so a signature that drifts
+    # from them 500s every load after the background work has already been accepted.
+    import core.inference.video as video_module
+    from routes.video import router as video_router
+
+    class _Backend:
+        def validate_load_request(self, *a, **k):
+            return object()
+
+        def begin_load(self, *a, **k):
+            return {"loaded": False, "repo_id": None}
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
+    monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
+    monkeypatch.setattr("routes.video._selected_gpu_ordinal", _async_none)
+    import core.inference.diffusion_device as device_module
+
+    monkeypatch.setattr(
+        device_module,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(device = "cpu"),
+    )
+
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(video_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/Wan2.2-GGUF",
+            "gguf_filename": "wan-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert mk.loaded_by_user_action(arb.VIDEO, "unsloth/Wan2.2-GGUF", "Q4_K_M") is True
+
+
+async def _async_none(*args, **kwargs):
+    return None
+
+
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module

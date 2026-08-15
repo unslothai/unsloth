@@ -125,12 +125,13 @@ def note_load_origin(
     owner: str,
     target: Optional[str],
     variant: Optional[str] = None,
+    partition: Optional[str] = None,
     *,
     user_action: bool,
 ) -> None:
     """Record who asked for the model a load route is bringing up."""
     with _LOAD_ORIGINS_GUARD:
-        _LOAD_ORIGINS[owner] = (_origin_key(target, variant), user_action)
+        _LOAD_ORIGINS[owner] = (_origin_key(target, variant, partition), user_action)
 
 
 def loaded_by_user_action(

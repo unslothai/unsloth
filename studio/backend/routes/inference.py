@@ -22862,7 +22862,7 @@ async def load_diffusion_model_gated(
         note_media_load_origin(
             DIFFUSION,
             request.model_path,
-            extract_quant_token(request.gguf_filename) if request.gguf_filename else None,
+            extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
             user_action = user_initiated,
         )
         return DiffusionStatusResponse(**annotate_status(status_dict))
