@@ -111,13 +111,18 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
 ALLOWED_PINVOKES = {
     # Canonicalising linked ancestors of security-relevant paths. No PS 5.1 equivalent:
     # ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
+    # Not skippable either: Get-StudioRuntimePathHash hashes this spelling byte for byte and
+    # Python derives the same mutex name from its own, so a GetFullPath fast path differing on
+    # case or an 8.3 name would let two installers each believe they hold the lock.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
-    # ANSI colour on legacy conhost.
+    # ANSI colour on a real console. Skipped entirely when stdout is redirected, see
+    # test_virtual_terminal_answers_a_redirected_stream_without_compiling.
     "GetStdHandle",
     "GetConsoleMode",
     "SetConsoleMode",
-    # Per-item Explorer icon refresh; the global broadcast alone does not recover a stale .lnk.
+    # Per-item Explorer icon refresh, standalone path only. ie4uinit.exe -show is the global
+    # broadcast, which alone does not recover a stale .lnk, so it is not a substitute.
     "SHChangeNotify",
     # PID -> image path for the venv-holder check. Win32_Process answers the same question,
     # but test_windows_installer_concurrency_guard.py bans it and $process.Path there: the
@@ -144,6 +149,32 @@ def test_no_new_native_imports(name: str) -> None:
     assert not unexpected, (
         f"{name} imports {sorted(unexpected)} from native code. Prefer a PowerShell or .NET "
         f"equivalent; if there genuinely is none, add it to ALLOWED_PINVOKES with the reason."
+    )
+
+
+@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+def test_virtual_terminal_answers_a_redirected_stream_without_compiling(name: str) -> None:
+    """Add-Type runs the C# compiler, so the answer we already know must come first.
+
+    Only the redirected case is decided early, and it is decided FALSE. A redirected stdout is
+    not a console, GetConsoleMode fails on a non-console handle, and the compiled path could
+    only have returned false too. Anything that claimed VT here would put raw escape sequences
+    in the Studio log panel, which is a pipe.
+    """
+    text = _text(name)
+    start = text.index("function Enable-StudioVirtualTerminal")
+    # The call, not the comment above it.
+    call = re.compile(r"(?m)^[ \t]*Add-Type\b").search(text, start)
+    assert call, f"{name} no longer compiles the console thunk; update this guard"
+    compile_at = call.start()
+    fast_path = text.index("if ($script:StudioStdoutRedirected) { return $false }", start)
+    assert fast_path < compile_at, (
+        f"{name} compiles C# for colour before checking the stream: move the redirect guard "
+        f"above Add-Type, or every install spawns csc.exe again."
+    )
+    assert "$true" not in text[fast_path:compile_at], (
+        f"{name} returns something other than $false before the compile. The early answer is "
+        f"only sound because a redirected stream can never render VT."
     )
 
 

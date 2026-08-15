@@ -4,8 +4,12 @@
 import { Button } from "@/components/ui/button";
 import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useRef } from "react";
-import { invalidateProjectSources, listProjectDocuments } from "../api/rag-api";
+import { useCallback, useEffect, useRef } from "react";
+import {
+  invalidateProjectSources,
+  listProjectDocuments,
+  subscribeProjectSourcesUpdated,
+} from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
@@ -46,6 +50,18 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     invalidateProjectSources(projectId);
     void refresh({ quiet: true });
   }, [projectId, refresh]);
+
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
+  // they are done; refresh the mounted list so a source saved from a chat shows
+  // up here without a remount. The list only polls while a row it already knows
+  // is indexing, so nothing else would ever fetch it.
+  useEffect(
+    () =>
+      subscribeProjectSourcesUpdated(projectId, () => {
+        void refresh({ quiet: true });
+      }),
+    [projectId, refresh],
+  );
 
   const empty = documents.length === 0;
 
