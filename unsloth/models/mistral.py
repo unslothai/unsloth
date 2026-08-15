@@ -27,6 +27,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     SDPA,
     select_attention_backend,
+    resolve_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -108,7 +109,13 @@ def MistralAttention_fast_forward(
 
     # Attention module
     sw_cfg = getattr(self.config, "sliding_window", None)
-    sw = kv_seq_len if (sw_cfg is None or sw_cfg == "null") else sw_cfg
+    # A non-positive window means "no local attention", the same as absent. Passing 0 through
+    # made window_size (0, 0) for flash and an all-false SDPA mask, since the lower bound
+    # q_pos - (0 - 1) sits above the causal upper bound.
+    if sw_cfg is None or sw_cfg == "null" or (isinstance(sw_cfg, int) and sw_cfg <= 0):
+        sw = kv_seq_len
+    else:
+        sw = sw_cfg
     window_size = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
 
     use_varlen = seq_info is not None and past_key_value is None and window_size == (-1, -1)
@@ -124,6 +131,9 @@ def MistralAttention_fast_forward(
             "softmax_scale": getattr(self, "softmax_scale", None),
         },
     )
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+    # (KV cache / padding mask) raises. None => byte-identical default.
+    _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
         q_len = q_len,
@@ -134,6 +144,13 @@ def MistralAttention_fast_forward(
         seq_info = seq_info,
         attention_mask = attention_mask,
         causal_mask = causal_mask,
+        # The window the flash path already gets through window_size. SDPA needs it too, and
+        # not only in the branch above: training takes `elif self.training: pass`, so no 4D
+        # mask is synthesized, and with xformers off and flash absent the local window was the
+        # one thing nothing carried -- every sequence past config.sliding_window silently
+        # attended its whole causal history.
+        sliding_window = None if window_size == (-1, -1) else sw,
+        prefix_seg_info = _pg_seg,
     )
 
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
@@ -161,7 +178,13 @@ def MistralForCausalLM_fast_forward(
     *args,
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
-    if causal_mask is None and past_key_values is None:
+    # PrefixGrouper brings its own mask: a synthesized causal attention_mask would trip
+    # resolve_prefix_seg_info on the no-xFormers path and force a fallback.
+    if (
+        causal_mask is None
+        and past_key_values is None
+        and kwargs.get("prefix_seg_info", None) is None
+    ):
         bsz, q_len = input_ids.shape
         sliding_window = getattr(self.config, "sliding_window", None)
 

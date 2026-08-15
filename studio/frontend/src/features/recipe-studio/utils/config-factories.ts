@@ -20,6 +20,46 @@ import type {
 } from "../types";
 import { nextName } from "./naming";
 
+export function makeUnstructuredUploadUid(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID().replace(/-/g, "").toLowerCase();
+  }
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+      "",
+    );
+  }
+  let uid = "";
+  while (uid.length < 32) {
+    uid += Math.floor(Math.random() * 0x100000000)
+      .toString(16)
+      .padStart(8, "0");
+  }
+  return uid.slice(0, 32);
+}
+
+export function resolveUnstructuredUploadBlockId({
+  configId,
+  uploadUid,
+  generatedUploadUid,
+  unstructuredFileCount,
+}: {
+  configId: string;
+  uploadUid: string;
+  generatedUploadUid: string | null;
+  unstructuredFileCount: number;
+}): string {
+  if (uploadUid) {
+    return uploadUid;
+  }
+  if (generatedUploadUid) {
+    return generatedUploadUid;
+  }
+  return unstructuredFileCount > 0 ? configId : "";
+}
+
 export function makeSamplerConfig(
   id: string,
   samplerType: SamplerType,
@@ -368,6 +408,9 @@ export function makeSeedConfig(
     hf_token: "",
     hf_endpoint: "https://huggingface.co",
     local_file_name: "",
+    ...(seedSourceType === "unstructured"
+      ? { unstructured_upload_uid: makeUnstructuredUploadUid() }
+      : {}),
     unstructured_file_ids: [],
     unstructured_file_names: [],
     unstructured_file_sizes: [],

@@ -4,9 +4,9 @@
 # Focused PR gate for the MLX dispatch surface, running on a real
 # Apple Silicon runner.
 #
-# Runner: macos-14 (M1, 3 vCPU / 7 GB / Apple Silicon standard runner
+# Runner: macos-15 (M1, 3 vCPU / 7 GB / Apple Silicon standard runner
 # -- FREE for public repositories per the GitHub Actions billing
-# reference; larger variants like macos-14-large/-xlarge are paid so
+# reference; larger -large/-xlarge variants are paid so
 # we deliberately avoid those).
 #
 # Why a single Mac job (no Linux+spoof leg): the dispatch tests are
@@ -28,7 +28,18 @@
 #      environment (the test fixture installs a MetaPathFinder that
 #      blocks `import mlx.core` for "no-mlx" profiles, faithfully
 #      simulating a Mac without mlx even when mlx IS installed).
-#   4. End-to-end MLX training + inference smoke test:
+#   4. The Mac capability verdict /api/health publishes. Whether
+#      the sidebar's Train and Video rows are enabled, greyed out
+#      behind "Training needs MLX", or still spinning is decided by
+#      that one reply, and the decision reads a real `import
+#      mlx.core` and a real background reinstall. The unit tests
+#      drive it with a fake clock and a stand-in worker; only here
+#      is the host Apple Silicon and the MLX stack genuinely
+#      present or genuinely absent. mac_capability_verdict_smoke.py
+#      boots the server and judges every reply from the first one,
+#      because the reported bug was a verdict that was wrong for a
+#      while and right afterwards.
+#   5. End-to-end MLX training + inference smoke test:
 #      run_real_mlx_smoke.py trains unsloth/gemma-3-270m-it for 7
 #      deterministic LoRA steps on a single repeated text row, then
 #      verifies the trained model can complete the prompt and that
@@ -36,13 +47,17 @@
 #      only place in CI that exercises a real MLX backward pass +
 #      optimizer step + inference call.
 #
-# Three dispatch test files documented in tests/studio/README.md:
-#   - test_hardware_dispatch_matrix.py    parametrized 7-profile matrix
-#                                         + 2 dispatch-priority canaries
-#   - test_is_mlx_dispatch_gate.py        AST + runtime guard on
-#                                         unsloth._IS_MLX
+# Dispatch test files documented in tests/studio/README.md:
 #   - test_mlx_training_worker_behaviors.py  AST contract checks on
 #                                            studio/backend/core/training/worker.py
+#     Run here because no other workflow claims it.
+#
+# test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py are NOT run
+# here. Both are fully spoofed (monkeypatched profiles plus a MetaPathFinder
+# that blocks `import mlx.core`), so they assert identically on any host, and
+# studio-backend-ci.yml runs both on ubuntu-latest. macOS concurrency is capped
+# at 5 jobs account-wide; re-running host-independent tests on that pool is the
+# most expensive way to learn nothing new.
 #
 # Surfaces a single PR check ("MLX CI on Mac M1 / dispatch").
 #
@@ -64,18 +79,53 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
-      - 'tests/studio/test_hardware_dispatch_matrix.py'
-      - 'tests/studio/test_is_mlx_dispatch_gate.py'
+      # The capability verdict is decided across these three: hardware/** measures it,
+      # mlx_repair.py says whether a self-heal can still overturn it, and main.py holds
+      # it back while one can. main.py is the studio's front door and is edited often,
+      # so listing it does cost macOS slots on PRs that never touch the verdict -- but a
+      # gate that cannot be triggered by the file the logic lives in is not a gate.
+      - 'studio/backend/main.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      # test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py are
+      # deliberately absent: this workflow no longer runs them (see the AST
+      # contract step below), so booting a macOS runner when only those files
+      # change would burn a slot from the 5-job account-wide macOS cap to run
+      # nothing related. studio-backend-ci.yml covers both on ubuntu-latest and
+      # already triggers on them.
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
+      - 'tests/studio/mac_capability_verdict_smoke.py'
       - 'tests/conftest.py'
+      # Every capability-verdict boot below shells out to these two, so an edit to
+      # either changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
       - '.github/workflows/mlx-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
+    paths:
+      - 'unsloth/__init__.py'
+      - 'unsloth/_gpu_init.py'
+      - 'studio/backend/utils/hardware/**'
+      - 'studio/backend/core/training/worker.py'
+      - 'studio/backend/core/inference/mlx_inference.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/utils/mlx_repair.py'
+      - 'tests/studio/test_mlx_training_worker_behaviors.py'
+      - 'tests/studio/run_real_mlx_smoke.py'
+      - 'tests/studio/mac_capability_verdict_smoke.py'
+      - 'tests/conftest.py'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/workflows/mlx-ci.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -83,27 +133,29 @@ permissions:
 jobs:
   dispatch:
     name: dispatch
-    runs-on: macos-14
-    # 25 min: dispatch + spoofed matrix + 7-step real LoRA training is
+    runs-on: macos-15
+    # 40 min: dispatch + spoofed matrix + 7-step real LoRA training is
     # under 2 min; GGUF export builds llama.cpp via cmake on Apple
-    # Silicon (~5-7 min), so we budget headroom.
-    timeout-minutes: 25
+    # Silicon (~5-7 min), so we budget headroom. The capability-verdict
+    # boots add roughly ten more: two settle in seconds, but the in-flight
+    # one has to wait out the whole torch warm before the self-heal is even
+    # scheduled, and then the length of the install it is holding a verdict
+    # against.
+    timeout-minutes: 40
     steps:
-      # harden-runner audit mode: macOS runners cannot use blocking mode
-      # today (eBPF egress enforcement is Linux-only), but audit mode is
-      # supported cross-platform and surfaces the egress destinations in
-      # the runner log. This produces the data needed to graduate this
-      # job to a block-mode allowlist once macOS support lands.
+      # harden-runner v2.20.0 supports blocking mode on GitHub-hosted macOS
+      # runners. Keep this job in audit while its egress destinations are
+      # observed, then graduate it to a reviewed block-mode allowlist.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -130,7 +182,7 @@ jobs:
       #    MLX support landed after the most recent unsloth-zoo PyPI
       #    release; the wheel still raises NotImplementedError on
       #    Apple Silicon when device_type.get_device_type() runs
-      #    unguarded. Studio's own install.sh overlays unsloth-zoo
+      #    unguarded. Unsloth's own install.sh overlays unsloth-zoo
       #    from git main for the same reason. Pulling deps lets pip
       #    resolve the platform-conditional MLX-only wheels (mlx,
       #    mlx-lm, mlx-vlm gated on darwin+arm64 in unsloth-zoo's
@@ -163,7 +215,7 @@ jobs:
             'pytest==9.0.3' \
             'pytest-asyncio==1.3.0' \
             'httpx==0.28.1'
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch==2.10.0'
           # github.com occasionally 500s on the git fetch; retry the
           # zoo install so a single upstream blip does not fail CI.
@@ -216,113 +268,25 @@ jobs:
           print('OK: FastMLXModel + MLXTrainer surface present')
           "
 
-      # Spoofed dispatch matrix. Runs on the real Mac too -- the
-      # test fixture installs a MetaPathFinder that blocks
-      # `import mlx.core` for "no-mlx" profiles, so the spoofs
-      # faithfully simulate every supported hardware combo regardless
-      # of whether mlx is installed for real.
-      - name: MLX dispatch tests (3 files, 36 tests)
+      # AST contract checks on worker.py. Pure `ast.parse`, no runtime and no
+      # mlx import, so it would run anywhere -- but this is the only workflow
+      # that runs it at all, so it stays here until something on Linux claims it.
+      #
+      # test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py used
+      # to run here too. They are 100% spoofed monkeypatches (the fixture
+      # installs a MetaPathFinder that blocks `import mlx.core` for "no-mlx"
+      # profiles), so they assert the same thing on any host -- and
+      # studio-backend-ci.yml already runs both on ubuntu-latest in its
+      # "Hardware-spoof tests" step. Running them again on a macOS runner spent
+      # minutes from a pool capped at 5 concurrent jobs account-wide to
+      # re-derive a result Linux had already produced.
+      - name: MLX worker AST contract tests
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           python -m pytest -v --tb=short \
-            tests/studio/test_hardware_dispatch_matrix.py \
-            tests/studio/test_is_mlx_dispatch_gate.py \
             tests/studio/test_mlx_training_worker_behaviors.py
-
-      # Studio prebuilt llama.cpp install + GGUF inference. Mirrors the
-      # path Studio's setup.sh takes on macOS since #5963: plan against
-      # the unslothai/llama.cpp fork's latest release, which ships the
-      # bin-macos-arm64 bundle plus the llama-prebuilt-manifest.json the
-      # default policy reads. After install, downloads a small published
-      # GGUF (unsloth/gemma-3-270m-it-GGUF, Q4_K_M) and validates
-      # llama-server /completion end to end. An install failure or a
-      # non-zero binary exit is an Unsloth/Studio bug.
-      - name: Studio prebuilt llama.cpp install + GGUF inference (Mac M1)
-        env:
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-          # install_llama_prebuilt.py hits the GitHub releases API to
-          # resolve the asset URL. Anonymous calls share the runner-IP
-          # rate-limit bucket and 403 quickly -- pass the workflow's
-          # automatic GITHUB_TOKEN to bump us to the 5000/hr authenticated
-          # bucket.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
-          rm -rf "$INSTALL_DIR"
-          # Mirror studio/setup.sh on macOS (the install.sh user path):
-          # it plans against the unslothai/llama.cpp fork's latest
-          # release with no policy or tag flags.
-          python studio/install_llama_prebuilt.py \
-            --install-dir "$INSTALL_DIR" \
-            --published-repo unslothai/llama.cpp
-
-          # Studio bundles only llama-server + llama-quantize from the
-          # prebuilt (not llama-cli) -- inference goes through
-          # llama-server's HTTP /completion endpoint. Validate both:
-          # llama-quantize --help proves the dynamic libs link, then
-          # spin up llama-server and POST a /completion request on a
-          # tiny published GGUF.
-          LLAMA_SERVER="$INSTALL_DIR/build/bin/llama-server"
-          LLAMA_QUANT="$INSTALL_DIR/build/bin/llama-quantize"
-          [ -x "$LLAMA_SERVER" ] || { echo "::error::llama-server missing at $LLAMA_SERVER"; find "$INSTALL_DIR/build" -type f | head -40; exit 1; }
-          [ -x "$LLAMA_QUANT" ]  || { echo "::error::llama-quantize missing at $LLAMA_QUANT"; exit 1; }
-          echo "llama-server : $LLAMA_SERVER"
-          echo "llama-quantize: $LLAMA_QUANT"
-          "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
-
-          mkdir -p /tmp/ggufs
-          bash .github/scripts/hf-download-with-retry.sh \
-            'unsloth/gemma-3-270m-it-GGUF' \
-            'gemma-3-270m-it-Q4_K_M.gguf' \
-            /tmp/ggufs
-
-          PORT=18080
-          echo "=== starting llama-server on 127.0.0.1:$PORT ==="
-          "$LLAMA_SERVER" \
-            -m /tmp/ggufs/gemma-3-270m-it-Q4_K_M.gguf \
-            --host 127.0.0.1 \
-            --port "$PORT" \
-            -c 256 \
-            -n 16 \
-            --no-warmup \
-            > /tmp/llama-server.log 2>&1 &
-          SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
-
-          # Wait for /health to come up
-          for i in $(seq 1 30); do
-            if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-              echo "  server up after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-            echo "::error::llama-server never became healthy"
-            tail -40 /tmp/llama-server.log
-            exit 1
-          fi
-
-          PROMPT="Hello, my name is"
-          echo "=== POST /completion ==="
-          RESP=$(curl -sf -X POST "http://127.0.0.1:$PORT/completion" \
-            -H 'Content-Type: application/json' \
-            -d "{\"prompt\":\"$PROMPT\",\"n_predict\":16,\"temperature\":0,\"seed\":3407}")
-          echo "raw response (head): $(echo "$RESP" | head -c 600)"
-          CONTENT=$(echo "$RESP" | python -c "import json,sys; print(json.loads(sys.stdin.read()).get('content',''))")
-          echo "completion content: $CONTENT"
-
-          if [ -z "$CONTENT" ]; then
-            echo "::error::llama-server /completion returned empty content"
-            tail -40 /tmp/llama-server.log
-            exit 1
-          fi
-          echo "OK: Studio prebuilt llama.cpp on Mac M1 + GGUF /completion works"
 
       # Real MLX training + inference smoke test. Trains
       # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
@@ -338,6 +302,9 @@ jobs:
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           mkdir -p mlx_workdir
+          # Authenticate llama.cpp's release-API lookup (anonymous 403s on rate-limit);
+          # read-only GITHUB_TOKEN scoped here only, never to steps that run binaries.
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           python tests/studio/run_real_mlx_smoke.py train \
             --workdir "$PWD/mlx_workdir"
 
@@ -406,3 +373,164 @@ jobs:
             cat "$f" 2>/dev/null || echo "(missing)"
             echo
           done
+
+      # ---------------------------------------------------------------
+      # The Mac capability verdict, on a real Apple Silicon host.
+      #
+      # /api/health is what decides whether the sidebar's Train and Video rows
+      # are enabled, greyed out behind "Training needs MLX. Run `unsloth studio
+      # update`", or still spinning. That decision reads a real `import
+      # mlx.core` and waits on a real background reinstall, and the unit tests
+      # for it necessarily fake both. Here the host is Apple Silicon and the
+      # MLX stack is genuinely present (first step) or genuinely unimportable
+      # (last two), so this is the only place the verdict is judged against the
+      # thing it is a verdict about.
+      #
+      # Three boots, one per step: the self-heal is once per process, so the
+      # opted-out and the in-flight cases cannot share a server.
+      # ---------------------------------------------------------------
+      - name: Provision a Studio venv for the capability-verdict boots
+        run: |
+          set -euo pipefail
+          # `unsloth studio` re-execs into $STUDIO_HOME/unsloth_studio and refuses to
+          # start without it ("Unsloth Studio not set up. Run install.sh first."), so a
+          # bare `pip install -e .` cannot boot a server. install.sh --local builds that
+          # venv, but it also reinstalls the whole stack for ten minutes, and
+          # studio-mac-ui-smoke.yml already pays that on every studio/** PR. Building the
+          # venv over this job's site-packages gets the same launch path -- no re-exec,
+          # the real run.py, the real uvicorn -- for the cost of a virtualenv.
+          STUDIO_VENV="$HOME/.unsloth/studio/unsloth_studio"
+          rm -rf "$STUDIO_VENV"
+          python -m venv --system-site-packages "$STUDIO_VENV"
+          "$STUDIO_VENV/bin/pip" install --no-deps -e .
+          "$STUDIO_VENV/bin/unsloth" --help > /dev/null
+          echo "studio venv ready at $STUDIO_VENV"
+
+      # PATH is set per step rather than through $GITHUB_PATH: the llama.cpp steps
+      # below deliberately run under the job's own interpreter, and a venv exported
+      # for the rest of the job would quietly move them.
+      - name: "Mac capability verdict: real MLX must never look chat-only"
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          export PATH="$HOME/.unsloth/studio/unsloth_studio/bin:$PATH"
+          python tests/studio/mac_capability_verdict_smoke.py real-mlx \
+            --port 18901 \
+            --log logs/studio_verdict_real_mlx.log \
+            --workdir logs/verdict_real_mlx
+
+      - name: "Mac capability verdict: no MLX, self-heal opted out, must still settle"
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          export PATH="$HOME/.unsloth/studio/unsloth_studio/bin:$PATH"
+          python tests/studio/mac_capability_verdict_smoke.py no-mlx-settles \
+            --port 18902 \
+            --log logs/studio_verdict_no_mlx.log \
+            --workdir logs/verdict_no_mlx
+
+      - name: "Mac capability verdict: no MLX, self-heal in flight, must not publish"
+        env:
+          UNSLOTH_COMPILE_DISABLE: '1'
+        run: |
+          export PATH="$HOME/.unsloth/studio/unsloth_studio/bin:$PATH"
+          python tests/studio/mac_capability_verdict_smoke.py no-mlx-repair \
+            --port 18903 \
+            --log logs/studio_verdict_repairing.log \
+            --workdir logs/verdict_repairing
+
+      - name: "Mac capability verdict: server logs"
+        if: always()
+        run: |
+          for f in logs/studio_verdict_real_mlx.log \
+                   logs/studio_verdict_no_mlx.log \
+                   logs/studio_verdict_repairing.log; do
+            echo "=== $f ==="
+            tail -60 "$f" 2>/dev/null || echo "(missing)"
+            echo
+          done
+
+      # Validates the macOS prebuilt path Unsloth's setup.sh uses (#5963): install the
+      # unslothai/llama.cpp fork's latest release, download a small public GGUF, and
+      # check llama-server /completion end to end. Split and placed last so the
+      # untrusted binary runs only in the final smoke step, after every HF_TOKEN step,
+      # leaving no token-bearing step or shared workspace for a tampered prebuilt to
+      # corrupt. GH_TOKEN: releases API; HF_TOKEN (withheld on PR): probe + GGUF fetch.
+      - name: Unsloth prebuilt llama.cpp install + GGUF download (Mac M1)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
+          rm -rf "$INSTALL_DIR"
+          # Download only -- no llama-quantize / llama-server launch in this step.
+          python studio/install_llama_prebuilt.py \
+            --install-dir "$INSTALL_DIR" \
+            --published-repo unslothai/llama.cpp
+          mkdir -p /tmp/ggufs
+          bash .github/scripts/hf-download-with-retry.sh \
+            'unsloth/gemma-3-270m-it-GGUF' \
+            'gemma-3-270m-it-Q4_K_M.gguf' \
+            /tmp/ggufs
+
+      # Final step: runs the downloaded binaries with no secrets present, and clears
+      # the GitHub Actions command files so a tampered prebuilt cannot influence the job.
+      - name: Unsloth prebuilt llama.cpp GGUF inference smoke (Mac M1)
+        run: |
+          set -euo pipefail
+          unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
+          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
+          # Unsloth bundles only llama-server + llama-quantize (not llama-cli);
+          # inference goes through llama-server's HTTP /completion endpoint.
+          LLAMA_SERVER="$INSTALL_DIR/build/bin/llama-server"
+          LLAMA_QUANT="$INSTALL_DIR/build/bin/llama-quantize"
+          [ -x "$LLAMA_SERVER" ] || { echo "::error::llama-server missing at $LLAMA_SERVER"; find "$INSTALL_DIR/build" -type f | head -40; exit 1; }
+          [ -x "$LLAMA_QUANT" ]  || { echo "::error::llama-quantize missing at $LLAMA_QUANT"; exit 1; }
+          echo "llama-server : $LLAMA_SERVER"
+          echo "llama-quantize: $LLAMA_QUANT"
+          "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
+
+          PORT=18080
+          echo "=== starting llama-server on 127.0.0.1:$PORT ==="
+          "$LLAMA_SERVER" \
+            -m /tmp/ggufs/gemma-3-270m-it-Q4_K_M.gguf \
+            --host 127.0.0.1 \
+            --port "$PORT" \
+            -c 256 \
+            -n 16 \
+            --no-warmup \
+            > /tmp/llama-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          # Wait for /health to come up
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+              echo "  server up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+            echo "::error::llama-server never became healthy"
+            tail -40 /tmp/llama-server.log
+            exit 1
+          fi
+
+          PROMPT="Hello, my name is"
+          echo "=== POST /completion ==="
+          RESP=$(curl -sf -X POST "http://127.0.0.1:$PORT/completion" \
+            -H 'Content-Type: application/json' \
+            -d "{\"prompt\":\"$PROMPT\",\"n_predict\":16,\"temperature\":0,\"seed\":3407}")
+          echo "raw response (head): $(echo "$RESP" | head -c 600)"
+          CONTENT=$(echo "$RESP" | python -c "import json,sys; print(json.loads(sys.stdin.read()).get('content',''))")
+          echo "completion content: $CONTENT"
+
+          if [ -z "$CONTENT" ]; then
+            echo "::error::llama-server /completion returned empty content"
+            tail -40 /tmp/llama-server.log
+            exit 1
+          fi
+          echo "OK: Unsloth prebuilt llama.cpp on Mac M1 + GGUF /completion works"

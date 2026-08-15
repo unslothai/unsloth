@@ -12,18 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import os
 import importlib.abc
 import importlib.machinery
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
+from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
 import re
 import logging
 import textwrap
 import warnings
 import sys
+import threading
 import functools
 import inspect
 
@@ -158,6 +162,11 @@ if not UNSLOTH_ENABLE_LOGGING:
     logging.getLogger("torchao").addFilter(
         HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
+    # torch >= 2.11 path: torchao dlopens each prebuilt _C*.so and logs "Failed to load
+    # .../_C*.so" when one can't (ABI tag mismatch in the wheel, e.g. a cp310 .so under a
+    # cp312 runtime on Colab, or an arch-specific kernel the GPU lacks). It falls back to
+    # non-cpp paths and Unsloth doesn't use these kernels, so drop the cosmetic record.
+    logging.getLogger("torchao").addFilter(HideLoggingMessage("Failed to load "))
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
@@ -167,6 +176,10 @@ if not UNSLOTH_ENABLE_LOGGING:
     # Deprecation warnings from torchao
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
     warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
+    # torch._check_is_size FutureWarning (called by bitsandbytes 4-bit dequant)
+    warnings.filterwarnings(
+        "ignore", message = r"_check_is_size will be removed", category = FutureWarning
+    )
 
     # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
     warnings.filterwarnings(
@@ -246,6 +259,30 @@ if not UNSLOTH_ENABLE_LOGGING:
         category = UserWarning,
         module = r"^apex\.transformer\.functional\.fused_rope$",
     )
+
+
+def fix_torch_check_is_size():
+    """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
+    dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
+    try:
+        import torch
+
+        if hasattr(torch, "_check_is_size"):
+            return
+
+        def _check_is_size(
+            i,
+            message = None,
+            *,
+            max = None,
+        ):
+            torch._check(i >= 0, message)
+            if max is not None:
+                torch._check(i <= max, message)
+
+        torch._check_is_size = _check_is_size
+    except Exception:
+        return
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -378,12 +415,156 @@ def patch_vllm_for_notebooks():
     sys.stdout.fileno = lambda: 1
 
 
+# TypeError: non-default argument 'vision_config' follows default argument
+_UNSLOTH_DC_BACKFILL_FLAG = "__unsloth_dc_defaults_backfilled__"
+
+
+def _backfill_dataclass_defaults(cls):
+    """Give class-local bare annotations a ``None`` default.
+
+    transformers 5.x dataclass-ifies every ``PretrainedConfig`` subclass, so a
+    bare annotation after an inherited default trips "non-default argument
+    follows default argument". Skips names resolving anywhere in the MRO, and
+    ``ClassVar`` / ``InitVar``, matched textually as annotations may be strings.
+    """
+    if cls.__dict__.get(_UNSLOTH_DC_BACKFILL_FLAG):
+        return []
+    own_annotations = cls.__dict__.get("__annotations__") or {}
+    backfilled = []
+    for name, annotation in own_annotations.items():
+        text = (
+            annotation
+            if isinstance(annotation, str)
+            else (getattr(annotation, "__name__", "") or repr(annotation))
+        )
+        if "ClassVar" in text or "InitVar" in text:
+            continue
+        # dataclass reads defaults with getattr, so the MRO already counts.
+        if hasattr(cls, name):
+            continue
+        try:
+            setattr(cls, name, None)
+            backfilled.append(name)
+        except Exception:
+            pass
+    try:
+        setattr(cls, _UNSLOTH_DC_BACKFILL_FLAG, True)
+    except Exception:
+        pass
+    return backfilled
+
+
+def _transformers_configs_are_kw_only(PretrainedConfig):
+    """Does this transformers already build config dataclasses `kw_only`?
+
+    `kw_only=True` (5.5.1 on the 5.5 branch, 5.6.0 on main) removes the ordering
+    rule this fix exists for. Read the source, not the version, since it was
+    backported; where the source is unreadable (stripped or frozen installs),
+    probe instead, as a wrong False gives required fields a `None` default.
+    """
+    import inspect
+
+    hook = PretrainedConfig.__dict__.get("__init_subclass__")
+    hook = getattr(hook, "__func__", hook)
+    if hook is None:
+        return False
+    try:
+        return re.search(r"\bkw_only\s*=\s*True", inspect.getsource(hook)) is not None
+    except Exception:
+        pass
+    return not _transformers_needs_bare_annotation_fix()
+
+
+def _transformers_needs_bare_annotation_fix():
+    """Does defining a bare-annotation config subclass actually raise here?
+
+    Answered by trying it: the rule (5.4.0) and `kw_only=True` (5.5.1) were both
+    backported, so a version window mislabels distros carrying them early or
+    late. Absent positive evidence answer False: a loud `TypeError` beats a
+    config quietly accepting a missing required field.
+    """
+    try:
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return False
+    try:
+        # Exactly the shape vLLM defines: a default, then a bare annotation.
+        type(
+            "_UnslothProbeConfig",
+            (PretrainedConfig,),
+            {"__annotations__": {"a": int, "b": int}, "a": 0},
+        )
+    except TypeError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def fix_transformers5_bare_annotation_configs():
+    """Stop transformers 5.x from breaking third-party config classes.
+
+    vLLM's ``configs/deepseek_vl2.py`` declares a bare ``vision_config``, which
+    raises ``TypeError`` while importing ``vllm.transformers_utils.configs`` and
+    takes ``import unsloth`` down with it. Patching
+    ``PretrainedConfig.__init_subclass__`` rather than vLLM's source covers every
+    affected class in any vLLM version. No-ops outside the 5.4.0 to 5.5.0
+    window: below it configs are not dataclasses, above ``kw_only=True`` leaves
+    no ordering rule to break.
+    """
+    try:
+        import transformers
+        if Version(transformers.__version__) < Version("5.0.0"):
+            return
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping transformers-5 config fix ({e})")
+        return
+
+    if _transformers_configs_are_kw_only(PretrainedConfig):
+        return
+
+    if getattr(PretrainedConfig, "_unsloth_patched_init_subclass", False):
+        return
+
+    original = PretrainedConfig.__dict__.get("__init_subclass__")
+    if original is None:
+        return
+    # `__init_subclass__` is an implicit classmethod; unwrap to the function.
+    original_func = getattr(original, "__func__", original)
+
+    def __init_subclass__(cls, *args, **kwargs):
+        try:
+            _backfill_dataclass_defaults(cls)
+        except Exception as e:
+            logger.info(f"Unsloth: dataclass default backfill skipped ({e})")
+        return original_func(cls, *args, **kwargs)
+
+    # Keep the original reachable, so the patch can be tested and undone.
+    __init_subclass__.__wrapped__ = original_func
+    try:
+        PretrainedConfig.__init_subclass__ = classmethod(__init_subclass__)
+        PretrainedConfig._unsloth_patched_init_subclass = True
+        logger.info(
+            "Unsloth: Patching transformers `PretrainedConfig.__init_subclass__` "
+            "so vLLM config classes with bare annotations still import"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
     if spec is None:
         return
-    vllm_version = importlib_version("vllm")
+    # A findable spec with unreadable dist metadata (broken/partial vllm install)
+    # must not crash unsloth import; every other vllm probe here guards this too.
+    try:
+        vllm_version = importlib_version("vllm")
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping vLLM aimv2 fix -- vLLM version unreadable ({e})")
+        return
     if Version(vllm_version) < Version("0.10.1"):
         vllm_location = spec.origin
         if vllm_location is None:
@@ -624,6 +805,204 @@ def patch_datasets():
         )
 
 
+# psutil divides the pmgr "voltage-statesN-sram" IORegistry tables by 1e6 to
+# reach MHz, but Apple switched them from Hz to kHz on M4, so psutil <= 7.2.2
+# reads a 4.5 GHz M4 Pro back as 4 MHz (unslothai/unsloth#8519). Upstream fix is
+# giampaolo/psutil#2824, merged and unreleased; its heuristics are mirrored here.
+#
+# Studio's backend keeps the same correction in
+# studio/backend/utils/hardware/hardware.py, since the API server never imports
+# unsloth. Keep both in sync; delete both once a fixed psutil is our floor.
+#
+# Apple clocks are 0.6-4.6 GHz, so a raw Hz entry sits above 1e8 and kHz below.
+_APPLE_CPU_FREQ_UNIT_THRESHOLD = 100_000_000
+_APPLE_MIN_PLAUSIBLE_CPU_MHZ = 500
+_APPLE_MAX_PLAUSIBLE_CPU_MHZ = 20000
+# Below this a table is a GPU/NPU rail: above every Apple GPU peak so far, under
+# the slowest CPU cluster shipped (M1 E-core, 2064 MHz).
+_APPLE_CPU_CLUSTER_MIN_PEAK_MHZ = 2000
+_APPLE_VOLTAGE_STATES_KEY = re.compile(r"^voltage-states\d+-sram$")
+# Fixed for the life of the host, so probe once. The sentinel separates "not
+# probed yet" from "probed, unavailable".
+_apple_cpu_freq_range = "unprobed"
+# At import, not on first use: two threads reaching a lazy initialiser build a
+# lock each and then exclude nothing.
+_apple_cpu_freq_lock = threading.Lock()
+
+
+def _apple_voltage_state_freqs_mhz(blob):
+    """Plausible MHz from one voltage-statesN-sram blob.
+
+    Entries are 8 bytes: little-endian uint32 frequency, then uint32 voltage.
+    """
+    freqs = []
+    for offset in range(0, len(blob) - 7, 8):
+        raw = int.from_bytes(blob[offset : offset + 4], "little")
+        if raw == 0:
+            continue
+        mhz = raw / 1e6 if raw > _APPLE_CPU_FREQ_UNIT_THRESHOLD else raw / 1e3
+        if _APPLE_MIN_PLAUSIBLE_CPU_MHZ <= mhz <= _APPLE_MAX_PLAUSIBLE_CPU_MHZ:
+            freqs.append(mhz)
+    return freqs
+
+
+def _apple_cpu_freq_range_from_ioreg_entries(entries):
+    """(min_mhz, max_mhz) across the CPU-cluster tables, or None."""
+    lows, peaks = [], []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            if not isinstance(value, (bytes, bytearray)):
+                continue
+            if not _APPLE_VOLTAGE_STATES_KEY.match(str(key)):
+                continue
+            freqs = _apple_voltage_state_freqs_mhz(bytes(value))
+            # M5 renumbered the indexes, so classify by peak, not by index.
+            if freqs and max(freqs) >= _APPLE_CPU_CLUSTER_MIN_PEAK_MHZ:
+                lows.append(min(freqs))
+                peaks.append(max(freqs))
+    if not peaks:
+        return None
+    return (min(lows), max(peaks))
+
+
+def _apple_cpu_freq_range_mhz():
+    """Read (min, max) CPU MHz from the pmgr IORegistry node, cached."""
+    global _apple_cpu_freq_range
+    if _apple_cpu_freq_range != "unprobed":
+        return _apple_cpu_freq_range
+
+    # Unlocked, every thread spawns its own ioreg and a slow failing probe landing
+    # last overwrites a good reading with None.
+    with _apple_cpu_freq_lock:
+        if _apple_cpu_freq_range != "unprobed":
+            return _apple_cpu_freq_range
+
+        freq_range = None
+        try:
+            import plistlib
+            import subprocess
+
+            result = subprocess.run(
+                ["ioreg", "-a", "-r", "-c", "AppleARMIODevice", "-d", "1"],
+                capture_output = True,
+                timeout = 2,
+            )
+            entries = plistlib.loads(result.stdout) if result.stdout else []
+            if isinstance(entries, dict):
+                entries = [entries]
+            freq_range = _apple_cpu_freq_range_from_ioreg_entries(entries)
+        except Exception as exception:
+            logger.info("Unsloth: could not read Apple CPU frequencies from ioreg (%s)", exception)
+
+        _apple_cpu_freq_range = freq_range
+        return freq_range
+
+
+def _corrected_apple_cpu_freq(sample):
+    """Rescale one psutil scpufreq sample that was read in the wrong unit."""
+    current = getattr(sample, "current", None)
+    usable = isinstance(current, (int, float)) and current == current and current > 0
+    if usable and current >= _APPLE_MIN_PLAUSIBLE_CPU_MHZ:
+        return sample  # already plausible: a fixed psutil, or not an affected chip
+
+    freq_range = _apple_cpu_freq_range_mhz()
+    if freq_range is not None:
+        low, peak = freq_range
+        # macOS has no per-instant clock, so psutil reports the peak as `current`.
+        return sample._replace(current = peak, min = low, max = peak)
+    if not usable:
+        return sample  # 0, negative or NaN and no tables: nothing to say
+    # No tables: recover the magnitude instead. psutil truncates in integer
+    # arithmetic, so this lands on the GHz step (4 -> 4000 MHz), not the peak.
+    return sample._replace(
+        current = current * 1000,
+        min = getattr(sample, "min", 0.0) * 1000,
+        max = getattr(sample, "max", 0.0) * 1000,
+    )
+
+
+def patch_psutil_cpu_freq():
+    """Fix psutil.cpu_freq() reporting kHz-derived MHz on Apple Silicon M4+."""
+    if sys.platform != "darwin":
+        return
+    import platform as _platform
+
+    if _platform.machine() != "arm64":
+        return  # Rosetta / Intel Macs read a different, unaffected code path
+    if importlib.util.find_spec("psutil") is None:
+        return
+    try:
+        import psutil
+    except Exception:
+        return
+
+    original_cpu_freq = getattr(psutil, "cpu_freq", None)
+    if original_cpu_freq is None or getattr(original_cpu_freq, "__unsloth_patched__", False):
+        return
+
+    def _percpu_requested(args, kwargs):
+        return bool(args[0]) if args else bool(kwargs.get("percpu", False))
+
+    def _scpufreq_type():
+        # psutil 7.x keeps the namedtuple in _ntuples, older releases in _common.
+        for module_name in ("_ntuples", "_common"):
+            namedtuple_type = getattr(getattr(psutil, module_name, None), "scpufreq", None)
+            if namedtuple_type is not None:
+                return namedtuple_type
+        return None
+
+    def _from_tables(percpu):
+        """The IORegistry reading in psutil's own return shape, or None.
+
+        macOS has no per-core clock, so psutil's percpu answer is a one-element
+        list of the same sample; matching that keeps percpu callers whole.
+        """
+        namedtuple_type = _scpufreq_type()
+        if namedtuple_type is None:
+            return None
+        freq_range = _apple_cpu_freq_range_mhz()
+        if freq_range is None:
+            return None
+        low, peak = freq_range
+        sample = namedtuple_type(peak, low, peak)
+        return [sample] if percpu else sample
+
+    @functools.wraps(original_cpu_freq)
+    def cpu_freq(*args, **kwargs):
+        try:
+            result = original_cpu_freq(*args, **kwargs)
+        except TypeError:
+            # Arguments psutil does not take are the caller's mistake, not psutil
+            # declining to answer. This function replaces psutil's globally, so
+            # swallowing that would hide the error everywhere, not just here.
+            raise
+        except Exception:
+            # psutil raises on M5, whose renumbered tables are not at the indexes
+            # it hardcodes. With no tables either, its error is the honest answer.
+            stand_in = _from_tables(_percpu_requested(args, kwargs))
+            if stand_in is None:
+                raise
+            return stand_in
+        try:
+            # percpu = True returns a list of samples, otherwise a single one.
+            if isinstance(result, list):
+                # Empty is giampaolo/psutil#2382's "undeterminable".
+                if not result:
+                    return _from_tables(percpu = True) or result
+                return [_corrected_apple_cpu_freq(sample) for sample in result]
+            if result is None:
+                stand_in = _from_tables(percpu = False)
+                return result if stand_in is None else stand_in
+            return _corrected_apple_cpu_freq(result)
+        except Exception:
+            return result  # never let a cosmetic fix break a caller
+
+    cpu_freq.__unsloth_patched__ = True
+    psutil.cpu_freq = cpu_freq
+
+
 def check_fbgemm_gpu_version():
     if importlib.util.find_spec("fbgemm_gpu") is None:
         return
@@ -802,6 +1181,170 @@ def _infer_required_torchvision(torch_major, torch_minor):
     return None
 
 
+# Unambiguous on their own: only a torchvision/torch mismatch produces these.
+_TORCHVISION_ABI_MARKERS = (
+    "torchvision::",
+    "torchvision.io.video",
+    "torchvision.io._video",
+)
+# A loader failure is a torchvision break only when it names torchvision or the
+# torch libraries it links. The probe below imports torchvision where nothing
+# used to, so a box whose torchvision cannot load for an UNRELATED reason (a
+# missing CUDA library, say) must keep importing unsloth exactly as before
+# instead of being handed a hard "reinstall torchvision".
+_LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
+_TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
+
+
+def _is_broken_torchvision_error(error) -> bool:
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current)
+        if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
+            m in message for m in _TORCH_LIBRARY_MARKERS
+        ):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
+# PyPI carries exactly one torchvision build per release and it is one CUDA
+# family: its `_C.so` links libcudart, libc10_cuda and libtorch_cuda. Every
+# other build -- CPU, XPU, ROCm, and every CUDA family but PyPI's -- lives only
+# on download.pytorch.org, under an index named after torch's own local tag.
+# `--no-deps` keeps the installed torch, so an unqualified pin swaps a working
+# wheel for PyPI's and raises the very `operator torchvision::nms does not
+# exist` this command is handed out to clear. A tag we cannot turn into an
+# index (a vendor build: this repo's Radeon extras install
+# `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a repo.radeon.com torchvision;
+# or a source build) has no wheel to name at all, and neither does a
+# prerelease, whose stable-looking companion is synthesised from the release
+# numbers alone.
+_TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
+# conda keeps the backend in the build string (`py3.12_cuda12.4_cudnn9_0`) and
+# leaves the version plain, so a conda torch is indistinguishable from a PyPI
+# one by version alone. Its own ledger tells them apart:
+# `conda-meta/<name>-<version>-<build>.json`, one per installed package.
+_CONDA_TORCH_PACKAGES = ("pytorch", "pytorch-cpu", "pytorch-gpu", "libtorch")
+
+
+def _torch_local_tag(torch_version_raw):
+    if not torch_version_raw or "+" not in torch_version_raw:
+        return ""
+    return torch_version_raw.split("+", 1)[1]
+
+
+def _torch_is_conda_managed(torch_version_raw):
+    """Did conda install this torch, rather than pip?"""
+    conda_meta = os.path.join(sys.prefix, "conda-meta")
+    # A conda version never carries the `+tag`, but strip it so a pip torch
+    # sitting in a conda prefix is still matched on its release numbers.
+    version = (torch_version_raw or "").split("+", 1)[0]
+    if not version or not os.path.isdir(conda_meta):
+        return False
+    # Pinned to this exact version, so an unrelated `pytorch-lightning-*.json`
+    # cannot answer for torch.
+    prefixes = tuple(f"{name}-{version}-" for name in _CONDA_TORCH_PACKAGES)
+    try:
+        entries = os.listdir(conda_meta)
+    except OSError:
+        return False
+    return any(e.endswith(".json") and e.startswith(prefixes) for e in entries)
+
+
+def _has_no_matching_public_wheel(torch_version_raw):
+    try:
+        # `.is_prerelease`, not a substring list: `2.11.0a1` and `2.11.0b2` are
+        # prereleases that no `a0`/`b0` match would catch.
+        if TrueVersion(torch_version_raw).is_prerelease:
+            return True
+    except Exception:
+        return True
+    local = _torch_local_tag(torch_version_raw)
+    if not local:
+        # An absent tag means PyPI for a pip install, but conda never writes one
+        # either, and its torch may be CPU, ROCm or a CUDA family PyPI does not
+        # ship. `--no-deps` would leave that torch beside PyPI's torchvision.
+        return _torch_is_conda_managed(torch_version_raw)
+    return not _TORCH_BACKEND_INDEX.fullmatch(local)
+
+
+def _torchvision_repair_advice(required = None, torch_version_raw = None):
+    """The one sentence telling the user how to repair a broken torchvision."""
+    if _has_no_matching_public_wheel(torch_version_raw):
+        return (
+            f"Reinstall the torchvision built for torch=={torch_version_raw}, "
+            f"from wherever that torch came from."
+        )
+    return f"Reinstall it with `{_torchvision_repair_command(required, torch_version_raw)}`."
+
+
+def _torchvision_repair_command(required = None, torch_version_raw = None):
+    """The pip command to repair a broken torchvision binary in place.
+
+    Pinned and `--no-deps`, both deliberately. Every torchvision wheel requires
+    an exact `torch==X.Y.Z`, so an unpinned `pip install --upgrade
+    --force-reinstall torchvision` resolves the newest torchvision and then
+    replaces the user's torch to satisfy it -- on a Colab/Kaggle image that is
+    the pinned torch every other wheel was built against, vLLM included. The
+    pin also fixes the case where the version gate passed on its lower bound
+    (torch 2.4 accepts torchvision >= 0.19, so an installed 0.20 reaches here):
+    the companion release is what gets reinstalled, not the newest one.
+    """
+    if required is None:
+        spec = "torchvision"
+    elif len(required) >= 3:
+        # Exact, because the pair is exact: torchvision 0.22.0 requires torch
+        # 2.7.0 and 0.22.1 requires torch 2.7.1. A `0.22.*` wildcard on a
+        # torch 2.7.0 host resolves 0.22.1, and `--no-deps` then keeps the torch
+        # that does not match it, rebuilding the mismatch the command repairs.
+        spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
+    else:
+        spec = f"torchvision=={required[0]}.{required[1]}.*"
+    local = _torch_local_tag(torch_version_raw)
+    index = ""
+    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
+        index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
+
+
+def _probe_torchvision_binary(
+    torch_version_raw,
+    torchvision_version_raw,
+    required = None,
+):
+    """Import torchvision, so a broken binary is named here and not six frames
+    deep in transformers.
+
+    The table above compares metadata, which cannot see an ABI break: ops
+    built against a different torch die in `_meta_registrations`, at
+    `register_fake("torchvision::nms")`. Found by running Gemma4_(E2B)_GRPO,
+    whose T4 branch installs vllm==0.9.2 beside Colab's torch and mismatches
+    both; `disable_broken_vllm` already covers the vLLM half.
+
+    Costs no extra import: transformers imports torchvision from `image_utils`
+    the moment anything touches `processing_utils`.
+    """
+    try:
+        import torchvision  # noqa: F401
+        import torchvision.ops  # noqa: F401  where the compiled nms lives
+    except Exception as error:
+        # Anything else is left for whoever actually needs torchvision.
+        if not _is_broken_torchvision_error(error):
+            return
+        raise ImportError(
+            f"Unsloth: torchvision=={torchvision_version_raw} claims to match "
+            f"torch=={torch_version_raw}, but its compiled operators do not "
+            f"load ({type(error).__name__}: {error}). "
+            f"{_torchvision_repair_advice(required, torch_version_raw)} "
+            f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to skip this check."
+        ) from error
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -849,6 +1392,12 @@ def torchvision_compatibility_check():
     if required is None:
         return
 
+    # Carry torch's own patch into the companion: the two move together
+    # (2.7.0/0.22.0, 2.7.1/0.22.1), so the repair command can name one wheel
+    # instead of a minor-wide range it cannot then satisfy under `--no-deps`.
+    if len(torch_release) >= 3:
+        required = (required[0], required[1], torch_release[2])
+
     required_tv_str = f"{required[0]}.{required[1]}.0"
 
     if tv_v >= Version(required_tv_str):
@@ -856,6 +1405,7 @@ def torchvision_compatibility_check():
             f"Unsloth: torch=={torch_version_raw} and "
             f"torchvision=={torchvision_version_raw} are compatible."
         )
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required)
         return
 
     # Version mismatch detected
@@ -892,6 +1442,139 @@ def torchvision_compatibility_check():
         return
 
     raise ImportError(message)
+
+
+def _unsatisfied_transformers_requirements():
+    """Base (no-extras) requirements the environment does not satisfy, as
+    [(name, specifier, installed_version), ...]; installed_version is None when the
+    package is absent. Read from the installed distribution's own metadata, so it is
+    whatever that transformers asks for - git main, 4.57.x or 5.x - rather than a
+    table that would rot. Never raises; returns [] on anything unexpected.
+    """
+    try:
+        from importlib.metadata import requires as _dist_requires
+        from packaging.requirements import Requirement
+    except Exception:
+        return []
+
+    try:
+        raw_requirements = _dist_requires("transformers")
+    except Exception:
+        # transformers not installed, or its dist-info is missing / unreadable.
+        return []
+    if not raw_requirements:
+        return []
+
+    unsatisfied = []
+    for raw_requirement in raw_requirements:
+        try:
+            requirement = Requirement(raw_requirement)
+        except Exception:
+            continue  # Unparseable requirement line - ignore it, never guess.
+
+        # extra = "" drops optional-extra requirements and inapplicable
+        # python_version / sys_platform gates - packages the user is right not to have.
+        if requirement.marker is not None:
+            try:
+                if not requirement.marker.evaluate({"extra": ""}):
+                    continue
+            except Exception:
+                continue  # Undecidable marker - assume it does not apply.
+
+        try:
+            installed = importlib_version(requirement.name)
+        except PackageNotFoundError:
+            # Absent, which `--no-deps` causes as readily as a stale version.
+            # transformers checks its base requirements at its own root import and
+            # raises PackageNotFoundError carrying the same misleading hint, so an
+            # absent one belongs here - floor or no floor, it is not optional.
+            unsatisfied.append((requirement.name, str(requirement.specifier), None))
+            continue
+        except Exception:
+            continue  # Metadata unreadable - we cannot judge it, so stay quiet.
+
+        if not requirement.specifier:
+            continue  # Installed, and no floor it could fall below.
+
+        try:
+            # Parse explicitly: SpecifierSet.contains() reports a non-PEP440 version
+            # as "not contained" rather than raising, which would be a false positive.
+            installed_version = TrueVersion(installed)
+        except Exception:
+            continue  # Not a PEP 440 version - we cannot judge it, so stay quiet.
+
+        try:
+            # prereleases = True so a legitimate 1.0.0rc1 does not read as a violation.
+            if requirement.specifier.contains(installed_version, prereleases = True):
+                continue
+        except Exception:
+            continue  # Bad specifier - stay quiet.
+
+        unsatisfied.append((requirement.name, str(requirement.specifier), installed))
+
+    return unsatisfied
+
+
+def check_transformers_dependency_versions():
+    """Warn when transformers' own declared dependency floors are unmet.
+
+    A notebook needing a bleeding-edge model installs transformers from git with
+    `--no-deps` on purpose, so pip cannot re-resolve torch - and so pip never
+    enforces what that transformers requires either. The install "succeeds" and the
+    failure lands at import, advising `pip install transformers -U`. That remedy is
+    wrong here: the user is deliberately on main, so upgrading undoes the install
+    they wanted, or loops. The dependency is what needs upgrading. This runs first
+    and says so, naming it. Warns rather than raises; see the _gpu_init.py call.
+    """
+    if os.environ.get("UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK", "0").lower() in (
+        "1",
+        "true",
+    ):
+        return
+    try:
+        # find_spec RAISES ValueError, rather than returning None, for a transformers
+        # in sys.modules with `__spec__` None or unset - a stub, or one mid-teardown.
+        # Nothing here is worth failing `import unsloth` over.
+        if importlib.util.find_spec("transformers") is None:
+            return
+    except Exception:
+        return
+
+    try:
+        unsatisfied = _unsatisfied_transformers_requirements()
+    except Exception:
+        return
+    if not unsatisfied:
+        return
+
+    try:
+        transformers_version = importlib_version("transformers")
+    except Exception:
+        transformers_version = "unknown"
+
+    lines = [
+        f"Unsloth: transformers=={transformers_version} declares dependencies that "
+        f"your environment does not satisfy:"
+    ]
+    upgrades = []
+    for name, specifier, installed in unsatisfied:
+        found = f"found {name}=={installed}" if installed is not None else "it is not installed"
+        lines.append(f"    {name}{specifier} is required, but {found}")
+        upgrades.append(f'"{name}{specifier}"')
+    lines.append("")
+    verb = "Upgrade" if all(i is not None for _, _, i in unsatisfied) else "Install or upgrade"
+    lines.append(f"{verb} the dependencies, not transformers:")
+    lines.append(f"    pip install --upgrade {' '.join(upgrades)}")
+    lines.append("")
+    lines.append(
+        "transformers may suggest `pip install transformers -U` instead. Ignore that "
+        "if you installed transformers from git main on purpose (for example with "
+        "`pip install --no-deps git+https://github.com/huggingface/transformers.git` "
+        "for a new model) - upgrading transformers would only undo the install you "
+        "wanted. Set UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK=1 to silence this."
+    )
+
+    logger.warning("\n".join(lines))
 
 
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
@@ -1056,6 +1739,135 @@ def fix_triton_compiled_kernel_missing_attrs():
     logger.info(
         "Unsloth: Patched triton CompiledKernel with num_ctas/cluster_dims "
         "for torch.compile compatibility."
+    )
+
+
+def fix_dynamo_config_thread_visibility():
+    """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
+    (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
+    invisible to the autograd worker threads that run backward. Gradient
+    checkpointing recompiles fullgraph gpt-oss kernels there against the default
+    limit of 8, raising FailOnRecompileLimitHit at step 0. Mirror direct config
+    assignments into the process-global entry default (torch <= 2.11 semantics).
+    config.patch(...) and config.load_config(...) also assign via __setattr__ but
+    are thread-local by design, so skip mirroring while inside one (tracked per
+    thread). No-op below torch 2.12 and on any torch without this internal layout.
+    """
+    try:
+        import torch
+
+        if Version(torch.__version__) < Version("2.12.0"):
+            return
+        import torch._dynamo.config as _dynamo_config
+        from torch.utils._config_module import ConfigModule
+        from contextvars import ContextVar
+    except Exception:
+        return
+
+    try:
+        probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
+        if probe is None or not isinstance(getattr(probe, "user_override", None), ContextVar):
+            # Overrides are not context-local on this torch; nothing to fix.
+            return
+        original_setattr = ConfigModule.__setattr__
+        if getattr(original_setattr, "__unsloth_patched__", False):
+            return
+    except Exception:
+        return
+
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+
+    # config.patch(...) and config.load_config(...) also assign via __setattr__, but
+    # their writes are thread-local by design; a per-thread depth counter marks them
+    # so they are not mirrored into the process-global default.
+    import threading
+
+    _scoped_depth = threading.local()
+
+    def _in_scoped_write():
+        return getattr(_scoped_depth, "n", 0) > 0
+
+    def _bump(delta):
+        _scoped_depth.n = getattr(_scoped_depth, "n", 0) + delta
+
+    original_patch = ConfigModule.patch
+    if not getattr(original_patch, "__unsloth_patched__", False):
+
+        @functools.wraps(original_patch)
+        def _patched_patch(self, *args, **kwargs):
+            ctx = original_patch(self, *args, **kwargs)
+            try:
+                cls = type(ctx)  # patch() builds a fresh ConfigPatch class each call
+                if not getattr(cls, "__unsloth_patch_wrapped__", False):
+                    _enter0, _exit0 = cls.__enter__, cls.__exit__
+
+                    def _enter(s, _e = _enter0):
+                        _bump(1)
+                        try:
+                            return _e(s)
+                        finally:
+                            _bump(-1)
+
+                    def _exit(
+                        s,
+                        *a,
+                        _x = _exit0,
+                    ):
+                        _bump(1)
+                        try:
+                            return _x(s, *a)
+                        finally:
+                            _bump(-1)
+
+                    cls.__enter__, cls.__exit__ = _enter, _exit
+                    cls.__unsloth_patch_wrapped__ = True
+            except Exception:
+                pass
+            return ctx
+
+        _patched_patch.__unsloth_patched__ = True
+        ConfigModule.patch = _patched_patch
+
+    # load_config restores a saved config by calling setattr per key (thread-local).
+    original_load_config = getattr(ConfigModule, "load_config", None)
+    if callable(original_load_config) and not getattr(
+        original_load_config, "__unsloth_patched__", False
+    ):
+
+        @functools.wraps(original_load_config)
+        def _patched_load_config(self, *args, **kwargs):
+            _bump(1)
+            try:
+                return original_load_config(self, *args, **kwargs)
+            finally:
+                _bump(-1)
+
+        _patched_load_config.__unsloth_patched__ = True
+        ConfigModule.load_config = _patched_load_config
+
+    @functools.wraps(original_setattr)
+    def _patched_setattr(self, name, value):
+        original_setattr(self, name, value)
+        if _in_scoped_write():
+            return  # transient patch / load_config write: keep it thread-local
+        # Aliases (cache_size_limit -> recompile_limit) re-enter with the real name.
+        if self.__dict__.get("__name__", None) in mirrored_modules:
+            try:
+                entry = self.__dict__["_config"].get(name, None)
+                if entry is not None and entry.alias is None:
+                    entry.default = value
+            except Exception:
+                pass
+
+    _patched_setattr.__unsloth_patched__ = True
+    ConfigModule.__setattr__ = _patched_setattr
+
+    # No replay of existing overrides: unsloth installs this before it sets any
+    # dynamo/inductor config, so the wrapper mirrors every later assignment. Replaying
+    # would also bake a still-active config.patch override into the global default.
+    logger.info(
+        "Unsloth: Patched torch config modules so dynamo/inductor settings "
+        "(e.g. recompile_limit) apply across threads on torch >= 2.12."
     )
 
 
@@ -1318,8 +2130,7 @@ def fix_vllm_pdl_blackwell():
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
-            f"patched: {', '.join(patched)}"
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
@@ -1364,6 +2175,59 @@ def patch_torchcodec_audio_decoder():
         pass
 
 
+# torch.minor -> compatible torchcodec.minor strings (see notebook_validator.py).
+_TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
+    "2.10": {"0.10"},
+    "2.9": {"0.8", "0.9"},
+    "2.8": {"0.6", "0.7"},
+    "2.7": {"0.3", "0.4", "0.5"},
+    "2.6": {"0.2", "0.3"},
+    "2.5": {"0.1", "0.2"},
+}
+
+
+def _torchcodec_exclusive_upper(pin: str) -> str:
+    """Next torchcodec minor as an exclusive pip upper bound (0.10 -> <0.11.0)."""
+    major, minor = pin.split(".", 1)
+    return f"<{major}.{int(minor) + 1}.0"
+
+
+def _torchcodec_version_mismatch_hint() -> str | None:
+    """Return a user-facing hint when installed torchcodec mismatches torch."""
+    try:
+        import importlib.metadata as importlib_metadata
+        import torch
+        from packaging.version import Version
+
+        torchcodec_version = importlib_metadata.version("torchcodec")
+    except Exception:
+        return None
+
+    def _minor(version: str) -> str:
+        parts = Version(version.split("+", 1)[0]).release
+        return ".".join(str(p) for p in parts[:2])
+
+    try:
+        torch_minor = _minor(torch.__version__)
+        codec_minor = _minor(torchcodec_version)
+    except Exception:
+        # Non-PEP440 version strings must never break `import unsloth`.
+        return None
+    allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
+    if allowed is None or codec_minor in allowed:
+        return None
+
+    pin = sorted(allowed)[-1]
+    upper = _torchcodec_exclusive_upper(pin)
+    install_hint = f"`pip install 'torchcodec>={pin},{upper}'`"
+    if torch_minor == "2.10":
+        install_hint += " or `pip install 'unsloth[audio-torch210]'`"
+    return (
+        f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "
+        f"install a matching build with {install_hint}."
+    )
+
+
 def disable_torchcodec_if_broken():
     """Make broken torchcodec behave as if uninstalled (#5446).
 
@@ -1372,6 +2236,15 @@ def disable_torchcodec_if_broken():
     flags and seat a sys.modules sentinel so downstream imports fall through
     their existing except ImportError handlers cleanly.
     """
+    mismatch_hint = _torchcodec_version_mismatch_hint()
+    if mismatch_hint is not None:
+        try:
+            import warnings
+            warnings.warn(mismatch_hint, stacklevel = 2)
+        except Exception:
+            # Warning filters promoted to errors must not abort the disable
+            # fallback below (e.g. PYTHONWARNINGS=error, pytest -W error).
+            pass
     try:
         import importlib.util
         if importlib.util.find_spec("torchcodec") is None:
@@ -1418,6 +2291,100 @@ def disable_torchcodec_if_broken():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchcodec"] = None
+
+
+def disable_torchaudio_if_cuda_mismatched():
+    """Make a CUDA-mismatched torchaudio behave as if uninstalled.
+
+    `torchaudio._extension.utils._check_cuda_version` compares the CUDA
+    version torchaudio was BUILT against with torch's, and raises on any
+    difference:
+
+        RuntimeError: Detected that PyTorch and TorchAudio were compiled with
+        different CUDA versions.
+
+    That check runs at extension init, so it takes down the whole import --
+    including for callers that only ever wanted CPU-side audio I/O, and
+    including callers that never asked for torchaudio at all and merely
+    imported something that does. Measured on a Kaggle 2xT4 session running
+    `Kaggle-Muse_Glimmer_(30B)-GRPO`, a text model: it died at cell 4 on this,
+    having never reached anything to do with audio.
+
+    Same shape as `disable_torchcodec_if_broken` and for the same reason: the
+    package is present, `find_spec` says so, and the failure is at native
+    init rather than at resolution, so downstream `except ImportError`
+    handlers never get their chance. Seating the sentinel gives them one.
+
+    What this deliberately does NOT do is patch out `_check_cuda_version`.
+    The check is right -- torchaudio's CUDA ops really are unusable against a
+    different runtime -- and silencing it in place would leave those ops
+    reachable and wrong. Making the package absent is the honest version of
+    the same repair, and it is loud: the warning names both versions and the
+    wheel that would fix it.
+    """
+    try:
+        import importlib.util
+        if importlib.util.find_spec("torchaudio") is None:
+            return
+        import torchaudio  # noqa: F401
+    except ImportError:
+        return
+    except (RuntimeError, OSError) as exc:
+        if "different CUDA versions" not in str(exc) and "torchaudio" not in str(exc).lower():
+            # Some other failure. Not this function's business, and swallowing
+            # it would hide a real one behind a message about CUDA versions.
+            raise
+        try:
+            import warnings
+            warnings.warn(
+                f"Unsloth: torchaudio cannot initialise against this torch and has been "
+                f"disabled for this process, so anything that needs it will report it as "
+                f"missing rather than crash at import. Install the matching wheel to "
+                f"restore it. Original error: {exc}",
+                stacklevel = 2,
+            )
+        except Exception:
+            # Warning filters promoted to errors must not abort the repair.
+            pass
+
+        try:
+            import transformers.utils.import_utils as tf_import_utils
+            try:
+                tf_import_utils._torchaudio_available = False
+            except AttributeError:
+                pass
+            # `speech` is transformers' composite backend and it is nothing but
+            # torchaudio (`is_speech_available` returns `is_torchaudio_available()`).
+            # On 4.x both read one module global, so setting the flag above covers
+            # them. On 5.x each is separately `@lru_cache`d, so a `speech` answer
+            # computed before this repair stays True and `requires_backends(...,
+            # "speech")` waves callers on into a torchaudio that is now a None
+            # sentinel -- a raw crash instead of the unavailable-backend path this
+            # whole function exists to restore. Clear both caches.
+            for _name in ("is_torchaudio_available", "is_speech_available"):
+                is_avail = getattr(tf_import_utils, _name, None)
+                if is_avail is None:
+                    continue
+                try:
+                    is_avail.cache_clear()
+                except AttributeError:
+                    pass
+                setattr(tf_import_utils, _name, lambda: False)
+        except ImportError:
+            pass
+
+        try:
+            import datasets.config as datasets_config
+            if hasattr(datasets_config, "TORCHAUDIO_AVAILABLE"):
+                datasets_config.TORCHAUDIO_AVAILABLE = False
+        except ImportError:
+            pass
+
+        for _stale in [
+            n for n in list(sys.modules) if n == "torchaudio" or n.startswith("torchaudio.")
+        ]:
+            sys.modules.pop(_stale, None)
+        sys.modules["torchaudio"] = None
 
 
 def disable_broken_wandb():
@@ -1487,6 +2454,143 @@ def disable_broken_wandb():
 # Stamped on stub modules so a second call is a strict no-op and so third
 # parties can introspect ``__unsloth_stub__`` to detect our patch.
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
+_PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (
+    "ALL_PARALLEL_STYLES",
+    "ColwiseParallel",
+    "EmbeddingParallel",
+    "RowwiseParallel",
+)
+
+
+def _extract_peft_tensor_parallel_imported_symbols():
+    """Return names PEFT imports from ``transformers.integrations.tensor_parallel``.
+
+    Parsed from ``peft.utils.save_and_load._maybe_shard_state_dict_for_tp`` to
+    avoid a stale hard-coded symbol list.
+    """
+    try:
+        import peft.utils.save_and_load as _save_and_load
+    except Exception:
+        return ()
+    try:
+        sharding_fn = _save_and_load._maybe_shard_state_dict_for_tp
+    except AttributeError:
+        return ()
+
+    try:
+        source = inspect.getsource(sharding_fn)
+    except Exception as exc:
+        logger.debug("Failed to inspect PEFT tensor-parallel imports: %r", exc)
+        return _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+    import_pattern = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s*\((.*?)\)",
+        re.S,
+    )
+    import_pattern_single = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s+([A-Za-z_][A-Za-z0-9_\s,]*)",
+        re.S,
+    )
+    matches = import_pattern.findall(source)
+    if not matches:
+        matches = import_pattern_single.findall(source)
+
+    symbols = []
+    seen = set()
+    for match in matches:
+        pieces = re.split(r"[,\n]", match)
+        for piece in pieces:
+            candidate = piece.strip()
+            if not candidate:
+                continue
+            if candidate.endswith(")"):
+                candidate = candidate[:-1].strip()
+            if not candidate.isidentifier():
+                continue
+            if candidate in seen:
+                continue
+            symbols.append(candidate)
+            seen.add(candidate)
+    return tuple(symbols) or _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+
+def _raise_on_peft_tensor_parallel_symbol_use(symbol_name):
+    raise NotImplementedError(
+        f"Unsloth: cannot use unsupported "
+        f"`transformers.integrations.tensor_parallel.{symbol_name}` on this "
+        f"transformers installation. Please upgrade transformers before "
+        f"using PEFT tensor-parallel adapter sharding features."
+    )
+
+
+def fix_peft_transformers_tensor_parallel_import_compat():
+    """Add placeholders to ``transformers.integrations.tensor_parallel`` for symbols
+    PEFT expects but this transformers build omits, keeping existing objects.
+
+    Returns ``True`` when patched, ``False`` when no patch is needed, ``None``
+    when transformers / PEFT context is absent.
+    """
+    try:
+        tensor_parallel_spec = importlib.util.find_spec("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError:
+        return None
+    if tensor_parallel_spec is None:
+        return None
+
+    required_symbols = _extract_peft_tensor_parallel_imported_symbols()
+    if not required_symbols:
+        return None
+
+    try:
+        tp_mod = importlib.import_module("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "transformers",
+            "transformers.integrations",
+            "transformers.integrations.tensor_parallel",
+        }:
+            raise
+        return None
+    missing = [symbol for symbol in required_symbols if not hasattr(tp_mod, symbol)]
+    if not missing:
+        return False
+
+    def _install_symbol_placeholder(symbol_name):
+        if symbol_name == "ALL_PARALLEL_STYLES":
+
+            class _UnslothTensorParallelStyles(dict):
+                def __getitem__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def get(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __contains__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __iter__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __len__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelStyles()
+        else:
+
+            class _UnslothTensorParallelPlaceholder:
+                def __init__(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelPlaceholder
+            value.__name__ = f"UnslothTensorParallelPlaceholder{symbol_name}"
+
+        setattr(value, _UNSLOTH_STUB_SENTINEL, True)
+        setattr(tp_mod, symbol_name, value)
+
+    for symbol in missing:
+        _install_symbol_placeholder(symbol)
+
+    return True
 
 
 def _peft_stub_module_importable(name):
@@ -1509,14 +2613,10 @@ def _make_peft_stub_module(fullname):
     return mod
 
 
-def _install_transformers_conversion_mapping_stub():
-    """Stub the 3 symbols peft 0.19.x imports from this module at top level."""
-    name = "transformers.conversion_mapping"
-    existing = sys.modules.get(name)
-    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
-        return existing
-
-    mod = _make_peft_stub_module(name)
+def _build_transformers_conversion_mapping_stub():
+    """Build (not install) peft's 3 symbols, so the same objects can also
+    backfill a REAL module missing only some of them."""
+    mod = _make_peft_stub_module("transformers.conversion_mapping")
 
     # peft does ``.copy()`` + keyed assignment at module top; real dict suffices.
     mod._MODEL_TO_CONVERSION_PATTERN = {}
@@ -1531,7 +2631,17 @@ def _install_transformers_conversion_mapping_stub():
 
     mod.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping
     mod.get_model_conversion_mapping = get_model_conversion_mapping
+    return mod
 
+
+def _install_transformers_conversion_mapping_stub():
+    """Stub the 3 symbols peft 0.19.x imports from this module at top level."""
+    name = "transformers.conversion_mapping"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _build_transformers_conversion_mapping_stub()
     sys.modules[name] = mod
     # Attach to parent so attribute-style access matches a real submodule.
     parent = sys.modules.get("transformers")
@@ -1544,18 +2654,14 @@ def _install_transformers_conversion_mapping_stub():
     return mod
 
 
-def _install_transformers_core_model_loading_stub():
-    """Stub the 8 symbols peft 0.19.x imports from this module at top level.
+def _build_transformers_core_model_loading_stub():
+    """Build (not install) peft's 8 symbols, so the same objects can also
+    backfill a REAL module missing only some of them.
 
-    ``Concatenate`` and ``ConversionOps`` MUST be real classes (peft
-    subclasses them at module top); the rest only appear in runtime
-    ``isinstance`` / construction calls gated behind ``is_transformers_ge_v5``."""
-    name = "transformers.core_model_loading"
-    existing = sys.modules.get(name)
-    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
-        return existing
-
-    mod = _make_peft_stub_module(name)
+    ``Concatenate`` and ``ConversionOps`` MUST be real classes (peft subclasses
+    them at module top); the rest only appear in runtime calls gated behind
+    ``is_transformers_ge_v5``."""
+    mod = _make_peft_stub_module("transformers.core_model_loading")
 
     class ConversionOps:
         def convert(self, *args, **kwargs):  # pragma: no cover - inert stub
@@ -1624,7 +2730,17 @@ def _install_transformers_core_model_loading_stub():
     mod.WeightRenaming = WeightRenaming
     mod.dot_natural_key = dot_natural_key
     mod.rename_source_key = rename_source_key
+    return mod
 
+
+def _install_transformers_core_model_loading_stub():
+    """Install the core_model_loading stub, unless a real module is present."""
+    name = "transformers.core_model_loading"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _build_transformers_core_model_loading_stub()
     sys.modules[name] = mod
     parent = sys.modules.get("transformers")
     if parent is not None and not hasattr(parent, "core_model_loading"):
@@ -1633,6 +2749,84 @@ def _install_transformers_core_model_loading_stub():
         except Exception:
             pass
     return mod
+
+
+# Names peft's transformers_weight_conversion imports at module top level; a
+# real module missing ANY of them breaks that import as hard as an absent one.
+_PEFT_REQUIRED_SYMBOLS = {
+    "transformers.conversion_mapping": (
+        "_MODEL_TO_CONVERSION_PATTERN",
+        "get_checkpoint_conversion_mapping",
+        "get_model_conversion_mapping",
+    ),
+    "transformers.core_model_loading": (
+        "Concatenate",
+        "ConversionOps",
+        "MergeModulelist",
+        "Transpose",
+        "WeightConverter",
+        "WeightRenaming",
+        "dot_natural_key",
+        "rename_source_key",
+    ),
+}
+_PEFT_STUB_BUILDERS = {
+    "transformers.conversion_mapping": _build_transformers_conversion_mapping_stub,
+    "transformers.core_model_loading": _build_transformers_core_model_loading_stub,
+}
+
+
+def _backfill_missing_peft_symbols(name):
+    """Add to a REAL transformers submodule only the peft symbols it lacks.
+
+    transformers 5.0.0.dev0 ships ``conversion_mapping`` without
+    ``_MODEL_TO_CONVERSION_PATTERN``, so peft's top-level import raises
+    ImportError even though the module imports fine; stubbing it wholesale would
+    replace working transformers code. The donors are inert, which is right
+    where the symbol never existed but wrong for a transformers 5 that HAS
+    conversions and merely renamed one, hence the warning.
+
+    Strictly additive and idempotent. Returns the names added."""
+    try:
+        mod = importlib.import_module(name)
+    except Exception:
+        return ()
+    if getattr(mod, _UNSLOTH_STUB_SENTINEL, False):
+        return ()  # our own stub already provides the full set
+    missing = [s for s in _PEFT_REQUIRED_SYMBOLS[name] if not hasattr(mod, s)]
+    if not missing:
+        return ()
+    donor = _PEFT_STUB_BUILDERS[name]()
+    added = []
+    for symbol in missing:
+        try:
+            setattr(mod, symbol, getattr(donor, symbol))
+            added.append(symbol)
+        except Exception:
+            pass  # frozen or slotted module object
+    if added:
+        _warn_peft_symbols_backfilled(name, added)
+    return tuple(added)
+
+
+# An empty pattern is peft's own starting point; the rest stand in for real
+# upstream behaviour, so those are worth warning about.
+_PEFT_INERT_BACKFILL_IS_FINE = frozenset(("_MODEL_TO_CONVERSION_PATTERN",))
+
+
+def _warn_peft_symbols_backfilled(name, added):
+    """Say when an inert stand-in went into a module that is otherwise real."""
+    substantive = [s for s in added if s not in _PEFT_INERT_BACKFILL_IS_FINE]
+    if not substantive:
+        return
+    warnings.warn(
+        f"Unsloth: {name} is missing {', '.join(substantive)}, so peft could "
+        f"not be imported. Added inert stand-ins to get the import through; "
+        f"weight conversions that rely on them will be skipped. Upgrading "
+        f"transformers is the real fix.",
+        RuntimeWarning,
+        stacklevel = 2,
+    )
 
 
 def fix_peft_transformers_weight_conversion_import():
@@ -1691,8 +2885,31 @@ def fix_peft_transformers_weight_conversion_import():
         _install_transformers_core_model_loading_stub()
         patched_any = True
 
+    # Present but incomplete. transformers 5.x kept both modules and dropped
+    # names peft still imports at module top -- `cannot import name
+    # '_MODEL_TO_CONVERSION_PATTERN' from 'transformers.conversion_mapping'`.
+    # The stubs above only fire when a module is ABSENT, so that case fell
+    # through here and no-oped. Backfill the missing names onto the real
+    # module: strictly additive, so a transformers that still defines them is
+    # untouched, and nothing else on either side changes.
+    patched_any = _backfill_missing_conversion_symbols() or patched_any
+
+    # An importable submodule can still lack individual symbols; backfill just
+    # those names rather than replacing a real module wholesale.
+    backfilled = {}
+    for _submodule in _PEFT_REQUIRED_SYMBOLS:
+        added = _backfill_missing_peft_symbols(_submodule)
+        if added:
+            backfilled[_submodule] = added
+            patched_any = True
+    if backfilled:
+        logger.info(
+            "Unsloth: backfilled peft symbols missing from transformers: "
+            + "; ".join(f"{m}: {', '.join(s)}" for m, s in backfilled.items())
+        )
+
     if not patched_any:
-        # Real submodules present; failure was for some other reason.
+        # Real submodules present and complete; failure was for another reason.
         return False
 
     # Force a fresh import now that stubs are in place. Drop any cached
@@ -1713,6 +2930,404 @@ def fix_peft_transformers_weight_conversion_import():
         "transformers <5."
     )
     return True
+
+
+# What peft.utils.transformers_weight_conversion imports at module top. Kept
+# beside the stubs so the two lists cannot drift apart.
+_PEFT_CONVERSION_SYMBOLS = {
+    "transformers.conversion_mapping": (
+        "_MODEL_TO_CONVERSION_PATTERN",
+        "get_checkpoint_conversion_mapping",
+        "get_model_conversion_mapping",
+    ),
+    "transformers.core_model_loading": (
+        "Concatenate",
+        "ConversionOps",
+        "MergeModulelist",
+        "Transpose",
+        "WeightConverter",
+        "WeightRenaming",
+        "dot_natural_key",
+        "rename_source_key",
+    ),
+}
+
+# Of those, the ones peft calls rather than merely imports. The stubs are
+# deliberately inert: on transformers <5 the whole module is ours and peft's
+# converter never runs. Landing an inert body on a REAL transformers is a
+# different matter -- peft would call it and get a wrong answer, so these are
+# replaced by a placeholder that says what is wrong instead.
+_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
+    (
+        "transformers.core_model_loading.dot_natural_key",
+        "transformers.core_model_loading.rename_source_key",
+        "transformers.core_model_loading.WeightRenaming",
+        "transformers.core_model_loading.WeightConverter",
+        # `build_peft_weight_mapping` buckets its entries with
+        # `isinstance(op, Concatenate)` / `isinstance(op, MergeModulelist)` and
+        # builds `Transpose(dim0 = 0, dim1 = 1)` outright, so an inert stub does not
+        # merely fail to help: the isinstance arms go quiet and the conversion is
+        # skipped. `ConversionOps` stays import-only -- peft subclasses it at module
+        # top and never asks about instances of it.
+        "transformers.core_model_loading.Concatenate",
+        "transformers.core_model_loading.MergeModulelist",
+        "transformers.core_model_loading.Transpose",
+        "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
+        "transformers.conversion_mapping.get_model_conversion_mapping",
+    )
+)
+
+
+def _unsupported_conversion_symbol(qualified, donor_value = None):
+    """A stand-in that satisfies the import and refuses to answer wrongly.
+
+    Shaped like whatever it replaces: peft runs `isinstance(entry, X)` on the
+    class-valued names, so those stay classes -- never instantiable, which
+    makes the isinstance answer False, and False is right when the class does
+    not exist.
+    """
+    short = qualified.rsplit(".", 1)[-1]
+    message = (
+        f"Unsloth: this transformers does not provide {qualified}, which "
+        "peft.utils.transformers_weight_conversion calls to convert LoRA "
+        "weights. Unsloth supplied a placeholder so the import succeeds; "
+        "answering for it would silently mis-convert the adapter. Pin a "
+        "transformers that still exports it, or a peft that does not need it."
+    )
+    if isinstance(donor_value, type):
+        # `isinstance` has to raise, not answer False. peft buckets its
+        # conversion entries by type, and a placeholder that quietly matches
+        # nothing drops the operations instead of reporting that it cannot do
+        # the job. Subclassing still works: peft does `class PeftConcatenate
+        # (Concatenate)` at module top, and creating a class does not construct
+        # one.
+        class _RefusingMeta(type):
+            def __instancecheck__(cls, instance):
+                raise RuntimeError(message)
+
+        def _refuse_init(self, *args, **kwargs):
+            raise RuntimeError(message)
+
+        return _RefusingMeta(
+            short,
+            (object,),
+            {
+                "__init__": _refuse_init,
+                "__doc__": message,
+            },
+        )
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError(message)
+
+    _refuse.__name__ = _refuse.__qualname__ = short
+    _refuse.__doc__ = message
+    return _refuse
+
+
+# The model types peft actually acts on, and what it converts them as. Only two
+# base patterns reach a rewrite -- `_MOE_TARGET_MODULE_MAPPING` and
+# `_MOE_FUSED_TARGETS` are keyed on `mixtral` and `qwen2_moe` alone, and
+# `_convert_peft_config_moe` returns early for anything else -- so this is the
+# whole set of lookups that must not be answered with a silent None.
+# Snapshotted from transformers `conversion_mapping._MODEL_TO_CONVERSION_PATTERN`,
+# because the case this file handles is that map being gone. Names are the
+# reason it is a list and not a rule: `deepseek_v3`, `dots1`, `longcat_flash`,
+# `minimax`, `mellum`, `qwen3_next`, `solar_open` and `flex_olmo` are all fused
+# MoE and none of them say so.
+_PEFT_MOE_CONVERSION_PATTERNS = {
+    # The two base patterns map to themselves, and leaving them out was not the
+    # harmless omission it looked like: `mixtral` says nothing about MoE, so the
+    # substring hint answered the default for it -- the silent None this stand-in
+    # exists to prevent -- and the drift test failed outright on transformers
+    # 5.5.0, which pyproject permits. `qwen3_5_moe` is here for 5.3.0, where it
+    # is a separate key; the hint would catch that one, but only by its name.
+    "mixtral": "mixtral",
+    "qwen2_moe": "qwen2_moe",
+    "qwen3_5_moe": "qwen2_moe",
+    "minimax": "mixtral",
+    "minimax_m2": "mixtral",
+    "afmoe": "qwen2_moe",
+    "cohere2_moe": "qwen2_moe",
+    "deepseek_v2": "qwen2_moe",
+    "deepseek_v3": "qwen2_moe",
+    "deepseek_v32": "qwen2_moe",
+    "dots1": "qwen2_moe",
+    "ernie4_5_moe": "qwen2_moe",
+    "exaone_moe": "qwen2_moe",
+    "flex_olmo": "qwen2_moe",
+    "glm4_moe": "qwen2_moe",
+    "glm4_moe_lite": "qwen2_moe",
+    "glm4v_moe": "qwen2_moe",
+    "glm_moe_dsa": "qwen2_moe",
+    "hunyuan_v1_moe": "qwen2_moe",
+    "longcat_flash": "qwen2_moe",
+    "mellum": "qwen2_moe",
+    "olmoe": "qwen2_moe",
+    "qwen3_moe": "qwen2_moe",
+    "qwen3_next": "qwen2_moe",
+    "qwen3_omni_moe": "qwen2_moe",
+    "qwen3_omni_moe_thinker": "qwen2_moe",
+    "solar_open": "qwen2_moe",
+}
+
+# MoE-named model types whose conversion family is NOT one of the two fused ones,
+# so peft's `_convert_peft_config_moe` finds no `_MOE_TARGET_MODULE_MAPPING` entry
+# and returns without a rewrite. The substring hint below raised for all three
+# purely on the name, turning a load that works into a hard error. Every one is a
+# shipping model: `qwen3_5_moe_text` converts as `qwen3_5_text`, and both Granite
+# MoE variants as `granitemoe`. Checked before the hint, never instead of the
+# snapshot above, so a genuinely fused type still refuses.
+_PEFT_MOE_NAMED_NOT_FUSED = frozenset(
+    (
+        "granitemoehybrid",
+        "granitemoeshared",
+        "qwen3_5_moe_text",
+    )
+)
+
+# The other half of the same carve-out: MoE-named model types that are not in the
+# conversion map AT ALL. peft's `.get()` answers None for them and skips the target
+# rewrite, so a refusal here breaks an ordinary adapter load -- `qwen3_vl_moe` and
+# `lfm2_moe` are both supported models that the substring hint caught. Kept apart
+# from the set above so its upstream canary keeps comparing like with like: that
+# one is "in the map, mapped elsewhere", this one is "not in the map".
+#
+# Every `*moe*` / `*mixtral*` model type absent from `_MODEL_TO_CONVERSION_PATTERN`
+# in BOTH 5.3.0 and 5.5.0. A name absent from one only (`afmoe`, `qwen3_5_moe`)
+# stays fused: refusing a type that was fused costs an error message, answering
+# None for one is the silent mis-conversion this exists to prevent.
+_PEFT_MOE_NAMED_NOT_CONVERTED = frozenset(
+    (
+        "ernie4_5_vl_moe",
+        "glm4v_moe_text",
+        "glm4v_moe_vision",
+        "granitemoe",
+        "jetmoe",
+        "lfm2_moe",
+        "phimoe",
+        "qwen3_vl_moe",
+        "qwen3_vl_moe_text",
+    )
+)
+
+# How many of those pairs a candidate map has to agree with before we believe it
+# is the conversion map under a new name. Three, so a coincidence does not pass
+# and a version that has renamed or dropped a handful of model types still does.
+_CONVERSION_MAP_MATCHES = 3
+
+
+def _recover_conversion_pattern_map(real):
+    """Find the model-type map under whatever name this transformers uses.
+
+    peft copies this dict and looks model families up in it, so an empty one
+    is not a harmless placeholder: `_convert_peft_config_moe` misses the
+    lookup and leaves legacy LoRA targets unconverted, with no error. The most
+    likely reason for the name to disappear is a rename, so go by shape --
+    a non-empty module-level `dict[str, str]` -- rather than by name.
+
+    Shape alone is not enough to install one, though. A module that renames the
+    map is just as likely to carry some other `dict[str, str]` (an alias table,
+    a doc map), and the largest of those is not the conversion map. So a
+    candidate also has to agree with the known model-type -> pattern pairs
+    above, and the best agreement wins rather than the biggest dict. Nothing
+    convincing means nothing recovered: the caller then installs the map that
+    raises on a MoE lookup, which is the safe answer, not the wrong one.
+    """
+    best = None
+    best_matches = 0
+    for attribute in vars(real).values():
+        if not isinstance(attribute, dict) or not attribute:
+            continue
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in attribute.items()):
+            continue
+        matches = sum(1 for k, v in _PEFT_MOE_CONVERSION_PATTERNS.items() if attribute.get(k) == v)
+        if matches < _CONVERSION_MAP_MATCHES:
+            continue
+        if matches > best_matches or (matches == best_matches and len(attribute) > len(best)):
+            best, best_matches = attribute, matches
+    return best
+
+
+_MISSING = object()
+
+
+class _UnavailableConversionPatternMap(dict):
+    """A conversion map that answers only for entries someone put in it, and raises otherwise.
+
+    Stands in when transformers has REMOVED the model-type map rather than renamed it, so
+    there is nothing to recover. Importing peft's converter still works, which is the point
+    of the backfill, but a lookup we cannot answer honestly raises where it happens instead
+    of returning None and letting the adapter load mis-converted.
+
+    ``copy`` returns another one of these because peft copies the map at import
+    (`_MODEL_TO_CONVERSION_PATTERN = _MODEL_TO_CONVERSION_PATTERN.copy()`) and a plain dict
+    copy would be silent again. Writes still work, so peft's own `["mixtral"] = "mixtral"`
+    lands and answers normally.
+    """
+
+    _MESSAGE = (
+        "Unsloth: this transformers exports no model-type conversion map, so peft cannot "
+        "convert legacy LoRA targets for fused MoE checkpoints. Re-save the adapter with a "
+        "transformers that still ships transformers.conversion_mapping, or load it with a "
+        "peft that does not need the conversion."
+    )
+
+    # Only fused-MoE lookups are unsafe to answer with a silent None. peft reaches
+    # `_convert_peft_config_moe` for ANY model type that has a checkpoint conversion
+    # mapping, not just MoE ones, and for those a None is the correct answer: the function
+    # returns without a MoE target rewrite, which is what it would do with the real map
+    # too. Raising for all of them would break ordinary adapter loads to guard a case they
+    # are not in.
+    #
+    # The snapshot is the list, not a rule over the name: eleven of the twenty-four fused
+    # MoE model types say nothing about MoE in their names (`deepseek_v3`, `dots1`,
+    # `longcat_flash`, `minimax`, `mellum`, `qwen3_next`, `solar_open`, `flex_olmo` among
+    # them), so a substring test answered the default for exactly the checkpoints this
+    # exists to protect. The substring hints stay on top of it, for a fused MoE model type
+    # added after this snapshot that does follow the naming convention.
+    _MOE_HINTS = ("moe", "mixtral")
+
+    def _is_moe(self, key):
+        name = str(key).lower()
+        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+            return True
+        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+            return False
+        return any(hint in name for hint in self._MOE_HINTS)
+
+    def _answer(self, key, default):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if self._is_moe(key):
+            raise RuntimeError(self._MESSAGE)
+        return default
+
+    def copy(self):
+        new = type(self)()
+        dict.update(new, self)
+        return new
+
+    def get(
+        self,
+        key,
+        default = None,
+    ):
+        return self._answer(key, default)
+
+    def __getitem__(self, key):
+        answer = self._answer(key, _MISSING)
+        if answer is _MISSING:
+            raise KeyError(key)
+        return answer
+
+
+def _backfill_conversion_symbols_once(builders, added):
+    """One pass over the modules. Returns True if any was left unimportable.
+
+    Split out so the caller can run it again: a module that could not be
+    imported this time may import fine once a module later in the pass has been
+    backfilled.
+    """
+    skipped = False
+    for name, symbols in _PEFT_CONVERSION_SYMBOLS.items():
+        real = sys.modules.get(name)
+        if real is None:
+            try:
+                real = importlib.import_module(name)
+            except Exception:
+                skipped = True
+                continue
+        if getattr(real, _UNSLOTH_STUB_SENTINEL, False):
+            continue  # ours already, and complete
+        missing = [s for s in symbols if not hasattr(real, s)]
+        if not missing:
+            continue
+        # Build the stub off to the side rather than installing it, so the real
+        # module keeps its identity and everything else it exports.
+        saved = sys.modules.pop(name, None)
+        try:
+            donor = builders[name]()
+        finally:
+            if saved is not None:
+                sys.modules[name] = saved
+            else:
+                sys.modules.pop(name, None)
+        for symbol in missing:
+            qualified = f"{name}.{symbol}"
+            if symbol == "_MODEL_TO_CONVERSION_PATTERN":
+                # peft copies this and looks families up in it, so the stub's
+                # empty dict silently drops every alias. Recover the real one.
+                recovered = _recover_conversion_pattern_map(real)
+                if recovered is None:
+                    logger.warning(
+                        "Unsloth: this transformers exports no model-type "
+                        "conversion map, so peft cannot convert legacy LoRA "
+                        "targets for fused MoE checkpoints. Adapters for other "
+                        "architectures are unaffected."
+                    )
+                # An empty dict is the one shape that fails SILENTLY. peft does
+                # `_MODEL_TO_CONVERSION_PATTERN.copy()` at import and then
+                # `.get(model_type, None)`, and a None makes `_convert_peft_config_moe`
+                # return early, so every affected adapter loads with its legacy targets
+                # unconverted and no message anywhere. Every other runtime symbol here is
+                # backfilled as fail-on-use for exactly that reason; this one now matches.
+                setattr(
+                    real,
+                    symbol,
+                    dict(recovered) if recovered else _UnavailableConversionPatternMap(),
+                )
+                added.append(qualified)
+                continue
+            if qualified in _PEFT_CONVERSION_RUNTIME_SYMBOLS:
+                # peft calls this one. The stub bodies exist to make the import
+                # work on transformers <5, where peft's converter never runs;
+                # on a real transformers it would run and answer wrongly.
+                setattr(
+                    real,
+                    symbol,
+                    _unsupported_conversion_symbol(qualified, getattr(donor, symbol, None)),
+                )
+                added.append(qualified)
+                continue
+            if hasattr(donor, symbol):
+                setattr(real, symbol, getattr(donor, symbol))
+                added.append(qualified)
+    return skipped
+
+
+def _backfill_missing_conversion_symbols():
+    """Add only the names a real module is missing, taken from our own stub.
+
+    Never replaces a module and never overwrites a name transformers defines,
+    so this is a no-op on every release that still exports them.
+    """
+    builders = {
+        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+    }
+    added = []
+    # One pass is not enough when the two drifts coincide. conversion_mapping
+    # imports names from core_model_loading at its own module top, so while
+    # core_model_loading is still missing them, importing conversion_mapping
+    # raises and the pass skips it. Backfilling core_model_loading later in the
+    # same pass unblocks that import, but nothing comes back for it, and
+    # _gpu_init calls this guard once, so an installation carrying both drifts
+    # stayed broken. Repeat while a pass both adds a symbol and leaves a module
+    # unimportable; each pass adds at least one symbol, so the bound is the
+    # number of modules and there is no way to spin.
+    for _attempt in range(len(_PEFT_CONVERSION_SYMBOLS) + 1):
+        before = len(added)
+        skipped = _backfill_conversion_symbols_once(builders, added)
+        if not skipped or len(added) == before:
+            break
+    if added:
+        logger.info(
+            "Unsloth: backfilled %s so peft.utils."
+            "transformers_weight_conversion imports on this transformers.",
+            ", ".join(added),
+        )
+    return bool(added)
 
 
 def patch_peft_weight_converter_compatibility():
@@ -2349,20 +3964,154 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # Also catch CUDA shared library mismatches during vllm import
-        # e.g. "libcudart.so.12: cannot open shared object file"
-        if (
-            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
-        ) and "cannot open shared object file" in message:
+        # Forced extension load raises the bare loader error (no "vllm._C"
+        # wrapper); match any .so failure as callers feed only vLLM imports.
+        if "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
 
 
+_VLLM_RELEASES_URL = "https://github.com/vllm-project/vllm/releases"
+_VLLM_INSTALL_DOCS_URL = "https://docs.vllm.ai/en/latest/getting_started/installation/gpu/"
+
+# A plain release version, e.g. "0.23.0". Anything else (rc / dev / post builds)
+# has no matching GitHub release asset, so we never name a wheel for it.
+_VLLM_RELEASE_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
+
+# Normalises platform.machine() onto the arch spelling used in wheel names.
+_VLLM_WHEEL_ARCHES = {
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "x64": "x86_64",
+    "aarch64": "aarch64",
+    "arm64": "aarch64",
+}
+
+
+def _both_arches(manylinux_tag):
+    return {"x86_64": manylinux_tag, "aarch64": manylinux_tag}
+
+
+# vLLM ships exactly one CUDA build per release as the unsuffixed "default" wheel
+# and the other under a "+cuXXX" local version tag. Which CUDA major is the default
+# flipped at 0.20.0 (release notes: "CUDA 13.0 default"), the "+cuXXX" tag has been
+# cu130 and then cu129, and the manylinux tag has moved manylinux1 -> 2_31 -> 2_35 ->
+# 2_34 -> 2_24 -> 2_28, differing between the two wheels of the same release. So the
+# asset name cannot be derived from a formula: vLLM's own docs document a
+# "+cu${CUDA_VERSION}" pattern that 404s (vllm-project/vllm#37847), and no release
+# has ever published a "+cu128" wheel.
+#
+# Each entry is (min_version, max_version, {cuda_major: (local_tag, {arch: manylinux})}),
+# transcribed from the actual release assets. A CUDA major or arch that is absent was
+# never published for that range. Extend the table when a new vLLM release lands; until
+# then newer versions fall back to the release page instead of a fabricated filename.
+_VLLM_WHEEL_ASSETS = (
+    (
+        "0.11.0",
+        "0.11.0",
+        {12: ("", {"x86_64": "manylinux1", "aarch64": "manylinux2014"})},
+    ),
+    (
+        "0.11.1",
+        "0.11.2",
+        {
+            12: ("", {"x86_64": "manylinux1", "aarch64": "manylinux2014"}),
+            13: ("cu130", {"x86_64": "manylinux1"}),
+        },
+    ),
+    (
+        "0.12.0",
+        "0.12.0",
+        {
+            12: ("", _both_arches("manylinux_2_31")),
+            13: ("cu130", {"x86_64": "manylinux_2_31"}),
+        },
+    ),
+    (
+        "0.13.0",
+        "0.19.1",
+        {
+            12: ("", _both_arches("manylinux_2_31")),
+            13: ("cu130", _both_arches("manylinux_2_35")),
+        },
+    ),
+    (
+        "0.20.0",
+        "0.20.2",
+        {
+            12: ("cu129", _both_arches("manylinux_2_31")),
+            13: ("", _both_arches("manylinux_2_35")),
+        },
+    ),
+    (
+        "0.21.0",
+        "0.21.0",
+        {
+            12: ("cu129", _both_arches("manylinux_2_34")),
+            13: ("", _both_arches("manylinux_2_24")),
+        },
+    ),
+    (
+        "0.22.0",
+        "0.26.0",
+        {
+            12: ("cu129", _both_arches("manylinux_2_28")),
+            13: ("", _both_arches("manylinux_2_28")),
+        },
+    ),
+)
+
+# From this release on, the default (unsuffixed) wheel is the CUDA 13 build and the
+# CUDA 12 build carries "+cu129", so we can still name the right variant for a release
+# newer than the table above even though its manylinux tag is unknown.
+_VLLM_CUDA13_DEFAULT_SINCE = "0.20.0"
+
+
+def _get_vllm_wheel_url(vllm_version, cuda_major, cpu_arch):
+    """URL of the published vLLM wheel for this release/CUDA/arch, else None."""
+    if not _VLLM_RELEASE_VERSION_RE.match(vllm_version or ""):
+        return None
+    arch = _VLLM_WHEEL_ARCHES.get(str(cpu_arch).lower())
+    if arch is None:
+        return None
+    try:
+        wanted = TrueVersion(vllm_version)
+    except Exception:
+        return None
+    for low, high, by_cuda in _VLLM_WHEEL_ASSETS:
+        if not TrueVersion(low) <= wanted <= TrueVersion(high):
+            continue
+        local_tag, manylinux_by_arch = by_cuda.get(cuda_major, (None, {}))
+        manylinux = manylinux_by_arch.get(arch)
+        if manylinux is None:
+            return None
+        local = f"+{local_tag}" if local_tag else ""
+        return (
+            f"{_VLLM_RELEASES_URL}/download/v{vllm_version}/"
+            f"vllm-{vllm_version}{local}-cp38-abi3-{manylinux}_{arch}.whl"
+        )
+    return None
+
+
+def _get_vllm_wheel_variant_hint(vllm_version, cuda_major):
+    """Which wheel of a release to pick, when we cannot name the exact file."""
+    if not _VLLM_RELEASE_VERSION_RE.match(vllm_version or ""):
+        return None
+    try:
+        if TrueVersion(vllm_version) < TrueVersion(_VLLM_CUDA13_DEFAULT_SINCE):
+            return None
+    except Exception:
+        return None
+    if cuda_major >= 13:
+        return "the default wheel (the one with no `+cuXXX` suffix)"
+    if cuda_major == 12:
+        return "the `+cu129` wheel"
+    return None
+
+
 def _get_vllm_cuda_mismatch_message(error):
     """If the error is a CUDA version mismatch, return a helpful install message."""
-    import re as _re
-
     checked = set()
     current = error
     wanted_cuda = None
@@ -2370,9 +4119,9 @@ def _get_vllm_cuda_mismatch_message(error):
         checked.add(id(current))
         message = str(current)
         # Extract the CUDA version vllm was built for, e.g. "libcudart.so.12"
-        match = _re.search(r"libcudart\.so\.(\d+)", message)
+        match = re.search(r"libcudart\.so\.(\d+)", message)
         if match:
-            wanted_cuda = match.group(1)
+            wanted_cuda = int(match.group(1))
             break
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     if wanted_cuda is None:
@@ -2380,38 +4129,64 @@ def _get_vllm_cuda_mismatch_message(error):
 
     # Detect what CUDA version is actually available on the system
     system_cuda_display = None  # Human-readable, e.g. "13.0"
-    system_cuda_tag = None  # For wheel URL, e.g. "130"
+    system_cuda_major = None
     try:
         import torch
         cuda_version = torch.version.cuda  # e.g. "13.0" or "12.8"
         if cuda_version:
             system_cuda_display = cuda_version
-            system_cuda_tag = cuda_version.replace(".", "")[:3]  # "130" or "128"
+            system_cuda_major = int(str(cuda_version).split(".")[0])
     except Exception:
         pass
 
-    if system_cuda_tag is None or system_cuda_tag.startswith(wanted_cuda):
+    if system_cuda_major is None or system_cuda_major == wanted_cuda:
         return None  # Not a mismatch or can't determine
 
     try:
         vllm_version = importlib_version("vllm").split("+")[0]
     except Exception:
-        vllm_version = "VLLM_VERSION"
+        vllm_version = None
 
+    system = ""
     cpu_arch = "x86_64"
     try:
         import platform
+        system = platform.system()
         cpu_arch = platform.machine()
     except Exception:
         pass
 
-    return (
+    header = (
         f"Unsloth: vLLM was built for CUDA {wanted_cuda} but this system has "
-        f"CUDA {system_cuda_display}. Please reinstall vLLM with the correct CUDA version:\n"
-        f"\n"
-        f"  uv pip install https://github.com/vllm-project/vllm/releases/download/"
-        f"v{vllm_version}/vllm-{vllm_version}+cu{system_cuda_tag}-cp38-abi3-"
-        f"manylinux_2_35_{cpu_arch}.whl"
+        f"CUDA {system_cuda_display}. "
+    )
+
+    # vLLM only publishes CUDA wheels for Linux (Windows users go through WSL).
+    if system and system != "Linux":
+        return (
+            f"{header}Please reinstall a vLLM build for CUDA {system_cuda_major}; "
+            f"vLLM publishes CUDA wheels for Linux only, so see\n\n  "
+            f"{_VLLM_INSTALL_DOCS_URL}"
+        )
+
+    wheel_url = _get_vllm_wheel_url(vllm_version, system_cuda_major, cpu_arch)
+    if wheel_url is not None:
+        return (
+            f"{header}Please reinstall vLLM with the correct CUDA version:\n\n  "
+            f"uv pip install {wheel_url}"
+        )
+
+    # Unknown / unmapped release: never invent a filename, point at the real assets.
+    hint = _get_vllm_wheel_variant_hint(vllm_version, system_cuda_major)
+    hint = f"Download {hint} for your platform" if hint else "Pick the wheel for your platform"
+    release_page = (
+        f"{_VLLM_RELEASES_URL}/tag/v{vllm_version}"
+        if _VLLM_RELEASE_VERSION_RE.match(vllm_version or "")
+        else _VLLM_RELEASES_URL
+    )
+    return (
+        f"{header}Please reinstall a vLLM build for CUDA {system_cuda_major}. "
+        f"{hint} from\n\n  {release_page}"
     )
 
 
@@ -2545,6 +4320,16 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
+# vLLM's compiled extensions. A CUDA-major ABI break hits all of them, so
+# probing the eagerly-loaded _C and its siblings reliably trips it.
+_VLLM_COMPILED_EXTENSIONS = (
+    "vllm._C",
+    "vllm._C_stable_libtorch",
+    "vllm._moe_C",
+    "vllm._rocm_C",
+)
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken."""
     global VLLM_BROKEN
@@ -2562,6 +4347,15 @@ def disable_broken_vllm(error = None):
 
         try:
             import vllm  # noqa: F401
+
+            # Lazy vLLM lets a bare `import vllm` succeed even when an extension
+            # is ABI-broken; force-load each to surface the .so failure here.
+            # A missing one raises ModuleNotFoundError (skipped below).
+            for _ext in _VLLM_COMPILED_EXTENSIONS:
+                try:
+                    importlib.import_module(_ext)
+                except ModuleNotFoundError:
+                    pass
             return False
         except Exception as import_error:
             failure = import_error
@@ -2693,7 +4487,7 @@ def maybe_set_windows_rocm_bnb_version():
 
     No-op unless ALL of: Windows, a real HIP torch build (env hints like
     HIP_PATH do not count), a ROCm DLL installed, and no explicit user value.
-    Linux is untouched. Values seeded by Studio's venv sitecustomize.py
+    Linux is untouched. Values seeded by Unsloth's venv sitecustomize.py
     (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``) are
     redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
     opts out and drops a seeded default. Returns the value set, else None.
@@ -2814,3 +4608,796 @@ def patch_accelerate_recursively_apply():
                         setattr(mod, "find_device", _patched_find_device)
                     except Exception:
                         pass
+
+
+# The one ImportError worth answering False to. Matching "torchao" anywhere is
+# too wide: "No module named 'torchao.quantization'" and a missing
+# libtorchao_ops_cuda.so also say it, and both mean genuinely broken rather than
+# merely old, so they must keep propagating. Match the version complaint itself.
+# peft's current wording is the first alternative; the rest are how other
+# libraries phrase the same sentence, so an upstream reword does not silently
+# turn this back into a raise.
+_TORCHAO_STALE_VERSION_ERROR = re.compile(
+    r"incompatible version of torchao"
+    r"|torchao.{0,120}?only versions?\s+(?:above|below|>=|<=)"
+    r"|(?:requires|needs|expected)\s+torchao\s*[><=!]",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def fix_peft_stale_torchao_import_error():
+    """Stop an old torchao from aborting LoRA creation that never uses it.
+
+    ``peft.import_utils.is_torchao_available`` returns False when torchao is
+    absent but raises when it is installed and older than peft's minimum, and
+    ``dispatch_torchao`` calls it for every LoRA layer, so one stale optional
+    dependency ends ``get_peft_model``. "Installed but unusable" is closer to
+    "not installed" than to "fatal", so answer False and warn once.
+
+    Returns True when patched, False when no patch is needed, None when peft
+    is absent.
+    """
+    try:
+        import peft.import_utils as peft_import_utils
+    except Exception:
+        return None
+
+    original = getattr(peft_import_utils, "is_torchao_available", None)
+    if original is None:
+        return None
+    if getattr(original, "__unsloth_patched__", False):
+        return False
+
+    warned = [False]
+
+    @functools.wraps(original)
+    def is_torchao_available(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except ImportError as exc:
+            # Only the version complaint; any other torchao import failure is
+            # a real problem and must still surface.
+            message = str(exc)
+            if _TORCHAO_STALE_VERSION_ERROR.search(message) is None:
+                raise
+            if not warned[0]:
+                warned[0] = True
+                logger.warning(
+                    f"Unsloth: Ignoring an unusable torchao so LoRA can still "
+                    f"be built ({message}). Run "
+                    f"`pip install --upgrade torchao` if you need torchao "
+                    f"quantization."
+                )
+            return False
+
+    is_torchao_available.__unsloth_patched__ = True
+
+    patched = False
+    try:
+        peft_import_utils.is_torchao_available = is_torchao_available
+        patched = True
+    except Exception:
+        return False
+
+    # `from peft.import_utils import is_torchao_available` binds the original
+    # into each importing module, so patching import_utils alone would leave
+    # peft.tuners.lora.torchao, the actual caller, still raising.
+    for mod_name, mod in tuple(sys.modules.items()):
+        if not mod_name.startswith("peft") or mod is None:
+            continue
+        if getattr(mod, "is_torchao_available", None) is original:
+            try:
+                setattr(mod, "is_torchao_available", is_torchao_available)
+            except Exception:
+                pass
+    return patched
+
+
+# Every name torchao 0.18.0 imports from torch.nn.functional, from
+#     grep -rh "from torch.nn.functional import" torchao/
+# scaled_grouped_mm is on the path of a plain `import torchao`.
+# scaled_dot_product_attention is listed for completeness only: it exists on
+# every supported torch, and the loop below skips symbols torch provides.
+_TORCHAO_TORCH_SYMBOLS = (
+    "ScalingType",
+    "SwizzleType",
+    "scaled_grouped_mm",
+    "scaled_dot_product_attention",
+)
+
+
+def _make_torch_symbol_placeholder(name, detail):
+    """A stand-in that imports cleanly and refuses to be used.
+
+    Pretending to be a real enum would be worse than the crash it replaces: it
+    could hand a float8 path a meaningless value. torchao 0.17 left these names
+    undefined on older torch anyway, so anything wanting them already raised.
+    """
+    message = (
+        f"Unsloth: `torch.nn.functional.{name}` does not exist in this torch. "
+        f"{detail} Unsloth supplied a placeholder so that importing torchao "
+        f"(and therefore unsloth) still works, but this symbol cannot be used. "
+        f"Install `torchao<0.18` to use float8/MX features on this torch, or "
+        f"upgrade torch."
+    )
+
+    class _Meta(type):
+        def __getattr__(cls, item):
+            raise RuntimeError(message)
+
+        def __call__(cls, *args, **kwargs):
+            raise RuntimeError(message)
+
+        def __repr__(cls):
+            return f"<unsloth placeholder for torch.nn.functional.{name}>"
+
+    placeholder = _Meta(name, (), {"__doc__": message})
+    # So we can recognise our own object later and never double-patch.
+    type.__setattr__(placeholder, "__unsloth_placeholder__", True)
+    return placeholder
+
+
+# The same skew one layer down: torchao 0.18 does `@implements([aten.
+# _grouped_mm.default])` at module scope in float8/float8_tensor.py, and that
+# op only arrived in torch 2.8, so older torch raises AttributeError on the
+# lookup. The torch.nn.functional names above do not help; this goes through
+# torch.ops, so the schema itself has to exist.
+_ATEN_GROUPED_MM_SCHEMA = (
+    "_grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None, "
+    "Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor"
+)
+
+# Module level on purpose: a torch.library.Library deregisters everything it
+# defined once collected, so a local would undo itself.
+_aten_grouped_mm_library = None
+
+
+def _torch_op_is_missing(namespace, name):
+    """Is `torch.ops.<namespace>.<name>` absent on this torch?
+
+    Only a plain AttributeError counts: anything else means we could not tell,
+    and when unsure we must not register into the aten namespace.
+    """
+    try:
+        import torch
+        ns = getattr(torch.ops, namespace)
+    except Exception:
+        return False
+    try:
+        getattr(ns, name)
+    except AttributeError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def _ensure_aten_grouped_mm(detail):
+    """Define an unusable `aten::_grouped_mm` so torchao's decorator resolves.
+
+    No real implementation on purpose: torchao only wants somewhere to hang a
+    float8 handler this torch never dispatches to, so the schema is the whole
+    requirement, and a silently wrong grouped matmul would be worse than the
+    crash it replaces. Calling it raises and says why.
+    """
+    global _aten_grouped_mm_library
+    if _aten_grouped_mm_library is not None:
+        return False
+    if not _torch_op_is_missing("aten", "_grouped_mm"):
+        return False
+
+    message = (
+        f"Unsloth: `torch.ops.aten._grouped_mm` does not exist in this torch. "
+        f"{detail} Unsloth registered a placeholder schema so that importing "
+        f"torchao (and therefore unsloth) still works, but the operator cannot "
+        f"be used. Upgrade to torch >= 2.8 for grouped matmul, or install "
+        f"`torchao<0.18`."
+    )
+
+    def _refuse(
+        self,
+        mat2,
+        offs = None,
+        bias = None,
+        out_dtype = None,
+    ):
+        raise RuntimeError(message)
+
+    try:
+        import torch
+
+        # FRAGMENT adds to a namespace someone else owns; DEF would try to
+        # claim "aten" outright and be rejected.
+        library = torch.library.Library("aten", "FRAGMENT")
+        library.define(_ATEN_GROUPED_MM_SCHEMA)
+        library.impl("_grouped_mm", _refuse, "CompositeExplicitAutograd")
+    except Exception:
+        # A torch that will not let us register keeps its own error.
+        return False
+
+    _aten_grouped_mm_library = library
+    return True
+
+
+def fix_torchao_torch_symbol_skew():
+    """Let `import unsloth` survive a torchao built for a newer torch.
+
+    torchao 0.17 guarded the import behind `torch_version_at_least("2.10.0")`;
+    0.18.0 left it unguarded at module level, so torch below 2.10 raises
+    "cannot import name 'ScalingType' from 'torch.nn.functional'" while
+    importing transformers, naming neither torchao nor torch.
+
+    Narrow by design: only fires when torchao is installed, its version has
+    the bug, and torch really lacks the symbol. Nothing is masked otherwise.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        torchao_version = importlib_version("torchao")
+    except Exception:
+        return False
+    try:
+        # 0.17 and earlier guard their own import.
+        if Version(torchao_version) < Version("0.18.0"):
+            return False
+    except Exception:
+        return False
+
+    try:
+        import torch
+        import torch.nn.functional as F
+        torch_version = str(torch.__version__)
+    except Exception:
+        return False
+
+    detail = (
+        f"torchao {torchao_version} imports it unconditionally, but "
+        f"torch {torch_version} does not provide it (it arrived in "
+        f"torch 2.10)."
+    )
+
+    patched = []
+    for name in _TORCHAO_TORCH_SYMBOLS:
+        if hasattr(F, name):
+            continue  # real torch symbol, or already placed by us
+        try:
+            setattr(F, name, _make_torch_symbol_placeholder(name, detail))
+            patched.append(name)
+        except Exception:
+            pass
+    if patched:
+        logger.info(
+            "Unsloth: torchao %s needs torch.nn.functional.%s, which torch %s "
+            "does not have. Adding an unusable placeholder so the import "
+            "succeeds; install torchao<0.18 to use float8/MX features.",
+            torchao_version,
+            "/".join(patched),
+            torch_version,
+        )
+
+    # The aten-op half of the same skew. Independent of the loop above: a torch
+    # can have every functional symbol and still lack the operator, or vice
+    # versa, so neither result gates the other.
+    op_detail = (
+        f"torchao {torchao_version} registers a handler for it at "
+        f"import time, but torch {torch_version} does not provide it "
+        f"(it arrived in torch 2.8)."
+    )
+    if _ensure_aten_grouped_mm(op_detail):
+        patched.append("aten::_grouped_mm")
+        logger.info(
+            "Unsloth: torchao %s registers a handler for torch.ops.aten."
+            "_grouped_mm, which torch %s does not have. Registering an "
+            "unusable placeholder schema so the import succeeds.",
+            torchao_version,
+            torch_version,
+        )
+    return bool(patched)
+
+
+# vLLM inspects model architectures in a separate process, which imports
+# torchao itself, never sees a parent monkey-patch, and fails with the same
+# ImportError as the generic "Model architectures ['...'] failed to be
+# inspected".
+#
+# `sitecustomize` is the one hook that reaches a process we do not launch:
+# `site` imports it at interpreter startup off PYTHONPATH, which subprocesses
+# inherit. A `.pth` would also work, but only inside a real site directory,
+# which a library has no business writing into.
+
+_SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
+
+
+def _subprocess_fix_directory():
+    """A private directory for the generated sitecustomize.
+
+    Everything on PYTHONPATH runs in every subprocess and /tmp is shared on
+    Linux, so a fixed name there would let whoever created it first run code as
+    everyone else. Scope it per user and refuse a path this user does not own.
+
+    Ownership alone is not enough: ``exist_ok = True`` does not apply ``mode``
+    to an existing directory, so one left group- or world-writable stays that
+    way and anyone who can write into it can replace the ``sitecustomize.py``.
+    Take the write bits away, and refuse the directory if they will not go.
+    """
+    import stat
+    import tempfile
+
+    name = _SUBPROCESS_FIX_DIRNAME
+    try:
+        name += "-%d" % os.getuid()
+    except AttributeError:
+        name += "-" + (os.environ.get("USERNAME") or "user")
+    directory = os.path.join(tempfile.gettempdir(), name)
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
+    if hasattr(os, "getuid"):
+        info = os.lstat(directory)
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError(
+                "refusing a subprocess fix directory owned by another user: " + directory
+            )
+        # chmod then re-read: some network and FUSE mounts ignore mode bits
+        # and report success without changing anything.
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            try:
+                os.chmod(directory, 0o700)
+            except Exception:
+                pass
+            info = os.lstat(directory)
+            if stat.S_IMODE(info.st_mode) & 0o022:
+                raise RuntimeError(
+                    "refusing a group- or world-writable subprocess fix "
+                    "directory (mode %04o): %s" % (stat.S_IMODE(info.st_mode), directory)
+                )
+    return directory
+
+
+def _subprocess_sitecustomize_source():
+    """The sitecustomize we hand to child processes.
+
+    It chains rather than shadows: `sitecustomize` is a single global name that
+    other things legitimately install, so replacing it would disable them in
+    every subprocess. Ours runs the next one on sys.path first, then the fix.
+    """
+    return '''"""Written by unsloth. Makes `import torchao` survive a torch that
+predates the symbols torchao 0.18 imports unconditionally, in processes
+unsloth did not launch (notably vLLM's model-architecture inspector)."""
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _same_path(a, b):
+    """Two spellings of one file or directory, symlinks included."""
+    try:
+        if os.path.samefile(a, b):
+            return True
+    except Exception:
+        pass
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
+def _chain_to_the_real_sitecustomize():
+    """Do not shadow somebody else's sitecustomize."""
+    import importlib.util
+    from importlib.machinery import PathFinder
+    for entry in sys.path:
+        # Ask the import system rather than probing for a filename, so the
+        # package (`sitecustomize/__init__.py`) and .pyc forms chain too.
+        try:
+            # Canonical comparison, not a string one: a symlink alias of our
+            # own directory also on sys.path would otherwise look like a
+            # different location, and the two spellings would chain to each
+            # other until the stack ran out.
+            if not entry or _same_path(entry, _HERE):
+                continue
+            spec = PathFinder.find_spec("sitecustomize", [entry])
+        except Exception:
+            continue
+        if spec is None or spec.loader is None:
+            continue
+        # Second guard for the same hazard, in case the alias is the file
+        # rather than the directory: never chain to this very hook.
+        try:
+            origin = getattr(spec, "origin", None)
+            if origin and (_same_path(origin, __file__)
+                           or _same_path(os.path.dirname(origin), _HERE)):
+                continue
+        except Exception:
+            continue
+        try:
+            mod = importlib.util.module_from_spec(spec)
+            # A package needs its own name in sys.modules for `from . import`
+            # to resolve, and it needs it AFTER initialization too: a callback
+            # it registers (atexit, a hook) does its relative imports later,
+            # and would find our non-package module under `sitecustomize` and
+            # fail. So leave the real one there on success -- which is also
+            # what `import sitecustomize` returns when we are not installed --
+            # and only put the previous entry back if it failed to load.
+            previous = sys.modules.get("sitecustomize")
+            sys.modules["sitecustomize"] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except BaseException:
+                if previous is None:
+                    sys.modules.pop("sitecustomize", None)
+                else:
+                    sys.modules["sitecustomize"] = previous
+                raise
+            break
+        except Exception:
+            # A broken sitecustomize elsewhere must not stop us, and must not
+            # take down every subprocess either.
+            break
+
+
+def _apply():
+    import importlib.metadata as md
+    try:
+        version = md.version("torchao")
+    except Exception:
+        return
+    try:
+        major, minor = (int("".join(c for c in p if c.isdigit()) or 0)
+                        for p in str(version).split(".")[:2])
+        if (major, minor) < (0, 18):
+            return
+    except Exception:
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+    except Exception:
+        return
+    detail = ("torchao %s imports it unconditionally, but torch %s does not "
+              "provide it (it arrived in torch 2.10)." % (version, torch.__version__))
+    for name in ("ScalingType", "SwizzleType", "scaled_grouped_mm",
+                 "scaled_dot_product_attention"):
+        if hasattr(F, name):
+            continue
+        message = ("Unsloth: `torch.nn.functional.%s` does not exist in this "
+                   "torch. %s Unsloth supplied a placeholder so that importing "
+                   "torchao still works, but this symbol cannot be used. "
+                   "Install `torchao<0.18`, or upgrade torch." % (name, detail))
+
+        def _make(msg):
+            class _Meta(type):
+                def __getattr__(cls, item):
+                    raise RuntimeError(msg)
+
+                def __call__(cls, *args, **kwargs):
+                    raise RuntimeError(msg)
+            return _Meta
+
+        try:
+            placeholder = _make(message)(name, (), {"__doc__": message})
+            type.__setattr__(placeholder, "__unsloth_placeholder__", True)
+            setattr(F, name, placeholder)
+        except Exception:
+            pass
+
+    # torchao also hangs a handler off aten._grouped_mm at import time, and
+    # that operator only exists from torch 2.8. Same skew, different lookup:
+    # supplying the torch.nn.functional names above does not help it.
+    try:
+        torch.ops.aten._grouped_mm
+    except AttributeError:
+        op_message = (
+            "Unsloth: `torch.ops.aten._grouped_mm` does not exist in this "
+            "torch. torchao %s registers a handler for it at import time, but "
+            "torch %s does not provide it (it arrived in torch 2.8). Unsloth "
+            "registered a placeholder schema so the import succeeds; the "
+            "operator itself cannot be used."
+            % (version, torch.__version__))
+
+        def _refuse(self, mat2, offs=None, bias=None, out_dtype=None):
+            raise RuntimeError(op_message)
+
+        try:
+            # Held on the module so the Library is not collected -- that
+            # would deregister the schema again.
+            global _ATEN_LIBRARY
+            _ATEN_LIBRARY = torch.library.Library("aten", "FRAGMENT")
+            _ATEN_LIBRARY.define(
+                "_grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None, "
+                "Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor")
+            _ATEN_LIBRARY.impl("_grouped_mm", _refuse,
+                               "CompositeExplicitAutograd")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+_ATEN_LIBRARY = None
+
+
+class _TorchaoImportHook:
+    """Runs the fix when a child actually imports torchao, and not before.
+
+    This module is on PYTHONPATH, so it starts every Python descendant, most
+    of which never touch torchao. Calling `_apply()` here would import torch
+    in all of them, adding seconds of startup and torch's memory to unrelated
+    utilities and workers. A meta_path finder costs a string compare instead,
+    and still runs before torchao's module body, which is the only ordering
+    the fix needs.
+    """
+
+    def find_spec(self, fullname, path = None, target = None):
+        if fullname != "torchao":
+            return None
+        try:
+            sys.meta_path.remove(self)  # once, and before _apply imports torch
+        except ValueError:
+            pass
+        try:
+            _apply()
+        except Exception:
+            pass
+        return None  # let the normal finders import torchao
+
+
+# Chaining gives our name away to the real sitecustomize, so keep our own
+# module object alive here: the finder below outlives this file's execution.
+_SELF = sys.modules.get(__name__)
+_chain_to_the_real_sitecustomize()
+try:
+    sys.meta_path.insert(0, _TorchaoImportHook())
+except Exception:
+    # Never let this abort interpreter startup: it would break every
+    # subprocess, which is far worse than the import error it fixes.
+    pass
+'''
+
+
+def _write_hook_atomically(target, source):
+    """Put `source` at `target` without ever writing through a symlink.
+
+    A predictable temporary name (`sitecustomize.py.<pid>.tmp`) can be
+    pre-created as a symlink while the directory is still group- or
+    world-writable: tightening it afterwards does not revoke what is already
+    inside. The write would land on a file the other user owns, and os.replace
+    renames the link itself into place, so `sitecustomize.py` stays theirs to
+    rewrite. A random name opened O_EXCL|O_NOFOLLOW cannot be pre-empted and
+    refuses a symlink instead of following it.
+    """
+    import binascii
+
+    directory = os.path.dirname(target)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    payload = source.encode("utf-8")
+    for _ in range(16):
+        tmp = os.path.join(
+            directory,
+            ".sitecustomize.py.%s.tmp" % binascii.hexlify(os.urandom(8)).decode(),
+        )
+        try:
+            handle = os.open(tmp, flags, 0o600)  # nobody else may rewrite it
+        except FileExistsError:
+            continue
+        try:
+            try:
+                os.fchmod(handle, 0o600)  # a loose umask must not widen it
+            except Exception:
+                pass
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(payload)
+            os.replace(tmp, target)  # atomic
+        except BaseException:
+            # A random name is never reused, so a failed attempt would be
+            # litter rather than something the next run overwrites.
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            raise
+        return
+    raise RuntimeError("could not create a private temporary file in " + directory)
+
+
+def _existing_hook_is_trustworthy(target):
+    """Can the file already at `target` only have been written by us?
+
+    Tightening the directory does not revoke access to what is already inside
+    it: a file planted while it was group- or world-writable stays foreign
+    owned, or is a symlink into somewhere still writable. This file runs in
+    every Python descendant, so anything but a private regular file of ours is
+    replaced outright, even when its contents match, which is exactly what an
+    attacker would arrange to skip the write below.
+    """
+    import stat
+
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return True  # nothing there yet; the write creates it
+    except Exception:
+        return False
+    if not stat.S_ISREG(info.st_mode):  # symlink, directory, fifo, device
+        return False
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        return False
+    # Writable by anyone else means its contents prove nothing.
+    return not stat.S_IMODE(info.st_mode) & 0o022
+
+
+def _torch_really_has(F, name):
+    """Does torch itself provide `name`, or is it a placeholder we installed?
+
+    `_gpu_init` runs `fix_torchao_torch_symbol_skew()` just before the function
+    below, so a plain `hasattr` would read as healthy in exactly the
+    environments the child fix exists for.
+    """
+    symbol = getattr(F, name, None)
+    if symbol is None:
+        return False
+    return not getattr(symbol, "__unsloth_placeholder__", False)
+
+
+def propagate_torchao_fix_to_subprocesses():
+    """Make the torchao fix apply to child processes too.
+
+    A no-op unless the fix is needed: returns early when torchao is absent,
+    old enough to guard its own import, or when torch already has the symbols.
+    Nothing is written and PYTHONPATH is untouched on a healthy pair.
+
+    The generated file inlines the symbol fix rather than importing unsloth: a
+    sitecustomize runs at the start of every subprocess on the machine, so an
+    `import unsloth` there would pay the full import cost each time and could
+    recurse through this function. Anything else found to be needed should be
+    inlined here too. The other two torchao fixes need no child: both guard
+    work in this process (LoRA construction, `import torchtune` via xcodec2),
+    and the vLLM inspector this hook exists for imports neither.
+
+    Returns the directory added to PYTHONPATH, or None.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return None
+    try:
+        if Version(importlib_version("torchao")) < Version("0.18.0"):
+            return None
+    except Exception:
+        return None
+    try:
+        import torch.nn.functional as F
+
+        # Both halves of the skew must be absent for there to be nothing to do.
+        # Today a torch missing the operator also misses the functional symbols
+        # (2.8 vs 2.10), so the second check never fires alone; it keeps the
+        # gate correct if that ever stops holding. Our own patches do not count
+        # as torch being new enough: the in-process fix ran first.
+        if (
+            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+            and _aten_grouped_mm_library is None
+            and not _torch_op_is_missing("aten", "_grouped_mm")
+        ):
+            return None  # this torch is new enough; nothing to do
+    except Exception:
+        return None
+
+    try:
+        directory = _subprocess_fix_directory()
+        target = os.path.join(directory, "sitecustomize.py")
+        source = _subprocess_sitecustomize_source()
+        # Rewrite only when it differs, so concurrent runs do not fight and a
+        # reader never sees a truncated file. Matching contents only count as
+        # evidence when the file is ours: see the helper. A directory in the
+        # way makes os.replace raise, which the handler below turns into "no
+        # subprocess fix" rather than into a hook we do not trust.
+        if _existing_hook_is_trustworthy(target):
+            try:
+                existing = open(target, "r", encoding = "utf-8").read()
+            except Exception:
+                existing = None
+        else:
+            existing = None
+        if existing != source:
+            _write_hook_atomically(target, source)
+    except Exception as exception:
+        logger.warning(
+            "Unsloth: could not stage the torchao subprocess fix (%s). vLLM "
+            "may fail to inspect model architectures.",
+            exception,
+        )
+        return None
+
+    # os.pathsep, not ":" -- Windows uses ";".
+    current = os.environ.get("PYTHONPATH", "")
+    # An empty component is an import location, not padding: it is what
+    # `PYTHONPATH="$PYTHONPATH:/opt/lib"` leaves behind when PYTHONPATH was
+    # unset, and CPython reads it as the cwd, so dropping it would take an
+    # import location away from every descendant. A SET-BUT-EMPTY PYTHONPATH is
+    # the opposite case: CPython ignores it entirely, so it must not become a
+    # lone "" component, which would ADD the cwd instead.
+    parts = current.split(os.pathsep) if current else []
+    if directory not in parts:
+        os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
+        logger.info(
+            "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
+            "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
+            "inspector) can import torchao too.",
+            importlib_version("torchao"),
+        )
+    return directory
+
+
+# torchao 0.18.0 moved `torchao/dtypes/nf4tensor.py` under
+# `quantization/quantize_/workflows/nf4/`, but torchtune (and xcodec2 through
+# it) still imports the old path and dies with ModuleNotFoundError.
+#
+# Same shape as the vLLM tokenizer stub above: a meta path finder APPENDED
+# after the real ones, so an older torchao that still ships the module wins,
+# and the alias resolves lazily so `import unsloth` pays nothing.
+_TORCHAO_NF4_OLD = "torchao.dtypes.nf4tensor"
+_TORCHAO_NF4_NEW = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
+_TORCHAO_NF4_SENTINEL = "__unsloth_torchao_nf4_alias__"
+
+
+class _TorchaoNF4AliasLoader(importlib.abc.Loader):
+    __slots__ = ("module_name", "real_spec")
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+        self.real_spec = None
+
+    def create_module(self, spec):
+        # Return the RELOCATED module itself, not a stub with a hand-copied
+        # surface: torchtune then sees whatever torchao actually ships, and
+        # this cannot rot as symbols are added.
+        module = importlib.import_module(_TORCHAO_NF4_NEW)
+        # module_from_spec is about to overwrite this shared object's __spec__
+        # with the old-name one (_bootstrap.py assigns __spec__ unconditionally,
+        # unlike every other attribute), which would leave find_spec reporting
+        # the old name for the new module and make reload run the no-op
+        # exec_module below instead of the file.
+        self.real_spec = getattr(module, "__spec__", None)
+        return module
+
+    def exec_module(self, module):
+        # Already imported, so nothing to execute. Put back the __spec__
+        # module_from_spec just clobbered.
+        if self.real_spec is not None:
+            try:
+                module.__spec__ = self.real_spec
+            except Exception:
+                pass
+        return None
+
+
+class _TorchaoNF4AliasFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_TORCHAO_NF4_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _TORCHAO_NF4_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _TORCHAO_NF4_OLD:
+            return None
+        try:
+            if importlib.util.find_spec(_TORCHAO_NF4_NEW) is None:
+                return None  # neither layout: let the real ImportError happen
+        except Exception:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _TorchaoNF4AliasLoader(fullname),
+            is_package = False,
+        )
+
+
+def fix_torchao_nf4tensor_move():
+    if importlib.util.find_spec("torchao") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _TORCHAO_NF4_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so a real module on older torchao wins.
+    sys.meta_path.append(_TorchaoNF4AliasFinder())

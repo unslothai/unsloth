@@ -26,11 +26,13 @@ is_managed_flag = _lsa.is_managed_flag
 parse_cache_override = _lsa.parse_cache_override
 parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
+parse_gpu_layers_override = _lsa.parse_gpu_layers_override
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 strip_split_mode_only = _lsa.strip_split_mode_only
+strip_context_only = _lsa.strip_context_only
 extra_args_disable_mmproj = _lsa.extra_args_disable_mmproj
 validate_extra_args = _lsa.validate_extra_args
 
@@ -75,9 +77,8 @@ validate_extra_args = _lsa.validate_extra_args
         # Reasoning controls
         ["--reasoning-format", "deepseek"],
         ["-rea", "auto"],
-        # Soft-managed: user flags last-wins over Studio's auto-set version.
-        # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
-        # count would desync); use `unsloth studio run --parallel N` instead.
+        # Soft-managed: user flags last-wins over Unsloth's auto-set version.
+        # --parallel / -np / --n-parallel are hard-denied; use Parallel Slots.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],
@@ -93,6 +94,9 @@ validate_extra_args = _lsa.validate_extra_args
         ["-fit", "off"],
         ["--fit", "on"],
         ["--fit-ctx", "8192"],
+        # Memory placement flags (soft-managed; shadowed on inherit)
+        ["--mlock"],
+        ["--no-mmap", "--mlock"],
     ],
 )
 def test_pass_through_allowed(args):
@@ -107,13 +111,40 @@ def test_empty_list_returns_empty_list():
     assert validate_extra_args([]) == []
 
 
-def test_value_with_equals_form_passes_through():
-    assert validate_extra_args(["--top-k=20"]) == ["--top-k=20"]
+def test_the_attached_value_form_is_refused():
+    # llama.cpp looks the whole token up in its option map and folds only the
+    # underscore spelling, so "--top-k=20" is an argument it has never heard of.
+    # Measured on b10342 and b10360: "error: invalid argument: --top-k=20", and the
+    # same for --ctx-size=4096 and --flash-attn=on. Accepting it here meant the
+    # switch tore down the resident model and the child then refused to start.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        validate_extra_args(["--top-k=20"])
+    # The detached spelling is what it takes, and the underscore one still folds.
+    assert validate_extra_args(["--top-k", "20"]) == ["--top-k", "20"]
+    assert validate_extra_args(["--ctx_size", "4096"]) == ["--ctx_size", "4096"]
+    # A managed name is still named as managed: that message says which control
+    # owns it, which is the more useful of the two.
+    with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
+        validate_extra_args(["--parallel=8"])
+    # An "=" inside a VALUE is untouched: it is the value's own syntax.
+    assert validate_extra_args(["--override-kv", "a=int:2"]) == ["--override-kv", "a=int:2"]
 
 
-def test_non_flag_token_passes_through():
-    # Bare positionals are passed through; llama-server can reject them.
-    assert validate_extra_args(["foo"]) == ["foo"]
+def test_managed_long_flag_underscore_alias_is_rejected():
+    with pytest.raises(ValueError, match = "slot-save-path"):
+        validate_extra_args(["--slot_save_path", "/tmp/slots"])
+
+
+def test_a_bare_positional_is_rejected():
+    # This used to pass through on the grounds that llama-server can reject it, and
+    # it does: "error: invalid argument: foo", so the launch fails instead of the
+    # request. Refused here now that a textbox can produce one, because a build that
+    # DID accept a positional would read it as the model path, which is exactly what
+    # denying -m / --model prevents.
+    with pytest.raises(ValueError, match = "bare value"):
+        validate_extra_args(["foo"])
+    # A value that follows its flag is untouched.
+    assert validate_extra_args(["--numa", "distribute"]) == ["--numa", "distribute"]
 
 
 # ── Denylist (rejected) ──────────────────────────────────────────────
@@ -122,7 +153,7 @@ def test_non_flag_token_passes_through():
 @pytest.mark.parametrize(
     "denied",
     [
-        # Parallel slots -- owned by the typer --parallel flag.
+        # Parallel slots -- owned by typer --parallel and LoadRequest.n_parallel.
         "-np",
         "--parallel",
         "--n-parallel",
@@ -150,7 +181,7 @@ def test_non_flag_token_passes_through():
         "--mmproj",
         "-mmu",
         "--mmproj-url",
-        # Networking (Studio binds + proxies)
+        # Networking (Unsloth binds + proxies)
         "--host",
         "--port",
         "--path",
@@ -176,13 +207,51 @@ def test_non_flag_token_passes_through():
         "--models-autoload",
         "--no-models-autoload",
         # Server-mode flips: --embedding / --rerank restrict llama-server to
-        # those endpoints and break Studio's chat hop.
+        # those endpoints and break Unsloth's chat hop.
         "--embedding",
         "--embeddings",
         "--rerank",
         "--reranking",
-        # llama-server's own --tools clashes with Studio's tool policy.
+        "--pooling",
+        # llama-server's own --tools clashes with Unsloth's tool policy.
         "--tools",
+        # --agent is --tools by another name ("enable CORS proxy and ALL built-in
+        # tools", which includes exec_shell_command), and --tools-runtime says where
+        # those tools run -- a container, or another host over ssh.
+        "-ag",
+        "--agent",
+        "-no-ag",
+        "--no-agent",
+        "--tools-runtime",
+        # MCP servers are the same capability from a file or an inline blob.
+        "--mcp-servers-config",
+        "--mcp-servers-json",
+        # Unsloth terminates browser access at its own origin.
+        "--cors-origins",
+        "--cors-headers",
+        "--cors-methods",
+        "--cors-credentials",
+        "--no-cors-credentials",
+        "--media-path",
+        # Startup output is how a bad GGUF is told from an OOM from a rejected flag.
+        "--log-file",
+        "--log-disable",
+        # Slot-state dir: Studio owns it for KV persistence across idle unload.
+        "--slot-save-path",
+        # These print and exit instead of serving.
+        "-h",
+        "--help",
+        "--usage",
+        "--version",
+        "--list-devices",
+        "-cl",
+        "--cache-list",
+        "--completion-bash",
+        # Aliases of already-denied UI flags; upstream ships both spellings.
+        "--webui-config",
+        "--webui-config-file",
+        "--webui-mcp-proxy",
+        "--no-webui-mcp-proxy",
     ],
 )
 def test_denylist_rejects_all_aliases(denied):
@@ -193,9 +262,8 @@ def test_denylist_rejects_all_aliases(denied):
 @pytest.mark.parametrize(
     "args,offending",
     [
-        # Pass-through --parallel would last-wins-override the real slot
-        # count while Studio's KV-cache fit + llama_parallel_slots stay at
-        # the typer value -- plan vs. process disagree.
+        # Pass-through --parallel would last-wins-override the real slot count
+        # while the KV-cache fit and slot bookkeeping stay at the resolved value.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
         (["--n-parallel", "16"], "--n-parallel"),
@@ -205,7 +273,7 @@ def test_denylist_rejects_all_aliases(denied):
         # `["-np8"]` must still resolve to managed.
         (["-np8"], "-np"),
         (["-np64"], "-np"),
-        # Out-of-range values that would bypass the typer 1..64 guard.
+        # Out-of-range values that would bypass the PARALLEL_MIN/MAX bounds.
         (["--parallel", "999"], "--parallel"),
         (["-np", "0"], "-np"),
         (["-np999"], "-np"),
@@ -222,6 +290,19 @@ def test_parallel_flags_are_managed(args, offending):
 def test_denylist_rejects_equals_form():
     with pytest.raises(ValueError, match = "--port"):
         validate_extra_args(["--port=9000"])
+
+
+def test_slot_save_path_is_managed_in_all_forms():
+    for args in (["--slot-save-path", "/tmp/x"], ["--slot-save-path=/tmp/x"], ["--slot-save-path"]):
+        with pytest.raises(ValueError, match = "--slot-save-path"):
+            validate_extra_args(args)
+    assert is_managed_flag("--slot-save-path") is True
+    assert is_managed_flag("--slot-save-path=/tmp/x") is True
+    # Endpoint exposure stays a user choice: Unsloth reads GET /props and never
+    # /slots, so neither flag can strand it.
+    assert is_managed_flag("--slots") is False
+    assert is_managed_flag("--no-slots") is False
+    assert is_managed_flag("--props") is False
 
 
 @pytest.mark.parametrize(
@@ -282,7 +363,7 @@ def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--api-key") is True
     assert is_managed_flag("-m") is True
     assert is_managed_flag("--model") is True
-    # Parallel slots owned by the typer --parallel flag.
+    # Parallel slots owned by typer --parallel and LoadRequest.n_parallel.
     assert is_managed_flag("--parallel") is True
     assert is_managed_flag("--n-parallel") is True
     assert is_managed_flag("-np") is True
@@ -303,6 +384,9 @@ def test_is_managed_flag_false_for_pass_through():
     assert is_managed_flag("--flash-attn") is False
     assert is_managed_flag("-ngl") is False
     assert is_managed_flag("--threads") is False
+    # Memory placement flags are pass-through (shadowed on inherit only).
+    assert is_managed_flag("--mlock") is False
+    assert is_managed_flag("--no-mmap") is False
 
 
 # ── strip_shadowing_flags ─────────────────────────────────────────────
@@ -365,6 +449,34 @@ def test_strip_shadowing_flags_keeps_spec_when_spec_disabled():
         strip_spec = False,
     )
     assert out == ["--spec-type", "ngram-mod", "--draft-min", "48", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_device_by_default():
+    # --device is pass-through by default (users may pin when Unsloth auto-selects).
+    out = strip_shadowing_flags(
+        ["--device", "Vulkan1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+    assert out == ["--device", "Vulkan1", "--top-k", "20"]
+
+
+def test_strip_shadowing_flags_drops_device_when_requested():
+    # strip_device drops device placement flags when gpu_ids owns placement.
+    for flag in ("--device", "-dev", "--main-gpu", "-mg"):
+        out = strip_shadowing_flags(
+            [flag, "Vulkan1", "--top-k", "20"],
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_device = True,
+        )
+        assert out == ["--top-k", "20"], flag
 
 
 def test_strip_shadowing_flags_drops_mtp_flags_when_requested():
@@ -434,6 +546,45 @@ def test_parse_ctx_override_rejects_malformed_values(args):
 def test_validate_extra_args_rejects_malformed_ctx_override():
     with pytest.raises(ValueError, match = "ctx-size"):
         validate_extra_args(["--ctx-size", "abc"])
+
+
+# ── parse_gpu_layers_override ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (None, None),
+        ([], None),
+        (["--top-k", "20"], None),
+        (["--gpu-layers", "20"], 20),
+        (["--gpu-layers=20"], 20),
+        (["--n-gpu-layers", "0"], 0),
+        (["-ngl", "-1"], -1),
+        (["-ngl", "12", "--gpu-layers", "20"], 20),
+    ],
+)
+def test_parse_gpu_layers_override(args, expected):
+    assert parse_gpu_layers_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--gpu-layers"],
+        ["--gpu-layers", "--top-k"],
+        ["--gpu-layers", "abc"],
+        ["--gpu-layers=-2"],
+    ],
+)
+def test_parse_gpu_layers_override_rejects_malformed_values(args):
+    with pytest.raises(ValueError, match = "gpu-layers|GPU layers"):
+        parse_gpu_layers_override(args)
+
+
+def test_validate_extra_args_rejects_malformed_gpu_layers_override():
+    with pytest.raises(ValueError, match = "GPU layers"):
+        validate_extra_args(["-ngl", "abc"])
 
 
 # ── parse_cache_override ─────────────────────────────────────────────
@@ -548,13 +699,20 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["--split-mode", "none"],
         ["--split-mode", "layer"],
         ["-sm", "tensor"],
-        ["--split-mode=row"],
-        ["-sm=tensor"],
     ],
 )
 def test_split_mode_passes_through(args):
     # Not denylisted -- a user keeps row/none/layer via extras.
     assert validate_extra_args(args) == args
+
+
+@pytest.mark.parametrize("args", [["--split-mode=row"], ["-sm=tensor"]])
+def test_the_attached_split_mode_spelling_is_refused(args):
+    # The parsers below still read the attached form, since they also run over
+    # Unsloth's own emitted flags; the boundary is where the user's spelling of it
+    # is turned back, while the message can still reach them.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        validate_extra_args(args)
 
 
 def test_split_mode_is_not_managed():
@@ -656,7 +814,7 @@ def test_extra_args_disable_mmproj_last_wins():
 
 
 def test_strip_shadowing_flags_drops_model_draft_with_spec():
-    # --model-draft (and aliases) are Studio-managed since the separate
+    # --model-draft (and aliases) are Unsloth-managed since the separate
     # MTP drafter support: an inherited copy must not last-wins-override
     # the auto-detected drafter.
     out = strip_shadowing_flags(
@@ -681,7 +839,7 @@ def test_strip_shadowing_flags_drops_model_draft_with_spec():
 )
 def test_strip_shadowing_flags_drops_hf_drafter_selectors_with_spec(selector):
     # HF drafter selectors must reset on inherit like local --model-draft, or a
-    # stale inherited HF drafter last-wins over Studio's re-derived spec choice.
+    # stale inherited HF drafter last-wins over Unsloth's re-derived spec choice.
     out = strip_shadowing_flags(
         selector + ["--top-k", "20"],
         strip_context = False,
@@ -747,6 +905,34 @@ def test_strip_shadowing_flags_defaults_strip_split_mode_too():
     assert strip_shadowing_flags(["--split-mode", "tensor"]) == []
 
 
+def test_strip_offload_is_opt_in_and_covers_moe():
+    base = dict(
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+    # Default: offload (incl. MoE) flags are NOT stripped.
+    assert strip_shadowing_flags(["--n-cpu-moe", "8", "--top-k", "20"], **base) == [
+        "--n-cpu-moe",
+        "8",
+        "--top-k",
+        "20",
+    ]
+    # Opt-in strips layer AND MoE offload flags (value-aware), keeps the rest.
+    assert strip_shadowing_flags(
+        ["--n-cpu-moe", "8", "--gpu-layers", "33", "--fit", "off", "--top-k", "20"],
+        **base,
+        strip_offload = True,
+    ) == ["--top-k", "20"]
+    # Boolean --cpu-moe drops the flag only, not the following value.
+    assert strip_shadowing_flags(["--cpu-moe", "--seed", "-1"], **base, strip_offload = True) == [
+        "--seed",
+        "-1",
+    ]
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -767,9 +953,39 @@ def test_strip_split_mode_only_preserves_none_and_empty():
     assert strip_split_mode_only([]) == []
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-c", "0", "--top-k", "20"],
+        ["--ctx-size", "0", "--top-k", "20"],
+        ["-c=0", "--top-k", "20"],
+        ["--ctx-size=0", "--top-k", "20"],
+    ],
+)
+def test_strip_context_only_drops_every_context_form(args):
+    # Every -c / --ctx-size form (long/short, space/=) goes; the rest survives.
+    assert strip_context_only(args) == ["--top-k", "20"]
+
+
+def test_strip_context_only_keeps_other_shadow_flags():
+    # Only the context group: the cache/spec/template/split flags are untouched.
+    assert strip_context_only(["-c", "0", "--split-mode", "row", "--cache-type-k", "q8_0"]) == [
+        "--split-mode",
+        "row",
+        "--cache-type-k",
+        "q8_0",
+    ]
+
+
+def test_strip_context_only_preserves_none_and_empty():
+    # None means "inherit"; [] means "explicit empty" -- both must round-trip.
+    assert strip_context_only(None) is None
+    assert strip_context_only([]) == []
+
+
 def test_strip_shadowing_flags_drops_tensor_split_with_split_mode():
     # --tensor-split is coupled to the split mode: stripped together so a stale
-    # ratio can't override Studio's computed tensor split. Other flags survive.
+    # ratio can't override Unsloth's computed tensor split. Other flags survive.
     out = strip_shadowing_flags(
         ["--split-mode", "row", "--tensor-split", "1,1", "--top-k", "20"],
         strip_context = False,
@@ -796,6 +1012,23 @@ def test_strip_split_mode_only_drops_tensor_split_too():
     assert strip_split_mode_only(["-sm=tensor", "-ts=3,1"]) == []
 
 
+def test_strip_tensor_split_alone_preserves_split_mode():
+    # Manual mode emits its own --tensor-split, so an inherited ratio is dropped
+    # -- but the user's --split-mode row/none/layer choice (which the manual
+    # ratio toggle can't express) must survive. strip_tensor_split removes only
+    # the ratio, unlike strip_split_mode which removes the whole group.
+    out = strip_shadowing_flags(
+        ["--split-mode", "row", "--tensor-split", "1,1", "--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_tensor_split = True,
+    )
+    assert out == ["--split-mode", "row", "--top-k", "20"]
+
+
 def test_strip_shadowing_flags_keeps_model_draft_without_spec():
     out = strip_shadowing_flags(
         ["--model-draft", "/custom/mtp.gguf"],
@@ -805,3 +1038,152 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
         strip_template = False,
     )
     assert out == ["--model-draft", "/custom/mtp.gguf"]
+
+
+# --- shape bounds -----------------------------------------------------------
+# Not the security boundary (the denylist is), just a floor under what reaches
+# execve, so a pasted file fails here naming the limit instead of in the child.
+
+
+def test_token_count_is_capped():
+    with pytest.raises(ValueError, match = "too many"):
+        validate_extra_args(["--verbose"] * (_lsa.MAX_EXTRA_ARG_TOKENS + 1))
+    # The cap itself still passes, so the limit is inclusive as stated.
+    assert len(validate_extra_args(["--verbose"] * _lsa.MAX_EXTRA_ARG_TOKENS)) == (
+        _lsa.MAX_EXTRA_ARG_TOKENS
+    )
+
+
+def test_total_size_is_capped():
+    with pytest.raises(ValueError, match = "too large"):
+        validate_extra_args(["--grammar", "x" * (_lsa.MAX_EXTRA_ARGS_BYTES + 1)])
+
+
+def test_a_long_single_token_is_allowed_under_the_total():
+    # A grammar or JSON schema is legitimately one long token, so the cap is on the
+    # list rather than per token.
+    schema = "x" * (_lsa.MAX_EXTRA_ARGS_BYTES // 2)
+    assert validate_extra_args(["--grammar", schema]) == ["--grammar", schema]
+
+
+def test_the_size_cap_counts_bytes_not_characters():
+    # Astral-plane characters are 4 bytes each; a character-counted cap would let
+    # through four times the argv this claims to bound.
+    big = "\U0001f600" * (_lsa.MAX_EXTRA_ARGS_BYTES // 4)
+    with pytest.raises(ValueError, match = "too large"):
+        validate_extra_args(["--grammar", big])
+
+
+@pytest.mark.parametrize("token", ["a\x00b", "a\x07b", "\x1b[31m"])
+def test_control_characters_are_rejected(token):
+    with pytest.raises(ValueError, match = "control characters"):
+        validate_extra_args([token])
+
+
+@pytest.mark.parametrize("token", ["line\nbreak", "tab\there"])
+def test_tab_and_newline_survive(token):
+    # A chat template or grammar passed inline carries both. As its flag's value,
+    # which is where such a string actually arrives: a bare one is refused now.
+    assert validate_extra_args(["--grammar", token]) == ["--grammar", token]
+
+
+# --- environment twins ------------------------------------------------------
+
+
+def test_denied_env_twins_are_scrubbed():
+    env = {
+        "LLAMA_ARG_AGENT": "1",
+        "LLAMA_ARG_TOOLS": "all",
+        "LLAMA_ARG_MCP_SERVERS_JSON": "{}",
+        "PATH": "/usr/bin",
+    }
+    removed = _lsa.scrub_denied_env(env)
+    assert set(removed) == {"LLAMA_ARG_AGENT", "LLAMA_ARG_TOOLS", "LLAMA_ARG_MCP_SERVERS_JSON"}
+    # Only the twins go.
+    assert env == {"PATH": "/usr/bin"}
+
+
+def test_scrubbing_is_a_no_op_without_the_twins():
+    env = {"PATH": "/usr/bin", "LLAMA_ARG_MLOCK": "1"}
+    assert _lsa.scrub_denied_env(env) == []
+    assert env == {"PATH": "/usr/bin", "LLAMA_ARG_MLOCK": "1"}
+
+
+def test_every_denied_env_var_names_a_denied_flag():
+    # The twins are only worth scrubbing while the flag itself is refused; this
+    # catches a group being dropped from the denylist and leaving a live back door.
+    #
+    # Both prefixes, because llama.cpp uses both: --api-key reads LLAMA_API_KEY while
+    # --api-key-file reads LLAMA_ARG_API_KEY_FILE, and which one a flag gets has
+    # changed between releases.
+    for name in _lsa.DENIED_ENV_VARS:
+        stem = name.removeprefix("LLAMA_ARG_").removeprefix("LLAMA_")
+        flag = _lsa.DENIED_ENV_TWIN_FLAGS.get(name) or "--" + stem.lower().replace("_", "-")
+        assert is_managed_flag(flag), f"{name} has no denied flag ({flag})"
+
+
+def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
+    # The list was enumerated from the bundled b10342 --help rather than guessed:
+    # every "(env: NAME)" whose option this module refuses. Recorded here as the
+    # pairs that mattered, so a name dropped from the denylist, or a twin dropped
+    # from the scrub, is a red test rather than a back door found later.
+    #
+    # llama.cpp applies the environment BEFORE argv, so the ones Studio always emits
+    # are overridden anyway; the rest are the reason this exists.
+    for env_var, flag in (
+        ("LLAMA_ARG_UI_MCP_PROXY", "--ui-mcp-proxy"),
+        ("LLAMA_ARG_UI", "--ui"),
+        ("LLAMA_ARG_STATIC_PATH", "--path"),
+        ("LLAMA_ARG_MODELS_DIR", "--models-dir"),
+        ("LLAMA_ARG_MODELS_AUTOLOAD", "--models-autoload"),
+        ("LLAMA_ARG_EMBEDDINGS", "--embeddings"),
+        ("LLAMA_ARG_RERANKING", "--reranking"),
+        ("LLAMA_ARG_MODEL", "--model"),
+        ("LLAMA_ARG_HF_REPO", "--hf-repo"),
+        ("LLAMA_ARG_HOST", "--host"),
+        ("LLAMA_ARG_PORT", "--port"),
+        ("LLAMA_ARG_N_PARALLEL", "--parallel"),
+        ("LLAMA_ARG_SSL_KEY_FILE", "--ssl-key-file"),
+        ("LLAMA_ARG_SSL_CERT_FILE", "--ssl-cert-file"),
+    ):
+        assert is_managed_flag(flag), flag
+        assert env_var in _lsa.DENIED_ENV_VARS, env_var
+    env = {name: "1" for name in _lsa.DENIED_ENV_VARS}
+    env["PATH"] = "/usr/bin"
+    # The projector twins are an INPUT here, not a back door: _launch_has_mmproj reads
+    # both to know the launch has a projector at all, which is what keeps the vision
+    # and audio state of a model loaded through an inherited one. Scrubbing them
+    # globally cleared that state (test_gpu_init_crash_message caught it), and only
+    # the paravirtual CPU recovery drops them, where an unpinned projector is the
+    # corrupt path it is undoing.
+    for kept in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
+        assert kept not in _lsa.DENIED_ENV_VARS, kept
+    # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
+    # Studio's own downloads use, not a llama-server behaviour switch, and the child
+    # is always given a local -m path rather than a repo to fetch.
+    assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
+    _lsa.scrub_denied_env(env)
+    assert env == {"PATH": "/usr/bin"}
+
+
+def test_the_projector_env_twins_survive_the_scrub():
+    # --mmproj is refused in the box because Unsloth resolves the projector itself,
+    # but the environment twin is an INPUT: _launch_has_mmproj reads both names to
+    # know the launch has a projector at all, which is what keeps the vision and
+    # audio state of a model loaded through an inherited one. Scrubbing them made
+    # every such load report itself as text-only.
+    env = {
+        "LLAMA_ARG_MMPROJ": "/models/mmproj-F16.gguf",
+        "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj-F16.gguf",
+        "LLAMA_ARG_AGENT": "1",
+    }
+    removed = _lsa.scrub_denied_env(env)
+    assert removed == ["LLAMA_ARG_AGENT"]
+    assert env == {
+        "LLAMA_ARG_MMPROJ": "/models/mmproj-F16.gguf",
+        "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj-F16.gguf",
+    }
+    # Only the paravirtual CPU recovery drops them, where an unpinned projector is
+    # the corrupt path it is undoing, and it does that itself.
+    assert "LLAMA_ARG_MMPROJ" not in _lsa.DENIED_ENV_VARS
+    assert "LLAMA_ARG_MMPROJ_URL" not in _lsa.DENIED_ENV_VARS

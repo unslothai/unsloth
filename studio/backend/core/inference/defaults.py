@@ -8,6 +8,7 @@ import utils.hardware.hardware as hw
 DEFAULT_MODELS_GGUF = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+    "unsloth/DeepSeek-V4-Flash-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",
@@ -27,6 +28,7 @@ DEFAULT_MODELS_GGUF = [
 DEFAULT_MODELS_STANDARD = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+    "unsloth/DeepSeek-V4-Flash-GGUF",
     "unsloth/gemma-4-E2B-it-GGUF",
     "unsloth/gemma-4-E4B-it-GGUF",
     "unsloth/gemma-4-31B-it-GGUF",

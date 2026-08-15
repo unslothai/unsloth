@@ -238,7 +238,7 @@ def _run_oxc_batch(
     if not node_executable:
         return _fallback_results(
             len(code_values),
-            "Node.js not found (install Node >= 20.19, or re-run Studio setup to provision it).",
+            "Node.js not found (install Node >= 20.19, or re-run Unsloth setup to provision it).",
         )
     try:
         tmp_dir = ensure_dir(oxc_validator_tmp_root())
@@ -257,6 +257,8 @@ def _run_oxc_batch(
             cwd = str(_OXC_TOOL_DIR),
             input = json.dumps(payload),
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             capture_output = True,
             check = False,
             env = env,

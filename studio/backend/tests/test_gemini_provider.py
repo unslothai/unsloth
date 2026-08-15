@@ -768,7 +768,7 @@ def test_cached_content_pass_through(monkeypatch):
 
 
 def test_boolean_caching_does_not_set_cached_content(monkeypatch):
-    """Studio's existing True/False signals shouldn't fabricate a cache id."""
+    """Unsloth's existing True/False signals shouldn't fabricate a cache id."""
     captured = _capture_body(monkeypatch, enable_prompt_caching = True)
     assert "cachedContent" not in captured["body"]
 
@@ -2613,7 +2613,7 @@ def test_gemini_native_skips_orphan_function_response_for_native_part_replay(mon
 
 def test_gemini_native_part_falls_back_to_args_google(monkeypatch):
     """Round 27: a direct OpenAI-compat API caller (or imported third-party
-    thread) cannot use Studio's non-standard `tool_calls[].extra_content`
+    thread) cannot use Unsloth's non-standard `tool_calls[].extra_content`
     field, so the native_part payload round-trips through `function.arguments`
     as `{"google": {"native_part": {...}}}`. The synthetic-builtin detector
     recognizes that location, but the replay branch was only reading from
@@ -5181,7 +5181,9 @@ def test_gemini_custom_oai_compat_base_skips_native_allowlist():
             provider_type = "gemini",
             base_url = "https://litellm.example/v1",
         )
-        result = _asyncio.run(list_provider_models(req, current_subject = "unsloth"))
+        result = _asyncio.run(
+            list_provider_models(req, _current_subject = "unsloth", via_api_key = False)
+        )
     finally:
         _providers.ExternalProviderClient = orig
     ids = {m.id for m in result}
@@ -5351,3 +5353,37 @@ def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice
             tool_event = extra.get("toolEvent") if isinstance(extra, dict) else None
             if isinstance(tool_event, dict):
                 assert tool_event.get("tool_name") != "web_search", evt
+
+
+@pytest.mark.parametrize(
+    "model",
+    (
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3-flash-preview",
+        "gemini-pro-latest",
+    ),
+)
+def test_gemini_3_family_uses_thinking_level(monkeypatch, model):
+    """Any 3.x minor must take thinkingLevel; an int budget 400s upstream."""
+    body = _capture_body(monkeypatch, model = model, enable_thinking = False)["body"]
+    thinking = body["generationConfig"]["thinkingConfig"]
+    assert "thinkingLevel" in thinking, (model, thinking)
+    assert "thinkingBudget" not in thinking, (model, thinking)
+
+
+@pytest.mark.parametrize("model", ("gemini-2.5-flash", "gemini-2.5-pro"))
+def test_gemini_2_5_still_uses_thinking_budget(monkeypatch, model):
+    body = _capture_body(monkeypatch, model = model, enable_thinking = False)["body"]
+    assert "thinkingBudget" in body["generationConfig"]["thinkingConfig"]
+
+
+def test_gemini_3_pro_floor_is_low_not_minimal(monkeypatch):
+    """Pro has no `minimal` level, so thinking off floors at `low`."""
+    body = _capture_body(
+        monkeypatch,
+        model = "gemini-3.1-pro-preview",
+        enable_thinking = False,
+    )["body"]
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}

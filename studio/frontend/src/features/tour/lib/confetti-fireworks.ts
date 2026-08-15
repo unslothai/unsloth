@@ -5,6 +5,8 @@
 
 import type { CreateTypes as ConfettiInstance } from "canvas-confetti";
 
+import { prefersReducedMotion } from "@/features/settings";
+
 type FireworksOpts = {
   durationMs?: number;
   intervalMs?: number;
@@ -48,9 +50,8 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
   try {
     if (typeof window === "undefined") return;
 
-    const prefersReduce =
-      window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
-    if (prefersReduce) return;
+    // Honor Appearance > Reduce motion (on/off) first, then the OS preference.
+    if (prefersReducedMotion()) return;
 
     const fire = await getSharedFire();
     if (!fire || !_sharedCanvas) return;
@@ -65,7 +66,9 @@ export async function fireConfettiFireworks(opts: FireworksOpts = {}) {
       startVelocity: 28,
       spread: 360,
       ticks: 58,
-      disableForReducedMotion: true,
+      // Reduce motion is enforced above (incl. the in-app "off" override), so
+      // don't let the library re-suppress purely on the OS preference.
+      disableForReducedMotion: false,
     } as const;
 
     const randomInRange = (min: number, max: number) =>

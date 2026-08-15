@@ -69,7 +69,7 @@ def approval_target_key(targets) -> str:
 def _load() -> dict:
     """Parsed store, or an empty skeleton on any error (fail-safe = re-prompt)."""
     try:
-        with open(_store_path()) as f:
+        with open(_store_path(), encoding = "utf-8-sig") as f:
             data = json.load(f)
         # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a
         # dict (e.g. ``[]``) would otherwise crash lookup/record instead of failing safe.
@@ -92,7 +92,7 @@ def _save(data: dict) -> None:
     storage_roots.ensure_dir(path.parent)
     tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(data, f, indent = 2)
         try:
             os.chmod(tmp, 0o600)

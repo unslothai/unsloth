@@ -1,6 +1,8 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
+use crate::install_watchdog::{self, ProgressWatch, WatchState};
 use log::{error, info, warn};
 use process_wrap::std::*;
+use std::collections::{HashMap, VecDeque};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -9,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 // ── Types ──
 
+#[derive(Default)]
 pub struct InstallProcess {
     /// Process group handle — killing this kills the entire subprocess tree.
     pub child: Option<Box<dyn ChildWrapper + Send>>,
@@ -19,17 +22,6 @@ pub struct InstallProcess {
     pub current_attempt: Option<AttemptLog>,
 }
 
-impl Default for InstallProcess {
-    fn default() -> Self {
-        Self {
-            child: None,
-            intentional_stop: false,
-            needed_packages: Vec::new(),
-            current_attempt: None,
-        }
-    }
-}
-
 pub type InstallState = Arc<Mutex<InstallProcess>>;
 
 pub fn new_install_state() -> InstallState {
@@ -37,6 +29,416 @@ pub fn new_install_state() -> InstallState {
 }
 
 use crate::process::trim_line_endings;
+
+const FAILURE_CONTEXT_LINES: usize = 8;
+const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
+/// Clear labels are a small fixed set; this only bounds a pathological producer.
+const MAX_UNPAIRED_CLEARS: usize = 64;
+
+fn generic_failure_message(code: i32) -> String {
+    format!(
+        "Installation failed with exit code {}. Open the installer logs for details.",
+        code
+    )
+}
+
+/// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
+/// product's verdict arrives as a parse error over the entire file before the installer's first
+/// line runs: no `[TAURI:ERROR]` marker, no phase log, just an unexplained stderr tail. Match the
+/// stable error id, never the localized message text.
+const AMSI_MALWARE_ERROR_ID: &str = "ScriptContainedMaliciousContent";
+const AMSI_ADMIN_BLOCK_ERROR_ID: &str = "ScriptHasAdminBlockedContent";
+
+/// The id only means a verdict when it is the VALUE of a `FullyQualifiedErrorId` field, which is
+/// how the parse error prints it. Otherwise a scanner log or a diagnostic that merely names the id
+/// would attach antivirus guidance to an unrelated failure. A record split across writes loses the
+/// guidance rather than inventing one, which is the safe direction.
+const POWERSHELL_ERROR_ID_FIELD: &str = "FullyQualifiedErrorId";
+
+/// "Nothing was changed" only holds for a block on install.ps1 itself, which AMSI rejects before
+/// its first statement. It also runs `unsloth studio setup`, whose child spawns studio/setup.ps1
+/// through the same pipes: a block there arrives with the venv, PyTorch and the packages already
+/// on disk. A `[TAURI:STEP]` marker is the dividing line, since a pre-start block produces none.
+/// Not "nothing was changed": a diagnostics attempt and its phase log are written before
+/// PowerShell is spawned, so the honest claim is that no installation step ran. And not "this is a
+/// false positive": classification proves only that the output carries an error id, and install.ps1
+/// can sit in a user-writable directory.
+const AMSI_MALWARE_GUIDANCE_PRE_START: &str = "Security software blocked the installer before it \
+     started, so no installation steps ran; only diagnostic logs may have been written. This is \
+     usually a false positive: reinstall from an official Unsloth package, and if an unmodified \
+     copy is still blocked, update your security product's definitions or report it to your \
+     vendor. Do not disable endpoint protection.";
+const AMSI_MALWARE_GUIDANCE_IN_PROGRESS: &str = "Security software blocked part of the installer, \
+     so setup did not finish and some components may already be installed. This is usually a \
+     false positive: reinstall from an official Unsloth package, and if an unmodified copy is \
+     still blocked, update your security product's definitions or report it to your vendor. Do \
+     not disable endpoint protection.";
+const AMSI_ADMIN_BLOCK_GUIDANCE_PRE_START: &str = "This machine's security policy blocked the \
+     installer before it started, so no installation steps ran. Ask whoever manages the device \
+     to allow it.";
+const AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS: &str = "This machine's security policy blocked part \
+     of the installer, so setup did not finish and some components may already be installed. Ask \
+     whoever manages the device to allow it.";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SecurityBlockKind {
+    Malware,
+    AdminPolicy,
+}
+
+impl SecurityBlockKind {
+    /// Resolved at message time, not observation time: the two streams are read by independent
+    /// threads, so a `[TAURI:STEP]` written before the block can be observed after it.
+    fn guidance(self, started: bool) -> &'static str {
+        match (self, started) {
+            (Self::Malware, false) => AMSI_MALWARE_GUIDANCE_PRE_START,
+            (Self::Malware, true) => AMSI_MALWARE_GUIDANCE_IN_PROGRESS,
+            (Self::AdminPolicy, false) => AMSI_ADMIN_BLOCK_GUIDANCE_PRE_START,
+            (Self::AdminPolicy, true) => AMSI_ADMIN_BLOCK_GUIDANCE_IN_PROGRESS,
+        }
+    }
+}
+
+/// True when `id` is the value of the `FullyQualifiedErrorId` field rather than merely present on
+/// the line. PowerShell prints `+ FullyQualifiedErrorId : <id>[,<cmdlet>]`, so it follows the
+/// colon; prose naming both does not qualify.
+fn is_error_id_value(text: &str, id: &str) -> bool {
+    let mut rest = text;
+    while let Some(at) = rest.find(POWERSHELL_ERROR_ID_FIELD) {
+        let after = &rest[at + POWERSHELL_ERROR_ID_FIELD.len()..];
+        let after = after.trim_start();
+        if let Some(value) = after.strip_prefix(':') {
+            let value = value.trim_start();
+            if let Some(tail) = value.strip_prefix(id) {
+                // The id can carry a cmdlet suffix, but nothing else may extend the token.
+                if tail.is_empty() || tail.starts_with(',') || tail.starts_with(char::is_whitespace)
+                {
+                    return true;
+                }
+            }
+        }
+        rest = &rest[at + POWERSHELL_ERROR_ID_FIELD.len()..];
+    }
+    false
+}
+
+fn security_block_kind(text: &str) -> Option<SecurityBlockKind> {
+    if is_error_id_value(text, AMSI_MALWARE_ERROR_ID) {
+        return Some(SecurityBlockKind::Malware);
+    }
+    if is_error_id_value(text, AMSI_ADMIN_BLOCK_ERROR_ID) {
+        return Some(SecurityBlockKind::AdminPolicy);
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum InstallOutputStream {
+    Stdout,
+    Stderr,
+}
+
+impl InstallOutputStream {
+    fn other(self) -> Self {
+        match self {
+            Self::Stdout => Self::Stderr,
+            Self::Stderr => Self::Stdout,
+        }
+    }
+}
+
+struct InstallOutputLine {
+    stream: InstallOutputStream,
+    text: String,
+}
+
+#[derive(Default)]
+struct InstallFailureContext {
+    explicit_error: Option<String>,
+    explicit_error_stream: Option<InstallOutputStream>,
+    default_error: Option<String>,
+    security_block: Option<SecurityBlockKind>,
+    unpaired_clears: HashMap<(String, InstallOutputStream), usize>,
+    started: bool,
+    output_tail: VecDeque<InstallOutputLine>,
+}
+
+impl InstallFailureContext {
+    fn observe_stdout(&mut self, text: &str) -> bool {
+        if text.starts_with("[TAURI:STEP] ") {
+            self.started = true;
+        }
+        self.note_security_block(text);
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_CLEAR] ") {
+            self.clear_failure(InstallOutputStream::Stdout, message);
+            return true;
+        }
+        if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
+            self.clear_stream(InstallOutputStream::Stdout);
+            return true;
+        }
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR] ") {
+            let message = message.trim();
+            if !message.is_empty() {
+                self.explicit_error = Some(Self::bounded_line(message));
+                self.explicit_error_stream = Some(InstallOutputStream::Stdout);
+            }
+            return false;
+        }
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_OUTPUT] ") {
+            self.capture_output_error(InstallOutputStream::Stdout, message);
+            return true;
+        }
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_DEFAULT] ") {
+            let message = message.trim();
+            if !message.is_empty() {
+                self.default_error = Some(Self::bounded_line(message));
+            }
+            return true;
+        }
+        if !text.starts_with("[TAURI:") {
+            self.push_output(InstallOutputStream::Stdout, text);
+        }
+        false
+    }
+
+    fn observe_stderr(&mut self, text: &str) -> bool {
+        self.note_security_block(text);
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_CLEAR] ") {
+            self.clear_failure(InstallOutputStream::Stderr, message);
+            return true;
+        }
+        if text.starts_with("[TAURI:OUTPUT_CLEAR] ") {
+            self.clear_stream(InstallOutputStream::Stderr);
+            return true;
+        }
+        if let Some(message) = text.strip_prefix("[TAURI:ERROR_OUTPUT] ") {
+            self.capture_output_error(InstallOutputStream::Stderr, message);
+            return true;
+        }
+        self.push_output(InstallOutputStream::Stderr, text);
+        false
+    }
+
+    fn capture_output_error(&mut self, stream: InstallOutputStream, fallback: &str) {
+        let fallback = fallback.trim();
+        let detail = self
+            .output_tail
+            .iter()
+            .rev()
+            .find(|line| line.stream == stream)
+            .map(|line| line.text.as_str());
+        if let Some(error) = match (fallback.is_empty(), detail) {
+            (_, Some(detail)) if fallback == detail => Some(detail.to_owned()),
+            (false, Some(detail)) => Some(Self::bounded_line(&format!("{fallback}: {detail}"))),
+            (false, None) => Some(Self::bounded_line(fallback)),
+            (true, Some(detail)) => Some(detail.to_owned()),
+            (true, None) => None,
+        } {
+            self.explicit_error = Some(error);
+            self.explicit_error_stream = Some(stream);
+        }
+    }
+
+    /// Both streams, before marker handling: PowerShell writes the parse error to stderr, but a
+    /// wrapper that folded the streams together would otherwise lose it.
+    fn note_security_block(&mut self, text: &str) {
+        if self.security_block.is_none() {
+            self.security_block = security_block_kind(text);
+        }
+    }
+
+    fn clear_failure(&mut self, stream: InstallOutputStream, message: &str) {
+        // Clear-TauriInstallError writes ONE logical clear to BOTH streams (install.ps1:198),
+        // read by independent threads, so a verdict can land between a clear and its own twin and
+        // treating the twin as a second clear would discard a real block.
+        //
+        // Pair by message, not against the previous clear alone: a reader can lag several clears
+        // behind, so "is this the message I just saw" answers no and throws the verdict away. Each
+        // logical clear emits exactly two markers, so the first sighting is the clear and the next
+        // pairs with it.
+        //
+        // Keyed by stream as well as message: the same label can be cleared twice for real (an
+        // install and then a repair both emit "install PyTorch recovered"), and a reader that got
+        // ahead would otherwise pair those two same-stream clears with each other. Only the
+        // opposite stream's copy can consume a pending marker.
+        let other = stream.other();
+        let twin = match self.unpaired_clears.get_mut(&(message.to_owned(), other)) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                true
+            }
+            _ => {
+                *self
+                    .unpaired_clears
+                    .entry((message.to_owned(), stream))
+                    .or_insert(0) += 1;
+                false
+            }
+        };
+        self.unpaired_clears.retain(|_, count| *count > 0);
+        // Producers clear with a small fixed set of labels, and an unbounded map fed by child
+        // output is a memory sink. Dropping the oldest entries only costs a twin match.
+        if self.unpaired_clears.len() > MAX_UNPAIRED_CLEARS {
+            self.unpaired_clears.clear();
+        }
+        if !twin {
+            // A run that cleared its own failure state was never blocked at parse time, so a
+            // verdict here is stale.
+            self.security_block = None;
+        }
+        if self.explicit_error_stream == Some(stream) {
+            self.explicit_error = None;
+            self.explicit_error_stream = None;
+        }
+        if stream == InstallOutputStream::Stdout {
+            self.default_error = None;
+        }
+        self.clear_stream(stream);
+    }
+
+    fn clear_stream(&mut self, stream: InstallOutputStream) {
+        self.output_tail.retain(|line| line.stream != stream);
+    }
+
+    fn push_output(&mut self, stream: InstallOutputStream, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let text = Self::bounded_line(text);
+        self.output_tail
+            .push_back(InstallOutputLine { stream, text });
+        while self.output_tail.len() > FAILURE_CONTEXT_LINES {
+            self.output_tail.pop_front();
+        }
+    }
+
+    fn bounded_line(text: &str) -> String {
+        let mut text = diagnostics::redact_for_display(text);
+        let boundary =
+            diagnostics::valid_utf8_boundary(&text, text.len().min(FAILURE_CONTEXT_LINE_BYTES));
+        text.truncate(boundary);
+        text
+    }
+
+    fn message(&self, code: i32) -> String {
+        let detail = self
+            .explicit_error
+            .as_deref()
+            .or(self.default_error.as_deref())
+            .or_else(|| self.output_tail.back().map(|line| line.text.as_str()));
+        let base = match detail {
+            Some(detail) => format!("Installation failed: {}", detail),
+            None => generic_failure_message(code),
+        };
+        // Appended, not substituted: the raw id is what a diagnostics report and a vendor
+        // submission need, the guidance is what the user needs.
+        match self.security_block {
+            Some(kind) => format!("{} {}", base, kind.guidance(self.started)),
+            None => base,
+        }
+    }
+}
+
+fn is_elevation_request(code: i32, packages: &[String]) -> bool {
+    code == 2 && !packages.is_empty()
+}
+
+/// Windows PowerShell 5.1 applies `RemoteSigned` authorization differently to
+/// Win32 verbatim paths (`\\?\C:\...`) than to their ordinary drive/UNC forms.
+/// Tauri resolves resources through `canonicalize`, which always returns the
+/// verbatim form, so convert only the two lossless filesystem forms PowerShell
+/// understands before passing a script to `-File`.
+#[cfg(windows)]
+fn powershell_script_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    // Everything after `\\?\` reaches the object manager, which is case insensitive.
+    fn is(unit: Option<&u16>, ascii: u8) -> bool {
+        unit.is_some_and(|value| *value < 128 && (*value as u8).eq_ignore_ascii_case(&ascii))
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+    if !wide.starts_with(&verbatim) {
+        return path.to_path_buf();
+    }
+    let rest = &wide[verbatim.len()..];
+
+    let is_drive = rest.first().is_some_and(|value| {
+        (b'A' as u16..=b'Z' as u16).contains(value) || (b'a' as u16..=b'z' as u16).contains(value)
+    }) && rest.get(1) == Some(&(b':' as u16))
+        && rest.get(2) == Some(&(b'\\' as u16));
+
+    let normalized = if is(rest.first(), b'U')
+        && is(rest.get(1), b'N')
+        && is(rest.get(2), b'C')
+        && rest.get(3) == Some(&(b'\\' as u16))
+    {
+        let mut value: Vec<u16> = r"\\".encode_utf16().collect();
+        value.extend_from_slice(&rest[4..]);
+        value
+    } else if is_drive {
+        rest.to_vec()
+    } else {
+        return path.to_path_buf();
+    };
+
+    // Only the verbatim form addresses a path past MAX_PATH; stripping it there
+    // would trade an authorization error for a "path too long" one. MAX_PATH
+    // counts the terminating NUL, so 259 units is the longest legacy path.
+    if normalized.len() >= 260 {
+        return path.to_path_buf();
+    }
+
+    PathBuf::from(OsString::from_wide(&normalized))
+}
+
+/// Everything passed to `powershell.exe` before the script's own arguments.
+///
+/// Separate from `spawn_script` so a test can assert the property that matters:
+/// that this flag set authorizes this path spelling. #7819 broke first-run
+/// install by editing only the flags, which no test over `powershell_script_path`
+/// can see.
+#[cfg(windows)]
+fn powershell_launch_args(script: &Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+
+    // No -WindowStyle Hidden / -ExecutionPolicy Bypass: that pair is a Microsoft
+    // detection signature, CREATE_NO_WINDOW hides the console, and NSIS writes
+    // resources without a mark-of-the-web so RemoteSigned loads them.
+    let mut launch: Vec<OsString> = [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "RemoteSigned",
+        "-File",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
+
+    // Load-bearing: RemoteSigned rejects the `\\?\` spelling Tauri resolves to.
+    launch.push(powershell_script_path(script).into_os_string());
+    launch
+}
+
+/// `Command::new` searches the running executable's own directory before the
+/// system one, and a `currentUser` install puts that directory somewhere the
+/// user can write, so resolve the interpreter absolutely.
+#[cfg(windows)]
+fn powershell_exe() -> PathBuf {
+    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let absolute = Path::new(&system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if absolute.is_file() {
+        absolute
+    } else {
+        PathBuf::from("powershell.exe")
+    }
+}
 
 // ── Script Resolution ──
 
@@ -150,13 +552,10 @@ fn spawn_script(
     install.intentional_stop = false;
     install.needed_packages.clear();
 
-    // Scripts create ~/.unsloth/studio/ themselves, but need a writable cwd.
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let work_dir = home.join(".unsloth");
-    if !work_dir.exists() {
-        std::fs::create_dir_all(&work_dir)
-            .map_err(|e| format!("Failed to create {}: {}", work_dir.display(), e))?;
-    }
+    // Scripts create ~/.unsloth/studio/ themselves but need a writable cwd, and
+    // unlike the CLI children they always want ~/.unsloth. No Windows-directory
+    // rejection: install.ps1 detects a SYSTEM profile itself and explains it.
+    let work_dir = crate::process::install_working_dir(dirs::home_dir())?;
 
     #[cfg(unix)]
     let mut cmd = Command::new("bash");
@@ -168,38 +567,30 @@ fn spawn_script(
         .stderr(Stdio::piped());
 
     #[cfg(windows)]
-    let mut cmd = Command::new("powershell.exe");
+    let mut cmd = Command::new(powershell_exe());
     #[cfg(windows)]
-    cmd.args([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-    ])
-    .arg(script)
-    .args(args)
-    .current_dir(&work_dir)
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    cmd.args(powershell_launch_args(script))
+        .args(args)
+        .current_dir(&work_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
-    // spawned by the install script. Only clear inside AppImage — native installs
-    // may need these for custom CUDA or conda paths.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env(&mut cmd);
 
     // Tauri only does default-root installs; install.sh / install.ps1 reject
     // these under --tauri. Scrub so an inherited value can't trip the guard.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+
+    // We decode this child as UTF-8 below, so its Python descendants must emit
+    // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
+    // this covers any path reaching Python without them.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
 
     // On Windows, launch the installer directly with CREATE_NO_WINDOW.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
@@ -232,23 +623,30 @@ fn spawn_script(
 // ── Stream ──
 
 /// Spawns reader threads for stdout/stderr.
-/// Parses [TAURI:*] lines from stdout for structured events.
+/// Parses structured events from stdout and failure controls from both streams.
 fn stream_output(
     app: &AppHandle,
     state: &InstallState,
+    watch: &WatchState,
     event_mode: InstallEventMode,
     diagnostics: DiagnosticsState,
     attempt: AttemptLog,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
-) -> Vec<std::thread::JoinHandle<()>> {
+) -> (
+    Vec<std::thread::JoinHandle<()>>,
+    Arc<Mutex<InstallFailureContext>>,
+) {
     let mut threads = Vec::new();
+    let failure_context = Arc::new(Mutex::new(InstallFailureContext::default()));
 
     if let Some(out) = stdout {
         let app_clone = app.clone();
         let state_clone = Arc::clone(state);
+        let watch_clone = Arc::clone(watch);
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
+        let failure_context_clone = Arc::clone(&failure_context);
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(out);
             let mut buf = Vec::new();
@@ -259,6 +657,20 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
+                        // Not forwarded: a line per large dependency is noise. install.sh
+                        // sends them on stderr and install.ps1 on stdout, so both filter.
+                        if install_watchdog::note_progress(&watch_clone, &text) {
+                            info!("[install][stdout] {}", text);
+                            continue;
+                        }
+                        let is_failure_control = failure_context_clone
+                            .lock()
+                            .map(|mut context| context.observe_stdout(&text))
+                            .unwrap_or(false);
+                        if is_failure_control {
+                            info!("[install][stdout] {}", text);
+                            continue;
+                        }
                         // Parse structured Tauri protocol lines
                         if let Some(packages) = text.strip_prefix("[TAURI:NEED_SUDO] ") {
                             let pkgs: Vec<String> =
@@ -314,6 +726,8 @@ fn stream_output(
     if let Some(err) = stderr {
         let app_clone = app.clone();
         let attempt_clone = attempt.clone();
+        let watch_clone = Arc::clone(watch);
+        let failure_context_clone = Arc::clone(&failure_context);
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(err);
             let mut buf = Vec::new();
@@ -324,6 +738,18 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
+                        if install_watchdog::note_progress(&watch_clone, &text) {
+                            info!("[install][stderr] {}", text);
+                            continue;
+                        }
+                        let is_failure_control = failure_context_clone
+                            .lock()
+                            .map(|mut context| context.observe_stderr(&text))
+                            .unwrap_or(false);
+                        if is_failure_control {
+                            info!("[install][stderr] {}", text);
+                            continue;
+                        }
                         warn!("[install][stderr] {}", text);
                         let _ = app_clone.emit(event_mode.progress_event(), &text);
                     }
@@ -336,41 +762,48 @@ fn stream_output(
         }));
     }
 
-    threads
+    (threads, failure_context)
 }
 
 // ── Wait & Finalize ──
 
 /// Waits for the install process to exit. Returns (exit_status, was_intentional_stop).
-/// Times out after 2 hours to prevent infinite loops if the child hangs.
-fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
-    const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
-    for _ in 0..MAX_WAIT_ITERATIONS {
-        let mut install = state.lock().map_err(|e| e.to_string())?;
-        let intentional = install.intentional_stop;
-
-        match install.child.as_mut() {
-            Some(child) => match child.try_wait() {
-                Ok(Some(status)) => {
-                    install.child = None;
-                    return Ok((status, intentional));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    install.child = None;
-                    return Err(format!("Error waiting for installer: {}", e));
-                }
-            },
-            None if intentional => return Err("Installation stopped.".to_string()),
-            None => return Err("Installer process disappeared unexpectedly.".to_string()),
-        }
-
-        drop(install);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    // Timed out — kill and report
-    let _ = stop_install(state);
-    Err("Installation timed out after 2 hours".to_string())
+/// The deadline is a backstop, not a patience limit; see install_watchdog.
+fn wait_for_exit(
+    state: &InstallState,
+    watch: &WatchState,
+    app: &AppHandle,
+    event_mode: InstallEventMode,
+) -> Result<(ExitStatus, bool), String> {
+    install_watchdog::wait_with_watchdog(
+        watch,
+        || {
+            let mut install = state.lock().map_err(|e| e.to_string())?;
+            let intentional = install.intentional_stop;
+            match install.child.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => {
+                        install.child = None;
+                        Ok(Some((status, intentional)))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => {
+                        install.child = None;
+                        Err(format!("Error waiting for installer: {}", e))
+                    }
+                },
+                None if intentional => Err("Installation stopped.".to_string()),
+                None => Err("Installer process disappeared unexpectedly.".to_string()),
+            }
+        },
+        |line| {
+            info!("[install] {}", line);
+            let _ = app.emit(event_mode.progress_event(), line);
+        },
+        || {
+            let _ = stop_install(state);
+        },
+    )
 }
 
 // ── Public API ──
@@ -457,9 +890,11 @@ fn run_install_with_event_mode(
             return Err(msg);
         }
     };
-    let threads = stream_output(
+    let watch: WatchState = Arc::new(Mutex::new(ProgressWatch::new(std::time::Instant::now())));
+    let (threads, failure_context) = stream_output(
         &app,
         &state,
+        &watch,
         event_mode,
         diagnostics.clone(),
         attempt.clone(),
@@ -468,7 +903,7 @@ fn run_install_with_event_mode(
     );
 
     // Wait for exit, join reader threads
-    let result = wait_for_exit(&state);
+    let result = wait_for_exit(&state, &watch, &app, event_mode);
     for handle in threads {
         let _ = handle.join();
     }
@@ -490,12 +925,12 @@ fn run_install_with_event_mode(
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
-            if code == 2 {
+            let packages = state
+                .lock()
+                .map(|install| install.needed_packages.clone())
+                .unwrap_or_default();
+            if is_elevation_request(code, &packages) {
                 // Script needs elevated package install — report to frontend
-                let packages = state
-                    .lock()
-                    .map(|i| i.needed_packages.clone())
-                    .unwrap_or_default();
                 diagnostics::record_elevation_packages(&diagnostics, &attempt, &packages);
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -508,7 +943,10 @@ fn run_install_with_event_mode(
                 let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
-                let msg = format!("Installer exited with code {}", code);
+                let msg = failure_context
+                    .lock()
+                    .map(|context| context.message(code))
+                    .unwrap_or_else(|_| generic_failure_message(code));
                 diagnostics::finish_attempt(
                     &diagnostics,
                     &attempt,
@@ -601,6 +1039,14 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
             Some("intentional_stop".to_string()),
         );
     }
+}
+
+/// True while an installer runs; quitting now would leave a broken venv.
+pub fn is_install_running(state: &InstallState) -> bool {
+    state
+        .lock()
+        .map(|install| install.child.is_some())
+        .unwrap_or(false)
 }
 
 /// Stop a running install process gracefully.
@@ -877,6 +1323,159 @@ fn capped_output_text(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_path_normalizes_verbatim_filesystem_paths() {
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\UNC\server\share\install.ps1")),
+            PathBuf::from(r"\\server\share\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\Volume{1234}\install.ps1")),
+            PathBuf::from(r"\\?\Volume{1234}\install.ps1")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_path_leaves_unsupported_spellings_verbatim() {
+        // The object manager is case insensitive, so `unc` must normalize too.
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\unc\server\share\install.ps1")),
+            PathBuf::from(r"\\server\share\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\c:\Users\Owner\install.ps1")),
+            PathBuf::from(r"c:\Users\Owner\install.ps1")
+        );
+        // A drive letter with no separator is drive-relative, not the same path.
+        for unchanged in [
+            r"\\?\C:",
+            r"\\?\",
+            r"\\?\1:\install.ps1",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\install.ps1",
+            r"\\.\C:\install.ps1",
+            r"\\server\share\install.ps1",
+            r"install.ps1",
+        ] {
+            assert_eq!(
+                powershell_script_path(Path::new(unchanged)),
+                PathBuf::from(unchanged),
+                "{unchanged} should be passed through untouched"
+            );
+        }
+        // MAX_PATH counts the terminating NUL, so 259 units still fits but 260 does not.
+        let fits = format!(r"C:\{}\install.ps1", "a".repeat(244));
+        assert_eq!(fits.len(), 259);
+        assert_eq!(
+            powershell_script_path(Path::new(&format!(r"\\?\{fits}"))),
+            PathBuf::from(&fits)
+        );
+        for over in [
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(245)),
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(300)),
+        ] {
+            assert_eq!(
+                powershell_script_path(Path::new(&over)),
+                PathBuf::from(&over),
+                "a path past MAX_PATH must stay verbatim"
+            );
+        }
+    }
+
+    /// Run the real interpreter with the real flags against a script addressed
+    /// the way Tauri addresses it. Fails if the execution policy is swapped as
+    /// in #7819, or if `powershell_script_path` is dropped from the call site;
+    /// both leave the assertions over the normalizer itself passing.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_runs_a_script_addressed_the_way_tauri_addresses_it() {
+        use std::fs;
+
+        // A temp file has no Zone.Identifier, so RemoteSigned admits it unsigned.
+        // The path spelling and the flag set are what is under test, not signing.
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-launch-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let script = dir.join("install.ps1");
+        fs::write(&script, "Write-Output 'unsloth-launcher-ok'\r\n").expect("write script");
+
+        // Resource resolution bottoms out in `canonicalize`, documented to return
+        // extended-length syntax. Assert that, so the test cannot pass vacuously.
+        let resolved = fs::canonicalize(&script).expect("canonicalize");
+        assert!(
+            resolved.as_os_str().to_string_lossy().starts_with(r"\\?\"),
+            "expected a verbatim path to exercise, got {resolved:?}"
+        );
+
+        let output = Command::new(powershell_exe())
+            .args(powershell_launch_args(&resolved))
+            .output()
+            .expect("spawn powershell");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            output.status.success() && stdout.contains("unsloth-launcher-ok"),
+            "the launcher shape failed to authorize {resolved:?}\n\
+             status: {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            output.status.code()
+        );
+    }
+
+    /// Pin the flag set, so a policy swap shows up as a diff. `-File` stays last
+    /// so the script path is never parsed as a flag.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_launch_args_pin_the_defender_friendly_shape() {
+        let args = powershell_launch_args(Path::new(r"\\?\C:\Users\Owner\install.ps1"));
+        let args: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            args,
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "RemoteSigned",
+                "-File",
+                r"C:\Users\Owner\install.ps1",
+            ]
+        );
+        // The pair Microsoft ships as a detection test must not come back.
+        assert!(!args.iter().any(|a| a == "Bypass" || a == "-WindowStyle"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_exe_resolves_under_the_system_directory() {
+        let resolved = powershell_exe();
+        assert!(resolved.is_absolute(), "{resolved:?} should be absolute");
+        assert!(resolved.is_file(), "{resolved:?} should exist");
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        assert!(
+            resolved.starts_with(&system_root),
+            "{resolved:?} escaped {system_root}"
+        );
+    }
+
     #[test]
     fn elevated_output_cap_is_utf8_boundary_safe() {
         let text = "é".repeat(40_000);
@@ -896,5 +1495,446 @@ mod tests {
             "repair-needs-elevation"
         );
         assert!(!InstallEventMode::Repair.emit_terminal_events());
+        assert!(!is_elevation_request(2, &[]));
+        assert!(is_elevation_request(2, &["cmake".to_string()]));
+        assert!(!is_elevation_request(1, &["cmake".to_string()]));
+    }
+
+    /// The exact stderr an AMSI provider produced in #8523. The scan covers the whole script
+    /// block, so the parse error points at line 1 char 1 and no statement ever runs.
+    const AMSI_BLOCK_STDERR: [&str; 6] = [
+        r"At C:\Program Files\Unsloth\install.ps1:1 char:1",
+        "+ # Unsloth Studio Installer for Windows PowerShell",
+        "+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+        "This script contains malicious content and has been blocked by your antivirus software.",
+        "    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException",
+        "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent",
+    ];
+
+    #[test]
+    fn amsi_block_explains_itself_without_losing_the_error_id() {
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = context.message(1);
+        // The raw id survives: diagnostics and vendor submissions need it.
+        assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
+        assert!(message.starts_with("Installation failed: "), "{message}");
+        assert!(message.contains("blocked the installer before it started"), "{message}");
+        assert!(message.contains("only diagnostic logs may have been written"), "{message}");
+        // We cannot know a verdict is wrong, so the text must not assert it.
+        assert!(!message.contains("This is a false positive"), "{message}");
+    }
+
+    #[test]
+    fn a_block_after_the_install_started_does_not_claim_nothing_changed() {
+        // install.ps1 runs `unsloth studio setup` near the end, and that child spawns
+        // studio/setup.ps1 on the same inherited pipes. A block there lands after the venv and
+        // PyTorch are on disk, so the pre-start reassurance would be false.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] running unsloth studio setup...");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = context.message(1);
+        assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
+        assert!(message.contains("blocked part of the installer"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
+        assert!(message.contains("some components may already be installed"), "{message}");
+    }
+
+    #[test]
+    fn the_wording_follows_the_final_started_state_not_the_arrival_order() {
+        // stdout and stderr are read by independent threads, so the STEP a child wrote before
+        // the block can be observed after it. Deciding the wording when the token arrives would
+        // tell the user nothing was changed on a run that had already installed PyTorch.
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:STEP] running unsloth studio setup...");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
+    }
+
+    #[test]
+    fn the_twin_of_an_earlier_clear_does_not_erase_a_later_verdict() {
+        // Clear-TauriInstallError writes one clear to BOTH streams, and independent readers can
+        // interleave them around a block that happened afterwards. install.ps1 clears after each
+        // recovered step, so this is the ordinary shape of a setup.ps1 block late in a run.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        // the twin of the same clear, arriving late on the other stream
+        context.observe_stdout("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn two_real_clears_of_one_label_on_one_stream_are_not_twins() {
+        // The same label can be cleared twice for real: _install_torch_default_index emits its
+        // recovery during the install and again during the ROCm repair. Pairing by message alone
+        // treated the second as the twin of the first, so the block that landed between them was
+        // then erased by the genuinely later clear arriving on the other stream.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        // Both twins arrive late on the other stream and consume the two pending clears.
+        context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn a_twin_lagging_several_clears_behind_still_pairs() {
+        // install.ps1 clears after every recovered step, so a slower reader can be several clears
+        // behind when a block lands. Pairing only against the previous message would treat this
+        // delayed twin of A as a fresh recovery and drop the verdict.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] step A recovered");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] step B recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:ERROR_CLEAR] step A recovered");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] step B recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn a_genuinely_later_recovery_still_clears_the_verdict() {
+        // Distinct text means a real subsequent recovery, not a twin, and the guidance must go.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        context.observe_stdout("[TAURI:ERROR_CLEAR] studio setup completed");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn the_id_has_to_be_the_field_value_not_just_on_the_line() {
+        // Prose that names both the field and the id is not an error record.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr(
+            "checking FullyQualifiedErrorId handling for ScriptContainedMaliciousContent",
+        );
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+        // A longer token that merely starts with the id is a different id.
+        assert!(!is_error_id_value(
+            "+ FullyQualifiedErrorId : ScriptContainedMaliciousContentX",
+            AMSI_MALWARE_ERROR_ID
+        ));
+        // The real record, with and without the cmdlet suffix.
+        assert!(is_error_id_value(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent",
+            AMSI_MALWARE_ERROR_ID
+        ));
+        assert!(is_error_id_value(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent,Microsoft.PowerShell",
+            AMSI_MALWARE_ERROR_ID
+        ));
+    }
+
+    #[test]
+    fn a_flood_of_distinct_clears_cannot_grow_the_pairing_map() {
+        let mut context = InstallFailureContext::default();
+        for i in 0..(MAX_UNPAIRED_CLEARS * 4) {
+            context.observe_stdout(&format!("[TAURI:ERROR_CLEAR] step {i} recovered"));
+        }
+        assert!(context.unpaired_clears.len() <= MAX_UNPAIRED_CLEARS, "{}", context.unpaired_clears.len());
+    }
+
+    #[test]
+    fn merely_naming_the_error_id_is_not_a_verdict() {
+        // The id is only a verdict as the value of a PowerShell error record's field. A scanner
+        // log or a test fixture that prints the bare string must not attach antivirus guidance
+        // to whatever fails next.
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("scanning fixture ScriptContainedMaliciousContent");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn an_admin_policy_block_after_the_install_started_is_also_neutral() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptHasAdminBlockedContent");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+        assert!(!message.contains("no installation steps ran"), "{message}");
+    }
+
+    #[test]
+    fn amsi_block_is_recognised_on_stdout_and_when_the_id_carries_a_cmdlet_suffix() {
+        // A wrapper folding stderr into stdout, plus the Invoke-Expression form of the id.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent,\
+             Microsoft.PowerShell.Commands.InvokeExpressionCommand",
+        );
+        assert!(context
+            .message(1)
+            .contains("blocked the installer before it started"));
+    }
+
+    #[test]
+    fn admin_policy_block_gets_its_own_guidance() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptHasAdminBlockedContent");
+        let message = context.message(1);
+        assert!(message.contains("security policy blocked the installer"), "{message}");
+        assert!(!message.contains("report it to your vendor"), "{message}");
+    }
+
+    #[test]
+    fn an_ordinary_failure_gains_no_security_guidance() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn a_run_that_clears_its_failure_state_drops_a_stale_verdict() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptContainedMaliciousContent");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] retrying");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn explicit_installer_error_beats_stderr_noise() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        context.observe_stderr("rollback cleanup failed");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn command_error_includes_preceding_output_from_the_same_stream() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("unrelated stdout");
+        context.observe_stderr("resolver error: no space left on device");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install unsloth failed (exit code 1)"));
+        context.observe_stdout("[TAURI:ERROR_DEFAULT] Failed to install unsloth");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: install unsloth failed (exit code 1): resolver error: no space left on device"
+        );
+    }
+
+    #[test]
+    fn command_error_without_output_uses_its_fallback() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("unrelated output from an earlier step");
+        assert!(context.observe_stdout("[TAURI:OUTPUT_CLEAR] create venv"));
+        assert!(context.observe_stdout("[TAURI:ERROR_OUTPUT] create venv failed (exit code 2)"));
+        assert_eq!(
+            context.message(2),
+            "Installation failed: create venv failed (exit code 2)"
+        );
+    }
+
+    #[test]
+    fn recovered_retry_clears_stale_installer_error() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("ERROR: transient PyTorch download failure");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install PyTorch failed (exit code 1)"));
+        assert!(context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered after retry"));
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered after retry"));
+        context.observe_stderr("ERROR: studio setup failed");
+        let message = context.message(7);
+        assert!(message.contains("studio setup failed"));
+        assert!(!message.contains("install PyTorch"));
+        assert!(!message.contains("transient PyTorch"));
+    }
+
+    #[test]
+    fn recovery_clear_is_order_independent_across_streams() {
+        let mut context = InstallFailureContext::default();
+        assert!(context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered"));
+        context.observe_stderr("ERROR: transient PyTorch download failure");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install PyTorch failed (exit code 1)"));
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered"));
+        context.observe_stdout("[TAURI:ERROR] later setup failure");
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] delayed recovery clear"));
+        assert_eq!(
+            context.message(1),
+            "Installation failed: later setup failure"
+        );
+    }
+
+    #[test]
+    fn successful_fallback_clears_unstructured_stderr() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("bitsandbytes pre-release install failed");
+        assert!(context.observe_stderr("[TAURI:ERROR_CLEAR] bitsandbytes pypi fallback recovered"));
+        context.observe_stderr("mkdir: cannot create directory: Permission denied");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: mkdir: cannot create directory: Permission denied"
+        );
+    }
+
+    #[test]
+    fn setup_failure_uses_explicit_producer_error_before_default() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("CMake not found -- installing via winget");
+        context.observe_stdout("[TAURI:ERROR] UNSLOTH_LLAMA_PR=invalid is not a valid PR number");
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 4)"));
+        assert_eq!(
+            context.message(4),
+            "Installation failed: UNSLOTH_LLAMA_PR=invalid is not a valid PR number"
+        );
+    }
+
+    #[test]
+    fn setup_failure_uses_default_without_specific_output() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("Finishing setup");
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 4)"));
+        context.observe_stderr("restored previous environment");
+        assert_eq!(
+            context.message(4),
+            "Installation failed: studio setup failed (exit code 4)"
+        );
+    }
+
+    #[test]
+    fn explicit_setup_error_survives_optional_output_and_footer() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] llama.cpp setup did not produce a usable server");
+        context.observe_stderr("whisper.cpp source build failed (exit code 1)");
+        context.observe_stdout(
+            "whisper.cpp    prebuilt install failed; browser and Transformers dictation remain available",
+        );
+        for index in 0..10 {
+            context.observe_stdout(&format!("setup footer line {index}"));
+        }
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 1)"));
+        assert_eq!(
+            context.message(1),
+            "Installation failed: llama.cpp setup did not produce a usable server"
+        );
+    }
+
+    #[test]
+    fn setup_default_outranks_nonfatal_failure_output() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("long paths failed to enable");
+        context.observe_stderr("Triton install failed; torch.compile may not work");
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 3)"));
+        assert_eq!(
+            context.message(3),
+            "Installation failed: studio setup failed (exit code 3)"
+        );
+    }
+
+    #[test]
+    fn latest_output_is_used_without_structured_context() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("first diagnostic");
+        context.observe_stderr("mv: cannot move build: Permission denied");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: mv: cannot move build: Permission denied"
+        );
+    }
+
+    #[test]
+    fn structured_rollback_progress_does_not_replace_failure_output() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("ln: cannot create symbolic link: Permission denied");
+        context.observe_stdout(
+            "[TAURI:PROGRESS] restoring previous environment after failed install...",
+        );
+        context.observe_stdout("[TAURI:PROGRESS] restored previous environment");
+        assert_eq!(
+            context.message(1),
+            "Installation failed: ln: cannot create symbolic link: Permission denied"
+        );
+    }
+
+    #[test]
+    fn installer_exit_code_is_not_duplicated() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch (exit code 7)");
+        let message = context.message(7);
+        assert_eq!(
+            message,
+            "Installation failed: Failed to install PyTorch (exit code 7)"
+        );
+        assert_eq!(message.matches("exit code 7").count(), 1);
+    }
+
+    #[test]
+    fn stderr_fallback_redacts_secrets() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("ERROR: download failed for https://user:pass@example.com/package");
+        let message = context.message(1);
+        assert!(message.contains("ERROR: download failed"));
+        assert!(message.contains("https://<redacted>@example.com/package"));
+        assert!(!message.contains("user:pass"));
+    }
+
+    #[test]
+    fn failure_context_is_bounded_and_utf8_safe() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout(&format!(
+            "[TAURI:ERROR] {}https://user:secret@example.com/package",
+            "é".repeat(500)
+        ));
+        for index in 0..20 {
+            context.observe_stderr(&format!("{index}: {}", "é".repeat(1_000)));
+        }
+        let explicit_error = context.explicit_error.as_ref().unwrap();
+        assert!(explicit_error.len() <= FAILURE_CONTEXT_LINE_BYTES);
+        assert!(explicit_error.is_char_boundary(explicit_error.len()));
+        assert!(!explicit_error.contains("secret"));
+        assert_eq!(context.output_tail.len(), FAILURE_CONTEXT_LINES);
+        assert!(context
+            .output_tail
+            .iter()
+            .all(|line| line.text.len() <= FAILURE_CONTEXT_LINE_BYTES));
+        assert!(context
+            .output_tail
+            .iter()
+            .all(|line| line.text.is_char_boundary(line.text.len())));
     }
 }

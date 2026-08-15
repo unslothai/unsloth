@@ -12,7 +12,7 @@ SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _read_source() -> str:
-    with open(SOURCE_PATH, "r") as fh:
+    with open(SOURCE_PATH, "r", encoding = "utf-8") as fh:
         return fh.read()
 
 

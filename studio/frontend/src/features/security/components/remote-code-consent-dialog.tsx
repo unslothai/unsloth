@@ -111,7 +111,7 @@ function UnsafeFileCard({ file }: { file: UnsafeFile }) {
       <Badge
         variant="outline"
         className={cn(
-          "shrink-0 text-[10px] font-semibold uppercase tracking-wide",
+          "shrink-0 text-ui-10 font-semibold uppercase tracking-wide",
           severityTone("CRITICAL"),
         )}
       >
@@ -134,7 +134,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
         <Badge
           variant="outline"
           className={cn(
-            "shrink-0 text-[10px] font-semibold tracking-wide",
+            "shrink-0 text-ui-10 font-semibold tracking-wide",
             severityTone(finding.severity),
           )}
         >

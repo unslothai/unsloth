@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for Studio trained-model discovery used by Chat."""
+"""Tests for Unsloth trained-model discovery used by Chat."""
 
 import json
 from pathlib import Path
@@ -97,6 +97,7 @@ def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
         repo,
         fn,
         token = None,
+        cache_dir = None,
     ):
         assert repo == "someone/my-remote-lora"
         assert fn == "adapter_config.json"
@@ -128,6 +129,7 @@ def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
         repo,
         fn,
         token = None,
+        cache_dir = None,
     ):
         calls["n"] += 1
         if calls["n"] == 1:

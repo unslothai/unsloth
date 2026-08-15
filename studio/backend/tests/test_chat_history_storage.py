@@ -4,6 +4,7 @@
 import os
 import platform
 import shutil
+import sqlite3
 import threading
 import uuid
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from storage import studio_db
+from utils.paths import studio_db_path
 
 
 def _reset_studio_db(
@@ -108,6 +110,180 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     assert by_id["msg-2"]["content"] == [{"type": "text", "text": "updated text"}]
 
 
+def test_chat_thread_updated_at_bumps_on_message_writes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = studio_db.upsert_chat_thread(_thread())
+    assert thread["updatedAt"] == thread["createdAt"]
+
+    studio_db.upsert_chat_message(_message("msg-1", 1_700_000_000_500, "hi"))
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+    studio_db.upsert_chat_message(_message("msg-0", 1_600_000_000_000, "old"))
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [_message("msg-2", 1_700_000_001_000, "newer")],
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
+
+
+def test_chat_export_reads_one_snapshot_during_concurrent_delete(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    project = studio_db.upsert_chat_project(_project())
+    thread = {**_thread(), "projectId": project["id"]}
+    studio_db.upsert_chat_thread(thread)
+    studio_db.upsert_chat_message(_message("msg-1", 1, "hello"))
+
+    original_get_connection = studio_db.get_connection
+    reader = original_get_connection()
+    deleted = False
+
+    class InterleavingConnection:
+        def execute(
+            self,
+            sql,
+            parameters = (),
+        ):
+            nonlocal deleted
+            cursor = reader.execute(sql, parameters)
+            if not deleted and "SELECT * FROM chat_threads" in sql:
+                deleted = True
+                writer = original_get_connection()
+                try:
+                    writer.execute("DELETE FROM chat_threads WHERE id = ?", (thread["id"],))
+                    writer.execute("DELETE FROM chat_projects WHERE id = ?", (project["id"],))
+                    writer.commit()
+                finally:
+                    writer.close()
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(reader, name)
+
+    monkeypatch.setattr(studio_db, "get_connection", lambda: InterleavingConnection())
+    projects, threads, messages = studio_db.build_chat_history_export()
+
+    assert deleted
+    assert [item["id"] for item in projects] == [project["id"]]
+    assert [item["id"] for item in threads] == [thread["id"]]
+    assert [item["id"] for item in messages] == ["msg-1"]
+
+
+def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = studio_db.upsert_chat_thread(_thread())
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [
+            _message("msg-1", 1_700_000_000_500, "older"),
+            _message("msg-2", 1_700_000_001_000, "newest"),
+        ],
+        prune_missing = True,
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
+
+    # Pruning the newest message must lower updated_at to the remaining one.
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [_message("msg-1", 1_700_000_000_500, "older")],
+        prune_missing = True,
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+    # Pruning every message falls back to created_at.
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == thread["createdAt"]
+
+
+def test_chat_thread_updated_at_survives_thread_resave(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_message(_message("msg-1", 1_700_000_000_500, "hi"))
+
+    studio_db.upsert_chat_thread(_thread())
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+
+def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    older = _thread("thread-old")
+    older["createdAt"] = 1_700_000_000_000
+    newer = _thread("thread-new")
+    newer["createdAt"] = 1_700_000_100_000
+    studio_db.upsert_chat_thread(older)
+    studio_db.upsert_chat_thread(newer)
+    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-new", "thread-old"]
+
+    studio_db.upsert_chat_message(
+        _message("msg-1", 1_700_000_200_000, "hi", thread_id = "thread-old")
+    )
+    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-old", "thread-new"]
+
+
+def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    db_path = studio_db_path()
+    db_path.parent.mkdir(parents = True, exist_ok = True)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE chat_threads (
+                id TEXT NOT NULL PRIMARY KEY,
+                title TEXT NOT NULL,
+                model_type TEXT NOT NULL,
+                model_id TEXT,
+                pair_id TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE chat_messages (
+                id TEXT NOT NULL PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                parent_id TEXT,
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                attachments_json TEXT,
+                metadata_json TEXT,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
+            ("thread-with-msgs", "Old", "base", 1_700_000_000_000),
+        )
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
+            ("thread-empty", "Empty", "base", 1_700_000_050_000),
+        )
+        # Fork-like thread: copied ancestor messages predate the thread itself.
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
+            ("thread-fork", "Fork", "base", 1_700_000_100_000),
+        )
+        conn.executemany(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("m1", "thread-with-msgs", "user", "[]", 1_700_000_001_000),
+                ("m2", "thread-with-msgs", "assistant", "[]", 1_700_000_002_000),
+                ("m3", "thread-fork", "user", "[]", 1_700_000_001_000),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert studio_db.get_chat_thread("thread-with-msgs")["updatedAt"] == 1_700_000_002_000
+    assert studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
+    assert studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
+
+
 def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     project = studio_db.upsert_chat_project(_project())
@@ -132,6 +308,63 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     assert studio_db.get_chat_thread("thread-1") is None
     assert studio_db.list_chat_messages("thread-1") == []
     assert (tmp_path / "Projects" / "Research-project").exists()
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
+
+
+def test_thread_delete_blocks_a_late_create_with_the_same_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+
+    studio_db.delete_chat_threads(["late-thread"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("late-thread"))
+    assert studio_db.get_chat_thread("late-thread") is None
+
+
+def test_clear_blocks_a_stale_recreate_of_a_deleted_thread(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    studio_db.clear_chat_history_with_active_research_runs(["pending-thread"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("thread-1"))
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("pending-thread"))
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert studio_db.get_chat_thread("pending-thread") is None
+
+
+def test_clear_reports_only_threads_that_had_a_row(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    _, deleted_ids = studio_db.clear_chat_history_with_active_research_runs(["never-committed"])
+
+    # the fenced id is still tombstoned, but reporting it would inflate the cleared count
+    assert deleted_ids == ["thread-1"]
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("never-committed"))
+
+
+def test_repeated_clear_operation_does_not_delete_later_threads(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("before-clear"))
+
+    _, first_deleted_ids = studio_db.clear_chat_history_with_active_research_runs(
+        operation_id = "clear-operation-1"
+    )
+    studio_db.upsert_chat_thread(_thread("after-clear"))
+
+    _, repeated_deleted_ids = studio_db.clear_chat_history_with_active_research_runs(
+        operation_id = "clear-operation-1"
+    )
+
+    assert first_deleted_ids == ["before-clear"]
+    assert repeated_deleted_ids == first_deleted_ids
+    assert studio_db.get_chat_thread("before-clear") is None
+    assert studio_db.get_chat_thread("after-clear") is not None
 
 
 def test_chat_project_delete_files_removes_workspace(
@@ -468,6 +701,73 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
     }
 
 
+def test_fork_chat_thread_detaches_research_run_metadata(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.upsert_chat_message(_msg("user", None, 1))
+    studio_db.upsert_chat_message(
+        {
+            "id": "research-report",
+            "threadId": "src",
+            "parentId": "user",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "# Copied report",
+                    "researchRunId": "run-source",
+                },
+                {
+                    "type": "source",
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "researchStatus": "completed",
+                },
+            ],
+            "metadata": {
+                "researchRunId": "run-source",
+                "researchStatus": "completed",
+                "researchPlanRevision": 1,
+                "serverManaged": True,
+                "model": "local-model",
+            },
+            "createdAt": 2,
+        }
+    )
+
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "research-report",
+        new_thread_id = "fork-1",
+        new_title = "fork",
+        created_at = 3,
+        id_factory = iter(("fork-user", "fork-report")).__next__,
+    )
+
+    report = next(
+        message
+        for message in studio_db.list_chat_messages("fork-1")
+        if message["role"] == "assistant"
+    )
+    assert report["content"][0]["text"] == "# Copied report"
+    assert report["content"][1]["url"] == "https://example.com"
+    assert all(
+        not ({"researchRunId", "researchStatus", "serverManaged"} & set(part))
+        for part in report["content"]
+    )
+    assert report["metadata"] == {"model": "local-model"}
+
+
+def test_fork_detachment_detects_non_id_research_content_keys():
+    content_json, metadata_json = studio_db._detach_research_message_json(
+        '[{"type":"text","text":"Report","serverManaged":true}]',
+        '{"model":"local-model"}',
+    )
+
+    assert "serverManaged" not in content_json
+    assert metadata_json == '{"model": "local-model"}'
+
+
 def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     result = studio_db.fork_chat_thread(
@@ -479,6 +779,24 @@ def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch)
         id_factory = lambda: "x",
     )
     assert result is None
+
+
+def test_fork_chat_thread_rejects_a_deleted_target_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.upsert_chat_message(_msg("m1", None, 1))
+    studio_db.delete_chat_threads(["fork"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.fork_chat_thread(
+            source_thread_id = "src",
+            branch_message_id = "m1",
+            new_thread_id = "fork",
+            new_title = "f",
+            created_at = 2,
+            id_factory = lambda: "new-1",
+        )
+    assert studio_db.get_chat_thread("fork") is None
 
 
 def test_count_forks_for_message(tmp_path, monkeypatch):
@@ -510,3 +828,283 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         id_factory = id_factory,
     )
     assert studio_db.count_forks_for_message("src", "m1") == 2
+
+
+def _research_thread(
+    tmp_path,
+    monkeypatch,
+    *,
+    extra_ancestors: int = 1,
+):
+    """A thread shaped `a0 -> ... -> prompt -> report`, with the pair claimed by a research run.
+
+    Returns the ancestor ids in order. `prompt` and `report` are the server-managed pair.
+    """
+    from storage import research_runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+
+    ancestors = [f"a{index}" for index in range(extra_ancestors)]
+    chain = [*ancestors, "prompt", "report"]
+    messages = []
+    for position, message_id in enumerate(chain):
+        messages.append(
+            {
+                "id": message_id,
+                "threadId": "src",
+                "parentId": chain[position - 1] if position else None,
+                "role": "assistant" if message_id == "report" else "user",
+                "content": [{"type": "text", "text": message_id}],
+                "metadata": (
+                    {"researchRunId": "run-1", "serverManaged": True}
+                    if message_id == "report"
+                    else None
+                ),
+                "createdAt": position + 1,
+            }
+        )
+    studio_db.sync_chat_messages("src", messages)
+    research_runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "owner",
+        thread_id = "src",
+        user_message_id = "prompt",
+        assistant_message_id = "report",
+        config = {},
+        created_at = 1,
+    )
+    # create_run may rewrite the pair, so the baseline has to be what the server now holds.
+    return ancestors, studio_db.list_chat_messages("src")
+
+
+def _without(messages: list[dict], *drop: str) -> list[dict]:
+    return [dict(m) for m in messages if m["id"] not in drop]
+
+
+def test_deleting_an_ancestor_relinks_the_research_prompt(tmp_path, monkeypatch):
+    # The headline case: assistant-ui relinks the protected prompt to the deleted node's parent,
+    # and the guard must read that as the repair it is rather than an edit.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    payload = _without(messages, "a0")
+    payload[0]["parentId"] = None
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    assert [m["id"] for m in synced] == ["prompt", "report"]
+    assert synced[0]["parentId"] is None
+
+
+def test_deleting_a_mid_chain_ancestor_relinks_to_the_surviving_grandparent(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 3)
+    payload = _without(messages, "a1", "a2")
+    next(m for m in payload if m["id"] == "prompt")["parentId"] = "a0"
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(tmp_path, monkeypatch):
+    # The bulk sync keeps the server copy instead of rejecting the batch, so the protection is
+    # that the claim is dropped: the reseat is walked from the stored chain, and a client cannot
+    # use a pruned parent as cover for pointing a protected message anywhere it likes.
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 3)
+    payload = _without(messages, "a1", "a2")
+    next(m for m in payload if m["id"] == "prompt")["parentId"] = "report"
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+def test_a_relink_with_nothing_pruned_leaves_the_stored_parent_alone(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    payload = [dict(m) for m in messages]
+    next(m for m in payload if m["id"] == "prompt")["parentId"] = None
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    # Nothing was deleted, so there is no repair to make and the claim is simply dropped.
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+def test_a_relink_is_ignored_when_pruning_is_off(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    payload = _without(messages, "a0")
+    payload[0]["parentId"] = None
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = False)
+
+    # With pruning off the omitted ancestor survives, so the stored parent still resolves.
+    assert {m["id"] for m in synced} >= {"a0", "prompt"}
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("content", [{"type": "text", "text": "edited"}]),
+        ("role", "assistant"),
+        ("metadata", {"tampered": True}),
+        ("createdAt", 999),
+    ],
+)
+def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, value):
+    # Structure is repaired, content is not adopted: the reseat must not become a hole through
+    # which a drifted autosave rewrites the protected row.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    stored = next(m for m in messages if m["id"] == "prompt")
+    payload = _without(messages, "a0")
+    payload[0]["parentId"] = None
+    payload[0][field] = value
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    prompt = next(m for m in synced if m["id"] == "prompt")
+    # The deleted ancestor was the root, so the repair is a reseat to the root.
+    assert prompt["parentId"] is None
+    # .get on both sides: an absent key is how a None metadata comes back, and the point is
+    # that the client's value is not there either way.
+    assert prompt.get(field) == stored.get(field)
+    assert prompt.get(field) != value
+
+
+def test_deleting_a_protected_message_itself_is_still_refused(tmp_path, monkeypatch):
+    # Update permission is not delete permission. Omitting a protected message no longer 409s
+    # the batch, but it must not delete it either.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+
+    for dropped in ("prompt", "report"):
+        synced = studio_db.sync_chat_messages(
+            "src", _without(messages, dropped), prune_missing = True
+        )
+        assert dropped in {m["id"] for m in synced}
+
+
+def test_a_research_prompt_already_at_the_root_is_unaffected(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 0)
+
+    synced = studio_db.sync_chat_messages("src", messages, prune_missing = True)
+
+    assert [m["id"] for m in synced] == ["prompt", "report"]
+
+
+def test_an_unrelated_sibling_can_still_be_deleted(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    sibling = {
+        "id": "sibling",
+        "threadId": "src",
+        "parentId": "a0",
+        "role": "user",
+        "content": [{"type": "text", "text": "sibling"}],
+        "createdAt": 9,
+    }
+    studio_db.sync_chat_messages("src", [*messages, sibling])
+
+    synced = studio_db.sync_chat_messages("src", messages, prune_missing = True)
+
+    assert "sibling" not in {m["id"] for m in synced}
+
+
+def test_a_plain_message_whose_parent_is_pruned_is_never_guarded(tmp_path, monkeypatch):
+    # Only protected ids reach the guard at all; an ordinary relink must stay untouched by any of
+    # this, including when its own parent is the pruned node.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    plain_parent = {
+        "id": "plain-parent",
+        "threadId": "src",
+        "parentId": "report",
+        "role": "user",
+        "content": [{"type": "text", "text": "plain-parent"}],
+        "createdAt": 8,
+    }
+    plain_child = {
+        "id": "plain-child",
+        "threadId": "src",
+        "parentId": "plain-parent",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "plain-child"}],
+        "createdAt": 9,
+    }
+    studio_db.sync_chat_messages("src", [*messages, plain_parent, plain_child])
+
+    relinked = {**plain_child, "parentId": "report"}
+    synced = studio_db.sync_chat_messages("src", [*messages, relinked], prune_missing = True)
+
+    assert next(m for m in synced if m["id"] == "plain-child")["parentId"] == "report"
+
+
+def test_a_corrupt_self_link_resolves_to_the_root_rather_than_itself(tmp_path, monkeypatch):
+    # A thread can only reach this shape by storing a cycle among its own unprotected rows, but
+    # the walk must still hand back a link the tree can hold rather than a message's own id.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    cyclic = [dict(m) for m in messages]
+    next(m for m in cyclic if m["id"] == "a0")["parentId"] = "prompt"
+    studio_db.sync_chat_messages("src", cyclic)
+
+    conn = studio_db.get_connection()
+    try:
+        assert studio_db._surviving_parent_id(conn, "src", "prompt", {"a0"}) is None
+    finally:
+        conn.close()
+
+
+def test_an_empty_stored_parent_reads_as_the_root(tmp_path, monkeypatch):
+    # parent_id is nullable, so '' is only reachable through a direct writer, but the helper and
+    # the caller's `or None` normalization must agree about it either way.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE chat_messages SET parent_id = '' WHERE id = 'a0'")
+        conn.commit()
+        assert studio_db._surviving_parent_id(conn, "src", "a0", set()) is None
+    finally:
+        conn.close()
+
+
+def test_deleting_a_thread_signals_only_research_runs_a_worker_owns(tmp_path, monkeypatch):
+    # A fresh run sits in 'planning' with no lease. Deleting its thread cascades the row away, so
+    # no worker can ever claim it; signalling it would leave a cancellation event in the
+    # supervisor that nothing is left to consume.
+    _research_thread(tmp_path, monkeypatch)
+
+    assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == []
+
+
+def test_deleting_a_thread_signals_a_leased_research_run(tmp_path, monkeypatch):
+    # The same run once a worker owns it: that worker is still running and has to be told.
+    _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE research_runs SET lease_owner = 'worker-1', status = 'running' WHERE id = ?",
+            ("run-1",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == ["run-1"]
+
+
+def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, monkeypatch):
+    # The request that recorded the operation already signalled these runs on its way out. Its
+    # worker may have exited since, so a second signal would leave a cancellation event in the
+    # supervisor that nothing is left to consume.
+    _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE research_runs SET lease_owner = 'worker-1', status = 'running' WHERE id = ?",
+            ("run-1",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    first = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
+    assert first == (["run-1"], ["src"])
+
+    replay = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
+    assert replay == ([], ["src"])

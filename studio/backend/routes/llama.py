@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp prebuilt update endpoints.
+"""llama.cpp prebuilt update endpoints -- the single main update item.
 
 GET  /api/llama/update-status  -> is a newer prebuilt available + job state
 POST /api/llama/update         -> download + atomically swap to the latest
@@ -9,24 +9,40 @@ POST /api/llama/update         -> download + atomically swap to the latest
 Detection reuses utils.llama_cpp_freshness; the swap reuses
 install_llama_prebuilt.py via utils.llama_cpp_update. Both fail open so the UI
 never blocks on a missing marker / offline GitHub.
+
+whisper.cpp updates piggyback here: the status payload carries a whisper
+sub-status (update_available is the llama OR whisper union) and the apply job
+chains a whisper phase after the llama phase when whisper is behind, with a
+per-phase breakdown in job.phases. All pre-existing top-level fields keep
+their shape, so older clients keep working unchanged.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import threading
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from utils.llama_cpp_update import get_update_status, start_update
+from loggers import get_logger
+from utils.llama_cpp_update import (
+    get_backend_status,
+    get_update_status,
+    start_backend_switch,
+    start_update,
+)
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 
 class LlamaUpdateJob(BaseModel):
     state: str = Field("idle", description = "idle | running | success | error")
+    operation: Optional[Literal["update", "switch"]] = None
+    requested_backend: Optional[Literal["auto", "cpu", "cuda", "rocm", "vulkan"]] = None
     message: str = ""
     from_tag: Optional[str] = None
     to_tag: Optional[str] = None
@@ -35,6 +51,31 @@ class LlamaUpdateJob(BaseModel):
     progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    phases: Optional[dict] = Field(
+        None,
+        description = (
+            "Per-phase breakdown of a chained llama+whisper job "
+            "(name -> state/progress/to_tag/...); None for pre-chaining jobs."
+        ),
+    )
+
+
+class WhisperSubStatus(BaseModel):
+    """The whisper piggyback inside the llama update item."""
+
+    update_available: bool = Field(
+        False, description = "True when the chained apply would run a whisper phase."
+    )
+    installed_tag: Optional[str] = None
+    latest_tag: Optional[str] = None
+    update_size_bytes: Optional[int] = None
+    skip_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why the whisper phase would be skipped "
+            "(up_to_date | local_link | source_build | not_installed | ...)."
+        ),
+    )
 
 
 class LlamaUpdateStatusResponse(BaseModel):
@@ -43,7 +84,18 @@ class LlamaUpdateStatusResponse(BaseModel):
         description = "True when the install came from an Unsloth prebuilt (has a marker).",
     )
     update_available: bool = Field(
-        False, description = "True when the latest release is genuinely newer than the install."
+        False,
+        description = (
+            "True when an update would do something: llama.cpp is behind OR the "
+            "whisper piggyback is behind."
+        ),
+    )
+    llama_update_available: bool = Field(
+        False, description = "True when the latest llama.cpp release is newer than the install."
+    )
+    update_component: Optional[Literal["llama", "whisper"]] = Field(
+        None,
+        description = "Component whose versions the combined update banner should display.",
     )
     stale: bool = Field(
         False, description = "Update available AND install older than the staleness threshold."
@@ -59,6 +111,9 @@ class LlamaUpdateStatusResponse(BaseModel):
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
+    whisper: Optional[WhisperSubStatus] = Field(
+        None, description = "Whisper piggyback sub-status; None when the probe is unavailable."
+    )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
 
@@ -67,6 +122,27 @@ class LlamaUpdateActionResponse(BaseModel):
     reason: Optional[str] = None
     message: Optional[str] = None
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
+
+
+_llama_update_lock = threading.Lock()
+_last_llama_update_step = -1
+
+
+def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
+    """One llama_update_progress line per 10% step so a prebuilt update reports
+    progress without a line per poll. Resyncs when a new update starts."""
+    global _last_llama_update_step
+    if job.state != "running" or job.progress is None:
+        return
+    step = int(max(0.0, min(float(job.progress), 1.0)) * 10)
+    with _llama_update_lock:
+        prev = _last_llama_update_step
+        if step == prev:
+            return
+        _last_llama_update_step = step
+        if step < prev:
+            return  # new update; resync without logging
+    logger.info("llama_update_progress", to_tag = job.to_tag or "", percent = step * 10)
 
 
 @router.get("/update-status", response_model = LlamaUpdateStatusResponse)
@@ -78,7 +154,9 @@ async def llama_update_status(
 ) -> LlamaUpdateStatusResponse:
     # Off the event loop: detection may probe the host and read GitHub.
     status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
-    return LlamaUpdateStatusResponse(**status)
+    resp = LlamaUpdateStatusResponse(**status)
+    _log_llama_update_progress(resp.job)
+    return resp
 
 
 @router.post("/update", response_model = LlamaUpdateActionResponse)
@@ -86,4 +164,90 @@ async def llama_update(
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateActionResponse:
     action = await asyncio.to_thread(start_update)
+    return LlamaUpdateActionResponse(**action)
+
+
+class LlamaBackendOption(BaseModel):
+    backend: str = Field(..., description = "auto | cpu | cuda | rocm | vulkan")
+    available: bool = Field(
+        False, description = "True when a prebuilt for this backend installs on this host."
+    )
+    unavailable_reason: Optional[str] = Field(
+        None, description = "unavailable | no_prebuilt | error, when available is false."
+    )
+    resolved_backend: Optional[str] = Field(
+        None, description = "For 'auto', the backend hardware detection picks right now."
+    )
+    release_tag: Optional[str] = None
+    download_size_bytes: Optional[int] = None
+
+
+class LlamaBackendStatusResponse(BaseModel):
+    supported: bool = Field(
+        False, description = "True when this install's backend can be switched from here."
+    )
+    reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why it cannot: not_installed | local_link | source_build | no_install_dir "
+            "| unresolved (the backend list could not be resolved, e.g. offline)."
+        ),
+    )
+    env_backend: Optional[str] = Field(
+        None,
+        description = (
+            "Backend pinned by UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN. It "
+            "overrides a stored choice, so the picker shows it as read-only."
+        ),
+    )
+    backend: Optional[str] = Field(None, description = "What the install runs on now.")
+    backend_request: str = Field(
+        "auto",
+        description = (
+            "The recorded choice; 'auto' means hardware detection. A name this "
+            "build does not know was written by a newer Studio and is read-only."
+        ),
+    )
+    selection_applied: bool = Field(
+        True,
+        description = (
+            "False when the recorded choice is 'auto' and detection would now "
+            "resolve to a different backend than the installed one."
+        ),
+    )
+    installed_tag: Optional[str] = None
+    options: list[LlamaBackendOption] = Field(default_factory = list)
+    job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
+
+
+class LlamaBackendRequest(BaseModel):
+    backend: Literal["auto", "cpu", "cuda", "rocm", "vulkan"] = Field(
+        ..., description = "Backend to install. 'auto' restores hardware detection."
+    )
+
+
+@router.get("/backend", response_model = LlamaBackendStatusResponse)
+async def llama_backend_status(
+    force_refresh: bool = Query(
+        False, description = "Bypass the 24h resolver cache for an explicit re-check."
+    ),
+    current_subject: str = Depends(get_current_subject),
+) -> LlamaBackendStatusResponse:
+    # Off the event loop: resolving the options runs the installer's probe.
+    status = await asyncio.to_thread(get_backend_status, force_refresh = force_refresh)
+    return LlamaBackendStatusResponse(**status)
+
+
+@router.post("/backend", response_model = LlamaUpdateActionResponse)
+async def llama_backend_switch(
+    request: LlamaBackendRequest, current_subject: str = Depends(get_current_subject)
+) -> LlamaUpdateActionResponse:
+    """Install the llama.cpp build for another backend and record the choice.
+
+    Shares the update job, so it answers already_running rather than starting a
+    second writer against the same install; callers poll /update-status for
+    progress exactly as they do for an update.
+    """
+    logger.info("llama_backend_switch_requested", backend = request.backend)
+    action = await asyncio.to_thread(start_backend_switch, request.backend)
     return LlamaUpdateActionResponse(**action)

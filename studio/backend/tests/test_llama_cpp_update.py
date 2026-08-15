@@ -45,8 +45,12 @@ class _FakeInstallerPopen:
             captured_kwargs.update(kwargs)
         if on_start is not None:
             on_start(list(cmd))
+        self.pid = 515151  # a real Popen has one; the lifetime record needs it
         self.returncode = returncode
         self.stdout = iter(lines or [])
+
+    def poll(self):
+        return self.returncode
 
     def wait(self):
         return self.returncode
@@ -83,6 +87,9 @@ def _write_install(
     repo: str = "unslothai/llama.cpp",
     asset: str | None = None,
     release_tag: str | None = None,
+    force_cpu: bool | None = None,
+    llama_backend: str | None = None,
+    include_llama_backend: bool = False,
 ) -> str:
     """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
@@ -99,6 +106,10 @@ def _write_install(
     }
     if asset is not None:
         marker["asset"] = asset
+    if force_cpu is not None:
+        marker["force_cpu"] = force_cpu
+    if include_llama_backend or llama_backend is not None:
+        marker["llama_backend"] = llama_backend
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
 
@@ -116,6 +127,9 @@ def _clean_state(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     # Never hit the network in these tests.
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    # Keep the whisper piggyback out of the llama-only tests: no host probe, no
+    # whisper phase (test_combined_update.py covers the chained flow).
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kwargs: None)
     yield
     freshness.reset_caches()
     upd._reset_job_for_tests()
@@ -393,6 +407,9 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     assert "--llama-tag" in cmd and "latest" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--simple-policy" not in cmd and "--cpu-fallback" not in cmd
+    # No pin: source-build detection and the unpinned apply share the same
+    # "latest" resolver, so they already agree.
+    assert "--published-release-tag" not in cmd
 
 
 def test_start_update_happy_path(monkeypatch, tmp_path):
@@ -448,6 +465,98 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
 
+@pytest.mark.parametrize(
+    "marker_fields, expected_choice",
+    [
+        # A legacy markerless Vulkan asset was an explicit selection, so the bundle
+        # is kept rather than re-detected.
+        ({"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz"}, "vulkan"),
+        # New automatic Intel / Windows AMD installs carry llama_backend (None or
+        # "auto") and rerun hardware detection, staying eligible for CPU recovery.
+        (
+            {
+                "asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz",
+                "llama_backend": None,
+                "include_llama_backend": True,
+            },
+            "auto",
+        ),
+        (
+            {"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", "llama_backend": "auto"},
+            "auto",
+        ),
+        (
+            {"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", "llama_backend": "vulkan"},
+            "vulkan",
+        ),
+        # A deliberate CPU install must not be re-routed onto a GPU bundle (#7213);
+        # a transient fallback (or a legacy marker without the flag) heals (#6097).
+        ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz", "force_cpu": True}, "cpu"),
+        ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz", "force_cpu": False}, "auto"),
+        ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz"}, "auto"),
+    ],
+)
+def test_update_leaves_the_recorded_choice_to_the_installer(
+    monkeypatch, tmp_path, marker_fields, expected_choice
+):
+    """An update names no backend: install_llama_prebuilt.py reads the choice back
+    out of the marker it wrote.
+
+    That is what makes the choice survive every other entry point too (setup.sh,
+    `unsloth studio update`, the desktop updater), none of which could forward an
+    env var they were never given. Both halves are asserted here -- the command
+    carries no override, and the installer resolves the marker to the choice -- so
+    the handoff cannot silently break on one side.
+    """
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
+    install_dir = tmp_path / "llama.cpp"
+    fields = dict(marker_fields)
+    binary = _write_install(install_dir, "b9493", repo = "ggml-org/llama.cpp", **fields)
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    captured: dict = {}
+    popen_kwargs: dict = {}
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, "b9518", repo = "ggml-org/llama.cpp", **fields)
+
+    _patch_installer_popen(
+        monkeypatch,
+        lines = ["installed\n"],
+        on_start = _on_start,
+        captured_kwargs = popen_kwargs,
+    )
+
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "success", job
+
+    assert "--llama-backend" not in captured["cmd"]
+    assert "--force-cpu" not in captured["cmd"]
+    assert "--cpu-fallback" not in captured["cmd"]
+    assert "UNSLOTH_LLAMA_CPP_BACKEND" not in popen_kwargs["env"]
+    assert "UNSLOTH_FORCE_VULKAN" not in popen_kwargs["env"]
+
+    _studio = _BACKEND.parent
+    if str(_studio) not in sys.path:
+        sys.path.insert(0, str(_studio))
+    import install_llama_prebuilt as ilp
+
+    assert ilp.effective_backend_request(None, install_dir = install_dir) == (
+        expected_choice,
+        False,
+    )
+
+
 def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595")
@@ -475,6 +584,57 @@ def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     assert job["state"] == "success", job
     assert job["to_tag"] == "b9596-mix-e6f2453"
     assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
+
+
+def _run_start_update_to_completion():
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            return job
+        time.sleep(0.05)
+    return upd.get_update_status()["job"]
+
+
+def test_start_update_pinned_tag_mismatch_fails(monkeypatch, tmp_path):
+    # Installer stays on the pinned repo but produces a different tag -> it
+    # ignored the pin (the silent mismatch this pin exists to prevent). Fail loud.
+    monkeypatch.setattr(sys, "platform", "linux")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906"
+    )
+    _patch_installer_popen(
+        monkeypatch,
+        on_start = lambda cmd: _write_install(install_dir, "b9500", release_tag = "b9500-mix-deadbee"),
+    )
+    job = _run_start_update_to_completion()
+    assert job["state"] == "error", job
+    assert "b9601-mix-a0e2906" in (job["error"] or "")
+
+
+def test_start_update_pinned_reroute_to_other_repo_ok(monkeypatch, tmp_path):
+    # A Vulkan/Intel host reroutes fork->upstream and drops the pin, installing a
+    # different-repo tag. Legitimate: the pin check must not flag the repo switch.
+    monkeypatch.setattr(sys, "platform", "linux")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595", repo = "unslothai/llama.cpp")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906"
+    )
+    _patch_installer_popen(
+        monkeypatch,
+        on_start = lambda cmd: _write_install(install_dir, "b9601", repo = "ggml-org/llama.cpp"),
+    )
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
 
 
 def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
@@ -580,7 +740,7 @@ def test_install_cmd_rocm_marker_forwards_gfx(monkeypatch, tmp_path):
     assert "--rocm-gfx" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--has-rocm" not in cmd
-    assert "--cpu-fallback" not in cmd
+    assert "--force-cpu" not in cmd
     assert "--simple-policy" not in cmd
     assert "--published-repo" in cmd and "unslothai/llama.cpp" in cmd
 
@@ -594,16 +754,17 @@ def test_install_cmd_fork_rocm_marker_forwards_has_rocm(monkeypatch, tmp_path):
 
 
 def test_install_cmd_ggml_cpu_marker_has_no_cpu_fallback(monkeypatch, tmp_path):
-    # CPU installs come from ggml-org. Re-running into the same install-dir/repo
-    # reproduces the same CPU bundle; --cpu-fallback (which force-drops GPU
-    # detection) is reserved for setup.sh's arm64 rescue and must not appear here.
+    # Legacy CPU installs recorded a ggml-org marker (new installs use the fork) with
+    # no force_cpu field. Re-running into the same install-dir/repo reproduces the same
+    # CPU bundle; --force-cpu (the persisted-CPU re-assert) must not appear for a marker
+    # that never recorded a deliberate CPU choice, so it can still heal to GPU (#6097).
     cmd = _capture_install_cmd(
         monkeypatch,
         tmp_path,
         repo = "ggml-org/llama.cpp",
         asset = "llama-b9334-bin-ubuntu-x64.tar.gz",
     )
-    assert "--cpu-fallback" not in cmd
+    assert "--force-cpu" not in cmd
     assert "--rocm-gfx" not in cmd
     assert "--has-rocm" not in cmd
     assert "--simple-policy" not in cmd
@@ -617,7 +778,34 @@ def test_install_cmd_cuda_marker_minimal_and_backward_compatible(monkeypatch, tm
     assert "--simple-policy" not in cmd
     assert "--rocm-gfx" not in cmd
     assert "--has-rocm" not in cmd
-    assert "--cpu-fallback" not in cmd
+    assert "--force-cpu" not in cmd
+
+
+def test_install_cmd_pins_offered_release_tag(monkeypatch, tmp_path):
+    # Apply must install exactly the release the banner offered. The installer's
+    # own "latest" comes from commit-date-ordered sources, which can lag the
+    # published_at-newest tag detection picked; unpinned, that lag makes Update
+    # reinstall the current build while the banner never clears.
+    monkeypatch.setattr(sys, "platform", "linux")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path, latest = "b9601-mix-a0e2906")
+    # The full release identity is pinned, not the bare upstream base.
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b9601-mix-a0e2906"
+
+
+def test_install_cmd_pins_on_windows(monkeypatch, tmp_path):
+    # The darwin exemption must not leak to other platforms.
+    monkeypatch.setattr(sys, "platform", "win32")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path)
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b9518"
+
+
+def test_install_cmd_does_not_pin_on_macos(monkeypatch, tmp_path):
+    # A pinned tag disables the installer's older-release walk-back, which macOS
+    # needs to skip prebuilts built for a newer macOS than the host.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path)
+    assert "--published-release-tag" not in cmd
+    assert "--llama-tag" in cmd and "latest" in cmd
 
 
 # --- refusal + maintenance-state coordination ---
@@ -632,6 +820,7 @@ def test_start_update_already_running_refuses(monkeypatch, tmp_path):
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "already_running"
+    assert res["message"] == "Another llama.cpp install is already running."
 
 
 def test_start_update_installer_missing_refuses(monkeypatch, tmp_path):
@@ -719,6 +908,7 @@ def test_update_clears_maintenance_flag_on_installer_failure(monkeypatch, tmp_pa
             break
         time.sleep(0.05)
     assert upd.get_update_status()["job"]["state"] == "error"
+    assert upd.get_update_status()["job"]["reload_required"] is True
     assert backend._llama_update_in_progress is False
 
 

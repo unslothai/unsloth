@@ -16,11 +16,20 @@ from loggers import get_logger
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.gguf import extract_quant_label, extract_quant_token
+from hub.utils.gguf import (
+    bare_quant_alias,
+    extract_quant_token,
+    gguf_variant_key,
+    is_qualified_gguf_variant_key,
+    quant_token_with_bpw,
+    is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
+)
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
+    iter_repo_cache_dirs,
     purge_partial_repo,
     purge_repo_cache_dirs,
+    resolve_delete_target_root,
 )
 from hub.utils.paths import (
     is_valid_gguf_variant as _is_valid_gguf_variant,
@@ -33,7 +42,6 @@ from hub.services.models.common import (
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
-    _is_mtp_drafter_path,
 )
 
 logger = get_logger(__name__)
@@ -77,13 +85,28 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
+    """Files whose snapshot-relative path satisfies *predicate*.
+
+    Relative, not the bare ``file_name``: huggingface_hub sets that to
+    ``file_path.name`` (and our own recovery scan to ``entry.name``), so a
+    companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a
+    root file. Every predicate below keys on the directory for at least one
+    supported layout, and the quant labels they extract are unchanged by the
+    prefix.
+    """
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
+        snapshot = getattr(rev, "snapshot_path", None)
         for f in getattr(rev, "files", ()):
             name = str(getattr(f, "file_name", ""))
+            file_path = getattr(f, "file_path", None)
+            if snapshot and file_path:
+                try:
+                    name = Path(file_path).relative_to(Path(snapshot)).as_posix()
+                except ValueError:
+                    pass
             if not predicate(name):
                 continue
-            file_path = getattr(f, "file_path", None)
             if not file_path:
                 continue
             blob_path = getattr(f, "blob_path", None)
@@ -111,7 +134,17 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    variant_key = (extract_quant_token(variant) or variant).lower()
+    # A qualified key names its own folder; its quant token belongs to sibling checkpoints too,
+    # so it must not reach for a <quant>/ dir it does not own. Qualified means a path
+    # (``distilled/...-Q6_K``), an H3 root stem, or a bpw modifier (``IQ4_XS-3.53bpw``, whose
+    # token-only ``IQ4_XS/`` folder is a different build's).
+    qualified = (
+        is_qualified_gguf_variant_key(variant)
+        or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    )
+    variant_key = (
+        variant.lower() if qualified else (extract_quant_token(variant) or variant).lower()
+    )
     removed = 0
     failures: list[str] = []
     for target_repo in target_repos:
@@ -134,7 +167,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
                 try:
                     if sub.is_symlink() or not sub.is_dir():
                         continue
-                    folder_quant = extract_quant_token(sub.name)
+                    folder_quant = quant_token_with_bpw(sub.name)
                     matches = (
                         folder_quant is not None and folder_quant.lower() == variant_key
                     ) or sub.name.lower() == variant.lower()
@@ -153,6 +186,59 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     return removed, failures
 
 
+def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
+    removed = 0
+    failures: list[str] = []
+    for target_repo in target_repos:
+        repo_path = getattr(target_repo, "repo_path", None)
+        if not repo_path:
+            continue
+        snapshots = Path(repo_path) / "snapshots"
+        if not snapshots.is_dir():
+            continue
+        try:
+            snap_dirs = [s for s in snapshots.iterdir() if s.is_dir() and not s.is_symlink()]
+        except OSError:
+            continue
+        for snap in snap_dirs:
+            try:
+                snap.rmdir()
+                removed += 1
+            except OSError as e:
+                if e.errno != errno.ENOTEMPTY:
+                    failures.append(f"{snap.name}: {e}")
+    return removed, failures
+
+
+def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
+    """The variant keys in *target_repo* that *variant* names, lowercased.
+
+    Its own key, always. Plus the unambiguous bare-quant alias the download side already admits
+    (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container
+    (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the
+    path and cannot know the directory disambiguates nothing, so every stored pin and every
+    explicit ``repo:Q4_K_M`` names it by quant alone. Admitting the alias for the download and not
+    for the delete answered "not found" and left the weights on disk.
+
+    Only when it is unambiguous, exactly as the download side decides it: a repo that really does
+    hold several checkpoints at one quant gets no fallback, because there the bare name genuinely
+    does not name one of them and deleting the wrong one is unrecoverable.
+    """
+    wanted = (variant or "").strip().lower()
+    if not wanted or "/" in wanted:
+        return {wanted}
+    keys = {
+        gguf_variant_key(name).lower()
+        for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)
+    }
+    if wanted in keys:
+        return {wanted}
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, so it must not delete either.
+    aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
+    return aliased if len(aliased) == 1 else {wanted}
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -160,6 +246,7 @@ def _delete_gguf_variant_from_repos(
     hf_token: Optional[str],
     *,
     sibling_active: bool = False,
+    root: Optional[Path] = None,
 ) -> dict:
     failures: list[str] = []
     removed_snapshots = 0
@@ -169,10 +256,11 @@ def _delete_gguf_variant_from_repos(
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
+        wanted_keys = _variant_keys_to_delete(target_repo, variant)
         matched = _repo_file_matches(
             target_repo,
-            lambda name: _is_main_gguf_filename(name)
-            and extract_quant_label(name).lower() == variant.lower(),
+            lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
+            and gguf_variant_key(name).lower() in keys,
         )
 
         for snap, _blob, name in matched:
@@ -187,10 +275,11 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the MTP drafter -- downloaded with
-                # every variant, so the last variant's delete reclaims them.
+                # Companions: mmproj and the drafters Studio downloads (MTP with
+                # every variant, DSpark on opt-in). No main GGUF is left, so they
+                # cannot be launched; reclaim them with the last variant.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name)),
+                and (_is_mmproj_filename(name) or _is_reclaimable_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -241,6 +330,7 @@ def _delete_gguf_variant_from_repos(
         hf_token,
         extra_hashes = frozenset(completed_hashes),
         companions = not sibling_active,
+        root = root,
     )
     if incomplete_result.unresolved:
         raise HTTPException(
@@ -252,9 +342,12 @@ def _delete_gguf_variant_from_repos(
             ),
         )
 
-    state_purged = download_manifest.purge_state("model", repo_id, variant)
+    state_purged = download_manifest.purge_state("model", repo_id, variant, hub_cache = root)
     # Reclaim the empty quant folder so it stops 404ing on delete.
     removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
+    removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+    removed_dirs += removed_snap_dirs
+    dir_failures.extend(snap_dir_failures)
     if dir_failures:
         raise HTTPException(
             status_code = 409,
@@ -284,11 +377,218 @@ def _delete_gguf_variant_from_repos(
     return {"status": "deleted", "repo_id": repo_id, "variant": variant}
 
 
+def reclaim_replaced_gguf_variant(
+    repo_id: str,
+    variant: str,
+    keep_main_hashes: frozenset[str],
+    hf_token: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> dict:
+    """Prune stale main-GGUF files for a variant after a replacement verified.
+
+    This is intentionally narrower than user-driven delete: it removes only
+    same-variant main files whose local blob hash is not in *keep_main_hashes*,
+    then unlinks their blobs only if no remaining snapshot references them.
+    Shared companions and sibling variants are left intact.
+    """
+    if not keep_main_hashes:
+        logger.info(
+            "Skipping stale GGUF reclaim for %s [%s]: current main hashes unresolved",
+            repo_id,
+            variant,
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "unresolved_hashes",
+        }
+    if not _is_valid_repo_id(repo_id) or not _is_valid_gguf_variant(variant):
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "invalid_target",
+        }
+
+    failures: list[str] = []
+    removed_snapshots = 0
+    deleted_blobs = 0
+    deleted_bytes = 0
+    variant_key = variant.lower()
+
+    try:
+        cache_scans = cache_inventory.all_hf_cache_scans()
+    except Exception as e:
+        logger.warning(
+            "Skipping stale GGUF reclaim for %s [%s]: cache scan failed: %s",
+            repo_id,
+            variant,
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "scan_failed",
+        }
+
+    if hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        target_hub_cache = Path(hub_cache).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        target_hub_cache = Path(hub_cache).expanduser()
+
+    candidate_repos = [
+        repo_info
+        for hf_cache in cache_scans
+        for repo_info in hf_cache.repos
+        if str(getattr(repo_info, "repo_type", "")) == "model"
+        and str(getattr(repo_info, "repo_id", "")).lower() == repo_id.lower()
+        and getattr(repo_info, "repo_path", None)
+        and Path(repo_info.repo_path).parent.resolve(strict = False) == target_hub_cache
+    ]
+    try:
+        matched_repo_ids = resolve_destructive_repo_ids(
+            repo_id,
+            [str(getattr(repo_info, "repo_id", "")) for repo_info in candidate_repos],
+            noun = "models",
+        )
+    except HTTPException as e:
+        detail = getattr(e, "detail", str(e))
+        logger.warning(
+            "Skipping stale GGUF reclaim for %s [%s]: %s",
+            repo_id,
+            variant,
+            download_registry.scrub_secrets(str(detail), hf_token = hf_token),
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "ambiguous_repo",
+        }
+    target_repos = [
+        repo_info
+        for repo_info in candidate_repos
+        if str(getattr(repo_info, "repo_id", "")) in matched_repo_ids
+    ]
+
+    for target_repo in target_repos:
+        repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
+        stale_matches: list[tuple[Path, Optional[Path], str]] = []
+        matches = _repo_file_matches(
+            target_repo,
+            lambda name: _is_main_gguf_filename(name)
+            and gguf_variant_key(name).lower() == variant_key,
+        )
+        for snap, blob, name in matches:
+            # Prune only a file we can identify as a real, stale cache blob. A
+            # no-symlink snapshot file has no identifiable blob hash, so keep it.
+            blob_hash = (
+                _blob_hash_from_path(blob)
+                if cache_inventory._is_real_cache_blob(blob, repo_dir)
+                else None
+            )
+            if blob_hash is None or blob_hash in keep_main_hashes:
+                continue
+            stale_matches.append((snap, blob, name))
+
+        if not stale_matches:
+            continue
+
+        for snap, _blob, name in stale_matches:
+            try:
+                if _path_exists_or_symlink(snap):
+                    snap.unlink()
+                    removed_snapshots += 1
+            except OSError as e:
+                failures.append(f"{name}: {e}")
+
+        ref_counts = _snapshot_blob_reference_counts(repo_dir)
+        seen_blobs: set[Path] = set()
+        for _snap, blob, name in stale_matches:
+            if blob is None:
+                continue
+            try:
+                blob_key = blob.resolve()
+            except OSError:
+                blob_key = blob
+            if blob_key in seen_blobs:
+                continue
+            seen_blobs.add(blob_key)
+            if ref_counts.get(blob_key, 0) > 0:
+                continue
+            try:
+                if blob.exists():
+                    deleted_bytes += blob.stat().st_size
+                    blob.unlink()
+                    deleted_blobs += 1
+            except OSError as e:
+                failures.append(f"{name}: {e}")
+
+    removed_dirs = 0
+    dir_failures: list[str] = []
+    if target_repos:
+        removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
+        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+        removed_dirs += removed_snap_dirs
+        dir_failures.extend(snap_dir_failures)
+        failures.extend(dir_failures)
+
+    if failures:
+        logger.warning(
+            "Stale GGUF reclaim for %s [%s] left %d failure(s): %s",
+            repo_id,
+            variant,
+            len(failures),
+            "; ".join(failures[:3]),
+        )
+
+    if removed_snapshots or deleted_blobs or removed_dirs:
+        cache_inventory.invalidate_hf_cache_scans()
+        logger.info(
+            "Reclaimed stale GGUF %s [%s]: snapshots=%d blobs=%d dirs=%d freed=%.1f MB",
+            repo_id,
+            variant,
+            removed_snapshots,
+            deleted_blobs,
+            removed_dirs,
+            deleted_bytes / (1024 * 1024),
+        )
+
+    return {
+        "status": "reclaimed",
+        "repo_id": repo_id,
+        "variant": variant,
+        "removed_snapshots": removed_snapshots,
+        "deleted_blobs": deleted_blobs,
+        "removed_dirs": removed_dirs,
+    }
+
+
 def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
-    """True when *loaded_id* is *repo_id* or a file within it; ``/``-boundary aware so ``org/model`` doesn't match sibling ``org/model-v2``."""
+    """Match a loaded repo ID or an on-disk path inside any copy of the repo."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
-    return lid == rid or lid.startswith(f"{rid}/")
+    if lid == rid or lid.startswith(f"{rid}/"):
+        return True
+
+    try:
+        loaded_path = Path(loaded_id).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for repo_dir in iter_repo_cache_dirs("model", repo_id):
+        try:
+            resolved_repo = repo_dir.resolve(strict = False)
+            if loaded_path == resolved_repo or loaded_path.is_relative_to(resolved_repo):
+                return True
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return False
 
 
 def _loaded_repo_variant_blocks_delete(
@@ -339,25 +639,142 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
 def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
-        from core.inference import get_inference_backend
-        backend = get_inference_backend()
+        from core.inference.orchestrator import peek_inference_backend
+
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
+        backend = peek_inference_backend()
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
         return False
+    if backend is None:
+        return False
     active_name = backend.active_model_name
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
+
+
+def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
+    """The 400 detail if the Images backend holds *repo_id*, else None.
+
+    Queries the ACTIVE engine: on a native selection the diffusers singleton reports
+    unloaded while sd-cli still generates from the cached GGUF. Same
+    fail-open-on-acquire contract as :func:`_llama_cpp_blocks_delete`.
+    """
+    try:
+        from core.inference.diffusion_engine_router import get_active_diffusion_engine
+        engine = get_active_diffusion_engine()
+    except Exception as e:
+        logger.debug(f"Diffusion engine unavailable during delete guard for {repo_id}: {e}")
+        return None
+    status = engine.status()
+    if status.get("loaded") and status.get("repo_id"):
+        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
+            return "Unload the model before deleting"
+    # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers only the main GGUF, so refuse the companions too.
+    for lid in getattr(engine, "loaded_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "Unload the model before deleting"
+    # A downloading repo still reports loaded=False, but deleting would pull blobs from under the in-flight fetch.
+    for lid in getattr(engine, "loading_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "An Images model load is using this repo; wait for it to finish"
+    return None
+
+
+def _video_blocks_delete(repo_id: str) -> Optional[str]:
+    """The 400 detail if the Video backend holds or is fetching *repo_id*, else None.
+
+    Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan
+    pipeline could otherwise lose its snapshot. Mirrors :func:`_diffusion_blocks_delete`.
+    """
+    try:
+        from core.inference.video import get_video_backend
+        backend = get_video_backend()
+    except Exception as e:
+        logger.debug(f"Video backend unavailable during delete guard for {repo_id}: {e}")
+        return None
+    status = backend.status()
+    if status.get("loaded"):
+        # repo_id names the checkpoint; for a GGUF / single-file load the companion base supplies the VAE and text encoders, so refuse it too.
+        for key in ("repo_id", "base_repo"):
+            held = status.get(key)
+            if held and _loaded_id_matches_repo(str(held), repo_id):
+                return "Unload the model before deleting"
+    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
+    # neither of the two ids above, so refuse those as well, exactly as the Images guard does.
+    for lid in getattr(backend, "loaded_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "Unload the model before deleting"
+    for lid in getattr(backend, "loading_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "A Video model load is using this repo; wait for it to finish"
+    return None
+
+
+def _is_companion_base_repo(repo_id: str) -> bool:
+    """Whether *repo_id* is a curated image-family companion base (pure table lookup, no I/O)."""
+    try:
+        from hub.utils import companion_assets
+        return companion_assets.is_companion_base(repo_id)
+    except Exception as e:  # noqa: BLE001 -- an unavailable table just skips the extra guard
+        logger.debug(f"Companion base classification unavailable for {repo_id}: {e}")
+        return False
+
+
+def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
+    """Whether *variant* names a file an installed checkpoint's native load actually opens.
+
+    Not "would this empty the repo": the asset is a FIXED filename, so a sibling quant left
+    behind substitutes for nothing. Fails CLOSED, and cheaply -- a True here only runs the
+    dependants check, which answers "nobody needs it" for every ordinary repo and lets the
+    delete through.
+    """
+    from hub.services.models import cache_inventory
+    from hub.utils import companion_assets
+    from hub.utils.gguf import extract_quant_label
+
+    try:
+        wanted = companion_assets.required_companion_asset_files(
+            cache_inventory.all_hf_cache_scans()
+        ).get((repo_id or "").strip().lower(), set())
+        target = (variant or "").strip().lower()
+        return any(extract_quant_label(name).lower() == target for name in wanted)
+    except Exception as exc:  # noqa: BLE001 -- an unreadable cache is not permission to delete
+        logger.warning(f"Could not check companion assets for {repo_id}: {exc}")
+        return True
+
+
+def _companion_share_blocks_delete(repo_id: str) -> Optional[str]:
+    """The 400 detail when installed models still need *repo_id*'s shared assets, else None."""
+    from hub.services.models import companion_cleanup
+
+    holders = companion_cleanup.companion_dependents(repo_id, ignore_repo_ids = [repo_id])
+    if not holders:
+        return None
+    shown = ", ".join(holders[:3])
+    extra = len(holders) - 3
+    if extra > 0:
+        shown = f"{shown} and {extra} more"
+    return (
+        f"{repo_id} holds the text encoder, VAE and tokenizer that {shown} still "
+        "needs. Delete those models first, then remove these shared assets."
+    )
 
 
 async def delete_cached_model_response(
     repo_id: str,
     variant: Optional[str] = None,
     hf_token: Optional[str] = None,
+    cache_path: Optional[str] = None,
+    only_if_orphan: bool = False,
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
 
     When *variant* is provided, only the GGUF files matching that quant label
     are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
     Refuses if the model is currently loaded for inference.
+
+    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
+    become an installed checkpoint since the list the caller is acting on was built.
     """
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
@@ -370,20 +787,28 @@ async def delete_cached_model_response(
 
     # Guard fails closed: if a live backend's load state can't be read, abort
     # with 503 rather than risk unlinking weights under a running process.
-    try:
-        blocks_delete = _llama_cpp_blocks_delete(repo_id, variant) or (
+    # Every guard is sync and the chat ones reach get_inference_backend(), whose cold build waits
+    # on hardware detection. One worker keeps the `or` short-circuit and keeps the event loop free.
+    def _load_state_blocks_delete() -> Optional[str]:
+        if _llama_cpp_blocks_delete(repo_id, variant) or (
             _inference_backend_blocks_delete(repo_id)
-        )
+        ):
+            return "Unload the model before deleting"
+        # The guards above are chat-only; Images / Video hold their own pipelines.
+        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+
+    try:
+        blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
     except Exception as e:
         logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
         raise HTTPException(
             status_code = 503,
             detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
         )
-    if blocks_delete:
+    if blocks_detail:
         raise HTTPException(
             status_code = 400,
-            detail = "Unload the model before deleting",
+            detail = blocks_detail,
         )
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
@@ -395,15 +820,126 @@ async def delete_cached_model_response(
         )
         raise HTTPException(status_code = 400, detail = detail)
     try:
-        return await asyncio.to_thread(_delete_cached_model_blocking, repo_id, variant, hf_token)
+        # Re-derived now the scope is reserved, as only_if_orphan re-derives its own answer
+        # below. The first read ran before the reservation existed, so a load starting in
+        # between published its claim too late to be seen, and begin_delete misses it too:
+        # image and video loads download directly rather than through a registry claim.
+        try:
+            blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
+        except Exception as e:
+            logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
+            )
+        if blocks_detail:
+            raise HTTPException(
+                status_code = 400,
+                detail = blocks_detail,
+            )
+        return await asyncio.to_thread(
+            _delete_cached_model_blocking,
+            repo_id,
+            variant,
+            hf_token,
+            cache_path,
+            only_if_orphan = only_if_orphan,
+        )
     finally:
         downloads.registry.end_delete(repo_key, variant)
         cache_inventory.invalidate_hf_cache_scans()
 
 
 def _delete_cached_model_blocking(
-    repo_id: str, variant: Optional[str], hf_token: Optional[str]
+    repo_id: str,
+    variant: Optional[str],
+    hf_token: Optional[str],
+    cache_path: Optional[str] = None,
+    *,
+    only_if_orphan: bool = False,
 ) -> dict:
+    # Free up space asks for this: the row it is removing was an orphan when the list was built,
+    # and the list can be minutes old. A download of that same repo finishing in the background
+    # turns it into an installed checkpoint, and neither guard below catches that -- begin_delete
+    # only refuses a download still in flight, and the companion guard deliberately ignores the
+    # target as its own dependent. Re-derived here, after begin_delete has closed the repo to new
+    # downloads, so the answer cannot go stale between the check and the unlink.
+    if only_if_orphan:
+        from hub.services.models import companion_cleanup
+        from hub.utils import companion_assets
+
+        try:
+            copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
+                repo_id.strip().lower(), []
+            )
+            # Only the copy being removed. The orphan listing emits one row per cache root
+            # precisely because a delete is scoped to one, so a full-pipeline copy in another
+            # remembered cache must not veto removing the companion-only copy that was listed.
+            if cache_path:
+                wanted = Path(cache_path)
+                copies = [
+                    r
+                    for r in copies
+                    if getattr(r, "repo_path", None) and Path(getattr(r, "repo_path")) == wanted
+                ]
+                if not copies:
+                    # No fallback to the other copies. An empty match means the target root is
+                    # not in this scan (its scan failed, or the copy is gone), and the delete
+                    # below can still purge that directory by path -- so concluding "orphan" from
+                    # copies we did not look at is exactly the fail-open this precondition exists
+                    # to prevent. Raising here lands in the fail-closed 503 below.
+                    raise RuntimeError(f"cache root not present in the scan: {cache_path}")
+            still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
+        except Exception as e:
+            logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = ("Couldn't confirm these assets are still unused. Try again in a moment."),
+            )
+        if not still_orphan:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"{repo_id} now holds an installed model, so it is no longer an unused "
+                    "asset. Reopen Free up space to see the current list."
+                ),
+            )
+
+    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
+    # family, so removing it while one is installed leaves that quant unloadable with nothing on
+    # screen to say why. Derived from what is installed right now, never from a stored count, and
+    # only for a WHOLE-repo delete: a variant delete cannot touch another repo. Deleting the
+    # dependants first makes the base an orphan, which Free up space then offers.
+    #
+    # Here rather than in the async caller so it shares this function's cache walk and its stubs:
+    # the check IS part of the destructive stage, and a caller that replaces that stage should not
+    # end up with half of it still running.
+    # A variant delete normally cannot touch another repo, so the guard is a whole-repo check.
+    # The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens
+    # exactly Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF repo, so removing that one
+    # quant strands the image checkpoint however many siblings remain, and none of them is a
+    # substitute for a fixed filename. A FLAG, never a rewrite of `variant`: that name is the
+    # destructive scope, and widening it here would delete every revision and manifest the user
+    # did not ask for, and purge a sibling quant out from under an in-flight download.
+    guard_this_delete = variant is None or _variant_is_a_required_companion_asset(repo_id, variant)
+    if guard_this_delete and _is_companion_base_repo(repo_id):
+        # Fails CLOSED, and only here: the lookup above already established this repo IS a
+        # companion base, so an unreadable cache means the dependants cannot be enumerated, not
+        # that there are none. Every other repo skips the check entirely and is unaffected.
+        try:
+            shared_detail = _companion_share_blocks_delete(repo_id)
+        except Exception as e:
+            logger.warning(f"Companion dependency check failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    "Couldn't check whether other installed models still need these shared "
+                    "assets. Try again in a moment."
+                ),
+            )
+        if shared_detail:
+            raise HTTPException(status_code = 400, detail = shared_detail)
+
     try:
         # If a sibling quant is downloading concurrently, restrict this delete to
         # the variant's own files and leave the shared mmproj companion for it.
@@ -413,13 +949,26 @@ def _delete_cached_model_blocking(
 
         cache_scans = cache_inventory.all_hf_cache_scans()
 
-        candidate_entries = []
+        # A repo can live in several remembered caches. Group its copies by the
+        # cache root that owns each, then target exactly one cache so a delete
+        # never removes copies in other, previously selected caches.
+        owners: dict = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 if str(repo_info.repo_type) != "model":
                     continue
-                if repo_info.repo_id.lower() == repo_id.lower():
-                    candidate_entries.append((hf_cache, repo_info))
+                if repo_info.repo_id.lower() != repo_id.lower():
+                    continue
+                try:
+                    owner = Path(repo_info.repo_path).parent.resolve(strict = False)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                owners.setdefault(owner, []).append((hf_cache, repo_info))
+
+        target_root = resolve_delete_target_root("model", repo_id, cache_path, owners.keys())
+        if target_root is None:
+            raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+        candidate_entries = owners.get(target_root, [])
 
         matched_repo_ids = resolve_destructive_repo_ids(
             repo_id,
@@ -434,10 +983,15 @@ def _delete_cached_model_blocking(
 
         if not target_entries:
             if variant is None:
-                cache_purged = purge_repo_cache_dirs("model", repo_id) or purge_partial_repo(
-                    "model", repo_id
+                cache_purged = purge_repo_cache_dirs(
+                    "model", repo_id, root = target_root
+                ) or purge_partial_repo("model", repo_id, root = target_root)
+                state_purged = (
+                    download_manifest.purge_all_state_for_repo(
+                        "model", repo_id, hub_cache = target_root
+                    )
+                    > 0
                 )
-                state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
                 if cache_purged or state_purged:
                     return {"status": "deleted", "repo_id": repo_id}
             if variant:
@@ -446,6 +1000,7 @@ def _delete_cached_model_blocking(
                     variant,
                     hf_token,
                     companions = not sibling_active,
+                    root = target_root,
                 )
                 if incomplete_result.unresolved:
                     raise HTTPException(
@@ -460,6 +1015,7 @@ def _delete_cached_model_blocking(
                     "model",
                     repo_id,
                     variant,
+                    hub_cache = target_root,
                 )
                 if incomplete_result.deleted > 0 or state_purged:
                     return {
@@ -476,6 +1032,7 @@ def _delete_cached_model_blocking(
                 [repo for _cache, repo in target_entries],
                 hf_token,
                 sibling_active = sibling_active,
+                root = target_root,
             )
 
         deleted_revisions = False
@@ -494,9 +1051,11 @@ def _delete_cached_model_blocking(
             delete_strategy.execute()
             deleted_revisions = True
 
-        cache_purged = purge_repo_cache_dirs("model", repo_id)
-        partial_purged = purge_partial_repo("model", repo_id)
-        state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
+        cache_purged = purge_repo_cache_dirs("model", repo_id, root = target_root)
+        partial_purged = purge_partial_repo("model", repo_id, root = target_root)
+        state_purged = (
+            download_manifest.purge_all_state_for_repo("model", repo_id, hub_cache = target_root) > 0
+        )
 
         if not (deleted_revisions or cache_purged or partial_purged or state_purged):
             raise HTTPException(status_code = 404, detail = "No revisions found for model")

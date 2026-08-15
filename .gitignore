@@ -11,6 +11,8 @@ outputs/
 exports/
 /datasets/
 studio/backend/assets/datasets/
+# Generated async worker / reviewer transcripts (never part of the product).
+studio/backend/async_task_outputs/
 unsloth_training_checkpoints/
 *.gguf
 *.safetensors
@@ -236,4 +238,12 @@ package-lock.json
 !studio/package-lock.json
 llama.cpp/
 # Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
-/~/
+~/
+
+# Agent workspace runtime/scratch artifacts, never part of the repo.
+async_task_outputs/
+temp/
+logs/
+
+# Audio fixture downloaded by tests/saving/text_to_speech_models at import time.
+Speech_12dB_s16.flac

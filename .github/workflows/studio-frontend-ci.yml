@@ -17,15 +17,27 @@ on:
       - 'studio/frontend/**'
       - 'scripts/check_frontend_dep_removal.py'
       - 'tests/studio/test_frontend_dep_removal.py'
+
+      - 'tests/studio/playwright_strip_ansi_smoke.py'
+      - 'tests/studio/playwright_chat_autoscroll.py'
+      - 'tests/studio/playwright_research_freeze.py'
+      # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_autoscroll_harness_contract.py'
+      - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -34,12 +46,13 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Two browser smokes (~50s) plus the Chromium install now sit inside this.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: studio/frontend
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -58,7 +71,7 @@ jobs:
           fi
           echo "All assistant-ui packages are pinned exactly."
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
@@ -130,13 +143,53 @@ jobs:
             --enumerate-dead
           python3 tests/studio/test_frontend_dep_removal.py
 
+      # A key added only to en.ts falls back to English at runtime, so nothing
+      # breaks and nothing complains -- which is how the overlays drifted 22
+      # keys behind, were repaired, then drifted 18 behind inside a day.
+      - name: Locale parity
+        run: npm run i18n:check:strict
+
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+
+      - name: Install Chromium for browser smokes
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install 'playwright>=1.45,<2' pytest
+          python3 -m playwright install --with-deps chromium
+
+      # Cheap and browserless, but it imports the harnesses, which import playwright, so it has
+      # to sit after the install. Covers the Windows teardown branch no runner here executes.
+      - name: Dev-server lifecycle tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
+            tests/studio/test_autoscroll_harness_contract.py -q
+
+      - name: Browser smoke for ANSI tool output
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_BROWSER: chromium
+        run: python3 tests/studio/playwright_strip_ansi_smoke.py
+
+      # Each harness owns its vite dev server, like the ANSI smoke above. Starting one here
+      # would background npm, so $! is the wrapper and killing it orphans the node child.
+      - name: Browser smoke for chat autoscroll
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_chat_autoscroll.py
+
+      - name: Browser smoke for research freeze
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_research_freeze.py
 
       - name: Build
         run: npm run build
 
-      - name: Built bundle must not contain Studio's unstable_Provider call site
+      - name: Built bundle must not contain Unsloth's unstable_Provider call site
         run: |
           set -e
           JS=$(ls dist/assets/index-*.js | head -1)
@@ -144,7 +197,7 @@ jobs:
           echo "main bundle: $JS"
           echo "unstable_Provider: hits=$HITS (assistant-ui internals contribute up to 3)"
           if [ "$HITS" -gt 3 ]; then
-            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Studio bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
+            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Unsloth bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
             exit 1
           fi
 
@@ -163,13 +216,20 @@ jobs:
         run: npm run biome:check
 
       - name: Upload built dist
-        # Always upload so a green run is reviewable too -- the dist
-        # output catches "tests passed but bundle changed unexpectedly"
-        # regressions that would be invisible if we only kept artifacts
-        # on failure.
-        if: always()
+        # Failures only. This uploads a whole build directory (~35MB), and
+        # keeping it from green runs too made it the second-largest artifact
+        # family in the repo at ~3.5GB. Actions storage is not free on public
+        # repos, and exceeding the account allowance silently stops GitHub
+        # scheduling jobs org-wide, so a build tree retained purely for review
+        # is not worth that risk.
+        #
+        # The "bundle changed unexpectedly" check this previously enabled is
+        # better served by asserting on the build inside the job -- the size
+        # gate in build.sh is the existing precedent -- rather than by keeping
+        # every green run's output for inspection.
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-dist
           path: studio/frontend/dist
-          retention-days: 3
+          retention-days: 1

@@ -8,6 +8,9 @@
     <!-- Network access for backend health checks and HuggingFace API -->
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Permit microphone capture for local dictation -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
     <!-- Allow loading Python/venv libraries not signed by us -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>

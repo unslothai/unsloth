@@ -3,7 +3,7 @@
 
 """Tests for the server session log + native-crash capture in run.py.
 
-Field regression: Studio "terminates without a warning" -- a native crash in
+Field regression: Unsloth "terminates without a warning" -- a native crash in
 the GPU runtime kills the process with no Python traceback, and a desktop-
 shortcut console closes before anything can be read. The server must tee its
 console output to disk and aim faulthandler at the same file so even hard
@@ -52,6 +52,62 @@ class TestTeeStream:
         tee = run_mod._TeeStream(console, log)
         # isatty / encoding probes must see the original stream's answers.
         assert tee.isatty() == console.isatty()
+
+    def test_missing_console_is_a_null_sink(self):
+        # Production never builds this, but _TeeStream(None, ...) must not crash.
+        log = io.StringIO()
+        tee = run_mod._TeeStream(None, log)
+        assert tee.write("hello") == len("hello")  # text-stream write contract
+        tee.flush()
+        tee.close()
+        assert log.getvalue() == "hello"
+        assert not log.closed  # the tee does not own the log handle
+        run_mod._harden_console_close(None)  # must not raise
+
+
+class TestNormalizeStandardStreams:
+    """A Windows process with no valid std handles starts with them all None."""
+
+    def test_missing_streams_become_usable_text_streams(self, monkeypatch):
+        for name in ("stdin", "stdout", "stderr"):
+            monkeypatch.setattr(sys, name, None)
+            monkeypatch.setattr(sys, f"__{name}__", None)
+        run_mod._normalize_standard_streams()
+        try:
+            for name in ("stdin", "stdout", "stderr"):
+                stream = getattr(sys, name)
+                assert stream is not None
+                assert getattr(sys, f"__{name}__") is not None
+                # uvicorn's default formatter probes isatty(); logging needs write().
+                assert stream.isatty() is False
+                assert stream.encoding
+                assert stream.fileno() >= 0
+            sys.stdout.write("discarded")
+            sys.stdout.flush()
+            print("also discarded")
+        finally:
+            for name in ("stdin", "stdout", "stderr"):
+                stream = getattr(sys, name)
+                if stream is not None:
+                    stream.close()
+
+    def test_existing_streams_are_left_alone(self, monkeypatch):
+        console = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", console)
+        monkeypatch.setattr(sys, "stderr", console)
+        run_mod._normalize_standard_streams()
+        # Identity, not truthiness: replacing a live console would break Colab
+        # (ipykernel OutStream), Tauri's stdout protocol and pytest capture.
+        assert sys.stdout is console
+        assert sys.stderr is console
+
+    def test_runs_before_the_logger_import(self):
+        # structlog binds `from sys import stdout` at import time, so normalizing
+        # after the loggers import leaves None captured forever.
+        src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
+        call = "\n_normalize_standard_streams()"
+        assert call in src, "run.py never calls _normalize_standard_streams()"
+        assert src.index(call) < src.index("\nfrom loggers import get_logger")
 
 
 class TestSetupServerDiskLogging:

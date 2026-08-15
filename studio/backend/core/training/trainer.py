@@ -11,14 +11,13 @@ import os
 import sys
 import types
 
-# Prevent tokenizer parallelism deadlocks when datasets forks.
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Off on Linux so datasets' forked map() workers can't deadlock. On spawn platforms
+# map() runs in-process, so keep the fast tokenizer's Rust threads on.
+os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
 
-# Make compiled cache modules importable by any subprocess. On spawn platforms
-# (Windows/macOS) spawned dataset.map() workers re-import top-level modules, and
-# the cache's trainer files import torch + unsloth_zoo (inits CUDA). Propagating
-# UNSLOTH_COMPILE_LOCATION via PYTHONPATH lets any subprocess find them.
-# Do NOT import unsloth_zoo.compiler here -- it triggers heavy torch/triton imports.
+# Make compiled cache modules importable by any subprocess: spawned dataset.map()
+# workers re-import top-level modules whose cache files import torch + unsloth_zoo.
+# Do NOT import unsloth_zoo.compiler here -- it pulls in heavy torch/triton imports.
 if sys.platform in ("win32", "darwin"):
     _compile_cache = os.environ.get("UNSLOTH_COMPILE_LOCATION", "unsloth_compiled_cache")
     if not os.path.isabs(_compile_cache):
@@ -33,15 +32,13 @@ if sys.platform in ("win32", "darwin"):
 import torch
 from utils.hardware import (
     clear_gpu_cache,
-    safe_num_proc,
     dataset_map_num_proc,
     get_device_map,
     raise_if_offloaded,
     get_visible_gpu_count,
 )
 
-# recompile_limit was removed in some ROCm torch builds; guard so training
-# doesn't crash on RDNA2/RDNA3 with older ROCm wheels.
+# recompile_limit was removed in some ROCm torch builds; guard for older wheels.
 if hasattr(torch._dynamo.config, "recompile_limit"):
     torch._dynamo.config.recompile_limit = 64
 
@@ -51,27 +48,31 @@ from core.import_guards import ensure_real_packages as _ensure_real_packages
 
 _ensure_real_packages("unsloth_zoo", "unsloth")
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
-from unsloth.chat_templates import get_chat_template
 
 import json
 import threading
 import math
-import subprocess
-import structlog
 from loggers import get_logger
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
-from dataclasses import dataclass
-import pandas as pd
 from datasets import Dataset
+from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
+from utils.hf_dataset_options import hf_dataset_split_instruction_names
+from utils.third_party_source import (
+    ensure_dac_speech_weights,
+    ensure_outetts_source,
+    ensure_spark_tts_source,
+    import_outetts_module,
+    import_sparktts_module,
+)
 
-from core.inference.llama_cpp import _hf_offline_if_dns_dead
-from utils.models import is_vision_model, detect_audio_type
+from utils.models import is_vision_model, detect_audio_type_checked
+from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
-from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
+from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
@@ -82,16 +83,16 @@ from utils.paths import (
 )
 from trl import SFTTrainer, SFTConfig
 
-from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+from .training import (
+    TrainingProgress,
+    create_mlx_trainer_adapter,
+    should_use_mlx_training_backend,
 )
 
 logger = get_logger(__name__)
 
-# A streaming eval dataset has no __len__, so a streaming evaluation would
-# iterate the entire (potentially unbounded) source on every eval step. Cap it
-# to a fixed sample count so each evaluation terminates predictably.
+# Streaming eval has no __len__, so an unbounded eval would iterate the whole
+# source on every eval step. Cap it so each evaluation terminates.
 STREAMING_EVAL_MAX_SAMPLES = 500
 
 
@@ -104,30 +105,182 @@ def _build_report_targets(training_args) -> list[str] | str:
     return report_to or "none"
 
 
-@dataclass
-class TrainingProgress:
-    """Training progress tracking"""
+def _verbose_logging_requested() -> bool:
+    """Whether `unsloth studio --verbose` is in effect.
 
-    epoch: float = 0
-    step: int = 0
-    total_steps: int = 0
-    loss: Optional[float] = None
-    learning_rate: Optional[float] = None
-    is_training: bool = False
-    is_completed: bool = False
-    error: Optional[str] = None
-    status_message: str = "Ready to train"  # Current stage
-    elapsed_seconds: Optional[float] = None
-    eta_seconds: Optional[float] = None
-    grad_norm: Optional[float] = None
-    num_tokens: Optional[int] = None
-    eval_loss: Optional[float] = None
+    --verbose zeroes both access-log windows (unsloth_cli/commands/studio.py), and the
+    env is inherited by the training subprocess, so the same pair is the signal here.
+    """
+
+    def _zero(name: str) -> bool:
+        raw = (os.environ.get(name) or "").strip()
+        try:
+            return raw != "" and int(raw) <= 0
+        except ValueError:
+            return False
+
+    return _zero("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS") and _zero(
+        "UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"
+    )
+
+
+def _hf_stdout_progress_disabled() -> bool:
+    """`disable_tqdm` for the HF training args, unless --verbose asked for everything.
+
+    The trainer subprocess has no terminal: its stdout is teed into the server log, so
+    the tqdm bar becomes a burst of carriage-return fragments that can also land inside
+    a structlog JSON record and make it unparseable. Every number the bar carries is
+    already published twice, as the throttled `training_progress` event added in #7087
+    and as the per-step SSE stream the UI charts.
+    """
+    return not _verbose_logging_requested()
+
+
+# Keys that only ever appear on Trainer's end-of-run / end-of-eval summary record.
+_TRAINER_SUMMARY_KEYS = (
+    "train_runtime",
+    "train_samples_per_second",
+    "train_steps_per_second",
+    "total_flos",
+    "eval_runtime",
+    "eval_samples_per_second",
+    "eval_steps_per_second",
+)
+# structlog fills these itself; a metric of the same name would collide.
+_RESERVED_LOG_KEYS = frozenset({"event", "level", "timestamp", "logger"})
+
+
+def _drop_hf_stdout_callbacks(trainer) -> None:
+    """Remove HF's stdout progress callbacks from an already-built trainer.
+
+    `disable_tqdm=True` only swaps ProgressCallback for PrinterCallback, which prints a
+    raw dict per step instead (`{'loss': '0.5684', 'grad_norm': ..., 'epoch': ...}`).
+    Both write to the same stdout, so both have to go; Studio's own progress callback,
+    the SSE stream and `training_progress` are unaffected. Best effort: a transformers
+    build without these classes just keeps its current behaviour.
+    """
+    if _verbose_logging_requested():
+        return
+    try:
+        from transformers.trainer_callback import PrinterCallback, ProgressCallback
+    except Exception:  # noqa: BLE001 - never let log tidying break a training run
+        return
+    for callback_cls in (PrinterCallback, ProgressCallback):
+        try:
+            trainer.remove_callback(callback_cls)
+        except Exception:  # noqa: BLE001 - not attached, or an incompatible trainer
+            pass
+
+
+def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> dict:
+    """``subfolder`` for a Spark-TTS repo root, empty for anything else.
+
+    Only the canonical repo layout needs it: a local checkpoint or an alias that already
+    names LLM/ points at the tokenizer directly.
+    """
+    if audio_type != "bicodec":
+        return {}
+    name = str(lookup_name).replace("\\", "/").rstrip("/")
+    if name.endswith("/LLM"):
+        return {}
+    # An LLM/ child is the canonical layout, and a cache-pinned or offline snapshot root has
+    # one too. Treating that as "already at the tokenizer" sent AutoTokenizer at the root,
+    # which holds no tokenizer, and failed the very case this helper exists for.
+    if os.path.isdir(os.path.join(lookup_name, "LLM")):
+        return {"subfolder": "LLM"}
+    # A local checkpoint that carries its own tokenizer is already the right directory.
+    if os.path.isfile(os.path.join(lookup_name, "tokenizer_config.json")):
+        return {}
+    return {"subfolder": "LLM"}
+
+
+# Enough rows to see past a leading null or malformed value, few enough to stay cheap on a
+# streamed dataset, where each row is pulled over the network.
+_AUDIO_SNIFF_ROWS = 16
+
+# Kept in step with detect_multimodal_dataset, so the veto answers False only about the very
+# columns that set the flag it is vetoing.
+_AUDIO_COLUMN_KEYWORDS = ("audio", "speech", "wav", "waveform", "sound")
+
+
+def _dataset_has_audio_column(dataset) -> Optional[bool]:
+    """Whether `dataset` really carries audio. None when it cannot be told.
+
+    `is_dataset_audio` comes from the format check's `is_audio`, set by a column-NAME
+    keyword match that never inspects the value, so a text dataset with a column called
+    `audio` holding prose reports audio. Refusing such a run would take away a text path
+    that works today, so the dataset itself gets the last word.
+
+    An ``Audio`` feature is audio without reading a row. Otherwise look at the values: an
+    audio column loaded from JSON/CSV is a ``Value("string")`` of paths until the
+    preprocessor casts it (``_preprocess_snac_dataset`` does exactly that), so trusting the
+    schema would call a real audio dataset textual.
+
+    None for a DatasetDict, a schema-less iterable dataset, or an unreadable row: an
+    unreadable model probe is still the likelier explanation, so the caller keeps refusing
+    unless this says False outright.
+    """
+    try:
+        from datasets.features.audio import Audio
+    except Exception:  # noqa: BLE001 - datasets missing or too old to have the feature
+        return None
+
+    features = getattr(dataset, "features", None)
+    if not features:
+        return None
+    try:
+        if any(isinstance(f, Audio) for f in features.values()):
+            return True
+    except Exception:  # noqa: BLE001 - a mapping that is not a features dict
+        return None
+
+    # No Audio feature, so nothing decodes here and reading rows cannot hit the
+    # missing-FFmpeg path. Several rows, not one: a JSON/CSV audio dataset can carry a null
+    # or malformed first value and real paths after it, and the preprocessors skip such a
+    # row rather than fail, so row 0 alone would call it textual.
+    #
+    # Audio-like values count anywhere, but only an audio-NAMED column can answer False: a
+    # transcript is populated in every row of a path-backed audio dataset, so counting it
+    # would report "no audio here" on the strength of the text. No evidence stays None.
+    try:
+        from utils.datasets.format_detection import (
+            _AUDIO_EXTENSIONS,
+            _is_audio_value,
+            _keyword_in_column,
+        )
+
+        def looks_like_audio(value) -> bool:
+            if _is_audio_value(value):
+                return True
+            return isinstance(value, str) and value.lower().endswith(_AUDIO_EXTENSIONS)
+
+        saw_a_usable_value = False
+        for index, row in enumerate(dataset):
+            if index >= _AUDIO_SNIFF_ROWS:
+                break
+            for name, value in row.items():
+                if looks_like_audio(value):
+                    return True
+                if not any(_keyword_in_column(k, str(name)) for k in _AUDIO_COLUMN_KEYWORDS):
+                    continue
+                if isinstance(value, str):
+                    saw_a_usable_value = saw_a_usable_value or bool(value.strip())
+                elif value is not None:
+                    saw_a_usable_value = True
+    except Exception:  # noqa: BLE001 - unreadable row, empty dataset, odd row type
+        return None
+    return False if saw_a_usable_value else None
 
 
 class UnslothTrainer:
     """
     Unsloth Training Backend
     """
+
+    def __new__(cls, *args, **kwargs):
+        if cls is UnslothTrainer and should_use_mlx_training_backend():
+            return create_mlx_trainer_adapter(*args, **kwargs)
+        return super().__new__(cls)
 
     def __init__(self):
         self.model = None
@@ -139,33 +292,32 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
-        self.load_in_4bit = True  # Quantization mode for metadata
+        self.load_in_4bit = True
 
-        # Model state tracking
-        self.is_cpt = False  # True for Continued Pretraining
+        self.is_cpt = False  # Continued Pretraining
         self.is_vlm = False
         self.is_audio = False
-        self.is_audio_vlm = False  # Multimodal model (e.g. Gemma 3N) trained on audio data
+        self.is_audio_vlm = False  # e.g. Gemma 3N trained on audio
         self._audio_type = None  # 'csm', 'whisper', 'snac', 'bicodec', 'dac'
+        # True until a probe says otherwise, so a path that never probes cannot trip the
+        # inconclusive-detection guard.
+        self._audio_type_known = True
+        self._is_dataset_audio = False
         self._cuda_audio_used = False  # Set once after audio CUDA preprocessing; never cleared
-        self._spark_tts_repo_dir = None  # Downloaded Spark-TTS repo path (for BiCodecTokenizer)
+        self._spark_tts_repo_dir = None  # Spark-TTS repo path, for BiCodecTokenizer
+        self._spark_tts_code_dir = None
+        self._outetts_code_dir = None
         self.model_name = None
+        self.model_load_error = None
+        self.dataset_loaded_from_exact_snapshot = False
+        self.dataset_snapshot_path = None
 
-        # Training metrics tracking
         self.training_start_time: Optional[float] = None
         self.batch_size: Optional[int] = None
         self.max_seq_length: Optional[int] = None
         self.gradient_accumulation_steps: Optional[int] = None
 
-        # Thread safety
         self._lock = threading.Lock()
-
-        # Training context for later transfer
-        self.training_context = {
-            "base_model_name": None,
-            "output_dir": None,
-            "is_lora": True,  # Default to LoRA
-        }
 
     def pre_detect_and_load_tokenizer(
         self,
@@ -175,6 +327,9 @@ class UnslothTrainer:
         is_dataset_image: bool = False,
         is_dataset_audio: bool = False,
         trust_remote_code: bool = False,
+        model_load_name: Optional[str] = None,
+        local_files_only: bool = False,
+        model_revision: Optional[str] = None,
     ) -> None:
         """Lightweight detection and tokenizer load — no model weights, no VRAM.
 
@@ -187,12 +342,22 @@ class UnslothTrainer:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
         self.trust_remote_code = trust_remote_code
+        lookup_name = model_load_name or model_name
 
         if hf_token:
             os.environ["HF_TOKEN"] = hf_token
 
-        # --- Detect audio type (reads config.json only, no VRAM) ---
-        self._audio_type = detect_audio_type(model_name, hf_token)
+        # Detect audio type (config.json only, no VRAM). Checked, because an unreadable
+        # tokenizer_config.json (gated repo, offline, or a cache holding weights but not the
+        # tokenizer files) otherwise reads as "not an audio model" and sends a TTS run down
+        # the text path.
+        self._audio_type, self._audio_type_known = detect_audio_type_checked(
+            lookup_name,
+            hf_token,
+            local_files_only = local_files_only,
+            revision = model_revision,
+        )
+        self._is_dataset_audio = is_dataset_audio
         if self._audio_type == "audio_vlm":
             self.is_audio = False
             self.is_audio_vlm = is_dataset_audio
@@ -204,8 +369,16 @@ class UnslothTrainer:
         if not self.is_audio and not self.is_audio_vlm:
             self._cuda_audio_used = False
 
-        # --- Detect VLM ---
-        vision = is_vision_model(model_name, hf_token = hf_token) if not self.is_audio else False
+        vision = (
+            is_vision_model(
+                lookup_name,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
+            )
+            if not self.is_audio
+            else False
+        )
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
 
         logger.info(
@@ -216,25 +389,94 @@ class UnslothTrainer:
             self.is_vlm,
         )
 
-        # --- Load lightweight tokenizer/processor (CPU only, no VRAM) ---
-        # Whisper needs AutoProcessor; others use AutoTokenizer (CSM loads its
-        # own processor inline).
-        if self._audio_type == "whisper":
-            from transformers import AutoProcessor
-            self.tokenizer = AutoProcessor.from_pretrained(
-                model_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
+        # Load tokenizer/processor (CPU only, no VRAM)
+        # Whisper needs AutoProcessor; others AutoTokenizer (CSM loads its own inline).
+        def _load_tokenizer_for_detected_type():
+            if self._audio_type == "whisper":
+                from transformers import AutoProcessor
+                self.tokenizer = AutoProcessor.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
+            else:
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    lookup_name,
+                    trust_remote_code = trust_remote_code,
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                    # Spark-TTS keeps its tokenizer under LLM/, the subfolder _load_model
+                    # loads weights from. Reading the root finds no vocab and fails blaming
+                    # a missing sentencepiece that is installed and irrelevant.
+                    **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
+                )
+
+        # The probe and the tokenizer load are separate reads of the same repo, so a transient
+        # timeout or 5xx can leave the probe inconclusive while the read after it succeeds.
+        # Ask again rather than refuse the run later claiming tokenizer_config.json could not
+        # be read when it just was. detect_audio_type_checked caches only definitive results,
+        # so this costs a cache hit on the common path.
+        def _retry_audio_detection() -> bool:
+            """Re-probe an inconclusive type. True if the answer changed."""
+            if self._audio_type_known:
+                return False
+            previous_type = self._audio_type
+            retried_type, retried_known = detect_audio_type_checked(
+                lookup_name,
+                hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
             )
-        else:
-            from transformers import AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                trust_remote_code = trust_remote_code,
-                token = hf_token,
+            if not retried_known:
+                return False
+            self._audio_type, self._audio_type_known = retried_type, True
+            if self._audio_type == "audio_vlm":
+                self.is_audio = False
+                self.is_audio_vlm = is_dataset_audio
+                self._audio_type = None
+            else:
+                self.is_audio = self._audio_type is not None
+                self.is_audio_vlm = False
+            logger.info(
+                "pre_detect retry: audio_type=%s, is_audio=%s",
+                self._audio_type,
+                self.is_audio,
             )
+            return self._audio_type != previous_type
+
+        # An inconclusive probe leaves _audio_type None and the kwargs are chosen from it, so
+        # a Spark-TTS repo is read at its tokenizer-less root and raises here. Re-probe before
+        # giving up, or the retry below is unreachable for exactly the models whose layout the
+        # type decides.
+        try:
+            _load_tokenizer_for_detected_type()
+        except Exception:
+            if not _retry_audio_detection():
+                raise
+            logger.info(
+                "Retrying the tokenizer load for %s as %s after the first read failed",
+                model_name,
+                self._audio_type,
+            )
+            _load_tokenizer_for_detected_type()
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
+
+        # The loader and its kwargs are chosen from the type, so a retry that changes the
+        # answer has left the wrong object in self.tokenizer: whisper needs an AutoProcessor
+        # (_preprocess_whisper_dataset reads .feature_extractor and .tokenizer off it), and
+        # Spark-TTS its LLM/ subfolder.
+        if _retry_audio_detection():
+            _load_tokenizer_for_detected_type()
+            logger.info(
+                "Reloaded tokenizer for %s after detection changed to %s",
+                model_name,
+                self._audio_type,
+            )
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         """Add callback for training progress updates"""
@@ -253,6 +495,21 @@ class UnslothTrainer:
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
 
+    def _record_warning(self, message: str) -> None:
+        message = str(message).strip()
+        if not message:
+            return
+        with self._lock:
+            if message in self.training_progress.warnings:
+                return
+            self.training_progress.warnings.append(message)
+            logger.warning(message)
+            for callback in self.progress_callbacks:
+                try:
+                    callback(self.training_progress)
+                except Exception as e:
+                    logger.error(f"Error in progress callback: {e}")
+
     def _create_progress_callback(self):
         """Create a TrainerCallback for progress tracking. Reused by all training branches."""
         from transformers import TrainerCallback
@@ -260,6 +517,52 @@ class UnslothTrainer:
         trainer_ref = self
 
         class _ProgressCallback(TrainerCallback):
+            # Per-batch evaluation progress used to exist only as HF's tqdm bar, which
+            # this PR drops. A long eval would otherwise look stalled between the last
+            # step log and the eval result, so it is republished, throttled, as status
+            # and one structured line.
+            _eval_seen = 0
+            _eval_last_report = 0.0
+
+            def on_train_begin(self, args, state, control, **kwargs):
+                # on_log reports an empty status, else the UI stays on "Starting training...".
+                if trainer_ref.should_stop:
+                    return
+                trainer_ref._update_progress(status_message = "Training in progress...")
+
+            def on_evaluate(self, args, state, control, **kwargs):
+                cls = type(self)
+                had_status = cls._eval_last_report > 0.0
+                cls._eval_seen = 0
+                cls._eval_last_report = 0.0
+                # An empty status is ignored downstream on purpose, so the UI would
+                # sit on "Evaluating..." for the rest of the run.
+                if had_status and not trainer_ref.should_stop:
+                    trainer_ref._update_progress(status_message = "Training in progress...")
+
+            def on_prediction_step(
+                self,
+                args,
+                state,
+                control,
+                eval_dataloader = None,
+                **kwargs,
+            ):
+                cls = type(self)
+                cls._eval_seen += 1
+                total = None
+                try:
+                    total = len(eval_dataloader) if eval_dataloader is not None else None
+                except TypeError:  # an iterable-style loader has no length
+                    total = None
+                now = time.time()
+                if cls._eval_last_report and (now - cls._eval_last_report) < 15.0:
+                    return
+                cls._eval_last_report = now
+                where = f"{cls._eval_seen:,}" + (f"/{total:,}" if total else "")
+                trainer_ref._update_progress(status_message = f"Evaluating... {where} batches")
+                logger.info("evaluating", batches = cls._eval_seen, total_batches = total)
+
             def on_log(
                 self,
                 args,
@@ -270,7 +573,36 @@ class UnslothTrainer:
             ):
                 if not logs:
                     return
-                loss_value = logs.get("loss", logs.get("train_loss", None))
+                # Trainer's end-of-run and end-of-eval summaries carry numbers that
+                # appear nowhere else in Studio (train_samples_per_second,
+                # train_steps_per_second, total_flos, memory, eval runtime). They used
+                # to reach the log only through PrinterCallback's raw stdout dict, so
+                # with that callback gone they are re-published here, structured, once.
+                if any(k in logs for k in _TRAINER_SUMMARY_KEYS):
+                    logger.info(
+                        "trainer summary",
+                        **{
+                            k: v
+                            for k, v in logs.items()
+                            if isinstance(k, str) and k not in _RESERVED_LOG_KEYS
+                        },
+                    )
+                # HF logs the end-of-run summary as {"train_runtime": ..., "train_loss": ...}
+                # with no "loss" key, and `train_loss` is the MEAN loss over the whole run,
+                # not a step loss. Falling back to it reported the average as the final
+                # step's value: it landed on the chart at the same global_step as the real
+                # last step and became `final_loss` on /api/train/runs, disagreeing with the
+                # checkpoint. Keep reporting it, as the summary it is.
+                loss_value = logs.get("loss")
+                is_run_summary = loss_value is None and (
+                    logs.get("train_loss") is not None or logs.get("train_runtime") is not None
+                )
+                if is_run_summary:
+                    logger.info(
+                        "training finished: mean train_loss=%s over %s steps",
+                        logs.get("train_loss"),
+                        state.global_step,
+                    )
                 current_step = state.global_step
                 grad_norm = logs.get("grad_norm", None)
 
@@ -298,6 +630,7 @@ class UnslothTrainer:
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
+                    is_run_summary = is_run_summary,
                     status_message = "",
                 )
 
@@ -356,6 +689,9 @@ class UnslothTrainer:
             "seed": random_seed,
             "output_dir": output_dir,
             "report_to": _build_report_targets(training_args),
+            # The subprocess stdout is teed into the server log, so HF's bar is
+            # noise there; --verbose restores it. See _hf_stdout_progress_disabled.
+            "disable_tqdm": _hf_stdout_progress_disabled(),
         }
 
         if training_args.get("enable_tensorboard", False):
@@ -363,19 +699,16 @@ class UnslothTrainer:
                 resolve_tensorboard_dir(training_args.get("tensorboard_dir"))
             )
 
-        # max_steps vs epochs
         if max_steps_val and max_steps_val > 0:
             config["max_steps"] = max_steps_val
         else:
             config["num_train_epochs"] = training_args.get("num_epochs", 3)
 
-        # save_steps
         save_steps_val = training_args.get("save_steps", 0)
         if save_steps_val and save_steps_val > 0:
             config["save_steps"] = save_steps_val
             config["save_strategy"] = "steps"
 
-        # Apply per-branch overrides
         if extra_args:
             config.update(extra_args)
 
@@ -417,20 +750,16 @@ class UnslothTrainer:
     def _cleanup_audio_artifacts(self):
         """Remove sys.path/sys.modules entries from previous audio preprocessing.
 
-        After audio training, cloned repo dirs (OuteTTS, Spark-TTS) and heavy
+        After audio training, codec source dirs and heavy
         modules (snac, whisper, sparktts, outetts) linger; the next
         dataset.map(num_proc=N) forks children that inherit this stale state and
         deadlock.
         """
-        # Remove cloned audio repo paths from sys.path
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        audio_paths = [
-            os.path.join(base_dir, "inference", "OuteTTS"),  # DAC/OuteTTS
-        ]
-        # Spark-TTS path is relative to the downloaded repo
-        if self._spark_tts_repo_dir:
-            spark_code_dir = os.path.join(os.path.dirname(self._spark_tts_repo_dir), "Spark-TTS")
-            audio_paths.append(spark_code_dir)
+        audio_paths = []
+        if self._spark_tts_code_dir:
+            audio_paths.append(str(self._spark_tts_code_dir))
+        if self._outetts_code_dir:
+            audio_paths.append(str(self._outetts_code_dir))
 
         removed_paths = []
         for path in audio_paths:
@@ -443,6 +772,8 @@ class UnslothTrainer:
         removed_modules = [key for key in sys.modules if key.startswith(prefixes)]
         for key in removed_modules:
             del sys.modules[key]
+        self._spark_tts_code_dir = None
+        self._outetts_code_dir = None
 
         if removed_paths or removed_modules:
             logger.info(
@@ -472,7 +803,6 @@ class UnslothTrainer:
                     text_col = col
                 elif role == "speaker_id":
                     speaker_col = col
-            # Use mapping if both required columns exist
             if audio_col and audio_col in cols and text_col and text_col in cols:
                 return {
                     "audio_col": audio_col,
@@ -510,10 +840,16 @@ class UnslothTrainer:
         trust_remote_code: bool = False,
         full_finetuning: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        model_load_name: Optional[str] = None,
+        local_files_only: bool = False,
+        actual_model_repo_id: Optional[str] = None,
+        model_revision: Optional[str] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # For training_meta.json
         self.trust_remote_code = trust_remote_code  # For AutoProcessor etc. used during training
+        lookup_name = model_load_name or model_name
+        self.model_load_error = None
         try:
             if self.model is not None:
                 del self.model
@@ -526,14 +862,11 @@ class UnslothTrainer:
             logger.info("\nClearing GPU memory before training...")
             clear_gpu_cache()
 
-            # Clean up sys.path/sys.modules from previous audio preprocessing
-            # to prevent deadlocks when forking dataset.map() workers
+            # Clear audio sys.path/sys.modules state; stale entries deadlock forked map() workers
             self._cleanup_audio_artifacts()
 
-            # Reload Unsloth-patched modeling modules before clearing the cache.
-            # __UNSLOTH_PATCHED__ blocks re-compilation, so clearing the disk
-            # cache alone would leave files missing; reloading restores original
-            # class defs so Unsloth re-compiles cleanly.
+            # Reload Unsloth-patched modeling modules before clearing the cache: __UNSLOTH_PATCHED__
+            # blocks re-compilation, so clearing the disk cache alone would leave files missing.
             import importlib
 
             for _key, _mod in list(sys.modules.items()):
@@ -549,8 +882,16 @@ class UnslothTrainer:
 
             _preserve = ["Unsloth*Trainer.py"] if sys.platform in ("win32", "darwin") else None
             clear_unsloth_compiled_cache(preserve_patterns = _preserve)
-            # Detect audio model type dynamically (config.json + tokenizer)
-            self._audio_type = detect_audio_type(model_name, hf_token)
+            # Detect audio type (config.json + tokenizer). Checked: this reassigns
+            # _audio_type, so an unchecked answer would leave the flag describing the
+            # previous probe.
+            self._audio_type, self._audio_type_known = detect_audio_type_checked(
+                lookup_name,
+                hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
+            )
+            self._is_dataset_audio = is_dataset_audio
             # audio_vlm is detected as an audio_type now; handle separately
             if self._audio_type == "audio_vlm":
                 self.is_audio = False
@@ -564,7 +905,16 @@ class UnslothTrainer:
                 self._cuda_audio_used = False
 
             # VLM: vision model + image dataset (mutually exclusive with audio)
-            vision = is_vision_model(model_name, hf_token = hf_token) if not self.is_audio else False
+            vision = (
+                is_vision_model(
+                    lookup_name,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
+                if not self.is_audio
+                else False
+            )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             self.model_name = model_name
             self.max_seq_length = max_seq_length
@@ -575,7 +925,6 @@ class UnslothTrainer:
             logger.info(f"Dataset has images: {is_dataset_image}, audio: {is_dataset_audio}")
             logger.info(f"Using VLM path: {self.is_vlm}")
 
-            # Reset training state for new run
             self._update_progress(
                 is_training = True,
                 is_completed = False,
@@ -585,7 +934,6 @@ class UnslothTrainer:
                 epoch = 0,
             )
 
-            # Update UI with loading message
             model_display = model_name.split("/")[-1] if "/" in model_name else model_name
             model_type_label = "audio" if self.is_audio else ("vision" if self.is_vlm else "text")
             self._update_progress(
@@ -597,14 +945,16 @@ class UnslothTrainer:
             if hf_token:
                 os.environ["HF_TOKEN"] = hf_token
 
-            # Proactive gated-model check before from_pretrained (catches all
-            # gated/private models). Skip when offline -- it uses the cache.
-            if "/" in model_name and not _env_offline():
+            # Proactive gated/private check before from_pretrained; skipped offline (uses cache).
+            if "/" in model_name and not local_files_only and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
-                    info = hf_model_info(model_name, token = hf_token or None)
-                    # model_info succeeds for gated repos (metadata is public);
-                    # info.gated tells us if files require acceptance/token.
+
+                    model_info_kwargs = {"token": hf_token or None}
+                    if model_revision:
+                        model_info_kwargs["revision"] = model_revision
+                    info = hf_model_info(model_name, **model_info_kwargs)
+                    # model_info works on gated repos (metadata is public); info.gated flags acceptance.
                     if info.gated and not hf_token:
                         friendly = (
                             f"Access denied for '{model_name}'. This model is gated. "
@@ -634,24 +984,21 @@ class UnslothTrainer:
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
 
-            # AMD ROCm without native bf16 (e.g. RDNA2/gfx103x) crashes with an
-            # LLVM error on the first bf16 kernel if dtype=None auto-picks bf16, so
-            # force float16 there. NVIDIA keeps dtype=None so unsloth's auto-detect
-            # (incl. FORCE_FLOAT32) is honored -- T4/V100 must NOT be coerced to
-            # float16. Derive ROCm inline since hardware.IS_ROCM may be unset here.
+            # ROCm without native bf16 (e.g. RDNA2/gfx103x) dies with an LLVM error on the first
+            # bf16 kernel when dtype=None picks bf16, so force float16. NVIDIA keeps None so
+            # unsloth's auto-detect is honored -- T4/V100 must NOT be coerced to float16.
             _is_rocm = (
                 bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
             )
             _auto_dtype = torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
 
-            # Branch based on model type
             if self._audio_type == "csm":
                 # CSM: FastModel, auto_model=CsmForConditionalGeneration, load_in_4bit=False
                 from unsloth import FastModel
                 from transformers import CsmForConditionalGeneration
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
                     auto_model = CsmForConditionalGeneration,
@@ -660,6 +1007,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -669,7 +1018,7 @@ class UnslothTrainer:
                 from transformers import WhisperForConditionalGeneration
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     dtype = _auto_dtype,
                     load_in_4bit = False,
                     device_map = device_map,
@@ -679,6 +1028,8 @@ class UnslothTrainer:
                     whisper_task = "transcribe",
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 # Generation settings (notebook lines 100-105)
                 self.model.generation_config.language = "<|en|>"
@@ -690,7 +1041,7 @@ class UnslothTrainer:
             elif self._audio_type == "snac":
                 # Orpheus: language model with audio codec tokens
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
@@ -698,28 +1049,30 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
             elif self._audio_type == "bicodec":
-                # Spark-TTS: download full repo (sparktts + BiCodec weights), then
-                # load only the LLM subfolder. model_name may be
-                # "Spark-TTS-0.5B/LLM" (YAML mapping) or "unsloth/Spark-TTS-0.5B".
+                # Spark-TTS: download the full repo (sparktts + BiCodec weights), load only the LLM
+                # subfolder. model_name is "Spark-TTS-0.5B/LLM" (YAML mapping) or "unsloth/Spark-TTS-0.5B".
                 from unsloth import FastModel
                 from huggingface_hub import snapshot_download
 
                 if model_name.endswith("/LLM"):
-                    # "Spark-TTS-0.5B/LLM" → parent="Spark-TTS-0.5B"
-                    local_dir = model_name.rsplit("/", 1)[0]
-                    hf_repo = f"unsloth/{local_dir}"
-                    llm_path = model_name
+                    # "Spark-TTS-0.5B/LLM" → repo "unsloth/Spark-TTS-0.5B"
+                    hf_repo = f"unsloth/{model_name.rsplit('/', 1)[0]}"
                 else:
-                    # "unsloth/Spark-TTS-0.5B" → local_dir="Spark-TTS-0.5B"
                     hf_repo = model_name
-                    local_dir = model_name.split("/")[-1]
-                    llm_path = f"{local_dir}/LLM"
 
-                repo_path = snapshot_download(hf_repo, local_dir = local_dir)
+                if local_files_only:
+                    repo_path = lookup_name
+                else:
+                    repo_path = snapshot_download(
+                        hf_repo,
+                        revision = model_revision,
+                    )
                 self._spark_tts_repo_dir = os.path.abspath(repo_path)  # Absolute for sys.path
                 llm_path = os.path.join(self._spark_tts_repo_dir, "LLM")
 
@@ -739,22 +1092,23 @@ class UnslothTrainer:
                 # OuteTTS: uses FastModel (not FastLanguageModel) with load_in_4bit=False
                 from unsloth import FastModel
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name,
+                    lookup_name,
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
                     device_map = device_map,
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
             elif self.is_audio_vlm:
-                # Audio VLM: multimodal model trained on audio (e.g. Gemma 3N).
-                # FastModel (general loader) returns (model, processor).
+                # Audio VLM (e.g. Gemma 3N): FastModel returns (model, processor).
                 from unsloth import FastModel
                 self.model, self.tokenizer = FastModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
@@ -762,13 +1116,14 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
             elif self.is_vlm:
-                # Load vision model - returns (model, tokenizer)
                 self.model, self.tokenizer = FastVisionModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
@@ -776,6 +1131,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded vision model")
 
@@ -793,9 +1150,8 @@ class UnslothTrainer:
                 )
                 logger.info(f"[VLM Diagnostic] Usable as vision processor: {has_image_proc}\n")
             else:
-                # Load text model - returns (model, tokenizer)
                 self.model, self.tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = model_name,
+                    model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
                     load_in_4bit = load_in_4bit,
@@ -803,16 +1159,28 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded text model")
 
-            raise_if_offloaded(self.model, device_map, "Studio training")
+            raise_if_offloaded(self.model, device_map, "Unsloth training")
+
+            restored_repo_id = restore_hf_cache_repo_identity(
+                self.model,
+                lookup_name,
+                expected_repo_id = actual_model_repo_id or model_name,
+            )
+            if restored_repo_id:
+                logger.info(
+                    f"Restored Hub model identity for saved adapter metadata: {restored_repo_id}"
+                )
 
             if self.should_stop:
                 return False
 
             if full_finetuning:
-                # Enable training mode so all params are trainable (else frozen)
+                # All params trainable (else frozen)
                 self.model.for_training()
 
             self._update_progress(status_message = "Model loaded successfully")
@@ -820,12 +1188,12 @@ class UnslothTrainer:
             return True
 
         except OSError as e:
+            self.model_load_error = e
             if "could not get source code" in str(e) and not getattr(
                 self, "_source_code_retried", False
             ):
-                # Unsloth patching can leave stale state that breaks
-                # inspect.getsource() when switching model families (e.g. gemma3 →
-                # gemma3n); the first failure clears it, so a retry succeeds.
+                # Unsloth patching can leave stale state that breaks inspect.getsource() when
+                # switching model families (e.g. gemma3 -> gemma3n); the first failure clears it.
                 self._source_code_retried = True
                 logger.info(f"\n'could not get source code' — retrying once...\n")
                 return self.load_model(
@@ -838,6 +1206,10 @@ class UnslothTrainer:
                     trust_remote_code = trust_remote_code,
                     full_finetuning = full_finetuning,
                     gpu_ids = gpu_ids,
+                    model_load_name = model_load_name,
+                    local_files_only = local_files_only,
+                    actual_model_repo_id = actual_model_repo_id,
+                    model_revision = model_revision,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -860,6 +1232,7 @@ class UnslothTrainer:
             self._update_progress(error = error_msg, is_training = False)
             return False
         except Exception as e:
+            self.model_load_error = e
             error_msg = str(e)
             # Surface a friendly message for gated/auth errors
             error_lower = error_msg.lower()
@@ -892,7 +1265,6 @@ class UnslothTrainer:
         finetune_language_layers: bool = True,
         finetune_attention_modules: bool = True,
         finetune_mlp_modules: bool = True,
-        # Standard LoRA parameters
         target_modules: list = None,
         lora_r: int = 16,
         lora_alpha: int = 16,
@@ -900,6 +1272,7 @@ class UnslothTrainer:
         use_gradient_checkpointing: str = "unsloth",
         use_rslora: bool = False,
         use_loftq: bool = False,
+        use_dora: bool = False,
         modules_to_save: list = None,
     ) -> bool:
         """
@@ -909,14 +1282,13 @@ class UnslothTrainer:
             if self.model is None:
                 raise ValueError("Model not loaded. Call load_model() first.")
 
-            # Full finetuning - skip PEFT entirely
+            # Full finetuning: skip PEFT
             if not use_lora:
                 self._update_progress(status_message = "Full finetuning mode - no LoRA adapters")
                 logger.info("Full finetuning mode - training all parameters\n")
                 return True
 
-            # LoRA/QLoRA - apply PEFT.
-            # "all-linear" is a PEFT keyword targeting every linear layer.
+            # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
                 if len(target_modules) == 1:
                     target_modules = "all-linear"
@@ -942,29 +1314,25 @@ class UnslothTrainer:
                     use_gradient_checkpointing = "unsloth"
                 elif use_gradient_checkpointing in ("true", "1", "yes"):
                     use_gradient_checkpointing = True
-                elif use_gradient_checkpointing in ("false", "0", "no"):
+                elif use_gradient_checkpointing in ("false", "0", "no", "none", "off"):
                     use_gradient_checkpointing = False
                 else:
-                    # Invalid value -> "unsloth"
                     logger.warning(
                         f"Invalid gradient_checkpointing value: {use_gradient_checkpointing}, defaulting to 'unsloth'"
                     )
                     use_gradient_checkpointing = "unsloth"
             elif use_gradient_checkpointing not in (True, False, "unsloth"):
-                # Invalid type/value -> "unsloth"
                 logger.warning(
                     f"Invalid gradient_checkpointing type/value: {use_gradient_checkpointing}, defaulting to 'unsloth'"
                 )
                 use_gradient_checkpointing = "unsloth"
 
-            # Verify model is loaded
             if self.model is None:
                 error_msg = "Model is None - model was not loaded properly"
                 logger.error(error_msg)
                 self._update_progress(error = error_msg)
                 return False
 
-            # Check expected attributes
             if not hasattr(self.model, "config"):
                 error_msg = (
                     "Model does not have config attribute - model may not be loaded correctly"
@@ -978,7 +1346,6 @@ class UnslothTrainer:
                 f"Gradient checkpointing: {use_gradient_checkpointing} (type: {type(use_gradient_checkpointing).__name__})\n"
             )
 
-            # Branch by model type: audio, audio_vlm, vision, or text
             if self._audio_type in ("csm", "bicodec", "dac") or self.is_audio_vlm:
                 # Use FastModel.get_peft_model (codec audio + audio VLM)
                 from unsloth import FastModel
@@ -1002,6 +1369,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                 )
                 # Audio VLM models support VLM-style layer selection
@@ -1032,12 +1400,12 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     task_type = None,
                 )
 
             elif self._audio_type == "snac":
-                # Orpheus: FastLanguageModel.get_peft_model
                 logger.info(f"Audio model ({self._audio_type}) LoRA configuration:")
                 logger.info(f"  - Target modules: {target_modules}\n")
 
@@ -1051,11 +1419,11 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                 )
 
             elif self.is_vlm:
-                # Vision model LoRA
                 logger.info(f"Vision model LoRA configuration:")
                 logger.info(f"  - Finetune vision layers: {finetune_vision_layers}")
                 logger.info(f"  - Finetune language layers: {finetune_language_layers}")
@@ -1076,11 +1444,11 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
                 )
             else:
-                # Text model LoRA
                 logger.info(f"Text model LoRA configuration:")
                 logger.info(f"  - Target modules: {target_modules}\n")
                 if modules_to_save:
@@ -1096,11 +1464,11 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
                 )
 
-            # Check if stopped during LoRA preparation
             if self.should_stop:
                 logger.info("Stopped during LoRA configuration\n")
                 return False
@@ -1179,7 +1547,6 @@ class UnslothTrainer:
             kwargs.pop("num_logits_to_keep", None)
             kwargs.pop("task_ids", None)
 
-            # Only keep recognized TransformersKwargs
             clean_kwargs = {k: v for k, v in kwargs.items() if k in _TRANSFORMERS_KWARGS}
 
             if input_ids is not None and input_ids.ndim == 2:
@@ -1307,12 +1674,10 @@ class UnslothTrainer:
             trust_remote_code = getattr(self, "trust_remote_code", False),
         )
 
-        # Strip pad_to_multiple_of from tokenizer init_kwargs — some fine-tuned
-        # models save it in tokenizer_config.json, and _merge_kwargs leaks it into
-        # audio_kwargs where EncodecFeatureExtractor rejects it.
+        # Some fine-tuned models save pad_to_multiple_of in tokenizer_config.json and
+        # _merge_kwargs leaks it into audio_kwargs, where EncodecFeatureExtractor rejects it.
         processor.tokenizer.init_kwargs.pop("pad_to_multiple_of", None)
 
-        # Resolve columns from user mapping or hardcoded fallback
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
         audio_col = resolved["audio_col"]
         text_col = resolved["text_col"]
@@ -1360,8 +1725,7 @@ class UnslothTrainer:
                         ],
                     }
                 ]
-                # pad_to_multiple_of omitted: _merge_kwargs leaks it to
-                # EncodecFeatureExtractor, which rejects it.
+                # pad_to_multiple_of omitted: _merge_kwargs leaks it to EncodecFeatureExtractor.
                 model_inputs = processor.apply_chat_template(
                     conversation,
                     tokenize = True,
@@ -1431,7 +1795,7 @@ class UnslothTrainer:
                 f"Audio VLM dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
 
-        # Store resolved audio column name for the collator closure
+        # Needed by the collator closure
         self._audio_vlm_audio_col = audio_col
 
         # Cast audio to 16kHz (standard for speech models)
@@ -1490,6 +1854,8 @@ class UnslothTrainer:
 
         SNAC_MODEL_NAME = "hubertsiuzdak/snac_24khz"
         SNAC_SAMPLE_RATE = 24000
+
+        # SNAC unvalidated on Intel XPU; keep the pre-PR CPU fallback for non-CUDA hosts.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         max_length = self.max_seq_length or 2048
         tokenizer = self.tokenizer
@@ -1527,7 +1893,6 @@ class UnslothTrainer:
             else SNAC_SAMPLE_RATE
         )
 
-        # Load SNAC codec model
         self._update_progress(status_message = "Loading SNAC codec model...")
         logger.info("Loading SNAC codec model...\n")
         from snac import SNAC
@@ -1567,7 +1932,7 @@ class UnslothTrainer:
                     skipped += 1
                     continue
 
-                # --- Encode audio with SNAC (notebook 122-142) ---
+                # Encode audio with SNAC (notebook 122-142)
                 waveform = (
                     torch.from_numpy(audio_data["array"]).unsqueeze(0).to(dtype = torch.float32)
                 )
@@ -1600,7 +1965,7 @@ class UnslothTrainer:
                         deduped.extend(all_codes[i : i + 7])
                 all_codes = deduped
 
-                # --- Build text tokens (notebook 217-224) ---
+                # Build text tokens (notebook 217-224)
                 text_prompt = (
                     f"{example[speaker_col]}: {text}"
                     if has_source and example.get(speaker_col)
@@ -1609,7 +1974,7 @@ class UnslothTrainer:
                 text_ids = tokenizer.encode(text_prompt, add_special_tokens = True)
                 text_ids.append(END_OF_TEXT)
 
-                # --- Build full input_ids (notebook 225-234) ---
+                # Build full input_ids (notebook 225-234)
                 input_ids = (
                     [START_OF_HUMAN]
                     + text_ids
@@ -1621,7 +1986,6 @@ class UnslothTrainer:
                     + [END_OF_AI]
                 )
 
-                # Truncate to max_length
                 input_ids = input_ids[:max_length]
 
                 # Labels = input_ids (no masking; Orpheus trains full sequence)
@@ -1641,17 +2005,16 @@ class UnslothTrainer:
                 skipped += 1
                 continue
 
-            # Progress update every 100 examples
             if (idx + 1) % 100 == 0:
                 self._update_progress(status_message = f"Encoding audio... {idx + 1}/{len(dataset)}")
 
-        # Free SNAC model from GPU
         logger.info("Freeing SNAC codec model from GPU...\n")
         snac_model.to("cpu")
         del snac_model
 
         gc.collect()
-        torch.cuda.empty_cache()
+
+        clear_gpu_cache()
         self._cuda_audio_used = True
 
         if not processed_examples:
@@ -1678,36 +2041,21 @@ class UnslothTrainer:
         import numpy as np
         import torchaudio.transforms as T
 
+        # Spark-TTS BiCodec unvalidated on Intel XPU; keep the pre-PR CPU fallback.
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # sparktts lives in the SparkAudio/Spark-TTS GitHub repo, not the HF model
-        # repo. Clone if needed.
-        spark_code_dir = os.path.join(os.path.dirname(self._spark_tts_repo_dir), "Spark-TTS")
-        sparktts_pkg = os.path.join(spark_code_dir, "sparktts")
-        if not os.path.isdir(sparktts_pkg):
-            self._update_progress(status_message = "Cloning Spark-TTS code repo...")
-            logger.info(f"Cloning SparkAudio/Spark-TTS to {spark_code_dir}...\n")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/SparkAudio/Spark-TTS",
-                    spark_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
+        self._update_progress(status_message = "Preparing Spark-TTS codec source...")
+        spark_code_dir = ensure_spark_tts_source(self._spark_tts_repo_dir)
+        self._spark_tts_code_dir = spark_code_dir
+        BiCodecTokenizer = import_sparktts_module(
+            "sparktts.models.audio_tokenizer",
+            spark_code_dir,
+        ).BiCodecTokenizer
+        audio_volume_normalize = import_sparktts_module(
+            "sparktts.utils.audio",
+            spark_code_dir,
+        ).audio_volume_normalize
 
-        if spark_code_dir not in sys.path:
-            sys.path.insert(0, spark_code_dir)
-
-        from sparktts.models.audio_tokenizer import BiCodecTokenizer
-        from sparktts.utils.audio import audio_volume_normalize
-
-        # Resolve audio and text columns
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
         audio_col = resolved["audio_col"]
         text_col = resolved["text_col"]
@@ -1718,13 +2066,12 @@ class UnslothTrainer:
                 f"BiCodec dataset needs 'audio' and 'text' columns, got: {dataset.column_names}"
             )
 
-        # Cast audio so datasets 4.x AudioDecoder objects decode to dicts.
-        # Don't resample here — BiCodec's target_sr may differ; the loop does it.
+        # Cast so datasets 4.x AudioDecoder objects decode to dicts. No resample here --
+        # BiCodec's target_sr may differ; the loop does it.
         from datasets import Audio
 
         dataset = dataset.cast_column(audio_col, Audio())
 
-        # Load BiCodec tokenizer
         self._update_progress(status_message = "Loading BiCodec tokenizer...")
         logger.info("Loading BiCodec tokenizer...\n")
         audio_tokenizer = BiCodecTokenizer(self._spark_tts_repo_dir, device)
@@ -1784,24 +2131,19 @@ class UnslothTrainer:
                 audio_array = audio_data["array"]
                 sampling_rate = audio_data.get("sampling_rate", target_sr)
 
-                # Resample if needed
                 if sampling_rate != target_sr:
                     resampler = T.Resample(orig_freq = sampling_rate, new_freq = target_sr)
                     audio_tensor_temp = torch.from_numpy(audio_array).float()
                     audio_array = resampler(audio_tensor_temp).numpy()
 
-                # Volume normalize if configured
                 if audio_tokenizer.config.get("volume_normalize", False):
                     audio_array = audio_volume_normalize(audio_array)
 
-                # Get reference clip
                 ref_wav_np = audio_tokenizer.get_ref_clip(audio_array)
 
-                # Prepare tensors
                 audio_tensor = torch.from_numpy(audio_array).unsqueeze(0).float().to(device)
                 ref_wav_tensor = torch.from_numpy(ref_wav_np).unsqueeze(0).float().to(device)
 
-                # Extract wav2vec2 features
                 feat = extract_wav2vec2_features(audio_tensor)
 
                 batch = {
@@ -1810,7 +2152,6 @@ class UnslothTrainer:
                     "feat": feat.to(device),
                 }
 
-                # BiCodec tokenize
                 semantic_token_ids, global_token_ids = audio_tokenizer.model.tokenize(batch)
 
                 global_tokens = "".join(
@@ -1823,7 +2164,6 @@ class UnslothTrainer:
                     ]
                 )
 
-                # Prefix text with source if available
                 text_content = (
                     f"{example[speaker_col]}: {text}"
                     if has_source and example.get(speaker_col)
@@ -1853,20 +2193,19 @@ class UnslothTrainer:
                 skipped += 1
                 continue
 
-            # Progress update every 100 examples
             if (idx + 1) % 100 == 0:
                 self._update_progress(
                     status_message = f"Encoding audio with BiCodec... {idx + 1}/{len(dataset)}"
                 )
 
-        # Free BiCodec model from GPU
         logger.info("Freeing BiCodec tokenizer from GPU...\n")
         audio_tokenizer.model.cpu()
         audio_tokenizer.feature_extractor.cpu()
         del audio_tokenizer
 
         gc.collect()
-        torch.cuda.empty_cache()
+
+        clear_gpu_cache()
         self._cuda_audio_used = True
 
         if not processed_examples:
@@ -1877,7 +2216,6 @@ class UnslothTrainer:
             f"BiCodec preprocessing complete: {len(result_dataset)} examples "
             f"({skipped} skipped)\n"
         )
-        # Debug: first example text (truncated)
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
         logger.info(f"Sample text length: {len(sample)} chars\n")
@@ -1903,46 +2241,29 @@ class UnslothTrainer:
         from datasets import Dataset as HFDataset
         from utils.paths import ensure_dir, tmp_root
 
+        # OuteTTS DAC/Whisper preprocess unvalidated on Intel XPU; CPU fallback kept.
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        # Clone OuteTTS repo (same as audio_codecs._load_dac)
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        outetts_code_dir = os.path.join(base_dir, "inference", "OuteTTS")
-        outetts_pkg = os.path.join(outetts_code_dir, "outetts")
-        if not os.path.isdir(outetts_pkg):
-            self._update_progress(status_message = "Cloning OuteTTS code repo...")
-            logger.info(f"Cloning edwko/OuteTTS to {outetts_code_dir}...\n")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/edwko/OuteTTS",
-                    outetts_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-            for fpath in [
-                os.path.join(outetts_pkg, "models", "gguf_model.py"),
-                os.path.join(outetts_pkg, "interface.py"),
-                os.path.join(outetts_pkg, "__init__.py"),
-            ]:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-                    logger.info(f"Removed {fpath}\n")
+        self._update_progress(status_message = "Preparing OuteTTS codec source...")
+        outetts_code_dir = ensure_outetts_source()
+        self._outetts_code_dir = outetts_code_dir
+        AudioProcessor = import_outetts_module(
+            "outetts.version.v3.audio_processor",
+            outetts_code_dir,
+        ).AudioProcessor
+        PromptProcessor = import_outetts_module(
+            "outetts.version.v3.prompt_processor",
+            outetts_code_dir,
+        ).PromptProcessor
+        OuteTTSModelConfig = import_outetts_module(
+            "outetts.models.config",
+            outetts_code_dir,
+        ).ModelConfig
+        text_normalizations = import_outetts_module(
+            "outetts.utils.preprocessing",
+            outetts_code_dir,
+        ).text_normalizations
 
-        if outetts_code_dir not in sys.path:
-            sys.path.insert(0, outetts_code_dir)
-
-        from outetts.version.v3.audio_processor import AudioProcessor
-        from outetts.version.v3.prompt_processor import PromptProcessor
-        from outetts.models.config import ModelConfig as OuteTTSModelConfig
-        from outetts.utils.preprocessing import text_normalizations
-
-        # Resolve audio and text columns
         resolved = self._resolve_audio_columns(dataset, custom_format_mapping)
         audio_col = resolved["audio_col"]
         text_col = resolved["text_col"]
@@ -1957,24 +2278,26 @@ class UnslothTrainer:
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 24000))
         logger.info("Cast audio column to 24kHz\n")
 
-        # Load Whisper for word timings
         self._update_progress(status_message = "Loading Whisper model for word timings...")
         logger.info("Loading Whisper model for word timings...\n")
         import whisper
 
         whisper_model = whisper.load_model("turbo", device = device)
 
-        # Load OuteTTS AudioProcessor + PromptProcessor
         self._update_progress(status_message = "Loading OuteTTS AudioProcessor...")
         logger.info("Loading OuteTTS AudioProcessor...\n")
-        model_tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B"
+        audio_codec_path = ensure_dac_speech_weights()
         dummy_config = OuteTTSModelConfig(
-            tokenizer_path = model_tokenizer_path,
+            tokenizer_path = None,
             device = device,
-            audio_codec_path = None,
+            audio_codec_path = str(audio_codec_path),
         )
         audio_processor = AudioProcessor(config = dummy_config)
-        prompt_processor = PromptProcessor(model_tokenizer_path)
+        if self.tokenizer is None:
+            raise RuntimeError("OuteTTS tokenizer is not loaded")
+        prompt_processor = PromptProcessor(None)
+        prompt_processor.tokenizer = self.tokenizer
+        prompt_processor.get_audio_token_map()
 
         self._update_progress(status_message = "Preprocessing audio with OuteTTS...")
         logger.info(f"DAC preprocessing: audio_col='{audio_col}', text_col='{text_col}'\n")
@@ -2074,7 +2397,8 @@ class UnslothTrainer:
         del prompt_processor
 
         gc.collect()
-        torch.cuda.empty_cache()
+
+        clear_gpu_cache()
         self._cuda_audio_used = True
 
         if not processed_examples:
@@ -2244,6 +2568,10 @@ class UnslothTrainer:
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
         s3_config: dict = None,
+        dataset_local_files_only: bool = False,
+        dataset_local_path: Optional[str] = None,
+        dataset_revision: Optional[str] = None,
+        require_exact_resume_resources: bool = False,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2256,13 +2584,53 @@ class UnslothTrainer:
         """
         from core.training.s3_dataset import S3DownloadCancelled
 
+        # `datasets` exposes no env var, so its bars can only be quieted through the
+        # class, and only once the module is in. It is (module-level import above), and
+        # this is the first point before any load: the local-file and Hub branches below
+        # both call load_dataset(), whose "Generating train split" / "Downloading data"
+        # bars would otherwise write into the worker's structured stream. It also covers
+        # the map/filter bars of every branch further down.
+        try:
+            from loggers.config import quiet_third_party_progress_bars
+            quiet_third_party_progress_bars()
+        except Exception:  # noqa: BLE001 - never let log tidying stop a run
+            pass
+
+        # An Audio column decodes inside load_dataset() below, before the audio branches
+        # that already call this. This worker starts without the shim the API process
+        # installs, so the load raised `datasets`' own "please install 'torchcodec'".
+        # A False here is still reported by those branches, naming FFmpeg.
+        try:
+            ensure_audio_decoding()
+        except Exception:  # noqa: BLE001 - never let a broken librosa stop a text run
+            pass
+
         s3_download = None
         try:
+            self.dataset_loaded_from_exact_snapshot = False
+            self.dataset_snapshot_path = None
             dataset = None
             eval_dataset = None
+            dataset_attestation_source = None
             has_separate_eval_source = False  # True if eval comes from a separate HF split
             eval_enabled = eval_steps is not None and eval_steps > 0
             raw_text_mode = is_cpt or format_type == "raw"
+            dataset_loaded_from_cache = False
+
+            def _load_selected_cached_dataset(
+                split_name: Optional[str], *, row_limit: Optional[int] = None
+            ):
+                if not dataset_source or not dataset_local_path:
+                    return None
+                from hub.utils.dataset_cache import load_cached_hf_dataset
+
+                kwargs = {
+                    "subset": subset,
+                    "split": split_name or "train",
+                }
+                if row_limit is not None:
+                    kwargs["row_limit"] = row_limit
+                return load_cached_hf_dataset(dataset_source, dataset_local_path, **kwargs)
 
             def _raw_mode_label() -> str:
                 return "CPT" if is_cpt else "raw text"
@@ -2292,8 +2660,7 @@ class UnslothTrainer:
 
                 return result.dataset
 
-            # S3 datasets are downloaded to a local temp dir and then consumed
-            # through the same local-file path below.
+            # S3 datasets download to a local temp dir, then use the local-file path below.
             if s3_config and not local_datasets:
                 from core.training.s3_dataset import prepare_s3_dataset_download
 
@@ -2309,16 +2676,14 @@ class UnslothTrainer:
                 logger.info(f"Downloaded {len(local_datasets)} file(s) from S3\n")
 
             if local_datasets:
-                # Use load_dataset() for an Arrow-backed result; in-memory
-                # Dataset.from_list() has no cache and forces num_proc=1 during
-                # tokenization/map (sharding needs Arrow files).
+                # load_dataset() gives an Arrow-backed result; in-memory Dataset.from_list() has no
+                # cache and forces num_proc=1 during tokenization/map (sharding needs Arrow files).
                 all_files = self._resolve_local_files(local_datasets)
 
                 if all_files:
                     loader = self._loader_for_files(all_files)
                     dataset = load_dataset(loader, data_files = all_files, split = "train")
 
-                    # Check if stopped during dataset loading
                     if self.should_stop:
                         logger.info("Stopped during dataset loading\n")
                         return None
@@ -2329,7 +2694,6 @@ class UnslothTrainer:
                     logger.info(f"Loaded {len(dataset)} samples from local files\n")
                     logger.info(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
 
-                # Load local eval datasets if provided
                 if local_eval_datasets and eval_enabled:
                     eval_all_files = self._resolve_local_files(local_eval_datasets)
                     if eval_all_files:
@@ -2343,17 +2707,17 @@ class UnslothTrainer:
                         )
 
             elif dataset_source:
-                # Load from Hugging Face
                 split_name = train_split or "train"
                 load_kwargs = {"path": dataset_source, "split": split_name}
                 if subset:
                     load_kwargs["name"] = subset
+                if dataset_revision:
+                    load_kwargs["revision"] = dataset_revision
 
                 if dataset_streaming:
                     self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
                     dataset = load_dataset(**load_kwargs, streaming = True)
 
-                    # Optional iterable slicing
                     if dataset_slice_start is not None and dataset_slice_start > 0:
                         dataset = dataset.skip(dataset_slice_start)
 
@@ -2365,16 +2729,14 @@ class UnslothTrainer:
                                 "Train Split End must be greater than or equal to Train Split Start."
                             )
                         dataset = dataset.take(take_count)
-                        # IterableDataset.take(N) yields *at most* N samples — if
-                        # the source is shorter, the user silently gets fewer rows.
+                        # take(N) yields at most N -- a shorter source silently gives fewer rows.
                         logger.warning(
                             f"Streaming slice requested up to {take_count} rows "
                             f"[{slice_start}, {dataset_slice_end}]; actual yield "
                             f"may be smaller if the dataset has fewer rows."
                         )
                         if take_count == 1:
-                            # start == end is a valid slice but produces a single
-                            # training row, which is almost always user error.
+                            # start == end is valid but yields a single training row, almost always user error.
                             logger.warning(
                                 "Dataset slice resolves to a single row "
                                 f"(start == end == {slice_start}); training on 1 "
@@ -2386,17 +2748,72 @@ class UnslothTrainer:
                     )
                     self._update_progress(status_message = f"Streaming {dataset_source}")
                 else:
-                    # Non-streaming: if a slice end is given, stream only the needed
-                    # rows and materialize them (avoids downloading the whole dataset);
-                    # the eager [start, end] trim happens further below.
+                    # Non-streaming: with a slice end, stream only the needed rows and materialize them
+                    # (avoids downloading everything); the eager [start, end] trim happens below.
                     _slice_start = dataset_slice_start or 0
-                    # streaming=True rejects HF slice syntax (e.g. "train[:50%]")
-                    # with "Bad split", so the streaming shortcut is unusable when
-                    # train_split already carries a slice expression, so fall back to
-                    # the regular download path, which handles HF slice syntax.
+                    # streaming=True rejects HF slice syntax (e.g. "train[:50%]") with "Bad split", so
+                    # fall back to the regular download path when train_split already carries a slice.
                     _split_has_slice = (train_split or "").find("[") != -1
+                    dataset = None
+                    if dataset_local_files_only:
+                        self._update_progress(
+                            status_message = f"Loading cached dataset: {dataset_source}..."
+                        )
+                        try:
+                            cached_row_limit = None
+                            if (
+                                not _split_has_slice
+                                and dataset_slice_end is not None
+                                and dataset_slice_end >= 0
+                                and dataset_slice_end >= _slice_start
+                            ):
+                                cached_row_limit = dataset_slice_end + 1
+                            dataset = _load_selected_cached_dataset(
+                                split_name,
+                                row_limit = cached_row_limit,
+                            )
+                            if require_exact_resume_resources and dataset is None:
+                                raise FileNotFoundError(
+                                    f"The exact cached dataset split '{split_name}' "
+                                    "is no longer available."
+                                )
+                            dataset_loaded_from_cache = True
+                            from core.training.provenance import (
+                                exact_dataset_snapshot_path,
+                            )
+
+                            self.dataset_snapshot_path = exact_dataset_snapshot_path(
+                                dataset_local_path,
+                                dataset_source,
+                            )
+                            self.dataset_loaded_from_exact_snapshot = bool(
+                                self.dataset_snapshot_path
+                            )
+                            logger.info(
+                                f"Loaded cached dataset for {dataset_source}: "
+                                f"{len(dataset)} rows\n"
+                            )
+                        except Exception as error:
+                            from hub.utils.dataset_cache import (
+                                dataset_cache_fallback_allowed,
+                            )
+
+                            if not dataset_cache_fallback_allowed(
+                                error,
+                                require_exact = require_exact_resume_resources,
+                                revision = dataset_revision,
+                            ):
+                                raise
+                            self._update_progress(
+                                status_message = (
+                                    f"Cached dataset unavailable; "
+                                    f"downloading {dataset_source}..."
+                                )
+                            )
+                            dataset = None
                     if (
-                        not _split_has_slice
+                        dataset is None
+                        and not _split_has_slice
                         and dataset_slice_end is not None
                         and dataset_slice_end >= 0
                         and dataset_slice_end >= _slice_start
@@ -2408,12 +2825,13 @@ class UnslothTrainer:
                             f"streaming {rows_to_stream} rows\n"
                         )
                         stream = load_dataset(**load_kwargs, streaming = True)
+                        dataset_attestation_source = stream
                         dataset = Dataset.from_list(list(stream.take(rows_to_stream)))
                         logger.info(
                             f"[dataset-slice] Downloaded {len(dataset)} rows "
                             f"(requested {rows_to_stream})\n"
                         )
-                    else:
+                    elif dataset is None:
                         self._update_progress(
                             status_message = f"Downloading dataset: {dataset_source}..."
                         )
@@ -2427,7 +2845,6 @@ class UnslothTrainer:
                             f"Loaded dataset from Hugging Face: {dataset_source} ({n_rows:,} rows)\n"
                         )
 
-                # Check if stopped during dataset loading
                 if self.should_stop:
                     logger.info("Stopped during dataset loading\n")
                     return None
@@ -2436,22 +2853,23 @@ class UnslothTrainer:
                 if eval_enabled:
                     effective_train = train_split or "train"
                     if eval_split and eval_split != effective_train:
-                        # Explicit eval split — load directly
                         logger.info(f"Loading explicit eval split: '{eval_split}'\n")
                         eval_load_kwargs = {"path": dataset_source, "split": eval_split}
                         if subset:
                             eval_load_kwargs["name"] = subset
+                        if dataset_revision:
+                            eval_load_kwargs["revision"] = dataset_revision
 
                         if dataset_streaming:
-                            # Probe available splits before the streaming load.
-                            # load_dataset(streaming=True) returns an IterableDataset
-                            # without validating the split name — a typo would only
-                            # surface on the first eval batch mid-training.
+                            # Probe splits first: load_dataset(streaming=True) returns an IterableDataset without
+                            # validating the name, so a typo would only surface on the first eval batch.
                             from datasets import get_dataset_split_names
 
                             probe_kwargs = {"path": dataset_source}
                             if subset:
                                 probe_kwargs["config_name"] = subset
+                            if dataset_revision:
+                                probe_kwargs["revision"] = dataset_revision
                             try:
                                 available_splits = get_dataset_split_names(**probe_kwargs)
                             except Exception as probe_err:
@@ -2459,9 +2877,8 @@ class UnslothTrainer:
                                     f"Could not list splits for '{dataset_source}' "
                                     f"to validate eval_split='{eval_split}': {probe_err}"
                                 )
-                            # Streaming rejects HF slice syntax, and the request
-                            # validator already blocks bracketed streaming splits,
-                            # so eval_split here is always a bare split name.
+                            # Streaming rejects HF slice syntax and the request validator blocks bracketed
+                            # streaming splits, so eval_split is always a bare split name here.
                             if eval_split not in available_splits:
                                 raise ValueError(
                                     f"Requested eval split '{eval_split}' not found in "
@@ -2469,10 +2886,8 @@ class UnslothTrainer:
                                     f"{available_splits}"
                                 )
                             eval_dataset = load_dataset(**eval_load_kwargs, streaming = True)
-                            # A streaming eval dataset has no __len__; bound it so
-                            # each evaluation terminates instead of consuming the
-                            # whole stream. .take() stays lazy and survives the
-                            # later format/raw-text .map() passes.
+                            # Streaming eval has no __len__; bound it so each evaluation terminates. .take()
+                            # stays lazy and survives the later format/raw-text .map() passes.
                             if not hasattr(eval_dataset, "__len__"):
                                 eval_dataset = eval_dataset.take(STREAMING_EVAL_MAX_SAMPLES)
                                 logger.info(
@@ -2480,7 +2895,41 @@ class UnslothTrainer:
                                     f"{STREAMING_EVAL_MAX_SAMPLES} samples\n"
                                 )
                         else:
-                            eval_dataset = load_dataset(**eval_load_kwargs)
+                            if dataset_loaded_from_cache:
+                                try:
+                                    eval_dataset = _load_selected_cached_dataset(eval_split)
+                                    if require_exact_resume_resources and eval_dataset is None:
+                                        raise FileNotFoundError(
+                                            f"The exact cached dataset split '{eval_split}' "
+                                            "is no longer available."
+                                        )
+                                except Exception as error:
+                                    from hub.utils.dataset_cache import (
+                                        dataset_cache_fallback_allowed,
+                                    )
+
+                                    if not dataset_cache_fallback_allowed(
+                                        error,
+                                        require_exact = require_exact_resume_resources,
+                                        revision = dataset_revision,
+                                    ):
+                                        raise
+                                    self._update_progress(
+                                        status_message = (
+                                            "Cached eval split unavailable; reloading train "
+                                            "and eval from the Hub..."
+                                        )
+                                    )
+                                    remote_train = load_dataset(**load_kwargs)
+                                    remote_eval = load_dataset(**eval_load_kwargs)
+                                    dataset = remote_train
+                                    dataset_attestation_source = None
+                                    eval_dataset = remote_eval
+                                    dataset_loaded_from_cache = False
+                                    self.dataset_loaded_from_exact_snapshot = False
+                                    self.dataset_snapshot_path = None
+                            else:
+                                eval_dataset = load_dataset(**eval_load_kwargs)
 
                         has_separate_eval_source = True
                         if hasattr(eval_dataset, "__len__"):
@@ -2505,28 +2954,59 @@ class UnslothTrainer:
                                 "Streaming mode currently requires an explicit eval split when evaluation is enabled."
                             )
                         # Auto-detect eval split from HF (separate dataset or None)
+                        if dataset_loaded_from_cache:
+                            split_info = getattr(getattr(dataset, "info", None), "splits", None)
+                            available_splits = list(split_info or ())
+                            split_loader = _load_selected_cached_dataset
+                        else:
+                            available_splits = None
+                            split_loader = None
                         eval_dataset = self._auto_detect_eval_split_from_hf(
                             dataset_source = dataset_source,
                             subset = subset,
+                            available_splits = available_splits,
+                            split_loader = split_loader,
+                            excluded_split = hf_dataset_split_instruction_names(
+                                train_split or "train"
+                            ),
+                            revision = dataset_revision,
+                            strict_split_loading = (
+                                require_exact_resume_resources and dataset_loaded_from_cache
+                            ),
                         )
                         if eval_dataset is not None:
                             has_separate_eval_source = True
                 else:
                     logger.info("Eval disabled (eval_steps <= 0), skipping eval split detection\n")
 
+                if not dataset_streaming:
+                    from core.training.provenance import attest_loaded_dataset
+
+                    train_attestation_source = (
+                        dataset_attestation_source
+                        if dataset_attestation_source is not None
+                        else dataset
+                    )
+                    snapshot, _ = attest_loaded_dataset(
+                        dataset_source,
+                        train_attestation_source,
+                        eval_dataset if has_separate_eval_source else None,
+                    )
+                    if snapshot is not None:
+                        self.dataset_snapshot_path = snapshot
+                        self.dataset_loaded_from_exact_snapshot = True
+
             if dataset is None:
                 raise ValueError("No dataset provided")
 
-            # Apply eager-only index range slicing if requested (inclusive on both ends).
-            # Streaming already sliced lazily via skip()/take() above; the non-streaming
-            # manual-slice path fetched up to end+1 rows and is trimmed to [start, end] here.
+            # Eager-only index slicing (inclusive both ends). Streaming already sliced lazily via
+            # skip()/take(); the non-streaming path fetched end+1 rows and is trimmed here.
             if (not dataset_streaming) and (
                 dataset_slice_start is not None or dataset_slice_end is not None
             ):
                 total_rows = len(dataset)
                 start = dataset_slice_start if dataset_slice_start is not None else 0
                 end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
-                # Clamp to valid range
                 start = max(0, min(start, total_rows - 1))
                 end = max(start, min(end, total_rows - 1))
                 dataset = dataset.select(range(start, end + 1))
@@ -2537,12 +3017,43 @@ class UnslothTrainer:
                     status_message = f"Sliced dataset to {len(dataset)} rows (indices {start}-{end})"
                 )
 
-            # Check if stopped before applying template
             if self.should_stop:
                 logger.info("Stopped before applying chat template\n")
                 return None
 
             # ========== AUDIO MODELS: custom preprocessing ==========
+            # An inconclusive probe must not read as "not an audio model": falling through
+            # with an audio dataset lands on the text path, which fails much later with
+            # "Could not auto-detect format mapping", a column-mapping complaint that says
+            # nothing about the repo read that actually failed.
+            # getattr, because this method is also driven against lightweight stand-ins; both
+            # defaults leave the guard closed.
+            # _is_dataset_audio arrives from the client and is true on a column-NAME match
+            # alone, so _dataset_has_audio_column is the tiebreaker: only a positive "no audio
+            # here" reopens the text path, unknown still refuses.
+            # raw/CPT is exempt: it reads the text column and ignores any audio one by design.
+            if (
+                not self._audio_type
+                and not getattr(self, "_audio_type_known", True)
+                and getattr(self, "_is_dataset_audio", False)
+                and not raw_text_mode
+                and _dataset_has_audio_column(dataset) is not False
+            ):
+                raise RuntimeError(
+                    "Could not determine whether this model is an audio model: its "
+                    "tokenizer_config.json could not be read (gated repo, offline, or a "
+                    "cache holding the weights but not the tokenizer files). The dataset "
+                    "has an audio column, so training cannot fall back to the text path. "
+                    "Re-download the model or provide a token, then retry."
+                )
+            # Every audio branch below, and the VLM path, casts an Audio column and reads its array.
+            if self._audio_type or self.is_audio_vlm:
+                if not ensure_audio_decoding():
+                    raise RuntimeError(
+                        "This host cannot decode audio datasets: torchcodec cannot load its "
+                        "FFmpeg libraries, and the soundfile fallback needs soundfile and "
+                        "librosa. Install an FFmpeg full-shared build, or install both."
+                    )
             if self._audio_type == "csm":
                 processed = self._preprocess_csm_dataset(dataset, custom_format_mapping)
                 return (processed, None)
@@ -2595,9 +3106,8 @@ class UnslothTrainer:
                         f"({eval_rows}) kept as raw text\n"
                     )
                 elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
-                    # _resolve_eval_split_from_dataset does a train_test_split (needs
-                    # len/random access). Streaming always provides a separate eval
-                    # split (route-enforced), so this auto-split is non-streaming only.
+                    # _resolve_eval_split_from_dataset does a train_test_split (needs len/random access).
+                    # Streaming always has a separate eval split (route-enforced), so non-streaming only.
                     split_result = self._resolve_eval_split_from_dataset(dataset)
                     if split_result is not None:
                         train_portion, eval_dataset = split_result
@@ -2611,9 +3121,8 @@ class UnslothTrainer:
                 )
                 logger.info(f"Raw-text dataset ready ({n_display} samples)\n")
 
-                # Streaming datasets can report column_names as None, which would
-                # make "text" not in None raise TypeError; resolve_column_names
-                # falls back to features/first-row probing.
+                # Streaming datasets can report column_names as None, which would make the `in` check
+                # raise; resolve_column_names falls back to features/first-row probing.
                 train_columns = resolve_column_names(train_dataset)
                 if "text" not in train_columns:
                     raise ValueError(f"Raw-text dataset missing 'text' column: {train_columns}")
@@ -2637,12 +3146,10 @@ class UnslothTrainer:
                 progress_callback = self._update_progress,
             )
 
-            # Check if stopped during formatting
             if self.should_stop:
                 logger.info("Stopped during dataset formatting\n")
                 return None
 
-            # Abort if dataset formatting/conversion failed
             if not dataset_info.get("success", True):
                 errors = dataset_info.get("errors", [])
                 error_msg = "; ".join(errors) if errors else "Dataset formatting failed"
@@ -2662,7 +3169,6 @@ class UnslothTrainer:
 
             # ========== THEN SPLIT ==========
             if has_separate_eval_source and eval_dataset is not None:
-                # Eval came from a separate HF split — format it too
                 eval_n = len(eval_dataset) if hasattr(eval_dataset, "__len__") else "?"
                 logger.info(f"Formatting eval dataset ({eval_n} rows)...\n")
                 eval_info = format_and_template_dataset(
@@ -2677,7 +3183,6 @@ class UnslothTrainer:
                 eval_dataset = eval_info["dataset"]
                 logger.info("Eval dataset formatted successfully\n")
             elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
-                # No separate eval source — split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
                 split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
                 if split_result is not None:
@@ -2698,37 +3203,65 @@ class UnslothTrainer:
                 s3_download.cleanup()
 
     def _auto_detect_eval_split_from_hf(
-        self, dataset_source: str, subset: str
+        self,
+        dataset_source: str,
+        subset: Optional[str],
+        *,
+        available_splits: Optional[list[str]] = None,
+        split_loader: Optional[Callable[[str], Dataset]] = None,
+        excluded_split: Any = None,
+        revision: Optional[str] = None,
+        strict_split_loading: bool = False,
     ) -> Optional[Dataset]:
         """Auto-detect an eval split from an HF dataset (named split only)."""
         try:
-            from datasets import get_dataset_split_names
+            if available_splits is None and split_loader is None:
+                from datasets import get_dataset_split_names
 
-            load_kwargs = {"path": dataset_source}
-            if subset:
-                load_kwargs["config_name"] = subset
-            available_splits = get_dataset_split_names(**load_kwargs)
+                load_kwargs = {"path": dataset_source}
+                if subset:
+                    load_kwargs["config_name"] = subset
+                if revision:
+                    load_kwargs["revision"] = revision
+                available_splits = get_dataset_split_names(**load_kwargs)
+            elif available_splits is None or split_loader is None:
+                raise ValueError("Cached split names and loader must be provided together")
             logger.info(f"Available splits: {available_splits}\n")
 
-            # Check for common eval split names
-            for candidate in ["eval", "validation", "valid", "val", "test"]:
-                if candidate in available_splits:
-                    eval_load_kwargs = {"path": dataset_source, "split": candidate}
-                    if subset:
-                        eval_load_kwargs["name"] = subset
-                    candidate_ds = load_dataset(**eval_load_kwargs)
-                    if len(candidate_ds) >= 16:
+            from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES, MIN_EVAL_ROWS
+
+            excluded_splits = (
+                {excluded_split} if isinstance(excluded_split, str) else set(excluded_split or ())
+            )
+            for candidate in EVAL_SPLIT_CANDIDATES:
+                if candidate in available_splits and candidate not in excluded_splits:
+                    if split_loader is not None:
+                        candidate_ds = split_loader(candidate)
+                    else:
+                        eval_load_kwargs = {"path": dataset_source, "split": candidate}
+                        if subset:
+                            eval_load_kwargs["name"] = subset
+                        if revision:
+                            eval_load_kwargs["revision"] = revision
+                        candidate_ds = load_dataset(**eval_load_kwargs)
+                    if len(candidate_ds) >= MIN_EVAL_ROWS:
                         logger.info(
                             f"Auto-detected eval split '{candidate}' with {len(candidate_ds)} rows\n"
                         )
                         return candidate_ds
                     else:
                         logger.info(
-                            f"Found eval split '{candidate}' but only {len(candidate_ds)} rows (< 16), skipping\n"
+                            f"Found eval split '{candidate}' but only {len(candidate_ds)} rows "
+                            f"(< {MIN_EVAL_ROWS}), skipping\n"
                         )
 
         except Exception as e:
-            logger.warning(f"Could not check dataset splits: {e}")
+            if strict_split_loading and split_loader is not None:
+                raise
+            self._record_warning(
+                "Automatic eval split detection failed; a held-out split will be created "
+                f"from the training data when enough rows are available: {e}"
+            )
 
         # No separate HF eval split — caller handles programmatic splitting
         return None
@@ -2738,24 +3271,29 @@ class UnslothTrainer:
 
         Returns (train_dataset, eval_dataset), or None if too small.
         """
-        MIN_EVAL_ROWS = 16
-        MIN_TOTAL_ROWS = 32  # Need at least 16 train + 16 eval
+        from core.training.eval_dataset import (
+            MIN_TOTAL_ROWS_FOR_EVAL,
+            split_dataset_for_evaluation,
+        )
 
         n = len(dataset)
-        if n < MIN_TOTAL_ROWS:
-            logger.info(f"Dataset too small ({n} rows) for eval split, skipping eval\n")
+        split_result = split_dataset_for_evaluation(dataset)
+        if split_result is None:
+            self._record_warning(
+                f"Evaluation is enabled, but the training dataset has only {n} rows; "
+                f"at least {MIN_TOTAL_ROWS_FOR_EVAL} are required to create a held-out "
+                "eval split. Training will continue without evaluation."
+            )
             return None
 
-        eval_size = max(MIN_EVAL_ROWS, min(128, int(0.05 * n)))
-        # Don't take more than half the dataset
-        eval_size = min(eval_size, n // 2)
-
-        logger.info(f"Auto-splitting: {eval_size} rows for eval from {n} total\n")
-        split_result = dataset.train_test_split(test_size = eval_size, seed = 3407)
+        train_dataset, eval_dataset = split_result
+        eval_size = len(eval_dataset)
         logger.info(
-            f"Split complete: {len(split_result['train'])} train, {len(split_result['test'])} eval\n"
+            f"Auto-splitting: {eval_size} rows for eval from {n} total "
+            f"(minimum total: {MIN_TOTAL_ROWS_FOR_EVAL})\n"
         )
-        return (split_result["train"], split_result["test"])
+        logger.info(f"Split complete: {len(train_dataset)} train, {len(eval_dataset)} eval\n")
+        return train_dataset, eval_dataset
 
     def start_training(
         self,
@@ -2793,9 +3331,8 @@ class UnslothTrainer:
             self._update_progress(error = "Model not loaded")
             return False
 
-        # Pre-import heavy transformers modules on the main thread. Unsloth's
-        # patched_import hook isn't thread-safe with importlib's cache, causing
-        # KeyError: 'size' if first imported in the worker thread.
+        # Pre-import heavy transformers modules on the main thread: Unsloth's patched_import
+        # isn't thread-safe with importlib's cache (KeyError: 'size') from a worker thread.
         import transformers  # noqa: F401 – ensures submodules are cached
         from transformers import (  # noqa: F401
             Trainer as _HFTrainer,
@@ -2809,7 +3346,6 @@ class UnslothTrainer:
                 Seq2SeqTrainingArguments as _Seq2SeqTrainingArguments,
             )
 
-        # Start training in separate thread
         self.training_thread = threading.Thread(
             target = self._train_worker,
             args = (dataset,),
@@ -2931,37 +3467,31 @@ class UnslothTrainer:
         never passed as a bare ``IterableDataset``.
         """
         try:
-            # On spawn platforms, register compiled-cache dirs on sys.path/PYTHONPATH
-            # before any dataset.map() so spawned workers can import compiled
-            # modules such as UnslothSFTTrainer.
+            # On spawn platforms, put compiled-cache dirs on sys.path/PYTHONPATH before any
+            # dataset.map() so spawned workers can import e.g. UnslothSFTTrainer.
             if sys.platform in ("win32", "darwin"):
                 from utils.cache_cleanup import register_compiled_cache_on_path
                 register_compiled_cache_on_path()
 
-            # Store training parameters for metrics calculation
             self.batch_size = training_args.get("batch_size", 2)
             self.max_seq_length = training_args.get("max_seq_length", 2048)
             self.gradient_accumulation_steps = training_args.get("gradient_accumulation_steps", 4)
 
-            # Set training start time
             self.training_start_time = time.time()
 
             self._update_progress(is_training = True, error = None)
 
-            # Setup logging
             if training_args.get("enable_wandb", False) and training_args.get("wandb_token"):
                 os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
                 import wandb
                 wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
 
-            # Create output directory
             output_dir = str(resolve_output_dir(training_args.get("output_dir")))
             ensure_dir(Path(output_dir))
 
             # ========== AUDIO TRAINER BRANCH ==========
             if self._audio_type == "csm":
-                # CSM uses plain HF Trainer (not SFTTrainer) with
-                # remove_unused_columns=False for the depth decoder.
+                # CSM uses plain HF Trainer with remove_unused_columns=False for the depth decoder.
                 from transformers import Trainer as HFTrainer, TrainingArguments
 
                 self._apply_csm_forward_fix()
@@ -2979,6 +3509,9 @@ class UnslothTrainer:
                     args = TrainingArguments(**config),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
+                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # duplication in a log that has no terminal. --verbose keeps them.
+                _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -2997,9 +3530,8 @@ class UnslothTrainer:
                 return
 
             elif self._audio_type == "snac":
-                # Orpheus: LM with SNAC codec tokens — plain HF Trainer.
-                # DataCollatorForSeq2Seq pads variable-length sequences per batch
-                # and pads labels with -100.
+                # Orpheus: LM with SNAC codec tokens -- plain HF Trainer. DataCollatorForSeq2Seq
+                # pads variable-length sequences per batch and pads labels with -100.
                 from transformers import (
                     Trainer as HFTrainer,
                     TrainingArguments,
@@ -3018,6 +3550,9 @@ class UnslothTrainer:
                     ),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
+                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # duplication in a log that has no terminal. --verbose keeps them.
+                _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3062,6 +3597,9 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # duplication in a log that has no terminal. --verbose keeps them.
+                _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3101,7 +3639,7 @@ class UnslothTrainer:
             )
             raw_text_mode = dataset_final_format == "raw_text"
 
-            data_collator = None  # Default: built-in collator
+            data_collator = None
             if is_deepseek_ocr:
                 # DeepSeek OCR collator - auto-install if needed
                 logger.info("Detected DeepSeek OCR model\n")
@@ -3121,9 +3659,8 @@ class UnslothTrainer:
 
                     logger.info("Configuring DeepSeek OCR data collator...\n")
                     FastVisionModel.for_training(self.model)
-                    # (image_size, base_size, crop_mode) is a coupled preset;
-                    # changing image_size alone desyncs the per-crop grid from
-                    # num_queries. Use Gundam preset.
+                    # (image_size, base_size, crop_mode) is a coupled preset; changing image_size alone
+                    # desyncs the per-crop grid from num_queries. Use the Gundam preset.
                     if training_args.get("vision_image_size") is not None:
                         logger.info(
                             "Vision image resize ignored for DeepSeek OCR "
@@ -3146,8 +3683,7 @@ class UnslothTrainer:
                     return
 
             elif self.is_audio_vlm and not raw_text_mode:
-                # Audio VLM collator (e.g. Gemma 3N), mirrors the
-                # Gemma3N_(4B)-Audio notebook collate_fn.
+                # Audio VLM collator (e.g. Gemma 3N), mirrors the Gemma3N_(4B)-Audio notebook.
                 logger.info("Configuring audio VLM data collator...\n")
                 processor = self.tokenizer  # FastModel returns processor as tokenizer
 
@@ -3186,7 +3722,6 @@ class UnslothTrainer:
                 logger.info("Audio VLM data collator configured\n")
 
             elif self.is_vlm and not raw_text_mode:
-                # Standard VLM collator (images)
                 logger.info("Using UnslothVisionDataCollator for vision model\n")
                 from unsloth.trainer import UnslothVisionDataCollator
 
@@ -3216,7 +3751,7 @@ class UnslothTrainer:
             config_args = {
                 "per_device_train_batch_size": training_args.get("batch_size", 2),
                 "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
-                "num_train_epochs": training_args.get("num_epochs", 3),  # Default to epochs
+                "num_train_epochs": training_args.get("num_epochs", 3),
                 "learning_rate": lr_value,
                 "fp16": not is_bfloat16_supported(),
                 "bf16": is_bfloat16_supported(),
@@ -3225,11 +3760,16 @@ class UnslothTrainer:
                 "seed": training_args.get("random_seed", 3407),
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
-                "include_num_input_tokens_seen": True,  # Enable token counting
+                "disable_tqdm": _hf_stdout_progress_disabled(),
+                "include_num_input_tokens_seen": True,
+                # serial_as_none = False: this is a config boundary, not a map() call site. The audio
+                # paths ask for 1 to keep dataset workers off a process holding audio/CUDA state, and
+                # a config None reads as "auto-size me" downstream. Pass None (not a count) otherwise:
+                # the shared policy sizes an auto request from CPU affinity + cgroup quota, while an
+                # integer computed here comes from host os.cpu_count() and skips that.
                 "dataset_num_proc": dataset_map_num_proc(
-                    1
-                    if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
-                    else max(1, (os.cpu_count() or 1) // 4)
+                    1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else None,
+                    serial_as_none = False,
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
             }
@@ -3241,14 +3781,12 @@ class UnslothTrainer:
                 f"[DEBUG] dataset_num_proc={config_args['dataset_num_proc']} (is_audio={self.is_audio}, is_audio_vlm={self.is_audio_vlm}, _cuda_audio_used={self._cuda_audio_used})"
             )
 
-            # On spawn platforms with transformers 5.x, disable DataLoader
-            # multiprocessing to avoid modified sys.path issues in spawned workers.
+            # Disable DataLoader multiprocessing: a modified sys.path breaks spawned workers.
             if sys.platform in ("win32", "darwin"):
                 import transformers as _tf
                 if _tf.__version__.startswith("5."):
                     config_args["dataloader_num_workers"] = 0
 
-            # Use warmup_ratio if provided, else warmup_steps
             if warmup_ratio_val is not None:
                 config_args["warmup_ratio"] = warmup_ratio_val
                 logger.info(f"Using warmup_ratio: {warmup_ratio_val}\n")
@@ -3256,17 +3794,14 @@ class UnslothTrainer:
                 config_args["warmup_steps"] = warmup_steps_val
                 logger.info(f"Using warmup_steps: {warmup_steps_val}\n")
             else:
-                # Default if neither provided
                 config_args["warmup_steps"] = 5
                 logger.info("Using default warmup_steps: 5\n")
 
-            # Add save_steps if specified
             save_steps_val = training_args.get("save_steps", 0)
             if save_steps_val and save_steps_val > 0:
                 config_args["save_steps"] = save_steps_val
                 config_args["save_strategy"] = "steps"
 
-            # If max_steps is specified, use it instead of epochs
             max_steps_val = training_args.get("max_steps", 0)
             if max_steps_val and max_steps_val > 0:
                 del config_args["num_train_epochs"]
@@ -3300,16 +3835,15 @@ class UnslothTrainer:
             else:
                 logger.info("No eval dataset — evaluation disabled\n")
 
-            # Model-specific params: use training_args optim/lr_scheduler_type if given, else defaults
+            # Use training_args optim/lr_scheduler_type if given, else defaults
             optim_value = training_args.get("optim", "adamw_8bit")
             lr_scheduler_type_value = training_args.get("lr_scheduler_type", "linear")
 
             if (self.is_vlm or self.is_audio_vlm) and not raw_text_mode:
-                # Vision / audio VLM config (both need skip_prepare_dataset +
-                # remove_unused_columns); raw-text VLM goes to the text path below.
+                # Vision / audio VLM both need skip_prepare_dataset + remove_unused_columns;
+                # raw-text VLM goes to the text path below.
                 label = "audio VLM" if self.is_audio_vlm else "vision"
                 logger.info(f"Configuring {label} model training parameters\n")
-                # Provided values or vision defaults
                 optim_value = training_args.get("optim", "adamw_torch_fused")
                 lr_scheduler_type_value = training_args.get("lr_scheduler_type", "cosine")
                 config_args.update(
@@ -3369,9 +3903,8 @@ class UnslothTrainer:
             logger.info("Training configuration prepared\n")
             # ========== TRAINER INITIALIZATION ==========
             if self.is_audio_vlm and not raw_text_mode:
-                # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset
-                # Notebook uses processing_class=processor.tokenizer (text tokenizer only)
-                # Raw-text runs are routed to the text path below.
+                # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset.
+                # Notebook uses processing_class=processor.tokenizer; raw-text runs use the text path.
                 train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
                 processing_class = (
                     self.tokenizer.tokenizer
@@ -3389,8 +3922,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = SFTTrainer(**trainer_kwargs)
             elif self.is_vlm and not raw_text_mode:
-                # Image VLM: dataset is a dict wrapper from
-                # format_and_template_dataset. Raw-text runs go to the text path below.
+                # Image VLM: dict wrapper from format_and_template_dataset (raw-text uses the text path).
                 train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
                 trainer_kwargs = {
                     "model": self.model,
@@ -3403,10 +3935,8 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = SFTTrainer(**trainer_kwargs)
             else:
-                # For text-only training, unwrap a Processor (e.g. Gemma-3 returns
-                # ProcessorMixin even for text) to the raw tokenizer; else SFTTrainer
-                # sets _is_vlm=True, skips _prepare_dataset, and 'text' never gets
-                # tokenized to 'input_ids'.
+                # For text-only, unwrap a Processor (Gemma-3 returns ProcessorMixin even for text) to
+                # the raw tokenizer; else SFTTrainer sets _is_vlm, skips _prepare_dataset, no input_ids.
                 from transformers import ProcessorMixin
 
                 sft_tokenizer = self.tokenizer
@@ -3434,15 +3964,19 @@ class UnslothTrainer:
                     logger.info(
                         f"CPT: using UnslothTrainer with embedding_learning_rate={embedding_lr}\n"
                     )
+                    cpt_args = _UnslothTrainingArguments(
+                        embedding_learning_rate = embedding_lr,
+                        **config_args,
+                    )
+                    if config_args.get("packing", False):
+                        cpt_args.packing_strategy = "wrapped"
+                        logger.info("CPT packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": _UnslothTrainingArguments(
-                            embedding_learning_rate = embedding_lr,
-                            **config_args,
-                        ),
+                        "args": cpt_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset
@@ -3458,16 +3992,13 @@ class UnslothTrainer:
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset
                     self.trainer = SFTTrainer(**trainer_kwargs)
-                # Restore full processor so checkpoints include
-                # preprocessor_config.json (needed for GGUF export).
+                # Restore the full processor so checkpoints include preprocessor_config.json (GGUF export).
                 if sft_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer
             logger.info("Trainer initialized\n")
 
             # ========== TRAIN ON RESPONSES ONLY ==========
             # Raw-text datasets always train on all tokens.
-            instruction_part = None
-            response_part = None
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
@@ -3484,113 +4015,87 @@ class UnslothTrainer:
 
             # DeepSeek OCR handles this internally in its collator, so skip
             # Audio VLM handles label masking in its collator, so skip
+            # Markers auto-detected from the chat template first, manual table as fallback;
+            # gpt-oss stays on manual markers. See apply_completion_masking.
             if (
                 train_on_responses_enabled
                 and not self.is_audio_vlm
                 and not self.is_audio
-                and not (is_deepseek_ocr or dataset_final_format == "alpaca")
+                and not is_deepseek_ocr
             ):
-                try:
-                    logger.info("Configuring train on responses only...\n")
+                from unsloth.chat_templates import train_on_responses_only
 
-                    # Template mapping for this model
-                    model_name_lower = self.model_name.lower()
+                logger.info("Configuring train on responses only...\n")
 
-                    if model_name_lower in MODEL_TO_TEMPLATE_MAPPER:
-                        template_name = MODEL_TO_TEMPLATE_MAPPER[model_name_lower]
-                        logger.info(f"Detected template: {template_name}\n")
+                def _notify(level, message):
+                    if level == "warning":
+                        logger.warning(message)
+                    else:
+                        logger.info(f"{message}\n")
 
-                        if template_name in TEMPLATE_TO_RESPONSES_MAPPER:
-                            instruction_part = TEMPLATE_TO_RESPONSES_MAPPER[template_name][
-                                "instruction"
-                            ]
-                            response_part = TEMPLATE_TO_RESPONSES_MAPPER[template_name]["response"]
+                # No try/except: the helper handles detection failures itself, so an exception here is
+                # a real masking failure that must fail the run, not silently train full sequences.
+                self.trainer, masking_applied = apply_completion_masking(
+                    self.trainer,
+                    self.model_name,
+                    train_on_responses_only,
+                    num_proc = config_args["dataset_num_proc"],
+                    notify = _notify,
+                    dataset_template = ("alpaca" if dataset_final_format == "alpaca" else None),
+                )
 
-                            logger.info(f"Instruction marker: {instruction_part[:50]}...\n")
-                            logger.info(f"Response marker: {response_part[:50]}...\n")
+                if not masking_applied:
+                    train_on_responses_enabled = False
+
+                if masking_applied:
+                    try:
+                        # Safety net: train_on_responses_only masks non-response tokens with -100, and a row
+                        # becomes all -100 (Unsloth drops it) when the response template is missing from the
+                        # formatted text -- usually a dataset/template mismatch, sometimes max_seq_length
+                        # truncation. len()-based, so skip for streaming.
+                        if detect_streaming_dataset(self.trainer.train_dataset):
+                            logger.info("Skipping post-filter length check for streaming dataset\n")
                         else:
-                            logger.info(
-                                f"No response mapping found for template: {template_name}\n"
+                            filtered_len = len(self.trainer.train_dataset)
+                            original_dataset_obj = (
+                                dataset["dataset"] if isinstance(dataset, dict) else dataset
                             )
-                            train_on_responses_enabled = False
-                    else:
-                        logger.info(f"No template mapping found for model: {self.model_name}\n")
-                        train_on_responses_enabled = False
-
-                except Exception as e:
-                    logger.warning(f"Could not configure train on responses: {e}")
-                    train_on_responses_enabled = False
-
-            # Apply train on responses only if we have valid parts
-            if (
-                train_on_responses_enabled
-                and instruction_part
-                and response_part
-                and not self.is_audio_vlm
-                and not self.is_audio
-                and not (is_deepseek_ocr or dataset_final_format == "alpaca")
-            ):
-                try:
-                    from unsloth.chat_templates import train_on_responses_only
-
-                    self.trainer = train_on_responses_only(
-                        self.trainer,
-                        instruction_part = instruction_part,
-                        response_part = response_part,
-                        num_proc = config_args["dataset_num_proc"],
-                    )
-                    logger.info("Train on responses only configured successfully\n")
-
-                    # ── Safety net: check if all samples were filtered out ──
-                    # train_on_responses_only masks non-response tokens with -100;
-                    # a row becomes all -100 (and Unsloth drops it) when the response
-                    # template is not found in the formatted text. That is usually a
-                    # dataset/template mismatch (already-formatted data, or 'Train on
-                    # completions' applied to data that doesn't match the model's chat
-                    # template), and only sometimes max_seq_length truncating the
-                    # response away. Skip this len()-based check for streaming.
-                    if detect_streaming_dataset(self.trainer.train_dataset):
-                        logger.info("Skipping post-filter length check for streaming dataset\n")
-                    else:
-                        filtered_len = len(self.trainer.train_dataset)
-                        original_dataset_obj = (
-                            dataset["dataset"] if isinstance(dataset, dict) else dataset
-                        )
-                        original_len = len(original_dataset_obj)
-                        dropped = original_len - filtered_len
-                        drop_pct = round(100 * dropped / original_len, 1) if original_len > 0 else 0
-
-                        if filtered_len == 0 or drop_pct > 30:
-                            max_seq = training_args.get("max_seq_length", 2048)
-                            error_msg = (
-                                f"{dropped}/{original_len} samples ({drop_pct}%) were "
-                                f"dropped after applying 'Train on completions': after "
-                                f"masking, those rows had no trainable response tokens "
-                                f"left. The usual cause is that this model's response "
-                                f"template was not found in the formatted samples, so "
-                                f"every token was masked out. That typically means the "
-                                f"dataset is already formatted, or its structure does "
-                                f"not match the model's chat template, so 'Train on "
-                                f"completions' should be turned off for this dataset. "
-                                f"Less commonly, a max_seq_length ({max_seq}) shorter "
-                                f"than the prompt can truncate the response away; only "
-                                f"raise it if your samples are actually longer than that."
+                            original_len = len(original_dataset_obj)
+                            dropped = original_len - filtered_len
+                            drop_pct = (
+                                round(100 * dropped / original_len, 1) if original_len > 0 else 0
                             )
-                            logger.error(error_msg)
-                            self._update_progress(error = error_msg, is_training = False)
-                            return
 
-                        if dropped > 0:
-                            logger.info(
-                                f"⚠️ {dropped}/{original_len} samples "
-                                f"({drop_pct}%) were dropped (all labels "
-                                f"masked). {filtered_len} samples remain.\n"
-                            )
-                        logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
+                            if filtered_len == 0 or drop_pct > 30:
+                                max_seq = training_args.get("max_seq_length", 2048)
+                                error_msg = (
+                                    f"{dropped}/{original_len} samples ({drop_pct}%) were "
+                                    f"dropped after applying 'Train on completions': after "
+                                    f"masking, those rows had no trainable response tokens "
+                                    f"left. The usual cause is that this model's response "
+                                    f"template was not found in the formatted samples, so "
+                                    f"every token was masked out. That typically means the "
+                                    f"dataset is already formatted, or its structure does "
+                                    f"not match the model's chat template, so 'Train on "
+                                    f"completions' should be turned off for this dataset. "
+                                    f"Less commonly, a max_seq_length ({max_seq}) shorter "
+                                    f"than the prompt can truncate the response away; only "
+                                    f"raise it if your samples are actually longer than that."
+                                )
+                                logger.error(error_msg)
+                                self._update_progress(error = error_msg, is_training = False)
+                                return
 
-                except Exception as e:
-                    logger.warning(f"Failed to apply train on responses only: {e}")
-                    train_on_responses_enabled = False
+                            if dropped > 0:
+                                logger.info(
+                                    f"⚠️ {dropped}/{original_len} samples "
+                                    f"({drop_pct}%) were dropped (all labels "
+                                    f"masked). {filtered_len} samples remain.\n"
+                                )
+                            logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
+
+                    except Exception as e:
+                        logger.warning(f"Post-masking dataset size check failed: {e}")
             else:
                 if train_on_responses_enabled and is_deepseek_ocr:
                     logger.info("Train on responses handled by DeepSeek OCR collator\n")
@@ -3599,6 +4104,9 @@ class UnslothTrainer:
 
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
+            # Studio publishes progress itself, so HF's stdout callbacks are pure
+            # duplication in a log that has no terminal. --verbose keeps them.
+            _drop_hf_stdout_callbacks(self.trainer)
 
             train_dataset_obj = dataset["dataset"] if isinstance(dataset, dict) else dataset
             is_streaming_dataset = detect_streaming_dataset(train_dataset_obj)
@@ -3614,9 +4122,7 @@ class UnslothTrainer:
             if is_streaming_dataset:
                 total_steps = max_steps
             else:
-                # Prefer the trainer's processed dataset length (post
-                # train-on-responses filtering); fall back to the raw dataset
-                # if it has no len().
+                # Prefer the trainer's processed length (post-filtering); fall back to the raw dataset.
                 num_samples = None
                 if getattr(self.trainer, "train_dataset", None) is not None:
                     try:
@@ -3672,10 +4178,9 @@ class UnslothTrainer:
             return
 
         try:
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
 
-            # Determine training method
             if self.is_cpt:
                 method = "CPT"
             elif self.load_in_4bit:
@@ -3686,7 +4191,7 @@ class UnslothTrainer:
             config["unsloth_training_method"] = method
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding = "utf-8") as f:
                 json.dump(config, f, indent = 2)
 
         except Exception as e:
@@ -3702,7 +4207,6 @@ class UnslothTrainer:
         )
         self._update_progress(status_message = stop_msg)
 
-        # If trainer exists, try to stop it gracefully
         if self.trainer:
             try:
                 # The callback catches should_stop and stops the loop
@@ -3724,7 +4228,6 @@ class UnslothTrainer:
         if self.tokenizer:
             self.tokenizer = None
 
-        # Clear GPU memory
         clear_gpu_cache()
 
 
@@ -3771,7 +4274,6 @@ def _ensure_deepseek_ocr_installed():
         return False
 
 
-# Global trainer instance
 _trainer_instance = None
 
 

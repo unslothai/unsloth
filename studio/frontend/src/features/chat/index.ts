@@ -3,52 +3,230 @@
 
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
+  addScanFolder,
+  browseFolders,
+  ChatThreadDeletedError,
+  deleteChatAttachment,
+  deleteFineTunedModel,
+  fetchChatAttachmentBlob,
+  fetchGgufStagedMetadata,
+  getCachedModelPath,
   getInferenceStatus,
+  listCachedGguf,
+  listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listLoras,
+  listModels,
+  listRecommendedFolders,
+  listScanFolders,
   loadModel,
+  unloadModel,
+  notifyChatHistoryUpdated,
+  removeScanFolder,
+  revealCachedModel,
+  type BrowseFoldersResponse,
+  type CachedGgufRepo,
+  type CachedModelRepo,
+  type ChatAttachmentPage,
+  type ChatAttachmentRecord,
   type LocalModelInfo,
+  type ScanFolderInfo,
 } from "./api/chat-api";
-export type { GgufVariantDetail } from "./types/api";
+export type {
+  ApiMonitorEntry,
+  BackendModelDetails,
+  GgufVariantDetail,
+  InferenceStatusResponse,
+} from "./types/api";
+export {
+  applyActiveModelStatusToStore,
+  resolveInferenceCheckpointId,
+} from "./lib/apply-inference-status-to-store";
 export {
   ChatSettingsPanel,
+  ParamSlider,
   defaultInferenceParams,
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  CHAT_RAG_CAPTION_KEY,
+  CHAT_RAG_OCR_KEY,
+  normalizeSpeculativeType,
+  readPersistedSpeculativeType,
+  readPersistedGpuMemoryMode,
+  reconcilePersistedGpuIds,
+  reconcilePersistedGpuSelection,
+  GPU_LAYERS_AUTO,
+} from "./stores/chat-runtime-store";
+export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
+export {
+  preferFullToolOutput,
+
+  preferSanitizedFullToolOutput,
+  toolOutputKey,
+  toolThreadScope,
+  useToolOutputFor,
+  useUnresolvedToolPaneScope,
+  useToolPaneScope,
+} from "./tool-output-scope";
+export { useToolAwaitingApproval } from "./tool-approval";
+export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
+export {
+  usePromptQueueUI,
+  type PromptQueueUIEntry,
+  type PromptQueueUIItem,
+  type PromptQueueUIItemStatus,
+  type PromptQueueUIState,
+} from "./stores/prompt-queue-ui-store";
+export {
+  notifyPromptQueueRunFailed,
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+  requestLocalPromptQueueStop,
+  type PromptQueueRunFailedEventDetail,
+  type PromptQueueStopEventDetail,
+} from "./utils/prompt-queue-boundary";
+export {
+  adoptPreStreamRunReservation,
+  findPreStreamRunReservation,
+  hasPreStreamRunReservation,
+  preStreamRunThreadIdsForAdapter,
+  preStreamRunThreadIdsForRuntime,
+  releasePreStreamRunForThreadIds,
+  releasePreStreamRunReservation,
+  reservePreStreamRun,
+} from "./utils/pre-stream-run-reservation";
+export {
+  localPromptQueueModelBoundary,
+  planLocalPromptQueueStop,
+  shouldAbortPendingQueueForModelBoundary,
+  shouldAbortPendingQueueForSettingsChange,
+} from "./utils/prompt-queue-model-boundary";
+export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+export {
+  addQueuedChatRunSettingsThreadIds,
+  consumeQueuedChatRunSettings,
+  discardQueuedChatRunSettings,
+  discardQueuedChatRunSettingsForThread,
+  registerQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
+  type QueuedChatRunSettings,
+} from "./utils/queued-chat-run-settings";
 export {
   PLUS_MENU_ORDER,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
-export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
-export { isExternalModelId } from "./external-providers";
+export {
+  useChatModelRuntime,
+  resyncInferenceStatusAfterServerModelChange,
+} from "./hooks/use-chat-model-runtime";
+export { chatModelLoaded } from "./lib/chat-model-loaded";
+export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
+export {
+  customProviderDisplayName,
+  isCustomProviderType,
+  isExternalModelId,
+  parseExternalModelId,
+} from "./external-providers";
+export { ApiProviderLogo } from "./api-provider-logo";
+export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
+export { StopRunningChatsDialog } from "./components/stop-running-chats-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
+export { pasteClipboardFiles } from "./utils/clipboard-files";
+export { extractYoutubeVideoId } from "./utils/youtube-url";
+export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
+export {
+  PASTED_TEXT_PREVIEW_MAX_CHARS,
+  attachmentContentText,
+  attachmentsPastedText,
+  createPastedTextFile,
+  isPastedTextContent,
+  isPastedTextFile,
+  pasteLongTextAsFile,
+  pastedTextContentBytes,
+  pastedTextContentPreview,
+  pastedTextOf,
+  pastedTextPreview,
+  shouldAttachPastedText,
+} from "./utils/pasted-text";
+export {
+  deleteStoredChatThreads,
+  ensureStoredChatThread,
+  isThreadIncognito,
+  listStoredChatMessages,
+  listStoredChatThreads,
+  markThreadIncognito,
+} from "./utils/chat-history-storage";
+export { recordedSandboxSessionId } from "./utils/recorded-sandbox-session";
+export {
+  markChatThreadDeleted,
+  removeChatThreadTombstones,
+} from "./utils/chat-thread-tombstones";
+export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
+export {
+  reasoningAutoOpensWhileStreaming,
+  resolveReasoningOpen,
+  resolveReasoningToggle,
+  startsNewReasoningRound,
+} from "./utils/reasoning-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ResearchMessage } from "./components/research-message";
+export {
+  ResearchActivityPanel,
+  ResearchActivitySheet,
+} from "./components/research-activity-panel";
 export {
   useChatArtifactsStore,
   useSelectedChatArtifact,
 } from "./artifacts/store";
-export { downloadChatExport } from "./utils/export-chat-history";
+export {
+  downloadArchivedChatExport,
+  downloadChatExport,
+} from "./utils/export-chat-history";
 export {
   clearNewChatDraft,
   composerDraftKey,
+  composerPasteDraftKey,
   readComposerDraft,
+  readPasteDraft,
   writeComposerDraft,
+  writePasteDraft,
 } from "./utils/composer-draft";
 export {
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
+} from "./utils/conversation-markdown";
+export {
   EXPORT_FORMATS_LIST,
+  buildFineTuneJsonl,
   bulkExportConversationsByScope,
-  importConversationsFromFile,
+  exportFineTuneJsonl,
+  type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
+  fileImportSource,
+  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  type ImportProgress,
+  type ImportResult,
+  type ImportSource,
+} from "./utils/chat-import";
+export {
+  archiveAllChatItems,
   archiveChatItem,
   deleteChatItem,
   renameChatItem,
@@ -64,3 +242,34 @@ export {
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";
+export { subscribeDictationLevel } from "./adapters/dictation-level";
+export {
+  dictationFailed,
+  dictationProducedTranscript,
+} from "./adapters/dictation-outcome";
+export {
+  StudioDictationAdapter,
+  cancelActiveStudioDictation,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "./adapters/studio-dictation-adapter";
+export {
+  StudioModelDictationAdapter,
+  SttModelNotDownloadedError,
+  cancelSttDownload,
+  fetchSttStatus,
+  loadSttModel,
+  startSttDownload,
+  sttEngineFor,
+  sttEngineStatusFor,
+  unloadSttModel,
+  validateSttModel,
+  type SttDownloadStatus,
+  type SttEngine,
+} from "./adapters/studio-model-dictation-adapter";
+export {
+  StudioSpeechSynthesisAdapter,
+  createConfiguredUtterance,
+  curateSystemVoices,
+  generateStudioTtsAudio,
+} from "./adapters/studio-speech-synthesis-adapter";

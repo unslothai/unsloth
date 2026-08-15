@@ -118,7 +118,7 @@ export function RecipeStudioHeader({
               {workflowName}
             </button>
           )}
-          <Badge variant="secondary" className="h-6 shrink-0 text-[10px]">
+          <Badge variant="secondary" className="h-6 shrink-0 text-ui-10">
             {STATUS_MESSAGE_CLASS[saveTone]}
           </Badge>
           <span
@@ -148,7 +148,7 @@ export function RecipeStudioHeader({
             <PopoverTrigger asChild={true}>
               <button
                 type="button"
-                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-[10px] font-medium ${RECIPE_STUDIO_WARNING_BADGE_TONE}`}
+                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-ui-10 font-medium ${RECIPE_STUDIO_WARNING_BADGE_TONE}`}
               >
                 <HugeiconsIcon icon={Alert02Icon} className="size-3" />
                 {warnings.length}

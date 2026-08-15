@@ -30,6 +30,7 @@ lora:
   vision_all_linear: true
   use_rslora: false
   use_loftq: false
+  use_dora: false
   finetune_vision_layers: true
   finetune_language_layers: true
   finetune_attention_modules: true

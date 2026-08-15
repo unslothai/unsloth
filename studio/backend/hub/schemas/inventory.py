@@ -27,9 +27,19 @@ class GgufVariantDetail(BaseModel):
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
+    update_available: bool = Field(
+        False, description = "Whether a newer main GGUF blob is available on Hugging Face"
+    )
     partial: bool = Field(
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
+    )
+    cleanable: bool = Field(
+        False,
+        description = (
+            "Row exists only to offer deleting an empty leftover <quant>/ folder; the "
+            "listing has no such weights, so it never proves a load would find any"
+        ),
     )
     partial_transport: Optional[str] = Field(
         None,
@@ -37,6 +47,19 @@ class GgufVariantDetail(BaseModel):
             'Transport recorded for the partial state ("http" or '
             '"xet"), or null if not partial / unknown. Frontend uses '
             "this to pick Resume (http) vs Redownload (xet) labels."
+        ),
+    )
+    dependency_key: Optional[str] = Field(
+        None,
+        description = (
+            "Opaque grouping key: variants sharing a key share one companion "
+            "download footprint (text encoders, VAE, tokenizer, configs), so a "
+            "footprint resolved for one of them is correct for all of them. The "
+            "companion set is NOT repository-wide -- one repo can hold GGUFs of "
+            "different diffusion families, and FLUX.2-klein picks its text "
+            "encoder per checkpoint size -- so a client must group by this key "
+            "rather than per repo. Null means unknown (no family resolved); "
+            "clients should then treat the repo as a single group."
         ),
     )
 
@@ -53,6 +76,21 @@ class GgufVariantsResponse(BaseModel):
     )
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
+    )
+    resolved_locally: bool = Field(
+        False,
+        description = "Whether this answer came from resolving repo_id as a local path",
+    )
+    loadable_variants: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Quants the load resolver resolves for this identifier; None when unanswered "
+            "(remote answers, or a server that predates the field)"
+        ),
+    )
+    loadable: Optional[bool] = Field(
+        None,
+        description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
 
 
@@ -95,6 +133,18 @@ class LocalModelInfo(BaseModel):
     model_id: Optional[str] = Field(
         None,
         description = "HF repo id for cached models, e.g. org/model",
+    )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether this HF entry belongs to the current download cache.",
+    )
+    task: Optional[str] = Field(
+        None,
+        description = (
+            "Inferred pipeline task. The task-scoped pickers filter On Device rows on it and the "
+            "chat picker routes a diffusion pick by it, so a row without one is dropped from "
+            "those lists."
+        ),
     )
     base_model: Optional[str] = Field(
         None,
@@ -157,6 +207,7 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
     inventory_id: Optional[str] = None
@@ -165,10 +216,21 @@ class CachedRepoBase(BaseModel):
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
+    # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
+    # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
+    task: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
     model_format: ModelFormat = "gguf"
+    has_variant_state: bool = Field(
+        False,
+        description = (
+            "Whether a download manifest or cancel marker exists for some quant. A sibling "
+            "cancelled before any file landed changes nothing else on this row, so callers "
+            "watching for on-disk change need this to notice it."
+        ),
+    )
 
 
 class CachedGgufResponse(BaseModel):
@@ -180,10 +242,23 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
+    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file
+    # + a filename. Pickers must not offer it as a pipeline load unless the catalog carries a curated artifact for it.
+    single_file: bool = False
+    # True for an sd.cpp companion mirror: a VAE / text-encoder repo with no denoiser, so it is
+    # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
+    # is how they are seen and deleted; the pickers filter on this instead.
+    companion: bool = False
 
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+
+
+class HiddenModelsResponse(BaseModel):
+    needles: List[str] = Field(default_factory = list)
+    exact_ids: List[str] = Field(default_factory = list)
+    exact_paths: List[str] = Field(default_factory = list)
 
 
 class AddScanFolderRequest(BaseModel):
@@ -211,79 +286,52 @@ class RemoveScanFolderResponse(BaseModel):
     ok: bool
 
 
-class RecommendedFoldersResponse(BaseModel):
-    folders: List[str] = Field(default_factory = list)
-
-
 class DeleteCachedModelResponse(BaseModel):
     status: str
     repo_id: str
     variant: Optional[str] = None
 
 
-class BrowseEntry(BaseModel):
-    """A directory entry surfaced by the folder browser."""
+class CompanionAssetInfo(BaseModel):
+    """A companion base repo (text encoders, VAE, tokenizer, configs) in the cache."""
 
-    name: str = Field(..., description = "Entry name (basename, not full path)")
-    has_models: bool = Field(
-        False,
-        description = (
-            "Hint that the directory likely contains models "
-            "(*.gguf, *.safetensors, config.json, or HF-style "
-            "`models--*` subfolders). Used by the UI to highlight "
-            "promising candidates; the scanner itself is authoritative."
-        ),
-    )
-    hidden: bool = Field(
-        False,
-        description = "Name starts with a dot (e.g. `.cache`)",
-    )
-
-
-class BrowseFoldersResponse(BaseModel):
-    """Response schema for the folder browser endpoint."""
-
-    current: str = Field(..., description = "Absolute path of the directory just listed")
-    parent: Optional[str] = Field(
-        None,
-        description = (
-            "Parent directory of `current`, or null if `current` is the "
-            "filesystem root. The frontend uses this to render an `Up` row."
-        ),
-    )
-    entries: List[BrowseEntry] = Field(
+    repo_id: str
+    size_bytes: int = Field(0, description = "Real on-disk blob bytes, deduped per blob")
+    needed_by: List[str] = Field(
         default_factory = list,
-        description = (
-            "Subdirectories of `current`. Sorted with model-bearing "
-            "directories first, then alphabetically case-insensitive; "
-            "hidden entries come last within each group."
-        ),
+        description = "Installed models that still need it; empty means it is reclaimable",
     )
-    suggestions: List[str] = Field(
+
+
+class DeleteImpactResponse(BaseModel):
+    """What a pending delete would actually do, so the confirm dialog can say it."""
+
+    repo_id: str
+    variant: Optional[str] = None
+    reclaimed_bytes: int = Field(0, description = "Bytes this delete frees, from the cache scan")
+    retained_companions: List[CompanionAssetInfo] = Field(
         default_factory = list,
-        description = (
-            "Handy starting points (home, HF cache, already-registered "
-            "scan folders). Rendered as quick-pick chips above the list."
-        ),
+        description = "Shared assets that stay because another installed model needs them",
     )
-    truncated: bool = Field(
-        False,
-        description = (
-            "True when the listing was capped because the directory had "
-            "more subfolders than the server is willing to enumerate in "
-            "one request. The UI should show a hint telling the user to "
-            "narrow their path."
-        ),
+    freeable_companions: List[CompanionAssetInfo] = Field(
+        default_factory = list,
+        description = "Shared assets that become orphaned by this delete and can then be removed",
     )
-    model_files_here: int = Field(
-        0,
-        description = (
-            "Count of GGUF/safetensors files immediately inside "
-            "``current``. Used by the UI to surface a hint on leaf "
-            "model directories (which otherwise look `empty` because "
-            "they contain only files, no subdirectories)."
-        ),
+    blocked_by: List[str] = Field(
+        default_factory = list,
+        description = "Installed models that make this delete impossible (shared-asset guard)",
     )
+
+
+class OrphanCompanionInfo(BaseModel):
+    repo_id: str
+    size_bytes: int = 0
+    cache_path: Optional[str] = None
+
+
+class OrphanCompanionsResponse(BaseModel):
+    companions: List[OrphanCompanionInfo] = Field(default_factory = list)
+    total_bytes: int = 0
 
 
 class ModelsFolderResponse(BaseModel):

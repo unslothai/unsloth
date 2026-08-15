@@ -10,6 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -54,8 +56,19 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
+import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
+import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
+import { parseCsv } from "../utils/csv-parse";
+import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
+import {
+  buildConversationMarkdown,
+  contentBlocksToMarkdownBlocks,
+  renderConversationBlocks,
+} from "../utils/conversation-markdown";
+import { planChatItemSources } from "../utils/project-source-plan";
+import { saveMarkdownAsProjectSource } from "@/features/rag";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -69,85 +82,73 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "export";
 }
 
-function downloadBlob(content: string | Blob, filename: string, mimeType: string): void {
-  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+async function downloadBlob(
+  content: string | Blob | Uint8Array,
+  filename: string,
+  mimeType: string,
+): Promise<void> {
+  return downloadFile(content, filename, mimeType);
 }
 
 function csvEscape(val: string): string {
   return `"${val.replace(/"/g, '""')}"`;
 }
 
-function exportPromptJsonl(entry: PromptEntry): void {
-  downloadBlob(
+function exportPromptJsonl(entry: PromptEntry): Promise<void> {
+  return downloadBlob(
     JSON.stringify({ name: entry.name, text: entry.text }),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportPromptCsv(entry: PromptEntry): void {
-  downloadBlob(
+function exportPromptCsv(entry: PromptEntry): Promise<void> {
+  return downloadBlob(
     `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
     `${sanitizeFilename(entry.name)}.csv`,
     "text/csv",
   );
 }
 
-function exportAllPromptsJsonl(entries: PromptEntry[]): void {
+function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
   const lines = entries.map((e) => JSON.stringify({ name: e.name, text: e.text })).join("\n");
-  downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
 }
 
-function exportAllPromptsCsv(entries: PromptEntry[]): void {
+function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
 }
 
-function exportListJsonl(entry: PromptListEntry): void {
-  downloadBlob(
+function exportListJsonl(entry: PromptListEntry): Promise<void> {
+  return downloadBlob(
     JSON.stringify({ name: entry.name, items: entry.items }),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportAllListsJsonl(entries: PromptListEntry[]): void {
+function exportAllListsJsonl(entries: PromptListEntry[]): Promise<void> {
   const lines = entries.map((e) => JSON.stringify({ name: e.name, items: e.items })).join("\n");
-  downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
 }
 
-function exportListCsv(entry: PromptListEntry): void {
+function exportListCsv(entry: PromptListEntry): Promise<void> {
   const rows = entry.items
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
-  downloadBlob(
+  return downloadBlob(
     `list_name,order,prompt_text\n${rows}`,
     `${sanitizeFilename(entry.name)}.csv`,
     "text/csv",
   );
 }
 
-function exportAllListsCsv(entries: PromptListEntry[]): void {
+function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
-}
-
-function exportCollectionJsonl(prompts: PromptEntry[], lists: PromptListEntry[]): void {
-  const lines = [
-    ...prompts.map((e) => JSON.stringify({ type: "prompt", name: e.name, text: e.text })),
-    ...lists.map((e) => JSON.stringify({ type: "prompt_list", name: e.name, items: e.items })),
-  ].join("\n");
-  downloadBlob(lines, "prompt-collection.jsonl", "application/x-ndjson");
+  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -170,11 +171,17 @@ function contentBlocksToText(content: unknown): string {
           parts.push("[thinking]\n" + thinkText + "\n[/thinking]");
         }
       } else if (p.type === "tool-call") {
+        // Keep base64 image payloads and sandbox card metadata out of every
+        // export format: use the model-visible text (matches chat replay).
+        const result = toolResultModelText(
+          p.result,
+          typeof p.toolName === "string" ? p.toolName : undefined,
+        );
         parts.push(
           JSON.stringify({
             tool_call: p.toolName,
             args: p.args,
-            result: p.result,
+            result,
           }),
         );
       } else if (p.type === "image") {
@@ -190,7 +197,16 @@ function contentBlocksToText(content: unknown): string {
 // predate the user's next message); the parent chain is timestamp-independent.
 type _Msg = { id: string; parentId?: string | null; createdAt?: number };
 
-function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
+function orderByParentChain<T extends _Msg>(
+  messages: T[],
+  options: {
+    /** Append messages off the selected chain (abandoned branches) at the
+     *  end. Full exports keep everything; fine-tune conversion must not,
+     *  since alternate replies would merge into one conversation. */
+    includeSiblings?: boolean;
+  } = {},
+): T[] {
+  const { includeSiblings = true } = options;
   const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
   const childrenOf = new Map<string | null, T[]>();
   for (const m of messages) {
@@ -211,14 +227,21 @@ function orderByParentChain<T extends _Msg>(messages: T[]): T[] {
     byId.delete(next.id);
   }
 
-  for (const [, m] of byId) result.push(m);
+  if (includeSiblings) {
+    for (const [, m] of byId) result.push(m);
+  }
   return result;
 }
 
-async function loadConversationMessages(threadId: string) {
+async function loadConversationMessages(
+  threadId: string,
+  // Every other caller here is an export; the project-sources save is not, and
+  // reporting an export to someone who never asked for one is confusing.
+  emptyMessage = "No messages in this conversation to export.",
+) {
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
-    toast.info("No messages in this conversation to export.");
+    toast.info(emptyMessage);
     return null;
   }
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the
@@ -241,11 +264,38 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
       if (!attachment?.content) continue;
-      const attText = contentBlocksToText(attachment.content);
+      // A paste carries a wrapper the same text never had when it fitted
+      // inline, so strip it rather than exporting the marker.
+      const attText = unwrapPastedTextContent(
+        contentBlocksToText(attachment.content),
+      );
       if (attText) parts.push(attText);
     }
   }
   return parts.join("\n\n");
+}
+
+// Markdown counterpart to messageToText: same content and attachments, but each
+// part keeps its shape so the renderer can fence tool calls and collapse thinking.
+function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
+  const normalizeToolResult = toolResultModelText;
+  const blocks = contentBlocksToMarkdownBlocks(msg.content, normalizeToolResult);
+  if (Array.isArray(msg.attachments)) {
+    for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
+      if (!attachment?.content) continue;
+      blocks.push(
+        ...contentBlocksToMarkdownBlocks(
+          attachment.content,
+          normalizeToolResult,
+        ).map((block) =>
+          block.kind === "text"
+            ? { ...block, text: unwrapPastedTextContent(block.text) }
+            : block,
+        ),
+      );
+    }
+  }
+  return renderConversationBlocks(blocks);
 }
 
 // OpenAI messages array (tool-calling + multimodal fine-tuning): tool calls →
@@ -276,9 +326,14 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
     ...blocks.map((b) => b as Record<string, unknown>),
     ...attachments.flatMap((a) => {
       const att = a as { content?: unknown };
-      return Array.isArray(att.content)
-        ? (att.content as Record<string, unknown>[])
-        : [];
+      if (!Array.isArray(att.content)) return [];
+      // Attachment text only: a message body is verbatim, and the paste
+      // wrapper is not something the user wrote.
+      return (att.content as Record<string, unknown>[]).map((part) =>
+        part?.type === "text" && typeof part.text === "string"
+          ? { ...part, text: unwrapPastedTextContent(part.text) }
+          : part,
+      );
     }),
   ];
 
@@ -299,7 +354,12 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
         const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
         toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
         if (p.result !== undefined && p.result !== null) {
-          const resultStr = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
+          // Keep base64 image payloads out of exports: MCP image results carry
+          // their model-visible text alongside the data, so serialize the text
+          // (matching chat replay) instead of the full object.
+          const modelText = toolResultModelText(p.result, name);
+          const resultStr =
+            typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
         }
       }
@@ -348,7 +408,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   }
 
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
-  downloadBlob(
+  await downloadBlob(
     JSON.stringify({ conversations }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
@@ -363,7 +423,7 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
 
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
-  downloadBlob(
+  await downloadBlob(
     JSON.stringify({ messages: oaiMsgs }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
@@ -382,7 +442,75 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   }
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
-  downloadBlob(rows.join("\n"), "conversation-" + exportTs() + ".csv", "text/csv");
+  await downloadBlob(
+    rows.join("\n"),
+    "conversation-" + exportTs() + ".csv",
+    "text/csv",
+  );
+}
+
+export const exportConversationMarkdown = createConversationMarkdownExporter({
+  loadMessages: loadConversationMessages,
+  renderMessage: messageToMarkdown,
+  download: downloadBlob,
+  exportTimestamp: exportTs,
+  notifyNoContent: () => toast.info("No exportable content."),
+});
+
+// "skipped" is an empty conversation, which has already said so and must not
+// stop the rest of a pair; "failed" has toasted a reason, so stop there rather
+// than stack a second one.
+type SaveSourceOutcome = "saved" | "skipped" | "failed";
+
+async function saveConversationAsProjectSource(
+  threadId: string,
+  projectId: string,
+  title: string,
+): Promise<SaveSourceOutcome> {
+  const messages = await loadConversationMessages(
+    threadId,
+    "No messages in this conversation to save.",
+  );
+  if (!messages) return "skipped";
+  const markdown = buildConversationMarkdown(
+    messages.map((msg) => ({
+      role: String(msg.role ?? ""),
+      content: messageToMarkdown(msg),
+    })),
+  );
+  if (!markdown) {
+    toast.info("No content to save.");
+    return "skipped";
+  }
+  const saved = await saveMarkdownAsProjectSource(projectId, markdown, title, {
+    quiet: true,
+  });
+  return saved ? "saved" : "failed";
+}
+
+export async function saveChatItemAsProjectSource(
+  item: { id: string; title: string; type: string },
+  projectId: string,
+): Promise<void> {
+  const plans = planChatItemSources(
+    item,
+    item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
+  );
+  let saved = 0;
+  for (const plan of plans) {
+    const outcome = await saveConversationAsProjectSource(
+      plan.id,
+      projectId,
+      plan.title,
+    );
+    if (outcome === "failed") break;
+    if (outcome === "saved") saved += 1;
+  }
+  // One toast per click, not one per thread in the pair.
+  if (saved === 1) toast.success("Saved to project sources.");
+  else if (saved > 1) {
+    toast.success(`Saved ${saved} chats to project sources.`);
+  }
 }
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
@@ -464,7 +592,11 @@ export async function exportBulkConversationsMerged(
     ? header + "\n" + parts.join("\n")
     : parts.join("\n");
 
-  downloadBlob(body, `${basename}.${exportExt(format)}`, exportMime(format));
+  await downloadBlob(
+    body,
+    `${basename}.${exportExt(format)}`,
+    exportMime(format),
+  );
 }
 
 export async function exportBulkConversationsSeparate(
@@ -489,11 +621,7 @@ export async function exportBulkConversationsSeparate(
   if (Object.keys(files).length === 0) { toast.info("No exportable content."); return; }
 
   const zipped = zipSync(files);
-  downloadBlob(
-    new Blob([zipped], { type: "application/zip" }),
-    `${basename}.zip`,
-    "application/zip",
-  );
+  await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
 // Scope-level bulk export shared by the sidebar Recents menu and
@@ -521,8 +649,10 @@ export async function bulkExportConversationsByScope(
     } else {
       await exportBulkConversationsSeparate(ids, format, basename);
     }
-  } catch {
-    toast.error("Export failed.");
+  } catch (error) {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Export failed.");
+    }
   }
 }
 
@@ -539,251 +669,236 @@ export async function exportProjectConversations(
   );
 }
 
-// role:"tool" results are absorbed into the preceding assistant tool-call
-// part's `result` field rather than becoming separate records.
-function oaiMessagesToRecords(
-  oaiMsgs: unknown[],
-  threadId: string,
-  baseTs: number,
-): MessageRecord[] {
-  const toolResults = new Map<string, string>();
-  for (const m of oaiMsgs) {
-    const msg = m as Record<string, unknown>;
-    if (msg.role === "tool" && typeof msg.tool_call_id === "string") {
-      toolResults.set(msg.tool_call_id, typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""));
+// ── Fine-tuning export ─────────────────────────────────────────────────────
+// One JSONL line per conversation: {"messages": [{"role", "content"}]} with
+// string-only content in system/user/assistant turns. Unsloth's training tab
+// detects this as ChatML natively (no column mapping, no standardization) and
+// it works with train-on-completions masking, which only trains on assistant
+// turns. Reasoning, tool calls, and images are dropped: clean SFT targets.
+
+export type FineTuneMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+const FINE_TUNE_ROLES = new Set(["system", "user", "assistant"]);
+
+/** Plain text of a message: text blocks plus text-type attachment parts. */
+function messageToPlainText(msg: {
+  content: unknown;
+  attachments?: unknown;
+}): string {
+  const parts: string[] = [];
+  // Only attachment text is unwrapped: a message body is verbatim, and may
+  // legitimately quote the wrapper syntax in a code sample.
+  const collect = (blocks: unknown, fromAttachment = false) => {
+    const normalize = fromAttachment
+      ? unwrapPastedTextContent
+      : (text: string) => text;
+    // Legacy and imported histories can store content as a plain string.
+    if (typeof blocks === "string") {
+      if (blocks.trim()) parts.push(normalize(blocks));
+      return;
+    }
+    if (!Array.isArray(blocks)) return;
+    for (const b of blocks) {
+      if (!b || typeof b !== "object") {
+        continue;
+      }
+      const block = b as Record<string, unknown>;
+      if (block.type === "text" && typeof block.text === "string" && block.text) {
+        parts.push(normalize(block.text));
+      }
+    }
+  };
+  collect(msg.content);
+  if (Array.isArray(msg.attachments)) {
+    for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
+      collect(attachment?.content, true);
     }
   }
+  return parts.join("\n\n").trim();
+}
 
-  const records: MessageRecord[] = [];
-  let prevId: string | null = null;
-  let idx = 0;
-
-  for (const m of oaiMsgs) {
-    const msg = m as Record<string, unknown>;
-    const role = msg.role as string;
-    if (role === "tool") continue;
-
-    const id = crypto.randomUUID();
-
-    let content: unknown[];
-
-    if (role === "assistant") {
-      const parts: unknown[] = [];
-      if (typeof msg.content === "string" && msg.content.trim()) {
-        parts.push({ type: "text", text: msg.content });
-      }
-      if (Array.isArray(msg.tool_calls)) {
-        for (const tc of msg.tool_calls) {
-          const tcObj = tc as Record<string, unknown>;
-          const fn = (tcObj.function as Record<string, unknown>) ?? {};
-          const tcId = typeof tcObj.id === "string" ? tcObj.id : crypto.randomUUID();
-          const name = typeof fn.name === "string" ? fn.name : "unknown";
-          const argsStr = typeof fn.arguments === "string" ? fn.arguments : "{}";
-          let args: unknown = {};
-          try { args = JSON.parse(argsStr); } catch { /* keep empty */ }
-          const result = toolResults.get(tcId);
-          parts.push({
-            type: "tool-call",
-            toolCallId: tcId,
-            toolName: name,
-            args,
-            argsText: argsStr,
-            ...(result !== undefined ? { result } : {}),
-          });
-        }
-      }
-      content = parts;
+/** Merge consecutive same-role turns so chat templates format cleanly. */
+function mergeSameRoleTurns(turns: FineTuneMessage[]): FineTuneMessage[] {
+  const merged: FineTuneMessage[] = [];
+  for (const turn of turns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) {
+      last.content += `\n\n${turn.content}`;
     } else {
-      const raw = msg.content;
-      if (Array.isArray(raw)) {
-        content = raw.flatMap((p): unknown[] => {
-          const part = p as Record<string, unknown>;
-          if (part.type === "text" && typeof part.text === "string") {
-            return [{ type: "text", text: part.text }];
-          }
-          if (part.type === "image_url") {
-            const iu = (part.image_url as Record<string, unknown>) ?? {};
-            return [{ type: "image", image: typeof iu.url === "string" ? iu.url : "" }];
-          }
-          return [];
-        });
-      } else {
-        content = typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
-      }
+      merged.push({ ...turn });
     }
-
-    if (content.length === 0) continue;
-
-    records.push({
-      id,
-      threadId,
-      parentId: prevId,
-      role: role as MessageRecord["role"],
-      content: content as MessageRecord["content"],
-      createdAt: baseTs + idx,
-    });
-    prevId = id;
-    idx++;
   }
-
-  return records;
+  return merged;
 }
 
-function sharegptToRecords(
-  conversations: unknown[],
-  threadId: string,
-  baseTs: number,
-): MessageRecord[] {
-  const records: MessageRecord[] = [];
-  let prevId: string | null = null;
-  let idx = 0;
-  for (const c of conversations) {
-    const conv = c as Record<string, unknown>;
-    const from = typeof conv.from === "string" ? conv.from : "";
-    const value = typeof conv.value === "string" ? conv.value : "";
-    if (!value.trim()) continue;
-    const role: MessageRecord["role"] = from === "human" ? "user" : from === "system" ? "system" : "assistant";
-    const id = crypto.randomUUID();
-    records.push({
-      id,
-      threadId,
-      parentId: prevId,
-      role,
-      content: [{ type: "text", text: value }] as MessageRecord["content"],
-      createdAt: baseTs + idx,
-    });
-    prevId = id;
-    idx++;
+/** Conversation turns for fine-tuning, or null when the thread has no
+ *  usable user + assistant exchange. Consecutive same-role turns merge,
+ *  assistant turns before the first user turn drop (an assistant target
+ *  with no prompt teaches nothing), and trailing non-assistant turns drop
+ *  so chat templates format cleanly. */
+function messagesToFineTuneTurns(
+  messages: Array<{ role: unknown; content: unknown; attachments?: unknown }>,
+): FineTuneMessage[] | null {
+  const raw: FineTuneMessage[] = [];
+  for (const msg of messages) {
+    const role = msg.role as FineTuneMessage["role"];
+    if (!FINE_TUNE_ROLES.has(role)) continue;
+    const content = messageToPlainText(msg);
+    if (!content) continue;
+    raw.push({ role, content });
   }
-  return records;
-}
-
-function csvToRecords(csvText: string, threadId: string, baseTs: number): MessageRecord[] {
-  // parseCsv handles quoted newlines, so multi-line message content
-  // round-trips; a naive per-line split would break those records.
-  const rows = parseCsv(csvText).slice(1);
-  const records: MessageRecord[] = [];
-  let prevId: string | null = null;
-  let idx = 0;
-  for (const row of rows) {
-    if (row.length < 2) continue;
-    const role = row[0].trim();
-    const content = row.slice(1).join(",");
-    if (!content.trim()) continue;
-    const validRole = role === "user" || role === "assistant" || role === "system" ? role : "user";
-    const id = crypto.randomUUID();
-    records.push({
-      id,
-      threadId,
-      parentId: prevId,
-      role: validRole as MessageRecord["role"],
-      content: [{ type: "text", text: content }] as MessageRecord["content"],
-      createdAt: baseTs + idx,
-    });
-    prevId = id;
-    idx++;
-  }
-  return records;
-}
-
-interface ParsedConversation {
-  title: string;
-  threadId: string;
-  messages: MessageRecord[];
-}
-
-function parseImportText(text: string, filename: string): ParsedConversation[] {
-  const results: ParsedConversation[] = [];
-  const basename = filename.replace(/\.[^.]+$/, "");
-
-  const isJsonl = /\.(jsonl|ndjson)$/i.test(filename);
-  const isCsv = /\.csv$/i.test(filename);
-
-  if (isCsv) {
-    const threadId = crypto.randomUUID();
-    const messages = csvToRecords(text, threadId, Date.now());
-    if (messages.length > 0) {
-      results.push({ title: basename, threadId, messages });
-    }
-    return results;
-  }
-
-  if (isJsonl) {
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
-    lines.forEach((line, lineIdx) => {
-      let obj: Record<string, unknown>;
-      try { obj = JSON.parse(line); } catch { return; }
-
-      // Fresh ID: reusing the exported thread_id would clobber an existing
-      // thread on import.
-      const threadId = crypto.randomUUID();
-      const title = typeof obj.title === "string" ? obj.title : `${basename} ${lineIdx + 1}`;
-      const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now() + lineIdx;
-
-      let messages: MessageRecord[] = [];
-
-      if (Array.isArray(obj.messages)) {
-        messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
-      } else if (Array.isArray(obj.conversations)) {
-        messages = sharegptToRecords(obj.conversations, threadId, baseTs);
-      }
-
-      if (messages.length > 0) {
-        results.push({ title, threadId, messages });
-      }
-    });
-    return results;
-  }
-
-  // Unknown extension: retry as JSONL.
-  return parseImportText(text, filename + ".jsonl");
-}
-
-export async function importConversationsFromFile(
-  file: File,
-  projectId: string | null = null,
-): Promise<number> {
-  const text = await file.text();
-  const parsed = parseImportText(text, file.name);
-  if (parsed.length === 0) return 0;
-
-  const now = Date.now();
-  await Promise.all(
-    parsed.map(async ({ title, threadId, messages }) => {
-      const thread: ThreadRecord = {
-        id: threadId,
-        title,
-        modelType: "base",
-        projectId: projectId ?? null,
-        archived: false,
-        createdAt: messages[0]?.createdAt ?? now,
-      };
-      await saveStoredChatThread(thread);
-      await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
-    }),
+  const firstUser = raw.findIndex((t) => t.role === "user");
+  if (firstUser === -1) return null;
+  const turns = mergeSameRoleTurns(
+    raw.filter((t, i) => i >= firstUser || t.role === "system"),
   );
+  while (turns.length > 0 && turns[turns.length - 1].role !== "assistant") {
+    turns.pop();
+  }
+  const hasUser = turns.some((t) => t.role === "user");
+  const hasAssistant = turns.some((t) => t.role === "assistant");
+  return hasUser && hasAssistant ? turns : null;
+}
 
-  notifyChatHistoryUpdated();
-  return parsed.length;
+export type FineTuneExportResult = {
+  lines: string[];
+  conversations: number;
+  skipped: number;
+};
+
+/** Dataset shapes the Train tab detects without column mapping. */
+export type FineTuneFormat = "openai" | "sharegpt" | "alpaca";
+
+const SHAREGPT_FROM: Record<FineTuneMessage["role"], string> = {
+  system: "system",
+  user: "human",
+  assistant: "gpt",
+};
+
+/** JSONL lines for one conversation in the chosen format. Alpaca is
+ *  single-turn, so each user to assistant pair becomes its own record with
+ *  the system prompt and earlier exchange carried in the input field. */
+function turnsToFineTuneLines(
+  turns: FineTuneMessage[],
+  format: FineTuneFormat,
+): string[] {
+  if (format === "sharegpt") {
+    return [
+      JSON.stringify({
+        conversations: turns.map((t) => ({
+          from: SHAREGPT_FROM[t.role],
+          value: t.content,
+        })),
+      }),
+    ];
+  }
+  if (format === "alpaca") {
+    const lines: string[] = [];
+    const context: string[] = [];
+    let system = "";
+    let pendingUser: string | null = null;
+    for (const t of turns) {
+      if (t.role === "system") {
+        system = system ? `${system}\n\n${t.content}` : t.content;
+        continue;
+      }
+      if (t.role === "user") {
+        pendingUser = t.content;
+        continue;
+      }
+      if (pendingUser === null) continue;
+      const inputParts = [];
+      if (system) inputParts.push(system);
+      if (context.length > 0) inputParts.push(context.join("\n"));
+      lines.push(
+        JSON.stringify({
+          instruction: pendingUser,
+          input: inputParts.join("\n\n"),
+          output: t.content,
+        }),
+      );
+      context.push(`User: ${pendingUser}`, `Assistant: ${t.content}`);
+      pendingUser = null;
+    }
+    return lines;
+  }
+  return [JSON.stringify({ messages: turns })];
+}
+
+/** Every non-archived chat (Recents and Projects) as training-ready JSONL. */
+export async function buildFineTuneJsonl(
+  format: FineTuneFormat = "openai",
+): Promise<FineTuneExportResult> {
+  const threads = await listStoredChatThreads({ includeArchived: false });
+  const ids = [...new Set(threads.map((t) => t.id))];
+  const lines: string[] = [];
+  let conversations = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    const raw = await listStoredChatMessages(id);
+    const hasParentIds = raw.some(
+      (m) => (m as { parentId?: unknown }).parentId != null,
+    );
+    // Chain only: retries/regenerations leave sibling branches, and mixing
+    // alternate replies into one conversation corrupts the training targets.
+    const ordered = hasParentIds
+      ? (orderByParentChain(raw, { includeSiblings: false }) as typeof raw)
+      : raw;
+    const turns = messagesToFineTuneTurns(ordered);
+    const converted = turns ? turnsToFineTuneLines(turns, format) : [];
+    if (converted.length === 0) {
+      skipped += 1;
+      continue;
+    }
+    conversations += 1;
+    lines.push(...converted);
+  }
+  return { lines, conversations, skipped };
+}
+
+/** Download the fine-tuning JSONL; returns the conversation count. */
+export async function exportFineTuneJsonl(
+  format: FineTuneFormat = "openai",
+): Promise<number> {
+  const { lines, conversations, skipped } = await buildFineTuneJsonl(format);
+  if (conversations === 0) {
+    toast.info("No chats with a user and assistant exchange to export.");
+    return 0;
+  }
+  const suffix = format === "openai" ? "" : `-${format}`;
+  await downloadBlob(
+    lines.join("\n"),
+    `chat-finetune${suffix}-${exportTs()}.jsonl`,
+    "application/x-ndjson",
+  );
+  if (skipped > 0) {
+    toast.success(
+      `Exported ${conversations} conversation${conversations === 1 ? "" : "s"} (${skipped} without a full exchange skipped).`,
+    );
+  }
+  return conversations;
 }
 
 // ShareGPT training exports: prompt → one record (human turn + empty gpt slot);
 // list → one multi-turn record, each item a human turn.
-function exportPromptTrainingJsonl(entry: PromptEntry): void {
+function exportPromptTrainingJsonl(entry: PromptEntry): Promise<void> {
   const record = {
     conversations: [
       { from: "human", value: entry.text },
       { from: "gpt", value: "" },
     ],
   };
-  downloadBlob(
+  return downloadBlob(
     JSON.stringify(record),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportPromptsTrainingJsonl(entries: PromptEntry[]): void {
+function exportPromptsTrainingJsonl(entries: PromptEntry[]): Promise<void> {
   const lines = entries
     .map((e) =>
       JSON.stringify({
@@ -794,22 +909,22 @@ function exportPromptsTrainingJsonl(entries: PromptEntry[]): void {
       }),
     )
     .join("\n");
-  downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
 }
 
-function exportListTrainingJsonl(entry: PromptListEntry): void {
+function exportListTrainingJsonl(entry: PromptListEntry): Promise<void> {
   const conversations = entry.items.flatMap((text) => [
     { from: "human", value: text },
     { from: "gpt", value: "" },
   ]);
-  downloadBlob(
+  return downloadBlob(
     JSON.stringify({ conversations }),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
+function exportListsTrainingJsonl(entries: PromptListEntry[]): Promise<void> {
   const lines = entries
     .map((e) => {
       const conversations = e.items.flatMap((text) => [
@@ -819,63 +934,7 @@ function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
       return JSON.stringify({ conversations });
     })
     .join("\n");
-  downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
-}
-
-// RFC 4180 CSV parser: handles quoted fields with embedded newlines/commas.
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let i = 0;
-
-  function finishRow() {
-    rows.push(row);
-    row = [];
-  }
-
-  while (i < text.length) {
-    if (text[i] === '"') {
-      i++;
-      let cell = "";
-      while (i < text.length) {
-        if (text[i] === '"') {
-          if (text[i + 1] === '"') {
-            cell += '"';
-            i += 2;
-          } else {
-            i++;
-            break;
-          }
-        } else {
-          cell += text[i++];
-        }
-      }
-      row.push(cell);
-      if (text[i] === ",") { i++; }
-      else if (text[i] === "\r") { i++; if (text[i] === "\n") i++; finishRow(); }
-      else if (text[i] === "\n") { i++; finishRow(); }
-    } else if (text[i] === "\r") {
-      i++;
-      if (text[i] === "\n") i++;
-      row.push("");
-      finishRow();
-    } else if (text[i] === "\n") {
-      i++;
-      row.push("");
-      finishRow();
-    } else {
-      let cell = "";
-      while (i < text.length && text[i] !== "," && text[i] !== "\r" && text[i] !== "\n") {
-        cell += text[i++];
-      }
-      row.push(cell);
-      if (text[i] === ",") { i++; }
-      else if (text[i] === "\r") { i++; if (text[i] === "\n") i++; finishRow(); }
-      else if (text[i] === "\n") { i++; finishRow(); }
-    }
-  }
-  if (row.length > 0) rows.push(row);
-  return rows;
+  return downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
 }
 
 async function importPromptsFromText(text: string, isCsv: boolean): Promise<{ count: number; skipped: number }> {
@@ -1045,38 +1104,44 @@ function ExportModal({
     if (!csvAvailable) setFormat("jsonl");
   }, [csvAvailable]);
 
-  const handleExport = useCallback(() => {
-    if (ctx.kind === "prompt") {
-      if (scope === "training") exportPromptTrainingJsonl(ctx.entry);
-      else if (format === "csv") exportPromptCsv(ctx.entry);
-      else exportPromptJsonl(ctx.entry);
-    } else if (ctx.kind === "list") {
-      if (scope === "training") exportListTrainingJsonl(ctx.entry);
-      else if (format === "csv") exportListCsv(ctx.entry);
-      else exportListJsonl(ctx.entry);
-    } else {
-      const { tab, prompts, lists } = ctx;
-      if (scope === "training") {
-        if (tab === "prompts") {
-          if (prompts.length === 0) { toast.info("No prompts to export"); return; }
-          exportPromptsTrainingJsonl(prompts);
-        } else {
-          if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
-          exportListsTrainingJsonl(lists);
-        }
+  const handleExport = useCallback(async () => {
+    try {
+      if (ctx.kind === "prompt") {
+        if (scope === "training") await exportPromptTrainingJsonl(ctx.entry);
+        else if (format === "csv") await exportPromptCsv(ctx.entry);
+        else await exportPromptJsonl(ctx.entry);
+      } else if (ctx.kind === "list") {
+        if (scope === "training") await exportListTrainingJsonl(ctx.entry);
+        else if (format === "csv") await exportListCsv(ctx.entry);
+        else await exportListJsonl(ctx.entry);
       } else {
-        if (tab === "prompts") {
+        const { tab, prompts, lists } = ctx;
+        if (scope === "training") {
+          if (tab === "prompts") {
+            if (prompts.length === 0) { toast.info("No prompts to export"); return; }
+            await exportPromptsTrainingJsonl(prompts);
+          } else {
+            if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
+            await exportListsTrainingJsonl(lists);
+          }
+        } else if (tab === "prompts") {
           if (prompts.length === 0) { toast.info("No prompts to export"); return; }
-          if (format === "csv") exportAllPromptsCsv(prompts);
-          else exportAllPromptsJsonl(prompts);
+          if (format === "csv") await exportAllPromptsCsv(prompts);
+          else await exportAllPromptsJsonl(prompts);
         } else {
           if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
-          if (format === "csv") exportAllListsCsv(lists);
-          else exportAllListsJsonl(lists);
+          if (format === "csv") await exportAllListsCsv(lists);
+          else await exportAllListsJsonl(lists);
         }
       }
+      onClose();
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save export.", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    onClose();
   }, [ctx, scope, format, onClose]);
 
   const singleLabel =
@@ -1108,7 +1173,7 @@ function ExportModal({
 
           {/* */}
           <div className="flex flex-col gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Export as
             </p>
             <div className="flex flex-col gap-2">
@@ -1117,7 +1182,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "single"
-                    ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20"
+                    ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1140,7 +1205,7 @@ function ExportModal({
                 className={cn(
                   "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
                   scope === "training"
-                    ? "border-primary/40 bg-primary/5 ring-1 ring-primary/20"
+                    ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
                 )}
               >
@@ -1157,7 +1222,7 @@ function ExportModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     ShareGPT format for Unsloth fine-tuning
                   </p>
-                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground/60">
+                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
                     {`{"conversations":[{"from":"human","value":"..."},{"from":"gpt","value":""}]}`}
                   </code>
                 </div>
@@ -1167,7 +1232,7 @@ function ExportModal({
 
           {/* */}
           <div className="flex flex-col gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Format
             </p>
             <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
@@ -1262,14 +1327,14 @@ function PromptCard({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Prompt name..."
-          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
         />
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={4}
           placeholder="Prompt text..."
-          className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+          className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
         />
         <div className="flex gap-2 justify-end">
           <Button size="sm" variant="ghost" onClick={() => { setName(entry.name); setText(entry.text); setEditing(false); }}>
@@ -1290,7 +1355,7 @@ function PromptCard({
           <BookmarkIcon className="size-3.5 shrink-0 fill-primary text-primary" />
         ) : null}
         <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
           <button
             type="button"
             onClick={() => onUse(entry.text)}
@@ -1373,14 +1438,14 @@ function NewPromptForm({ onClose, onRefresh }: { onClose: () => void; onRefresh:
         onChange={(e) => setName(e.target.value)}
         placeholder="Prompt name (optional)..."
         autoFocus
-        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={4}
         placeholder="Write your prompt here..."
-        className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+        className="w-full resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
       />
       <div className="flex gap-2 justify-end">
         <Button size="sm" variant="ghost" onClick={onClose}>
@@ -1440,7 +1505,7 @@ function PromptListCard({
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="List name..."
-          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+          className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
         />
         <p className="text-xs font-semibold text-muted-foreground">Prompts (sent in order)</p>
         <div className="flex flex-col gap-2">
@@ -1453,7 +1518,7 @@ function PromptListCard({
                 onChange={(e) => updateItem(i, e.target.value)}
                 rows={2}
                 placeholder={`Prompt ${i + 1}...`}
-                className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+                className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
               />
               <button
                 type="button"
@@ -1497,10 +1562,10 @@ function PromptListCard({
     <div className="group rounded-xl border border-border/60 bg-card p-4 flex flex-col gap-2.5 hover:border-border hover:shadow-sm transition-all">
       <div className="flex items-center gap-2">
         <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium text-muted-foreground">
           {entry.items.length}
         </span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
           {onRunList && (
             <button
               type="button"
@@ -1546,7 +1611,7 @@ function PromptListCard({
           </p>
         ))}
         {entry.items.length > 3 && (
-          <p className="text-[11px] text-muted-foreground/50 ml-5">
+          <p className="text-ui-11 text-muted-foreground/50 ml-5">
             +{entry.items.length - 3} more
           </p>
         )}
@@ -1593,7 +1658,7 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
         onChange={(e) => setName(e.target.value)}
         placeholder="List name..."
         autoFocus
-        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow"
+        className="w-full rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow"
       />
       <p className="text-xs font-semibold text-muted-foreground">
         Prompts — loaded into the composer one at a time
@@ -1607,7 +1672,7 @@ function NewPromptListForm({ onClose, onRefresh }: { onClose: () => void; onRefr
               onChange={(e) => updateItem(i, e.target.value)}
               rows={2}
               placeholder={`Prompt ${i + 1}...`}
-              className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-primary/50 transition-shadow leading-relaxed"
+              className="flex-1 resize-y rounded-lg border-0 bg-background/80 px-3 py-2 text-sm ring-1 ring-border/60 outline-none focus:ring-ring transition-shadow leading-relaxed"
             />
             <button
               type="button"
@@ -1803,7 +1868,7 @@ export function PromptStorageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94vh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94dvh] flex flex-col gap-0 p-0 overflow-hidden">
           {/* */}
           <DialogHeader className="px-6 pt-5 pb-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-3">
@@ -1887,7 +1952,7 @@ export function PromptStorageDialog({
                 onFocus={() => setShowSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                 placeholder={`Search ${activeTab === "prompts" ? "prompts by name or text" : "prompt lists by name"}…`}
-                className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/60 transition-shadow"
+                className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
                 <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">

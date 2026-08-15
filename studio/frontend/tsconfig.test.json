@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    // vite/client so a test may import a src module that (transitively) reads
+    // import.meta.env; without it those reads fail to typecheck here only.
+    "types": ["node", "vite/client"],
+    "skipLibCheck": true,
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  // The ambient globals under src/ are declaration files, so nothing imports them and
+  // "tests" alone never reaches them. A test that (transitively) pulls in a src module
+  // relying on one -- the dictation adapter's SpeechRecognition globals, say -- would
+  // otherwise fail to typecheck here only; the app project sees them because it
+  // includes all of src.
+  "include": ["tests", "src/**/*.d.ts"]
+}

@@ -21,8 +21,10 @@ import importlib
 import importlib.util
 import inspect
 import os
+import platform
 import re
 import sys
+from pathlib import Path
 from importlib.metadata import version as importlib_version
 
 import pytest
@@ -593,6 +595,7 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
     orig_debug = state.debug
     orig_dist_type = state.distributed_type
     orig_num_processes = state.num_processes
+    orig_device = state.device
 
     state.debug = True
     state.distributed_type = DistributedType.MULTI_GPU
@@ -624,6 +627,8 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
                 side_effect = mock_gpu_broadcast,
             ),
         ):
+            state.device = torch.device("cpu")
+
             # Top-level EmptyLogits gathers to itself
             res = acc_ops.gather(e)
             assert res is e
@@ -656,6 +661,7 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
         state.debug = orig_debug
         state.distributed_type = orig_dist_type
         state.num_processes = orig_num_processes
+        state.device = orig_device
 
 
 def test_accelerate_patch_is_idempotent():
@@ -698,10 +704,8 @@ def test_accelerate_find_device_skips_empty_logits():
 
 def test_accelerate_patch_wired_into_gpu_init():
     """The patch must be installed at startup, not only importable."""
-    import pathlib
-    import unsloth.import_fixes as import_fixes
-
-    source = pathlib.Path(import_fixes.__file__).with_name("_gpu_init.py").read_text()
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    source = source.read_text(encoding = "utf-8")
     assert "patch_accelerate_recursively_apply()" in source, (
         "DRIFT DETECTED: patch_accelerate_recursively_apply is defined but "
         "never called in _gpu_init.py, so real imports never install it."
@@ -755,3 +759,50 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
                 "decline to patch it and Windows ROCm import-time noise / "
                 "wrong ROCM_GPU_ARCH may return."
             )
+
+
+# ===========================================================================
+# psutil -- cpu_freq shape the Apple Silicon M4+ unit fix relies on
+# ===========================================================================
+
+
+def test_psutil_cpu_freq_shape_and_wiring():
+    """``patch_psutil_cpu_freq``: the wrapper rebuilds psutil's scpufreq
+    namedtuple, so fail if that surface moves or the patch is never called."""
+    psutil = pytest.importorskip("psutil")
+
+    if getattr(psutil, "cpu_freq", None) is None:
+        # On macOS psutil decides at runtime whether to expose cpu_freq at all
+        # (an absent one is normal on virtualised Apple Silicon), so its absence
+        # is only drift off that platform.
+        if platform.system() == "Darwin" and platform.machine() == "arm64":
+            pytest.skip("this Apple Silicon host exposes no psutil.cpu_freq")
+        pytest.fail(
+            "DRIFT DETECTED: psutil.cpu_freq is gone -- patch_psutil_cpu_freq "
+            "would silently stop correcting Apple Silicon M4+ readings."
+        )
+    assert callable(psutil.cpu_freq)
+    namedtuple_type = None
+    for module_name in ("_ntuples", "_common"):
+        namedtuple_type = getattr(getattr(psutil, module_name, None), "scpufreq", None)
+        if namedtuple_type is not None:
+            break
+    if namedtuple_type is None:
+        pytest.fail(
+            "DRIFT DETECTED: psutil no longer exposes scpufreq in _ntuples or "
+            "_common, so the M5 fallback cannot build a return value."
+        )
+    assert hasattr(namedtuple_type, "_replace") and namedtuple_type._fields[:3] == (
+        "current",
+        "min",
+        "max",
+    ), (
+        "DRIFT DETECTED: psutil.scpufreq changed shape; the Apple Silicon "
+        "rescale in patch_psutil_cpu_freq assumes (current, min, max)."
+    )
+
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    assert "patch_psutil_cpu_freq()" in source.read_text(encoding = "utf-8"), (
+        "DRIFT DETECTED: patch_psutil_cpu_freq is defined but never called in "
+        "_gpu_init.py, so real imports never install it."
+    )

@@ -12,9 +12,11 @@ from typing import Iterable, Mapping
 
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
+    mmproj_accepts_image,
     pairing_score,
     read_gguf_context_length,
     read_gguf_general_metadata,
+    read_gguf_staged_dims,
     read_mmproj_audio_capability,
 )
 
@@ -151,6 +153,78 @@ def test_context_length_ignores_foreign_arch_key(tmp_path: Path):
         extra_uint32 = {"qwen2.context_length": 8192},
     )
     assert read_gguf_context_length(str(p)) is None
+
+
+# --- read_gguf_staged_dims (one pass: context + layer + moe counts) ----
+
+
+def test_staged_dims_none_for_missing_or_non_gguf(tmp_path: Path):
+    assert read_gguf_staged_dims(str(tmp_path / "nope.gguf")) is None
+    p = tmp_path / "garbage.gguf"
+    p.write_bytes(b"not a gguf at all")
+    assert read_gguf_staged_dims(str(p)) is None
+
+
+def test_staged_dims_moe_with_leading_dense(tmp_path: Path):
+    # GLM-4.7-Flash shape: context + total layers + MoE layers in one read.
+    p = _write_synthetic_gguf(
+        tmp_path / "glm.gguf",
+        {"general.architecture": "deepseek2"},
+        extra_uint32 = {
+            "deepseek2.context_length": 202752,
+            "deepseek2.block_count": 47,
+            "deepseek2.expert_count": 64,
+            "deepseek2.leading_dense_block_count": 1,
+        },
+    )
+    assert read_gguf_staged_dims(str(p)) == {
+        "context_length": 202752,
+        "layer_count": 47,
+        "moe_layer_count": 46,
+    }
+
+
+def test_staged_dims_dense_model(tmp_path: Path):
+    # Dense: layer_count present, moe_layer_count 0 (slider hidden).
+    p = _write_synthetic_gguf(
+        tmp_path / "dense.gguf",
+        {"general.architecture": "qwen3"},
+        extra_uint32 = {"qwen3.context_length": 40960, "qwen3.block_count": 36},
+    )
+    assert read_gguf_staged_dims(str(p)) == {
+        "context_length": 40960,
+        "layer_count": 36,
+        "moe_layer_count": 0,
+    }
+
+
+def test_staged_dims_all_moe_no_leading_dense(tmp_path: Path):
+    # Experts present, no leading_dense key -> every block is a MoE layer.
+    p = _write_synthetic_gguf(
+        tmp_path / "moe.gguf",
+        {"general.architecture": "qwen35moe"},
+        extra_uint32 = {"qwen35moe.block_count": 40, "qwen35moe.expert_count": 256},
+    )
+    assert read_gguf_staged_dims(str(p)) == {
+        "context_length": None,
+        "layer_count": 40,
+        "moe_layer_count": 40,
+    }
+
+
+def test_staged_dims_uint64_block_count(tmp_path: Path):
+    # block_count stored as uint64 (vtype 10) still parses; moe == block_count.
+    p = _write_synthetic_gguf(
+        tmp_path / "moe64.gguf",
+        {"general.architecture": "gpt-oss"},
+        extra_uint32 = {"gpt-oss.expert_count": 32},
+        extra_uint64 = {"gpt-oss.block_count": 24},
+    )
+    assert read_gguf_staged_dims(str(p)) == {
+        "context_length": None,
+        "layer_count": 24,
+        "moe_layer_count": 24,
+    }
 
 
 def test_context_length_read_from_uint64(tmp_path: Path):
@@ -341,3 +415,42 @@ def test_mmproj_audio_capability_missing_or_non_gguf(tmp_path: Path):
     junk = tmp_path / "garbage.gguf"
     junk.write_bytes(b"not a gguf header at all")
     assert read_mmproj_audio_capability(str(junk)) is None
+
+
+# --- mmproj_accepts_image ----------------------------------------------
+
+
+def _projector(tmp_path: Path, **bools) -> str:
+    return str(
+        _write_synthetic_gguf(
+            tmp_path / "mmproj.gguf", {"general.type": "mmproj"}, extra_bools = bools
+        )
+    )
+
+
+def test_accepts_image_when_vision_declared(tmp_path: Path):
+    """A projector declaring vision accepts images, whatever it says about audio."""
+    assert mmproj_accepts_image(_projector(tmp_path, **{"clip.has_vision_encoder": True})) is True
+
+
+def test_audio_only_projector_is_not_a_vision_tower(tmp_path: Path):
+    """ultravox / Voxtral / Qwen3-ASR: audio declared, vision key absent."""
+    assert mmproj_accepts_image(_projector(tmp_path, **{"clip.has_audio_encoder": True})) is False
+
+
+def test_dual_projector_still_accepts_images(tmp_path: Path):
+    """Qwen2.5-Omni declares both, which is what makes a lone audio claim evidence."""
+    p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": True})
+    assert mmproj_accepts_image(p) is True
+
+
+def test_projector_declaring_neither_stays_image_capable(tmp_path: Path):
+    """An unreadable or older convert must not be refused: the load decides."""
+    assert mmproj_accepts_image(_projector(tmp_path)) is True
+    assert mmproj_accepts_image(str(tmp_path / "nope.gguf")) is True
+
+
+def test_declared_audio_false_is_not_an_audio_claim(tmp_path: Path):
+    """A vision projector writing audio=False is still a vision tower."""
+    p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": False})
+    assert mmproj_accepts_image(p) is True

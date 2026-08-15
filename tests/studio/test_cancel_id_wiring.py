@@ -13,10 +13,14 @@ from pathlib import Path
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-MODELS_SRC = (WORKSPACE / "studio/backend/models/inference.py").read_text()
-ROUTES_SRC = (WORKSPACE / "studio/backend/routes/inference.py").read_text()
-ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text()
-API_TYPES_SRC = (WORKSPACE / "studio/frontend/src/features/chat/types/api.ts").read_text()
+MODELS_SRC = (WORKSPACE / "studio/backend/models/inference.py").read_text(encoding = "utf-8")
+ROUTES_SRC = (WORKSPACE / "studio/backend/routes/inference.py").read_text(encoding = "utf-8")
+ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
+    encoding = "utf-8"
+)
+API_TYPES_SRC = (WORKSPACE / "studio/frontend/src/features/chat/types/api.ts").read_text(
+    encoding = "utf-8"
+)
 
 
 def _find_class(tree: ast.AST, name: str) -> ast.ClassDef | None:

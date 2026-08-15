@@ -48,7 +48,12 @@ function localResource(
       ? "cached"
       : "local";
   const id =
-    row.source === "hf_cache" && repoId && !row.partial ? repoId : row.loadId;
+    row.source === "hf_cache" &&
+    row.activeCache !== false &&
+    repoId &&
+    !row.partial
+      ? repoId
+      : row.loadId;
   return {
     repoId,
     localPath: row.path,
@@ -212,6 +217,10 @@ export function useSelectedModelView({
         capabilities: selectedDiscoverRow.capabilities,
         license: detectLicense(selectedDiscoverRow.result.tags),
         pipelineTag: selectedDiscoverRow.result.pipelineTag,
+        // From the matched on-device row, like every field above: its inventory task is the
+        // only record of the modality when the Hub metadata has no pipeline tag or only the
+        // generic text-generation one.
+        task: selectedCachedRow?.task ?? selectedLocalRow?.task ?? null,
         libraryName: selectedDiscoverRow.result.libraryName,
         gated: selectedDiscoverRow.result.gated,
         private: selectedDiscoverRow.result.private,
@@ -282,6 +291,7 @@ export function useSelectedModelView({
         ),
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
+        task: selectedCachedRow.task ?? null,
         libraryName: mergedLibraryName,
         gated: selectedHfResult?.gated,
         private: selectedHfResult?.private,
@@ -358,6 +368,7 @@ export function useSelectedModelView({
           ),
           license: detectLicense(mergedTags),
           pipelineTag: mergedPipelineTag,
+          task: selectedLocalRow.task ?? null,
           libraryName: mergedLibraryName,
           gated: selectedHfResult?.gated,
           private: selectedHfResult?.private,
@@ -410,6 +421,7 @@ export function useSelectedModelView({
         ),
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
+        task: selectedLocalRow.task ?? null,
         libraryName: mergedLibraryName,
         gated: localHubMetadata?.gated,
         private: localHubMetadata?.private,

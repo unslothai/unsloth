@@ -1,47 +1,57 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-focus";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useSettingsDialogStore } from "@/features/settings";
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { AiSecurity03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { hfApiToken, useHfTokenStore } from "../stores/hf-token-store";
 
 interface HfTokenIndicatorProps {
-  /** true: chip with "HF Token" label (Train wizard); false: icon-only pill (Hub header). */
+  /** true: status chip (Train wizard); false: icon-only pill (Hub header). */
   showLabel?: boolean;
+  onOpenSettings: () => void;
 }
 
-// Compact "set / not set" indicator for the app-wide HF token; click opens
-// Settings -> General. Shared by the Hub header and Train wizard (same store).
-export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = {}) {
+/** Masked preview so the saved token is identifiable without exposing it. */
+function maskHfToken(token: string): string {
+  const trimmed = token.trim();
+  return trimmed.length < 8 ? "••••" : `••••${trimmed.slice(-4)}`;
+}
+
+// Compact "set / not set" indicator for the app-wide HF token; click opens Settings -> General.
+export function HfTokenIndicator({
+  showLabel = false,
+  onOpenSettings,
+}: HfTokenIndicatorProps) {
+  const t = useT();
   const hfToken = useHfTokenStore((s) => s.token);
-  const openDialog = useSettingsDialogStore((s) => s.openDialog);
-  const hasToken = Boolean(hfToken && hfToken.trim());
+  const hasToken = hfApiToken(hfToken) !== undefined;
 
   const ariaLabel = hasToken
-    ? "Hugging Face token configured"
-    : "Set Hugging Face token";
+    ? t("picker.hfToken.savedAriaLabel")
+    : t("picker.hfToken.addAriaLabel");
   const tipText = hasToken
-    ? "Token set. Allows access to private and gated repos."
-    : "Set a token to access private and gated repos.";
+    ? t("picker.hfToken.savedHint")
+    : t("picker.hfToken.addHint");
 
   if (showLabel) {
     return (
       <Tooltip>
-        <TooltipTrigger asChild>
+        <TooltipTrigger asChild={true}>
           <button
             type="button"
-            onClick={() => openDialog("general")}
+            onClick={onOpenSettings}
             aria-label={ariaLabel}
             className={cn(
-              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-[12px] py-0 pl-1.5 pr-3 text-[12.5px] font-medium text-foreground transition-colors",
-              "focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0",
+              "hub-menu-trigger field-soft inline-flex h-9 w-full items-center justify-between gap-2 rounded-[12px] py-0 pl-1.5 pr-3 text-ui-12p5 font-medium text-foreground transition-colors",
+              PICKER_FOCUS_VISIBLE_CLASS,
             )}
           >
             <span className="flex min-w-0 items-center gap-2">
@@ -50,7 +60,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
                 className={cn(
                   "inline-flex size-6 items-center justify-center rounded-full transition-colors",
                   hasToken
-                    ? "bg-primary/15 text-primary"
+                    ? "bg-verified/15 text-verified"
                     : "bg-foreground/[0.07] text-muted-foreground dark:bg-white/[0.07]",
                 )}
               >
@@ -60,19 +70,32 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
                   className="size-3.5"
                 />
               </span>
-              <span className="truncate">HF Token</span>
-            </span>
-            <span
-              className={cn(
-                "shrink-0 text-[11px] font-normal tabular-nums",
-                hasToken ? "text-primary" : "text-muted-foreground/70",
-              )}
-            >
-              {hasToken ? "Set" : "Add"}
+              <span
+                className={cn(
+                  "truncate",
+                  hasToken
+                    ? "font-mono text-verified"
+                    : "text-muted-foreground",
+                )}
+              >
+                {hasToken ? (
+                  <>
+                    {/* Announced, not shown: the mask identifies the token. */}
+                    <span className="sr-only">{t("picker.hfToken.saved")}</span>
+                    {maskHfToken(hfToken)}
+                  </>
+                ) : (
+                  t("picker.hfToken.add")
+                )}
+              </span>
             </span>
           </button>
         </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+        <TooltipContent
+          side="bottom"
+          sideOffset={6}
+          className="tooltip-compact"
+        >
           {tipText}
         </TooltipContent>
       </Tooltip>
@@ -81,15 +104,14 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
 
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
+      <TooltipTrigger asChild={true}>
         <button
           type="button"
-          onClick={() => openDialog("general")}
+          onClick={onOpenSettings}
           aria-label={ariaLabel}
           className={cn(
-            // Solid circle reads optically larger than the flat HTTP/Xet box, so
-            // keep it 22px to sit within the row rather than bulging above it.
-            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            // Solid circle reads optically larger than the flat HTTP/Xet box, so keep it 22px.
+            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
               : "bg-destructive text-destructive-foreground hover:bg-destructive/90",

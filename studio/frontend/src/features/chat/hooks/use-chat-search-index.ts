@@ -8,6 +8,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "../utils/chat-history-storage";
+import { attachmentsPastedText } from "../utils/pasted-text.ts";
 
 export interface ChatSearchItem {
   type: "single" | "compare";
@@ -28,13 +29,43 @@ const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 // Keys whose values are base64 image/audio payloads, not searchable text.
 const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
 
+// Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON image
+// array appended by the backend, so legit tool text that merely mentions the
+// marker stays searchable. (base64 runs below are scrubbed regardless.)
+function stripMcpImageSuffix(value: string): string {
+  const marker = "\n__MCP_IMAGES__:";
+  const idx = value.lastIndexOf(marker);
+  if (idx === -1) return value;
+  try {
+    const images: unknown = JSON.parse(value.slice(idx + marker.length));
+    if (
+      Array.isArray(images) &&
+      images.length > 0 &&
+      images.every(
+        (img) =>
+          typeof img === "object" &&
+          img !== null &&
+          typeof (img as Record<string, unknown>).data === "string" &&
+          typeof (img as Record<string, unknown>).mimeType === "string",
+      )
+    ) {
+      return value.slice(0, idx);
+    }
+  } catch {
+    // Not a valid envelope; leave the text intact.
+  }
+  return value;
+}
+
 // Readable text from tool args/results, dropping base64 image/audio blobs so
 // they never bloat the index (object fields by key, plus data URLs / long
 // base64 runs and the "__IMAGES__" suffix inside strings).
 function searchableText(value: unknown, depth = 0): string {
   if (typeof value === "string") {
-    const cut = value.indexOf("\n__IMAGES__:");
-    return (cut === -1 ? value : value.slice(0, cut))
+    let text = stripMcpImageSuffix(value);
+    const cut = text.indexOf("\n__IMAGES__:");
+    if (cut !== -1) text = text.slice(0, cut);
+    return text
       .replace(/data:[^;,\s]+;base64,[A-Za-z0-9+/=]+/g, " ")
       .replace(/[A-Za-z0-9+/]{120,}={0,2}/g, " ");
   }
@@ -53,11 +84,13 @@ function searchableText(value: unknown, depth = 0): string {
 }
 
 // Pull searchable text from a message: plain text, reasoning/thinking, tool
-// calls (name + args + result) and cited sources (title + url).
+// calls (name + args + result), cited sources (title + url) and pasted bodies.
 function extractText(message: MessageRecord): string {
   const content = message.content;
-  if (!Array.isArray(content)) return "";
+  const pasted = attachmentsPastedText(message.attachments);
+  if (!Array.isArray(content)) return pasted;
   const parts: string[] = [];
+  if (pasted) parts.push(pasted);
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as Record<string, unknown>;

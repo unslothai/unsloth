@@ -64,7 +64,7 @@ export function InlineCategoryBadges({
           <Badge
             key={`m-${v}-${i}`}
             variant="secondary"
-            className="corner-squircle h-4 shrink-0 px-1.5 text-[10px]"
+            className="corner-squircle h-4 shrink-0 px-1.5 text-ui-10"
           >
             {v}
           </Badge>
@@ -76,13 +76,13 @@ export function InlineCategoryBadges({
           <Badge
             key={`${v}-${i}`}
             variant="secondary"
-            className="corner-squircle h-4 px-1.5 text-[10px]"
+            className="corner-squircle h-4 px-1.5 text-ui-10"
           >
             {v}
           </Badge>
         ))}
         {overflow > 0 && (
-          <Badge variant="outline" className="corner-squircle h-4 px-1.5 text-[10px]">
+          <Badge variant="outline" className="corner-squircle h-4 px-1.5 text-ui-10">
             +{overflow}
           </Badge>
         )}

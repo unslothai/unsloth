@@ -36,6 +36,7 @@ export interface ThreadRecord {
   projectId?: string | null;
   archived: boolean;
   createdAt: number;
+  updatedAt?: number;
   /**
    * OpenAI shell tool container id from a prior response. When set, the
    * next turn reuses it via `environment.type="container_reference"` so
@@ -76,4 +77,14 @@ export interface MessageRecord {
   attachments?: import("@assistant-ui/react").ThreadMessage["attachments"];
   metadata?: Record<string, unknown>;
   createdAt: number;
+}
+
+/** One conversation parsed out of an import file, before it is written to storage. */
+export interface ParsedConversation {
+  title: string;
+  threadId: string;
+  messages: MessageRecord[];
+  /** Open WebUI exports carry the flag; other formats leave it unset. */
+  archived?: boolean;
+  createdAt?: number;
 }

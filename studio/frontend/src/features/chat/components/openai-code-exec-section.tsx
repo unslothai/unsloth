@@ -60,18 +60,6 @@ const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes
 // minute without hammering /v1/containers.
 const REFRESH_POLL_MS = 30_000;
 
-function ageLabel(epochSeconds: number | null | undefined): string {
-  if (!epochSeconds) return "";
-  const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - epochSeconds);
-  if (ageSec < 60) return `${ageSec}s ago`;
-  const ageMin = Math.floor(ageSec / 60);
-  if (ageMin < 60) return `${ageMin}m ago`;
-  const ageHr = Math.floor(ageMin / 60);
-  if (ageHr < 48) return `${ageHr}h ago`;
-  const ageDay = Math.floor(ageHr / 24);
-  return `${ageDay}d ago`;
-}
-
 function shortContainerId(id: string): string {
   // Mid-truncate keeps the "cntr_" prefix readable and still surfaces the
   // tail digits users sometimes copy off OpenAI's dashboard.
@@ -99,6 +87,8 @@ export function OpenAICodeExecSection({
   activeThreadId,
   onProviderChange,
 }: OpenAICodeExecSectionProps) {
+
+  const hasCredential = Boolean(apiKey || provider.hasApiKey);
   const [containers, setContainers] = useState<OpenAIContainerSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -198,10 +188,12 @@ export function OpenAICodeExecSection({
       : firstRunningContainer?.id) ?? null;
 
   const refresh = useCallback(async () => {
-    if (!apiKey) return;
+    if (!hasCredential) return;
     setIsLoading(true);
     try {
       const list = await listOpenAIContainers({
+        providerId: provider.id,
+
         apiKey,
         baseUrl: provider.baseUrl || null,
       });
@@ -230,7 +222,7 @@ export function OpenAICodeExecSection({
     } finally {
       setIsLoading(false);
     }
-  }, [apiKey, provider.baseUrl]);
+  }, [apiKey, hasCredential, provider.baseUrl, provider.id]);
 
   // Fetch on mount (or provider change), then poll on a low cadence so an
   // expired container's ACTIVE pill clears without a manual refresh. Also
@@ -330,7 +322,7 @@ export function OpenAICodeExecSection({
   };
 
   const onCreate = async () => {
-    if (!apiKey) return;
+    if (!hasCredential) return;
     const name = createName.trim();
     if (!name) {
       toast.error("Container name is required");
@@ -344,7 +336,7 @@ export function OpenAICodeExecSection({
     setCreating(true);
     try {
       const created = await createOpenAIContainer(
-        { apiKey, baseUrl: provider.baseUrl || null },
+        { providerId: provider.id, apiKey, baseUrl: provider.baseUrl || null },
         { name, ttlMinutes },
       );
       toast.success(`Created container ${name}`);
@@ -399,12 +391,12 @@ export function OpenAICodeExecSection({
   };
 
   const confirmDelete = async () => {
-    if (!apiKey || !pendingDelete) return;
+    if (!hasCredential || !pendingDelete) return;
     const { id, name } = pendingDelete;
     setDeleting(true);
     try {
       await deleteOpenAIContainer(
-        { apiKey, baseUrl: provider.baseUrl || null },
+        { providerId: provider.id, apiKey, baseUrl: provider.baseUrl || null },
         id,
       );
       // Tombstone the id so the picker hides it at once even if OpenAI's list
@@ -447,7 +439,7 @@ export function OpenAICodeExecSection({
         <div className="flex min-w-0 items-center gap-1.5">
           <label
             htmlFor="openai-container-ttl"
-            className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg"
+            className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg"
           >
             Idle timeout
           </label>
@@ -463,7 +455,7 @@ export function OpenAICodeExecSection({
           max={TTL_MAX}
           value={ttlValue}
           onChange={(e) => onTtlChange(e.target.value)}
-          className="h-8 w-14 px-2 text-center text-sm tabular-nums"
+          className="h-8 w-[72px] pl-3 text-sm tabular-nums"
         />
       </div>
 
@@ -471,7 +463,7 @@ export function OpenAICodeExecSection({
           ACTIVE pill marks which one (no separate picker). */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          <span className="text-ui-11 uppercase tracking-wider text-muted-foreground">
             Containers
           </span>
           <Button
@@ -479,7 +471,7 @@ export function OpenAICodeExecSection({
             variant="ghost"
             className="-mr-1 h-6 w-6 p-0 text-muted-foreground"
             onClick={() => void refresh()}
-            disabled={isLoading || !apiKey}
+            disabled={isLoading || !hasCredential}
             aria-label="Refresh container list"
           >
             <RefreshCwIcon
@@ -509,7 +501,7 @@ export function OpenAICodeExecSection({
                   key={c.id}
                   className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     isActive
-                      ? "border-primary/30 bg-primary/5"
+                      ? "border-ring-strong bg-primary/5"
                       : "border-border/60 hover:bg-muted/40"
                   } ${canActivate ? "cursor-pointer" : ""} ${
                     running ? "" : "opacity-60"
@@ -543,15 +535,15 @@ export function OpenAICodeExecSection({
                         {c.name ?? "(unnamed)"}
                       </span>
                       {isPending ? (
-                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
                           Creating
                         </span>
                       ) : isActive ? (
-                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium uppercase tracking-wider text-primary">
+                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-primary">
                           Active
                         </span>
                       ) : statusLabel ? (
-                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
                           {statusLabel}
                         </span>
                       ) : null}
@@ -560,10 +552,10 @@ export function OpenAICodeExecSection({
                       className="flex min-w-0 items-center gap-1.5 text-muted-foreground"
                       title={c.id}
                     >
-                      <span className="min-w-0 truncate font-mono text-[11px]">
+                      <span className="min-w-0 truncate font-mono text-ui-11">
                         {shortContainerId(c.id)}
                       </span>
-                      <span className="shrink-0 text-[10px] uppercase tracking-wider">
+                      <span className="shrink-0 text-ui-10 uppercase tracking-wider">
                         · {ttlMinutes}m
                       </span>
                     </div>
@@ -600,7 +592,7 @@ export function OpenAICodeExecSection({
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                if (createName.trim() && !creating && apiKey) {
+                if (createName.trim() && !creating && hasCredential) {
                   void onCreate();
                 }
               } else if (e.key === "Escape") {
@@ -627,7 +619,7 @@ export function OpenAICodeExecSection({
             size="sm"
             className="h-7 shrink-0 px-3 text-xs"
             onClick={() => void onCreate()}
-            disabled={creating || !createName.trim() || !apiKey}
+            disabled={creating || !createName.trim() || !hasCredential}
           >
             {creating ? "Creating…" : "Create"}
           </Button>
@@ -638,7 +630,7 @@ export function OpenAICodeExecSection({
           variant="outline"
           className="h-8"
           onClick={() => setCreateOpen(true)}
-          disabled={!apiKey}
+          disabled={!hasCredential}
         >
           <PlusIcon className="size-3.5 mr-1" />
           New container

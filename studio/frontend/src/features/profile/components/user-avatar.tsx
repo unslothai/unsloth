@@ -21,7 +21,7 @@ const SIZE: Record<"sm" | "md" | "lg", string> = {
   sm: "size-9 text-xs",
   md: "size-11 text-sm",
   /** ~10% larger than `size-24` / `text-2xl` for the edit-profile dialog. */
-  lg: "size-[106px] text-[1.65rem]",
+  lg: "size-[106px] text-[calc(1.65rem*var(--ui-font-scale,1))]",
 };
 
 // Percentage radius keeps the rounded-rectangle proportional across sizes.
@@ -30,14 +30,27 @@ const SHAPE: Record<AvatarShape, string> = {
   rounded: "rounded-[22%]",
 };
 
-export function UserAvatar({ name, imageUrl, size, className, shape }: UserAvatarProps) {
+export function UserAvatar({
+  name,
+  imageUrl,
+  size,
+  className,
+  shape,
+}: UserAvatarProps) {
   const label = initialsFromName(name);
   const storedShape = useUserProfileStore((s) => s.avatarShape);
   const shapeClass = SHAPE[shape ?? storedShape];
 
   if (imageUrl) {
     return (
-      <span className={cn("relative inline-flex shrink-0 overflow-hidden bg-transparent", shapeClass, SIZE[size], className)}>
+      <span
+        className={cn(
+          "relative inline-flex shrink-0 overflow-hidden bg-transparent",
+          shapeClass,
+          SIZE[size],
+          className,
+        )}
+      >
         <img src={imageUrl} alt="" className="size-full object-cover" />
       </span>
     );
@@ -47,7 +60,7 @@ export function UserAvatar({ name, imageUrl, size, className, shape }: UserAvata
     <span
       style={avatarBgStyle()}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center font-semibold text-white",
+        "inline-flex shrink-0 items-center justify-center font-semibold",
         shapeClass,
         SIZE[size],
         className,

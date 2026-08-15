@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
+import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
@@ -260,6 +261,30 @@ function ToolFallbackArgs({
   );
 }
 
+interface McpImageResult {
+  text: string;
+  images: { data: string; mimeType: string }[];
+}
+
+function isMcpImageResult(val: unknown): val is McpImageResult {
+  if (typeof val !== "object" || val === null) {
+    return false;
+  }
+  const v = val as { text?: unknown; images?: unknown };
+  return (
+    typeof v.text === "string" &&
+    Array.isArray(v.images) &&
+    v.images.length > 0 &&
+    v.images.every(
+      (img: unknown) =>
+        typeof img === "object" &&
+        img !== null &&
+        typeof (img as { data?: unknown }).data === "string" &&
+        typeof (img as { mimeType?: unknown }).mimeType === "string",
+    )
+  );
+}
+
 function ToolFallbackResult({
   result,
   className,
@@ -271,6 +296,12 @@ function ToolFallbackResult({
     return null;
   }
 
+  const imageResult = isMcpImageResult(result) ? result : null;
+  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
+  // escapes that a plain <pre> cannot style; strip them so the pane stays
+  // readable (#7962).
+  const resultText = imageResult ? null : stringifyToolResult(result);
+
   return (
     <div
       data-slot="tool-fallback-result"
@@ -278,9 +309,30 @@ function ToolFallbackResult({
       {...props}
     >
       <p className="aui-tool-fallback-result-header font-semibold">Result:</p>
-      <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
-        {typeof result === "string" ? result : JSON.stringify(result, null, 2)}
-      </pre>
+      {imageResult ? (
+        <>
+          {imageResult.text && (
+            <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
+              {stripAnsi(imageResult.text)}
+            </pre>
+          )}
+          <div className="mt-2 flex flex-col gap-2">
+            {imageResult.images.map((img, i) => (
+              <img
+                key={i}
+                src={`data:${img.mimeType};base64,${img.data}`}
+                alt={`Tool result ${i + 1}`}
+                loading="lazy"
+                className="max-w-full rounded border border-border"
+              />
+            ))}
+          </div>
+        </>
+      ) : (
+        <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
+          {resultText}
+        </pre>
+      )}
     </div>
   );
 }

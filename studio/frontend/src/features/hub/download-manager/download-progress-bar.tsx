@@ -41,7 +41,7 @@ export function DownloadProgressBar({
           style={{ left: `${exactPercent}%` }}
         />
       </div>
-      <div className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground tabular-nums">
+      <div className="flex items-center justify-between gap-2 text-ui-10p5 text-muted-foreground tabular-nums">
         <span>
           {formatBytes(progress.downloadedBytes)}
           {totalLabel && ` / ${totalLabel}`}

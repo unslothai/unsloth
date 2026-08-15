@@ -59,6 +59,7 @@ from models.inference import (
     ResponsesUsage,
 )
 from routes.inference import (
+    _ResponsesReasoningExtractor,
     _SameTaskStreamingResponse,
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
@@ -119,7 +120,7 @@ class TestResponsesRequestTools:
     def test_builtin_tool_type_passes_validation(self):
         """Non-function built-in tools (web_search, file_search, mcp, ...)
         must not raise at validation so SDKs that default to them don't
-        fail on Studio; they're filtered out during translation."""
+        fail on Unsloth; they're filtered out during translation."""
         req = ResponsesRequest(
             input = "hi",
             tools = [{"type": "web_search_preview"}],
@@ -795,6 +796,7 @@ class TestResponsesNonStreamingAdapter:
 
     def test_monitor_records_translated_visible_text(self, monkeypatch):
         import routes.inference as inf_mod
+        import routes.inference as inf_mod
 
         async def fake_chat_completions(chat_req, request):
             assert request.state.skip_api_monitor is True
@@ -831,6 +833,142 @@ class TestResponsesNonStreamingAdapter:
         assert entry["prompt_tokens"] == 2
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
+
+    @staticmethod
+    def _run_in_process_completion(
+        monkeypatch,
+        monitor,
+        timings,
+        *,
+        observations = None,
+    ):
+        """Drive the wrapper over an in-process chat completion: its own monitor row is
+        suppressed and a ``ChatCompletion`` has no ``timings`` field to carry them out."""
+        import routes.inference as inf_mod
+        from models.inference import (
+            ChatCompletion,
+            CompletionChoice,
+            CompletionMessage,
+            CompletionUsage,
+        )
+
+        usage = {"prompt_tokens": 11, "completion_tokens": 50, "total_tokens": 61}
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            # monitor_id is None here: this call's own row is the suppressed one.
+            if observations is not None:
+                observations["perf_callback"] = inf_mod._monitor_perf_callback(None, 4096)
+            inf_mod._monitor_usage(None, usage, 4096, timings = timings)
+            if observations is not None:
+                observations["live_entries"] = monitor.snapshot()
+            return inf_mod._model_json_response(
+                ChatCompletion(
+                    model = "test-model",
+                    choices = [
+                        CompletionChoice(
+                            index = 0,
+                            message = CompletionMessage(content = "answer"),
+                            finish_reason = "stop",
+                        )
+                    ],
+                    usage = CompletionUsage(**usage),
+                )
+            )
+
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(
+                ResponsesRequest(input = "hi"),
+                [ChatMessage(role = "user", content = "hi")],
+                request,
+            )
+            return json.loads(response.body.decode())
+
+        return asyncio.run(run())
+
+    def test_in_process_engine_timings_reach_the_monitor(self, monkeypatch):
+        """A local non-streamed /v1/responses never reached the Throughput tile: the
+        wrapper read decode_ms off the body, which a ChatCompletion cannot carry."""
+        from models.inference import ChatCompletion
+
+        # Asserted, not assumed: pydantic drops undeclared fields, so a body lookup finds nothing.
+        assert "timings" not in json.loads(
+            ChatCompletion(choices = [], timings = {"predicted_ms": 1000.0}).model_dump_json()
+        )
+
+        monitor = ApiMonitor(max_entries = 3)
+        body = self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"prompt_ms": 9000.0, "predicted_ms": 1000.0, "predicted_per_second": 50.0},
+        )
+
+        assert body["output"][0]["content"][0]["text"] == "answer"
+        [entry] = monitor.snapshot()
+        assert entry["completion_tokens"] == 50
+        assert entry["decode_ms"] == 1000
+        # 9s of that request was queue wait and prefill; the model generated at 50 tok/s.
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
+
+    def test_in_process_engine_timings_update_outer_monitor_live(self, monkeypatch):
+        monitor = ApiMonitor(max_entries = 3)
+        observations = {}
+
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {
+                "prompt_per_second": 90.0,
+                "predicted_ms": 1000.0,
+                "predicted_per_second": 50.0,
+            },
+            observations = observations,
+        )
+
+        assert observations["perf_callback"] is not None
+        [entry] = observations["live_entries"]
+        assert entry["status"] == "running"
+        assert entry["prompt_tok_per_sec"] == 90.0
+        assert entry["tok_per_sec"] == 50.0
+        assert entry["decode_ms"] == 1000
+        assert entry["ttft_ms"] is None
+
+    def test_disabled_monitor_does_not_install_responses_perf_callback(self, monkeypatch):
+        monitor = ApiMonitor(max_entries = 3, enabled = False)
+        observations = {}
+
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"prompt_per_second": 90.0, "predicted_per_second": 50.0},
+            observations = observations,
+        )
+
+        assert observations["perf_callback"] is None
+        assert observations["live_entries"] == []
+        assert monitor.snapshot() == []
+
+    def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
+        """The relay is scoped to one inner call, so a timing-less request inherits nothing."""
+        monitor = ApiMonitor(max_entries = 3)
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"predicted_ms": 1000.0},
+        )
+        self._run_in_process_completion(monkeypatch, monitor, None)
+
+        newest, previous = monitor.snapshot()
+        assert previous["decode_ms"] == 1000
+        assert newest["decode_ms"] is None
 
     def test_monitor_records_tool_only_reply(self, monkeypatch):
         import routes.inference as inf_mod
@@ -1172,6 +1310,44 @@ class TestResponsesStreamAdapter:
         assert entry["completion_tokens"] == 3
         assert entry["total_tokens"] == 5
         assert entry["context_length"] == 4096
+
+    def test_final_chunk_timings_reach_the_monitor(self, monkeypatch):
+        """Responses recorded usage but never timings, so a local request never reached
+        the Throughput tile. The final chunk can carry timings with no usage of its own."""
+        import routes.inference as inf_mod
+
+        chunks = [
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 50}},
+            {"choices": [], "timings": {"prompt_ms": 9000.0, "predicted_ms": 1000.0}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["decode_ms"] == 1000
+        assert entry["completion_tokens"] == 50
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_function_call_chunk_updates_monitor_reply(self, monkeypatch):
         import routes.inference as inf_mod
@@ -1986,3 +2162,420 @@ class TestTranslatedMessagesValidate:
         msgs = _normalise_responses_input(payload)
         for m in msgs:
             ChatMessage(**m.model_dump(exclude_none = True))
+
+
+# reasoning_prefilled: enable_thinking templates prefill an unclosed <think>, so
+# generation begins inside the block; the extractor must start in reasoning.
+class TestReasoningPrefilledExtractor:
+    def test_prefilled_single_feed_splits_lone_close(self):
+        # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
+        reasoning, visible = _extract_responses_reasoning(
+            "plan</think>answer",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "plan"
+        assert visible == "answer"
+
+    def test_prefilled_never_closed_is_all_reasoning(self):
+        # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
+        reasoning, visible = _extract_responses_reasoning(
+            "still thinking with no close",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "still thinking with no close"
+        assert visible == ""
+
+    def test_prefilled_close_split_across_feeds(self):
+        # T3: </think> straddles two feed() calls; holdback resolves it.
+        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        r1, v1 = ex.feed("plan</th")
+        r2, v2 = ex.feed("ink>ans")
+        fr, fv = ex.finish()
+        assert (r1 + r2 + fr) == "plan"
+        assert (v1 + v2 + fv) == "ans"
+
+    def test_prefilled_close_split_one_char_per_feed(self):
+        # T4: every char in its own feed still splits correctly.
+        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        reasoning, visible = "", ""
+        for ch in "plan</think>x":
+            r, v = ex.feed(ch)
+            reasoning += r
+            visible += v
+        fr, fv = ex.finish()
+        assert (reasoning + fr) == "plan"
+        assert (visible + fv) == "x"
+
+    def test_prefilled_empty_generation(self):
+        # T5: nothing generated.
+        reasoning, visible = _extract_responses_reasoning(
+            "",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == ""
+        assert visible == ""
+
+    def test_prefilled_whitespace_after_close_is_visible(self):
+        # T6: Qwen commonly emits </think>\n\n before the answer.
+        reasoning, visible = _extract_responses_reasoning(
+            "plan</think>\n\nanswer",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "plan"
+        assert visible == "\n\nanswer"
+
+    def test_prefilled_stray_open_tag_is_suppressed(self):
+        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,
+        # not leaked into the drawer (covers enable_thinking_effort full-tag output).
+        reasoning, visible = _extract_responses_reasoning(
+            "a<think>b</think>c",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "ab"
+        assert visible == "c"
+        assert "<think>" not in reasoning
+
+    def test_prefilled_close_at_start_empty_reasoning(self):
+        # T8: model closed immediately (empty reasoning) then answered.
+        reasoning, visible = _extract_responses_reasoning(
+            "</think>hi",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == ""
+        assert visible == "hi"
+
+    def test_not_prefilled_lone_close_preserves_current_behavior(self):
+        # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
+        reasoning, visible = _extract_responses_reasoning(
+            "reasoning</think>ans",
+            parse_think_markers = True,
+            reasoning_prefilled = False,
+        )
+        assert reasoning == ""
+        assert visible == "reasoningans"
+
+    def test_not_prefilled_full_pair_still_splits(self):
+        # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
+        reasoning, visible = _extract_responses_reasoning(
+            "<think>r</think>v",
+            parse_think_markers = True,
+            reasoning_prefilled = False,
+        )
+        assert reasoning == "r"
+        assert visible == "v"
+
+    def test_prefilled_ignored_when_markers_not_parsed(self):
+        # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
+        reasoning, visible = _extract_responses_reasoning(
+            "just an answer",
+            parse_think_markers = False,
+            reasoning_prefilled = False,
+        )
+        assert reasoning == ""
+        assert visible == "just an answer"
+
+
+# =====================================================================
+# Streaming passthrough healing — text-form calls promoted in order
+# =====================================================================
+
+
+class TestResponsesStreamHealing:
+    """Route-level healing on the /v1/responses stream: text-form tool calls
+    are promoted through the same per-call item state machinery as structured
+    deltas, and healer events keep their order (text around a healed call must
+    not move relative to the function_call item)."""
+
+    _XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+    _TOOL = {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+
+    @staticmethod
+    def _ordered_events(lines):
+        events = []
+        for line in lines:
+            if not line.startswith("event: "):
+                continue
+            name, _, rest = line.partition("\n")
+            payload = json.loads(rest.split("data: ", 1)[1].strip())
+            events.append((name[len("event: ") :], payload))
+        return events
+
+    def _run_stream(self, monkeypatch, content, **payload_kwargs):
+        TestResponsesStreamAdapter._install_stream_mock(
+            monkeypatch, [{"choices": [{"delta": {"content": content}}]}]
+        )
+        payload = ResponsesRequest(input = "hi", stream = True, tools = [self._TOOL], **payload_kwargs)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+
+        return self._ordered_events(asyncio.run(run()))
+
+    def test_text_around_healed_call_keeps_order(self, monkeypatch):
+        events = self._run_stream(monkeypatch, f"before {self._XML} after.")
+        pos_before = pos_item = pos_after = None
+        for i, (name, payload) in enumerate(events):
+            if name == "response.output_text.delta":
+                if "before" in payload["delta"] and pos_before is None:
+                    pos_before = i
+                if "after" in payload["delta"]:
+                    pos_after = i
+            if (
+                name == "response.output_item.added"
+                and payload["item"]["type"] == "function_call"
+                and pos_item is None
+            ):
+                pos_item = i
+                assert payload["item"]["name"] == "lookup"
+        assert pos_before is not None and pos_item is not None and pos_after is not None
+        assert pos_before < pos_item < pos_after
+
+    def test_call_before_trailing_text_claims_lower_output_index(self, monkeypatch):
+        events = self._run_stream(monkeypatch, f"{self._XML} done.")
+        item_added = [
+            (name, payload) for name, payload in events if name == "response.output_item.added"
+        ]
+        # The call came first in the model output, so its item is added first
+        # and claims the lower output_index; the trailing text's message item
+        # follows.
+        assert [payload["item"]["type"] for _, payload in item_added] == [
+            "function_call",
+            "message",
+        ]
+        call_idx = item_added[0][1]["output_index"]
+        msg_idx = item_added[1][1]["output_index"]
+        assert call_idx < msg_idx
+        text = "".join(
+            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+        )
+        assert "done." in text
+        assert "<tool_call>" not in text
+
+    def test_tool_choice_none_streams_raw_text(self, monkeypatch):
+        events = self._run_stream(monkeypatch, self._XML, tool_choice = "none")
+        assert not any(
+            payload["item"]["type"] == "function_call"
+            for name, payload in events
+            if name == "response.output_item.added"
+        )
+        text = "".join(
+            payload["delta"] for name, payload in events if name == "response.output_text.delta"
+        )
+        assert text == self._XML
+
+    def test_healed_call_splits_message_items(self, monkeypatch):
+        # Text on both sides of a healed call becomes TWO message items: the
+        # healed function_call closes the first, trailing text opens a fresh
+        # one with a later output index (native Responses stream shape).
+        events = self._run_stream(monkeypatch, f"before {self._XML} after.")
+        added = [
+            (payload["output_index"], payload["item"]["type"], payload["item"].get("id"))
+            for name, payload in events
+            if name == "response.output_item.added"
+        ]
+        assert [item_type for _, item_type, _ in added] == [
+            "message",
+            "function_call",
+            "message",
+        ]
+        assert [idx for idx, _, _ in added] == sorted(idx for idx, _, _ in added)
+        assert added[0][2] != added[2][2]  # distinct message item ids
+        # Text deltas attribute to their OWN message item.
+        deltas = [
+            (payload["item_id"], payload["delta"])
+            for name, payload in events
+            if name == "response.output_text.delta"
+        ]
+        assert [d for i, d in deltas if i == added[0][2]] == ["before "]
+        assert [d for i, d in deltas if i == added[2][2]] == [" after."]
+        # The completed snapshot lists all three items with per-item text.
+        completed = [payload for name, payload in events if name == "response.completed"]
+        output = completed[0]["response"]["output"]
+        assert [item["type"] for item in output] == ["message", "function_call", "message"]
+        assert output[0]["content"][0]["text"] == "before "
+        assert output[2]["content"][0]["text"] == " after."
+
+    def test_parallel_cap_drops_native_after_healed(self, monkeypatch):
+        # parallel_tool_calls=false: a healed call consumed the single allowed
+        # slot; a later native structured call (index 0, so it survives
+        # _drop_parallel_tool_call_deltas) must not open a second
+        # function_call item.
+        TestResponsesStreamAdapter._install_stream_mock(
+            monkeypatch,
+            [
+                {"choices": [{"delta": {"content": self._XML}}]},
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_up",
+                                        "function": {"name": "lookup", "arguments": "{}"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            ],
+        )
+        payload = ResponsesRequest(
+            input = "hi",
+            stream = True,
+            tools = [self._TOOL],
+            parallel_tool_calls = False,
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+
+        events = self._ordered_events(asyncio.run(run()))
+        calls = [
+            payload
+            for name, payload in events
+            if name == "response.output_item.added" and payload["item"]["type"] == "function_call"
+        ]
+        assert len(calls) == 1
+        assert calls[0]["item"]["name"] == "lookup"
+
+
+def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
+    # Healed output bypasses append_reply, so a text-form tool call would go untimed
+    # until the item closes near end-of-stream.
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": xml}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    assert stamped, "a healed tool call is output the client already received"
+
+
+def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
+    # A response that is only an unclosed tool block heals in finalize() after the
+    # chunk loop, so nothing before it stamped; the item closes several yields later.
+    from core.inference.api_monitor import api_monitor
+
+    unclosed = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}'
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": unclosed}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    # The call really was promoted, so the stamp covers a function_call the client saw.
+    assert any("response.function_call_arguments.delta" in line for line in lines)
+    assert stamped, "a finalized healed call is output the client already received"
+
+
+def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
+    # The upstream chunk still says "stop" while this adapter emitted a function_call,
+    # so the monitor would disagree with the chat stream's synthetic finish line.
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == "tool_calls"
+
+
+def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
+    # Nothing was promoted, so the upstream reason still describes the response.
+    from core.inference.api_monitor import api_monitor
+
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "plain text"}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == "stop"

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub";
 
 interface VisionCheckResponse {
   model_name: string;
@@ -17,6 +18,7 @@ interface BackendTrainingDefaults {
   max_seq_length?: number;
   num_epochs?: number;
   learning_rate?: number | string;
+  embedding_learning_rate?: number | string | null;
   optim?: string;
   lr_scheduler_type?: string;
   batch_size?: number;
@@ -30,7 +32,8 @@ interface BackendTrainingDefaults {
   vision_image_size?: number | string | null;
   packing?: boolean;
   train_on_completions?: boolean;
-  gradient_checkpointing?: "none" | "true" | "unsloth";
+  // Shipped YAML may decode this value as a boolean.
+  gradient_checkpointing?: "none" | "true" | "unsloth" | boolean;
   trust_remote_code?: boolean;
 }
 
@@ -41,6 +44,7 @@ interface BackendLoraDefaults {
   target_modules?: string[];
   use_rslora?: boolean;
   use_loftq?: boolean;
+  use_dora?: boolean;
   finetune_vision_layers?: boolean;
   finetune_language_layers?: boolean;
   finetune_attention_modules?: boolean;
@@ -69,11 +73,19 @@ export interface ModelConfigResponse {
   is_vision: boolean;
   is_embedding?: boolean;
   is_audio: boolean;
+  // False when the repo's tokenizer_config.json was unreadable (gated, offline,
+  // upstream error), so is_audio false means unknown rather than "not audio".
+  audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
+}
+
+export interface ModelConfigRequestOptions {
+  preferLocalCache?: boolean;
+  localPath?: string | null;
 }
 
 export interface LocalModelInfo {
@@ -98,11 +110,13 @@ export async function checkVisionModel(
   hfToken?: string | null,
 ): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const query = hfToken?.trim() ? `?hf_token=${encodeURIComponent(hfToken.trim())}` : "";
-  const response = await authFetch(`/api/models/check-vision/${encoded}${query}`);
+  const response = await authFetch(`/api/models/check-vision/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-vision
-    return false;
+    throw new Error(
+      `Failed to check model vision support (${response.status})`,
+    );
   }
   const data = (await response.json()) as VisionCheckResponse;
   return data.is_vision;
@@ -114,10 +128,11 @@ export async function checkEmbeddingModel(
   hfToken?: string | null,
 ): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const query = hfToken?.trim() ? `?hf_token=${encodeURIComponent(hfToken.trim())}` : "";
-  const response = await authFetch(`/api/models/check-embedding/${encoded}${query}`);
+  const response = await authFetch(`/api/models/check-embedding/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-embedding
+    // Check failure (e.g. network error): default to non-embedding.
     return false;
   }
   const data = (await response.json()) as EmbeddingCheckResponse;
@@ -128,10 +143,24 @@ export async function getModelConfig(
   modelName: string,
   signal?: AbortSignal,
   hfToken?: string,
+  options?: ModelConfigRequestOptions,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const params = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
-  const response = await authFetch(`/api/models/config/${encoded}${params}`, { signal });
+  const params = new URLSearchParams();
+  if (options?.preferLocalCache) {
+    params.set("prefer_local_cache", "true");
+  }
+  if (options?.localPath) {
+    params.set("local_path", options.localPath);
+  }
+  const query = params.toString();
+  const response = await authFetch(
+    `/api/models/config/${encoded}${query ? `?${query}` : ""}`,
+    {
+      headers: hubTokenHeader(hfToken?.trim() || null),
+      signal,
+    },
+  );
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }

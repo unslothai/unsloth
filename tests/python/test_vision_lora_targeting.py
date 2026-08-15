@@ -37,7 +37,7 @@ def test_vlm_lora_regex_respects_language_only_with_explicit_targets():
 
 
 def test_fast_vision_model_wraps_explicit_targets_when_layer_filters_are_used():
-    source = Path("unsloth/models/vision.py").read_text()
+    source = Path("unsloth/models/vision.py").read_text(encoding = "utf-8")
 
     assert "target_modules = get_peft_regex(" in source
     assert "target_modules = list(target_modules)" in source

@@ -3,7 +3,7 @@
 
 # Builds the PyPI wheel from the PR branch, then verifies the built wheel
 # actually contains what we expect to ship and does NOT contain the broken
-# Studio bundle that 2026.5.1 published. This is the single workflow that
+# Unsloth bundle that 2026.5.1 published. This is the single workflow that
 # would have blocked the 2026.5.1 release before twine upload.
 #
 # Verified locally end-to-end against this branch:
@@ -12,7 +12,7 @@
 #       lockfile shipped, frontend dist shipped,
 #       no node_modules in wheel, no bun.lock in wheel,
 #       main bundle has unstable_Provider hits=1 (assistant-ui internals only).
-#   - Studio backend imports cleanly from the installed wheel with the
+#   - Unsloth backend imports cleanly from the installed wheel with the
 #     lightweight dep set below.
 
 name: Wheel CI
@@ -26,11 +26,21 @@ on:
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - '.github/workflows/wheel-smoke.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -41,15 +51,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -101,7 +111,7 @@ jobs:
               hits = data.count("unstable_Provider:")
               print(f"main bundle: {js[0]}")
               print(f"unstable_Provider hits: {hits} (>=4 indicates 2026.5.1 regression)")
-              checks["bundle has no Studio unstable_Provider call site"] = (hits < 4)
+              checks["bundle has no Unsloth unstable_Provider call site"] = (hits < 4)
 
               print()
               for k, v in checks.items():
@@ -109,7 +119,7 @@ jobs:
               sys.exit(0 if all(checks.values()) else 1)
           PY
 
-      - name: Studio backend import smoke
+      - name: Unsloth backend import smoke
         # Imports `studio.backend.main:app` from the freshly-installed wheel in
         # a clean venv. This catches the class of bug that 2026.5.1 shipped with:
         # frontend dist missing, package-lock.json missing, or the wheel's Python
@@ -125,7 +135,32 @@ jobs:
           /tmp/v/bin/pip install --no-deps dist/unsloth-*.whl
           # Run from /tmp so Python imports the installed package, not the source tree.
           cd /tmp
-          /tmp/v/bin/python -c "from studio.backend.main import app; print('Studio backend OK:', app.title)"
+          /tmp/v/bin/python -c "from studio.backend.main import app; print('Unsloth backend OK:', app.title)"
+
+      - name: CLI without the Studio stack guides instead of tracebacking
+        # The smoke above installs studio.txt first, so it cannot catch a wheel
+        # that ships studio/ without declaring what it imports (#4701, #5260,
+        # #7147). Drop only structlog to reuse that venv without a re-download.
+        run: |
+          set -eu
+          /tmp/v/bin/pip uninstall -y structlog >/dev/null
+          cd /tmp
+          status=0
+          for args in "export ./nope ./out" "list-checkpoints"; do
+            echo "--- unsloth $args"
+            out=$(/tmp/v/bin/unsloth $args 2>&1 || true)
+            printf '%s\n' "$out"
+            case "$out" in
+              *Traceback*)
+                echo "FAIL: raw traceback instead of guidance"; status=1 ;;
+            esac
+            case "$out" in
+              *'unsloth studio update'*) ;;
+              *) echo "FAIL: no remediation in the message"; status=1 ;;
+            esac
+          done
+          /tmp/v/bin/pip install -q structlog >/dev/null
+          exit "$status"
 
       - name: Upload wheel on failure
         if: failure()

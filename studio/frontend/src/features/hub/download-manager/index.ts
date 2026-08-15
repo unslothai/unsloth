@@ -4,6 +4,11 @@
 export * from "./api";
 export { DownloadManagerPanel } from "./download-manager-panel";
 export {
+  finishExternalJob,
+  startExternalJob,
+  updateExternalJob,
+} from "./external-jobs";
+export {
   DownloadProgressBar,
   type DownloadProgress,
 } from "./download-progress-bar";
@@ -20,7 +25,6 @@ export {
 } from "./constants";
 export {
   __resetDownloadManagerForTests,
-  cancelStagedModelDownload,
   clearCompletedInventoryHint,
   downloadManager,
   hydrateDownloadManager,
@@ -40,6 +44,11 @@ export {
   type DownloadJobProgress,
   type RepoDownloadConfig,
 } from "./use-repo-download";
+export {
+  useStagedDownload,
+  type StagedDownloadEntry,
+} from "./use-staged-download";
+export { scopedVariant } from "./download-manager-types";
 export {
   getTransportMode,
   useDownloadTransportCapabilities,

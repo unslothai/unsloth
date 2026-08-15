@@ -5,7 +5,7 @@
 
 A signed link stops ref guessing, but anyone with a link can still drive GPU
 generation. This bounds sustained abuse from a single source. In-process and
-single-worker only (like the login limiter in ``routes/auth.py``); Studio runs as
+single-worker only (like the login limiter in ``routes/auth.py``); Unsloth runs as
 one uvicorn process, so a shared store isn't needed.
 """
 

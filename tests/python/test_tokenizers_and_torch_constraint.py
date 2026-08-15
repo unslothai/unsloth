@@ -14,6 +14,8 @@ _TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
 _REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
+_SETUP_SH = _REPO_ROOT / "studio" / "setup.sh"
+_SETUP_PS1 = _REPO_ROOT / "studio" / "setup.ps1"
 _NO_TORCH_RT = _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 
 
@@ -68,15 +70,40 @@ class TestStructuralTorchConstraint:
     def test_tightened_assignment_exists(self):
         assert 'TORCH_CONSTRAINT="torch>=2.6,<2.11.0"' in self._sh
 
+    def test_cuda_constraint_widened_to_2_12(self):
+        """A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x
+        land torch 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC);
+        without it cu128/cu130 resolves torch 2.10.x."""
+        assert 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' in self._sh
+
+    def test_cuda_case_widens_via_index_leaf(self):
+        """The cu* branch of the _torch_index_leaf case sets the widened
+        constraint (parallel to rocm7.2), anchored on the leaf."""
+        m = re.search(
+            r'cu\[0-9\]\*\)\s*TORCH_CONSTRAINT="torch>=2\.4,<2\.12\.0"',
+            self._sh,
+        )
+        assert m is not None, "CUDA (cu*) TORCH_CONSTRAINT widening case not found"
+
     def test_variable_used_in_pip_install(self):
         """$TORCH_CONSTRAINT must appear in a uv pip install line."""
         assert '"$TORCH_CONSTRAINT"' in self._sh
 
-    def test_hardcoded_torch_constraint_only_once(self):
-        """The hard-coded torch>=2.4,<2.11.0 string should appear exactly once
-        in install.sh (the default assignment), not in pip install lines."""
-        count = self._sh.count('"torch>=2.4,<2.11.0"')
-        assert count == 1, f"Expected 1, found {count}"
+    def test_hardcoded_torch_constraint_only_on_assignments(self):
+        """The hard-coded torch>=2.4,<2.11.0 string must only appear on
+        TORCH_CONSTRAINT= assignment lines, never on a pip/uv install line
+        (those must reference $TORCH_CONSTRAINT). Two assignments are expected:
+        the default, and the gfx906 (MI50) reroute that restores the default
+        <2.11 window after the rocm7.2 floor bump raised it to 2.11."""
+        hits = [ln for ln in self._sh.splitlines() if '"torch>=2.4,<2.11.0"' in ln]
+        assert hits, "default constraint literal missing from install.sh"
+        for ln in hits:
+            assert (
+                "TORCH_CONSTRAINT=" in ln
+            ), f"torch>=2.4,<2.11.0 hardcoded off a TORCH_CONSTRAINT= assignment: {ln.strip()!r}"
+            assert (
+                "pip install" not in ln
+            ), f"torch>=2.4,<2.11.0 hardcoded on a pip install line: {ln.strip()!r}"
 
     def test_tightening_guarded_by_skip_torch(self):
         """The block must check SKIP_TORCH=false."""
@@ -107,6 +134,81 @@ class TestStructuralInstallPs1Unchanged:
 
     def test_hardcoded_torch_constraint_present(self):
         assert '"torch>=2.4,<2.11.0"' in self._ps1
+
+
+class TestInstallPs1UvDefaultIndex:
+    """Installer-managed torch indexes must override inherited uv defaults."""
+
+    _ps1 = _read(_INSTALL_PS1)
+
+    def test_torch_installs_use_default_index(self):
+        assert "--default-index $TorchIndexUrl" in self._ps1
+        assert "--default-index $ROCmIndexUrl" in self._ps1
+
+    def test_torch_installs_do_not_use_deprecated_index_url(self):
+        assert "--index-url $TorchIndexUrl" not in self._ps1
+        assert "--index-url $ROCmIndexUrl" not in self._ps1
+
+    def test_torch_installs_neutralize_all_uv_index_env_vars(self):
+        # Extra-index vars outrank --default-index, so pinned installs must clear them.
+        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+            assert var in self._ps1
+        assert 'Remove-Item "Env:$n"' in self._ps1
+
+
+class TestSetupPs1FastInstallIndex:
+    """setup.ps1 Fast-Install must neutralize inherited uv indexes when pinning."""
+
+    _ps1 = _read(_SETUP_PS1)
+
+    def test_fast_install_clears_all_uv_index_env_vars(self):
+        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+            assert var in self._ps1
+        # Must truly remove the vars (child sees no value), not set them empty.
+        assert 'Remove-Item "Env:$n"' in self._ps1
+
+
+def test_setup_sh_sidecar_installs_isolate_uv_override():
+    source = _read(_SETUP_SH)
+    helper = re.search(r"fast_install_sidecar\(\) \(\n.*?\n\)", source, re.S)
+    assert helper is not None
+    script = (
+        "UV_OVERRIDE=base\nfast_install() { printf 'child=%s\\n' \"${UV_OVERRIDE-unset}\"; }\n"
+        f"{helper.group()}\nfast_install_sidecar\nprintf 'parent=%s\\n' \"$UV_OVERRIDE\"\n"
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
+    assert result.returncode == 0 and result.stdout.splitlines() == ["child=unset", "parent=base"]
+    sidecars = source.split("# ── 6b.", 1)[1].split("# ── GPU detection", 1)[0]
+    assert sidecars.count("fast_install_sidecar --target") == 12
+    assert " fast_install --target" not in sidecars
+
+
+class TestInstallShUvDefaultIndex:
+    """Linux/Mac installer torch indexes must override inherited uv defaults."""
+
+    _sh = _read(_INSTALL_SH)
+
+    def test_torch_installs_use_default_index(self):
+        assert '--default-index "$TORCH_INDEX_URL"' in self._sh
+
+    def test_torch_installs_do_not_use_deprecated_index_url(self):
+        # uv deprecated --index-url in favour of --default-index; pip never had it, so the XPU
+        # triton pre-fetch (`pip download`) legitimately uses --index-url. Checked per
+        # occurrence so a uv invocation still cannot slip one through. Backslash continuations
+        # are joined first, since the flag and its command are often on different lines.
+        joined = self._sh.replace("\\\n", " ")
+        offenders = [
+            " ".join(line.split())
+            for line in joined.splitlines()
+            if '--index-url "$TORCH_INDEX_URL"' in line and "pip download" not in line
+        ]
+        assert not offenders, offenders
+
+    def test_torch_installs_neutralize_all_uv_index_env_vars(self):
+        # --default-index installs run with all uv index env vars unset via `env -u`.
+        assert (
+            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in self._sh
+        )
 
 
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)
@@ -332,6 +434,71 @@ class TestTorchConstraintShell:
         assert result.returncode == 0, f"Script failed: {result.stderr}"
         logged = log_file.read_text()
         assert "torch>=2.4,<2.11.0" in logged, f"uv log: {logged}"
+
+    # Mirrors the _torch_index_leaf case in install.sh: rocm7.2 -> 2.11.x floor,
+    # CUDA -> widened <2.12.0 ceiling, else (CPU/older ROCm) -> default. Anchored
+    # on the final path segment, so a mirror base path containing cu*/rocm7.2 but
+    # ending in a cpu/older-rocm leaf keeps the default.
+    _INDEX_SNIPPET = textwrap.dedent(r"""
+        #!/bin/bash
+        set -e
+        TORCH_INDEX_URL="{index_url}"
+        TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+        _torch_index_leaf="${TORCH_INDEX_URL%/}"
+        _torch_index_leaf="${_torch_index_leaf##*/}"
+        case "$_torch_index_leaf" in
+            rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+            cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
+        esac
+        echo "$TORCH_CONSTRAINT"
+    """).strip()
+
+    def _resolve_index(self, tmp_path: pathlib.Path, index_url: str) -> str:
+        script_file = tmp_path / "index_snippet.sh"
+        script_file.write_text(self._INDEX_SNIPPET.replace("{index_url}", index_url))
+        script_file.chmod(0o755)
+        result = subprocess.run(
+            ["bash", str(script_file)],
+            capture_output = True,
+            text = True,
+            timeout = 10,
+        )
+        assert result.returncode == 0, f"Script failed: {result.stderr}"
+        return result.stdout.strip()
+
+    @pytest.mark.parametrize("leaf", ["cu118", "cu124", "cu126", "cu128", "cu130"])
+    def test_cuda_index_widens_to_2_12(self, tmp_path, leaf):
+        url = f"https://download.pytorch.org/whl/{leaf}"
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
+
+    def test_rocm72_index_uses_211_floor(self, tmp_path):
+        url = "https://download.pytorch.org/whl/rocm7.2"
+        assert self._resolve_index(tmp_path, url) == "torch>=2.11.0,<2.12.0"
+
+    def test_cpu_index_keeps_default(self, tmp_path):
+        # /cpu must NOT match the */cu[0-9]* branch.
+        url = "https://download.pytorch.org/whl/cpu"
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
+
+    def test_older_rocm_index_keeps_default(self, tmp_path):
+        url = "https://download.pytorch.org/whl/rocm7.1"
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
+
+    def test_cuda_index_custom_mirror_widens(self, tmp_path):
+        url = "https://internal.example.com/pytorch/cu128"
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://internal.example.com/pytorch/cu128/cpu",
+            "https://internal.example.com/cu128/whl/rocm7.1",
+        ],
+    )
+    def test_cuda_in_mirror_path_but_noncuda_leaf_keeps_default(self, tmp_path, url):
+        # A cu128 in the mirror base path must not widen when the leaf is cpu /
+        # older ROCm: the case anchors on _torch_index_leaf, not the whole URL.
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
 
 
 # Group 3 -- E2E tokenizers fix (requires network, ~2-5 min)

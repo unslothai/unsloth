@@ -7,13 +7,12 @@
 # npm or cargo lockfile, on push to main, and on a daily schedule so
 # newly-published IOCs surface even when no PR opens.
 #
-# Default behavior is "advisory": only public indicator-of-compromise
-# strings, known-malicious pinned versions, and structurally broken
-# lockfiles fail the build. Structural anomalies (missing integrity,
-# non-default registry, etc.) are emitted as GitHub Actions warnings
-# but do not block merges. This deliberately keeps the noise floor
-# low while still failing the moment a checked-in lockfile starts
-# pointing at known-bad bytes.
+# Default behavior blocks public indicator-of-compromise strings,
+# known-malicious pinned versions, structurally broken lockfiles, and
+# provenance/integrity failures (non-registry resolved URL or cargo
+# source, missing integrity hash or cargo checksum) -- the pre-install
+# fetches this gate stops before `npm ci` runs lifecycle scripts.
+# Lesser anomalies warn; --strict escalates them to blocking.
 #
 # This workflow is intentionally separate from security-audit.yml:
 #   - security-audit.yml is the umbrella job (pip-audit + npm audit +
@@ -48,8 +47,16 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # The event is part of the group so a scheduled run and a push to main cannot
+  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
+  # only one pending run, so without this a merge burst silently drops the nightly:
+  # cancel-in-progress protects the running run, never the pending one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -60,11 +67,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -72,8 +79,7 @@ jobs:
         run: python3 -c "import ast; ast.parse(open('scripts/lockfile_supply_chain_audit.py').read())"
 
       - name: Run lockfile supply-chain audit
-        # Default mode: only known-malicious pinned versions, known IOC
-        # strings, and structurally broken lockfiles fail the build.
-        # Missing-integrity and other structural anomalies are emitted
-        # as ::warning:: annotations and do not gate merges.
+        # Blocks known-malicious versions, IOC strings, broken lockfiles,
+        # and provenance/integrity failures. Lesser anomalies stay
+        # ::warning:: unless --strict is passed.
         run: python3 scripts/lockfile_supply_chain_audit.py

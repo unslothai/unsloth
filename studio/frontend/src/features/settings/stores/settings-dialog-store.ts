@@ -7,12 +7,20 @@ export type SettingsTab =
   | "general"
   | "profile"
   | "appearance"
+  | "resources"
   | "chat"
+  | "voice"
   | "connections"
+  | "data"
   | "api-keys"
+  | "agents"
+  | "debugging"
   | "about";
 
-export type SettingsScrollTarget = "about-updates";
+export type SettingsScrollTarget = "about-updates" | "appearance-sidebar-nav";
+
+/** Which archive the Data tab should open straight into. */
+export type ArchivedShelf = "chats" | "images" | "videos";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
@@ -27,11 +35,12 @@ interface SettingsDialogState {
   // previous-focus capture, leaving focus on <body> after close. We restore
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
-  // Set when something asks to jump straight to the archived chats list (the
-  // archive toast). ChatTab consumes it to open the dialog, then clears it.
-  archivedChatsRequested: boolean;
+  // Set when something asks to jump straight to an archive listing (the archive
+  // toast). DataTab uses it as its initial subpage, then clears it.
+  archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
+  openArchivedMedia: (shelf: "images" | "videos") => void;
   consumeArchivedChatsRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
@@ -60,9 +69,14 @@ function loadInitialTab(): SettingsTab {
     "general",
     "profile",
     "appearance",
+    "resources",
     "chat",
+    "voice",
     "connections",
+    "data",
     "api-keys",
+    "agents",
+    "debugging",
     "about",
   ];
   return valid.includes(stored as SettingsTab)
@@ -75,7 +89,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   activeTab: loadInitialTab(),
   scrollTarget: null,
   opener: null,
-  archivedChatsRequested: false,
+  archivedRequested: null,
   openDialog: (tab, options) =>
     set((state) => ({
       open: true,
@@ -86,12 +100,20 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   openArchivedChats: () =>
     set({
       open: true,
-      activeTab: "chat",
+      activeTab: "data",
       scrollTarget: null,
-      archivedChatsRequested: true,
+      archivedRequested: "chats",
       opener: captureOpener(),
     }),
-  consumeArchivedChatsRequest: () => set({ archivedChatsRequested: false }),
+  openArchivedMedia: (shelf) =>
+    set({
+      open: true,
+      activeTab: "data",
+      scrollTarget: null,
+      archivedRequested: shelf,
+      opener: captureOpener(),
+    }),
+  consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,

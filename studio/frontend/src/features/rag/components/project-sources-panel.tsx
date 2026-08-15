@@ -1,27 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useRef } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
+import { FolderAddIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   invalidateProjectSources,
   listProjectDocuments,
+  subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT } from "../types/rag";
+import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
+import { LinkedFoldersManager } from "./linked-folders-manager";
 import { useRagDocuments } from "./use-rag-documents";
 
 /** Project "Sources" tab: documents indexed for retrieval in every chat that
  * belongs to the project. */
 export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const lister = useCallback(() => listProjectDocuments(projectId), [projectId]);
-  const { documents, loading, uploading, upload, remove } = useRagDocuments(
-    { type: "project", projectId },
-    lister,
+  const lister = useCallback(
+    () => listProjectDocuments(projectId),
+    [projectId],
   );
+  const { documents, loading, uploading, refresh, upload, remove } =
+    useRagDocuments({ type: "project", projectId }, lister);
 
   // Invalidate the sources probe before and after each mutation: a chat sent
   // mid-upload must not cache "no sources" for the probe's TTL.
@@ -43,6 +46,22 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     },
     [projectId, remove],
   );
+  const handleLinkedSourcesChanged = useCallback(() => {
+    invalidateProjectSources(projectId);
+    void refresh({ quiet: true });
+  }, [projectId, refresh]);
+
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
+  // they are done; refresh the mounted list so a source saved from a chat shows
+  // up here without a remount. The list only polls while a row it already knows
+  // is indexing, so nothing else would ever fetch it.
+  useEffect(
+    () =>
+      subscribeProjectSourcesUpdated(projectId, () => {
+        void refresh({ quiet: true });
+      }),
+    [projectId, refresh],
+  );
 
   const empty = documents.length === 0;
 
@@ -58,7 +77,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       <input
         ref={fileInputRef}
         type="file"
-        multiple
+        multiple={true}
         accept={RAG_UPLOAD_ACCEPT}
         className="hidden"
         onChange={(e) => {
@@ -67,6 +86,13 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           void handleFiles(files);
         }}
       />
+      <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">
+        <LinkedFoldersManager
+          scope={{ type: "project", id: projectId }}
+          compact={true}
+          onSourcesChanged={handleLinkedSourcesChanged}
+        />
+      </div>
       {empty ? (
         <div className="flex flex-col items-center justify-center gap-3 rounded-[26px] bg-muted/30 px-6 py-16 text-center">
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -77,7 +103,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
             />
           </span>
           <div className="space-y-1">
-            <p className="text-[15px] font-semibold text-foreground">
+            <p className="text-ui-15 font-semibold text-foreground">
               Give this project context
             </p>
             <p className="max-w-sm text-sm text-muted-foreground">
@@ -94,7 +120,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           >
             Add sources
           </Button>
-          <p className="text-[11px] text-muted-foreground">Or drop files here</p>
+          <p className="text-ui-11 text-muted-foreground">Or drop files here</p>
         </div>
       ) : (
         <div className="flex flex-col gap-4 rounded-[26px] bg-muted/30 px-6 py-5">
@@ -124,7 +150,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 progress={doc.progress}
                 error={doc.error}
                 onRemove={
-                  doc.id.startsWith("pending_")
+                  doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
                     ? undefined
                     : () => void handleRemove(doc.id)
                 }

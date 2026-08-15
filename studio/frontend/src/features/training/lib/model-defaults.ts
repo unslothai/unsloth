@@ -1,52 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
-import { usePlatformStore } from "@/config/env";
-
-type ModelDefaultsPatch = Partial<
-  Pick<
-    TrainingConfigState,
-    | "epochs"
-    | "contextLength"
-    | "learningRate"
-    | "optimizerType"
-    | "lrSchedulerType"
-    | "loraRank"
-    | "loraAlpha"
-    | "loraDropout"
-    | "loraVariant"
-    | "batchSize"
-    | "gradientAccumulation"
-    | "weightDecay"
-    | "warmupSteps"
-    | "maxSteps"
-    | "saveSteps"
-    | "evalSteps"
-    | "packing"
-    | "trainOnCompletions"
-    | "gradientCheckpointing"
-    | "randomSeed"
-    | "visionImageSize"
-    | "enableWandb"
-    | "wandbProject"
-    | "enableTensorboard"
-    | "tensorboardDir"
-    | "logFrequency"
-    | "finetuneVisionLayers"
-    | "trustRemoteCode"
-    | "finetuneLanguageLayers"
-    | "finetuneAttentionModules"
-    | "finetuneMLPModules"
-    | "targetModules"
-  >
->;
+import type { ModelDefaultsPatch } from "./model-defaults-edit-policy";
 
 function toNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
-    const parsed = Number(value);
+    // Do not coerce blank strings to 0.
+    const trimmed = value.trim();
+    if (trimmed === "") return undefined;
+    const parsed = Number(trimmed);
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
@@ -64,21 +30,53 @@ function toStringValue(value: unknown): string | undefined {
 
 function toStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const result = value.filter((item): item is string => typeof item === "string");
+  const result = [
+    ...new Set(
+      value.filter((item): item is string => typeof item === "string"),
+    ),
+  ];
   return result.length > 0 ? result : undefined;
 }
+
+// The spellings studio/backend/core/training/trainer.py accepts, so a file means
+// the same thing to the picker as it does to the trainer. A quoted "false" read
+// as "leave it at the default" is how a config asking for no checkpointing ended
+// up training with Unsloth GC.
+const GRADIENT_CHECKPOINTING_ALIASES = new Map<
+  string,
+  TrainingConfigState["gradientCheckpointing"]
+>([
+  ["true", "true"],
+  ["1", "true"],
+  ["yes", "true"],
+  ["false", "none"],
+  ["0", "none"],
+  ["no", "none"],
+  ["none", "none"],
+  ["off", "none"],
+  ["unsloth", "unsloth"],
+  ["mlx", "mlx"],
+]);
 
 function toGradientCheckpointing(
   value: unknown,
 ): TrainingConfigState["gradientCheckpointing"] | undefined {
-  if (value === "none" || value === "true" || value === "unsloth" || value === "mlx") {
-    // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
-    if (usePlatformStore.getState().deviceType === "mac" && value === "unsloth") {
-      return "mlx";
-    }
-    return value;
+  // Shipped YAML may decode this value as a boolean.
+  if (typeof value === "boolean") return value ? "true" : "none";
+  if (typeof value !== "string") return undefined;
+  // Blank means absent here too, so it keeps whatever is selected.
+  const resolved = GRADIENT_CHECKPOINTING_ALIASES.get(
+    value.trim().toLowerCase(),
+  );
+  if (resolved === undefined) return undefined;
+  // On Mac, map "unsloth" → "mlx" since Unsloth GC is GPU-only
+  if (
+    resolved === "unsloth" &&
+    usePlatformStore.getState().deviceType === "mac"
+  ) {
+    return "mlx";
   }
-  return undefined;
+  return resolved;
 }
 
 export function mapBackendModelConfigToTrainingPatch(
@@ -99,6 +97,19 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const learningRate = toNumber(training?.learning_rate);
   if (learningRate !== undefined) patch.learningRate = learningRate;
+
+  // Preserve explicit null ("derive it") versus an absent or invalid value.
+  if (Object.hasOwn(training ?? {}, "embedding_learning_rate")) {
+    const raw = training?.embedding_learning_rate;
+    if (raw === null) {
+      patch.embeddingLearningRate = null;
+    } else {
+      const embeddingLearningRate = toNumber(raw);
+      if (embeddingLearningRate !== undefined) {
+        patch.embeddingLearningRate = embeddingLearningRate;
+      }
+    }
+  }
 
   const optim = toStringValue(training?.optim);
   if (optim !== undefined) patch.optimizerType = optim;
@@ -130,16 +141,14 @@ export function mapBackendModelConfigToTrainingPatch(
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
 
-  // Only patch when the config carries the key; model-switch reset lives in
-  // setSelectedModel so same-model reloads don't wipe a user's choice.
+  // Only patch when the config carries the key; model-switch reset lives in setSelectedModel.
   if (Object.hasOwn(training ?? {}, "vision_image_size")) {
     const raw = training?.vision_image_size;
     if (raw == null) {
       patch.visionImageSize = null;
     } else {
-      // Mirror studio/backend/models/training.py:_check_vision_image_size:
-      // drop anything outside [_MIN_VISION_IMAGE_SIZE, _MAX_VISION_IMAGE_SIZE]
-      // so the store/UI never show a value the backend would reject.
+      // Mirror studio/backend/models/training.py:_check_vision_image_size: drop anything outside
+      // [_MIN_VISION_IMAGE_SIZE, _MAX_VISION_IMAGE_SIZE] so the UI never shows a rejected value.
       const n = toNumber(raw);
       if (n !== undefined && Number.isInteger(n) && n >= 256 && n <= 2048) {
         patch.visionImageSize = n;
@@ -181,6 +190,7 @@ export function mapBackendModelConfigToTrainingPatch(
 
   if (lora?.use_loftq === true) patch.loraVariant = "loftq";
   else if (lora?.use_rslora === true) patch.loraVariant = "rslora";
+  else if (lora?.use_dora === true) patch.loraVariant = "dora";
   else if (lora) patch.loraVariant = "lora";
 
   const finetuneVisionLayers = toBoolean(lora?.finetune_vision_layers);
@@ -210,7 +220,8 @@ export function mapBackendModelConfigToTrainingPatch(
   if (wandbProject !== undefined) patch.wandbProject = wandbProject;
 
   const enableTensorboard = toBoolean(logging?.enable_tensorboard);
-  if (enableTensorboard !== undefined) patch.enableTensorboard = enableTensorboard;
+  if (enableTensorboard !== undefined)
+    patch.enableTensorboard = enableTensorboard;
 
   const tensorboardDir = toStringValue(logging?.tensorboard_dir);
   if (tensorboardDir !== undefined) patch.tensorboardDir = tensorboardDir;

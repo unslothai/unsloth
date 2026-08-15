@@ -38,7 +38,7 @@ from utils.hardware import (
     DeviceType,
 )
 import utils.hardware.hardware as _hw_module
-from utils.utils import format_error_message
+from utils.utils import format_error_message, is_hf_authentication_error
 
 
 # ========== Helpers ==========
@@ -176,6 +176,28 @@ class TestClearGpuCache:
     def test_noop_on_cpu(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             clear_gpu_cache()
+
+    @needs_torch
+    def test_clears_mps_on_apple_silicon_without_mlx(self):
+        """An Apple Silicon host with a broken MLX stack reports CPU, but diffusion and video
+        still run on Metal, so the MPS allocator has to be released on that path too."""
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
+            patch("torch.mps.empty_cache") as mock_empty,
+        ):
+            clear_gpu_cache()
+            mock_empty.assert_called_once()
+
+    @needs_torch
+    def test_does_not_clear_mps_on_a_non_apple_cpu_host(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
+            patch("utils.hardware.hardware.is_apple_silicon", return_value = False),
+            patch("torch.mps.empty_cache") as mock_empty,
+        ):
+            clear_gpu_cache()
+            mock_empty.assert_not_called()
 
 
 # ========== get_gpu_memory_info() ==========
@@ -438,6 +460,20 @@ class TestFormatErrorMessage:
         err = Exception("Invalid user token")
         msg = format_error_message(err, "any/model")
         assert "invalid" in msg.lower()
+
+    def test_hf_authentication_error_follows_wrapped_401(self):
+        response = type("Response", (), {"status_code": 401})()
+        auth_error = Exception("request failed")
+        auth_error.response = response
+        wrapper = RuntimeError("model validation failed")
+        wrapper.__cause__ = auth_error
+        assert is_hf_authentication_error(wrapper) is True
+
+    def test_hf_authentication_error_does_not_treat_429_as_invalid(self):
+        response = type("Response", (), {"status_code": 429})()
+        rate_error = Exception("too many requests")
+        rate_error.response = response
+        assert is_hf_authentication_error(rate_error) is False
 
     # --- OOM on CUDA ---
 
