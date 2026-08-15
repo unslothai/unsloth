@@ -142,8 +142,18 @@ export function perModelConfigsEqual(
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
+    extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
+}
+
+/**
+ * Compare on the launched command, so "not loaded" and "cleared" are equal here.
+ * They differ only in what a SAVE does, and treating them as different would make
+ * the row read as an unsaved change the moment it finished reading the server.
+ */
+function extraArgsSignature(value: string[] | null | undefined): string {
+  return (value ?? []).join("\u0000");
 }
 
 function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {

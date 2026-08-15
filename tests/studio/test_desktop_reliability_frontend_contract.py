@@ -868,7 +868,12 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
     assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
     assert "data-tauri-drag-region" in navbar
 
-    for page in (IMAGES_PAGE, VIDEO_PAGE):
+    # (page, end of the header band, clickable control groups expected inside it)
+    for page, band_end, min_groups in (
+        (IMAGES_PAGE, "MediaPageLink", 3),
+        (VIDEO_PAGE, "MediaPageLink", 2),
+        (AUDIO_PAGE, "PillTabs", 2),
+    ):
         source = page.read_text(encoding = "utf-8")
         # matched on the band's size alone: Images lays its header out as a grid and Video as a
         # flex row, so the stacking contract below is what this pins, not one layout's utilities.
@@ -878,11 +883,12 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
         for token in ("pointer-events-none", "relative", "z-40"):
             assert token in opening, (page.name, token)
 
-        band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'"([^"]*pointer-events-auto flex[^"]*items-center gap-[^"]*)"', band)
-        assert len(groups) >= 2, (page.name, groups)
-        for group in groups:
-            assert "pointer-events-auto" in group, (page.name, group)
+        band = band.split(band_end, 1)[0]
+        # every control group in the band has to opt back in, whatever utilities lay it out:
+        # Audio and Images seat their mode pills in a grid cell, Video in a flex row, so
+        # matching on the opt-in alone is what keeps this honest across all three.
+        groups = re.findall(r'"([^"]*pointer-events-auto[^"]*)"', band)
+        assert len(groups) >= min_groups, (page.name, groups)
 
 
 def test_images_header_tracks_preview_and_preserves_titlebar_controls():

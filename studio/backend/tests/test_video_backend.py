@@ -3534,6 +3534,135 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
     assert sd_cpp_backend._tree_readers == 0, "the claim must be released after the probe"
 
 
+def _load_h3_native_offload(
+    monkeypatch,
+    tmp_path,
+    *,
+    help_text,
+    accelerator = True,
+    memory_mode = None,
+):
+    """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
+
+    ``help_text`` is what the binary answers ``--help`` with, which is the only thing the graph-cut
+    gate reads. ``accelerator = False`` reproduces the Linux CUDA host with only the CPU prebuilt,
+    where the load commits to ``native_device = "cpu"``.
+    """
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli",
+    )
+    # One probe helper serves both --list-devices and --help, so the ggml device line rides along or the CPU case is unreachable.
+    devices = "CUDA0\tNVIDIA GeForce RTX 4070 Ti\n" if accelerator else "CPU\tAMD Ryzen 9\n"
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: devices + help_text)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        memory_mode = memory_mode,
+    )
+    assert backend._state is not None
+    return backend._state, list(backend._state.pipe.offload_flags)
+
+
+# Both fixtures carry the project banner the identity gate reads and the H3 marker
+# ensure_h3_sd_cpp_binary gates on, and differ only in the graph-cut options.
+_H3_HELP = (
+    "stable-diffusion.cpp version master-813\n"
+    "  --ref-video           MiniMax-H3 Ref2VA reference video frame directory\n"
+)
+_GRAPH_CUT_HELP = (
+    _H3_HELP + "  --max-vram <string>   VRAM budget\n  --stream-layers       prefetch\n"
+)
+_NO_GRAPH_CUT_HELP = _H3_HELP + "  --offload-to-cpu      place the weights in RAM\n"
+
+
+def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_path):
+    """H3's modules are individually larger than the cards it is offered on, so --offload-to-cpu
+    alone still allocates each one whole and cudaMallocs before any tensor is resident. The graph
+    cut is what makes the checkpoint renderable, and auto -- not low_vram -- is the default mode
+    that has to carry it."""
+    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+    assert state.device == "cuda"
+    # auto offloads, which is what makes --stream-layers take effect.
+    assert "--offload-to-cpu" in offload
+    assert offload[-3:] == ["--max-vram", "-1", "--stream-layers"]
+    # A negative budget auto-detects per device. A fixed number would misjudge the other card.
+    assert "0" not in offload
+
+
+def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path):
+    """fast keeps the params resident on the device, and upstream only honours --stream-layers when
+    the diffusion params backend is CPU: without --offload-to-cpu it warns and ignores the flag.
+    The budget still segments on its own, so --max-vram stays."""
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, memory_mode = "fast"
+    )
+    assert "--offload-to-cpu" not in offload
+    assert offload[-2:] == ["--max-vram", "-1"]
+    assert "--stream-layers" not in offload
+
+
+def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):
+    """sd-cli exits non-zero on an option it does not know, so emitting these unconditionally
+    would break every generation on a build that predates the executor."""
+    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _NO_GRAPH_CUT_HELP)
+    assert "--max-vram" not in offload
+    assert "--stream-layers" not in offload
+
+
+def test_h3_native_skips_the_graph_cut_flags_on_cpu(monkeypatch, tmp_path):
+    """The cut splits a module to fit a device budget; the CPU backend allocates from system RAM,
+    so there is nothing to size against."""
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, accelerator = False
+    )
+    assert state.device == "cpu"
+    assert "--max-vram" not in offload
+
+
 def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path):
     """The second load on a Linux CUDA host. The first one installed the CPU prebuilt (upstream
     publishes no Linux CUDA asset for the pinned tag), and from then on ensure_sd_cpp_binary finds
