@@ -1043,3 +1043,49 @@ def test_cpu_pinned_drafter_weights_are_charged_to_host_ram(tmp_path, monkeypatc
             speculative_type = "mtp",
             extra_args = ["--spec-draft-ngl", "0"],
         )
+
+
+def test_a_hand_typed_mlock_prices_the_whole_mapping(tmp_path, monkeypatch):
+    """With both Model Memory toggles off, apply_model_memory_policy preserves a
+    caller's --mlock, so the launch pins the whole mapping even though should_mlock()
+    is false. --no-mmap reads it into a full host buffer for the same reason."""
+    import utils.model_memory_settings as mms
+
+    monkeypatch.setattr(mms, "should_mlock", lambda: False)
+    for flag in ("--mlock", "--no-mmap"):
+        backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14_000)
+        )
+        with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+            _launch(backend, gguf, extra_args = [flag])
+
+
+def test_a_cpu_device_override_takes_no_vram_credit(tmp_path, monkeypatch):
+    """`--device none` leaves the child nothing to offload onto, so the detected
+    card's free VRAM must not offset the model."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 12_000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--device", "none"])
+
+
+def test_a_cgroup_limit_caps_the_available_ram_reading(monkeypatch):
+    """Inside a memory-limited container the binding memory.max, not the host's
+    MemAvailable, is what the OOM killer enforces."""
+    import core.inference.llama_cpp as mod
+
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.virtual_memory = lambda: types.SimpleNamespace(available = 64 * 1024**3)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+
+    fake_dnp = types.ModuleType("unsloth.dataset_num_proc")
+    fake_dnp._cgroup_free_bytes = lambda: 3 * 1024**3
+    monkeypatch.setitem(sys.modules, "unsloth.dataset_num_proc", fake_dnp)
+    assert mod.LlamaCppBackend._available_system_memory_mib() == 3 * 1024
+
+    fake_dnp._cgroup_free_bytes = lambda: None
+    assert mod.LlamaCppBackend._available_system_memory_mib() == 64 * 1024

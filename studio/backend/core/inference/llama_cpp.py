@@ -6806,19 +6806,32 @@ class LlamaCppBackend:
         """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
         neither is readable. On a unified-memory APU this, not the ROCm-reported
         VRAM, is the real ceiling: the weights load into shared system RAM."""
+        avail: Optional[int] = None
         try:
             import psutil
-            return int(psutil.virtual_memory().available // (1024 * 1024))
+            avail = int(psutil.virtual_memory().available // (1024 * 1024))
         except Exception:
             pass
+        if avail is None:
+            try:
+                with open("/proc/meminfo", encoding = "utf-8") as f:
+                    for line in f:
+                        if line.startswith("MemAvailable:"):
+                            avail = int(line.split()[1]) // 1024  # kB -> MiB
+                            break
+            except Exception:
+                pass
+        # a container or systemd scope is OOM-killed at its own memory.max, not the host's
         try:
-            with open("/proc/meminfo", encoding = "utf-8") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        return int(line.split()[1]) // 1024  # kB -> MiB
+            from unsloth.dataset_num_proc import _cgroup_free_bytes
+
+            cgroup_free = _cgroup_free_bytes()
+            if cgroup_free is not None and cgroup_free >= 0:
+                cgroup_mib = int(cgroup_free // (1024 * 1024))
+                avail = cgroup_mib if avail is None else min(avail, cgroup_mib)
         except Exception:
             pass
-        return None
+        return avail
 
     @staticmethod
     def _apu_ram_shortfall_message(
@@ -13782,11 +13795,22 @@ class LlamaCppBackend:
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
                     if _draft_on_cpu and _mtp_draft_for_budget:
-                        # off the gpu budget, but still resident in host ram
+                        # off the gpu budget, but weights and kv still sit in host ram
                         try:
                             _cpu_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
                         except Exception:
                             _cpu_draft_weights = 0
+                        try:
+                            _cpu_draft_weights += (
+                                self._mtp_draft_kv_bytes(
+                                    effective_ctx,
+                                    drafter_path = _mtp_draft_for_budget,
+                                    n_parallel = n_parallel,
+                                )
+                                or 0
+                            )
+                        except Exception:
+                            pass
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
                     _mtp_draft_weights = 0
@@ -14883,6 +14907,12 @@ class LlamaCppBackend:
                     except Exception:
                         # settings unavailable: price the spill, the pre-guard behaviour
                         _guard_mlocked = False
+                    # both toggles off preserves a hand-typed --mlock / --no-mmap
+                    _guard_mlocked = _guard_mlocked or any(
+                        resolve_effective_memory_state(extra_args)
+                    )
+                    # a --device naming no gpu leaves the child nothing to offload onto
+                    _guard_cpu_only = _device_selection_is_cpu(extra_args, os.environ)
                     # a page-locked mapping is pinned whole and --device none holds no vram
                     _fit_vram_mib = (
                         0
@@ -14890,6 +14920,7 @@ class LlamaCppBackend:
                             _paravirtual_cpu_forced
                             or _arch_gate_forced_cpu
                             or _guard_mlocked
+                            or _guard_cpu_only
                             # gated to 0 layers above, so the gpus hold nothing
                             or _manual_layers
                         )
