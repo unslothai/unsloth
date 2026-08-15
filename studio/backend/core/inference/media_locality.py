@@ -392,33 +392,45 @@ def _component_present(component: Path, variant: str = "") -> bool:
 
     ``variant`` is the named weight set a modular spec can pin (``fp16`` and the like), which
     from_pretrained requires by name rather than falling back to the default files.
+
+    Judged on entries that are real FILES, not merely names in the directory listing. An HF cache
+    snapshot holds symlinks into ``blobs/``, and a deleted blob leaves the link behind: matching
+    on the name alone reads such a component as complete, evicts the resident pipeline, and then
+    fails in from_pretrained with nothing loaded. The same listing on Windows without developer
+    mode holds copies rather than links and cannot express that state at all, so the two hosts
+    disagreed about the very same repository. A directory that merely ends in ``.safetensors``
+    is excluded by the same test.
     """
     try:
         if not component.is_dir():
             return False
         entries = list(component.iterdir())
+        files = [entry for entry in entries if entry.is_file()]
     except OSError:
         return False
     if not entries:
         return False
     if not _shards_present(component):
         return False
-    if variant and not any(f".{variant}." in entry.name for entry in entries):
+    if variant and not any(f".{variant}." in entry.name for entry in files):
         return False
+    # kept on the full listing: a shard index whose blob is gone must still route here, where
+    # _shards_declared reads the unreadable index and refuses, rather than fall through to the
+    # weight test below and pass on whichever sibling shard did survive
     if any(entry.name.endswith(".index.json") for entry in entries):
         # an index is proof only once it declares something; an empty weight_map declares nothing
         return _shards_declared(component)
     # a weight-bearing component declares config.json; schedulers, tokenizers and processors
     # carry their own *_config.json instead and ship no weights at all
     if (component / "config.json").is_file():
-        return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in entries)
+        return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in files)
     # a tokenizer ships no weights but is still useless without its vocabulary, and which file
     # that is varies by class, so any one of the known spellings answers for all of them
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
     # a metadata-only component is its config: a scheduler or processor directory holding
     # anything else at all (a stray README) builds nothing and is fetched at load time
-    return any(entry.name.endswith("config.json") for entry in entries)
+    return any(entry.name.endswith("config.json") for entry in files)
 
 
 def _shards_declared(component: Path) -> bool:
