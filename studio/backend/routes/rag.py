@@ -828,6 +828,11 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
     _require_rag()
     conn = _rag_connection()
     try:
+        # Read and delete in one transaction so this serializes against an ingestion worker
+        # publishing a replacement of this document (ingestion._replace_old_document takes the
+        # same lock). Otherwise the worker could retire this row between the read and the
+        # delete, leaving the delete a silent no-op and the source back under the new id.
+        conn.execute("BEGIN IMMEDIATE")
         doc = store.get_visible_document(conn, document_id)
         if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
@@ -1220,6 +1225,20 @@ def _document_text(stored_path: str, ext: str) -> tuple[str, bool]:
     return text, complete and text.encode("utf-8") == raw
 
 
+def _newline_style(text: str) -> str | None:
+    """The one line ending this text uses, or ``None`` when it mixes conventions.
+
+    A <textarea> hands back "\\n" for every line whatever the file used -- the HTML API value is
+    newline-normalized -- so an edit can only be written back verbatim when a single convention
+    covers the whole file and the client can restore it. A file that mixes them (or uses a lone
+    CR) has no such convention, so it is shown and not edited rather than silently rewritten.
+    """
+    crlf, lf, cr = text.count("\r\n"), text.count("\n"), text.count("\r")
+    if crlf and crlf == lf == cr:
+        return "\r\n"
+    return "\n" if not cr else None
+
+
 @router.get("/documents/{document_id}/content")
 def document_content(document_id: str, subject: str = Depends(get_current_subject)) -> dict:
     """Text of a source for the preview modal, plus whether it may be edited.
@@ -1247,6 +1266,8 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
         "editable": False,
         "truncated": False,
         "readOnlyReason": None,
+        # The line ending the editor must restore on save; see _newline_style.
+        "newline": "\n",
     }
     if ext == ".pdf":
         # Rendered from the signed file URL by pdf.js, so no text is sent here.
@@ -1291,8 +1312,16 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
         out["readOnlyReason"] = (
             "This file cannot be edited here: it is too large or is not valid UTF-8 text."
         )
+    elif (newline := _newline_style(out["text"])) is None:
+        # The editor works in LF and restores one convention on save, which a file using
+        # several cannot survive: saving it back would rewrite line endings the user never
+        # touched, the same reason a lossy decode above is read-only.
+        out["readOnlyReason"] = (
+            "This file mixes line endings, so editing it here would rewrite them."
+        )
     else:
         out["editable"] = True
+        out["newline"] = newline
     return out
 
 

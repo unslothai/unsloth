@@ -70,6 +70,37 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
 
 
+def _release_replaced_claim(replaces: tuple[str, str | None] | None) -> None:
+    """Hand back the source this ingestion was replacing when the replacement did not land.
+
+    Editing a source claims it with ``status='running'`` so a second edit of it cannot start
+    (``routes/rag.py::_claim_document_for_replacement``). A successful ingestion deletes that
+    row, so this matches nothing; every other outcome -- a failed parse or embed, a lost lease,
+    a cancellation -- would otherwise leave the source reading as indexing forever, polled
+    endlessly and refusing both a retry and a removal.
+
+    Guarded on ``status='running'`` so the other caller of ``replaces`` (the stale-embedder and
+    empty-ingest dedupe branch of ``start_ingestion``, whose old row is ``completed``) is
+    untouched. Best-effort for the same reason ``_remove_upload`` is: a logged warning beats
+    turning a failed job into a second failure.
+    """
+    if replaces is None:
+        return
+    old_id, _ = replaces
+    try:
+        conn = rag_db.get_connection()
+        try:
+            conn.execute(
+                "UPDATE documents SET status='completed' WHERE id=? AND status='running'",
+                (old_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - the job is already settling
+        logger.warning("failed to release the edit claim on %s", old_id, exc_info = True)
+
+
 def _emit(job_id: str, event: dict) -> None:
     with _jobs_lock:
         q = _jobs.get(account_key(job_id))
@@ -122,6 +153,25 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
     _emit(job_id, {"type": "error", "stage": "cancelled", "error": "Document was deleted"})
     return True
+
+
+def _withdraw_replacement(conn, job_id: str) -> None:
+    """Settle a job whose replacement was not published because the source was deleted.
+
+    ``_replace_old_document`` has already removed the row; this only reports it. The error text
+    is set (unlike ``_abort_if_document_deleted``, whose caller has no one waiting) because the
+    preview modal polls this job to decide whether a save succeeded, and would otherwise blame
+    the re-index for a deletion the user asked for.
+    """
+    _set_job(
+        conn,
+        job_id,
+        status = "cancelled",
+        stage = "done",
+        progress = 1.0,
+        error = "Document was deleted",
+    )
+    _emit(job_id, {"type": "error", "stage": "cancelled", "error": "Document was deleted"})
 
 
 def _embed_pass(
@@ -237,26 +287,41 @@ def _ocr_scanned_pages(
 
 def _replace_old_document(
     conn, replaces: tuple[str, str | None] | None, keep_path: str, document_id: str
-) -> None:
+) -> bool:
     """Drop the document this ingestion replaced (stale embedder / empty prior
     ingest), called only after the replacement completed successfully.
 
-    Checked against the replacement inside the transaction that retires the old row: every
-    store helper commits, so a delete that removed the replacement between the completion and
-    this call would otherwise take the still-searchable document it was replacing with it.
+    Returns whether the replacement stands. Both rows are checked inside the one transaction
+    that retires the old one, because every store helper commits and a delete landing between
+    a check and the write would otherwise be lost:
+
+    * the replacement gone means a delete already removed it, so there is nothing to publish
+      and the document it was replacing must keep its chunks
+    * the *old* row gone means the user deleted the source while this ingestion ran. Their
+      delete wins: publishing here would bring a source they just removed back under a new id,
+      so the replacement is withdrawn instead.
     """
     if replaces is None:
-        return
+        return True
     old_id, old_path = replaces
+    # Decided before the writes below, so a failure part way through them still reports the
+    # outcome the rows were checked for rather than defaulting to publishing.
+    published = True
     try:
         conn.execute("BEGIN IMMEDIATE")
         if store.get_document(conn, document_id) is None:
             conn.rollback()
-            return
-        store.delete_document(conn, old_id)
-        _remove_upload(old_path, keep_path = keep_path)
+            return False
+        published = store.get_document(conn, old_id) is not None
+        if published:
+            store.delete_document(conn, old_id)
+            _remove_upload(old_path, keep_path = keep_path)
+        else:
+            store.delete_document(conn, document_id)
+            _remove_upload(keep_path)
     except Exception:  # noqa: BLE001 - the new document is already live
-        logger.warning("failed to remove replaced document %s", old_id, exc_info = True)
+        logger.warning("failed to settle replaced document %s", old_id, exc_info = True)
+    return published
 
 
 def _retire_orphan_after_failure(
@@ -389,6 +454,18 @@ def _run(
             if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
                 conn.rollback()
                 raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
+            # An edit that empties a source still completes: the user cleared the text
+            # on purpose and the replacement is the version they asked for. An upload
+            # that parses to nothing keeps failing below, since that is a mistake the
+            # user can act on rather than an intentional blank.
+            if replaces is not None:
+                store.set_document_status(conn, document_id, "completed", num_chunks = 0)
+                if not _replace_old_document(conn, replaces, stored_path, document_id):
+                    _withdraw_replacement(conn, job_id)
+                    return
+                _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
+                _emit(job_id, {"type": "complete", "num_chunks": 0})
+                return
             raise ValueError(
                 "No extractable text found in file. Upload a document containing readable text."
             )
@@ -426,7 +503,9 @@ def _run(
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
-        _replace_old_document(conn, replaces, stored_path, document_id)
+        if not _replace_old_document(conn, replaces, stored_path, document_id):
+            _withdraw_replacement(conn, job_id)
+            return
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
@@ -448,6 +527,9 @@ def _run(
             # ingestion, so a lost lease ends the work too: only _new_job ever claims one.
             _retire_orphan_after_failure(conn, replaces, stored_path, document_id)
             conn.close()
+        # Unconditional: on the one path that published the replacement the old row is already
+        # gone, so this matches nothing. Every other exit leaves an edit claim to hand back.
+        _release_replaced_claim(replaces)
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
             _workers.pop(account_key(job_id), None)

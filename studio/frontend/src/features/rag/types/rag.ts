@@ -196,6 +196,10 @@ export interface DocumentContent {
   editable: boolean;
   /** Text was cut off at the size cap, so it is shown but not editable. */
   truncated: boolean;
+  /** The line ending the file uses. A textarea reports every line as "\n" whatever the
+   * file held, so the editor works in LF and restores this on save; a file mixing
+   * conventions has none, and comes back read-only instead. */
+  newline: "\n" | "\r\n";
   /** Why editing is unavailable; shown in the footer. Null when editable. */
   readOnlyReason?: string | null;
 }

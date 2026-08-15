@@ -94,8 +94,15 @@ export function SourcePreviewDialog({
     setZoom(1);
     (async () => {
       try {
-        const loaded = await getDocumentContent(documentId);
+        const raw = await getDocumentContent(documentId);
         if (cancelled) return;
+        // A <textarea> reports every line as "\n" whatever the file held, so the editor
+        // works in LF and handleSave restores `newline`. The baseline is normalized too,
+        // or the dirty check would fire on a file the user has not touched.
+        const loaded = {
+          ...raw,
+          text: raw.text?.replace(/\r\n/g, "\n") ?? null,
+        };
         setContent(loaded);
         setText(loaded.text ?? "");
         if (loaded.mediaKind === "pdf") {
@@ -135,7 +142,11 @@ export function SourcePreviewDialog({
     if (!documentId || !dirty) return;
     setSaving(true);
     try {
-      const { jobId } = await updateDocumentContent(documentId, text);
+      // Back into the file's own convention, so a one-character edit to a CRLF file
+      // rewrites that character and not every line ending in it.
+      const body =
+        content?.newline === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
+      const { jobId } = await updateDocumentContent(documentId, body);
       // The PUT only starts the re-index. Reporting success here would call a
       // failed parse or embed a save: the replacement is dropped, the original
       // stays, and the edit is silently lost. Wait for the job to settle.

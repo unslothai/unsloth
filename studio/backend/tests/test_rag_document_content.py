@@ -51,7 +51,7 @@ def _await_job(job_id: str, *, expect: str = "completed") -> dict:
     status = None
     while time.time() < deadline:
         status = ingestion.get_job_status(job_id)
-        if status and status["status"] in ("completed", "failed"):
+        if status and status["status"] in ("completed", "failed", "cancelled"):
             break
         time.sleep(0.02)
     assert status and status["status"] == expect, status
@@ -323,6 +323,46 @@ def test_a_failed_reindex_leaves_the_original_searchable(rag_home, stub_embeddin
     monkeypatch.setattr(embeddings, "encode", working)
     assert _search(client, "kickoff third"), "the original is no longer retrievable"
 
+    # The save claimed the source with status='running'. Only the replacement retiring it
+    # releases that claim, so a failure has to hand it back or the source reads as indexing
+    # forever: polled every few seconds, and refusing both a retry and a removal.
+    row = _document_row(doc_id)
+    assert row["status"] == "completed", "a failed edit left the source stuck indexing"
+    retry = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "second try\n"})
+    assert retry.status_code == 200, "the source could not be edited again after a failed save"
+    _await_job(retry.json()["jobId"])
+    assert _search(client, "second try")
+
+
+def test_deleting_a_source_mid_save_leaves_nothing_indexed(rag_home, stub_embeddings, monkeypatch):
+    """A delete during a save must win. The worker retires the old row only on success, so a
+    delete landing first would leave the replacement to publish a source the user removed."""
+    from core.rag import ingestion
+
+    _, doc_id, old_path = _ingest("notes.md", "kickoff is on the third\n")
+    client = _client()
+
+    real_embed_all = ingestion._embed_all
+
+    def delete_original_then_embed(texts, model_name):
+        vectors = real_embed_all(texts, model_name)
+        # Through the route, so this is the delete a second client would issue.
+        assert client.delete(f"/api/rag/documents/{doc_id}").status_code == 200
+        return vectors
+
+    monkeypatch.setattr(ingestion, "_embed_all", delete_original_then_embed)
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "replacement\n"})
+    assert res.status_code == 200
+    new_id = res.json()["documentId"]
+    _await_job(res.json()["jobId"], expect = "cancelled")
+
+    assert _document_row(doc_id) is None
+    assert _document_row(new_id) is None, "a deleted source came back as its replacement"
+    assert not os.path.exists(old_path)
+    monkeypatch.setattr(ingestion, "_embed_all", real_embed_all)
+    assert not _search(client, "replacement"), "the withdrawn replacement is still indexed"
+    assert not _search(client, "kickoff third")
+
 
 def test_editing_html_saves_the_markup_and_indexes_its_visible_text(rag_home, stub_embeddings):
     # The Edit tab holds markup, so the file must round-trip as markup while the
@@ -462,6 +502,50 @@ def test_a_file_with_invalid_utf8_is_shown_but_not_editable(rag_home, stub_embed
     assert body["editable"] is False
     assert body["truncated"] is True
     assert path.read_bytes().startswith(b"caf\xe9"), "the file itself is untouched"
+
+
+def _ingest_bytes(filename: str, body: bytes) -> str:
+    """Index a managed upload whose exact bytes matter, without the newline translation
+    ``Path.write_text`` applies on Windows."""
+    from core.rag import ingestion, store
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    path = ensure_dir(rag_uploads_root()) / filename
+    path.write_bytes(body)
+    doc_id, job_id = ingestion.start_ingestion(
+        store.project_scope(PROJECT_ID), None, None, filename, str(path), project_id = PROJECT_ID
+    )
+    _await_job(job_id)
+    return doc_id
+
+
+def test_a_crlf_source_reports_its_line_ending(rag_home, stub_embeddings):
+    # A <textarea> hands back "\n" for every line, so the client has to be told what to
+    # restore -- otherwise one edited character rewrites every line ending in the file.
+    doc_id = _ingest_bytes("windows.md", b"# Notes\r\n\r\nkickoff is on the third\r\n")
+    body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
+
+    assert body["editable"] is True
+    assert body["newline"] == "\r\n"
+
+
+def test_an_lf_source_reports_lf(rag_home, stub_embeddings):
+    doc_id = _ingest_bytes("unix.md", b"# Notes\n\nkickoff is on the third\n")
+    body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
+
+    assert body["editable"] is True
+    assert body["newline"] == "\n"
+
+
+def test_a_source_with_mixed_line_endings_is_not_editable(rag_home, stub_embeddings):
+    # There is no single convention to restore, so an edit would rewrite whichever half
+    # did not match -- the same lossiness that makes an invalid-UTF-8 file read-only.
+    doc_id = _ingest_bytes("mixed.md", b"first line\r\nsecond line\nthird line\r\n")
+    body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
+
+    assert body["editable"] is False
+    assert "line endings" in body["readOnlyReason"]
+    assert "second line" in body["text"], "it must still preview"
 
 
 def test_valid_utf8_multibyte_text_stays_editable(rag_home, stub_embeddings):
