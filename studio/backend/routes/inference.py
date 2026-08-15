@@ -5392,7 +5392,11 @@ def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
     )
 
 
-def _matches_any(requested: str, candidates, fold_case: bool = True) -> bool:
+def _matches_any(
+    requested: str,
+    candidates,
+    fold_case: bool = True,
+) -> bool:
     """Whether *requested* names any of *candidates*.
 
     A repo alias is case-insensitive, a filesystem path is not: lowercasing both

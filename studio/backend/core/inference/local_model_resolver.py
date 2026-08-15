@@ -217,6 +217,7 @@ def _vocabulary_file_is_readable(path) -> bool:
 # far above any real header: a corrupt length reads huge, and reading it is the failure here.
 _MAX_SAFETENSORS_HEADER_BYTES = 256 * 1024 * 1024
 
+
 def _is_index(value) -> bool:
     """A nonnegative integer offset or dimension, excluding bool, which subclasses int."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
@@ -499,7 +500,6 @@ def _has_a_chat_template(load_dir, loader_id: str) -> bool:
             return True
     try:
         from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
-
         return str(loader_id).strip().lower() in MODEL_TO_TEMPLATE_MAPPER
     except Exception:
         return False

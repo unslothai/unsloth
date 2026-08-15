@@ -8499,7 +8499,9 @@ def test_a_text_seq2seq_checkpoint_is_not_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "t5-base")
     info = SimpleNamespace(id = str(path), path = str(path))
-    (path / "config.json").write_text('{"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}')
+    (path / "config.json").write_text(
+        '{"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}'
+    )
     assert resolver.local_servable_model(info) is None
     (path / "config.json").write_text(
         '{"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3", "vision_config": {}}'
@@ -8583,7 +8585,9 @@ def test_a_causal_model_without_the_suffix_stays_switchable(tmp_path):
 
     path = _local_checkpoint(tmp_path, "gpt2")
     info = SimpleNamespace(id = str(path), path = str(path))
-    (path / "config.json").write_text('{"architectures": ["GPT2LMHeadModel"], "model_type": "gpt2"}')
+    (path / "config.json").write_text(
+        '{"architectures": ["GPT2LMHeadModel"], "model_type": "gpt2"}'
+    )
     assert resolver.local_servable_model(info) == (False, ())
 
 
