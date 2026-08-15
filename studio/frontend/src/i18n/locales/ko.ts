@@ -386,7 +386,7 @@ export const ko = {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
         enable: "요청에 따라 모델 전환",
         enableDescription:
-          "API 요청에 지정된 GGUF가 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
+          "API 요청에 지정된 모델이 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",

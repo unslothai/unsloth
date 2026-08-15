@@ -518,7 +518,7 @@ def test_local_gguf_entry_rejects_standalone_companions(tmp_path, monkeypatch):
     proj = tmp_path / "mmproj-F16.gguf"
     proj.write_text("x")
     assert resolver._local_gguf_entry("p", SimpleNamespace(path = str(proj))) is None
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(proj), path = str(proj))) is False
+    assert resolver.local_servable_model(SimpleNamespace(id = str(proj), path = str(proj))) is None
     root = tmp_path / "MTP"
     root.mkdir()
     main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
@@ -2387,23 +2387,32 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
 
 
-def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
+def test_local_servable_model_reads_files_not_model_format(tmp_path):
     # Codex: HF-cache GGUF snapshots leave model_format unset, so /v1/models must
-    # decide GGUF-ness from the on-disk files. A standalone .gguf (no model_format)
-    # is servable; a safetensors-only dir is not.
+    # decide the format from the on-disk files. A checkpoint dir needs a root
+    # config.json to prove it is a model and not a bare adapter.
     from types import SimpleNamespace
 
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(gguf), path = str(gguf))) is True
+    assert resolver.local_servable_model(SimpleNamespace(id = str(gguf), path = str(gguf))) == (
+        True,
+        (),
+    )
 
     st = tmp_path / "safetensors_model"
     st.mkdir()
     (st / "model.safetensors").write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(st), path = str(st))) is False
+    (st / "tokenizer.json").write_text("{}")
+    assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) is None
+    (st / "config.json").write_text("{}")
+    assert resolver.local_servable_model(SimpleNamespace(id = str(st), path = str(st))) == (
+        False,
+        (),
+    )
 
 
-def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
+def test_local_servable_model_excludes_ollama_links(tmp_path):
     # Codex P2: Ollama entries come from a scanner _build_index skips, so their
     # advertised ids never resolve; the catalog must not report them as servable.
     from types import SimpleNamespace
@@ -2413,13 +2422,18 @@ def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
     ollama_gguf = links / "model-Q4_K_M.gguf"
     ollama_gguf.write_bytes(b"x" * 32)
     assert (
-        resolver.info_has_local_gguf(SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf)))
-        is False
+        resolver.local_servable_model(
+            SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf))
+        )
+        is None
     )
     # The same GGUF outside an ollama-link dir is still servable.
     plain = tmp_path / "model-Q4_K_M.gguf"
     plain.write_bytes(b"x" * 32)
-    assert resolver.info_has_local_gguf(SimpleNamespace(id = str(plain), path = str(plain))) is True
+    assert resolver.local_servable_model(SimpleNamespace(id = str(plain), path = str(plain))) == (
+        True,
+        (),
+    )
 
 
 def test_embeddings_input_present_helper():
@@ -2936,7 +2950,12 @@ def _chat_msg(text = "hi"):
     return ChatMessage(role = "user", content = text)
 
 
-def _responses_payload(*, tools = None, set_model = True):
+def _responses_payload(
+    *,
+    tools = None,
+    set_model = True,
+    stream = None,
+):
     from models.inference import ResponsesRequest
 
     kwargs = dict(input = "hi")
@@ -2944,6 +2963,8 @@ def _responses_payload(*, tools = None, set_model = True):
         kwargs["model"] = "org/B-GGUF"
     if tools is not None:
         kwargs["tools"] = tools
+    if stream is not None:
+        kwargs["stream"] = stream
     return ResponsesRequest(**kwargs)
 
 
@@ -3144,7 +3165,8 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     # target can't be loaded and evict the working audio model. Assert the handler
     # flags require_vision so the hook's multimodal probe runs, and that it asks for
     # the projector alone: an audio model's projector carries no vision tower, so
-    # requiring one would refuse the very models that serve the request.
+    # requiring one would refuse the very models that serve the request. A
+    # safetensors or MLX checkpoint declares audio apart, so that flag rides along.
     from models.inference import ChatMessage, ImageContentPart, ImageUrl
 
     class _Reached(Exception):
@@ -3159,8 +3181,14 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         *,
         require_vision = False,
         require_image = True,
+        require_audio_input = False,
+        gguf_only = False,
     ):
-        captured.update(require_vision = require_vision, require_image = require_image)
+        captured.update(
+            require_vision = require_vision,
+            require_image = require_image,
+            require_audio_input = require_audio_input,
+        )
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -3168,7 +3196,11 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     payload = _chat_request(model = "org/B-GGUF", audio_base64 = "AAAA")
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured == {"require_vision": True, "require_image": False}
+    assert captured == {
+        "require_vision": True,
+        "require_image": False,
+        "require_audio_input": True,
+    }
 
     # An image in the same request does need the vision tower.
     img = ImageContentPart(type = "image_url", image_url = ImageUrl(url = "data:image/png;base64,AAAA"))
@@ -3179,7 +3211,11 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     )
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
-    assert captured == {"require_vision": True, "require_image": True}
+    assert captured == {
+        "require_vision": True,
+        "require_image": True,
+        "require_audio_input": True,
+    }
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
@@ -3534,8 +3570,11 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        require_audio_input = False,
+        gguf_only = False,
     ):
         captured["require_vision"] = require_vision
+        captured["gguf_only"] = gguf_only
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
@@ -3544,6 +3583,8 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    # llama.cpp serves this endpoint alone, so a non-GGUF swap must not be attempted.
+    assert captured["gguf_only"] is True
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────
@@ -7913,3 +7954,389 @@ def test_normalize_keeps_an_explicit_empty_list_only_when_asked(monkeypatch):
         assert settings.normalize_model_override(
             {"llama_extra_args": ["--top-k", "40"]}, keep_empty_extra_args = keep
         ) == {"llama_extra_args": ["--top-k", "40"]}
+# ── non-GGUF discovery and switching ──
+
+
+def _local_checkpoint(root, name = "Qwen3-MLX-4bit"):
+    """An on-disk non-GGUF checkpoint: config.json and a tokenizer beside safetensors.
+
+    Unquantized, so it is servable on any host; the MLX-gating test adds the
+    mlx-lm quantization block itself.
+    """
+    path = root / name
+    path.mkdir()
+    (path / "config.json").write_text("{}")
+    (path / "model.safetensors").write_bytes(b"x" * 32)
+    (path / "tokenizer.json").write_text("{}")
+    return path
+
+
+def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
+    # The Images and Video backends own these; /v1/chat/completions cannot serve them.
+    from types import SimpleNamespace
+
+    pipeline = _local_checkpoint(tmp_path, "SomeDiffusionPipeline")
+    (pipeline / "model_index.json").write_text("{}")
+    info = SimpleNamespace(id = str(pipeline), path = str(pipeline))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_partial_download_is_not_a_servable_chat_model(tmp_path):
+    # Advertising an incomplete snapshot hands out an id whose load must fail.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path)
+    info = SimpleNamespace(id = str(path), path = str(path), partial = True)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_adapter_only_directory_is_not_a_servable_chat_model(tmp_path):
+    # A bare LoRA adapter has no config.json and cannot be served on its own.
+    from types import SimpleNamespace
+
+    path = tmp_path / "adapter"
+    path.mkdir()
+    (path / "adapter_config.json").write_text("{}")
+    (path / "adapter_model.safetensors").write_bytes(b"x" * 32)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_installed_mlx_model_is_indexed_and_resolves(tmp_path, monkeypatch):
+    # Issue #8748: an unloaded MLX model was invisible to the resolver, so a request
+    # naming it 404'd as not downloaded.
+    import routes.models as models_route
+    from utils import paths
+
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path)
+    (path / "config.json").write_text('{"quantization": {"group_size": 64, "bits": 4}}')
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(tmp_path)}])
+
+    resolver._scan = (0.0, {})
+    assert resolver.resolve_local_gguf(str(path)) == (str(path), None, path.name)
+    # No quant to pin: these weights carry their quantization internally.
+    assert resolver.resolve_local_gguf(f"{path.name}:Q4_K_M") is None
+    assert resolver.local_target_is_gguf(str(path), path.name) is False
+    # An index that no longer carries the entry must not flip the answer to GGUF.
+    resolver._scan = (0.0, {})
+    assert resolver.local_target_is_gguf(str(path), path.name) is False
+
+
+def test_auto_switch_loads_an_unloaded_mlx_model(monkeypatch):
+    # The other half of #8748: the switch must load it through the orchestrator.
+    llama = _FakeBackend(None)
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    entry = resolver._LocalGgufEntry(
+        "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+
+    _run_hook("unsloth/Qwen3-MLX")
+
+    assert [c.model_path for c in calls] == ["/srv/models/Qwen3-MLX"]
+    assert calls[0].gguf_variant is None
+    # The alias lands on the orchestrator, leaving the llama.cpp backend untouched.
+    assert orchestrator._openai_advertised_id == "unsloth/Qwen3-MLX"
+    assert getattr(llama, "_openai_advertised_id", None) is None
+    assert inference_route._openai_model_objects()[0]["id"] == "unsloth/Qwen3-MLX"
+
+
+def test_auto_switch_does_not_reload_a_resident_mlx_model(monkeypatch):
+    # Either guard alone stops the reload, so both are asserted directly as well.
+    llama = _FakeBackend(None)
+
+    class _FakeOrchestrator:
+        active_model_name = "/srv/models/Qwen3-MLX"
+        models: dict = {}
+        _openai_advertised_id = "unsloth/Qwen3-MLX"
+
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    entry = resolver._LocalGgufEntry(
+        "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+
+    assert inference_route._loaded_satisfies("unsloth/Qwen3-MLX") is True
+    assert inference_route._loaded_identity_satisfies("unsloth/Qwen3-MLX") is True
+    _run_hook("unsloth/Qwen3-MLX")
+    assert calls == []
+
+
+def test_a_resident_mlx_alias_counts_as_a_namespaced_identity(monkeypatch):
+    # Without the alias this reads a bare basename, so an unknown org/model would be
+    # answered by the resident MLX model instead of refused.
+    class _FakeOrchestrator:
+        active_model_name = "/srv/models/Qwen3-MLX"
+        _openai_advertised_id = "unsloth/Qwen3-MLX"
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resident_id_is_namespaced() is True
+
+
+def test_a_gguf_only_endpoint_refuses_a_non_gguf_target_before_loading(monkeypatch):
+    # Codex P1: /v1/completions, /v1/embeddings and the Anthropic routes read llama.cpp
+    # alone, and loading a non-GGUF model unloads the resident GGUF, so an unguarded
+    # switch left them with nothing to serve and a 503.
+    llama = _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/srv/models/Qwen3-MLX", None, "unsloth/Qwen3-MLX"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    entry = resolver._LocalGgufEntry(
+        "unsloth/Qwen3-MLX", "/srv/models/Qwen3-MLX", (), is_gguf = False
+    )
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/qwen3-mlx": entry}))
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "unsloth/Qwen3-MLX", object(), "tester", gguf_only = True
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert calls == [], "the resident GGUF was unloaded for a swap the endpoint cannot use"
+    assert llama.is_loaded is True
+
+
+def test_an_audio_request_probes_audio_capability_on_a_non_gguf_target(monkeypatch):
+    # Codex P2: audio rides a companion mmproj only for a GGUF. Probing vision on a
+    # safetensors Whisper rejected a model the non-GGUF chat branch can serve.
+    seen = {}
+
+    monkeypatch.setattr(
+        inference_route,
+        "_target_is_vision",
+        lambda path, *_a: seen.setdefault("vision", path) and False,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "_target_accepts_audio_input",
+        lambda path: seen.setdefault("audio", path) or True,
+    )
+    assert (
+        inference_route._target_accepts_request_input("/srv/models/Whisper", False, False, True)
+        is True
+    )
+    assert "vision" not in seen
+    # A GGUF still answers both from the one mmproj probe.
+    inference_route._target_accepts_request_input("/srv/models/A.gguf", True, False, True)
+    assert seen.get("vision") == "/srv/models/A.gguf"
+
+
+def test_a_custom_code_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: an auto_map repo needs trust_remote_code plus the subject's approval
+    # fingerprint, and a switch carries neither, so advertising it guarantees a load
+    # that fails after evicting the resident model.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "CustomCode")
+    (path / "config.json").write_text('{"auto_map": {"AutoModel": "modeling.MyModel"}}')
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_an_embedding_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: only the generative chat path consumes non-GGUF entries, and
+    # /v1/embeddings is GGUF-only, so a SentenceTransformer would be loaded as a
+    # language model and fail after the swap evicted the resident model.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "bge-small")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is not None
+    (path / "modules.json").write_text("[]")
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_sharded_checkpoint_missing_shards_is_not_switchable(tmp_path):
+    # Codex P2: _has_non_gguf_weights is satisfied by one file, so a sharded repo
+    # whose index names absent shards was advertised and failed on load.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Sharded")
+    (path / "model.safetensors").unlink()
+    (path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 32)
+    (path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
+        ' "b": "model-00002-of-00002.safetensors"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+    (path / "model-00002-of-00002.safetensors").write_bytes(b"x" * 32)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
+    # Codex P1: _responses_stream reads llama.cpp alone, so a streaming Responses
+    # request naming a non-GGUF model unloaded the resident GGUF and then 400'd.
+    captured = {}
+
+    async def _capture(model, request, subject, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("reached the switch")
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
+    for streaming in (True, False):
+        captured.clear()
+        payload = _responses_payload(stream = streaming)
+        with pytest.raises(RuntimeError):
+            asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+        assert captured["gguf_only"] is streaming
+
+
+def test_a_pickle_checkpoint_is_not_switchable(tmp_path):
+    # Codex P2: .bin weights are pickle-backed, so an API request must not be able to
+    # load one without an explicit load action.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "PickleOnly")
+    (path / "model.safetensors").unlink()
+    (path / "pytorch_model.bin").write_bytes(b"x" * 32)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_checkpoint_without_tokenizer_assets_is_not_switchable(tmp_path):
+    # Codex P2: weights alone cannot serve chat, and the swap has already evicted the
+    # resident model by the time the loader finds no tokenizer.
+    from types import SimpleNamespace
+
+    path = tmp_path / "WeightsOnly"
+    path.mkdir()
+    (path / "config.json").write_text("{}")
+    (path / "model.safetensors").write_bytes(b"x" * 32)
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+    (path / "tokenizer.json").write_text("{}")
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_mlx_quantized_weights_are_offered_only_on_an_mlx_host(tmp_path, monkeypatch):
+    # Codex P2: mlx-lm quantized weights load through MLXInferenceBackend alone, so
+    # advertising them on CUDA evicts the resident model for a load that must fail.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path)
+    (path / "config.json").write_text('{"quantization": {"group_size": 64, "bits": 4}}')
+    info = SimpleNamespace(id = str(path), path = str(path))
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", None)  # detection has not run yet
+    assert resolver.local_servable_model(info) is None
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    assert resolver.local_servable_model(info) == (False, ())
+
+    # An unquantized conversion is ordinary safetensors and loads anywhere.
+    (path / "config.json").write_text("{}")
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_auto_map_in_a_processor_config_is_not_switchable(tmp_path):
+    # Codex P2: trust_remote_code runs auto_map from any of the scanner's config
+    # files, not just config.json, and a switch carries no approval fingerprint.
+    from types import SimpleNamespace
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
+    for name in REMOTE_CODE_CONFIG_FILES:
+        path = _local_checkpoint(tmp_path, f"custom-{name}")
+        info = SimpleNamespace(id = str(path), path = str(path))
+        assert resolver.local_servable_model(info) is not None
+        (path / name).write_text('{"auto_map": {"AutoModel": "modeling.MyModel"}}')
+        assert resolver.local_servable_model(info) is None, name
+
+
+def test_a_case_variant_path_is_not_treated_as_the_resident_model(monkeypatch):
+    # Codex P2: lowercasing made /models/Foo satisfy a request resolving to
+    # /models/foo, which then recorded the alias on the wrong resident weights.
+    llama = _FakeBackend(None)
+
+    class _FakeOrchestrator:
+        active_model_name = "/models/Foo"
+        models: dict = {}
+        _openai_advertised_id = None
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *args, **kwargs):
+        calls.append(request)
+        return None
+
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/foo", None, "/models/foo"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    entry = resolver._LocalGgufEntry("/models/foo", "/models/foo", (), is_gguf = False)
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"/models/foo": entry}))
+
+    async def _accept(*_a, **_kw):
+        return None
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept)
+
+    _run_hook("/models/foo")
+    assert calls, "the case-variant path was mistaken for the resident model"
+    assert calls[0].model_path == "/models/foo"

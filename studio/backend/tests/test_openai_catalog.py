@@ -59,14 +59,16 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
             # HF-cache GGUF: model_format is unset for these, so a files-based check
             # (not model_format) must still list it.
             _Info("models--org--Foo", "Foo", model_id = "org/Foo"),
-            # Non-GGUF (safetensors) can't be served via /v1: must NOT be advertised.
+            # Non-GGUF (safetensors/MLX): the orchestrator serves it, so it is listed too.
             _Info("/data/models/Mistral-7B", "Mistral-7B", is_gguf = False),
         ]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    # GGUF-ness and the quant labels come from one on-disk scan; drive both off the flag.
+    # Format and the quant labels come from one on-disk scan; drive both off the flag.
     monkeypatch.setattr(
-        resolver, "local_gguf_quants", lambda info: ("Q8_0",) if info.is_gguf else None
+        resolver,
+        "local_servable_model",
+        lambda info: (True, ("Q8_0",)) if info.is_gguf else (False, ()),
     )
 
     data = asyncio.run(inf._openai_catalog_objects())
@@ -80,8 +82,9 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
     assert ids["Llama-8B-Q8"]["quant"] == "Q8_0"
     # The HF-cache GGUF is listed despite model_format being unset.
     assert ids["org/Foo"]["loaded"] is False
-    # The non-GGUF model is filtered out (/v1 can never serve it).
-    assert "Mistral-7B" not in ids
+    # The non-GGUF model is listed so an API client can switch to it, with no quant to pin.
+    assert ids["Mistral-7B"]["loaded"] is False
+    assert "quant" not in ids["Mistral-7B"]
     # The loaded gguf and the on-disk copy collapse to one clean id.
     assert [m["id"] for m in data].count("Qwen3-Q4") == 1
     # No absolute paths or .gguf suffixes leak anywhere.
@@ -89,6 +92,30 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
     assert ".gguf" not in blob
     assert "/srv/" not in blob
     assert "/data/" not in blob
+
+
+def test_a_resident_non_gguf_model_is_marked_loaded_and_stays_quantless(monkeypatch):
+    # llama-only residency lists the model that is serving as unloaded, and the ungated
+    # hf_variant read stamps a stale quant on this row.
+    class _Orchestrator:
+        active_model_name = "/data/models/Mistral-7B"
+        models: dict = {}
+        context_length = None
+        max_seq_length = None
+
+    llama = _FakeLlama(loaded = False)
+    llama.hf_variant = "Q4_K_M"
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _Orchestrator())
+
+    async def _fake_catalog():
+        return [_Info("/data/models/Mistral-7B", "Mistral-7B", is_gguf = False)]
+
+    monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (False, ()))
+    ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
+    assert ids["Mistral-7B"]["loaded"] is True
+    assert "quant" not in ids["Mistral-7B"]
 
 
 def test_catalog_lock_is_per_loop():
@@ -234,6 +261,42 @@ def test_monitor_active_model_cleans_a_path_with_no_advertised_id(monkeypatch):
     assert "/" not in label and ".gguf" not in label
 
 
+def test_monitor_reports_nothing_once_a_non_gguf_model_is_unloaded(monkeypatch):
+    # An auto-switch load records the requested repo id on the orchestrator, and an
+    # unload clears active_model_name without clearing that alias. Reading the alias
+    # ungated made the monitor report a ready model with nothing loaded.
+    class _Orchestrator:
+        active_model_name = None
+        _openai_advertised_id = "unsloth/Qwen3-MLX"
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+    monkeypatch.setattr(inf, "_peek_inference_backend", lambda: _Orchestrator())
+    assert inf._monitor_active_model() is None
+
+
+def test_a_non_gguf_model_reports_one_id_across_every_v1_surface(monkeypatch):
+    # /v1/models, GET /v1/models/{id} and the chat-completions response body must all
+    # name an auto-switched model the same way, or a client cannot round-trip the id.
+    class _Orchestrator:
+        active_model_name = "/srv/lmstudio/mlx-community/Qwen3-8B-4bit"
+        _openai_advertised_id = "mlx-community/Qwen3-8B-4bit"
+        models: dict = {}
+        context_length = None
+        max_seq_length = None
+
+    orchestrator = _Orchestrator()
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = False))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: orchestrator)
+
+    listed = inf._openai_model_objects()[0]["id"]
+    retrieved = asyncio.run(
+        inf.openai_retrieve_model(orchestrator.active_model_name, current_subject = "t")
+    )
+    assert listed == "mlx-community/Qwen3-8B-4bit"
+    assert retrieved["id"] == listed and retrieved["loaded"] is True
+    assert inf._orchestrator_public_model_id(orchestrator) == listed
+
+
 def test_lifecycle_label_recovers_the_repo_id_from_an_hf_cache_path():
     # An auto-switch load gets the snapshot dir, whose basename is a commit sha.
     snap = "/home/me/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/bfc15c3"
@@ -294,7 +357,7 @@ def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch
         return [alias]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q4_K_M", "Q8_0"))
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M", "Q8_0")))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
     assert ids["publisher/Qwen3"]["quant"] == "Q8_0"
@@ -340,7 +403,7 @@ def test_a_transformers_model_does_not_mark_a_gguf_alias_loaded(monkeypatch):
         return [alias]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M",)))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is False
 
@@ -358,6 +421,6 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
         return [alias]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    monkeypatch.setattr(resolver, "local_gguf_quants", lambda info: ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M",)))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True

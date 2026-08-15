@@ -374,7 +374,7 @@ export const zhCN = {
         sectionTitle: "模型自动切换（OpenAI API）",
         enable: "按请求切换模型",
         enableDescription:
-          "在提供服务前，加载 API 请求中指定的已下载 GGUF。默认关闭。",
+          "在提供服务前，加载 API 请求中指定的已下载模型。默认关闭。",
         idleUnload: "空闲自动卸载",
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",

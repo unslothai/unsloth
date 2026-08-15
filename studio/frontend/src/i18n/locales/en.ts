@@ -386,7 +386,7 @@ export const en = {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
         enableDescription:
-          "Load a downloaded GGUF named in an API request before serving. Off by default.",
+          "Load a downloaded model named in an API request before serving. Off by default.",
         autoDownload: "Download missing models",
         autoDownloadDescription:
           "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",

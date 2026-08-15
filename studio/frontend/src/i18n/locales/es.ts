@@ -397,7 +397,7 @@ export const es = {
         sectionTitle: "Cambio automático de modelo (API de OpenAI)",
         enable: "Cambiar de modelo según la solicitud",
         enableDescription:
-          "Si una solicitud de la API especifica un GGUF que ya está descargado, carga ese modelo antes de responder. Desactivado por defecto.",
+          "Si una solicitud de la API especifica un modelo que ya está descargado, carga ese modelo antes de responder. Desactivado por defecto.",
         idleUnload: "Liberar automáticamente por inactividad",
         idleUnloadDescription:
           "Libera la VRAM después de este número de segundos de inactividad. El valor 0 mantiene el modelo cargado; el mínimo es 60.",
