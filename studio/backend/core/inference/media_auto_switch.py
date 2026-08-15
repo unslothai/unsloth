@@ -558,7 +558,11 @@ def _chat_busy() -> bool:
     except Exception:  # noqa: BLE001 -- no chat stack means no chat work
         return False
     try:
-        return other_inference_request_count(current_request_counted = True) > 0
+        # Chat's counter covers every inference request, media included, so the switchers and
+        # the requests parked behind them are discounted: none of them is using chat.
+        parked = _switcher_count() + _waiter_count(DIFFUSION) + _waiter_count(VIDEO)
+        counted = other_inference_request_count(current_request_counted = True)
+        return max(0, counted - max(0, parked - 1)) > 0
     except Exception:  # noqa: BLE001
         return False
 
@@ -640,7 +644,11 @@ async def _drain(
         # whose cross-owner handoff unloads whatever holds it, cancelling a generation that has
         # nothing to do with this request.
         if cross_owner:
-            others += other_request_count(_other_owner(owner), count_pending = count_pending)
+            other = _other_owner(owner)
+            others += max(
+                0,
+                other_request_count(other, count_pending = count_pending) - _switcher_count(other),
+            )
         # Probed under the deadline: loading_repo_ids takes the backend lock, which the loader
         # holds across pipeline assembly, so an unbounded probe outlives the response window.
         # Chat counts as well: the arbiter evicts whoever owns the GPU, streaming or not.
@@ -779,7 +787,13 @@ def _hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
         return False
     if not is_ltx23_checkpoint(checkpoint):
         return False
-    return not _encoder_repo_complete(LTX23_EXTRAS_REPO)
+    from core.inference.diffusion_families import cache_holds_files
+    from core.inference.video_ltx2 import ltx23_extras_files
+
+    extras = ltx23_extras_files(checkpoint)
+    # The exact variant-specific connector, video VAE and audio VAE, not "some weight file":
+    # the repo also holds checkpoints, so any-file evidence proves nothing about these three.
+    return bool(extras) and not cache_holds_files(LTX23_EXTRAS_REPO, list(extras))
 
 
 def _missing_external_encoder(pick: MediaModelPick) -> Optional[int]:
@@ -1044,14 +1058,14 @@ async def _gated_start_load(
     name: str,
     pick: MediaModelPick,
     current_subject: str,
-    lock: asyncio.Lock,
+    locks: list,
     deadline: float,
     *,
     kind: str,
     openai_errors: bool,
     hf_token: Optional[str],
 ) -> bool:
-    """Run the final checks and start the load, owning the gate and *lock* throughout.
+    """Run the final checks and start the load, owning the gates and *locks* throughout.
 
     Returns True when the resident model already answers the request, so the caller can stop.
 
@@ -1128,7 +1142,8 @@ async def _gated_start_load(
             await _start_load(owner, pick, current_subject, hf_token)
             return False
     finally:
-        lock.release()
+        for held in reversed(locks):
+            held.release()
 
 
 async def maybe_auto_switch_media_model(
@@ -1209,64 +1224,81 @@ async def maybe_auto_switch_media_model(
     # request holds it, and especially once it is polling its own load, it is real work another
     # switch has to see rather than discount.
     lock = _switch_lock(owner)
-    with _note_waiter(owner):
-        await _bounded(lock.acquire(), deadline, kind = kind, openai_errors = openai_errors)
-    handed_over = False
-    try:
-        backend = _backend_for(owner)
-        # Re-read under the lock: a concurrent request may have just loaded this model.
-        if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
-            return
-        missing = await _bounded(
-            asyncio.to_thread(_missing_download_bytes, owner, pick, hf_token),
-            deadline,
-            kind = kind,
-            openai_errors = openai_errors,
-        )
-        if missing is None:
-            raise _refuse(
-                _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind),
-                status_code = 409,
-                openai_errors = openai_errors,
-                code = "model_not_downloaded",
-            )
-        if missing:
-            raise _refuse(
-                _incomplete_message(pick, missing, kind),
-                status_code = 409,
-                openai_errors = openai_errors,
-                code = "model_not_downloaded",
-            )
-        if not await _drain(owner, backend, min(deadline, time.monotonic() + _DRAIN_WAIT_S)):
-            raise _refuse(
-                _BUSY_MSG.format(kind = kind),
-                status_code = 409,
-                openai_errors = openai_errors,
-                code = "model_busy",
-                retry_after = _RETRY_AFTER_S,
-            )
-        # The gated section runs as its own task holding the gate AND the switch lock, so
-        # a timeout below frees the caller without unwinding either: setup that has begun
-        # activating an engine must reach begin_load before anything else is admitted.
-        setup = asyncio.ensure_future(
-            _gated_start_load(
-                owner,
-                name,
-                pick,
-                current_subject,
-                lock,
+    # One GPU switch at a time across both media backends. Without it two switchers each see the
+    # other as cross-owner work and refuse each other; queueing here instead makes the second a
+    # waiter, which the drain already discounts. Held only when the load takes the GPU.
+    gpu_lock = _gpu_switch_lock() if await asyncio.to_thread(_load_takes_the_gpu) else None
+    locks = [held for held in (gpu_lock, lock) if held is not None]
+    with _note_switcher(owner):
+        with _note_waiter(owner):
+            acquired: list = []
+            try:
+                for held in locks:
+                    await _bounded(held.acquire(), deadline, kind = kind, openai_errors = openai_errors)
+                    acquired.append(held)
+            except BaseException:
+                for held in reversed(acquired):
+                    held.release()
+                raise
+        handed_over = False
+        try:
+            backend = _backend_for(owner)
+            # Re-read under the lock: a concurrent request may have just loaded this model.
+            if _satisfied_by(await asyncio.to_thread(backend.status), name, pick):
+                return
+            missing = await _bounded(
+                asyncio.to_thread(_missing_download_bytes, owner, pick, hf_token),
                 deadline,
                 kind = kind,
                 openai_errors = openai_errors,
-                hf_token = hf_token,
             )
-        )
-        handed_over = True
-        if await _bounded(asyncio.shield(setup), deadline, kind = kind, openai_errors = openai_errors):
-            return
-    finally:
-        if not handed_over:
-            lock.release()
+            if missing is None:
+                raise _refuse(
+                    _UNVERIFIED_MSG.format(model = pick.model_id, kind = kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_not_downloaded",
+                )
+            if missing:
+                raise _refuse(
+                    _incomplete_message(pick, missing, kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_not_downloaded",
+                )
+            if not await _drain(owner, backend, min(deadline, time.monotonic() + _DRAIN_WAIT_S)):
+                raise _refuse(
+                    _BUSY_MSG.format(kind = kind),
+                    status_code = 409,
+                    openai_errors = openai_errors,
+                    code = "model_busy",
+                    retry_after = _RETRY_AFTER_S,
+                )
+            # The gated section runs as its own task holding the gate AND the switch lock, so
+            # a timeout below frees the caller without unwinding either: setup that has begun
+            # activating an engine must reach begin_load before anything else is admitted.
+            setup = asyncio.ensure_future(
+                _gated_start_load(
+                    owner,
+                    name,
+                    pick,
+                    current_subject,
+                    locks,
+                    deadline,
+                    kind = kind,
+                    openai_errors = openai_errors,
+                    hf_token = hf_token,
+                )
+            )
+            handed_over = True
+            if await _bounded(
+                asyncio.shield(setup), deadline, kind = kind, openai_errors = openai_errors
+            ):
+                return
+        finally:
+            if not handed_over:
+                for held in reversed(locks):
+                    held.release()
 
     try:
         # Re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object.
@@ -1292,6 +1324,8 @@ async def maybe_auto_switch_media_model(
 # One switch at a time per backend, so two requests cannot race the single pipeline slot.
 # Per running loop, like _auto_switch_lock in routes.inference: a module-level asyncio.Lock
 # binds to the loop that first awaited it and hangs a second one.
+# Not an owner: the key the cross-backend GPU switch lock is stored under.
+_GPU_SWITCH_KEY = "gpu-switch"
 _switch_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _switch_locks_guard = threading.Lock()
 
@@ -1299,6 +1333,34 @@ _switch_locks_guard = threading.Lock()
 # Requests parked on a backend's switch lock. They hold no work, so the drain discounts them.
 _waiters: dict[str, int] = {}
 _waiters_guard = threading.Lock()
+
+# Requests currently performing a switch, for the whole switch. Two switchers on different
+# backends each see the other in the cross-owner and chat counts and would refuse each other,
+# so both discount them; the GPU switch lock below then lets one proceed at a time.
+_switching: dict[str, int] = {}
+_switching_guard = threading.Lock()
+
+
+@contextlib.contextmanager
+def _note_switcher(owner: str):
+    with _switching_guard:
+        _switching[owner] = _switching.get(owner, 0) + 1
+    try:
+        yield
+    finally:
+        with _switching_guard:
+            remaining = _switching.get(owner, 0) - 1
+            if remaining > 0:
+                _switching[owner] = remaining
+            else:
+                _switching.pop(owner, None)
+
+
+def _switcher_count(owner: Optional[str] = None) -> int:
+    with _switching_guard:
+        if owner is None:
+            return sum(_switching.values())
+        return _switching.get(owner, 0)
 
 
 @contextlib.contextmanager
@@ -1319,6 +1381,11 @@ def _note_waiter(owner: str):
 def _waiter_count(owner: str) -> int:
     with _waiters_guard:
         return _waiters.get(owner, 0)
+
+
+def _gpu_switch_lock() -> asyncio.Lock:
+    """The single lock every GPU-taking media switch queues on, per running loop."""
+    return _switch_lock(_GPU_SWITCH_KEY)
 
 
 def _switch_lock(owner: str) -> asyncio.Lock:

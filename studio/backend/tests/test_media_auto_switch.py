@@ -1551,6 +1551,53 @@ def test_a_stalled_gate_does_not_pin_the_switch_lock(
         keepwarm._TRACKERS[arb.VIDEO].gate.release()
 
 
+def test_two_switches_on_different_backends_do_not_refuse_each_other(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # Each switcher is counted by the middleware on its own backend, so without discounting
+    # them both saw the other as cross-owner work and both returned busy.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    backend.repo_id = "Qwen/Qwen-Image"
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.5)
+    # A video switch is in flight and its request is tracked on the video backend.
+    monkeypatch.setattr(mk._TRACKERS[arb.VIDEO], "_inflight", 1)
+
+    with mas._note_switcher(arb.VIDEO):
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
+
+
+def test_the_ltx23_extras_check_names_the_exact_companions(tmp_path, monkeypatch):
+    # The extras repo also holds checkpoints, so any-weight-file evidence proves nothing about
+    # the three variant-specific companions the assembly reads.
+    import core.inference.diffusion_families as families
+    import core.inference.video_ltx2 as ltx2
+    import core.inference.video_families as video_families
+
+    checkpoint = tmp_path / "generic-Q4_K_M.gguf"
+    checkpoint.write_bytes(b"")
+    pick = mas.MediaModelPick("local/ltx", str(tmp_path), checkpoint.name, "gguf")
+    monkeypatch.setattr(
+        video_families, "detect_video_family", lambda *a, **k: types.SimpleNamespace(name = "ltx-2")
+    )
+    monkeypatch.setattr(ltx2, "is_ltx23_checkpoint", lambda path: True)
+    monkeypatch.setattr(ltx2, "ltx23_extras_files", lambda path: ("a.safetensors", "b.safetensors"))
+    asked: list = []
+
+    def _holds(repo_id, files):
+        asked.append(tuple(files))
+        return False
+
+    monkeypatch.setattr(families, "cache_holds_files", _holds)
+
+    assert mas._hidden_ltx23_extras(arb.VIDEO, pick) is True
+    assert asked == [("a.safetensors", "b.safetensors")]
+
+
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module
