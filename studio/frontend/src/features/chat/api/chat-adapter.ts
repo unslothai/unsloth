@@ -4519,6 +4519,20 @@ export function createOpenAIStreamAdapter(
               text.slice(continuationPartial.length),
             )
           : text;
+      // The publish gate can hide a reasoning group entirely: if every chunk
+      // that revealed it was coalesced away, the tracker never started it and
+      // the persisted durations would have a hole where the rendered panel has
+      // a group. Both terminal publishes call this before reading metadata().
+      const adoptGatedReasoningGroups = (
+        content: readonly { type?: unknown; text?: unknown }[],
+      ) => {
+        const groups = countReasoningGroups(content);
+        if (groups > reasoningDurationTracker.groupCount) {
+          // startGroup back-fills every index it skips, so one call fills the
+          // whole hole, not just the last group.
+          reasoningDurationTracker.startGroup(groups - 1);
+        }
+      };
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
@@ -5958,6 +5972,12 @@ export function createOpenAIStreamAdapter(
                 rawDeltaToolCalls.length > 0
               ) {
                 closeReasoningContent();
+                // A fragment that only extends an existing call's arguments is
+                // the same per-delta preview as tool_args, so it is gated the
+                // same way. A fragment that introduces a call is not: that is
+                // the state an aborted turn would otherwise lose, so it always
+                // publishes.
+                let addedToolCall = false;
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
                   const call = tc as {
@@ -5995,6 +6015,8 @@ export function createOpenAIStreamAdapter(
                     );
                   }
                   const argsFragment = call.function?.arguments ?? "";
+                  streamedChars +=
+                    argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
@@ -6063,19 +6085,22 @@ export function createOpenAIStreamAdapter(
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
+                    addedToolCall = true;
                   }
                 }
-                yield {
-                  content: liveAssistantContent(),
-                  metadata: {
-                    timing: buildTiming(
-                      streamStartTime,
-                      totalChunks,
-                      firstTokenTime,
-                    ),
-                    custom: liveCustom(),
-                  },
-                };
+                if (addedToolCall || canPublish(streamedChars)) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
                 continue;
               }
               if (!delta && !reasoning) {
@@ -6111,6 +6136,16 @@ export function createOpenAIStreamAdapter(
                   /\s*\$\{[^}]*\}\s*$/,
                   "",
                 );
+              }
+              // A chunk the strip above emptied has nothing to show, and the
+              // yield below is skipped for it anyway. Asking the gate first
+              // would spend this cycle's publish on it and hold the next real
+              // chunk, so leave the gate untouched.
+              if (
+                mergeContinuation(cumulativeText).length === 0 &&
+                toolCallParts.length === 0
+              ) {
+                continue;
               }
               // Coalesce text received before the next frame; cumulativeText retains
               // it. The gate publishes anyway once it holds more than a stop may drop.
@@ -6281,10 +6316,7 @@ export function createOpenAIStreamAdapter(
         const finalContent = buildAssistantContent(
           mergeContinuation(cumulativeText),
         );
-        const finalReasoningGroups = countReasoningGroups(finalContent);
-        if (finalReasoningGroups > reasoningDurationTracker.groupCount) {
-          reasoningDurationTracker.startGroup(finalReasoningGroups - 1);
-        }
+        adoptGatedReasoningGroups(finalContent);
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
@@ -6363,6 +6395,10 @@ export function createOpenAIStreamAdapter(
           const partialText = mergeContinuation(cumulativeText);
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
+            // Same hole as the success path: this partial can render a group
+            // the gate never let the tracker see.
+            adoptGatedReasoningGroups(partialContent);
+            reasoningDurationTracker.finishGroup();
             const partialTiming = buildTiming(
               streamStartTime,
               totalChunks,

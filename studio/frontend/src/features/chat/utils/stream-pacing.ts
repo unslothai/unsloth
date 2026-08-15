@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Hidden or heavily janked windows may not produce frames, so bound the wait.
-const UNPAINTED_REOPEN_MS = 500;
+// A janked window may not paint for a long time, so do not wait on frames
+// alone. This is a scheduled fallback, not a deadline: a hidden page throttles
+// this timer too (>=1s, and ~1/min once Chrome's intensive throttling kicks in),
+// and pauses frames outright. There the cap below is what paces publishes,
+// which is why the cap is counted in arrivals rather than in time.
+export const UNPAINTED_REOPEN_MS = 500;
 
 /**
  * Text a closed gate may hold before it publishes regardless.
@@ -34,17 +38,28 @@ export function createStreamPublishGate(): (streamed: number) => boolean {
       open = false;
       // Per cycle, so the loser of the previous race cannot reopen this one.
       let reopened = false;
+      // Initialised before reopen closes over them, so a scheduler that runs
+      // its callback synchronously cannot hit the temporal dead zone and throw
+      // out of the stream loop.
+      const handles: {
+        frame?: number;
+        timer?: ReturnType<typeof setTimeout>;
+      } = {};
       const reopen = () => {
         if (reopened) {
           return;
         }
         reopened = true;
-        cancelAnimationFrame(frame);
-        clearTimeout(timer);
+        if (handles.frame !== undefined) {
+          cancelAnimationFrame(handles.frame);
+        }
+        if (handles.timer !== undefined) {
+          clearTimeout(handles.timer);
+        }
         open = true;
       };
-      const frame = requestAnimationFrame(reopen);
-      const timer = setTimeout(reopen, UNPAINTED_REOPEN_MS);
+      handles.frame = requestAnimationFrame(reopen);
+      handles.timer = setTimeout(reopen, UNPAINTED_REOPEN_MS);
     }
     return true;
   };

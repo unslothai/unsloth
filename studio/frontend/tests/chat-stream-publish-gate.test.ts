@@ -261,11 +261,19 @@ function withoutComments(source: string): string {
 }
 
 /** The adapter between two anchors, without its comments. */
-function regionOf(from: string, to: string): string {
+function regionOf(from: string, to: string, maxChars = 60_000): string {
   const start = ADAPTER.indexOf(from);
   assert.notEqual(start, -1, `"${from}" is gone; this test needs rewriting`);
   const end = ADAPTER.indexOf(to, start);
   assert.notEqual(end, -1, `"${to}" is gone; this test needs rewriting`);
+  // Without this, editing the end anchor's line (even adding a space) silently
+  // slides the region to the next match hundreds of lines away, and the
+  // ordering assertions below go on passing against the wrong slice.
+  assert.ok(
+    end - start < maxChars,
+    `the region from "${from}" to "${to}" is ${end - start} chars; ` +
+      "an anchor has drifted and this test needs rewriting",
+  );
   return withoutComments(ADAPTER.slice(start, end));
 }
 
@@ -311,6 +319,10 @@ test("the live tool-argument preview shares the gate", () => {
   const preview = regionOf(
     'if (toolEvent.type === "tool_args") {',
     "\n                closeReasoningContent();",
+    // This branch is short. Bounding it keeps a whitespace edit to the end
+    // anchor's line from sliding the region hundreds of lines down and leaving
+    // the ordering assertions below to pass against the wrong slice.
+    6_000,
   );
 
   const gate = preview.indexOf("if (canPublish(streamedChars)) {");
@@ -349,16 +361,132 @@ test("the gate is fed a counter that only grows", () => {
 test("a reasoning group the gate skipped is adopted before the final metadata", () => {
   const source = withoutComments(ADAPTER);
 
-  const adopt = source.indexOf(
-    "if (finalReasoningGroups > reasoningDurationTracker.groupCount) {",
-  );
+  const adopt = source.indexOf("adoptGatedReasoningGroups(finalContent);");
   assert.notEqual(adopt, -1, "a group revealed only by skipped chunks is lost");
-  const finalize = source.indexOf(
-    "reasoningDurationTracker.finishGroup();",
-    adopt,
-  );
-  assert.ok(
-    finalize > adopt,
+  // Scoped to the finalizer, so a finishGroup() belonging to some later path
+  // cannot stand in for the one that has to follow the adoption here.
+  const finalizer = source.slice(adopt, adopt + 400);
+  const finalize = finalizer.indexOf("reasoningDurationTracker.finishGroup();");
+  assert.notEqual(
+    finalize,
+    -1,
     "the group must be adopted before the run finalizes durations",
   );
+});
+
+test("the interrupted-stream partial adopts skipped groups too", () => {
+  const source = withoutComments(ADAPTER);
+
+  // A non-abort failure yields its own partial with its own metadata(), so it
+  // needs the same adoption; otherwise an interrupted reply renders a reasoning
+  // group with no duration entry behind it.
+  assert.ok(
+    source.includes("adoptGatedReasoningGroups(partialContent);"),
+    "the non-abort failure path does not adopt gate-hidden reasoning groups",
+  );
+});
+
+test("streaming tool-call argument deltas are paced like the text path", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // Both branches of the OpenAI delta.tool_calls accumulator feed the counter,
+  // so a turn that only streams a call's arguments is still capped.
+  const count = loop.indexOf(
+    "streamedChars +=\n                    argsFragment.length",
+  );
+  assert.notEqual(count, -1, "tool-call argument deltas are not counted");
+
+  const gate = loop.indexOf("if (addedToolCall || canPublish(streamedChars)) {");
+  assert.notEqual(gate, -1, "the tool-call delta publish is not gated");
+  assert.ok(gate > count, "the fragment must be counted before the gate");
+
+  // A fragment that introduces a call must never be coalesced away: that part
+  // is state an aborted turn would otherwise lose.
+  assert.ok(
+    loop.includes("addedToolCall = true;"),
+    "a newly created tool call no longer forces a publish",
+  );
+});
+
+test("a chunk with nothing to show does not spend the gate's publish", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  const empty = loop.indexOf("mergeContinuation(cumulativeText).length === 0");
+  assert.notEqual(empty, -1, "an emptied chunk still consumes a gate cycle");
+  const gate = loop.indexOf("if (!canPublish(streamedChars)) {");
+  assert.ok(
+    empty < gate,
+    "the emptiness check must run before the gate is consulted",
+  );
+});
+
+test("the gate is fed every arrival, not only the tool-call ones", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // Without this the cap can never bind on a plain-text reply, which silently
+  // restores the unbounded stop loss the cap exists to prevent.
+  assert.ok(
+    loop.includes("streamedChars += reasoning.length + delta.length;"),
+    "text and reasoning arrivals are not counted toward the cap",
+  );
+});
+
+test("a cap-forced publish resets the baseline for the next one", () => {
+  withStubbedScheduling(() => {
+    const canPublish = createStreamPublishGate();
+    assert.equal(canPublish(0), true, "the first chunk publishes");
+
+    // No frame and no timer ever fire, so only the cap can publish. Each cycle
+    // must measure from the last publish; if the baseline only moved while the
+    // gate was open, the second cycle would publish on every single chunk.
+    for (let cycle = 1; cycle <= 4; cycle += 1) {
+      const at = cycle * MAX_HELD_CHARS;
+      assert.equal(canPublish(at - 1), false, `cycle ${cycle} held below cap`);
+      assert.equal(canPublish(at), true, `cycle ${cycle} published at the cap`);
+    }
+  });
+});
+
+test("a scheduler that calls back synchronously does not throw", () => {
+  const globals = globalThis as unknown as {
+    requestAnimationFrame: (cb: () => void) => number;
+  };
+  const real = globals.requestAnimationFrame;
+  // No browser does this, but a polyfill or a test double can, and reopen runs
+  // before the handles it cancels would have been assigned. Throwing here would
+  // escape the stream loop and surface as a failed generation.
+  globals.requestAnimationFrame = (cb) => {
+    cb();
+    return 1;
+  };
+  try {
+    const canPublish = createStreamPublishGate();
+    assert.equal(canPublish(0), true);
+    assert.equal(canPublish(1), true, "the synchronous frame reopened the gate");
+  } finally {
+    globals.requestAnimationFrame = real;
+  }
+});
+
+test("a cap-forced publish does not arm a second frame or timer", () => {
+  withStubbedScheduling((scheduled) => {
+    const canPublish = createStreamPublishGate();
+    canPublish(0);
+    assert.equal(scheduled.frames.length, 1);
+    assert.equal(scheduled.timers.length, 1);
+
+    canPublish(MAX_HELD_CHARS);
+    canPublish(MAX_HELD_CHARS * 2);
+    assert.equal(scheduled.frames.length, 1, "the cap re-armed a frame");
+    assert.equal(scheduled.timers.length, 1, "the cap re-armed a timer");
+  });
 });
