@@ -89,17 +89,14 @@ def effective_packing(config: dict, branch_never_packs: bool = False) -> bool:
     `is_dataset_image` and `is_dataset_audio` are client-supplied and true on a
     column-NAME match, so a text model with a column called "audio" carries the
     flag and still trains on the text path, which honours packing. Pass the
-    branch the model probe actually detected instead.
-
-    Raw-text and CPT are the exception on top: they reach the text path from any
-    branch, because the vision one is gated on `not raw_text_mode`.
+    branch the model probe actually detected instead, which the caller works out:
+    the two branches differ on raw-text and CPT, since the vision one is gated on
+    `not raw_text_mode` while audio preprocessing is chosen before the raw-text
+    bypass and so holds either way.
     """
     if not config.get("packing", False):
         return False
-    raw_text_mode = (
-        config.get("training_type") == "Continued Pretraining" or config.get("format_type") == "raw"
-    )
-    return bool(raw_text_mode or not branch_never_packs)
+    return not branch_never_packs
 
 
 def max_train_rows_for_config(config: dict, branch_never_packs: bool = False) -> Optional[int]:

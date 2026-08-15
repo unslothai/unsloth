@@ -2792,7 +2792,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # point -- formatting, chat templating, tokenization -- maps over every row.
     # Recomputed from the config rather than carried over from the parent so an
     # MLX run can never train against a bound derived from stale values.
-    mlx_max_train_rows = max_train_rows_for_config(config, branch_never_packs = is_vlm)
+    # The vision branch is gated on `not raw_text_mode`, so a raw or CPT run
+    # takes the text path and that path honours the requested packing.
+    mlx_raw_text_mode = (
+        training_type == "Continued Pretraining" or config.get("format_type") == "raw"
+    )
+    mlx_max_train_rows = max_train_rows_for_config(
+        config, branch_never_packs = is_vlm and not mlx_raw_text_mode
+    )
     # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
     # whatever dataset it is handed, so a bound applied to a checkpoint that was
     # written without one continues on unrelated rows. Same marker, same rule as
@@ -2800,6 +2807,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     mlx_max_train_rows, mlx_max_train_rows_seed = row_bound_for_resume(
         resume_from_checkpoint, mlx_max_train_rows, random_seed
     )
+
+    # A bracketed split instruction names rows the same way the numeric fields do.
+    mlx_split_names_rows = "[" in (config.get("train_split") or "")
 
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
@@ -2809,6 +2819,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 return ds.select([])
             # The user named these rows; the bound below defers to that.
             return ds.select(range(start, min(end + 1, len(ds))))
+        if mlx_split_names_rows:
+            return ds
         return bound_dataset_rows(
             ds,
             mlx_max_train_rows,
@@ -4218,10 +4230,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # the packing opt-out can read it instead of guessing from the client's
         # dataset flags. Streaming and an explicit train-split range opt out inside
         # load_and_format_dataset, where they live.
-        branch_never_packs = bool(
-            getattr(trainer, "is_vlm", False)
-            or getattr(trainer, "is_audio_vlm", False)
-            or getattr(trainer, "_audio_type", None)
+        # Audio codecs are chosen before the raw-text bypass and use plain
+        # Trainers with no packing argument, so they hold either way; the vision
+        # and audio-VLM branches are gated on `not raw_text_mode` and give the
+        # text path, which honours packing, when the run is raw or CPT.
+        raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"
+        branch_never_packs = bool(getattr(trainer, "_audio_type", None)) or (
+            bool(getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False))
+            and not raw_text_mode
         )
         max_train_rows = max_train_rows_for_config(config, branch_never_packs = branch_never_packs)
         # A resume trains on the rows its first start chose, read back from the

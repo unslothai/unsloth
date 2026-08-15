@@ -3028,10 +3028,14 @@ class UnslothTrainer:
             # over every row: that is the cost this avoids. Skipped when the user named
             # an explicit range, which is already the rows they asked for, and when
             # streaming, which was bounded lazily above.
+            # A bracketed split instruction names rows the same way the numeric
+            # fields do: train[1000:2000] is the user's selection, not a corpus to
+            # sample from.
             if (
                 (not dataset_streaming)
                 and dataset_slice_start is None
                 and dataset_slice_end is None
+                and "[" not in (train_split or "")
             ):
 
                 def _log_bound(kept, total):

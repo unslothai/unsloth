@@ -574,6 +574,24 @@ def test_max_steps_bound_defers_to_an_explicit_slice(monkeypatch):
     assert sliced.shuffle_seeds == []
 
 
+def test_max_steps_bound_defers_to_a_split_instruction(monkeypatch):
+    train = _SizedDataset(500_000)
+    trainer = _cached_only_loader(monkeypatch, train)
+
+    result = trainer.load_and_format_dataset(
+        "org/dataset",
+        dataset_local_files_only = True,
+        dataset_local_path = "/cache/snapshot",
+        train_split = "train[1000:200000]",
+        max_train_rows = 1024,
+    )
+
+    assert result is not None
+    # A bracketed split names rows exactly as the numeric slice fields do, so the
+    # bound must not resample a selection the user already made.
+    assert result[0]["dataset"] is train
+
+
 def test_max_steps_bound_is_off_without_it(monkeypatch):
     train = _SizedDataset(500_000)
     trainer = _cached_only_loader(monkeypatch, train)
@@ -626,15 +644,15 @@ def test_effective_packing_decides_the_opt_out():
     # An epoch-bounded run is unbounded whatever packing says.
     assert max_train_rows_for_config({"max_steps": 0, "packing": False}) is None
 
-    # Raw-text and CPT take the text path even on a vision model -- that branch
-    # is gated on `not raw_text_mode` -- and the text path honours the requested
-    # value, so those runs pack for real and keep the opt-out.
+    # Raw-text and CPT do not enter into it here: the caller decides the branch,
+    # because the two differ on raw mode. The vision branch is gated on
+    # `not raw_text_mode` and gives way to the text path, while audio
+    # preprocessing is chosen before the raw-text bypass and holds either way.
     for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
-        assert effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is True
         assert (
-            max_train_rows_for_config({**text, **raw, "packing": True}, branch_never_packs = True)
-            is None
+            effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is False
         )
+        assert effective_packing({**text, **raw, "packing": True}) is True
         # Without packing they are bounded like anything else.
         assert effective_packing({**text, **raw}, branch_never_packs = True) is False
         assert max_train_rows_for_config({**text, **raw}, branch_never_packs = True) == 1024
@@ -897,7 +915,9 @@ def test_both_loaders_apply_the_row_bound():
     import ast
     from pathlib import Path
 
-    worker_src = (Path(__file__).resolve().parents[1] / "core/training/worker.py").read_text()
+    worker_src = (Path(__file__).resolve().parents[1] / "core/training/worker.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(worker_src)
     calls = {}
     for node in ast.walk(tree):
