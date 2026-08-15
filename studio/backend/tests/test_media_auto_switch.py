@@ -1948,3 +1948,55 @@ def test_a_generically_named_ltx23_checkpoint_is_still_header_checked(
 
     assert excinfo.value.status_code == 409
     assert loads == []
+
+
+def test_the_video_route_refuses_conditioning_the_target_partition_cannot_take(monkeypatch):
+    # Ref2VA conditions on references, so a first frame is unservable however long the switch
+    # would have taken; the resident model must not be evicted to find that out.
+    import core.inference.video as video_module
+    from routes.video import router as video_router
+
+    generated: list = []
+
+    async def _switch_stub(
+        requested_model,
+        *,
+        owner,
+        current_subject,
+        openai_errors,
+        hf_token = None,
+        before_switch = None,
+    ):
+        before_switch(
+            index.MediaModelPick(
+                requested_model,
+                "unsloth/MiniMax-H3-GGUF",
+                "ref2va/minimax_h3_ref2va-Q4_K_M.gguf",
+                "gguf",
+            )
+        )
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
+
+    class _Backend:
+        def begin_generate(self, **kwargs):
+            generated.append(kwargs)
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(video_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "a sloth",
+            "model": "unsloth/MiniMax-H3-GGUF",
+            "first_frame": "data:image/png;base64,AAAA",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "Ref2VA partition" in resp.json()["detail"]
+    assert generated == []

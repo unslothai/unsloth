@@ -127,6 +127,8 @@ from .video_families import (
     snap_num_frames,
     snap_video_size,
     supported_video_family_names,
+    validate_video_keyframe_conditioning,
+    validate_video_reference_conditioning,
     validate_video_request_shape,
     video_family_prequant_available,
     video_family_prequant_repo,
@@ -5321,17 +5323,9 @@ class VideoBackend:
 
         Unsupported keyframes are rejected. Omitting both dimensions matches the source aspect.
         """
-        if first_frame or last_frame:
-            if not fam.supports_keyframes:
-                raise ValueError(
-                    f"{fam.name} generates from the prompt alone; it takes no first or last frame."
-                )
-            if h3_task == H3_TASK_REFERENCES:
-                raise ValueError(
-                    "The loaded MiniMax-H3 checkpoint is the Ref2VA partition, which conditions "
-                    "on references rather than keyframes. Load a minimax_h3_fl2va checkpoint to "
-                    "generate from a first or last frame."
-                )
+        validate_video_keyframe_conditioning(
+            fam, h3_task, has_keyframes = bool(first_frame or last_frame)
+        )
         first = last = None
         if first_frame or last_frame:
             from .diffusion import decode_b64_image
@@ -5421,23 +5415,11 @@ class VideoBackend:
         images = list(reference_images or [])
         videos = list(reference_videos or [])
         audios = list(reference_audios or [])
+        validate_video_reference_conditioning(
+            fam, h3_task, has_references = bool(images or videos or audios)
+        )
         if not (images or videos or audios):
-            if h3_task == H3_TASK_REFERENCES:
-                # Ref2VA has no text-only denoiser, so every request needs an image or video.
-                raise ValueError(
-                    "The loaded MiniMax-H3 checkpoint is the Ref2VA partition, which generates "
-                    "from references. Add at least one reference image or video, or load a "
-                    "minimax_h3_fl2va checkpoint for text-to-video."
-                )
             return MiniMaxH3References()
-        if not fam.supports_references:
-            raise ValueError(f"{fam.name} takes no reference images, videos or audio.")
-        if h3_task != H3_TASK_REFERENCES:
-            raise ValueError(
-                "The loaded MiniMax-H3 checkpoint is the FL2VA partition, which conditions on "
-                "keyframes rather than references. Load a minimax_h3_ref2va checkpoint to "
-                "generate from references."
-            )
         policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
         if policy not in (H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX):
             raise ValueError(

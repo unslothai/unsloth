@@ -367,19 +367,37 @@ async def generate_video(
         VideoShapeError,
     )
 
-    def _refuse_unrenderable_shape(pick) -> None:
-        """Judge the shape against the family being switched TO, before it evicts anything.
+    def _refuse_unservable_request(pick) -> None:
+        """Judge the request against the family being switched TO, before it evicts anything.
 
         begin_generate judges it against the loaded family under the lock, which is what makes
-        the answer race-proof, but by then a request no model could have rendered has already
-        cost the resident pipeline and a multi-minute load.
+        the answer race-proof, but by then a request no model could have served has already cost
+        the resident pipeline and a multi-minute load. The same rules, applied to the target's
+        family and MiniMax-H3 partition, both of which the pick already determines.
         """
+        from core.inference.media_model_index import expected_partition
         from core.inference.video import _detect_load_family
-        from core.inference.video_families import validate_video_request_shape
+        from core.inference.video_families import (
+            validate_video_keyframe_conditioning,
+            validate_video_reference_conditioning,
+            validate_video_request_shape,
+        )
 
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
-        if fam is not None:
-            validate_video_request_shape(fam, request.width, request.height, request.num_frames)
+        if fam is None:
+            return
+        validate_video_request_shape(fam, request.width, request.height, request.num_frames)
+        h3_task = expected_partition(pick)
+        validate_video_keyframe_conditioning(
+            fam, h3_task, has_keyframes = bool(request.first_frame or request.last_frame)
+        )
+        validate_video_reference_conditioning(
+            fam,
+            h3_task,
+            has_references = bool(
+                request.reference_images or request.reference_videos or request.reference_audios
+            ),
+        )
 
     # Before the backend is resolved: the requested model may be the one this brings up.
     try:
@@ -389,10 +407,13 @@ async def generate_video(
             current_subject = current_subject,
             openai_errors = False,
             hf_token = hf_token,
-            before_switch = _refuse_unrenderable_shape,
+            before_switch = _refuse_unservable_request,
         )
     except VideoShapeError as exc:
         raise HTTPException(status_code = 422, detail = str(exc))
+    except ValueError as exc:
+        # the conditioning rules, which begin_generate reports the same way below
+        raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
     # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED

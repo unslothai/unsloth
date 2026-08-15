@@ -621,6 +621,60 @@ def validate_video_request_shape(
             )
 
 
+def validate_video_keyframe_conditioning(
+    fam: VideoFamily, h3_task: Optional[str], *, has_keyframes: bool
+) -> None:
+    """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
+
+    Pure in the family and the MiniMax-H3 partition, which is what lets the generate route judge
+    the checkpoint it is about to SWITCH TO by the same rules the backend applies to the loaded
+    one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
+    target for a request that was already known to be unservable.
+    """
+    if not has_keyframes:
+        return
+    from .video_minimax_h3 import H3_TASK_REFERENCES
+
+    if not fam.supports_keyframes:
+        raise ValueError(
+            f"{fam.name} generates from the prompt alone; it takes no first or last frame."
+        )
+    if h3_task == H3_TASK_REFERENCES:
+        raise ValueError(
+            "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
+            "rather than keyframes. Load a minimax_h3_fl2va checkpoint to generate from a first "
+            "or last frame."
+        )
+
+
+def validate_video_reference_conditioning(
+    fam: VideoFamily, h3_task: Optional[str], *, has_references: bool
+) -> None:
+    """Raise ``ValueError`` when a checkpoint cannot be conditioned on the request's references.
+
+    The absence of references is a rule too: the Ref2VA partition has no text-only denoiser. See
+    ``validate_video_keyframe_conditioning`` for why these live here rather than inline.
+    """
+    from .video_minimax_h3 import H3_TASK_REFERENCES
+
+    if not has_references:
+        if h3_task == H3_TASK_REFERENCES:
+            raise ValueError(
+                "The MiniMax-H3 checkpoint is the Ref2VA partition, which generates from "
+                "references. Add at least one reference image or video, or load a "
+                "minimax_h3_fl2va checkpoint for text-to-video."
+            )
+        return
+    if not fam.supports_references:
+        raise ValueError(f"{fam.name} takes no reference images, videos or audio.")
+    if h3_task != H3_TASK_REFERENCES:
+        raise ValueError(
+            "The MiniMax-H3 checkpoint is the FL2VA partition, which conditions on keyframes "
+            "rather than references. Load a minimax_h3_ref2va checkpoint to generate from "
+            "references."
+        )
+
+
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
