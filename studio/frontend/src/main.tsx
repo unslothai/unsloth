@@ -35,8 +35,7 @@ const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("Root element not found");
 }
-
-initializeLocale();
+const root = createRoot(rootElement);
 
 if (isTauri) {
   document.documentElement.classList.add("tauri");
@@ -52,10 +51,19 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
 
-createRoot(rootElement).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+function renderApp(): void {
+  root.render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
+
+const localeInitialization = initializeLocale();
+if (typeof localeInitialization !== "string") {
+  localeInitialization.then(renderApp);
+} else {
+  renderApp();
+}
 
 fetchDeviceType().catch(() => undefined);

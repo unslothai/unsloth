@@ -91,7 +91,7 @@ export async function uploadStagedSources(
   if (staged.length === 0) return;
   invalidateProjectSources(projectId);
   markProjectSourcesPending(projectId);
-  const { ocr, caption } = resolveVisionOverrides();
+  const { ocr, caption } = await resolveVisionOverrides();
   const documentIds = new Set<string>();
   const merged: string[] = [];
   for (const entry of staged) {

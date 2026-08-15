@@ -325,6 +325,26 @@ def sd_cpp_binary_vets_for_h3(binary: str) -> bool:
     return help_text_identifies_sd_cpp(text) and help_text_supports_minimax_h3(text)
 
 
+# The ``--help`` tokens marking a build with the graph-cut executor; both are required, since --stream-layers does nothing without --max-vram.
+_GRAPH_CUT_HELP_MARKERS: tuple[str, ...] = ("--max-vram", "--stream-layers")
+
+
+def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
+    """True only when ``binary``'s ``--help`` advertises the graph-cut executor.
+
+    The opposite default to ``sd_cpp_supports_minimax_h3``, and for the same reason each is safe:
+    that gate refuses a build, so "cannot tell" has to keep it, while this one ADDS flags, and
+    sd-cli exits non-zero on an option it does not know. Guessing yes from an unreadable ``--help``
+    would therefore break every generation on an older build instead of merely leaving it as slow
+    as it is today."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    if text is None:
+        return False
+    return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
+
+
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
     """True unless ``binary`` demonstrably enumerates the CPU ggml device and nothing else.
 

@@ -17,6 +17,12 @@ export type OpenAIAutoSwitchSettings = {
   autoDownloadModel: boolean;
   // Spare models loaded from the UI on idle unload; only free API-loaded ones.
   autoUnloadApiOnly: boolean;
+  // Idle TTL for the image and video pipelines. Its own setting, off by default:
+  // the chat TTL above is about the OpenAI API and never implied these.
+  mediaAutoUnloadIdleSeconds: number;
+  // True when the media idle unload will actually run, so the UI can say a veto
+  // (residency, or API-loaded only) is holding a saved TTL off.
+  mediaIdleUnloadActive: boolean;
 };
 
 type ApiOpenAIAutoSwitchSettings = {
@@ -33,6 +39,10 @@ type ApiOpenAIAutoSwitchSettings = {
   auto_download_model?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   auto_unload_api_only?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  media_auto_unload_idle_seconds?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  media_idle_unload_active?: boolean;
 };
 
 let cachedSettings: OpenAIAutoSwitchSettings | null = null;
@@ -53,6 +63,8 @@ function fromApi(
     autoUnloadKeepKv: settings.auto_unload_keep_kv ?? true,
     autoDownloadModel: settings.auto_download_model ?? false,
     autoUnloadApiOnly: settings.auto_unload_api_only ?? false,
+    mediaAutoUnloadIdleSeconds: settings.media_auto_unload_idle_seconds ?? 0,
+    mediaIdleUnloadActive: settings.media_idle_unload_active ?? false,
   };
 }
 
@@ -131,6 +143,7 @@ export async function updateOpenAIAutoSwitchSettings(
   autoUnloadKeepKv?: boolean,
   autoDownloadModel?: boolean,
   autoUnloadApiOnly?: boolean,
+  mediaAutoUnloadIdleSeconds?: number,
 ): Promise<OpenAIAutoSwitchSettings> {
   // Read BEFORE the request: idleUnloadActive depends on the Model Memory
   // setting, so a residency write landing mid-flight makes this response stale
@@ -158,6 +171,10 @@ export async function updateOpenAIAutoSwitchSettings(
         ? {}
         : // biome-ignore lint/style/useNamingConvention: API schema
           { auto_unload_api_only: autoUnloadApiOnly }),
+      ...(mediaAutoUnloadIdleSeconds === undefined
+        ? {}
+        : // biome-ignore lint/style/useNamingConvention: API schema
+          { media_auto_unload_idle_seconds: mediaAutoUnloadIdleSeconds }),
     }),
   });
   if (!res.ok) {

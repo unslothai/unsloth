@@ -834,6 +834,9 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
             "chat_template_override_reason",
+            # Read from requested_extra_args, which is what the load was invoked
+            # with rather than the rewritten launch list.
+            "requested_llama_extra_args",
         }
         unresolved = sorted(
             name

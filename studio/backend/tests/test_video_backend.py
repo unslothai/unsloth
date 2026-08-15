@@ -531,6 +531,44 @@ def _load_gguf(backend, tmp_path):
     )
 
 
+def _stub_apply_memory_plan(
+    monkeypatch,
+    video_mod,
+    *,
+    policy = "model",
+    vae_tiling = True,
+) -> list:
+    """Stand in for ``apply_memory_plan``, recording the placement kwargs of every call.
+
+    The keywords are spelled out rather than ``**kwargs`` on purpose: a double that swallows the
+    signature keeps passing once the load hands over an argument it never reads, which is how
+    ``placement_device`` (#8645) became a TypeError on CI.
+    """
+    calls = []
+
+    def _fake(
+        pipe,
+        plan,
+        *,
+        device = None,
+        placement_device = None,
+        logger = None,
+    ):
+        calls.append({"device": device, "placement_device": placement_device})
+        return (policy, vae_tiling)
+
+    monkeypatch.setattr(video_mod, "apply_memory_plan", _fake)
+    return calls
+
+
+def _assert_placement_follows_the_target(calls, video_mod):
+    """Placement gets the INDEXED device off the resolved target, the policy string stays bare."""
+    target = video_mod.resolve_diffusion_device_target()
+    assert calls, "apply_memory_plan was never called"
+    assert calls[0]["placement_device"] == target.torch_device
+    assert calls[0]["device"] == target.device
+
+
 def test_resolve_kind():
     assert resolve_video_model_kind("x.gguf", None) == "gguf"
     assert resolve_video_model_kind("x.safetensors", None) == "single_file"
@@ -1790,11 +1828,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
         "plan_diffusion_memory",
         lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
     )
-    monkeypatch.setattr(
-        video_mod,
-        "apply_memory_plan",
-        lambda pipe, plan, device = None, logger = None: ("model", True),
-    )
+    placements = _stub_apply_memory_plan(monkeypatch, video_mod)
 
     backend = VideoBackend()
     status = backend.load_pipeline(
@@ -1802,6 +1836,7 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
         model_kind = "pipeline",
         transformer_quant = "int8",
     )
+    _assert_placement_follows_the_target(placements, video_mod)
     assert status["offload_policy"] == "model"
     assert quantised == []
     assert status["transformer_quant"] is None
@@ -1811,6 +1846,36 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     assert resolved["requested"] == "int8"
     assert resolved["value"] == "off"
     assert resolved["status"] == "fell_back"
+
+
+def test_the_video_load_places_on_the_selected_card_not_a_bare_device(fake_runtime, monkeypatch):
+    # #8645 at the video seam: ``enable_model_cpu_offload`` reads the ordinal off the device and
+    # falls back to ``_offload_gpu_id = 0`` without one, so the load passes the INDEXED string as
+    # ``placement_device``; ``device`` stays bare because the memory/speed/attention policies
+    # compare it against "cuda". The two must not be swapped.
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    real_target = VideoBackend._device_target
+
+    def _selected(self, ordinal = None):
+        return dataclasses.replace(real_target(self, ordinal), ordinal = 1)
+
+    monkeypatch.setattr(VideoBackend, "_device_target", _selected)
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    placements = _stub_apply_memory_plan(monkeypatch, video_mod)
+
+    VideoBackend().load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+
+    assert placements, "apply_memory_plan was never called"
+    assert placements[0]["placement_device"] == "cpu:1"
+    assert placements[0]["device"] == "cpu"
 
 
 def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
@@ -3467,6 +3532,135 @@ def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch
     # own pair, so assert on the opening ones rather than the whole list.
     assert held[:2] == [1, False], f"probe ran unclaimed: {held}"
     assert sd_cpp_backend._tree_readers == 0, "the claim must be released after the probe"
+
+
+def _load_h3_native_offload(
+    monkeypatch,
+    tmp_path,
+    *,
+    help_text,
+    accelerator = True,
+    memory_mode = None,
+):
+    """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
+
+    ``help_text`` is what the binary answers ``--help`` with, which is the only thing the graph-cut
+    gate reads. ``accelerator = False`` reproduces the Linux CUDA host with only the CPU prebuilt,
+    where the load commits to ``native_device = "cpu"``.
+    """
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli",
+    )
+    # One probe helper serves both --list-devices and --help, so the ggml device line rides along or the CPU case is unreachable.
+    devices = "CUDA0\tNVIDIA GeForce RTX 4070 Ti\n" if accelerator else "CPU\tAMD Ryzen 9\n"
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: devices + help_text)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        memory_mode = memory_mode,
+    )
+    assert backend._state is not None
+    return backend._state, list(backend._state.pipe.offload_flags)
+
+
+# Both fixtures carry the project banner the identity gate reads and the H3 marker
+# ensure_h3_sd_cpp_binary gates on, and differ only in the graph-cut options.
+_H3_HELP = (
+    "stable-diffusion.cpp version master-813\n"
+    "  --ref-video           MiniMax-H3 Ref2VA reference video frame directory\n"
+)
+_GRAPH_CUT_HELP = (
+    _H3_HELP + "  --max-vram <string>   VRAM budget\n  --stream-layers       prefetch\n"
+)
+_NO_GRAPH_CUT_HELP = _H3_HELP + "  --offload-to-cpu      place the weights in RAM\n"
+
+
+def test_h3_native_emits_the_graph_cut_flags_on_an_accelerator(monkeypatch, tmp_path):
+    """H3's modules are individually larger than the cards it is offered on, so --offload-to-cpu
+    alone still allocates each one whole and cudaMallocs before any tensor is resident. The graph
+    cut is what makes the checkpoint renderable, and auto -- not low_vram -- is the default mode
+    that has to carry it."""
+    state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
+    assert state.device == "cuda"
+    # auto offloads, which is what makes --stream-layers take effect.
+    assert "--offload-to-cpu" in offload
+    assert offload[-3:] == ["--max-vram", "-1", "--stream-layers"]
+    # A negative budget auto-detects per device. A fixed number would misjudge the other card.
+    assert "0" not in offload
+
+
+def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path):
+    """fast keeps the params resident on the device, and upstream only honours --stream-layers when
+    the diffusion params backend is CPU: without --offload-to-cpu it warns and ignores the flag.
+    The budget still segments on its own, so --max-vram stays."""
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, memory_mode = "fast"
+    )
+    assert "--offload-to-cpu" not in offload
+    assert offload[-2:] == ["--max-vram", "-1"]
+    assert "--stream-layers" not in offload
+
+
+def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):
+    """sd-cli exits non-zero on an option it does not know, so emitting these unconditionally
+    would break every generation on a build that predates the executor."""
+    _state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _NO_GRAPH_CUT_HELP)
+    assert "--max-vram" not in offload
+    assert "--stream-layers" not in offload
+
+
+def test_h3_native_skips_the_graph_cut_flags_on_cpu(monkeypatch, tmp_path):
+    """The cut splits a module to fit a device budget; the CPU backend allocates from system RAM,
+    so there is nothing to size against."""
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, accelerator = False
+    )
+    assert state.device == "cpu"
+    assert "--max-vram" not in offload
 
 
 def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path):
@@ -6680,9 +6874,7 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         return dataclasses.replace(real(**kwargs), offload_policy = "model")
 
     monkeypatch.setattr(video_mod, "plan_diffusion_memory", _spy)
-    monkeypatch.setattr(
-        video_mod, "apply_memory_plan", lambda pipe, plan, device = None, logger = None: ("model", True)
-    )
+    placements = _stub_apply_memory_plan(monkeypatch, video_mod)
 
     VideoBackend().load_pipeline(
         "Lightricks/LTX-2",
@@ -6690,6 +6882,7 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         transformer_quant = "int8",
         text_encoder_quant = "fp8",
     )
+    _assert_placement_follows_the_target(placements, video_mod)
     assert len(calls) == 2, "the dense-quant re-plan did not run"
     assert calls[1]["model_dense_mib"] == int(
         (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)

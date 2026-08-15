@@ -19,6 +19,12 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
+      - 'tests/studio/playwright_chat_autoscroll.py'
+      - 'tests/studio/playwright_research_freeze.py'
+      # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_autoscroll_harness_contract.py'
+      - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
@@ -40,7 +46,8 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Two browser smokes (~50s) plus the Chromium install now sit inside this.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: studio/frontend
@@ -149,17 +156,35 @@ jobs:
         run: npm test
 
 
-      - name: Install Chromium for tool-output smoke
+      - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
         run: |
-          python3 -m pip install 'playwright>=1.45,<2'
+          python3 -m pip install 'playwright>=1.45,<2' pytest
           python3 -m playwright install --with-deps chromium
+
+      # Cheap and browserless, but it imports the harnesses, which import playwright, so it has
+      # to sit after the install. Covers the Windows teardown branch no runner here executes.
+      - name: Dev-server lifecycle tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
+            tests/studio/test_autoscroll_harness_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
         env:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
+
+      # Each harness owns its vite dev server, like the ANSI smoke above. Starting one here
+      # would background npm, so $! is the wrapper and killing it orphans the node child.
+      - name: Browser smoke for chat autoscroll
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_chat_autoscroll.py
+
+      - name: Browser smoke for research freeze
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_research_freeze.py
 
       - name: Build
         run: npm run build

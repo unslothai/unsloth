@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -124,7 +125,11 @@ def test_sandbox_listing_route_exists():
     sandbox_routes = sorted(r.path for r in router.routes if "sandbox" in r.path)
     print(f"\nsandbox routes = {sandbox_routes}")
     # :path so a file written into a subdirectory is reachable.
-    assert sandbox_routes == ["/sandbox/{session_id}", "/sandbox/{session_id}/{filename:path}"]
+    assert sandbox_routes == [
+        "/sandbox/{session_id}",
+        "/sandbox/{session_id}/reveal",
+        "/sandbox/{session_id}/{filename:path}",
+    ]
 
     import inspect
     from routes import inference
@@ -1681,16 +1686,17 @@ def test_a_real_project_workspace_is_still_left_alone(tmp_path, monkeypatch):
 def test_a_foreign_tool_result_keeps_its_own_fields():
     """Studio's wrapper always carries images; anything else with text and
     sessionId is someone else's result and must not be reduced to its text."""
-    adapter = (
+    # The predicate lives beside the rest of the sandbox contract, and the
+    # adapter and both tool cards share that one copy.
+    contract = (
         Path(__file__).resolve().parents[2]
         / "frontend"
         / "src"
-        / "features"
-        / "chat"
-        / "api"
-        / "chat-adapter.ts"
+        / "components"
+        / "assistant-ui"
+        / "sandbox-files.ts"
     ).read_text(encoding = "utf-8")
-    predicate = adapter.split("export function isSandboxToolResult(", 1)[1].split("\n}", 1)[0]
+    predicate = contract.split("export function isSandboxToolResult(", 1)[1].split("\n}", 1)[0]
     assert "Array.isArray(v.images)" in predicate, predicate
 
 
@@ -2217,14 +2223,16 @@ def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
 def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
     """The cards map over it, so anything else takes the chat view down."""
     root = Path(__file__).resolve().parents[2] / "frontend" / "src"
-    adapter = (root / "features" / "chat" / "api" / "chat-adapter.ts").read_text(encoding = "utf-8")
+    contract = (root / "components" / "assistant-ui" / "sandbox-files.ts").read_text(
+        encoding = "utf-8"
+    )
     python_card = (root / "components" / "assistant-ui" / "tool-ui-python.tsx").read_text(
         encoding = "utf-8"
     )
-    assert "export function isSandboxFileList" in adapter
+    assert "export function isSandboxFileList" in contract
     # Every entry, not just the array: the rows read name off each one.
-    assert 'typeof (entry as { name?: unknown }).name === "string"' in adapter
-    for source in (adapter, python_card):
+    assert 'typeof (entry as { name?: unknown }).name === "string"' in contract
+    for source in (contract, python_card):
         assert "isSandboxFileList(v.files)" in source
 
 
@@ -4773,6 +4781,304 @@ def test_a_sandbox_listing_does_not_resolve_on_the_event_loop(tmp_path, monkeypa
         inference.list_sandbox_files("thread-1", request = None, token = None, session = None)
     )
     assert ran_on and loop_thread not in ran_on, "resolution ran on the event loop"
+
+
+def test_revealing_a_sandbox_opens_the_directory_it_resolved(tmp_path, monkeypatch):
+    """The route hands the file manager the resolved sandbox, not the raw id."""
+    import asyncio
+
+    from pathlib import Path as _Path
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    opened = []
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: opened.append(path),
+    )
+
+    result = asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+    )
+    assert result["path"] == str(sandbox)
+    assert opened == [_Path(str(sandbox))]
+
+
+def test_a_sandbox_deleted_mid_request_does_not_reveal_the_root(tmp_path, monkeypatch):
+    """The Linux branch opens the parent when the target is not a directory, and
+    a sandbox's parent is the root holding every other chat's."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+
+    root = tmp_path / "sandbox"
+    sandbox = root / "thread-1"
+    sandbox.mkdir(parents = True)
+    opened = []
+
+    def resolve_then_delete(session_id, create):
+        # Stands in for the chat being deleted between the check and the open.
+        shutil.rmtree(sandbox, ignore_errors = True)
+        return str(sandbox)
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", resolve_then_delete)
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 404
+    assert opened == [], "the parent directory must never be opened"
+
+
+def test_revealing_a_sandbox_that_was_never_created_is_a_404(tmp_path, monkeypatch):
+    """A chat whose tools never ran has no folder, and opening one for it would
+    materialise a directory the user never asked for."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    missing = tmp_path / "sandbox" / "thread-1"
+    opened = []
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(missing))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: opened.append(path),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 404
+    assert not missing.exists()
+    assert opened == []
+
+
+def test_a_missing_file_manager_is_not_reported_as_a_missing_folder(tmp_path, monkeypatch):
+    """``xdg-open`` is absent on a headless host, and ``Popen`` then raises the
+    same ``FileNotFoundError`` as a missing target. Conflating them tells a user
+    whose files are right there that the chat has no folder."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+
+    def no_launcher(path, expect_dir = False):
+        raise FileNotFoundError(2, "No such file or directory", "xdg-open")
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", no_launcher)
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 500
+    assert sandbox.is_dir(), "the folder was there the whole time"
+
+
+def test_revealing_a_sandbox_demands_a_directory(tmp_path, monkeypatch):
+    """A tool can replace its own sandbox with a file between the route's isdir
+    check and the open, and the file branch names the parent, here the root
+    holding every other chat's. The route says up front that it only reveals a
+    directory rather than re-checking and losing the same race."""
+    import asyncio
+    import inspect
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    seen = []
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda session_id, create: str(sandbox))
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: seen.append((path, expect_dir)),
+    )
+
+    asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+    )
+    assert seen and seen[0][1] is True, "the sandbox reveal must demand a directory"
+
+    # The cached-model reveal shares the helper and legitimately points at a
+    # file, so it must NOT inherit the flag.
+    from routes import models
+
+    assert "expect_dir" not in inspect.getsource(models.reveal_cached_model)
+
+
+def test_revealing_reads_the_session_query_the_frontend_falls_back_to(tmp_path, monkeypatch):
+    """ASGI decodes ``%2F`` before routing, so a slashed id travels as
+    ``/sandbox/_/reveal?session=``. The listing route already reads it and this
+    one must agree, or such a chat silently reveals the wrong folder."""
+    import asyncio
+
+    from routes import inference
+    from utils.paths import path_utils
+
+    asked = []
+    sandbox = tmp_path / "sandbox" / "resolved"
+    sandbox.mkdir(parents = True)
+
+    def resolve(session_id, create):
+        asked.append(session_id)
+        return str(sandbox)
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", resolve)
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path, expect_dir = False: None)
+
+    asyncio.new_event_loop().run_until_complete(
+        inference.reveal_sandbox_dir("_", request = None, token = None, session = "thread/with/slashes")
+    )
+    assert asked == ["thread/with/slashes"], "the placeholder segment was resolved instead"
+
+
+def test_revealing_authenticates_before_it_touches_the_filesystem(tmp_path, monkeypatch):
+    """Resolution scans the sandbox root, so an unauthenticated caller must not
+    reach it -- and must certainly not reach the file manager."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from routes import inference
+
+    resolved = []
+    opened = []
+
+    async def refuse(request, token):
+        raise HTTPException(status_code = 401, detail = "Not authenticated")
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", refuse)
+    monkeypatch.setattr(inference, "_sandbox_dir_for", lambda *a, **k: resolved.append(a) or "")
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.new_event_loop().run_until_complete(
+            inference.reveal_sandbox_dir("thread-1", request = None, token = None, session = None)
+        )
+    assert caught.value.status_code == 401
+    assert resolved == [] and opened == []
+
+
+def test_a_traversal_id_stays_inside_the_sandbox_root_and_opens_nothing(tmp_path, monkeypatch):
+    """The id is a name, not a path. Every one of these must derive a name
+    inside the root, find nothing there, and launch nothing."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    opened = []
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: opened.append(list(cmd)))
+
+    for probe in (
+        "../../../../etc",
+        "..",
+        "/etc",
+        "thread/../../../etc",
+        "..\\..\\windows",
+        "C:\\Windows",
+        "con",
+        "x" * 300,
+    ):
+        with pytest.raises(HTTPException) as caught:
+            asyncio.new_event_loop().run_until_complete(
+                inference.reveal_sandbox_dir("_", request = None, token = None, session = probe)
+            )
+        assert caught.value.status_code == 404, probe
+        resolved = inference._sandbox_dir_for(probe, create = False)
+        assert not os.path.exists("/etc/.unsloth_sandbox")
+        assert (
+            Path(resolved).is_relative_to(tmp_path / "home") or not Path(resolved).exists()
+        ), probe
+    assert opened == [], "a refused id must never reach the file manager"
+
+
+def test_a_sandbox_file_named_reveal_is_still_served(tmp_path):
+    """The POST route shares the path the download route matches with
+    ``{filename:path}``. Being POST-only keeps a file called ``reveal``
+    reachable, which widening the method list later would silently undo."""
+    from routes.inference import router
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/sandbox/thread-1/reveal",
+        "headers": [],
+        "root_path": "",
+    }
+    matched = [r for r in router.routes if r.matches(scope)[0].name == "FULL"]
+    assert [r.endpoint.__name__ for r in matched] == ["serve_sandbox_file"]
+
+    scope["method"] = "POST"
+    matched = [r for r in router.routes if r.matches(scope)[0].name == "FULL"]
+    assert [r.endpoint.__name__ for r in matched] == ["reveal_sandbox_dir"]
+
+
+def test_the_cached_model_reveal_still_goes_through_the_moved_helper(tmp_path, monkeypatch):
+    """The moved helper's one prior caller must behave as at the merge base,
+    including for the symlinked entries an HF cache is made of."""
+    import asyncio
+
+    from routes import models
+    from utils.paths import path_utils
+
+    real = tmp_path / "blobs" / "model.gguf"
+    real.parent.mkdir(parents = True)
+    real.write_bytes(b"gguf")
+    link = tmp_path / "snapshot" / "model.gguf"
+    link.parent.mkdir(parents = True)
+    link.symlink_to(real)
+
+    opened = []
+    monkeypatch.setattr(models, "_resolve_cached_model_path", lambda repo_id, variant: link)
+    monkeypatch.setattr(
+        path_utils,
+        "reveal_in_file_manager",
+        lambda path, expect_dir = False: opened.append(path),
+    )
+
+    result = asyncio.new_event_loop().run_until_complete(
+        models.reveal_cached_model(
+            repo_id = "unsloth/Llama-3.2-1B", variant = None, current_subject = "unsloth"
+        )
+    )
+    assert result == {"status": "ok", "path": str(link)}
+    assert opened == [link], "a symlinked cache entry must still be revealed"
 
 
 def test_a_kept_sandbox_is_offered_even_when_deletion_was_asked_for():
