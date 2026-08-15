@@ -38,6 +38,9 @@ _SHARDED_ENCODER_REPOS = frozenset({"unsloth/Meta-Llama-3.1-8B-Instruct"})
 # what from_pretrained reads besides the weights, tiny next to them but still a download
 _ENCODER_METADATA_FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")
 
+# suffixes a weight-bearing pipeline component can satisfy from_pretrained with
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".msgpack", ".onnx")
+
 
 def detected_image_family(pick: MediaModelPick) -> Any:
     """The diffusion family for *pick*, tried against its path and then its id.
@@ -255,40 +258,60 @@ def plan_gpu_ordinal() -> Optional[int]:
 def _pipeline_components_present(root: Path) -> bool:
     """Whether every component a local pipeline's own index names is on disk.
 
-    A directory carrying ``model_index.json`` is treated as complete by definition, because
+    A directory carrying a pipeline index is treated as complete by definition, because
     from_pretrained reads it off disk and the planner cannot be asked about an absolute path.
     That holds only if the components are actually there: a hand-copied or interrupted pipeline
     passes the index check, and the loader then tears the resident pipeline down before
-    from_pretrained discovers the gap, leaving the API with no image model at all.
+    from_pretrained discovers the gap, leaving the API with no model at all.
 
-    Judged on what can be seen without reading weights: each named component's directory must
-    exist and hold something, and a sharded component must hold every shard its index lists.
+    Judged on what can be seen without reading weights. A directory carrying neither index is
+    not this function's business, and a Modular Diffusers index lists its components in a shape
+    this does not read, so both answer True and are left to the load route.
     """
     import json
 
-    try:
-        with open(root / "model_index.json", encoding = "utf-8-sig") as handle:
-            index = json.load(handle)
-    except Exception as exc:  # noqa: BLE001 -- an index the loader cannot read is not complete
-        logger.debug("media auto-switch: unreadable pipeline index under %s: %s", root, exc)
-        return False
-    if not isinstance(index, dict):
-        return False
-    for name, entry in index.items():
-        if name.startswith("_") or not isinstance(entry, (list, tuple)) or len(entry) != 2:
+    for name in ("model_index.json", "modular_model_index.json"):
+        index_file = root / name
+        if not index_file.is_file():
             continue
-        # [null, null] marks a component this pipeline deliberately ships without.
-        if not entry[1]:
-            continue
-        component = root / name
         try:
-            if not component.is_dir() or not any(component.iterdir()):
-                return False
-            if not _shards_present(component):
-                return False
-        except OSError:
+            with open(index_file, encoding = "utf-8-sig") as handle:
+                index = json.load(handle)
+        except Exception as exc:  # noqa: BLE001 -- an index the loader cannot read is not complete
+            logger.debug("media auto-switch: unreadable pipeline index under %s: %s", root, exc)
             return False
+        if not isinstance(index, dict):
+            return False
+        for component, entry in index.items():
+            if component.startswith("_") or not isinstance(entry, (list, tuple)):
+                continue
+            # [null, null] marks a component this pipeline deliberately ships without.
+            if len(entry) != 2 or not entry[1]:
+                continue
+            if not _component_present(root / component):
+                return False
     return True
+
+
+def _component_present(component: Path) -> bool:
+    """Whether one named pipeline component holds what from_pretrained will ask it for."""
+    try:
+        if not component.is_dir():
+            return False
+        entries = list(component.iterdir())
+    except OSError:
+        return False
+    if not entries:
+        return False
+    if not _shards_present(component):
+        return False
+    if any(entry.name.endswith(".index.json") for entry in entries):
+        return True
+    # a weight-bearing component declares config.json; schedulers, tokenizers and processors
+    # carry their own *_config.json instead and ship no weights at all
+    if not (component / "config.json").is_file():
+        return True
+    return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in entries)
 
 
 def _shards_present(component: Path) -> bool:
@@ -329,11 +352,18 @@ def missing_download_bytes(
     would allow exactly the download this exists to prevent, so the switch refuses instead.
     """
     target = normalized_pick(pick)
-    if owner == DIFFUSION and not target.gguf_filename and Path(target.model_path).is_dir():
-        if not _pipeline_components_present(Path(target.model_path)):
-            return UNSIZED_MISSING
-        # the pipeline is present, so only a dependency living outside it can still be fetched
-        return _missing_external_encoder(target)
+    local_pipeline = not target.gguf_filename and Path(target.model_path).is_dir()
+    if local_pipeline and not _pipeline_components_present(Path(target.model_path)):
+        return UNSIZED_MISSING
+    if owner == DIFFUSION:
+        # asked of every image pick, not only local pipelines: a single-file HiDream checkpoint
+        # plans clean and its assembly still loads the encoder repo unconditionally
+        external = _missing_external_encoder(target)
+        if external is None or external:
+            return external
+        if local_pipeline:
+            # the pipeline is present, so only a dependency outside it could still be fetched
+            return 0
     try:
         ordinal = plan_gpu_ordinal()
         plans = [

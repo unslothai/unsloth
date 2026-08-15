@@ -5404,21 +5404,15 @@ class VideoBackend:
         videos = list(reference_videos or [])
         audios = list(reference_audios or [])
         validate_video_reference_conditioning(
-            fam, h3_task, has_references = bool(images or videos or audios)
+            fam,
+            h3_task,
+            has_references = bool(images or videos or audios),
+            reference_image_size = reference_image_size,
+            engine = engine,
         )
         if not (images or videos or audios):
             return MiniMaxH3References()
         policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
-        if policy not in (H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX):
-            raise ValueError(
-                f"reference_image_size must be '{H3_REF_SIZE_MATCH}' or '{H3_REF_SIZE_MAX}'."
-            )
-        if policy == H3_REF_SIZE_MAX and engine == "sd_cpp":
-            raise ValueError(
-                "stable-diffusion.cpp scales every reference to the generation's pixel area, so "
-                f"'{H3_REF_SIZE_MAX}' reference sizing needs the Diffusers engine. Use "
-                f"'{H3_REF_SIZE_MATCH}' with this checkpoint."
-            )
 
         from .diffusion import decode_b64_image
 

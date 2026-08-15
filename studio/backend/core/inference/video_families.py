@@ -678,14 +678,23 @@ def validate_video_flow_controls(
 
 
 def validate_video_reference_conditioning(
-    fam: VideoFamily, h3_task: Optional[str], *, has_references: bool
+    fam: VideoFamily,
+    h3_task: Optional[str],
+    *,
+    has_references: bool,
+    reference_image_size: Optional[str] = None,
+    engine: Optional[str] = None,
 ) -> None:
     """Raise ``ValueError`` when a checkpoint cannot be conditioned on the request's references.
 
     The absence of references is a rule too: the Ref2VA partition has no text-only denoiser. See
     ``validate_video_keyframe_conditioning`` for why these live here rather than inline.
+
+    ``engine`` is optional for the same reason it is on the flow controls: a target's engine is
+    normally unknown before the load, but where the pick decides it, passing it refuses an
+    unservable sizing policy before anything is evicted.
     """
-    from .video_minimax_h3 import H3_TASK_REFERENCES
+    from .video_minimax_h3 import H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX, H3_TASK_REFERENCES
 
     if not has_references:
         if h3_task == H3_TASK_REFERENCES:
@@ -702,6 +711,15 @@ def validate_video_reference_conditioning(
             "The MiniMax-H3 checkpoint is the FL2VA partition, which conditions on keyframes "
             "rather than references. Load a minimax_h3_ref2va checkpoint to generate from "
             "references."
+        )
+    policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
+    if policy not in (H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX):
+        raise ValueError(f"reference_image_size must be '{H3_REF_SIZE_MATCH}' or '{H3_REF_SIZE_MAX}'.")
+    if policy == H3_REF_SIZE_MAX and engine == "sd_cpp":
+        raise ValueError(
+            "stable-diffusion.cpp scales every reference to the generation's pixel area, so "
+            f"'{H3_REF_SIZE_MAX}' reference sizing needs the Diffusers engine. Use "
+            f"'{H3_REF_SIZE_MATCH}' with this checkpoint."
         )
 
 

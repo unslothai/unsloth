@@ -1791,3 +1791,123 @@ def test_a_load_route_refusal_still_carries_the_openai_envelope(monkeypatch):
 
     assert resp.status_code == 400
     assert resp.json()["error"]["message"] == "'x/y' is not a supported diffusion model."
+
+
+def test_a_component_holding_only_its_config_is_refused(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A partially copied pipeline leaves the component directory in place with its config and
+    # none of its weights, which the nonempty-directory test alone accepted.
+    pipeline = tmp_path / "z-image"
+    (pipeline / "transformer").mkdir(parents = True)
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline",'
+        ' "transformer": ["diffusers", "ZImageTransformer2DModel"]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_weightless_component_is_still_accepted(catalog, enabled, tmp_path, backend, loads):
+    # Schedulers, tokenizers and processors ship no weights at all, and they declare their own
+    # *_config.json rather than config.json, so requiring a weight file must not refuse them.
+    pipeline = tmp_path / "z-image"
+    (pipeline / "scheduler").mkdir(parents = True)
+    (pipeline / "scheduler" / "scheduler_config.json").write_text("{}")
+    (pipeline / "tokenizer").mkdir(parents = True)
+    (pipeline / "tokenizer" / "tokenizer_config.json").write_text("{}")
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline", "scheduler": ["diffusers", "FlowMatchEulerScheduler"],'
+        ' "tokenizer": ["transformers", "Qwen2Tokenizer"]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert [pick.model_id for _owner, pick in loads] == ["Tongyi-MAI/Z-Image-Turbo"]
+
+
+def test_an_incomplete_local_video_pipeline_is_refused_too(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # The video planner omits the base files whenever the local path exists, so an incomplete
+    # directory reported nothing missing and the load worker tore the resident pipeline down.
+    pipeline = tmp_path / "wan"
+    (pipeline / "transformer").mkdir(parents = True)
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "WanPipeline", "transformer": ["diffusers", "WanTransformer3DModel"]}'
+    )
+    catalog.append(_info("Wan-AI/Wan2.2-T2V-A14B", pipeline, task = mas.VIDEO_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("Wan-AI/Wan2.2-T2V-A14B", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_single_file_hidream_still_checks_its_encoder(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # normalized_pick gives a standalone checkpoint a gguf_filename, which skipped the encoder
+    # check, while the single-file assembly still loads the Llama repo unconditionally.
+    directory = tmp_path / "hidream-i1-dev"
+    directory.mkdir()
+    (directory / "hidream-i1-dev.safetensors").write_bytes(b"")
+    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", directory, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(locality, "encoder_repo_complete", lambda repo_id: False)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("HiDream-ai/HiDream-I1-Dev")
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["error"]["code"] == "model_not_downloaded"
+    assert loads == []
+
+
+def test_a_native_h3_target_refuses_max_reference_sizing(monkeypatch):
+    # stable-diffusion.cpp scales every reference to the generation's pixel area, so 'max' needs
+    # the Diffusers engine, and an H3 GGUF is always native.
+    import core.inference.video as video_module
+    from routes.video import router as video_router
+
+    generated: list = []
+
+    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+        before_switch(
+            index.MediaModelPick(
+                requested_model,
+                "unsloth/MiniMax-H3-GGUF",
+                "ref2va/minimax_h3_ref2va-Q4_K_M.gguf",
+                "gguf",
+            )
+        )
+
+    monkeypatch.setattr(mas, "maybe_auto_switch_media_model", _switch_stub)
+
+    class _Backend:
+        def begin_generate(self, **kwargs):
+            generated.append(kwargs)
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+
+    resp = _client(video_router, "/api/inference").post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "a sloth",
+            "model": "unsloth/MiniMax-H3-GGUF",
+            "reference_images": ["data:image/png;base64,AAAA"],
+            "reference_image_size": "max",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "Diffusers engine" in resp.json()["detail"]
+    assert generated == []

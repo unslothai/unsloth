@@ -393,16 +393,18 @@ async def generate_video(
         validate_video_keyframe_conditioning(
             fam, h3_task, has_keyframes = bool(request.first_frame or request.last_frame)
         )
+        # the engine is only knowable up front where the pick decides it, as an h3 gguf does
+        kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
+        engine = "sd_cpp" if is_h3_native(fam, kind) else None
         validate_video_reference_conditioning(
             fam,
             h3_task,
             has_references = bool(
                 request.reference_images or request.reference_videos or request.reference_audios
             ),
+            reference_image_size = request.reference_image_size,
+            engine = engine,
         )
-        # the engine is only knowable up front where the pick decides it, as an h3 gguf does
-        kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
-        engine = "sd_cpp" if is_h3_native(fam, kind) else None
         validate_video_flow_controls(
             fam, request.flow_shift, request.audio_flow_shift, engine = engine
         )
