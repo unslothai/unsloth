@@ -5370,7 +5370,10 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
 
 
 def _resolves_to_resident(
-    load_path: Optional[str], *, llama_only: bool = False, exact_only: bool = False
+    load_path: Optional[str],
+    *,
+    llama_only: bool = False,
+    exact_only: bool = False,
 ) -> bool:
     """Whether a resolved on-disk path is what is already loaded.
 

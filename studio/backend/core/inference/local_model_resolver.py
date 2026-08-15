@@ -200,7 +200,6 @@ def _host_has_a_non_gguf_backend() -> bool:
         return True
     try:
         from importlib.util import find_spec
-
         return find_spec("torch") is not None
     except Exception:
         return False
