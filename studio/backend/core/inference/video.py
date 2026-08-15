@@ -4273,6 +4273,13 @@ class VideoBackend:
                     # Reject a checkpoint baked under a different Linear filter, exactly as the
                     # image path does, so prequant and runtime-quant stay the same model.
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                    # A load nobody asked for may not fetch this checkpoint either, exactly as the
+                    # image twin refuses it. The switch verified only what the PLAN listed, and
+                    # `auto` is re-decided here against live free memory rather than the card's
+                    # capacity, so this branch can ask for a hosted checkpoint the plan never
+                    # cleared and never staged. A cache miss returns None and the load continues
+                    # dense, which load_components refuses under the same flag a few lines below.
+                    local_files_only = local_files_only,
                     # Pin the live cache root, as every other loader call does: unset, the fetch
                     # lands under huggingface_hub's import-time constant and a later cache change
                     # re-downloads multiple GB into a root Studio no longer reads.

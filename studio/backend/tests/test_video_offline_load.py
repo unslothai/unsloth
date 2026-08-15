@@ -281,3 +281,38 @@ def test_the_xet_wrapper_is_unchanged_for_every_existing_caller(monkeypatch, tmp
     xet.hf_hub_download_with_xet_fallback("org/repo", "file.bin", None, cache_dir = str(tmp_path))
     assert seen["args"] == ("org/repo", "file.bin", None)
     assert "local_files_only" not in seen["kwargs"]
+
+
+def _keywords_of(module_path: str, function: str, callee: str) -> set[str]:
+    """The keyword names a call to *callee* inside *function* actually spells out.
+
+    Read from the source rather than driven, because the branch that reaches this call needs a
+    Modular Diffusers H3 pipeline and a card whose free memory has moved since the plan: the
+    condition is real but not one a unit test can stage, and the keyword either is there or is not.
+    """
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(module_path).read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != function:
+            continue
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call) and getattr(call.func, "id", None) == callee:
+                return {kw.arg for kw in call.keywords if kw.arg}
+    raise AssertionError(f"no call to {callee}() inside {function}()")
+
+
+def test_the_hosted_prequantized_denoiser_is_not_fetched_by_a_load_nobody_asked_for():
+    # `auto` is settled twice: the download plan decides against the card's CAPACITY, and this
+    # branch re-decides against LIVE free memory once the previous pipeline is gone. So a pick the
+    # plan sized as "the released bfloat16 denoiser fits" -- nothing hosted staged, the locality
+    # gate reporting zero missing bytes, the switch starting the load -- can be re-decided here as
+    # "take the hosted int8 checkpoint", and that is a multi-GB pull on a load that promised none.
+    # The image twin has passed the flag here all along; the video path did not.
+    assert "local_files_only" in _keywords_of(
+        "core/inference/video.py", "_load_h3_modular_pipeline", "load_prequantized_transformer"
+    )
+    assert "local_files_only" in _keywords_of(
+        "core/inference/diffusion.py", "_load_dense_quant_pipeline", "load_prequantized_transformer"
+    )
