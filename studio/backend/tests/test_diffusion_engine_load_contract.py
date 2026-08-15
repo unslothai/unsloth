@@ -95,8 +95,7 @@ def test_the_two_begin_load_signatures_declare_local_files_only_alike():
         assert declared.kind is inspect.Parameter.KEYWORD_ONLY, engine
         assert declared.default is False, engine
     assert not any(
-        p.kind is inspect.Parameter.VAR_KEYWORD
-        for p in params[SdCppDiffusionBackend].values()
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params[SdCppDiffusionBackend].values()
     ), "a **kwargs catch-all would accept the flag and ignore it"
 
 
@@ -195,7 +194,13 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
     )
     fetched: list = []
 
-    def _fetch(self, assets, token, cancel_event = None, local_files_only = False):
+    def _fetch(
+        self,
+        assets,
+        token,
+        cancel_event = None,
+        local_files_only = False,
+    ):
         fetched.append(local_files_only)
         raise RuntimeError("stop here; the Hub calls under test all precede the fetch")
 

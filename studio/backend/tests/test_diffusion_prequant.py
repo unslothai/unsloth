@@ -1705,9 +1705,7 @@ def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tm
     ckpt = live_root / "ck.pt"  # the checkpoint came from the LIVE root
     ckpt.write_bytes(b"x")
 
-    monkeypatch.setattr(
-        P, "_resolve_checkpoint_path", lambda s, t, c = None, **_: str(ckpt)
-    )
+    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None, **_: str(ckpt))
     monkeypatch.setattr(P, "_validate_checkpoint", lambda *a, **k: True)
     monkeypatch.setattr(P, "_pin_kernel_preference", lambda *a, **k: 0)
     monkeypatch.setattr(torch, "load", lambda *a, **k: {"state_dict": {}, "scheme": "int8"})
@@ -1756,9 +1754,7 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
     ckpt = other_root / "ck.pt"
     ckpt.write_bytes(b"x")
 
-    monkeypatch.setattr(
-        P, "_resolve_checkpoint_path", lambda s, t, c = None, **_: str(ckpt)
-    )
+    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None, **_: str(ckpt))
     monkeypatch.setattr(P, "_validate_checkpoint", lambda *a, **k: True)
     monkeypatch.setattr(P, "_pin_kernel_preference", lambda *a, **k: 0)
     monkeypatch.setattr(torch, "load", lambda *a, **k: {"state_dict": {}, "scheme": "int8"})

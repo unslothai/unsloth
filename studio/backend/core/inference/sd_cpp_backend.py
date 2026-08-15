@@ -970,7 +970,6 @@ def _local_entry_not_found_error() -> type[BaseException]:
     missing class simply leaves the raw hub error on load-progress."""
     try:
         from huggingface_hub.errors import LocalEntryNotFoundError
-
         return LocalEntryNotFoundError
     except Exception:  # noqa: BLE001 -- an unexpected hub layout keeps the raw error
         return _NeverRaised
@@ -1846,6 +1845,7 @@ class SdCppDiffusionBackend:
         if local_files_only:
             return
         from core.inference.diffusion import _assert_base_repo_accessible
+
         for repo, names in by_repo.items():
             # Companions only: the picker only lists repos it could already read.
             if repo != repo_id and names:

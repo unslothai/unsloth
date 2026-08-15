@@ -54,7 +54,12 @@ def _install_sentinels(monkeypatch, calls, tmp_path, *, offline):
             raise AssertionError(f"model_info({repo_id!r}) reached the Hub on an offline load")
         return types.SimpleNamespace(siblings = [], sha = "deadbeef")
 
-    def _download(repo_id, filename, token = None, **kwargs):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        **kwargs,
+    ):
         local_files_only = bool(kwargs.get("local_files_only"))
         calls.downloads.append((repo_id, filename, local_files_only))
         if offline and not local_files_only:
@@ -153,9 +158,7 @@ def test_the_native_h3_path_binds_the_flag_instead_of_swallowing_it(monkeypatch)
     monkeypatch.setattr(video_mod, "_detect_load_family", lambda *_a, **_k: fam)
     backend = VideoBackend()
     backend._load_token = 1
-    backend._loading = video_mod._VideoLoadingState(
-        repo_id = H3_GGUF_REPO, base_repo = fam.base_repo
-    )
+    backend._loading = video_mod._VideoLoadingState(repo_id = H3_GGUF_REPO, base_repo = fam.base_repo)
     seen: dict = {}
     monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: seen.update(kwargs))
 
@@ -176,9 +179,11 @@ def test_load_pipeline_carries_the_flag_into_the_native_path(monkeypatch):
     backend = VideoBackend()
     seen: dict = {}
     monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: seen.update(kwargs))
-    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: detect_video_family(
-        "MiniMaxAI/MiniMax-H3"
-    ))
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        lambda *a, **k: detect_video_family("MiniMaxAI/MiniMax-H3"),
+    )
 
     backend.load_pipeline(
         H3_GGUF_REPO,
@@ -197,9 +202,7 @@ def test_an_offline_denoiser_probe_reads_the_cache_instead_of_the_hub(monkeypatc
 
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
 
-    monkeypatch.setattr(
-        DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda *a, **k: True)
-    )
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda *a, **k: True))
     assert (
         VideoBackend._denoiser_prequant_cached_repo(fam, "int8", "MiniMaxAI/MiniMax-H3", "fl2va")
         == "unsloth/MiniMax-H3-FP8"
@@ -275,8 +278,6 @@ def test_the_xet_wrapper_is_unchanged_for_every_existing_caller(monkeypatch, tmp
         return str(tmp_path / "file.bin")
 
     monkeypatch.setattr(xet, "_shared_hf_hub_download_with_xet_fallback", _shared)
-    xet.hf_hub_download_with_xet_fallback(
-        "org/repo", "file.bin", None, cache_dir = str(tmp_path)
-    )
+    xet.hf_hub_download_with_xet_fallback("org/repo", "file.bin", None, cache_dir = str(tmp_path))
     assert seen["args"] == ("org/repo", "file.bin", None)
     assert "local_files_only" not in seen["kwargs"]

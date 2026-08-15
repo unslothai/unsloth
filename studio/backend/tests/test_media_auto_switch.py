@@ -2437,9 +2437,7 @@ def test_only_a_load_nobody_asked_for_is_kept_off_the_hub(monkeypatch, user_init
     assert seen == [not user_initiated]
 
 
-def test_a_non_h3_sibling_stays_in_the_ambiguity_group(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_a_non_h3_sibling_stays_in_the_ambiguity_group(catalog, enabled, tmp_path, backend, loads):
     # An H3 denoiser and another family's build sharing a directory and a quant token are
     # indistinguishable to status, and partition_matches reads a resident fl2va as answering
     # for the non-H3 one, so neither may be treated as already serving the other.

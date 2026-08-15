@@ -2152,9 +2152,7 @@ class VideoBackend:
             )
             return False
         if local_files_only:
-            repo = (
-                self._denoiser_prequant_cached_repo(fam, transformer_quant, base, h3_task)
-            )
+            repo = self._denoiser_prequant_cached_repo(fam, transformer_quant, base, h3_task)
         else:
             try:
                 from huggingface_hub import HfApi
@@ -2252,9 +2250,7 @@ class VideoBackend:
         scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
         if scheme is None:
             return None
-        source = self._h3_te_base_index_source(
-            base, hf_token, local_files_only = local_files_only
-        )
+        source = self._h3_te_base_index_source(base, hf_token, local_files_only = local_files_only)
         if source is None or _h3_te_canonical(source) != _h3_te_canonical(
             getattr(fam, "base_repo", None)
         ):
@@ -2473,7 +2469,6 @@ class VideoBackend:
         size mismatch would have produced one step later."""
         try:
             from .diffusion_prequant import resolve_prequant_source
-
             source = resolve_prequant_source(
                 fam,
                 (transformer_quant or "").strip().lower(),
