@@ -5465,6 +5465,7 @@ async def _reject_unservable_model(
     gguf_hub_repo = looks_like_gguf_hub_repo_id(base)
     from core.inference.local_model_resolver import (
         index_is_built,
+        local_target_is_gguf,
         recently_downloaded,
         resolve_local_gguf,
         warm_index_soon,
@@ -5506,9 +5507,17 @@ async def _reject_unservable_model(
         # would be answered by a resident Q4_K_M.
         # Off-loop: reads the Transformers singleton, and the llama.cpp short-circuits above
         # skip the offloaded reads, so on a restart this built the singleton on the loop.
+        # A non-GGUF target loads from its own directory, so the prefix rules must not
+        # let a checkpoint nested under the loaded model answer for it.
+        resolved_is_gguf = resolved is None or local_target_is_gguf(resolved[0], resolved[2])
         if (
             resolved is not None
-            and await asyncio.to_thread(_resolves_to_resident, resolved[0], llama_only = quantified)
+            and await asyncio.to_thread(
+                _resolves_to_resident,
+                resolved[0],
+                llama_only = quantified,
+                exact_only = not resolved_is_gguf,
+            )
             and (not quantified or _resident_quant_is(variant))
         ):
             return
@@ -5517,7 +5526,12 @@ async def _reject_unservable_model(
         advertised = _advertised_local_path(base)
         if (
             advertised is not None
-            and await asyncio.to_thread(_resolves_to_resident, advertised, llama_only = quantified)
+            and await asyncio.to_thread(
+                _resolves_to_resident,
+                advertised,
+                llama_only = quantified,
+                exact_only = not resolved_is_gguf,
+            )
             and (not quantified or _resident_quant_is(variant))
         ):
             return

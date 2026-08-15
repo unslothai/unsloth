@@ -155,7 +155,38 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 _WEIGHT_INDEXES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
 # Real tokenizer vocabulary. tokenizer_config.json and the processor configs carry
 # metadata, not the vocabulary the loader needs, so neither counts on its own.
-_TOKENIZER_MARKERS = ("tokenizer.json", "tokenizer.model", "vocab.json")
+_TOKENIZER_MARKERS = ("tokenizer.json", "tokenizer.model")
+
+
+def _has_tokenizer_vocabulary(load_dir) -> bool:
+    """Whether a real tokenizer vocabulary sits beside the weights.
+
+    A bare vocab.json is only half a BPE tokenizer; Qwen2 and its kin need merges.txt
+    with it when no complete tokenizer.json is present.
+    """
+    if any((load_dir / name).is_file() for name in _TOKENIZER_MARKERS):
+        return True
+    return (load_dir / "vocab.json").is_file() and (load_dir / "merges.txt").is_file()
+
+
+def _has_canonical_safetensors(load_dir) -> bool:
+    """Whether the loader will find weights under the names it actually looks for.
+
+    It receives no variant, so ``model.fp16.safetensors`` or a stray
+    ``optimizer.safetensors`` is not weights it can open.
+    """
+    import re
+
+    if (load_dir / "model.safetensors").is_file():
+        return True
+    if (load_dir / "model.safetensors.index.json").is_file():
+        return True
+    try:
+        return any(
+            re.fullmatch(r"model-\d+-of-\d+\.safetensors", f.name) for f in load_dir.iterdir()
+        )
+    except OSError:
+        return False
 # A LoRA directory can carry a copied config.json and tokenizer beside these, and
 # ModelConfig would then resolve its base model and fetch weights this resolver
 # promises never to download.
@@ -177,10 +208,15 @@ _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
 def _is_generative_chat_config(config: dict) -> bool:
     """Whether a config.json describes a checkpoint the chat loader can generate with."""
     architectures = config.get("architectures")
-    if not isinstance(architectures, list):
-        return False
+    # An absent list says nothing either way, and the loader resolves from model_type,
+    # so leave the decision to it rather than hide the model.
+    if not isinstance(architectures, list) or not architectures:
+        return True
     names = [name for name in architectures if isinstance(name, str)]
-    if any(name.endswith("ForCausalLM") for name in names):
+    # Not every causal checkpoint wears ForCausalLM: GPT2LMHeadModel and friends are
+    # selected from model_type by the loader, and withholding them is the invisibility
+    # this whole path exists to remove.
+    if any(name.endswith(("ForCausalLM", "LMHeadModel")) for name in names):
         return True
     # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving
     # path has no AutoModelForSeq2SeqLM branch, so require a multimodal sub-config.
@@ -311,13 +347,13 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             return None
         # Safetensors only. A .bin checkpoint is pickle-backed, and an API request
         # must not be able to execute one without an explicit load action.
-        if not any(load_dir.glob("*.safetensors")) or not _weight_shards_all_present(load_dir):
+        if not _has_canonical_safetensors(load_dir) or not _weight_shards_all_present(load_dir):
             return None
         if any((load_dir / name).is_file() for name in _ADAPTER_MARKERS):
             return None
         # Weights alone cannot serve chat, and the swap has evicted the resident model
         # by the time the loader finds the tokenizer missing.
-        if not any((load_dir / name).is_file() for name in _TOKENIZER_MARKERS):
+        if not _has_tokenizer_vocabulary(load_dir):
             return None
         # Only the generative chat path consumes these, and an embedder loaded as a
         # language model fails after the swap has already evicted the resident one.

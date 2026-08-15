@@ -8485,7 +8485,10 @@ def test_tokenizer_metadata_alone_is_not_a_vocabulary(tmp_path):
     (path / "tokenizer_config.json").write_text("{}")
     info = SimpleNamespace(id = str(path), path = str(path))
     assert resolver.local_servable_model(info) is None
+    # A bare vocab.json is only half a BPE tokenizer; it needs its merges.
     (path / "vocab.json").write_text("{}")
+    assert resolver.local_servable_model(info) is None
+    (path / "merges.txt").write_text("")
     assert resolver.local_servable_model(info) == (False, ())
 
 
@@ -8525,3 +8528,26 @@ def test_a_nested_row_is_not_resident_against_a_loaded_gguf_directory(monkeypatc
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
     assert inference_route._resolves_to_resident("/models/A/sub/B", exact_only = True) is False
     assert inference_route._resolves_to_resident("/models/A", exact_only = True) is True
+
+
+def test_a_non_canonical_safetensors_name_is_not_switchable(tmp_path):
+    # Codex P2: the loader receives no variant, so model.fp16.safetensors or a stray
+    # optimizer.safetensors is not weights it can open.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "VariantOnly")
+    (path / "model.safetensors").rename(path / "model.fp16.safetensors")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_causal_model_without_the_suffix_stays_switchable(tmp_path):
+    # Codex P2: GPT2LMHeadModel and an absent architectures list are both resolved from
+    # model_type by the loader, so requiring the suffix hid working models.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "gpt2")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    for blob in ('{"architectures": ["GPT2LMHeadModel"]}', '{"model_type": "gpt2"}'):
+        (path / "config.json").write_text(blob)
+        assert resolver.local_servable_model(info) == (False, ()), blob
