@@ -199,13 +199,22 @@ export function AskApp(): ReactElement {
     setErrorKey(null);
     setPhase("streaming");
 
+    // A summon replaces the controller, so anything this run writes after an
+    // await has to check it is still the live one. The status and settings
+    // fetches are not abortable, so without this a discarded run could park the
+    // freshly reset panel in loading and then return from its catch, leaving it
+    // busy with nothing running.
+    const isCurrentRun = (): boolean => abortRef.current === abort;
+
     try {
       const status = await fetchInferenceStatus().catch((error: unknown) => {
         throw new PillRunError(classifyFetchError(error));
       });
+      if (!isCurrentRun()) return;
       // Fresh-first: the default model may have changed in the main window.
       const settings =
         (await fetchPillSettings().catch(() => null)) ?? getCachedSettings();
+      if (!isCurrentRun()) return;
       const model = settings?.defaultModel ?? null;
 
       if (model) {
@@ -214,10 +223,12 @@ export function AskApp(): ReactElement {
           settings?.defaultGgufVariant ?? null,
           abort.signal,
           (loading) => {
+            if (!isCurrentRun()) return;
             setLoadingModel(shortModelName(loading));
             setPhase("loading");
           },
         );
+        if (!isCurrentRun()) return;
         setLoadingModel(null);
         setPhase("streaming");
       } else if (!status.active_model) {
