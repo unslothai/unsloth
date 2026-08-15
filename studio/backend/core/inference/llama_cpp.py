@@ -6824,7 +6824,6 @@ class LlamaCppBackend:
         # a container or systemd scope is OOM-killed at its own memory.max, not the host's
         try:
             from unsloth.dataset_num_proc import _cgroup_free_bytes
-
             cgroup_free = _cgroup_free_bytes()
             if cgroup_free is not None and cgroup_free >= 0:
                 cgroup_mib = int(cgroup_free // (1024 * 1024))
