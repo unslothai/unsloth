@@ -543,6 +543,11 @@ class _VideoLoadState:
 class _VideoLoadingState:
     repo_id: str
     base_repo: str
+    # The model the in-flight load will commit, so a generation queued behind a replacement
+    # is validated synchronously against the family it will actually run on.
+    family: Optional[VideoFamily] = None
+    engine: Optional[str] = None
+    h3_task: Optional[str] = None
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3
@@ -1039,6 +1044,10 @@ class VideoBackend:
         self._loading: Optional[_VideoLoadingState] = None
         self._load_token = 0
         self._cancel_event = threading.Event()
+        # Cancellation state has its own tiny lock so a user Stop stays responsive while a
+        # load holds the state lock. Everything touching _queued_generate_cancels or
+        # _active_generate_cancel takes this; code holding _lock may nest it, never the reverse.
+        self._generation_cancel_lock = threading.Lock()
         self._active_generate_cancel: Optional[threading.Event] = None
         # Cancel events of jobs queued behind a teardown but not yet admitted to the generation
         # slot. Only the ADMITTED event lives in _active_generate_cancel, so a load/unload cancels
@@ -1049,9 +1058,11 @@ class VideoBackend:
         # the active one holds no cancel event yet, so without this fence it could win the lock after an eject and denoise a
         # whole new clip against a pipeline being freed. A count, so concurrent teardowns each own their own release.
         self._teardown_waiters = 0
-        # Wakes a generation that yielded the generation lock to a pending teardown. It shares
-        # _lock so checking the count and sleeping cannot miss a completed teardown.
-        self._teardown_drained = threading.Condition(self._lock)
+        # Wakes a generation that yielded the generation lock to a pending teardown. A plain Event,
+        # NOT a Condition on _lock: Event.wait() returns without reacquiring the state lock, so a
+        # load holding _lock cannot stall a queued job's cancellation (the wait loop re-checks the
+        # fence under _lock and the cancel Event lock-free each wake).
+        self._teardown_drained = threading.Event()
         # Generation progress, written by the step callback / phase transitions.
         self._gen: dict[str, Any] = {"active": False}
         # True from begin_generate() until its worker records a terminal state, so a second call is refused while it runs.
@@ -1075,20 +1086,21 @@ class VideoBackend:
         assert self._teardown_waiters > 0, "teardown reservation released without an owner"
         self._teardown_waiters -= 1
         if self._teardown_waiters == 0:
-            self._teardown_drained.notify_all()
+            self._teardown_drained.set()
 
     def _cancel_active_generation_locked(self) -> bool:
-        """Cancel the ADMITTED generation and wake admission so it can exit promptly.
+        """Cancel the ADMITTED generation.
 
         Queued jobs are deliberately left alone: a model replacement must not cancel a job
         that is merely waiting for teardown, it should survive and run against the
-        replacement. cancel_generate() signals those separately."""
-        cancel = self._active_generate_cancel
-        if cancel is None:
-            return False
-        cancel.set()
-        self._teardown_drained.notify_all()
-        return True
+        replacement. cancel_generate() signals those separately. The cancel state lives
+        under its own lock, so this stays cheap for the load/unload callers that hold _lock."""
+        with self._generation_cancel_lock:
+            cancel = self._active_generate_cancel
+            if cancel is None:
+                return False
+            cancel.set()
+            return True
 
     @contextlib.contextmanager
     def _generation_slot(self, cancel_event: Optional[threading.Event] = None):
@@ -1098,9 +1110,12 @@ class VideoBackend:
         it. Admission promotes the event to the active slot in the SAME ``_lock`` section
         that observes the zero-fence state: a teardown starting after admission either sees
         this event and cancels it, or reserved before the check and made this request yield.
+        While queued, cancellation is observed WITHOUT the state lock: the wake is a plain
+        Event whose wait returns without reacquiring ``_lock``, so a load holding ``_lock``
+        cannot stall a queued Stop.
         """
         if cancel_event is not None:
-            with self._lock:
+            with self._generation_cancel_lock:
                 self._queued_generate_cancels.add(cancel_event)
         admitted = False
         try:
@@ -1115,33 +1130,39 @@ class VideoBackend:
                     cancelled = cancel_event is not None and cancel_event.is_set()
                     if not cancelled and not self._teardown_waiters:
                         if cancel_event is not None:
-                            self._queued_generate_cancels.discard(cancel_event)
-                            self._active_generate_cancel = cancel_event
+                            with self._generation_cancel_lock:
+                                self._queued_generate_cancels.discard(cancel_event)
+                                self._active_generate_cancel = cancel_event
                         admitted = True
                 if admitted:
                     break
                 self._generate_lock.release()
                 if cancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
-                with self._teardown_drained:
-                    self._teardown_drained.wait_for(
-                        lambda: self._teardown_waiters == 0
-                        or (cancel_event is not None and cancel_event.is_set())
-                    )
+                while True:
+                    # Lock-free: reading the cancel Event needs no state lock, so cancellation
+                    # stays responsive while a load holds _lock for its construction.
                     if cancel_event is not None and cancel_event.is_set():
                         raise RuntimeError(VIDEO_CANCELLED_MSG)
+                    with self._lock:
+                        if self._teardown_waiters == 0:
+                            break
+                    # Event.wait returns without reacquiring _lock (unlike a Condition bound
+                    # to it); the 100 ms timeout bounds how late a cancel is observed.
+                    self._teardown_drained.wait(timeout = 0.1)
+                    self._teardown_drained.clear()
             try:
                 yield
             finally:
                 if cancel_event is not None:
-                    with self._lock:
+                    with self._generation_cancel_lock:
                         if self._active_generate_cancel is cancel_event:
                             self._active_generate_cancel = None
                         self._queued_generate_cancels.discard(cancel_event)
                 self._generate_lock.release()
         finally:
             if not admitted and cancel_event is not None:
-                with self._lock:
+                with self._generation_cancel_lock:
                     self._queued_generate_cancels.discard(cancel_event)
 
     def _state_device_target(self, state: _VideoLoadState) -> DiffusionDeviceTarget:
@@ -1453,6 +1474,15 @@ class VideoBackend:
             self._loading = _VideoLoadingState(
                 repo_id = repo_id,
                 base_repo = fam.base_repo,
+                family = fam,
+                engine = "sd_cpp" if h3_native else "diffusers",
+                # Mirrors _run_load_h3_native's derivation; for diffusers loads the workflow
+                # param is the task (None for non-H3 families).
+                h3_task = (
+                    h3_transformer_task(gguf_filename)
+                    if h3_native and gguf_filename
+                    else h3_task
+                ),
                 asset_repos = claimed_assets,
             )
 
@@ -4818,15 +4848,29 @@ class VideoBackend:
             if self._state is None and self._teardown_waiters == 0:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
             state = self._state
-        if state is not None:
+            # A standard replacement tears the old pipeline down before committing the new one,
+            # so validate against the model the IN-FLIGHT load will commit: malformed image data,
+            # unsupported references or invalid flow shifts must still 400/422 here rather than
+            # fail the queued job asynchronously. The worker re-checks against the committed state.
+            if state is not None:
+                family, task, engine = state.family, state.h3_task, state.engine
+            elif self._loading is not None:
+                family, task, engine = (
+                    self._loading.family,
+                    self._loading.h3_task,
+                    self._loading.engine,
+                )
+            else:
+                family = task = engine = None
+        if family is not None:
             # Validate conditioning before creating the asynchronous job so request errors return 400.
             _, _, canvas_w, canvas_h, _ = self._resolve_keyframes(
-                state.family, state.h3_task, first_frame, last_frame, width, height
+                family, task, first_frame, last_frame, width, height
             )
             self._resolve_references(
-                state.family,
-                state.h3_task,
-                state.engine,
+                family,
+                task,
+                engine,
                 reference_images,
                 reference_videos,
                 reference_audios,
@@ -4834,7 +4878,7 @@ class VideoBackend:
                 canvas_w,
                 canvas_h,
             )
-            self._resolve_flow_shifts(state.family, state.engine, flow_shift, audio_flow_shift)
+            self._resolve_flow_shifts(family, engine, flow_shift, audio_flow_shift)
         with self._lock:
             if self._generate_job_active:
                 raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
@@ -4844,8 +4888,11 @@ class VideoBackend:
             # commits its new state here too, so judging the shape from a separate earlier read
             # could accept a size for the family being replaced and then denoise it with the new
             # one, or reject a size the new family supports. getattr, so a state carrying no
-            # family degrades to the old snapping rather than raising.
-            fam = getattr(self._state, "family", None) if self._state is not None else None
+            # family degrades to the old snapping rather than raising. During a replacement the
+            # resident state is gone, so the shape is judged against the incoming family.
+            fam = getattr(self._state, "family", None)
+            if fam is None and self._loading is not None:
+                fam = self._loading.family
             if fam is not None:
                 validate_video_request_shape(fam, width = width, height = height, num_frames = num_frames)
             validated_state = self._state
@@ -4857,7 +4904,8 @@ class VideoBackend:
             # run. QUEUED, not active: a load/unload cancels only the admitted generation, so a
             # job waiting behind a replacement survives it. The generation slot promotes this
             # event to _active_generate_cancel when the job is admitted.
-            self._queued_generate_cancels.add(cancel)
+            with self._generation_cancel_lock:
+                self._queued_generate_cancels.add(cancel)
             self._gen = {
                 "active": True,
                 "phase": "queued",
@@ -4980,11 +5028,12 @@ class VideoBackend:
         with self._lock:
             self._generate_job_active = False
             if cancel_event is not None:
-                # Covers a worker that failed before reaching generate()'s finally; identity-guarded so a direct generate() keeps its handle.
-                if self._active_generate_cancel is cancel_event:
-                    self._active_generate_cancel = None
-                # A job cancelled or failed while still queued never reached the slot's admission, so drop its queued registration here.
-                self._queued_generate_cancels.discard(cancel_event)
+                with self._generation_cancel_lock:
+                    # Covers a worker that failed before reaching generate()'s finally; identity-guarded so a direct generate() keeps its handle.
+                    if self._active_generate_cancel is cancel_event:
+                        self._active_generate_cancel = None
+                    # A job cancelled or failed while still queued never reached the slot's admission, so drop its queued registration here.
+                    self._queued_generate_cancels.discard(cancel_event)
             if error is not None:
                 self._gen = {
                     "active": False,
@@ -5442,7 +5491,7 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
-                with self._lock:
+                with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
 
@@ -5896,15 +5945,20 @@ class VideoBackend:
 
         Cancels the ADMITTED generation and any job queued behind a teardown: a user Stop
         should abort a waiting job, unlike a load/unload which only cancels the admitted
-        generation so queued jobs survive a replacement."""
-        with self._lock:
-            active = self._cancel_active_generation_locked()
+        generation so queued jobs survive a replacement. Runs under the independent
+        cancellation lock, so Stop stays responsive while a load holds the state lock."""
+        with self._generation_cancel_lock:
+            active = self._active_generate_cancel is not None
+            if self._active_generate_cancel is not None:
+                self._active_generate_cancel.set()
             queued = list(self._queued_generate_cancels)
             for cancel in queued:
                 cancel.set()
-            if queued:
-                self._teardown_drained.notify_all()
-            return active or bool(queued)
+        if queued:
+            # Wakes queued workers so they observe their cancel promptly; the wait is a
+            # lock-free Event, so this needs no state lock.
+            self._teardown_drained.set()
+        return active or bool(queued)
 
     # ── teardown + status ────────────────────────────────────────────────────
 
