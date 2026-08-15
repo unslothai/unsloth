@@ -534,6 +534,19 @@ async def _probe(fn, arg, deadline: float) -> bool:
         return True
 
 
+def _load_takes_the_gpu() -> bool:
+    """Whether this load will go through the arbiter and evict the current owner.
+
+    A CPU-only diffusion device releases ownership instead of acquiring it, so such a switch
+    interrupts nothing and must not wait on chat or the other media backend.
+    """
+    try:
+        from core.inference.diffusion_device import resolve_diffusion_device_target
+        return resolve_diffusion_device_target().device != "cpu"
+    except Exception:  # noqa: BLE001 -- assume the handoff, which is the careful direction
+        return True
+
+
 def _chat_busy() -> bool:
     """Whether a chat request or load is in flight, so the GPU handoff would interrupt it.
 
@@ -591,6 +604,7 @@ async def _drain(
     *,
     count_pending: bool = True,
     probe_deadline: Optional[float] = None,
+    check_chat: bool = True,
 ) -> bool:
     """Wait out other tracked requests and any in-flight load or generation.
 
@@ -606,6 +620,10 @@ async def _drain(
     ``probe_deadline`` bounds the busy probes themselves, and is the switch budget rather than
     this loop's deadline: the in-gate check evaluates the condition once with no time to wait,
     and reusing that as the probe bound would report every backend busy.
+
+    ``check_chat`` is False for that same in-gate check. Chat's counter includes media requests,
+    and one arriving while the gates are held is blocked in the middleware, so counting it would
+    abort the switch; the chat lifecycle gate is held by then, which is what makes it safe.
     """
     from core.inference.media_keepwarm import other_request_count
     while True:
@@ -624,11 +642,13 @@ async def _drain(
         # holds across pipeline assembly, so an unbounded probe outlives the response window.
         # Chat counts as well: the arbiter evicts whoever owns the GPU, streaming or not.
         probe_by = deadline if probe_deadline is None else probe_deadline
+        # A CPU load never calls acquire_for, so it evicts nobody and owes no cross-owner wait.
+        cross_owner = await asyncio.to_thread(_load_takes_the_gpu)
         if (
             others <= 0
             and not await _probe(_backend_busy, backend, probe_by)
-            and not await _probe(_other_backend_busy, owner, probe_by)
-            and not await _probe(_chat_busy, None, probe_by)
+            and not (cross_owner and await _probe(_other_backend_busy, owner, probe_by))
+            and not (cross_owner and check_chat and await _probe(_chat_busy, None, probe_by))
         ):
             return True
         if time.monotonic() >= deadline:
@@ -743,12 +763,44 @@ def _missing_external_encoder(pick: MediaModelPick) -> Optional[int]:
     from core.inference.diffusion_hidream import HIDREAM_LLAMA_REPO
 
     try:
-        if _upstream_is_cached(HIDREAM_LLAMA_REPO):
+        if _encoder_repo_complete(HIDREAM_LLAMA_REPO):
             return 0
     except Exception as exc:  # noqa: BLE001 -- an unreadable cache is not proof of locality
         logger.debug("media auto-switch: hidream encoder probe failed: %s", exc)
         return None
     return _UNSIZED_MISSING
+
+
+def _encoder_repo_complete(repo_id: str) -> bool:
+    """Whether every shard of a cached encoder repo is present, not merely one of them.
+
+    ``_upstream_is_cached`` counts any single weight file, while the pipeline calls
+    from_pretrained on the whole repository, so an interrupted sharded pull would otherwise
+    read as local and the load would fetch the rest.
+    """
+    import json
+
+    from core.inference.diffusion_families import _upstream_is_cached, cache_holds_files
+
+    if not _upstream_is_cached(repo_id):
+        return False
+    index = _cached_snapshot_file(repo_id, "model.safetensors.index.json")
+    if index is None:
+        # Unsharded, so the single weight file the check above found is the whole thing.
+        return True
+    with open(index, encoding = "utf-8") as handle:
+        shards = sorted(set((json.load(handle).get("weight_map") or {}).values()))
+    return bool(shards) and cache_holds_files(repo_id, shards)
+
+
+def _cached_snapshot_file(repo_id: str, filename: str) -> Optional[str]:
+    """The cached path of ``filename`` in ``repo_id``, or None when it is not downloaded."""
+    from huggingface_hub import try_to_load_from_cache
+
+    from core.inference.diffusion import hub_cache_dir
+
+    hit = try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir())
+    return hit if isinstance(hit, str) else None
 
 
 def _needs_external_encoder(pick: MediaModelPick) -> bool:
@@ -975,11 +1027,18 @@ async def _gated_start_load(
     registration would be cut short by a load that no longer has a request behind it.
     """
     from core.inference.media_keepwarm import admission_gate
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+
     try:
-        # BOTH media gates, always image first so two switches cannot deadlock on each other.
-        # The arbiter's handoff unloads whichever backend owns the GPU, so a request admitted
-        # to the other one between the drain and registration would be cancelled by this load.
-        async with admission_gate(DIFFUSION), admission_gate(VIDEO):
+        # Every gate the handoff can evict behind, in a fixed order so two switches cannot
+        # deadlock: both media backends, image first, and chat. The arbiter unloads whichever
+        # owner holds the GPU, so a request admitted between the drain and registration would
+        # be cancelled by this load.
+        async with (
+            admission_gate(DIFFUSION),
+            admission_gate(VIDEO),
+            inference_lifecycle_gate(),
+        ):
             # Re-resolved under the gate: a concurrent load can activate the other image engine
             # while this request drains, leaving the earlier reference on the idle one.
             backend = _backend_for(owner)
@@ -992,6 +1051,7 @@ async def _gated_start_load(
                 time.monotonic(),
                 count_pending = False,
                 probe_deadline = deadline,
+                check_chat = False,
             ):
                 raise _refuse(
                     _BUSY_MSG.format(kind = kind),

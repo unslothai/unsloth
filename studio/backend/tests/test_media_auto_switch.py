@@ -1440,9 +1440,7 @@ def test_a_local_hidream_is_accepted_once_its_encoder_is_cached(
     pipeline.mkdir()
     (pipeline / "model_index.json").write_text("{}")
     catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
-    import core.inference.diffusion_families as families
-
-    monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
+    monkeypatch.setattr(mas, "_encoder_repo_complete", lambda repo_id: True)
 
     def _explode(model_path, **kwargs):
         raise AssertionError("a local pipeline must not be planned against the Hub")
@@ -1461,6 +1459,42 @@ def test_a_failed_api_load_of_an_indistinguishable_build_keeps_the_user_mark():
     mk.note_load_origin(arb.DIFFUSION, "/models/x", "IQ4_XS", None, user_action = False)
 
     assert mk.loaded_by_user_action(arb.DIFFUSION, "/models/x", "IQ4_XS") is True
+
+
+def test_a_partially_downloaded_hidream_encoder_is_refused(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # One linked shard is not the repository from_pretrained opens, so the load would fetch the
+    # rest of roughly 16 GB.
+    pipeline = tmp_path / "hidream"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("HiDream-ai/HiDream-I1-Dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(mas, "_encoder_repo_complete", lambda repo_id: False)
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("HiDream-ai/HiDream-I1-Dev")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # A CPU diffusion device releases ownership instead of acquiring it, so such a switch
+    # evicts nobody and owes no cross-owner wait.
+    pipeline = tmp_path / "my-flux"
+    pipeline.mkdir()
+    (pipeline / "model_index.json").write_text("{}")
+    catalog.append(_info("black-forest-labs/FLUX.1-dev", pipeline, task = mas.IMAGE_TASK))
+    monkeypatch.setattr(mas, "_load_takes_the_gpu", lambda: False)
+    monkeypatch.setattr(mas, "_chat_busy", lambda: True)
+    monkeypatch.setattr(mas, "_other_backend_busy", lambda owner: True)
+
+    _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
 
 
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):

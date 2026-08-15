@@ -60,6 +60,20 @@ def _training_is_active() -> bool:
     return _images_training_is_active()
 
 
+def _derived_h3_task(gguf_filename: Optional[str], kind: str) -> Optional[str]:
+    """The MiniMax-H3 partition a GGUF load resolves to from its filename, else None."""
+    if kind != "gguf" or not gguf_filename:
+        return None
+    try:
+        from core.inference.video_minimax_h3 import h3_transformer_task
+        from pathlib import Path as _Path
+
+        name = _Path(gguf_filename).name.lower()
+        return h3_transformer_task(name) if name.startswith("minimax_h3_") else None
+    except Exception:  # noqa: BLE001 -- a probe failure must not fail the load
+        return None
+
+
 def _guard_video_load_against_training() -> None:
     """Refuse loading a video model while a training run is active. Unlike chat,
     a video pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -312,7 +326,8 @@ async def load_video_model_gated(
             VIDEO,
             request.model_path,
             extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
-            request.h3_task,
+            # Derived when the caller left it unset, since that is what the backend publishes.
+            request.h3_task or _derived_h3_task(request.gguf_filename, kind),
             user_action = user_initiated,
         )
         return VideoStatusResponse(**status_dict)
