@@ -556,6 +556,50 @@ def test_partial_offload_stand_down_records_the_draft_depth_it_decided_at(tmp_pa
     assert backend.spec_draft_n_max == 3
 
 
+def test_manual_auto_layers_is_not_evidence_of_partial_offload(tmp_path):
+    # Manual mode empties the probed GPU set to hand sizing to llama.cpp, so its
+    # --fit on is the value this path starts at, not a finding. Reading it as
+    # partial offload disabled MTP on a card with room for every layer.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert "draft-mtp" in cmd[cmd.index("--spec-type") + 1]
+    assert backend.spec_fallback_reason is None
+
+
+def test_manual_auto_layers_still_reads_a_pass_through_layer_count(tmp_path):
+    # The evidence Manual mode does carry: a concrete count in the extras. That
+    # still stands the drafter down, so declining to guess costs nothing where the
+    # user actually said where the layers go.
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+
+    result = _launch(
+        backend,
+        gguf,
+        speculative_type = "auto",
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        extra_args = ["--gpu-layers", "42"],
+        n_ctx = 4096,
+        n_parallel = 4,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--spec-type") + 1] == "none"
+    assert backend.spec_fallback_reason == "mtp_partial_offload"
+
+
 def test_auto_disables_embedded_hybrid_mtp_for_final_partial_layer_override(tmp_path):
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
 

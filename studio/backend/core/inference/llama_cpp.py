@@ -5670,6 +5670,7 @@ class LlamaCppBackend:
         self,
         args: Optional[Iterable[str]],
         env: Optional[Mapping[str, str]] = None,
+        fit_implies_partial: bool = True,
     ) -> bool:
         """Whether the effective main-model layer policy is partial GPU offload.
 
@@ -5678,6 +5679,12 @@ class LlamaCppBackend:
         lower it. Zero is CPU-only rather than partial offload, and keeps CPU MTP,
         and so is a ``--device`` selection naming no GPU: llama.cpp then runs the
         model on the CPU whatever the layer count and the fitter say.
+
+        ``fit_implies_partial`` is what an active fitter is allowed to mean. In Auto
+        it is evidence: the planner ran and could not prove the model fits, which is
+        why the fitter is on. In Manual mode the planner is skipped by design, so
+        ``--fit on`` is a default rather than a verdict and says nothing about
+        placement -- pass False there and let a concrete count answer instead.
         """
         n_layers = self.n_layers
         if not n_layers:
@@ -5702,7 +5709,7 @@ class LlamaCppBackend:
             # llama.cpp needs a count above block_count to include the output
             # layer, matching _offloads_every_layer.
             return requested <= n_layers
-        return fit_is_effectively_on(args, source_env)
+        return fit_implies_partial and fit_is_effectively_on(args, source_env)
 
     @staticmethod
     def _torch_is_rocm(torch) -> bool:
@@ -15503,6 +15510,11 @@ class LlamaCppBackend:
                         and self._partially_offloads_layers(
                             [*cmd, *(_spec_placement_extras or [])],
                             _spec_placement_env,
+                            # Manual mode skips Studio's placement planner (gpus is
+                            # emptied above), so its --fit on is the default this
+                            # function starts at, not a finding that the model does
+                            # not fit. Only Auto's fitter carries that evidence.
+                            fit_implies_partial = gpu_memory_mode != "manual",
                         )
                     ),
                     draft_device = _draft_device,
