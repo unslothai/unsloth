@@ -659,7 +659,11 @@ def _cached_gguf(root: Path, name: str, payload: bytes) -> Path:
     return path
 
 
-def _verified(path: Path, repo: str = "owner/model", variant: str = "Q4_K_M"):
+def _verified(
+    path: Path,
+    repo: str = "owner/model",
+    variant: str = "Q4_K_M",
+):
     return repo, variant, str(path), path.stat().st_size
 
 

@@ -7726,9 +7726,7 @@ class LlamaCppBackend:
             target = os.path.abspath(path)
             if not any(
                 os.path.abspath(candidate[0]) == target
-                for candidate in _cached_variant_candidates(
-                    _resolve_repo_id_casing(repo), variant
-                )
+                for candidate in _cached_variant_candidates(_resolve_repo_id_casing(repo), variant)
             ):
                 return None
         except OSError:

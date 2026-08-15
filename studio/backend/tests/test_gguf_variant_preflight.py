@@ -125,9 +125,7 @@ def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeyp
     """Config carries the cached file it already verified."""
     cached = tmp_path / "Llama-3.2-1B-Instruct-Q8_0.gguf"
     cached.write_bytes(b"cached")
-    monkeypatch.setattr(
-        llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached)
-    )
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
     assert config.gguf_verified == (REPO, "Q8_0", str(cached), cached.stat().st_size)
@@ -146,9 +144,7 @@ def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
         return list(REPO_FILES)
 
     monkeypatch.setattr(huggingface_hub, "list_repo_files", counting_list_repo_files)
-    monkeypatch.setattr(
-        llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached)
-    )
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "OLD_Q2")
     assert config.gguf_variant == "OLD_Q2"
