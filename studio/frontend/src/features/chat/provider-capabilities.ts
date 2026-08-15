@@ -87,6 +87,7 @@ export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
  *   Anthropic: platform.claude.com/docs/en/about-claude/models
  *   Gemini:    ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
  *   DeepSeek:  api-docs.deepseek.com/quick_start/pricing (V4 family)
+ *   MiniMax:   OpenRouter MiniMax M3 family docs / model cards
  * Local-model path is unaffected.
  */
 const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
@@ -134,6 +135,8 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
+  // MiniMax (M3 family on connected/cloud providers).
+  { providerType: "minimax", prefixes: ["minimax", "m3"], cap: 1048576 },
 ];
 
 /**
@@ -209,6 +212,7 @@ function _inferProviderFromOpenrouterId(
   if (normalizedId.startsWith("anthropic/")) return "anthropic";
   if (normalizedId.startsWith("google/")) return "gemini";
   if (normalizedId.startsWith("deepseek/")) return "deepseek";
+  if (normalizedId.startsWith("minimax/")) return "minimax";
   return null;
 }
 

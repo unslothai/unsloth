@@ -168,3 +168,21 @@ test("Custom overrides cannot alter documented caps for other providers", () => 
   assert.equal(getExternalMaxOutputTokens("anthropic", "claude-opus-5", 64), 128000);
   assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 32768);
 });
+
+test("OpenRouter Minimax ids use the Minimax cap instead of 32k fallback", () => {
+  assert.equal(
+    getExternalMaxOutputTokens("openrouter", "minimax/minimax-m3"),
+    1048576,
+  );
+  assert.equal(
+    getExternalMaxOutputTokens("openrouter", "minimax/m3-large"),
+    1048576,
+  );
+});
+
+test("unknown OpenRouter provider ids keep the conservative fallback", () => {
+  assert.equal(
+    getExternalMaxOutputTokens("openrouter", "unknownprovider/some-model"),
+    32768,
+  );
+});
