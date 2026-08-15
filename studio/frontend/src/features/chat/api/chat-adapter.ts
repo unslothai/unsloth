@@ -6188,6 +6188,9 @@ export function createOpenAIStreamAdapter(
               if (!delta && !reasoning) {
                 continue;
               }
+              // Where this chunk's text starts, so the tag check below can look
+              // at the join instead of at the delta alone.
+              const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
                 firstTokenTime = Date.now() - streamStartTime;
@@ -6226,29 +6229,40 @@ export function createOpenAIStreamAdapter(
               // any pause in between was charged to the reasoning. Cleared on
               // every publish, so stamping a chunk that turns out to publish is
               // harmless.
-              if (reasoning || delta.includes("<think>")) {
+              // Searched from just before this chunk's first character, not in
+              // the delta, so an opening tag split across two arrivals still
+              // registers: "<thi" then "nk>reasoning" contains the tag only at
+              // the join. Bounded by the tag length, so still O(delta).
+              const THINK_OPEN = "<think>";
+              const thinkOpenedNow =
+                cumulativeText.indexOf(
+                  THINK_OPEN,
+                  Math.max(0, textLenBeforeChunk - (THINK_OPEN.length - 1)),
+                ) !== -1;
+              if (reasoning || thinkOpenedNow) {
                 gateHeldSince ??= Date.now();
               }
               // Closing a group reads only pre-gate state, so it runs on every
               // arrival: deferring it to the next publish let a pause after the
               // reasoning ended count as part of the reasoning. Only the START
               // needs the parsed content, so only that stays gated.
+              const reasoningJustClosed =
+                !reasoningContentOpen &&
+                !structuredReasoningContinues &&
+                !hasUnclosedThinkTag(cumulativeText);
               if (
-                reasoningDurationTracker.hasActiveGroup &&
-                !reasoningContentOpen &&
-                !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText)
+                reasoningJustClosed &&
+                (reasoningDurationTracker.hasActiveGroup ||
+                  gateHeldSince !== undefined)
               ) {
-                reasoningDurationTracker.finishGroup();
-              } else if (
-                // Same transition, but for a group still behind the gate: the
-                // tracker has never heard of it, so only the timestamp is kept.
-                gateHeldSince !== undefined &&
-                !reasoningContentOpen &&
-                !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText)
-              ) {
+                // Recorded even when the group is active and closed right here,
+                // because a later publish can resumeGroup it (its text grew) and
+                // the finish that follows would otherwise run at the publish and
+                // stretch the duration across the wait.
                 gateReasoningEndedAt ??= Date.now();
+                if (reasoningDurationTracker.hasActiveGroup) {
+                  reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
+                }
               }
               // A chunk the strip emptied has nothing to show and is skipped
               // below anyway; asking the gate would spend this cycle's publish
@@ -6401,7 +6415,9 @@ export function createOpenAIStreamAdapter(
           mergeContinuation(cumulativeText),
         );
         adoptGatedReasoningGroups(finalContent, gateHeldSince);
-        reasoningDurationTracker.finishGroup();
+        // At the end the reasoning was seen to reach, not at stream close: any
+        // pause or trailing control frames in between are not reasoning.
+        reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
         yield {
           content: [
             ...finalContent,
@@ -6481,7 +6497,9 @@ export function createOpenAIStreamAdapter(
           if (partialContent.length > 0) {
             // This partial can render a group the gate hid from the tracker.
             adoptGatedReasoningGroups(partialContent, gateHeldSince);
-            reasoningDurationTracker.finishGroup();
+            // At the end the reasoning was seen to reach, not at stream close: any
+            // pause or trailing control frames in between are not reasoning.
+            reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
             const partialTiming = buildTiming(
               streamStartTime,
               totalChunks,

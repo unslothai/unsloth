@@ -369,7 +369,7 @@ test("a reasoning group the gate skipped is adopted before the final metadata", 
   // Scoped to the finalizer, so a finishGroup() belonging to some later path
   // cannot stand in for the one that has to follow the adoption here.
   const finalizer = source.slice(adopt, adopt + 400);
-  const finalize = finalizer.indexOf("reasoningDurationTracker.finishGroup();");
+  const finalize = finalizer.search(/reasoningDurationTracker\.finishGroup\(/);
   assert.notEqual(
     finalize,
     -1,
@@ -521,7 +521,7 @@ test("the reasoning timer stops on arrival, not on the next publish", () => {
 
   // finishGroup reads only pre-gate state, so deferring it to the next publish
   // counted a post-reasoning pause as reasoning.
-  const finish = loop.indexOf("reasoningDurationTracker.finishGroup();");
+  const finish = loop.search(/reasoningDurationTracker\.finishGroup\(/);
   const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
   assert.notEqual(finish, -1, "the group is never closed in the loop");
   assert.ok(finish < gate, "the close must run before the gate can skip");
@@ -635,6 +635,77 @@ test("every publish path reconciles, including the backend tool events", () => {
     calls.length >= 4,
     `every publish path must reconcile; found ${calls.length} call sites`,
   );
+});
+
+test("an opening think tag split across arrivals still stamps", () => {
+  // A provider can split the literal tag: "<thi" then "nk>reasoning". Testing
+  // the delta alone misses it, and the group then starts only at the eventual
+  // publish. The search runs from just before the chunk's first character, so
+  // the tag is found at the join.
+  const THINK_OPEN = "<think>";
+  const opensOn = (deltas: string[]) => {
+    let cumulative = "";
+    const hits: number[] = [];
+    deltas.forEach((delta, index) => {
+      const before = cumulative.length;
+      cumulative += delta;
+      const at = cumulative.indexOf(
+        THINK_OPEN,
+        Math.max(0, before - (THINK_OPEN.length - 1)),
+      );
+      if (at !== -1) hits.push(index);
+    });
+    return hits;
+  };
+
+  assert.deepEqual(opensOn(["Hello ", "<thi", "nk>reasoning"]), [2]);
+  assert.deepEqual(opensOn(["Hello ", "<think>reasoning"]), [1]);
+  // Not re-stamped for text that merely follows the tag.
+  assert.deepEqual(opensOn(["<think>a", "b", "c"]), [0]);
+});
+
+test("the terminal adoption finishes at the recorded end", () => {
+  const source = withoutComments(ADAPTER);
+
+  // Every adoption is a group the gate hid from the tracker, so the finish that
+  // follows it must be given the time the reasoning was last seen. Finishing at
+  // "now" would charge the wait between the last reasoning arrival and stream
+  // close to the reasoning.
+  const adoptions = [...source.matchAll(/adoptGatedReasoningGroups\(/g)].filter(
+    (m) => !source.startsWith("const adoptGatedReasoningGroups", m.index ?? 0),
+  );
+  assert.ok(adoptions.length >= 2, "the terminal adoptions are gone");
+
+  for (const match of adoptions) {
+    const after = source.slice(match.index ?? 0, (match.index ?? 0) + 400);
+    const finish = after.indexOf("reasoningDurationTracker.finishGroup(");
+    if (finish === -1) continue;
+    assert.ok(
+      after.startsWith(
+        "reasoningDurationTracker.finishGroup(gateReasoningEndedAt)",
+        finish,
+      ),
+      "an adoption is followed by a finish that ignores the recorded end",
+    );
+  }
+});
+
+test("an active group records its close time as well", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // A later publish can resumeGroup an active-and-closed group because its text
+  // grew; the finish that follows must use the close time, not the publish time.
+  const closed = loop.indexOf("const reasoningJustClosed =");
+  const stamp = loop.indexOf("gateReasoningEndedAt ??= Date.now();", closed);
+  const finish = loop.indexOf(
+    "reasoningDurationTracker.finishGroup(gateReasoningEndedAt)",
+    closed,
+  );
+  assert.notEqual(closed, -1, "the close condition is gone");
+  assert.ok(stamp !== -1 && stamp < finish, "the close time must be recorded first");
 });
 
 test("a scheduler that calls back synchronously does not throw", () => {
