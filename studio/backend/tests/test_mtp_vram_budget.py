@@ -1117,9 +1117,7 @@ class TestExtraArgsMtpDetection:
         # state, which the CPU pin does not move off the GPU.
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "if(_flat_mtp_engagesandnot_draft_cpu_no_embedded)" in load
-        assert (
-            "_mtp_will_engageand(not_draft_cpu_no_embeddedormtp_overhead_fnisnotNone)" in load
-        )
+        assert "_mtp_will_engageand(not_draft_cpu_no_embeddedormtp_overhead_fnisnotNone)" in load
         assert "ifnot_mtp_reserves_gpu:" in load
         assert "mtp_engaged=_mtp_reserves_gpu" in load
 
