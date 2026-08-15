@@ -10,9 +10,11 @@ export type SidebarOrganizeBy = "project" | "list";
 export type SidebarChatSort = "priority" | "updated" | "manual";
 
 // Manual order is per list: dragging a chat in one project must not move it in
-// another list showing the same chat. Recents and Pinned get their own keys.
+// another list showing the same chat. Each list gets its own key.
 export const RECENTS_ORDER_SCOPE = "recents";
 export const PINNED_ORDER_SCOPE = "pinned";
+// The project folders themselves, which drag regardless of the chat sort.
+export const PROJECT_ORDER_SCOPE = "projects";
 
 export function projectOrderScope(projectId: string): string {
   return `project:${projectId}`;
@@ -24,7 +26,7 @@ export interface SidebarOrganizationState {
   // Pinned sorts on its own. Pin order already is a manual order, so it
   // defaults to "manual" and stays put while the lists below re-sort.
   pinnedSort: SidebarChatSort;
-  /** Scope key -> chat row ids, in the order the user dragged them into. */
+  /** Scope key -> row ids, in the order the user dragged them into. */
   manualOrder: Record<string, string[]>;
   setOrganizeBy: (value: SidebarOrganizeBy) => void;
   setChatSort: (value: SidebarChatSort) => void;
@@ -49,6 +51,24 @@ export function reorderIds(
   next.splice(from, 1);
   next.splice(to, 0, draggedId);
   return next;
+}
+
+/**
+ * Applies a saved order to `items`, leaving rows it does not mention in their
+ * incoming order and on top. A row the user never dragged is new to the list,
+ * so it stays where the list's own rule put it rather than sinking.
+ */
+export function applyManualOrder<T>(
+  items: T[],
+  order: string[] | undefined,
+  getId: (item: T) => string,
+): T[] {
+  if (!order?.length) return items;
+  const rank = new Map(order.map((id, index) => [id, index]));
+  // Sort is stable, so two unranked rows keep their relative order.
+  return [...items].sort(
+    (a, b) => (rank.get(getId(a)) ?? -1) - (rank.get(getId(b)) ?? -1),
+  );
 }
 
 export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(

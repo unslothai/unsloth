@@ -142,9 +142,11 @@ import {
   useChatPreferencesStore,
   usePromptQueueUI,
   useSidebarOrganizationStore,
+  applyManualOrder,
   projectOrderScope,
   reorderIds,
   PINNED_ORDER_SCOPE,
+  PROJECT_ORDER_SCOPE,
   RECENTS_ORDER_SCOPE,
   type SidebarChatSort,
   type SidebarOrganizeBy,
@@ -274,6 +276,10 @@ const SIDEBAR_PROJECT_LIMIT = 5;
 // The shared radio item ticks on the right; these read as settings, so tick first.
 const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
+
+// Insertion cue on the row a drop lands on, inset to the pill.
+const DROP_CUE_CLASS =
+  "before:absolute before:inset-x-2 before:-top-px before:h-0.5 before:rounded-full before:bg-primary/70 before:content-['']";
 
 // Every list offers the same three orders.
 const CHAT_SORT_OPTIONS: Array<{ value: SidebarChatSort; label: string }> = [
@@ -935,7 +941,8 @@ export function AppSidebar() {
     () => new Set(pinnedProjectIds),
     [pinnedProjectIds],
   );
-  // Every project gets a folder: pinned first in pin order, then by activity.
+  // Every project gets a folder: pinned first in pin order, then by activity,
+  // then whatever the user dragged, which outranks both.
   const sidebarProjectRecords = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
     const pinned = pinnedProjectIds
@@ -944,8 +951,12 @@ export function AppSidebar() {
     const rest = projects
       .filter((p) => !pinnedProjectIdSet.has(p.id))
       .sort((a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt));
-    return [...pinned, ...rest];
-  }, [projects, pinnedProjectIds, pinnedProjectIdSet]);
+    return applyManualOrder(
+      [...pinned, ...rest],
+      manualOrder[PROJECT_ORDER_SCOPE],
+      (project) => project.id,
+    );
+  }, [projects, pinnedProjectIds, pinnedProjectIdSet, manualOrder]);
   const visibleProjectRecords = showAllProjects
     ? sidebarProjectRecords
     : sidebarProjectRecords.slice(0, SIDEBAR_PROJECT_LIMIT);
@@ -1070,19 +1081,9 @@ export function AppSidebar() {
       mode: SidebarChatSort,
     ): SidebarItem[] => {
       if (mode === "manual") {
-        const order = manualOrder[scope];
-        if (!order?.length) return items;
-        const rank = new Map(order.map((id, index) => [id, index]));
-        // Never dragged means no saved place, so it lands on top, newest first.
-        return [...items].sort((a, b) => {
-          const rankA = rank.get(a.id);
-          const rankB = rank.get(b.id);
-          if (rankA === undefined && rankB === undefined)
-            return b.updatedAt - a.updatedAt;
-          if (rankA === undefined) return -1;
-          if (rankB === undefined) return 1;
-          return rankA - rankB;
-        });
+        // Incoming order is the list's own rule, so undragged rows keep it:
+        // newest first in Recents, pin order in Pinned.
+        return applyManualOrder(items, manualOrder[scope], (item) => item.id);
       }
       if (mode === "priority") {
         return [...items].sort(
@@ -1116,26 +1117,57 @@ export function AppSidebar() {
 
   // A row must know which list it is dragged within: the same chat can sit in
   // its project and in Recents, and each list keeps its own order.
-  const [draggingChat, setDraggingChat] = useState<{
+  const [draggingRow, setDraggingRow] = useState<{
     id: string;
     scope: string;
   } | null>(null);
-  const [dropTargetChatId, setDropTargetChatId] = useState<string | null>(null);
+  const [dropTargetRowId, setDropTargetRowId] = useState<string | null>(null);
   const manualDragEnabled = chatSort === "manual";
   const pinnedDragEnabled = pinnedSort === "manual";
 
-  function commitChatDrop(
-    scope: string,
-    orderedIds: string[],
-    targetId: string,
-  ) {
-    const dragged = draggingChat;
-    setDraggingChat(null);
-    setDropTargetChatId(null);
-    // Cross-list drops are ignored: the row is not in this list's order.
-    if (!dragged || dragged.scope !== scope) return;
-    const next = reorderIds(orderedIds, dragged.id, targetId);
-    if (next !== orderedIds) setManualOrder(scope, next);
+  function isRowDropTarget(scope: string | undefined, rowId: string): boolean {
+    return (
+      scope !== undefined &&
+      dropTargetRowId === rowId &&
+      draggingRow?.scope === scope &&
+      draggingRow.id !== rowId
+    );
+  }
+
+  /** Drag handlers for one row of a reorderable list. */
+  function rowDragProps(scope: string, orderedIds: string[], rowId: string) {
+    return {
+      draggable: true,
+      onDragStart: (event: React.DragEvent) => {
+        // Firefox needs a payload to drag at all.
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", rowId);
+        setDraggingRow({ id: rowId, scope });
+      },
+      onDragEnd: () => {
+        setDraggingRow(null);
+        setDropTargetRowId(null);
+      },
+      onDragOver: (event: React.DragEvent) => {
+        if (draggingRow?.scope !== scope) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        if (dropTargetRowId !== rowId) setDropTargetRowId(rowId);
+      },
+      onDragLeave: () => {
+        setDropTargetRowId((prev) => (prev === rowId ? null : prev));
+      },
+      onDrop: (event: React.DragEvent) => {
+        event.preventDefault();
+        const dragged = draggingRow;
+        setDraggingRow(null);
+        setDropTargetRowId(null);
+        // Cross-list drops are ignored: the row is not in this list's order.
+        if (!dragged || dragged.scope !== scope) return;
+        const next = reorderIds(orderedIds, dragged.id, rowId);
+        if (next !== orderedIds) setManualOrder(scope, next);
+      },
+    };
   }
 
   useEffect(() => {
@@ -1938,63 +1970,17 @@ export function AppSidebar() {
       );
     }
 
-    const isDragging = draggingChat?.id === item.id;
-    const isDropTarget =
-      Boolean(drag) &&
-      dropTargetChatId === item.id &&
-      draggingChat !== null &&
-      draggingChat.scope === drag?.scope &&
-      draggingChat.id !== item.id;
-
     return (
       <SidebarMenuItem
         key={item.id}
         className={cn(
           itemClass,
-          isDragging && "opacity-50",
-          // Insertion cue on the row the drop lands on, inset to the pill.
-          isDropTarget &&
-            "before:absolute before:inset-x-2 before:-top-px before:h-0.5 before:rounded-full before:bg-primary/70 before:content-['']",
+          draggingRow?.id === item.id && "opacity-50",
+          isRowDropTarget(drag?.scope, item.id) && DROP_CUE_CLASS,
         )}
-        draggable={drag !== undefined || undefined}
-        onDragStart={
-          drag &&
-          ((event) => {
-            // Firefox needs a payload to drag at all.
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("text/plain", item.id);
-            setDraggingChat({ id: item.id, scope: drag.scope });
-          })
-        }
-        onDragEnd={
-          drag &&
-          (() => {
-            setDraggingChat(null);
-            setDropTargetChatId(null);
-          })
-        }
-        onDragOver={
-          drag &&
-          ((event) => {
-            if (draggingChat?.scope !== drag.scope) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            if (dropTargetChatId !== item.id) setDropTargetChatId(item.id);
-          })
-        }
-        onDragLeave={
-          drag &&
-          (() => {
-            setDropTargetChatId((prev) => (prev === item.id ? null : prev));
-          })
-        }
-        onDrop={
-          drag &&
-          ((event) => {
-            event.preventDefault();
-            commitChatDrop(drag.scope, drag.orderedIds, item.id);
-          })
-        }
+        {...(drag
+          ? rowDragProps(drag.scope, drag.orderedIds, item.id)
+          : undefined)}
       >
         <SidebarMenuButton
           data-testid="recent-thread"
@@ -2814,8 +2800,23 @@ export function AppSidebar() {
                         );
                         return (
                         <Fragment key={project.id}>
+                        {/* Folders drag to reorder whatever the chat sort is. */}
                         <SidebarMenuItem
-                          className="group/recent-item relative"
+                          className={cn(
+                            "group/recent-item relative",
+                            draggingRow?.id === project.id && "opacity-50",
+                            isRowDropTarget(
+                              PROJECT_ORDER_SCOPE,
+                              project.id,
+                            ) && DROP_CUE_CLASS,
+                          )}
+                          {...rowDragProps(
+                            PROJECT_ORDER_SCOPE,
+                            // Whole list, not the visible slice, so a drop
+                            // cannot lose what "Show more" hides.
+                            sidebarProjectRecords.map((record) => record.id),
+                            project.id,
+                          )}
                         >
                           <SidebarMenuButton
                             // Highlight the folder only on the project home; with a chat open, only that row is active.

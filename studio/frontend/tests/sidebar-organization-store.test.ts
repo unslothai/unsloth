@@ -5,11 +5,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyManualOrder,
+  PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
   reorderIds,
   useSidebarOrganizationStore,
 } from "../src/features/chat/stores/sidebar-organization-store.ts";
+
+const ids = (rows: Array<{ id: string }>) => rows.map((row) => row.id);
 
 test("a dragged chat takes the target's slot and pushes the rest along", () => {
   assert.deepEqual(reorderIds(["a", "b", "c", "d"], "d", "b"), [
@@ -33,6 +37,28 @@ test("a drop that cannot be resolved leaves the order alone", () => {
   assert.equal(reorderIds(ids, "b", "b"), ids);
   assert.equal(reorderIds(ids, "gone", "b"), ids);
   assert.equal(reorderIds(ids, "b", "gone"), ids);
+});
+
+test("a saved order applies, and undragged rows stay on top in list order", () => {
+  const rows = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "new" }];
+  assert.deepEqual(
+    ids(applyManualOrder(rows, ["c", "a", "b"], (row) => row.id)),
+    // "new" was never dragged, so it keeps the spot the list gave it.
+    ["new", "c", "a", "b"],
+  );
+  // No saved order returns the input untouched, not a copy.
+  assert.equal(applyManualOrder(rows, undefined, (row) => row.id), rows);
+  assert.equal(applyManualOrder(rows, [], (row) => row.id), rows);
+});
+
+test("project folders order independently of any chat list", () => {
+  const store = useSidebarOrganizationStore.getState();
+  store.setManualOrder(PROJECT_ORDER_SCOPE, ["p2", "p1"]);
+  store.setManualOrder(projectOrderScope("p1"), ["chat-b", "chat-a"]);
+
+  const saved = useSidebarOrganizationStore.getState().manualOrder;
+  assert.deepEqual(saved[PROJECT_ORDER_SCOPE], ["p2", "p1"]);
+  assert.deepEqual(saved["project:p1"], ["chat-b", "chat-a"]);
 });
 
 test("each list keeps its own manual order", () => {

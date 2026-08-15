@@ -78,7 +78,9 @@ export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
+  applyManualOrder,
   PINNED_ORDER_SCOPE,
+  PROJECT_ORDER_SCOPE,
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
   reorderIds,
