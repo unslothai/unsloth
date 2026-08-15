@@ -311,3 +311,175 @@ def test_studio_host_confirm_emits_tool_start_and_end(monkeypatch):
     assert asyncio.run(host.confirm("x")) is False
     host.cancel_event.set()
     assert asyncio.run(host.confirm("x", on_chunk = on_chunk)) is False
+
+
+def _payload():
+    class Payload:
+        def __init__(self):
+            self.model = "qwen"
+            self.session_id = "world"
+            self.thread_id = None
+            self.enable_tools = False
+            self.enabled_tools = None
+            self.messages = []
+            self.stream = False
+            self.use_adapter = None
+
+        def model_copy(self, deep = True):
+            import copy
+
+            return copy.deepcopy(self)
+
+    return Payload()
+
+
+def test_is_peft_adapter_dir_rejects_fake_and_accepts_peft(tmp_path):
+    from core.unforgettable_host import is_peft_adapter_dir, peft_adapter_name
+
+    missing = tmp_path / "nope"
+    assert is_peft_adapter_dir(missing) is False
+    fake = tmp_path / "fake-ada"
+    fake.mkdir()
+    (fake / "adapter_config.json").write_text(
+        json.dumps({"fake": True, "recipe": "sft", "n": 4}),
+        encoding = "utf-8",
+    )
+    assert is_peft_adapter_dir(fake) is False
+    peft = tmp_path / "ada-uuid"
+    peft.mkdir()
+    (peft / "adapter_config.json").write_text(
+        json.dumps(
+            {
+                "peft_type": "LORA",
+                "base_model_name_or_path": "unsloth/Qwen3.5-4B",
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert is_peft_adapter_dir(peft) is True
+    assert peft_adapter_name(peft) == "ada-uuid"
+
+
+def test_studio_host_generate_sets_use_adapter_for_peft_dir(tmp_path):
+    from core.unforgettable_host import GenerateRequest
+    from unforgettable.loop.runtime import bind_episode, reset_episode
+
+    peft = tmp_path / "ada-live"
+    peft.mkdir()
+    (peft / "adapter_config.json").write_text(
+        json.dumps({"peft_type": "LORA", "base_model_name_or_path": "unsloth/Qwen3.5-4B"}),
+        encoding = "utf-8",
+    )
+    seen = {}
+
+    async def inner(payload, request, subject):
+        seen["use_adapter"] = getattr(payload, "use_adapter", None)
+        chunk = (
+            b'data: {"id":"c","object":"chat.completion.chunk","model":"qwen",'
+            b'"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+        )
+        return SimpleNamespace(body_iterator = _ClosingIter([chunk]))
+
+    host = StudioHost(
+        payload = _payload(),
+        request = None,
+        current_subject = "u",
+        inner = inner,
+        inner_model = "qwen",
+    )
+    tokens, _ = bind_episode(db_path = str(tmp_path / "memory.db"), episode_id = "ep-ada")
+    try:
+        result = asyncio.run(
+            host.generate(
+                GenerateRequest(
+                    messages = [{"role": "user", "content": "hi"}],
+                    session_id = "world",
+                    adapter_path = str(peft),
+                )
+            )
+        )
+    finally:
+        reset_episode(tokens)
+    assert seen["use_adapter"] == str(peft)
+    assert result is not None
+
+
+def test_studio_host_generate_skips_fake_adapter_dir(tmp_path):
+    from core.unforgettable_host import GenerateRequest
+    from unforgettable.loop.runtime import bind_episode, reset_episode
+
+    fake = tmp_path / "ada-fake"
+    fake.mkdir()
+    (fake / "adapter_config.json").write_text(
+        json.dumps({"fake": True, "n": 4}),
+        encoding = "utf-8",
+    )
+    seen = {}
+
+    async def inner(payload, request, subject):
+        seen["use_adapter"] = getattr(payload, "use_adapter", None)
+        chunk = (
+            b'data: {"id":"c","object":"chat.completion.chunk","model":"qwen",'
+            b'"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+        )
+        return SimpleNamespace(body_iterator = _ClosingIter([chunk]))
+
+    host = StudioHost(
+        payload = _payload(),
+        request = None,
+        current_subject = "u",
+        inner = inner,
+        inner_model = "qwen",
+    )
+    tokens, _ = bind_episode(db_path = str(tmp_path / "memory.db"), episode_id = "ep-fake")
+    try:
+        asyncio.run(
+            host.generate(
+                GenerateRequest(
+                    messages = [{"role": "user", "content": "hi"}],
+                    session_id = "world",
+                    adapter_path = str(fake),
+                )
+            )
+        )
+    finally:
+        reset_episode(tokens)
+    assert seen["use_adapter"] is None
+
+
+def test_apply_adapter_state_loads_peft_directory(tmp_path):
+    pytest.importorskip("torch")
+    from core.inference.inference import InferenceBackend
+
+    peft = tmp_path / "ada-path"
+    peft.mkdir()
+    (peft / "adapter_config.json").write_text(
+        json.dumps({"peft_type": "LORA", "base_model_name_or_path": "unsloth/Qwen3.5-4B"}),
+        encoding = "utf-8",
+    )
+    loaded = []
+
+    class FakeModel:
+        def __init__(self):
+            self.peft_config = {}
+            self.base_model = types.SimpleNamespace(
+                _disable_adapters = False,
+                enable_adapter_layers = lambda: None,
+                disable_adapter_layers = lambda: None,
+            )
+
+        def load_adapter(self, path, adapter_name = None):
+            loaded.append((path, adapter_name))
+            self.peft_config[adapter_name] = path
+
+        def set_adapter(self, name):
+            self.active = name
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    model = FakeModel()
+    backend.models = {"qwen": {"model": model, "active_adapter": None, "loaded_adapters": {}}}
+    backend.active_model_name = "qwen"
+    backend._apply_adapter_state(str(peft))
+    assert loaded == [(str(peft), "ada-path")]
+    assert model.active == "ada-path"
+    assert backend.models["qwen"]["active_adapter"] == "ada-path"

@@ -36,9 +36,8 @@ These are **not** new architecture. They are leftovers the phase docs parked on 
 
 | Leftover | Where it sits today |
 |----------|---------------------|
-| `StudioHost.generate` does not load a LoRA | `EpisodeRequest.adapter_id` shrinks standing and sets `GenerateRequest.adapter_path`. FakeHost records the path. StudioHost **ignores** it. Operator path: load the saved LoRA as an ordinary Studio adapter. |
+| Live LoRA attach | **Shipped.** `StudioHost.generate` sets `payload.use_adapter` to a PEFT adapter directory. The inference worker loads it for that pass and restores. Fake dirs and GGUF inners fail open. |
 | Unsloth DPO | Fake backend writes `pairs.jsonl`. `UnslothTrainBackend` with `--recipe preference` raises `NotImplementedError("Unsloth DPO training is not wired")`. |
-| Live LoRA attach still a hole | Settings can set `adapter_id` (shrinks standing). `StudioHost.generate` still ignores `adapter_path`. |
 | Compact is explicit-only | CLI / `memory_compact`. Never at episode end, never on a timer. |
 | Extract stays proposed | Naive `error_fix` and `llm_extract` drafts do not auto-admit. Operator `admit` is the promote path. |
 | No `console_scripts` | Entry is `python -m unforgettable`. |
@@ -85,8 +84,8 @@ MemPhase2 open question 3: always 800 vs the user’s `max_tokens`. Default 800 
 **7. Auto-admit world/mixed `error_fix` after evidence** — **policy-sensitive**
 Parked in MemPhase2, 3, 4, and 5 as “a later tiny PR … one-line `admit()` change.” Only if a week (or more) of proposed rows shows the naive fail→success writer is consistently worth retrieving. Restrict to `kind=error_fix` and `provenance in {world, mixed}`. Do not auto-admit LLM drafts (`infer`) or sim-only rows.
 
-**8. Live LoRA attach in `StudioHost.generate`**
-The highest-value remaining fruit from Phase 5. MemPhase5 open question 2 / `TECHNICAL.md` §4.5: when `GenerateRequest.adapter_path` is set, call Studio’s existing `load_adapter` / `load_for_eval` for that inner pass only, then restore. Same-deploy: Apache already sets the path; the AGPL host is the hole. Without this, `adapter_id` only shrinks standing — the inner model is still the base.
+**8. Live LoRA attach in `StudioHost.generate`** — **Done.**
+`GenerateRequest.adapter_path` on a PEFT dir becomes `payload.use_adapter`. The worker `load_adapter`s for that generate and restores. Remaining hole: GGUF inners cannot take a PEFT LoRA (fail-open).
 
 **9. Scheduled compact**
 Parked every phase since MemPhase2 (“explicit-only; revisit if proposed pile-up is real”). Trigger ideas already named: weekly job, or after N proposed rows. Must stay deterministic (`store/compact.py`), must default to dry-run / operator confirm, must **not** run inside `episode.run`. A Studio cron or a CLI `compact --apply --older-than` wrapper is enough.

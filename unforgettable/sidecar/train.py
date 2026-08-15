@@ -109,6 +109,16 @@ def _refuse_full_finetune() -> None:
         raise RuntimeError(FULL_FINETUNE_REFUSED)
 
 
+def _vocab_token(tokenizer: Any, attr: str) -> Optional[str]:
+    token = getattr(tokenizer, attr, None)
+    if not isinstance(token, str) or not token:
+        return None
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if callable(convert) and convert(token) is None:
+        return None
+    return token
+
+
 def _sft_text(example: Any, tokenizer: Any) -> str:
     messages = _example_messages(example)
     apply = getattr(tokenizer, "apply_chat_template", None)
@@ -203,6 +213,30 @@ class FakeTrainBackend:
         return gold.get(user, "")
 
 
+def _unsloth_loader():
+    try:
+        from unsloth import FastModel
+
+        return FastModel
+    except ImportError:
+        from unsloth import FastLanguageModel
+
+        return FastLanguageModel
+
+
+def _from_pretrained(loader, base_model: str):
+    kwargs = {
+        "model_name": base_model,
+        "max_seq_length": 2048,
+        "load_in_4bit": True,
+        "full_finetuning": False,
+    }
+    try:
+        return loader.from_pretrained(text_only=True, **kwargs)
+    except TypeError:
+        return loader.from_pretrained(**kwargs)
+
+
 class UnslothTrainBackend:
     name = "unsloth"
 
@@ -219,26 +253,24 @@ class UnslothTrainBackend:
     ) -> None:
         _refuse_full_finetune()
         if recipe == RECIPE_PREFERENCE:
-            try:
-                from trl import DPOTrainer
-            except ImportError as exc:
-                raise RuntimeError(PREFERENCE_NEEDS_DPO) from exc
-            del DPOTrainer
+            import importlib.util
+
+            if importlib.util.find_spec("trl") is None:
+                raise RuntimeError(PREFERENCE_NEEDS_DPO)
             raise NotImplementedError(UNSLOTH_DPO_NOT_WIRED)
-        from unsloth import FastLanguageModel
-        from trl import SFTTrainer, SFTConfig
         from datasets import Dataset
 
         self._base_model = base_model
         dest = Path(output_dir)
         dest.mkdir(parents=True, exist_ok=True)
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            base_model,
-            max_seq_length=2048,
-            load_in_4bit=True,
-            full_finetuning=False,
-        )
-        model = FastLanguageModel.get_peft_model(
+        loader = _unsloth_loader()
+        # Import TRL after Unsloth so SFTConfig is the patched class TRL's
+        # isinstance check expects. A pre-import instance is rebuilt and
+        # picks up Unsloth's '<EOS_TOKEN>' sentinel.
+        from trl import SFTTrainer, SFTConfig
+
+        model, tokenizer = _from_pretrained(loader, base_model)
+        model = loader.get_peft_model(
             model,
             r=16,
             lora_alpha=16,
@@ -247,17 +279,24 @@ class UnslothTrainBackend:
             use_gradient_checkpointing="unsloth",
             random_state=3407,
         )
+        eos = _vocab_token(tokenizer, "eos_token")
+        pad = _vocab_token(tokenizer, "pad_token") or eos
         ds = Dataset.from_dict(
             {"text": [_sft_text(example, tokenizer) for example in examples]}
         )
-        sft_args = SFTConfig(
-            output_dir=str(dest),
-            per_device_train_batch_size=2,
-            num_train_epochs=1,
-            logging_steps=1,
-            seed=3407,
-            report_to=[],
-        )
+        sft_kwargs = {
+            "output_dir": str(dest),
+            "per_device_train_batch_size": 2,
+            "num_train_epochs": 1,
+            "logging_steps": 1,
+            "seed": 3407,
+            "report_to": [],
+        }
+        if eos:
+            sft_kwargs["eos_token"] = eos
+        if pad:
+            sft_kwargs["pad_token"] = pad
+        sft_args = SFTConfig(**sft_kwargs)
         try:
             trainer = SFTTrainer(
                 model=model,
@@ -284,17 +323,12 @@ class UnslothTrainBackend:
         max_tokens: int = 80,
     ) -> str:
         _refuse_full_finetune()
-        from unsloth import FastLanguageModel
+        loader = _unsloth_loader()
 
         base = getattr(self, "_base_model", None)
         if not base:
             return ""
-        model, tokenizer = FastLanguageModel.from_pretrained(
-            base,
-            max_seq_length=2048,
-            load_in_4bit=True,
-            full_finetuning=False,
-        )
+        model, tokenizer = _from_pretrained(loader, base)
         if adapter_path:
             try:
                 from peft import PeftModel
@@ -305,7 +339,7 @@ class UnslothTrainBackend:
                 if not callable(load_adapter):
                     raise
                 load_adapter(adapter_path)
-        FastLanguageModel.for_inference(model)
+        loader.for_inference(model)
         inputs = tokenizer(_prompt_text(messages, tokenizer), return_tensors="pt")
         device = getattr(model, "device", None)
         if device is not None and hasattr(inputs, "to"):

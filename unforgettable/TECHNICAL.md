@@ -158,7 +158,7 @@ Optional (`getattr` skip):
 
 | File | What it may do |
 |------|----------------|
-| `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, enabled-tool union, `supervise` one-shot |
+| `studio/backend/core/unforgettable_host.py` | `StudioHost`, stream rewrite, `handle_chat_completions`, enabled-tool union, `supervise` one-shot, PEFT `use_adapter` attach |
 | `studio/backend/routes/unforgettable.py` | Thin HTTP face over `operators.py` + store inspect. No status math. |
 | `studio/backend/utils/unforgettable_settings.py` | Persisted episode defaults and voter knobs (`/api/settings/unforgettable`) |
 | `studio/backend/routes/inference.py` | If `is_virtual_model(model)` and not `in_inner_generate()` → `handle_chat_completions`; catalog entry |
@@ -380,13 +380,13 @@ Chat completions and tool argument blobs are not training gold. Preference pairs
 
 `pack_from_admitted_b` (`sidecar/pack.py`): only active `procedure`/`error_fix` with trusted provenance; probes and `test command` dropped; traces **vote** (and hold out by episode); they do not donate episode text. Compiled membership is also a vote (operator `compile` or auto-pin after two world-pass hits). `include_sim` default false; sim/pass votes only with world/pass and no **active** twin_note. Sim rows never become assistant gold. Empty candidate sets are not persisted. `pack_is_retrieval_heavy` counts compiled rows without refreshing/unpinning them.
 
-`train_pack` refuses fewer than `PACK_MIN_TRAIN` (4) train items. Fake backend writes `adapter_config.json` + `fake_gold.json`. Unsloth backend lazy-imports, refuses `UNSLOTH_ENABLE_FULL_FINETUNING=1` and `full_finetuning=True`, writes a LoRA dir. Preference recipe: Fake writes `pairs.jsonl` from `preference_pairs(..., train_episode_ids=)` — only episodes that appear on **train** pack items. Unsloth DPO is not wired (`NotImplementedError`).
+`train_pack` refuses fewer than `PACK_MIN_TRAIN` (4) train items. Fake backend writes `adapter_config.json` + `fake_gold.json`. Unsloth backend lazy-imports `FastModel` (falls back to `FastLanguageModel`), prefers `text_only=True`, refuses `UNSLOTH_ENABLE_FULL_FINETUNING=1` and `full_finetuning=True`, writes a LoRA dir. Preference recipe: Fake writes `pairs.jsonl` from `preference_pairs(..., train_episode_ids=)` — only episodes that appear on **train** pack items. Unsloth DPO is not wired (`NotImplementedError`).
 
 `eval_adapter`: holdout title-only complete vs gold. Empty completions on both sides (`adapter_lean == base_lean == 0`) **fail**. CLI `eval` selects Fake vs Unsloth from `adapters.backend` and passes `base_model` into `UnslothTrainBackend.complete` (load base, then PEFT adapter).
 
 `promote_adapter` refuses without metrics / without `passed`. One promoted row; previous promoted → discarded. `rollback_adapter` discards current; does not repromote. Files are never deleted by the registry.
 
-Live Studio inject does **not** shrink on promote alone. Shrink + `GenerateRequest.adapter_path` only when `EpisodeRequest.adapter_id` is set. `StudioHost.generate` may ignore `adapter_path` this phase.
+Live Studio inject does **not** shrink on promote alone. Shrink + `GenerateRequest.adapter_path` only when `EpisodeRequest.adapter_id` is set. `StudioHost.generate` copies a PEFT adapter directory onto `payload.use_adapter`; the inference worker `load_adapter`s it for that generate and restores the previous adapter. Fake sidecar dirs and GGUF inners fail open (no attach).
 
 ### 4.6 ContextVars and Studio threads
 
@@ -409,7 +409,7 @@ Not the MemoryWheels outer wheel. Two optional jobs, separately configured, defa
 
 ## 5. Automated tests
 
-Apache suite: **255** tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`.
+Apache suite: **255** CPU tests under `unforgettable/tests/`, no GPU, tmp SQLite + tmp dirs. Fixture: `conftest.py` `db_path` → `tmp_path / "memory.db"`. `test_sidecar_gpu.py` is extra and skips unless CUDA torch and cached `--base` weights are present.
 
 | File | What it locks |
 |------|----------------|
@@ -436,6 +436,7 @@ Apache suite: **255** tests under `unforgettable/tests/`, no GPU, tmp SQLite + t
 | `test_sidecar_pack.py` | Drop reasons, no episode gold, sim vote matrix, rejected twin_note is not a veto, holdout-by-episode, preference pairs |
 | `test_remember_path.py` | Unbound dispatch, no human/episode from tools, sim cannot mint world, supersede does not promote, generate-text clip |
 | `test_sidecar_train.py` | Min size, fake shadow dir, full-FT refuse, preference pairs.jsonl, unpacked episode is not preference gold |
+| `test_sidecar_gpu.py` | CUDA + cached `--base` only: `UnslothTrainBackend.train` writes a real PEFT dir. Skips without GPU or weights |
 | `test_sidecar_eval.py` | Seeded holdout 1.0 vs 0.0; **unseeded holdout fails**; empty holdout fails |
 | `test_sidecar_adapters.py` | Promote gate, one promoted, rollback keeps files, probe-fail refuse |
 
@@ -443,7 +444,7 @@ Names that later phases must keep green: `test_episode_fail_sim_retry_writes_err
 
 ### 5.1 Studio-face tests (AGPL)
 
-`studio/backend/tests/test_unforgettable_stream.py` — `_rewrite_inner_frame` (tool frames unchanged, `finish_reason` nulled, inner `[DONE]` dropped), stream drain/`aclose`, enabled-tools union, `run_action`/`confirm` SSE, ContextVar copy through `stream_tool_execution`. Needs Studio backend on `PYTHONPATH` and Studio Python extras (`structlog`, …).
+`studio/backend/tests/test_unforgettable_stream.py` — `_rewrite_inner_frame` (tool frames unchanged, `finish_reason` nulled, inner `[DONE]` dropped), stream drain/`aclose`, enabled-tools union, `run_action`/`confirm` SSE, ContextVar copy through `stream_tool_execution`, PEFT `use_adapter` attach. Needs Studio backend on `PYTHONPATH` and Studio Python extras (`structlog`, …).
 
 Frontend: `studio/frontend/tests/unforgettable-merge-extras.test.ts` — virtual-model extras merge and settings search index. Studio settings/routes: `studio/backend/tests/test_unforgettable_settings.py`, `test_unforgettable_routes.py`.
 
@@ -495,7 +496,7 @@ python -m pytest unforgettable/tests -q --tb=short
 python -m pytest unforgettable/tests/test_episode.py -q
 ```
 
-Expect **255 passed**. Runtime is a few seconds on a laptop.
+Expect **255 passed** (the GPU file skips). Runtime is a few seconds on a laptop. On a CUDA box with `unsloth/Qwen3.5-4B` cached, `test_sidecar_gpu.py` adds one more pass (~1–2 minutes).
 
 If the environment has no `pytest` in the project venv:
 

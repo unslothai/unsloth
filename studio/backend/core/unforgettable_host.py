@@ -47,6 +47,28 @@ _BUFFERED_STREAM_CHUNK_ID = "chatcmpl-unforgettable"
 _TOOL_APPROVAL_FLUSH_DELAY_S = 0.05
 
 
+def is_peft_adapter_dir(path: str | os.PathLike[str] | None) -> bool:
+    """True when ``path`` is a PEFT adapter directory, not a fake sidecar dir."""
+    if not path:
+        return False
+    root = Path(path)
+    cfg_path = root / "adapter_config.json"
+    if not root.is_dir() or not cfg_path.is_file():
+        return False
+    try:
+        data = json.loads(cfg_path.read_text(encoding = "utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict) or data.get("fake"):
+        return False
+    return "peft_type" in data or "base_model_name_or_path" in data
+
+
+def peft_adapter_name(path: str | os.PathLike[str]) -> str:
+    """Stable PEFT adapter id derived from the directory name."""
+    return Path(path).name.replace(".", "_")
+
+
 def in_inner_generate() -> bool:
     return bool(_INNER.get())
 
@@ -401,6 +423,10 @@ class StudioHost:
         payload.messages = _as_chat_messages(req.messages)
         want_stream = req.on_chunk is not None
         payload.stream = want_stream
+        # Sidecar C: a PEFT dir on GenerateRequest becomes the existing
+        # use_adapter string. Fake adapter dirs and GGUF inners fail open.
+        if req.adapter_path and is_peft_adapter_dir(req.adapter_path):
+            payload.use_adapter = req.adapter_path
         before = len(current_traces())
         token = _INNER.set(True)
         try:
@@ -701,6 +727,8 @@ __all__ = [
     "handle_chat_completions",
     "in_inner_generate",
     "inner_model_id",
+    "is_peft_adapter_dir",
     "is_virtual_model",
+    "peft_adapter_name",
     "union_unforgettable_enabled_tools",
 ]

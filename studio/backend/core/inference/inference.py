@@ -868,12 +868,45 @@ class InferenceBackend:
             logger.error(f"Failed to set active adapter to '{adapter_name}': {e}")
             return False
 
+    def _snapshot_adapter_state(self) -> Optional[dict]:
+        """Record which adapter was live so a sidecar attach can be undone."""
+        base = self.active_model_name
+        if not base or base not in self.models:
+            return None
+        model = self.models[base].get("model")
+        if model is None:
+            return None
+        base_tuner = getattr(model, "base_model", None)
+        return {
+            "base": base,
+            "was_peft": isinstance(model, (PeftModel, PeftModelForCausalLM)),
+            "active": self.models[base].get("active_adapter"),
+            "disabled": bool(getattr(base_tuner, "_disable_adapters", False)),
+        }
+
+    def _restore_adapter_state(self, snap: Optional[dict]) -> None:
+        if not snap:
+            return
+        base = snap.get("base") or self.active_model_name
+        if not base or base not in self.models:
+            return
+        model = self.models[base].get("model")
+        if model is None or not isinstance(model, (PeftModel, PeftModelForCausalLM)):
+            return
+        if not snap.get("was_peft") or snap.get("disabled"):
+            model.base_model.disable_adapter_layers()
+            return
+        model.base_model.enable_adapter_layers()
+        previous = snap.get("active")
+        if previous:
+            self.set_active_adapter(base, previous)
+
     def _apply_adapter_state(self, use_adapter: Optional[Union[bool, str]]) -> None:
         """Apply adapter state before generation (must hold _generation_lock).
 
         Toggles PEFT enable/disable_adapter_layers (non-destructive, no reload).
         use_adapter: None = no change, False = base model, True = current adapter,
-        str = named adapter.
+        str = named adapter or a PEFT adapter directory (sidecar C).
         """
         if use_adapter is None:
             return
@@ -906,11 +939,27 @@ class InferenceBackend:
                 logger.warning("use_adapter=true but model is not a PeftModel")
 
         elif isinstance(use_adapter, str):
-            # Enable adapters and set the named one active.
-            if isinstance(model, (PeftModel, PeftModelForCausalLM)):
-                logger.info(f"Compare mode: enabling adapter '{use_adapter}' on '{base}'")
-                model.base_model.enable_adapter_layers()
-                self.set_active_adapter(base, use_adapter)
+            from core.unforgettable_host import is_peft_adapter_dir, peft_adapter_name
+
+            adapter_name = use_adapter
+            if is_peft_adapter_dir(use_adapter):
+                adapter_name = peft_adapter_name(use_adapter)
+                if not self.load_adapter(base, use_adapter, adapter_name):
+                    logger.warning(
+                        "use_adapter path '%s' did not load; inner generate stays on the base",
+                        use_adapter,
+                    )
+                    return
+                model = self.models[base].get("model")
+            can_enable = isinstance(model, (PeftModel, PeftModelForCausalLM)) or hasattr(
+                model, "set_adapter"
+            )
+            if can_enable:
+                logger.info(f"Compare mode: enabling adapter '{adapter_name}' on '{base}'")
+                enable = getattr(getattr(model, "base_model", None), "enable_adapter_layers", None)
+                if callable(enable):
+                    enable()
+                self.set_active_adapter(base, adapter_name)
             else:
                 logger.warning(f"use_adapter='{use_adapter}' but model is not a PeftModel")
 
@@ -1931,9 +1980,16 @@ class InferenceBackend:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
 
             def generate_fn():
+                from core.unforgettable_host import is_peft_adapter_dir
+
                 with self._generation_lock:
+                    snap = None
                     try:
                         if _adapter_state is not None:
+                            if isinstance(_adapter_state, str) and is_peft_adapter_dir(
+                                _adapter_state
+                            ):
+                                snap = self._snapshot_adapter_state()
                             self._apply_adapter_state(_adapter_state)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
@@ -1946,6 +2002,11 @@ class InferenceBackend:
                             streamer.abort()
                         logger.error(f"Generation error: {e}")
                     finally:
+                        if snap is not None:
+                            try:
+                                self._restore_adapter_state(snap)
+                            except Exception:
+                                logger.exception("Failed to restore adapter after sidecar attach")
                         timer.finish()
                         try:
                             streamer.end()
