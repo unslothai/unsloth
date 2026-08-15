@@ -8863,13 +8863,9 @@ def test_a_pickle_shard_named_by_a_safetensors_index_is_withheld(tmp_path):
     path = _local_checkpoint(tmp_path, "PickleShard")
     info = SimpleNamespace(id = str(path), path = str(path))
     (path / "pytorch_model.bin").write_bytes(b"x" * 32)
-    (path / "model.safetensors.index.json").write_text(
-        '{"weight_map": {"a": "pytorch_model.bin"}}'
-    )
+    (path / "model.safetensors.index.json").write_text('{"weight_map": {"a": "pytorch_model.bin"}}')
     assert resolver.local_servable_model(info) is None
-    (path / "model.safetensors.index.json").write_text(
-        '{"weight_map": {"a": "model.safetensors"}}'
-    )
+    (path / "model.safetensors.index.json").write_text('{"weight_map": {"a": "model.safetensors"}}')
     assert resolver.local_servable_model(info) == (False, ())
 
 
