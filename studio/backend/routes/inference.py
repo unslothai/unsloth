@@ -410,9 +410,7 @@ def _tts_max_new_tokens(
     moss_generation = audio_type in ("moss_tts_local", "moss_tts_nano")
     context_length = _monitor_context_length() if moss_generation or prompt else None
     token_ceiling = (
-        context_length or MOSS_TTS_MAX_FRAMES
-        if moss_generation
-        else AUDIO_GENERATION_MAX_TOKENS
+        context_length or MOSS_TTS_MAX_FRAMES if moss_generation else AUDIO_GENERATION_MAX_TOKENS
     )
     budget = min(
         token_ceiling,

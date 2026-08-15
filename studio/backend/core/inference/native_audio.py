@@ -855,13 +855,15 @@ class NativeAudioBackend:
     ):
         processor = entry["processor"]
         batch = processor(
-            [[
-                processor.build_user_message(
-                    text = text,
-                    instruction = instructions,
-                    language = language,
-                )
-            ]],
+            [
+                [
+                    processor.build_user_message(
+                        text = text,
+                        instruction = instructions,
+                        language = language,
+                    )
+                ]
+            ],
             mode = "generation",
         )
         kwargs = {
