@@ -103,9 +103,7 @@ def test_load_krea2_pipeline_threads_init_config(monkeypatch, tmp_path):
         "core.inference.diffusion_krea2.load_krea2_tokenizer",
         # Hand-written fakes with EXACT signatures, so they have to follow the production one:
         # load_krea2_pipeline now passes local_files_only down to every component load.
-        lambda repo_id, hf_token = None, local_files_only = False: SimpleNamespace(
-            tag = "tokenizer"
-        ),
+        lambda repo_id, hf_token = None, local_files_only = False: SimpleNamespace(tag = "tokenizer"),
     )
     monkeypatch.setattr(
         "core.inference.diffusion_krea2.load_krea2_text_encoder",

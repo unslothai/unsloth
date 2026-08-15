@@ -67,7 +67,6 @@ def _call_keyword_sets(module_path: str, function: str, callee: str) -> list[set
 
 def _h3_te_module():
     from core.inference import video_minimax_h3_te as te_mod
-
     return te_mod
 
 
@@ -90,7 +89,12 @@ def _drive_h3_conditioner(monkeypatch, *, local_files_only):
         sys.modules, "accelerate", SimpleNamespace(init_empty_weights = lambda **_k: None)
     )
 
-    def _download(repo_id, filename, token = None, **kwargs):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        **kwargs,
+    ):
         seen["download"] = (repo_id, filename, kwargs)
         return "/nowhere/artifact.safetensors"
 
@@ -184,9 +188,7 @@ def test_reopening_the_image_checkpoint_is_a_cache_lookup_offline(monkeypatch, c
     ``hf_hub_download`` re-resolves the revision against the Hub, so a checkpoint republished since
     the cache was filled is a multi-GB pull taken AFTER the resident pipeline was evicted, inside
     the generation lock, with progress already reading 100%."""
-    for kwargs in _drive_resolve_gguf(
-        monkeypatch, cached_here = cached_here, local_files_only = True
-    ):
+    for kwargs in _drive_resolve_gguf(monkeypatch, cached_here = cached_here, local_files_only = True):
         assert kwargs["local_files_only"] is True
 
 
@@ -194,9 +196,7 @@ def test_reopening_the_image_checkpoint_is_a_cache_lookup_offline(monkeypatch, c
 def test_a_user_initiated_image_load_still_revalidates_the_checkpoint(monkeypatch, cached_here):
     """Unchanged for the UI load: it still goes to the Hub, which is how a republished GGUF is
     picked up."""
-    for kwargs in _drive_resolve_gguf(
-        monkeypatch, cached_here = cached_here, local_files_only = False
-    ):
+    for kwargs in _drive_resolve_gguf(monkeypatch, cached_here = cached_here, local_files_only = False):
         assert kwargs["local_files_only"] is False
 
 
@@ -210,7 +210,13 @@ def test_the_image_assembly_hands_the_flag_to_the_checkpoint_resolver():
 # ── [C] the Krea 2 per-component assembler ───────────────────────────────────
 
 
-def _drive_krea(monkeypatch, tmp_path, *, local_files_only, with_transformer = True):
+def _drive_krea(
+    monkeypatch,
+    tmp_path,
+    *,
+    local_files_only,
+    with_transformer = True,
+):
     """Assemble a Krea pipeline against fakes, recording what each component was asked for."""
     from core.inference.diffusion_krea2 import load_krea2_pipeline
 
@@ -333,9 +339,7 @@ def test_the_ltx23_extras_fetch_is_a_cache_lookup_offline(monkeypatch):
         "hf_hub_download_with_xet_fallback",
         lambda repo_id, filename, token = None, **kwargs: seen.update(kwargs) or "/nowhere.st",
     )
-    monkeypatch.setattr(
-        "safetensors.torch.load_file", lambda _path: {}, raising = False
-    )
+    monkeypatch.setattr("safetensors.torch.load_file", lambda _path: {}, raising = False)
     video_ltx2._load_extras_file("vae/x.safetensors", None, True)
     assert seen["local_files_only"] is True
     assert seen["reuse_other_cache_root"] is True
@@ -366,7 +370,10 @@ def _drive_ltx23(monkeypatch, *, local_files_only):
         @classmethod
         def load_config(cls, repo_id, **kwargs):
             seen["load_config"] = kwargs
-            return {name: ["diffusers", "_LtxOfflineSub"] for name in ("scheduler", "tokenizer", "text_encoder")}
+            return {
+                name: ["diffusers", "_LtxOfflineSub"]
+                for name in ("scheduler", "tokenizer", "text_encoder")
+            }
 
     monkeypatch.setattr(diffusers, "LTX2Pipeline", _FakePipeline, raising = False)
     monkeypatch.setattr(diffusers, "_LtxOfflineSub", _Sub, raising = False)

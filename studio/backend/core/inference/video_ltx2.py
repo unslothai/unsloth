@@ -490,9 +490,7 @@ def load_ltx23_connectors(
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
-            _load_extras_file(
-                _EXTRAS_TEXT_PROJ.format(variant = variant), hf_token, local_files_only
-            )
+            _load_extras_file(_EXTRAS_TEXT_PROJ.format(variant = variant), hf_token, local_files_only)
         )
     return _build_from_config(
         LTX2TextConnectors,
@@ -650,9 +648,7 @@ def load_ltx23_pipeline(
     )
 
     # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather than drift.
-    index = LTX2Pipeline.load_config(
-        base_repo, token = hf_token, local_files_only = local_files_only
-    )
+    index = LTX2Pipeline.load_config(base_repo, token = hf_token, local_files_only = local_files_only)
 
     def _sub(name: str, **extra: Any) -> Any:
         library, class_name = index[name]
