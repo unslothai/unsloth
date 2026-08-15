@@ -146,8 +146,9 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
-    # A cached file and byte count already verified for this repo and variant.
-    verified_gguf: Optional[tuple[str, str, str, int]] = None
+    # A cached file, and the byte count of every shard beside it, already verified
+    # for this repo and variant.
+    verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
     dspark_draft_path: Optional[str] = None
@@ -1486,6 +1487,33 @@ def _cached_variant_candidates(
             yield str(main_path), main, shards, snap
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
+
+
+def _cached_variant_sizes(
+    repo_id: str, hf_variant: str, main_path: str
+) -> Optional[tuple[tuple[str, int], ...]]:
+    """Byte counts for every file of the cached variant copy rooted at ``main_path``.
+
+    Sorted ``(filename, size)`` pairs covering the main GGUF and its shards, or
+    None when no complete cached copy of the variant resolves to that path. The
+    shard set comes from ``_cached_variant_candidates`` so one function owns it,
+    and every read is local: recording this and comparing it later catches a file
+    truncated, resized or dropped in between without a Hub lookup.
+    """
+    target = os.path.abspath(main_path)
+    for cached_main, main, shards, snap in _cached_variant_candidates(repo_id, hf_variant):
+        if os.path.abspath(cached_main) != target:
+            continue
+        try:
+            return tuple(
+                sorted(
+                    (name, os.path.getsize(snap.joinpath(*name.replace("\\", "/").split("/"))))
+                    for name in (main, *shards)
+                )
+            )
+        except OSError:
+            return None
+    return None
 
 
 def _cached_candidate_matches_revision_size(
@@ -7696,7 +7724,7 @@ class LlamaCppBackend:
         if not verified:
             return None
         try:
-            repo, variant, path, size = verified
+            repo, variant, path, sizes = verified
         except (TypeError, ValueError):
             return None
         if (repo or "").lower() != (hf_repo or "").lower():
@@ -7718,16 +7746,10 @@ class LlamaCppBackend:
                 return None
         except (OSError, ValueError):
             return None
-        # Recheck the recorded byte count and derive the complete shard set from
-        # this snapshot. Both checks are local, so reuse still avoids Hub calls.
+        # Recheck the recorded byte count of every shard against the set this
+        # snapshot still holds. Both are local, so reuse still avoids Hub calls.
         try:
-            if os.path.getsize(path) != size:
-                return None
-            target = os.path.abspath(path)
-            if not any(
-                os.path.abspath(candidate[0]) == target
-                for candidate in _cached_variant_candidates(_resolve_repo_id_casing(repo), variant)
-            ):
+            if _cached_variant_sizes(_resolve_repo_id_casing(repo), variant, path) != sizes:
                 return None
         except OSError:
             return None

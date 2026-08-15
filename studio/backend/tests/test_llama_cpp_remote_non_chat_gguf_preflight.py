@@ -664,7 +664,13 @@ def _verified(
     repo: str = "owner/model",
     variant: str = "Q4_K_M",
 ):
-    return repo, variant, str(path), path.stat().st_size
+    """What config resolution carries for a cached copy it just verified."""
+    return (
+        repo,
+        variant,
+        str(path),
+        llama_cpp_module._cached_variant_sizes(repo, variant, str(path)),
+    )
 
 
 def test_a_verified_cached_file_is_judged_without_resolving_it_again(monkeypatch, tmp_path):
@@ -784,6 +790,28 @@ def test_an_incomplete_shard_set_after_config_resolution_is_not_reused(monkeypat
 
     sibling.unlink()
 
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+
+def test_a_shard_truncated_after_config_resolution_is_not_reused(monkeypatch, tmp_path):
+    """A shard that shrinks is as unusable as one that disappears.
+
+    The shard set alone only proves the siblings still exist, so the carried
+    value records every shard's byte count and Phase 2 rechecks all of them.
+    """
+    _hub_cache(monkeypatch, tmp_path)
+    main = _cached_gguf(tmp_path, "model-Q4_K_M-00001-of-00003.gguf", b"first shard")
+    second = _cached_gguf(tmp_path, "model-Q4_K_M-00002-of-00003.gguf", b"second shard")
+    _cached_gguf(tmp_path, "model-Q4_K_M-00003-of-00003.gguf", b"third shard")
+    intent = _intent(verified_gguf = _verified(main))
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(main)
+
+    second.write_bytes(b"sec")
+
+    assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
+
+    # A shard that grows past its recorded size is a different set too.
+    second.write_bytes(b"second shard and more")
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
 
 

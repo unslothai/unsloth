@@ -3581,8 +3581,9 @@ class ModelConfig:
     audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
-    # ``(repo, variant, path, size)`` for a cached GGUF verified during config resolution.
-    gguf_verified: Optional[tuple[str, str, str, int]] = None
+    # ``(repo, variant, path, sizes)`` for a cached GGUF verified during config
+    # resolution; ``sizes`` covers that file and every shard beside it.
+    gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
@@ -3874,15 +3875,18 @@ class ModelConfig:
 
                 verified_gguf = None
                 if verified_file:
-                    try:
-                        verified_gguf = (
-                            identifier,
-                            variant,
-                            verified_file,
-                            os.path.getsize(verified_file),
-                        )
-                    except OSError:
-                        pass
+                    from core.inference.llama_cpp import (
+                        _cached_variant_sizes,
+                        _resolve_repo_id_casing,
+                    )
+
+                    # Every shard's byte count, so the load can tell the copy apart
+                    # from one damaged after this point without asking the Hub again.
+                    sizes = _cached_variant_sizes(
+                        _resolve_repo_id_casing(identifier), variant, verified_file
+                    )
+                    if sizes:
+                        verified_gguf = (identifier, variant, verified_file, sizes)
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(

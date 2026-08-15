@@ -653,7 +653,7 @@ class TestLoadHubDownloadExclusion:
             "inference_route_module_for_verified_cache_hint",
             "routes/inference.py",
         )
-        verified = (REPO, VARIANT, "/cached/model.gguf", 123)
+        verified = (REPO, VARIANT, "/cached/model.gguf", ((MAIN, 123),))
         config = SimpleNamespace(
             identifier = REPO,
             gguf_hf_repo = REPO,

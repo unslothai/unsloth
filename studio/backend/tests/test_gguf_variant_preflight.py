@@ -1,10 +1,14 @@
 """An explicit --gguf-variant that exists nowhere must be rejected by
 ModelConfig.from_identifier, before the load path unloads the resident model."""
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import huggingface_hub
 import pytest
 
 import core.inference.llama_cpp as llama_cpp
+import utils.hf_cache_settings as hf_cache_settings
 import utils.models.model_config as mc
 from utils.models.model_config import GgufVariantInfo, ModelConfig
 
@@ -38,6 +42,28 @@ def remote_gguf_repo(monkeypatch):
         staticmethod(lambda *, include_denied = False: "/fake/llama-server"),
     )
     monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kwargs: None)
+
+
+@pytest.fixture
+def hub_cache(tmp_path, monkeypatch):
+    """Point the active Hub cache at a temp root."""
+    monkeypatch.setattr(
+        hf_cache_settings, "get_hf_cache_paths", lambda: SimpleNamespace(hub_cache = tmp_path)
+    )
+    return tmp_path
+
+
+def _cached(
+    root: Path,
+    name: str,
+    payload: bytes = b"cached",
+) -> Path:
+    """Write a GGUF into a snapshot of ``REPO`` under the active Hub cache."""
+    snapshot = root / f"models--{REPO.replace('/', '--')}" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True, exist_ok = True)
+    path = snapshot / name
+    path.write_bytes(payload)
+    return path
 
 
 def test_unknown_variant_rejected_before_load(remote_gguf_repo):
@@ -121,14 +147,50 @@ def test_no_variant_still_autoselects(remote_gguf_repo):
     assert config.gguf_variant in {"Q4_K_M", "Q8_0"}
 
 
-def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeypatch, tmp_path):
+def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeypatch, hub_cache):
     """Config carries the cached file it already verified."""
-    cached = tmp_path / "Llama-3.2-1B-Instruct-Q8_0.gguf"
-    cached.write_bytes(b"cached")
+    name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    cached = _cached(hub_cache, name)
     monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(cached))
 
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
-    assert config.gguf_verified == (REPO, "Q8_0", str(cached), cached.stat().st_size)
+    assert config.gguf_verified == (
+        REPO,
+        "Q8_0",
+        str(cached),
+        ((name, cached.stat().st_size),),
+    )
+
+
+def test_every_shard_of_a_verified_cached_copy_is_measured(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """A split copy carries all of its shards, not just the one the load opens."""
+    shards = {
+        f"Llama-3.2-1B-Instruct-Q8_0-0000{n}-of-00003.gguf": b"x" * (10 + n) for n in (1, 2, 3)
+    }
+    written = {name: _cached(hub_cache, name, payload) for name, payload in shards.items()}
+    main = written["Llama-3.2-1B-Instruct-Q8_0-00001-of-00003.gguf"]
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(main))
+
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
+    assert config.gguf_verified == (
+        REPO,
+        "Q8_0",
+        str(main),
+        tuple(sorted((name, len(payload)) for name, payload in shards.items())),
+    )
+
+
+def test_a_cached_copy_outside_the_variant_set_is_not_carried(
+    remote_gguf_repo, monkeypatch, hub_cache
+):
+    """Nothing is carried when the shard set cannot be derived for the path."""
+    loose = hub_cache / "Llama-3.2-1B-Instruct-Q8_0.gguf"
+    loose.write_bytes(b"cached")
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kw: str(loose))
+
+    assert ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0").gguf_verified is None
 
 
 def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
@@ -159,28 +221,27 @@ def test_a_verified_cached_copy_settles_the_variant_without_a_second_listing(
 
 
 def test_the_auto_selected_variant_carries_its_own_verified_copy(
-    remote_gguf_repo, monkeypatch, tmp_path
+    remote_gguf_repo, monkeypatch, hub_cache
 ):
     """No explicit variant means config picks one, and that pick is what the load asks for."""
     asked = []
 
     def fake_cached_gguf_for_load(repo, variant, **kw):
         asked.append((repo, variant, kw.get("verify_sizes")))
-        cached = tmp_path / f"{variant}.gguf"
-        cached.write_bytes(b"cached")
-        return str(cached)
+        return str(_cached(hub_cache, f"Llama-3.2-1B-Instruct-{variant}.gguf"))
 
     monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", fake_cached_gguf_for_load)
 
     config = ModelConfig.from_identifier(REPO)
     assert config.gguf_variant in {"Q4_K_M", "Q8_0"}
     assert asked == [(REPO, config.gguf_variant, True)]
-    cached = tmp_path / f"{config.gguf_variant}.gguf"
+    name = f"Llama-3.2-1B-Instruct-{config.gguf_variant}.gguf"
+    cached = hub_cache / f"models--{REPO.replace('/', '--')}" / "snapshots" / ("a" * 40) / name
     assert config.gguf_verified == (
         REPO,
         config.gguf_variant,
         str(cached),
-        cached.stat().st_size,
+        ((name, cached.stat().st_size),),
     )
 
 
