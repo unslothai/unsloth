@@ -1680,9 +1680,7 @@ def test_an_incomplete_local_pipeline_is_refused_before_the_resident_model_goes(
     assert loads == []
 
 
-def test_a_complete_local_pipeline_still_needs_no_plan(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_a_complete_local_pipeline_still_needs_no_plan(catalog, enabled, tmp_path, backend, loads):
     # The completeness check must not turn every on-disk pipeline into a planned one: a
     # directory whose components are all present is still complete by definition.
     pipeline = tmp_path / "z-image"
@@ -1707,9 +1705,7 @@ def test_a_complete_local_pipeline_still_needs_no_plan(
     assert [pick.model_id for _owner, pick in loads] == ["Tongyi-MAI/Z-Image-Turbo"]
 
 
-def test_a_sharded_component_missing_a_shard_is_refused(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_a_sharded_component_missing_a_shard_is_refused(catalog, enabled, tmp_path, backend, loads):
     # The component directory exists and is not empty, but its own weight index names a shard
     # that is not there, which from_pretrained would fetch.
     pipeline = tmp_path / "z-image"
@@ -1741,7 +1737,12 @@ def test_a_native_h3_target_refuses_an_audio_shift_sd_cpp_cannot_apply(monkeypat
 
     generated: list = []
 
-    async def _switch_stub(requested_model, *, before_switch = None, **kwargs):
+    async def _switch_stub(
+        requested_model,
+        *,
+        before_switch = None,
+        **kwargs,
+    ):
         before_switch(
             index.MediaModelPick(
                 requested_model,
