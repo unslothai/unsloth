@@ -95,6 +95,9 @@ def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **kwargs: None
     backend._apu_ram_shortfall_message = lambda *args, **kwargs: None
+    # Off by default: the host-RAM preflight is not what most of these cells are about,
+    # and it now runs on every launch. The tests that ARE about it restore the real one.
+    backend._launch_host_shortfall_message = lambda *args, **kwargs: None
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: vulkan
@@ -881,8 +884,17 @@ def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_p
     assert cmd[cmd.index("-c") + 1] == "8192"
 
 
+def _restore_host_guard(backend):
+    """Put the real preflight back on a harness that stubs it off by default."""
+    backend._launch_host_shortfall_message = (
+        LlamaCppBackend._launch_host_shortfall_message.__get__(backend)
+    )
+    return backend
+
+
 def _offload_backend(tmp_path, *, gguf_gb, free_mib):
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, free_mib, 6141)])
+    _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
     # no subset holds the model, so --fit on owns placement and spills to host ram
     backend._select_gpus = lambda *args, **kwargs: (None, True)
@@ -941,6 +953,7 @@ def test_vulkan_igpu_free_memory_is_not_subtracted_from_its_own_ram(tmp_path, mo
     and then charging the remainder against that same RAM counts the pool twice, so a
     20 GB model on a 14 GB host reads as a 6 GB requirement and is allowed."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 14_000, 0)])
+    _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(20 * 1024**3)
     backend._select_gpus = lambda *args, **kwargs: (None, True)
     monkeypatch.setattr(
@@ -955,6 +968,7 @@ def test_vulkan_discrete_card_still_offsets_the_spill(tmp_path, monkeypatch):
     """The iGPU rule keys on total 0; a discrete Vulkan card reports a real total and
     keeps reducing the host footprint."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 14_000, 16_000)])
+    _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(20 * 1024**3)
     backend._select_gpus = lambda *args, **kwargs: (None, True)
     monkeypatch.setattr(
@@ -969,6 +983,7 @@ def test_manual_auto_fit_prices_the_kv_cache_it_will_actually_allocate(tmp_path,
     is zero while the launch still floors --fit-ctx at 8192 and allocates that KV. The
     weights alone fit this host; the KV the server really takes does not."""
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 4877, 6141)])
+    _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(9 * 1024**3)
     backend._can_estimate_kv = lambda: True
     # 4 GB at the fit floor, which is the term the zero context dropped.
@@ -1107,6 +1122,7 @@ def test_a_cpu_override_is_guarded_even_when_the_fit_succeeded(tmp_path, monkeyp
     """A successful fit clears use_fit, but a retained `--device none` still loads the
     whole model on the CPU. The host check has to run on the placement, not the fit."""
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40_000, 48_000)])
+    _restore_host_guard(backend)
     backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
     backend._select_gpus = lambda *args, **kwargs: ([0], False)
     monkeypatch.setattr(
@@ -1213,8 +1229,33 @@ def test_a_cpu_override_beats_the_positive_manual_exemption(tmp_path, monkeypatc
 
 
 def test_manual_zero_layers_keeps_the_card_for_its_kv(tmp_path, monkeypatch):
-    """At 0 layers the weights sit in host RAM but a companion-visible launch still keeps
-    its KV on the card, so that cache must not be charged to RAM as well."""
+    """At 0 layers the weights sit in host RAM, but a GPU drafter keeps the devices
+    visible, so the KV cache stays on the card and must not be charged to RAM too."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 6, free_mib = 24 * 1024)
+    drafter = tmp_path / "drafter.gguf"
+    drafter.write_bytes(b"draft")
+    sizes = {str(drafter): int(1 * 1024**3)}
+    backend._get_gguf_size_bytes = lambda p: sizes.get(str(p), int(6 * 1024**3))
+    backend._resolve_launch_mtp_path = lambda **_k: str(drafter)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(10 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
+    )
+
+    assert _launch(
+        backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0,
+        mtp_draft_path = str(drafter), speculative_type = "mtp",
+    )["cmd"]
+
+
+def test_a_companion_free_manual_zero_charges_the_kv_to_host(tmp_path, monkeypatch):
+    """With no projector, drafter or device pin, _cpu_only_zero_offload masks every GPU,
+    so the default-offloaded KV cache lands in host RAM along with the weights."""
     backend, gguf = _offload_backend(tmp_path, gguf_gb = 6, free_mib = 24 * 1024)
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(10 * 1024**3)
@@ -1222,7 +1263,8 @@ def test_manual_zero_layers_keeps_the_card_for_its_kv(tmp_path, monkeypatch):
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
     )
 
-    assert _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)["cmd"]
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)
 
 
 def test_reclaimable_cgroup_cache_is_added_back(monkeypatch, tmp_path):
@@ -1242,3 +1284,36 @@ def test_reclaimable_cgroup_cache_is_added_back(monkeypatch, tmp_path):
         mod.LlamaCppBackend, "_cgroup_reclaimable_file_bytes", staticmethod(lambda: 8 * 1024**3)
     )
     assert mod.LlamaCppBackend._available_system_memory_mib() == 20 * 1024
+
+
+def test_a_device_pin_narrowing_the_pool_only_credits_its_own_cards(tmp_path, monkeypatch):
+    """A pass-through `--device CUDA0` restricts the child to one card, so the second
+    card's free VRAM is credit the launch never gets."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 8_000, 12_000), (1, 8_000, 12_000)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(14 * 1024**3)
+    backend._select_gpus = lambda *args, **kwargs: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--device", "CUDA0"])
+
+
+def test_a_full_host_memory_mode_is_guarded_even_on_a_proven_gpu_fit(tmp_path, monkeypatch):
+    """A retained --mlock pins the whole model in host RAM whatever the fit proved, so
+    the check has to run on a launch the planner called GPU-resident."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40_000, 48_000)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    import utils.model_memory_settings as mms
+
+    monkeypatch.setattr(mms, "get_model_memory_settings", lambda: (False, False))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--mlock"])
