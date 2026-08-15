@@ -8961,13 +8961,13 @@ def test_a_data_layout_that_is_not_an_exact_partition_is_withheld(tmp_path):
     def tensor(start, stop):
         return {"dtype": "F32", "shape": [(stop - start) // 4], "data_offsets": [start, stop]}
 
-    write({"a": tensor(0, 16), "b": tensor(0, 16)}, 16)      # overlap
+    write({"a": tensor(0, 16), "b": tensor(0, 16)}, 16)  # overlap
     assert resolver.local_servable_model(info) is None
-    write({"a": tensor(0, 16), "b": tensor(32, 48)}, 48)     # gap
+    write({"a": tensor(0, 16), "b": tensor(32, 48)}, 48)  # gap
     assert resolver.local_servable_model(info) is None
-    write({"a": tensor(0, 16)}, 64)                          # trailing bytes
+    write({"a": tensor(0, 16)}, 64)  # trailing bytes
     assert resolver.local_servable_model(info) is None
-    write({"a": tensor(4, 20)}, 20)                          # does not start at 0
+    write({"a": tensor(4, 20)}, 20)  # does not start at 0
     assert resolver.local_servable_model(info) is None
 
     # a contiguous partition covering the buffer exactly is accepted, in any header order.
