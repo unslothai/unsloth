@@ -14,12 +14,12 @@ registerBundlerResolver();
 const { store } = installLocalStorageFake();
 
 const {
-  CUSTOM_MAX_OUTPUT_TOKENS_MIN,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   loadExternalProviders,
-  normalizeCustomMaxOutputTokens,
+  normalizeProviderMaxOutputTokens,
+  PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   saveExternalProviders,
-  supportsCustomMaxOutputTokens,
+  supportsProviderMaxOutputTokens,
 } = await import("../src/features/chat/external-providers.ts");
 
 const {
@@ -31,74 +31,82 @@ const {
 // Two provider types are in play and they are NOT interchangeable. The UI type is
 // what the connections dialog draws, from `resolveUiProviderTypeFromConfig`; the
 // backend type is what the server row actually holds. They disagree for a row saved
-// as `openai` with a custom display name or base URL, which the dialog shows as
-// Custom while the server still rejects an override on it.
-test("the override is offered only when both provider types say custom", () => {
-  assert.equal(supportsCustomMaxOutputTokens("custom", "custom"), true);
-  assert.equal(supportsCustomMaxOutputTokens("custom", "openai"), false);
-  assert.equal(supportsCustomMaxOutputTokens("openai", "custom"), false);
-  assert.equal(supportsCustomMaxOutputTokens("openai", "openai"), false);
+// as `openai` with a custom display name or base URL.
+test("the override is offered on every connection except a ChatGPT subscription", () => {
+  assert.equal(supportsProviderMaxOutputTokens("custom", "custom"), true);
+  assert.equal(supportsProviderMaxOutputTokens("custom", "openai"), true);
+  assert.equal(supportsProviderMaxOutputTokens("openrouter", "openrouter"), true);
+  assert.equal(supportsProviderMaxOutputTokens("anthropic", "anthropic"), true);
+
+  // a codex override would be stored and never read, and either type saying so is enough
+  assert.equal(supportsProviderMaxOutputTokens("openai_codex", "openai_codex"), false);
+  assert.equal(supportsProviderMaxOutputTokens("openai_codex", null), false);
+  assert.equal(supportsProviderMaxOutputTokens("openai", "openai_codex"), false);
 
   // Unknown backend type: a connection being created has no server row yet, and an
   // entry synced before the field existed carries no value. Both fall back to the
-  // outgoing mapping, so a brand new Custom connection keeps working as before.
-  assert.equal(supportsCustomMaxOutputTokens("custom", null), true);
-  assert.equal(supportsCustomMaxOutputTokens("custom", undefined), true);
-  assert.equal(supportsCustomMaxOutputTokens("custom", ""), true);
-  assert.equal(supportsCustomMaxOutputTokens("openai", null), false);
-  assert.equal(supportsCustomMaxOutputTokens(null, null), false);
+  // outgoing mapping.
+  assert.equal(supportsProviderMaxOutputTokens("custom", null), true);
+  assert.equal(supportsProviderMaxOutputTokens("custom", undefined), true);
+  assert.equal(supportsProviderMaxOutputTokens("custom", ""), true);
+  assert.equal(supportsProviderMaxOutputTokens("openai", null), true);
+  assert.equal(supportsProviderMaxOutputTokens(null, null), false);
 });
 
-test("a stored override is dropped unless it is a usable custom-connection value", () => {
-  const custom = LEGACY_CUSTOM_PROVIDER_TYPE;
-  assert.equal(normalizeCustomMaxOutputTokens(custom, 384000), 384000);
-  assert.equal(normalizeCustomMaxOutputTokens(custom, CUSTOM_MAX_OUTPUT_TOKENS_MIN), 64);
+test("a stored override is dropped unless it is a usable value", () => {
+  assert.equal(normalizeProviderMaxOutputTokens(384000), 384000);
+  assert.equal(normalizeProviderMaxOutputTokens(PROVIDER_MAX_OUTPUT_TOKENS_MIN), 64);
 
   // Anything a hand-edited or older localStorage entry could hold.
   for (const junk of [
     "384000", 384000.5, -1, 0, 63, Number.NaN, Number.POSITIVE_INFINITY,
     null, undefined, {}, [], 2 ** 53,
   ]) {
-    assert.equal(normalizeCustomMaxOutputTokens(custom, junk), undefined);
-  }
-
-  // And never for a provider that has documented caps of its own.
-  for (const type of ["openai", "anthropic", "gemini", "vllm", "ollama", "llama_cpp"]) {
-    assert.equal(normalizeCustomMaxOutputTokens(type, 384000), undefined);
+    assert.equal(normalizeProviderMaxOutputTokens(junk), undefined);
   }
 });
 
-test("named providers keep the caps they had before the override existed", () => {
-  // Real entries from the capability table, each one a provider with a documented
-  // cap of its own. The override argument is passed on every call, so this fails if
-  // it ever leaks past the custom-only early return.
-  const cases: Array<[string, string | null, number]> = [
+test("a documented per-model cap outranks the connection override", () => {
+  // a router connection fronts models of every size, so one limit must not raise them all
+  const cases: Array<[string, string, number]> = [
     ["openai", "gpt-5.6", 128000],
     ["openai", "gpt-5.3", 16384],
-    ["openai", "gpt-4o", EXTERNAL_MAX_OUTPUT_TOKENS],
     ["gemini", "gemini-3-pro", 65536],
     ["deepseek", "deepseek-reasoner", 384000],
     ["openrouter", "deepseek/deepseek-reasoner", 384000],
-    ["vllm", "some/local-model", EXTERNAL_MAX_OUTPUT_TOKENS],
-    ["ollama", null, EXTERNAL_MAX_OUTPUT_TOKENS],
+    ["openai_codex", "gpt-5.3-codex", 128000],
   ];
   for (const [providerType, modelId, expected] of cases) {
     assert.equal(getExternalMaxOutputTokens(providerType, modelId), expected);
-    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 384000), expected);
+    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 1024), expected);
+    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 999999), expected);
     assert.equal(getExternalMaxOutputTokens(providerType, modelId, null), expected);
   }
 });
 
-test("a custom connection takes its own cap, above or below the fallback", () => {
-  const custom = LEGACY_CUSTOM_PROVIDER_TYPE;
-  assert.equal(getExternalMaxOutputTokens(custom, "any-model"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  assert.equal(getExternalMaxOutputTokens(custom, "any-model", 384000), 384000);
-  assert.equal(getExternalMaxOutputTokens(custom, "any-model", 1024), 1024);
-  // A model id that matches a known family is still ignored: on a custom endpoint the
-  // id space is user-controlled and means nothing.
-  assert.equal(getExternalMaxOutputTokens(custom, "gpt-4o"), EXTERNAL_MAX_OUTPUT_TOKENS);
-  // An unusable stored value fails closed to the fallback rather than to 0.
-  assert.equal(getExternalMaxOutputTokens(custom, "any-model", 0), EXTERNAL_MAX_OUTPUT_TOKENS);
+test("a model with no documented cap takes the connection override", () => {
+  // the reported case: a router id no capability row matches pinned at 32,768
+  const undocumented: Array<[string, string | null]> = [
+    ["openrouter", "minimax/minimax-m3"],
+    ["openai", "gpt-4o"],
+    ["vllm", "some/local-model"],
+    ["ollama", null],
+    [LEGACY_CUSTOM_PROVIDER_TYPE, "any-model"],
+    [LEGACY_CUSTOM_PROVIDER_TYPE, "gpt-4o"],
+  ];
+  for (const [providerType, modelId] of undocumented) {
+    assert.equal(
+      getExternalMaxOutputTokens(providerType, modelId),
+      EXTERNAL_MAX_OUTPUT_TOKENS,
+    );
+    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 262144), 262144);
+    assert.equal(getExternalMaxOutputTokens(providerType, modelId, 1024), 1024);
+    // an unusable stored value fails closed to the fallback rather than to 0
+    assert.equal(
+      getExternalMaxOutputTokens(providerType, modelId, 0),
+      EXTERNAL_MAX_OUTPUT_TOKENS,
+    );
+  }
 });
 
 // The settings panel PERSISTS what this returns, and it only ever lowers, so the

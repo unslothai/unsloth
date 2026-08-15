@@ -69,6 +69,7 @@ CREDENTIAL = ("alice", None)
 # Read from the registry rather than hardcoded, so a provider added later is covered
 # without an edit here.
 NON_CUSTOM_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "custom")
+OVERRIDABLE_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "openai_codex")
 
 # The schema as it stood before this column, including the two columns earlier
 # releases added by ALTER. A database in this shape is what an upgrading user has.
@@ -300,22 +301,37 @@ def test_a_non_custom_provider_accepts_an_explicit_null_override(
     assert _raw_override(provider_routes, f"{provider_type}-1") is None
 
 
-@pytest.mark.parametrize("provider_type", NON_CUSTOM_PROVIDER_TYPES)
-def test_a_non_custom_provider_still_rejects_a_real_override(
+@pytest.mark.parametrize("provider_type", OVERRIDABLE_PROVIDER_TYPES)
+def test_every_provider_type_but_codex_takes_a_real_override(
     provider_routes: Path, provider_type: str
 ):
-    """The half of the contract that must NOT be relaxed: providers with documented
-    caps of their own do not take a hand-written one."""
+    """A documented per-model cap still wins in the frontend; what the override replaces
+    is the 32,768-token fallback every provider reaches for an unlisted model."""
     providers_db.create_provider(
         id = f"{provider_type}-1",
         provider_type = provider_type,
         display_name = provider_type,
         base_url = "https://example.com/v1",
     )
+    assert _update(
+        f"{provider_type}-1", ProviderUpdate(max_output_tokens = 262144)
+    ).max_output_tokens == 262144
+    assert _raw_override(provider_routes, f"{provider_type}-1") == 262144
+
+
+def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
+    """Codex routing, model list and output cap are fixed, so a stored override there
+    would never be read."""
+    providers_db.create_provider(
+        id = "openai_codex-1",
+        provider_type = "openai_codex",
+        display_name = "ChatGPT",
+        base_url = "https://chatgpt.com/backend-api/codex",
+    )
     with pytest.raises(HTTPException) as error:
-        _update(f"{provider_type}-1", ProviderUpdate(max_output_tokens = 65536))
+        _update("openai_codex-1", ProviderUpdate(max_output_tokens = 65536))
     assert error.value.status_code == 400
-    assert _raw_override(provider_routes, f"{provider_type}-1") is None
+    assert _raw_override(provider_routes, "openai_codex-1") is None
 
 
 def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_routes: Path):

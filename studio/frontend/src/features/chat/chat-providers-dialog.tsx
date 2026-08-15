@@ -58,14 +58,14 @@ import {
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
-  CUSTOM_MAX_OUTPUT_TOKENS_MIN,
+  PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   providerModelSupportsStudioTools,
   removeExternalProviderApiKey,
-  supportsCustomMaxOutputTokens,
+  supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
@@ -193,9 +193,8 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
-  // Keyed on the STORED type, not the displayed one. A connection being created has
-  // no server row yet, so the helper falls back to what the create call will send.
-  const supportsMaxOutputTokens = supportsCustomMaxOutputTokens(
+  // a connection being created has no stored type yet, so pass none and let it infer
+  const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
     providerType,
     editingProviderId ? editingBackendProviderType : null,
   );
@@ -500,9 +499,9 @@ export function ChatProvidersSettings({
     if (!Number.isSafeInteger(value)) {
       throw new Error("Max Tokens limit must be a safe integer.");
     }
-    if (value < CUSTOM_MAX_OUTPUT_TOKENS_MIN) {
+    if (value < PROVIDER_MAX_OUTPUT_TOKENS_MIN) {
       throw new Error(
-        `Max Tokens limit must be at least ${CUSTOM_MAX_OUTPUT_TOKENS_MIN.toLocaleString()}.`,
+        `Max Tokens limit must be at least ${PROVIDER_MAX_OUTPUT_TOKENS_MIN.toLocaleString()}.`,
       );
     }
     return value;
@@ -1324,7 +1323,8 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Leave blank to use the 32,768-token default.
+                      Replaces the 32,768-token default for models Unsloth has
+                      no documented limit for. Leave blank to keep it.
                     </p>
                   </div>
                   <div className="flex min-w-0 flex-col gap-1.5">

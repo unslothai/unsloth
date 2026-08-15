@@ -221,22 +221,42 @@ def test_custom_max_output_tokens_requires_a_safe_integer(value):
         )
 
 
-def test_known_and_custom_preset_providers_reject_a_non_null_max_output_override():
-    for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
-        with pytest.raises(HTTPException) as error:
-            asyncio.run(
-                providers_route.create_provider_config(
-                    ProviderCreate(
-                        provider_type = provider_type,
-                        display_name = provider_type,
-                        base_url = "https://example.com/v1",
-                        max_output_tokens = 65536,
-                    ),
-                    credential = ("alice", None),
-                    via_api_key = False,
-                )
+def test_known_and_custom_preset_providers_accept_a_non_null_max_output_override():
+    """The override replaces the frontend's 32,768-token fallback, which every provider
+    type reaches for a model with no documented cap of its own."""
+    for provider_type in ("openai", "openrouter", "vllm", "ollama", "llama_cpp"):
+        created = asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(
+                    provider_type = provider_type,
+                    display_name = provider_type,
+                    base_url = "https://example.com/v1",
+                    max_output_tokens = 65536,
+                ),
+                credential = ("alice", None),
+                via_api_key = False,
             )
-        assert error.value.status_code == 400
+        )
+        assert created.max_output_tokens == 65536
+        assert providers_db.get_provider(created.id)["max_output_tokens"] == 65536
+
+
+def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
+    """Codex routing, model list and output cap are all fixed, so an override stored
+    against one would never be read."""
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(
+                    provider_type = "openai_codex",
+                    display_name = "ChatGPT",
+                    max_output_tokens = 65536,
+                ),
+                credential = ("alice", None),
+                via_api_key = False,
+            )
+        )
+    assert error.value.status_code == 400
 
 
 def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_override():
@@ -267,7 +287,7 @@ def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_ov
         assert providers_db.get_provider(created.id)["max_output_tokens"] is None
 
 
-def test_known_provider_rejects_max_output_override_update():
+def test_known_provider_accepts_max_output_override_update():
     providers_db.create_provider(
         id = "openai-1",
         provider_type = "openai",
@@ -275,16 +295,16 @@ def test_known_provider_rejects_max_output_override_update():
         base_url = "https://api.openai.com/v1",
     )
 
-    with pytest.raises(HTTPException) as error:
-        asyncio.run(
-            providers_route.update_provider_config(
-                "openai-1",
-                ProviderUpdate(max_output_tokens = 65536),
-                credential = ("alice", None),
-                via_api_key = False,
-            )
+    updated = asyncio.run(
+        providers_route.update_provider_config(
+            "openai-1",
+            ProviderUpdate(max_output_tokens = 65536),
+            credential = ("alice", None),
+            via_api_key = False,
         )
-    assert error.value.status_code == 400
+    )
+    assert updated.max_output_tokens == 65536
+    assert providers_db.get_provider("openai-1")["max_output_tokens"] == 65536
 
 
 def test_known_provider_accepts_a_null_max_output_override_update():

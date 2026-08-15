@@ -136,6 +136,7 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
 });
 
 test("generic Custom connections use only their explicit max-output override", () => {
+  // no capability row targets `custom`, so the model id never enters the decision
   // Model names that resemble known hosted families must not change Custom's cap.
   assert.equal(getExternalMaxOutputTokens("custom", "gpt-5.6-sol"), 32768);
   assert.equal(getExternalMaxOutputTokens("custom", "claude-opus-5"), 32768);
@@ -163,8 +164,9 @@ test("generic Custom connections use only their explicit max-output override", (
   );
 });
 
-test("Custom overrides cannot alter documented caps for other providers", () => {
+test("a connection override cannot alter a documented per-model cap", () => {
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 64), 128000);
   assert.equal(getExternalMaxOutputTokens("anthropic", "claude-opus-5", 64), 128000);
-  assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 32768);
+  // a vLLM server hosting an id borrowed from OpenAI has no documented cap of its own
+  assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 131072);
 });

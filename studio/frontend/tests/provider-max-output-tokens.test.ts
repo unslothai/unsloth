@@ -33,7 +33,7 @@ test("all max-output cap callers pass the selected connection override", () => {
   );
 });
 
-test("the generic Custom editor exposes a bounded optional cap and warning", () => {
+test("the connection editor exposes a bounded optional cap and warning", () => {
   const dialog = source("chat-providers-dialog.tsx");
 
   // Gated on the extracted predicate, not on the UI provider type: line 136's
@@ -41,11 +41,14 @@ test("the generic Custom editor exposes a bounded optional cap and warning", () 
   // matching it here would pass even if the row lost its gate entirely.
   assert.match(
     dialog,
-    /const supportsMaxOutputTokens = supportsCustomMaxOutputTokens\(/,
+    /const supportsMaxOutputTokens = supportsProviderMaxOutputTokens\(/,
   );
   assert.match(dialog, /\{supportsMaxOutputTokens \? \(/);
   assert.match(dialog, /Max Tokens limit/);
-  assert.match(dialog, /Leave blank to use the 32,768-token default\./);
+  assert.match(
+    dialog,
+    /Replaces the 32,768-token default for models Unsloth has\s+no documented limit for\. Leave blank to keep it\./,
+  );
   assert.match(
     dialog,
     /If the upstream provider does not support this value,\s+requests may fail\./,
@@ -63,7 +66,7 @@ test("the generic Custom editor exposes a bounded optional cap and warning", () 
     dialog,
     /id="provider-max-output-tokens"\s+type="number"/,
   );
-  assert.match(dialog, /value < CUSTOM_MAX_OUTPUT_TOKENS_MIN/);
+  assert.match(dialog, /value < PROVIDER_MAX_OUTPUT_TOKENS_MIN/);
   assert.match(dialog, /Number\.isSafeInteger\(value\)/);
   assert.match(dialog, /\/\^\\d\+\$\/\.test\(trimmed\)/);
 });
@@ -75,7 +78,7 @@ test("preset application clamps live Max Tokens to the active external cap", () 
     settings,
     // The provider guard is part of the shape: without a resolved provider the cap
     // is the 32,768 fallback, and applying a preset there would lower the value for
-    // good. `custom-provider-max-output-tokens-guards.test.ts` covers the same rule
+    // good. `provider-max-output-tokens-guards.test.ts` covers the same rule
     // at the other two clamp sites.
     /function applyPresetParamsWithinCurrentLimits\([\s\S]*?if \(!isExternalModel \|\| activeExternalProvider == null\) return nextParams;[\s\S]*?Math\.min\(nextParams\.maxTokens, maxTokensMax\)/,
   );

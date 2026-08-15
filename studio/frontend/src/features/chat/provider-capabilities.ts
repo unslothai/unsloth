@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  LEGACY_CUSTOM_PROVIDER_TYPE,
-  normalizeCustomMaxOutputTokens,
+  normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
 } from "./external-providers";
 
@@ -76,8 +75,8 @@ export function clampReasoningEffortToLevels(
 }
 
 /**
- * Fallback cap for unknown providers / models and Custom connections without
- * an explicit per-connection override.
+ * Fallback cap for providers / models with no documented limit, used when the
+ * connection carries no explicit per-connection override either.
  */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
@@ -137,25 +136,28 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
 ];
 
 /**
- * Documented per-model output cap; unknown ids fall back to
- * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). Generic Custom connections use only their
- * explicit per-connection override and never inspect the model id. OpenRouter
- * `provider/model` ids have the prefix stripped before matching.
+ * Documented per-model output cap; an id with no documented cap falls back to the
+ * connection's own Max Tokens limit, then to `EXTERNAL_MAX_OUTPUT_TOKENS` (32k).
+ * No table entry targets a generic Custom connection, so those resolve to the
+ * override alone whatever model id they carry. OpenRouter `provider/model` ids
+ * have the prefix stripped before matching.
+ *
+ * The override replaces the fallback and never a documented cap: one connection
+ * fronts many models on a router, so a limit set for a 256k-output model would
+ * otherwise raise the slider past what a smaller model on the same connection
+ * accepts.
  */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
-  customMaxOutputTokens?: number | null,
+  connectionMaxOutputTokens?: number | null,
 ): number {
-  if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
-    return (
-      normalizeCustomMaxOutputTokens(providerType, customMaxOutputTokens) ??
-      EXTERNAL_MAX_OUTPUT_TOKENS
-    );
-  }
-  if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  const undocumentedCap =
+    normalizeProviderMaxOutputTokens(connectionMaxOutputTokens) ??
+    EXTERNAL_MAX_OUTPUT_TOKENS;
+  if (!providerType || !modelId) return undocumentedCap;
   const normalized = modelId.trim().toLowerCase();
-  if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
+  if (!normalized) return undocumentedCap;
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -174,7 +176,7 @@ export function getExternalMaxOutputTokens(
       return entry.cap;
     }
   }
-  return EXTERNAL_MAX_OUTPUT_TOKENS;
+  return undocumentedCap;
 }
 
 /**
