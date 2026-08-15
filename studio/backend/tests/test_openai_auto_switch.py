@@ -8571,3 +8571,30 @@ def test_an_fp8_checkpoint_is_offered_only_on_cuda(tmp_path, monkeypatch):
     assert resolver.local_servable_model(info) is None
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA)
     assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_an_obsolete_bin_index_does_not_hide_a_safetensors_checkpoint(tmp_path):
+    # Codex P2: a conversion can leave pytorch_model.bin.index.json behind with its
+    # shards deleted. Transformers ignores it once the safetensors set is complete, so
+    # validating it withheld a model that loads fine by hand.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "Converted")
+    (path / "pytorch_model.bin.index.json").write_text(
+        '{"weight_map": {"a": "pytorch_model-00001-of-00002.bin"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    assert resolver.local_servable_model(info) == (False, ())
+
+
+def test_a_seq2seq_model_type_without_architectures_is_not_switchable(tmp_path):
+    # Codex P2: architectures is optional, so a family with no causal branch must not
+    # qualify simply by omitting it.
+    from types import SimpleNamespace
+
+    path = _local_checkpoint(tmp_path, "t5-no-arch")
+    info = SimpleNamespace(id = str(path), path = str(path))
+    (path / "config.json").write_text('{"model_type": "t5"}')
+    assert resolver.local_servable_model(info) is None
+    (path / "config.json").write_text('{"model_type": "qwen3"}')
+    assert resolver.local_servable_model(info) == (False, ())

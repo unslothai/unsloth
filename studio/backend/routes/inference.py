@@ -5524,13 +5524,17 @@ async def _reject_unservable_model(
         downloaded = resolved is not None
         # /v1/models may have advertised this id off its own scan while the index is cold.
         advertised = _advertised_local_path(base)
+        # Classify the advertised path itself: a resolver miss leaves resolved_is_gguf
+        # at its safe default, and reusing it here would apply the GGUF prefix rules to
+        # a checkpoint the catalog advertised.
+        advertised_is_gguf = advertised is None or local_target_is_gguf(advertised, base)
         if (
             advertised is not None
             and await asyncio.to_thread(
                 _resolves_to_resident,
                 advertised,
                 llama_only = quantified,
-                exact_only = not resolved_is_gguf,
+                exact_only = not advertised_is_gguf,
             )
             and (not quantified or _resident_quant_is(variant))
         ):
