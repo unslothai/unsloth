@@ -55,7 +55,12 @@ def _install_sentinels(monkeypatch, calls, tmp_path, *, offline):
             raise AssertionError(f"model_info({repo_id!r}) reached the Hub on an offline load")
         return types.SimpleNamespace(siblings = [], sha = "deadbeef", gated = False, cardData = {})
 
-    def _download(repo_id, filename, token = None, **kwargs):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        **kwargs,
+    ):
         local_files_only = bool(kwargs.get("local_files_only"))
         calls.downloads.append((repo_id, filename, local_files_only))
         if offline and not local_files_only:
@@ -191,9 +196,10 @@ def test_the_base_preflight_reads_the_cache_and_never_the_hub_offline(monkeypatc
         ),
         raising = False,
     )
-    assert diffusion_mod._assert_base_repo_accessible(
-        FLUX_BASE, None, local_files_only = True
-    ) == f"/snap/{FLUX_BASE}"
+    assert (
+        diffusion_mod._assert_base_repo_accessible(FLUX_BASE, None, local_files_only = True)
+        == f"/snap/{FLUX_BASE}"
+    )
 
 
 def test_the_prefetch_signature_declares_the_flag():
