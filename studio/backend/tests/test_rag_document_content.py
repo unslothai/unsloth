@@ -344,8 +344,8 @@ def test_deleting_a_source_mid_save_leaves_nothing_indexed(rag_home, stub_embedd
 
     real_embed_all = ingestion._embed_all
 
-    def delete_original_then_embed(texts, model_name):
-        vectors = real_embed_all(texts, model_name)
+    def delete_original_then_embed(texts, model_name, on_batch = None):
+        vectors = real_embed_all(texts, model_name, on_batch)
         # Through the route, so this is the delete a second client would issue.
         assert client.delete(f"/api/rag/documents/{doc_id}").status_code == 200
         return vectors
@@ -708,6 +708,25 @@ def test_a_second_concurrent_save_is_refused(rag_home, stub_embeddings):
     assert _document_row(doc_id) is None
     assert _search(client, "one")
     assert not _search(client, "two"), "the refused save must not have been indexed"
+
+
+def test_the_claim_and_the_replacement_row_commit_together(rag_home, stub_embeddings):
+    """A claim committed before the replacement row leaves a window -- start_ingestion
+    hashes the file and can run slow embedder discovery -- where a crash strands the source
+    'running' with nothing recording what it waits for. Claimed in the admission
+    transaction, the two are never observable apart."""
+    _, doc_id, _ = _ingest("notes.md", "original\n")
+    client = _client()
+
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": "edited\n"})
+    assert res.status_code == 200
+    new_id = res.json()["documentId"]
+
+    # The claim is visible, and so is the row that explains it -- recovery can always get
+    # from one to the other.
+    assert _document_row(doc_id)["status"] == "running"
+    assert _document_row(new_id)["replaces_document_id"] == doc_id
+    _await_job(res.json()["jobId"])
 
 
 def test_a_refused_start_releases_the_claim(rag_home, stub_embeddings, monkeypatch):

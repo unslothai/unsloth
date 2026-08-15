@@ -15,6 +15,11 @@ export const JOB_POLL_MS = 700;
 // bounds *silence*, not total duration: embedding a near-limit source on a slow CPU can
 // take far longer than this and is not a failure, so the budget is renewed every time the
 // job's stage or progress moves. Only a worker that stops saying anything trips it.
+//
+// This relies on the backend reporting progress *within* a long stage, not just on entering
+// it: ingestion._run publishes one update per embedding batch for exactly that reason. A
+// stage that reported itself once and then went quiet for its whole duration would look
+// identical to a dead worker from here, however long the budget.
 export const JOB_WAIT_TIMEOUT_MS = 5 * 60_000;
 
 /** Poll until a job reaches a terminal status, and return it.

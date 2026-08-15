@@ -162,6 +162,53 @@ def test_a_completed_replacement_retires_the_source_it_replaced(rag_conn):
     assert _job_status(rag_conn, "edited") == "completed"
 
 
+def test_recovery_lets_a_delete_beat_a_completed_replacement(rag_conn):
+    """The original can be deleted through Settings or another backend while the crashed
+    job sits unreconciled. Publishing the replacement then brings back a source the user
+    removed, under a new id -- so the delete wins here exactly as it does in the worker."""
+    _add_doc(rag_conn, "kb_a", "edited", "completed", ["charlie delta"])
+    # No 'original' row: it was deleted after the crash.
+    rag_conn.execute(
+        "UPDATE documents SET replaces_document_id='original' WHERE id='edited'"
+    )
+    rag_conn.commit()
+    _orphan_job(rag_conn, "edited", "kb_a")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
+
+    assert store.get_document(rag_conn, "edited") is None, "a deleted source came back"
+    assert _chunk_count(rag_conn, "edited") == 0
+    assert _job_status(rag_conn, "edited") == "cancelled"
+
+
+def test_recovery_removes_the_retired_source_file(rag_conn, tmp_path, monkeypatch):
+    """The row holding the path is deleted here and nothing sweeps the uploads root, so a
+    file left behind is leaked for good."""
+    import utils.paths
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    monkeypatch.setattr(utils.paths, "rag_uploads_root", lambda: uploads)
+    retired = uploads / "original.txt"
+    retired.write_text("body", encoding = "utf-8")
+
+    _add_doc(rag_conn, "kb_a", "original", "running", ["alpha bravo"])
+    rag_conn.execute(
+        "UPDATE documents SET stored_path=? WHERE id='original'", (str(retired),)
+    )
+    _add_doc(rag_conn, "kb_a", "edited", "completed", ["charlie delta"])
+    rag_conn.execute(
+        "UPDATE documents SET replaces_document_id='original' WHERE id='edited'"
+    )
+    rag_conn.commit()
+    _orphan_job(rag_conn, "edited", "kb_a")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
+
+    assert store.get_document(rag_conn, "original") is None
+    assert not retired.exists(), "the retired source's file was left behind"
+
+
 def test_reconcile_leaves_an_unclaimed_replaced_source_alone(rag_conn):
     # The release is guarded on 'running': a replaced document that was never claimed (the
     # stale-embedder dedupe path re-ingests a 'completed' row) must not be rewritten.

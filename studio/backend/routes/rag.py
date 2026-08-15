@@ -1365,29 +1365,6 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
     return out
 
 
-def _claim_document_for_replacement(document_id: str) -> None:
-    """Mark a completed source as busy so only one edit of it can be in flight.
-
-    The UPDATE carries its own status precondition, so testing and claiming are a
-    single atomic statement: a second concurrent save matches no row and 409s
-    rather than starting a second replacement of the same document. "running" is
-    the existing busy status, so a claimed row already reads as indexing
-    everywhere else and needs no new column.
-    """
-    conn = _rag_connection()
-    try:
-        changed = conn.execute(
-            "UPDATE documents SET status='running' WHERE id=? AND status NOT IN "
-            "('pending','running')",
-            (document_id,),
-        ).rowcount
-        conn.commit()
-    finally:
-        conn.close()
-    if not changed:
-        raise HTTPException(status_code = 409, detail = "This source is already being saved or indexed")
-
-
 def _release_replacement_claim(document_id: str) -> None:
     """Undo the claim when the replacement never started.
 
@@ -1507,14 +1484,13 @@ def update_document_content(
                     ),
                 )
             with _rag_unavailable_as_503(stored_path):
-                # Claim the source before spawning anything. The status read above
-                # came from a closed connection, so two saves of the same document
-                # could both pass it, and each replacement would then retire the
-                # same old row -- leaving two copies of the source indexed. This
-                # marks it in the same transaction that checks it, so the second
-                # request loses the race and 409s. The claim is released either by
-                # the replacement retiring this row or by the rollback below.
-                _claim_document_for_replacement(document_id)
+                # The claim on the source lives inside start_ingestion's admission
+                # transaction, alongside the replacement row that records what it is
+                # waiting for -- the status read above came from a closed connection, so
+                # it cannot serialize two saves on its own, and claiming here instead
+                # would leave the claim committed and unexplained if this process died
+                # before the row existed. A second concurrent save matches no row there
+                # and arrives as ReplacementClaimUnavailable.
                 try:
                     new_id, job_id = ingestion.start_ingestion(
                         scope,
@@ -1529,7 +1505,13 @@ def update_document_content(
                         dedupe = False,
                         replaces = (document_id, old_path),
                     )
+                except ingestion.ReplacementClaimUnavailable as exc:
+                    # Lost the race: the claim was never taken, so there is nothing to
+                    # release and the winner's save is untouched.
+                    raise HTTPException(status_code = 409, detail = str(exc)) from exc
                 except Exception:
+                    # Past the admission transaction (a worker that could not start), so
+                    # the claim is committed and only this can hand it back.
                     _release_replacement_claim(document_id)
                     raise
     except Exception:
