@@ -311,7 +311,9 @@ async def update_mcp_server(
         # That await hands the loop to other requests, so re-read and re-gate
         # before writing: a UI conversion to stdio landing in the window would
         # otherwise let an API key's headers become the command's env.
-        current = mcp_servers_db.get_server(server_id)
+        # Metadata-only re-gate (reads url alone): never decrypt the stored
+        # secret here, so a corrupt/undecryptable secret can't 500 this path.
+        current = mcp_servers_db.get_server(server_id, decrypt_secret = False)
         if current is not None and (
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
