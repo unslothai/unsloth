@@ -3864,7 +3864,7 @@ class DiffusionBackend:
                     elif kind == "single_file" and fam.single_file_is_pipeline:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline class with ``config`` on the base repo.
                         sf_pipe_kwargs: dict[str, Any] = {
-                                "local_files_only": local_files_only,
+                            "local_files_only": local_files_only,
                             "torch_dtype": dtype,
                             # ``config`` is a REPO FETCH ahead of the mirrored load, so a gated id
                             # would 401 here first.

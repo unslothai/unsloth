@@ -2396,7 +2396,6 @@ def _capture_begin_load(monkeypatch, route):
 
     if route == "images":
         import core.inference.diffusion_engine_router as router_module
-
         monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: _Backend())
         monkeypatch.setattr(router_module, "get_active_diffusion_engine", lambda: _Backend())
     else:
