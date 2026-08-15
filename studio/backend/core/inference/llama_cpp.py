@@ -1975,9 +1975,6 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
 
-# --fit-ctx floor under manual + auto, shared so the guard cannot drift from the flag
-_AUTO_FIT_MIN_CTX = 8192
-
 
 def _vram_reserve_floor_mib(total_mib: float) -> float:
     """Smallest margin a card keeps: 512 MiB, or the default's own reserve if smaller.
@@ -6806,246 +6803,58 @@ class LlamaCppBackend:
         """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
         neither is readable. On a unified-memory APU this, not the ROCm-reported
         VRAM, is the real ceiling: the weights load into shared system RAM."""
-        avail: Optional[int] = None
         try:
             import psutil
-            avail = int(psutil.virtual_memory().available // (1024 * 1024))
+            return int(psutil.virtual_memory().available // (1024 * 1024))
         except Exception:
             pass
-        if avail is None:
-            try:
-                with open("/proc/meminfo", encoding = "utf-8") as f:
-                    for line in f:
-                        if line.startswith("MemAvailable:"):
-                            avail = int(line.split()[1]) // 1024  # kB -> MiB
-                            break
-            except Exception:
-                pass
-        # a container or systemd scope is OOM-killed at its own memory.max, not the host's
         try:
-            # via _shared_policy: unsloth's package __init__ would load the model stack
-            from utils.hardware.hardware import _shared_policy
-
-            _policy = _shared_policy()
-            _cgroup_free_bytes = getattr(_policy, "_cgroup_free_bytes", None)
-            cgroup_free = _cgroup_free_bytes() if _cgroup_free_bytes else None
-            if cgroup_free is not None and cgroup_free >= 0:
-                # memory.current counts the GGUF's own page cache, which the kernel
-                # reclaims under pressure; leaving it out charges those pages twice.
-                cgroup_free += LlamaCppBackend._cgroup_reclaimable_file_bytes()
-                cgroup_mib = int(cgroup_free // (1024 * 1024))
-                avail = cgroup_mib if avail is None else min(avail, cgroup_mib)
+            with open("/proc/meminfo", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) // 1024  # kB -> MiB
         except Exception:
             pass
-        return avail
+        return None
 
-    # The finished argv answers every placement question the fit block could only guess at.
     _ARGV_MODEL = frozenset({"-m", "--model"})
-    _ARGV_MMPROJ = frozenset({"--mmproj"})
-    _ARGV_DRAFT = frozenset({"-md", "--model-draft"})
-    _ARGV_CTX = frozenset({"-c", "--ctx-size", "--context-size"})
-    _ARGV_FIT_CTX = frozenset({"--fit-ctx"})
-    _ARGV_PARALLEL = frozenset({"-np", "--parallel"})
-    _ARGV_UBATCH = frozenset({"-ub", "--ubatch-size"})
-    _ARGV_CTK = frozenset({"-ctk", "--cache-type-k"})
-    _ARGV_CTV = frozenset({"-ctv", "--cache-type-v"})
-    # ROCr first: it names physical devices, and a prefer_rocr pin rewrites the CUDA
-    # mask to post-ROCr ordinals, so the two are not in the same space.
-    _ARGV_VISIBILITY = ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
     def _launch_host_shortfall_message(
         self,
         cmd: Iterable[str],
-        env: Mapping[str, str],
         detected_gpus: Iterable[tuple],
-        total_by_idx: Mapping[int, int],
-        *,
-        is_vulkan_backend: bool = False,
     ) -> Optional[str]:
-        """Refusal when the finished launch needs more host RAM than is available.
+        """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
 
-        Read after the command is built, so every input is the one the child gets:
-        nothing below this can move a byte it did not price. Returns None when the
-        placement cannot be sized, which keeps the check a floor rather than a guess.
+        Weights only, against the whole free pool, is a strict lower bound on what the
+        launch must hold: the KV cache, projector, drafter and compute buffers all add
+        to it, and a layer or device pin only narrows the VRAM actually reachable. So
+        every term this leaves out moves the estimate down, never up, and no missing
+        term can turn an allowed load into a refused one. That is what keeps the check
+        a floor with no placement modelling to keep in step with llama.cpp.
+
+        Read from the finished argv, so the model path is the one the child opens. An
+        unsized model or an unprobed GPU pool abstains rather than guessing.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
             return None
-
-        def _value(flags):
-            return _extra_args_device(argv, flags)
-
-        def _int(flags, default = 0):
-            try:
-                return int(str(_value(flags)).strip())
-            except (TypeError, ValueError):
-                return default
-
-        def _size(path):
-            if not path:
-                return 0
-            try:
-                return self._get_gguf_size_bytes(path)
-            except Exception:
-                return 0
-
-        model_bytes = _size(_value(self._ARGV_MODEL))
-        if not model_bytes:
+        model_path = _extra_args_device(argv, self._ARGV_MODEL)
+        if not model_path:
             return None
-
         try:
-            ngl = parse_gpu_layers_override(argv)
-        except ValueError:
-            return None
-
-        # -c wins; otherwise --fit-ctx is the floor the fitter starts from. A build
-        # that emits neither leaves the caches unsized, which the terms below drop.
-        ctx = _int(self._ARGV_CTX)
-        if ctx <= 0:
-            ctx = _int(self._ARGV_FIT_CTX)
-        n_parallel = max(1, _int(self._ARGV_PARALLEL, 1))
-        flash_attn = str(_value({"-fa", "--flash-attn"}) or "on").strip().lower() != "off"
-        try:
-            kv_bytes = self._estimate_kv_cache_bytes(
-                ctx,
-                _value(self._ARGV_CTK),
-                swa_full = "--swa-full" in argv,
-                n_parallel = n_parallel,
-                kv_unified = "--kv-unified" in argv,
-                n_ubatch = _int(self._ARGV_UBATCH) or None,
-                flash_attn = flash_attn,
-            )
+            model_bytes = self._get_gguf_size_bytes(model_path)
         except Exception:
-            kv_bytes = 0
-
-        draft_path = _value(self._ARGV_DRAFT)
-        draft_bytes = _size(draft_path)
-        if draft_path:
-            try:
-                draft_bytes += (
-                    self._mtp_draft_kv_bytes(
-                        ctx,
-                        drafter_path = draft_path,
-                        draft_cache_type_k = _value({"--spec-draft-cache-type-k"}),
-                        draft_cache_type_v = _value({"--spec-draft-cache-type-v"}),
-                        n_parallel = n_parallel,
-                        swa_full = "--swa-full" in argv,
-                        kv_unified = "--kv-unified" in argv,
-                        n_ubatch = _int(self._ARGV_UBATCH) or None,
-                        flash_attn = flash_attn,
-                    )
-                    or 0
-                )
-            except Exception:
-                pass
-
-        # Placement, entirely from what the child will see. The visibility mask is the
-        # authority on whether a GPU exists at all: a zero-layer launch that still has a
-        # projector or drafter on the card keeps its devices, and _cpu_only_zero_offload
-        # has already masked the one that does not.
-        masked_off = any(str(env.get(v, "")).strip() == "-1" for v in self._ARGV_VISIBILITY)
-        no_gpu = masked_off or _device_selection_is_cpu(argv, env)
-        # A partial split cannot be sized per layer; zero and full both can.
-        n_layers = self.n_layers or 0
-        if not no_gpu and ngl is not None and 0 < ngl and (not n_layers or ngl <= n_layers):
             return None
-        mlock, reserves_ram = resolve_effective_memory_state(argv, env)
-        weights_on_host = no_gpu or ngl == 0 or mlock or reserves_ram
-
-        # An empty pool means the probe threw, not that the child has no GPU: the
-        # fallback still builds a --fit on command for whatever it discovers. Only a
-        # mask or device pin is authoritative about there being nothing to offload to.
-        if not no_gpu and not list(detected_gpus or ()):
+        # an empty pool means the probe threw, not that the child has no gpu
+        gpus = list(detected_gpus or ())
+        if not model_bytes or not gpus:
             return None
-        free_vram_mib = (
-            0
-            if no_gpu
-            else self._visible_gpu_free_mib(
-                argv, env, detected_gpus, total_by_idx, is_vulkan_backend = is_vulkan_backend
-            )
+        free_vram_mib = sum(max(0, row[1]) for row in gpus)
+        return self._host_offload_shortfall_message(
+            model_bytes - free_vram_mib * 1024 * 1024,
+            self._available_system_memory_mib(),
         )
-
-        # Each companion sits on one side or the other; only the GPU side competes
-        # for VRAM, and whatever misses it lands in RAM with the rest.
-        kv_on_host = no_gpu or not _kv_offload_from_args(argv, env)
-        mmproj_bytes = _size(_value(self._ARGV_MMPROJ))
-        mmproj_on_host = no_gpu or "--no-mmproj-offload" in argv
-        draft_on_cpu = bool(draft_path) and (
-            no_gpu or _extra_args_draft_offloaded_to_cpu(argv, env)
-        )
-
-        host_pinned = (
-            (model_bytes if weights_on_host else 0)
-            + (kv_bytes if kv_on_host else 0)
-            + (mmproj_bytes if mmproj_on_host else 0)
-            + (draft_bytes if draft_on_cpu else 0)
-        )
-        gpu_side = (
-            (0 if weights_on_host else model_bytes)
-            + (0 if kv_on_host else kv_bytes)
-            + (0 if mmproj_on_host else mmproj_bytes)
-            + (0 if draft_on_cpu else draft_bytes)
-        )
-        host_bytes = host_pinned + max(0, gpu_side - free_vram_mib * 1024 * 1024)
-        return self._host_offload_shortfall_message(host_bytes, self._available_system_memory_mib())
-
-    def _visible_gpu_free_mib(
-        self,
-        argv: list,
-        env: Mapping[str, str],
-        detected_gpus: Iterable[tuple],
-        total_by_idx: Mapping[int, int],
-        *,
-        is_vulkan_backend: bool = False,
-    ) -> int:
-        """Free VRAM on the devices the child can actually allocate on.
-
-        A visibility mask or a --device pin narrows the pool the planner detected, and
-        a Vulkan iGPU reports shared system RAM (total 0), which is the very memory the
-        caller charges this against."""
-        # One mask only. Under prefer_rocr the ROCr mask names physical devices while
-        # CUDA_VISIBLE_DEVICES is rewritten to post-ROCr ordinals, so intersecting the
-        # two numeric strings compares different spaces and can empty the pool.
-        allowed: Optional[set] = None
-        for var in self._ARGV_VISIBILITY:
-            raw = str(env.get(var, "")).strip()
-            if raw and raw != "-1":
-                allowed = {int(p) for p in re.findall(r"\d+", raw)}
-                break
-        device = _extra_args_main_device(argv)
-        if device:
-            named = {int(d) for d in re.findall(r"\d+", device)}
-            if named:
-                allowed = named if allowed is None else (allowed & named)
-        total = 0
-        for row in detected_gpus or ():
-            idx, free = row[0], row[1]
-            if allowed is not None and idx not in allowed:
-                continue
-            if is_vulkan_backend and not total_by_idx.get(idx, 0):
-                continue
-            total += max(0, free)
-        return total
-
-    @staticmethod
-    def _cgroup_reclaimable_file_bytes() -> int:
-        """Page cache the binding cgroup can reclaim rather than OOM on, or 0.
-
-        Only ``inactive_file``: active pages may be in use, so counting them would
-        overstate what a new allocation can actually take."""
-        try:
-            with open("/proc/self/cgroup", encoding = "utf-8") as f:
-                rel = next((l[3:].strip() for l in f if l.startswith("0::")), None)
-            if rel is None:
-                return 0
-            stat = os.path.join("/sys/fs/cgroup", rel.lstrip("/"), "memory.stat")
-            with open(stat, encoding = "utf-8") as f:
-                for line in f:
-                    if line.startswith("inactive_file "):
-                        return max(0, int(line.split()[1]))
-        except Exception:
-            pass
-        return 0
 
     @staticmethod
     def _apu_ram_shortfall_message(
@@ -13673,8 +13482,6 @@ class LlamaCppBackend:
                 _arch_gate_forced_cpu = False
                 total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
-                kv_cache_bytes: Optional[int] = None
-                _mtp_reserve_bytes = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -16202,16 +16009,8 @@ class LlamaCppBackend:
                         # The whole visible set stays in use, only its order is fixed.
                         self._pin_visible_gpu_order_for_split(env)
 
-                # Every placement input is final here: the fit state, the layer and device
-                # pins, the memory policy's flags and the GPU visibility mask. Read the
-                # argv the child gets rather than the mid-fit state that produced it.
-                _offload_msg = self._launch_host_shortfall_message(
-                    cmd,
-                    env,
-                    _detected_gpus,
-                    total_by_idx,
-                    is_vulkan_backend = is_vulkan_backend,
-                )
+                # reads the argv the child gets, not the mid-fit state that produced it
+                _offload_msg = self._launch_host_shortfall_message(cmd, _detected_gpus)
                 if _offload_msg:
                     raise RuntimeError(_offload_msg)
 
@@ -19273,7 +19072,7 @@ class LlamaCppBackend:
             elif auto_fit:
                 # Manual + Auto omits -c, so floor at 8192 so --fit doesn't
                 # shrink the window below a usable size.
-                flags.extend(["--fit-ctx", str(_AUTO_FIT_MIN_CTX)])
+                flags.extend(["--fit-ctx", "8192"])
         if use_fit and caps.get("supports_fit_target"):
             # Each path keeps its own starting margin: the tighter 512 under Manual
             # + Auto, so llama.cpp packs more on before spilling to system RAM, and
