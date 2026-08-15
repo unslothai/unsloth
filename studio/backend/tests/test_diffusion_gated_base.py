@@ -671,6 +671,7 @@ def _native_backend_ready(monkeypatch):
         assets,
         token,
         cancel_event = None,
+        local_files_only = False,
     ):
         fetched.append(assets)
         raise AssertionError("the gated companion must be caught before any byte is fetched")
