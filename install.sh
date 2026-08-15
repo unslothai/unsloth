@@ -3330,6 +3330,29 @@ _kfd_gfx_targets() {
 # reasons), and rerouting a working machine to the wrong wheels is worse than
 # unslothai#7331 itself.
 # Kept in sync with _hsa_spoofed_physical_gfx in studio/install_python_stack.py.
+# one gfx token per device from a probe on stdin, so a visible-device ordinal indexes devices and not arches; rocminfo repeats a device's arch across its Name and ISA lines, so split on agent headers first (mirrors _detect_amd_gfx_codes(dedup=False)) and fall back to first-seen order for flat output such as amd-smi's
+_gfx_targets_per_device() {
+    awk '
+        {
+            _low = tolower($0)
+            if (match(_low, /agent[ \t]+[0-9]+/) || match(_low, /device[ \t]*#[ \t]*[0-9]+/)) {
+                if (_started && _cur != "") print _cur
+                _started = 1; _cur = ""
+                next
+            }
+            if (match(_low, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) {
+                _tok = substr(_low, RSTART, RLENGTH)
+                if (_started) { if (_cur == "") _cur = _tok }
+                else if (!_seen[_tok]++) _flat[_nf++] = _tok
+            }
+        }
+        END {
+            if (_started) { if (_cur != "") print _cur }
+            else for (_i = 0; _i < _nf; _i++) print _flat[_i]
+        }
+    '
+}
+
 _hsa_spoofed_physical_gfx() {
     _hsp_inferred="${1:-}"
     _hsp_probed_all="${2:-}"
@@ -4523,14 +4546,14 @@ case "$_torch_index_leaf" in
         # strip a copied hip gcnArchName suffix, matching _gfx906_env below and the python helper
         _gfx_all=${_gfx_all%%:*}
         if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _gfx_all=$(rocminfo 2>/dev/null | _gfx_targets_per_device || true)
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _gfx_all=$(amd-smi list 2>/dev/null | _gfx_targets_per_device || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | _gfx_targets_per_device || true)
             fi
         fi
         # get_torch_index_url reads the arch with ROCR/HIP masks cleared, so a
@@ -4542,12 +4565,12 @@ case "$_torch_index_leaf" in
         # must trigger the re-probe too.
         if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES+x}${HIP_VISIBLE_DEVICES+x}" ]; then
             if command -v rocminfo >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | _gfx_targets_per_device || true)
             fi
             if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | _gfx_targets_per_device || true)
                 [ -z "$_gfx_all" ] && \
-                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | _gfx_targets_per_device || true)
             fi
         fi
         # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
@@ -4581,7 +4604,7 @@ case "$_torch_index_leaf" in
                 esac
             fi
             _runtime_gfx=$(printf '%s\n' "$_gfx_all" | awk -v idx="$_idx" '
-                NF && !seen[$0]++ { vals[n++] = $0 }
+                NF { vals[n++] = $0 }
                 END {
                     if (idx < 0 || idx >= n) idx = 0
                     if (n > 0) print vals[idx]
@@ -4678,10 +4701,7 @@ case "$_torch_index_leaf" in
         # Target resolution: an explicit UNSLOTH_ROCM_GFX_ARCH wins (lets a host
         # whose rocminfo/amd-smi emit no gfx token still opt in; _gfx906_env was
         # lowercased above, before the Strix block it suppresses). Otherwise only
-        # treat gfx906 as the target when it is the SOLE distinct arch present:
-        # _gfx_all is de-duplicated by visible index, which loses per-device
-        # ordinals on a mixed host, so a non-gfx906 selection must never be
-        # downgraded to rocm6.3 -- such hosts set UNSLOTH_ROCM_GFX_ARCH to opt in.
+        # treat gfx906 as the target when it is the sole distinct arch present, since a rocm6.3 reroute is a downgrade for every other arch and a mixed host opts in through UNSLOTH_ROCM_GFX_ARCH instead
         _gfx906_target=false
         if [ -n "$_gfx906_env" ]; then
             [ "$_gfx906_env" = "gfx906" ] && _gfx906_target=true

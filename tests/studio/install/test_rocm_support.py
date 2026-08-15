@@ -2103,12 +2103,15 @@ class TestGfx1102Rocm64Floor:
             pytest.skip("bash needed to execute install.sh architecture routing")
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         leaf_helper = _extract_sh_function_body(source, "_rocm_leaf_below")
+        gfx_helper = _extract_sh_function_body(source, "_gfx_targets_per_device")
         start = source.find('case "$_torch_index_leaf" in\n    rocm[0-9]*)')
         end = source.find("\nfi  # _torch_index_pinned guard", start)
-        assert leaf_helper and start >= 0 and end >= 0
+        assert leaf_helper and gfx_helper and start >= 0 and end >= 0
         script = (
             "set -euo pipefail\n"
             + leaf_helper
+            + "\n"
+            + gfx_helper
             + "\n"
             + 'TORCH_INDEX_URL="https://download.pytorch.org/whl/rocm6.1"\n'
             + '_torch_index_leaf="rocm6.1"\n'
@@ -2140,6 +2143,36 @@ class TestGfx1102Rocm64Floor:
         preamble = "rocminfo() { printf 'Name: gfx1100\\nName: gfx1200\\n'; }\n" + "".join(
             f"export {assignment}\n" for assignment in mask.split()
         )
+        assert self._run_install_sh_routing(preamble) == expected
+
+    @staticmethod
+    def _rocminfo_stub(*arches: str) -> str:
+        """A rocminfo stub whose agents repeat their gfx token across Name and ISA."""
+        blocks = ["Agent 1", "  Name:                    AMD Ryzen 9 7950X", "  Device Type:             CPU"]
+        for n, gfx in enumerate(arches, start = 2):
+            blocks += [
+                "*******",
+                f"Agent {n}",
+                "*******",
+                f"  Name:                    {gfx}",
+                "  Marketing Name:          AMD Radeon Graphics",
+                f"      Name:                amdgcn-amd-amdhsa--{gfx}",
+            ]
+        body = "\\n".join(blocks)
+        return f"rocminfo() {{ printf '{body}\\n'; }}\n"
+
+    @pytest.mark.parametrize(
+        ("mask", "expected"),
+        (
+            ("HIP_VISIBLE_DEVICES=2", "rocm6.4"),
+            ("CUDA_VISIBLE_DEVICES=2", "rocm6.4"),
+            ("HIP_VISIBLE_DEVICES=1", "rocm6.1"),
+            ("HIP_VISIBLE_DEVICES=0", "rocm6.1"),
+        ),
+    )
+    def test_install_sh_mask_indexes_devices_not_arches(self, mask, expected):
+        """A visible-device mask is a device ordinal, so duplicate arches each count."""
+        preamble = self._rocminfo_stub("gfx1100", "gfx1100", "gfx1200") + f"export {mask}"
         assert self._run_install_sh_routing(preamble) == expected
 
     @pytest.mark.parametrize(
@@ -6121,6 +6154,8 @@ class TestStrixRocm71Override:
                 os.chmod(p, 0o755)
             script = (
                 'set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
+                + _extract_sh_function_body(source, "_gfx_targets_per_device")
+                + "\n"
                 + block.group(0)
                 + '\nprintf "OK:%s\\n" "$_gfx_all"\n'
             )
@@ -6164,7 +6199,11 @@ class TestStrixRocm71Override:
                     f.write(body)
                 os.chmod(p, 0o755)
             script = (
-                "set -euo pipefail\n" + block.group(0) + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
+                "set -euo pipefail\n"
+                + _extract_sh_function_body(source, "_gfx_targets_per_device")
+                + "\n"
+                + block.group(0)
+                + '\nprintf "OK:%s\\n" "$_runtime_gfx"\n'
             )
 
             def run(**extra):
