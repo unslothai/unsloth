@@ -16,12 +16,16 @@ from pathlib import Path
 import pytest
 
 STUDIO = Path(__file__).resolve().parents[2] / "studio"
-BLOCK = re.compile(r"^def _vkey\(c\):\n(?:[ \t].*\n|\n)*", re.MULTILINE)
+# _vkey delegates the parsing to _pep440_key, so both come out together.
+BLOCK = re.compile(
+    r"^def _pep440_key\(v\):\n(?:[ \t].*\n|\n)*^def _vkey\(c\):\n(?:[ \t].*\n|\n)*",
+    re.MULTILINE,
+)
 
 
 def _extract(path):
     m = BLOCK.search(path.read_text(encoding = "utf-8"))
-    assert m, f"_vkey is gone from {path.name}"
+    assert m, f"_pep440_key/_vkey are gone from {path.name}"
     return m.group(0)
 
 

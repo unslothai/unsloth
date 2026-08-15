@@ -1876,6 +1876,48 @@ for x in importlib.metadata.distributions(path=_paths):
             sizes[key] = int(_sz) if _sz.isdigit() else None
         elif sizes[key] is not None:
             sizes[key] = min(sizes[key], int(_sz)) if _sz.isdigit() else None
+def _pep440_key(v):
+    # A port of packaging.version's own comparison key, used only when packaging
+    # itself cannot import. Hand-rolled stage ranking kept springing leaks
+    # (compound suffixes, implicit post, epochs, local labels, the v prefix), so
+    # this mirrors the real algorithm instead: an absent pre sorts ABOVE any pre
+    # unless the version is a bare dev build, an absent post BELOW any post, and
+    # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
+    # fuzzes it against packaging.
+    v = (v or '').strip().lstrip('vV').lower()
+    em = re.match(r'(\d+)!', v)
+    epoch = int(em.group(1)) if em else 0
+    v = v[em.end():] if em else v
+    m = re.match(r'\d+(\.\d+)*', v)
+    if not m:
+        return None
+    rel = [int(n) for n in m.group(0).split('.')]
+    while rel and rel[-1] == 0:
+        rel.pop()
+    rest, _, loc = v[m.end():].partition('+')
+    pre = post = dev = None
+    # the implicit post release: a bare -N right after the release (1.0-1)
+    im = re.match(r'-(\d+)(?![a-z])', rest)
+    if im:
+        post, rest = int(im.group(1)), rest[im.end():]
+    # scanned from the left, never searched: a substring like the r in preview
+    # must not read as the r that spells post
+    while rest:
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
+        if not mm:
+            break
+        _t, _n = mm.group(1), int(mm.group(2) or 0)
+        if _t in ('post', 'rev', 'r'):
+            post = _n
+        elif _t == 'dev':
+            dev = _n
+        else:
+            pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
+        rest = rest[mm.end():]
+    if pre is None:
+        pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
+    lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
+    return (epoch, rel, pre, -1 if post is None else post, 10 ** 9 if dev is None else dev, lk)
 def _vkey(c):
     v = c[0].version or ''
     try:
@@ -1883,59 +1925,9 @@ def _vkey(c):
         return (1, Version(v))
     except Exception:
         pass
-    # PEP 440 allows a leading v and surrounding whitespace: v2.0 == 2.0
-    v = v.strip().lstrip('vV')
-    em = re.match(r'(\d+)!', v)
-    _epoch = int(em.group(1)) if em else 0
-    v = v[em.end():] if em else v
-    m = re.match(r'\d+(\.\d+)*', v)
-    if not m:
-        return (0, ([], (-9, 0)))
-    nums = [int(n) for n in m.group(0).split('.')]
-    # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
-    while nums and nums[-1] == 0:
-        nums.pop()
-    # the epoch orders above everything in the release: 1!0.1 > 2.0
-    nums = [_epoch] + nums
-    rest = v[m.end():].lower()
-    # the local label is split off before the stage matchers so it cannot hide
-    # behind them, and ordered last, exactly where PEP 440 puts it
-    rest, _, _local = rest.partition('+')
-    # Carry the stage AND its number, not just the class. An interrupted upgrade leaves
-    # .post1 and .post2 side by side; ranking both as "post" tied their keys, and max()
-    # keeps whichever enumerated first, so the verifier could confirm the stale one.
-    _dev = re.match(r'[-._]?dev[-._]?(\d*)', rest)
-    _pre = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c)[-._]?(\d*)', rest)
-    # post is also spelled rev and r; _pre is tested first, so rc never lands here
-    _post = re.match(r'[-._]?(post|rev|r)[-._]?(\d*)', rest)
-    # PEP 440's implicit post release: a bare -N after the release (1.0-1 == 1.0.post1)
-    _ipost = re.match(r'-(\d+)', rest)
-    _end = 0
-    if _dev:
-        rank, _end = (-3, int(_dev.group(1) or 0)), _dev.end()
-    elif _pre:
-        # a == alpha < b == beta < c == rc == pre == preview, as PEP 440 normalizes them
-        _stage = {'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_pre.group(1), 2)
-        rank, _end = (-2, _stage, int(_pre.group(2) or 0)), _pre.end()
-    elif _post:
-        rank, _end = (1, int(_post.group(2) or 0)), _post.end()
-    elif _ipost:
-        rank, _end = (1, int(_ipost.group(1))), _ipost.end()
-    else:
-        rank = (0, 0)
-    # PEP 440 allows -, _ or . before a suffix number (1.0.post-1 == 1.0.post1),
-    # so every separator is accepted above. The compound tail still orders too:
-    # 1.0rc1.dev1 < 1.0rc1 < 1.0rc1.post1
-    _tm = re.search(r'(dev|post)[-._]?(\d*)', rest[_end:]) if _end else None
-    _trail = ((-1 if _tm.group(1) == 'dev' else 1), int(_tm.group(2) or 0)) if _tm else (0, 0)
-    # PEP 440 local ordering: dot-separated segments, a numeric segment above an
-    # alphanumeric one, and more segments wins when the rest is equal. An absent
-    # label is the empty list, which sorts below any label (1.0 < 1.0+cpu).
-    # - and _ are separators inside a label too: +abc-10 == +abc.10, so a raw
-    # string compare would put abc-10 below abc-2
-    _lk = [(1, int(_s), '') if _s.isdigit() else (0, 0, _s)
-           for _s in re.split(r'[-._]', _local) if _s]
-    return (0, (nums, rank + _trail, _lk))
+    k = _pep440_key(v)
+    # unparsable sorts below every parsed candidate
+    return (0, k) if k is not None else (-1, ())
 if not cands:
     print('POSTVER=__MISSING__')
     sys.exit(0)
@@ -2223,56 +2215,56 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
             _UPDATE_OK=true
         elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ "$POST_VER" != "__DAMAGED__" ] && "$VENV_DIR/bin/python" -I -c "
 import re, sys
-def split(v):
-    v = v.strip().lstrip('vV')
+def _pep440_key(v):
+    # A port of packaging.version's own comparison key, used only when packaging
+    # itself cannot import. Hand-rolled stage ranking kept springing leaks
+    # (compound suffixes, implicit post, epochs, local labels, the v prefix), so
+    # this mirrors the real algorithm instead: an absent pre sorts ABOVE any pre
+    # unless the version is a bare dev build, an absent post BELOW any post, and
+    # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
+    # fuzzes it against packaging.
+    v = (v or '').strip().lstrip('vV').lower()
     em = re.match(r'(\d+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
     m = re.match(r'\d+(\.\d+)*', v)
-    if not m: sys.exit(1)
-    nums = [int(x) for x in m.group(0).split('.')]
-    # 1.0.0 == 1.0 per PEP 440: trailing zero segments must not outrank a suffix
-    while nums and nums[-1] == 0:
-        nums.pop()
-    # the epoch orders above everything in the release: 1!0.1 > 2.0
-    return [epoch] + nums, v[m.end():].lower()
+    if not m:
+        return None
+    rel = [int(n) for n in m.group(0).split('.')]
+    while rel and rel[-1] == 0:
+        rel.pop()
+    rest, _, loc = v[m.end():].partition('+')
+    pre = post = dev = None
+    # the implicit post release: a bare -N right after the release (1.0-1)
+    im = re.match(r'-(\d+)(?![a-z])', rest)
+    if im:
+        post, rest = int(im.group(1)), rest[im.end():]
+    # scanned from the left, never searched: a substring like the r in preview
+    # must not read as the r that spells post
+    while rest:
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
+        if not mm:
+            break
+        _t, _n = mm.group(1), int(mm.group(2) or 0)
+        if _t in ('post', 'rev', 'r'):
+            post = _n
+        elif _t == 'dev':
+            dev = _n
+        else:
+            pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
+        rest = rest[mm.end():]
+    if pre is None:
+        pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
+    lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
+    return (epoch, rel, pre, -1 if post is None else post, 10 ** 9 if dev is None else dev, lk)
 try:
     from packaging.version import Version
     ok = Version(sys.argv[1]) >= Version(sys.argv[2])
 except Exception:
-    a, ra = split(sys.argv[1])
-    b, rb = split(sys.argv[2])
-    def rank(rest):
-        # class, stage, number, then the compound tail: dev < a < b < c/rc <
-        # final < post, and a suffix AFTER the first stage still orders --
-        # 1.0rc1.dev1 sits below 1.0rc1, 1.0rc1.post1 above it
-        # before the lstrip: PEP 440's implicit post release is a bare -N (1.0-1)
-        ip = re.match(r'-(\d+)', rest)
-        s = rest.lstrip('-._')
-        # r and rev also spell post; both sit after rc in the alternation so a
-        # release candidate never matches them
-        m = re.match(r'(dev|post|rev|alpha|beta|preview|pre|rc|a|b|c|r)[-._]?(\d*)', s)
-        t = m.group(1) if m else ''
-        n = int(m.group(2) or 0) if m else 0
-        tail = s[m.end():] if m else s
-        tm = re.search(r'(dev|post)[-._]?(\d*)', tail)
-        trail = (0, 0)
-        if tm:
-            trail = ((-1 if tm.group(1) == 'dev' else 1), int(tm.group(2) or 0))
-        if ip: return (1, 0, int(ip.group(1))) + trail
-        if t == 'dev': return (-3, 0, n) + trail
-        if t in ('post', 'rev', 'r'): return (1, 0, n) + trail
-        if t in ('a', 'alpha'): return (-2, 0, n) + trail
-        if t in ('b', 'beta'): return (-2, 1, n) + trail
-        if t in ('c', 'rc', 'pre', 'preview'): return (-2, 2, n) + trail
-        return (0, 0, n) + trail
-    # equal numeric prefixes: pre/dev orders BELOW the final release and post
-    # ABOVE it, on either side -- an announced 1.0.post1 is not satisfied by an
-    # installed 1.0, and within a class the trailing number decides. No local
-    # label handling here, unlike _vkey: PEP 440 forbids local versions on a
-    # public index, so the announced side never carries one, and an installed
-    # 1.0+cu121 already answers "at least 1.0" through the tie.
-    ok = a > b or (a == b and rank(ra) >= rank(rb))
+    _a, _b = _pep440_key(sys.argv[1]), _pep440_key(sys.argv[2])
+    if _a is None or _b is None:
+        sys.exit(1)
+    ok = _a >= _b
 sys.exit(0 if ok else 1)
 " "$POST_VER" "$LATEST_VER" 2>/dev/null; then
             # newer than announced is fine (a release can land mid-update); PEP 440
