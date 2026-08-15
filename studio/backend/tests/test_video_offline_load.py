@@ -293,7 +293,10 @@ def _keywords_of(module_path: str, function: str, callee: str) -> set[str]:
     import ast
     import pathlib
 
-    tree = ast.parse(pathlib.Path(module_path).read_text())
+    # Anchored on the package, not on the process CWD: CI runs pytest from the repo root with the
+    # backend merely on PYTHONPATH, where a relative open raises FileNotFoundError.
+    backend_root = pathlib.Path(video_mod.__file__).resolve().parents[2]
+    tree = ast.parse((backend_root / module_path).read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != function:
             continue
