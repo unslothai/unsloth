@@ -2137,9 +2137,8 @@ class TestGfx1102Rocm64Floor:
     )
     def test_install_sh_runtime_target_honors_cuda_visible_devices(self, mask, expected):
         """HIP exposes devices through CUDA_VISIBLE_DEVICES too, so it must select the target."""
-        preamble = (
-            "rocminfo() { printf 'Name: gfx1100\\nName: gfx1200\\n'; }\n"
-            + "".join(f"export {assignment}\n" for assignment in mask.split())
+        preamble = "rocminfo() { printf 'Name: gfx1100\\nName: gfx1200\\n'; }\n" + "".join(
+            f"export {assignment}\n" for assignment in mask.split()
         )
         assert self._run_install_sh_routing(preamble) == expected
 
