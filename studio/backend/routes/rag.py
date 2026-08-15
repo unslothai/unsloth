@@ -1196,6 +1196,44 @@ _MAX_TEXT_EDIT_BYTES = 1024 * 1024
 _MAX_TEXT_EDIT_CHARS = _MAX_TEXT_EDIT_BYTES // 4
 
 
+# A .docx is a zip, and a small one can hold text that expands to many times its size on
+# disk. Slicing the extraction only bounds the reply -- the parser has already built the
+# whole document by then, so the allocation happened regardless. The archive declares how
+# much it unpacks to, which costs no decompression to read, so one that cannot possibly fit
+# the cap is never handed to the parser at all. Generous against the character cap because
+# a .docx is mostly markup: the text inside is a fraction of the XML around it.
+_MAX_DOCX_UNPACKED_BYTES = 16 * 1024 * 1024
+
+
+def _docx_text(stored_path: str) -> tuple[str, bool]:
+    """A Word document's extracted text, bounded before it is extracted.
+
+    Returns ``("", False)`` for an archive too large to preview, which reads as truncated
+    with nothing to show -- distinct from an empty document, which is faithfully empty.
+    """
+    import zipfile
+
+    from core.rag import parsers
+
+    try:
+        with zipfile.ZipFile(stored_path) as archive:
+            unpacked = sum(item.file_size for item in archive.infolist())
+    except Exception:  # noqa: BLE001 - not a readable zip; let the parser report it
+        unpacked = 0
+    if unpacked > _MAX_DOCX_UNPACKED_BYTES:
+        return "", False
+    # Accumulated, not joined in one pass: joining allocates a second full copy of text the
+    # parser has already built, and stopping at the cap keeps the excess out of the reply.
+    pages: list[str] = []
+    size = 0
+    for page in parsers.parse(stored_path):
+        pages.append(page.text)
+        size += len(page.text) + 1
+        if size > _MAX_TEXT_EDIT_CHARS:
+            return "\n".join(pages)[:_MAX_TEXT_EDIT_CHARS], False
+    return "\n".join(pages), True
+
+
 def _document_text(stored_path: str, ext: str) -> tuple[str, bool]:
     """The document's own text, and whether it is the whole of it verbatim.
 
@@ -1211,9 +1249,7 @@ def _document_text(stored_path: str, ext: str) -> tuple[str, bool]:
     to many megabytes.
     """
     if ext == ".docx":
-        from core.rag import parsers
-        text = "\n".join(page.text for page in parsers.parse(stored_path))
-        return text[:_MAX_TEXT_EDIT_CHARS], len(text) <= _MAX_TEXT_EDIT_CHARS
+        return _docx_text(stored_path)
     with open(stored_path, "rb") as handle:
         # One byte past the cap distinguishes "exactly at the cap" from "longer".
         raw = handle.read(_MAX_TEXT_EDIT_BYTES + 1)
@@ -1292,8 +1328,12 @@ def document_content(document_id: str, subject: str = Depends(get_current_subjec
 
     if ext not in _EDITABLE_EXTS:
         out["truncated"] = not faithful
+        # An empty document reads back faithfully empty, so nothing-and-unfaithful is the
+        # archive that was too large to unpack rather than a document with no words in it.
         out["readOnlyReason"] = (
-            "Word documents are shown as the text indexed and cannot be edited here."
+            "This Word document is too large to preview here."
+            if not faithful and not out["text"]
+            else "Word documents are shown as the text indexed and cannot be edited here."
         )
     elif doc.get("linked_folder_id"):
         # Editing the snapshot would be undone by the next folder sync, and the
@@ -1432,24 +1472,6 @@ def update_document_content(
     scope = doc["scope"]
     _raise_if_scope_retired(scope, "The owner of this source is being deleted")
 
-    # An ordinary upload dedupes by content hash, so a scope never holds the same bytes
-    # twice. A replacement cannot go through that path -- start_ingestion's dedupe branch
-    # owns `replaces` and its early return would drop it -- so saving this source into
-    # another one's exact bytes would index the same content under two documents, and
-    # retrieval (which dedupes only by chunk id) would return both copies. Refused rather
-    # than silently merged: the two sources keep their own names, and quietly retiring the
-    # one being edited would make it vanish into a file the user did not open.
-    conn = _rag_connection()
-    try:
-        twin = store.document_by_hash(conn, scope, hashlib.sha256(body).hexdigest())
-    finally:
-        conn.close()
-    if twin is not None and twin != document_id:
-        raise HTTPException(
-            status_code = 409,
-            detail = "This edit would make the source identical to another one in this project.",
-        )
-
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     with open(stored_path, "wb") as handle:
@@ -1457,6 +1479,33 @@ def update_document_content(
     try:
         with folder_sync.scope_lock(scope):
             _raise_if_scope_retired(scope, "The owner of this source is being deleted")
+            # An ordinary upload dedupes by content hash, so a scope never holds the same
+            # bytes twice. A replacement cannot go through that path -- start_ingestion's
+            # dedupe branch owns `replaces` and its early return would drop it -- so saving
+            # this source into another one's exact bytes would index the same content under
+            # two documents, and retrieval (which dedupes only by chunk id) would return
+            # both copies. Refused rather than silently merged: the two sources keep their
+            # own names, and quietly retiring the one being edited would make it vanish
+            # into a file the user did not open.
+            #
+            # Inside the scope lock, which is what makes it hold: outside it, two clients
+            # editing two different sources to the same new bytes both see no twin, then
+            # admit one after the other and index the content twice. The lock is the same
+            # one start_ingestion's admission runs under, so a losing writer sees the
+            # winner's row.
+            conn = _rag_connection()
+            try:
+                twin = store.document_by_hash(conn, scope, hashlib.sha256(body).hexdigest())
+            finally:
+                conn.close()
+            if twin is not None and twin != document_id:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "This edit would make the source identical to another one in this "
+                        "project."
+                    ),
+                )
             with _rag_unavailable_as_503(stored_path):
                 # Claim the source before spawning anything. The status read above
                 # came from a closed connection, so two saves of the same document

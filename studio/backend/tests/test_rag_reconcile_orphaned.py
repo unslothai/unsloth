@@ -141,6 +141,27 @@ def test_a_crashed_edit_releases_the_claim_on_the_source_it_replaced(rag_conn):
     assert _chunk_count(rag_conn, "original") == 1
 
 
+def test_a_completed_replacement_retires_the_source_it_replaced(rag_conn):
+    """A crash between marking the replacement completed and retiring the original leaves
+    two finished documents. Releasing the claim and keeping both would publish the source
+    twice, so recovery finishes the job the worker had all but done: the replacement is a
+    chunked, completed document, so it wins."""
+    _add_doc(rag_conn, "kb_a", "original", "running", ["alpha bravo"])
+    _add_doc(rag_conn, "kb_a", "edited", "completed", ["charlie delta"])
+    rag_conn.execute("UPDATE documents SET replaces_document_id='original' WHERE id='edited'")
+    rag_conn.commit()
+    _orphan_job(rag_conn, "edited", "kb_a")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 1
+
+    # Exactly one survives, and it is the edited one with its chunks.
+    assert store.get_document(rag_conn, "original") is None
+    assert _chunk_count(rag_conn, "original") == 0
+    assert store.get_document(rag_conn, "edited")["status"] == "completed"
+    assert _chunk_count(rag_conn, "edited") == 1
+    assert _job_status(rag_conn, "edited") == "completed"
+
+
 def test_reconcile_leaves_an_unclaimed_replaced_source_alone(rag_conn):
     # The release is guarded on 'running': a replaced document that was never claimed (the
     # stale-embedder dedupe path re-ingests a 'completed' row) must not be rewritten.

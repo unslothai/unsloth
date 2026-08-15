@@ -464,24 +464,10 @@ def _run(
             if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
                 conn.rollback()
                 raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
-<<<<<<< HEAD
-            # An edit that empties a source still completes: the user cleared the text
-            # on purpose and the replacement is the version they asked for. An upload
-            # that parses to nothing keeps failing below, since that is a mistake the
-            # user can act on rather than an intentional blank.
-            if replaces is not None:
-                store.set_document_status(conn, document_id, "completed", num_chunks = 0)
-                if not _replace_old_document(conn, replaces, stored_path, document_id):
-                    _withdraw_replacement(conn, job_id)
-                    return
-                _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
-                _emit(job_id, {"type": "complete", "num_chunks": 0})
-=======
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
             withdrawn = _replace_old_document(conn, replaces, stored_path, document_id)
             if withdrawn is not None:
                 _withdraw_replacement(conn, job_id, withdrawn)
->>>>>>> e0bec4254 (Survive a restart mid-edit, and stop two copies going in)
                 return
             raise ValueError(
                 "No extractable text found in file. Upload a document containing readable text."

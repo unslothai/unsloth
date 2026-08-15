@@ -258,14 +258,12 @@ def create_document(
     embedding_model: str | None = None,
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
-<<<<<<< HEAD
+    linked_relative_path: str | None = None,
+    replaces_document_id: str | None = None,
     archive_messages: int | None = None,
     archive_ordinal: int | None = None,
     created_at: str | None = None,
     rowid: int | None = None,
-=======
-    replaces_document_id: str | None = None,
->>>>>>> e0bec4254 (Survive a restart mid-edit, and stop two copies going in)
     commit: bool = True,
 ) -> str:
     """``created_at`` and ``rowid`` are for a REWRITE of a row that already exists.
@@ -286,12 +284,8 @@ def create_document(
     conn.execute(
         "INSERT INTO documents(rowid, id, scope, kb_id, thread_id, project_id, filename, sha256, "
         "status, stored_path, created_at, embedding_model, linked_folder_id, "
-<<<<<<< HEAD
-        "linked_relative_path, archive_messages, archive_ordinal) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-=======
-        "linked_relative_path, replaces_document_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
->>>>>>> e0bec4254 (Survive a restart mid-edit, and stop two copies going in)
+        "linked_relative_path, replaces_document_id, archive_messages, archive_ordinal) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             rowid,
             document_id,
@@ -307,12 +301,9 @@ def create_document(
             embedding_model,
             linked_folder_id,
             linked_relative_path,
-<<<<<<< HEAD
+            replaces_document_id,
             archive_messages,
             archive_ordinal,
-=======
-            replaces_document_id,
->>>>>>> e0bec4254 (Survive a restart mid-edit, and stop two copies going in)
         ),
     )
     if commit:

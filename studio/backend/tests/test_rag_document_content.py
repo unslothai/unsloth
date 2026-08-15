@@ -526,6 +526,34 @@ def test_an_edit_matching_another_source_is_refused(rag_home, stub_embeddings):
     assert [r["documentId"] for r in matches] == [first_id]
 
 
+def test_two_sources_edited_to_the_same_bytes_race_to_one_winner(rag_home, stub_embeddings):
+    """Two clients editing two different sources to the same new bytes. Outside the scope
+    lock both read no twin before either replacement row exists, both admit, and the content
+    is indexed twice. Under it the loser sees the winner's row and is refused."""
+    import concurrent.futures
+
+    first_id = _ingest_bytes("one.md", b"first body\n")
+    second_id = _ingest_bytes("two.md", b"second body\n")
+    client = _client()
+
+    def save(document_id: str):
+        return client.put(
+            f"/api/rag/documents/{document_id}/content", json = {"text": "merged body\n"}
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers = 2) as pool:
+        results = [f.result() for f in [pool.submit(save, first_id), pool.submit(save, second_id)]]
+
+    codes = sorted(r.status_code for r in results)
+    assert codes == [200, 409], f"both saves were admitted: {codes}"
+    for res in results:
+        if res.status_code == 200:
+            _await_job(res.json()["jobId"])
+
+    matches = [r for r in _search(client, "merged body") if "merged body" in r["text"]]
+    assert len(matches) == 1, "the same content was indexed under two documents"
+
+
 def test_a_failed_retirement_withdraws_the_replacement(rag_home, stub_embeddings, monkeypatch):
     """If settling raises with the old row still there, reporting success would leave the old
     and the edited copy both searchable -- the claim release restores the old row afterwards.
@@ -553,6 +581,43 @@ def test_a_failed_retirement_withdraws_the_replacement(rag_home, stub_embeddings
     assert _document_row(doc_id) is not None, "the original must survive"
     assert not _search(client, "replacement"), "both copies are searchable"
     assert _search(client, "kickoff third")
+
+
+def test_a_docx_that_unpacks_too_far_is_not_parsed(rag_home, stub_embeddings, monkeypatch):
+    """Slicing the extraction only bounds the reply: by then the parser has built the whole
+    document. A .docx declares how much it unpacks to, so an archive that cannot fit the cap
+    never reaches the parser at all."""
+    pytest.importorskip("docx")
+    import docx
+
+    from core.rag import ingestion, store
+    from routes import rag as rag_routes
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    path = ensure_dir(rag_uploads_root()) / "big.docx"
+    document = docx.Document()
+    document.add_paragraph("quarterly revenue is up twelve percent")
+    document.save(str(path))
+    doc_id, job_id = ingestion.start_ingestion(
+        store.project_scope(PROJECT_ID), None, None, "big.docx", str(path), project_id = PROJECT_ID
+    )
+    _await_job(job_id)
+
+    # Below the real archive's unpacked size, so this file now counts as too large.
+    monkeypatch.setattr(rag_routes, "_MAX_DOCX_UNPACKED_BYTES", 8)
+
+    from core.rag import parsers
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("the oversized archive was handed to the parser anyway")
+
+    monkeypatch.setattr(parsers, "parse", must_not_run)
+    body = _client().get(f"/api/rag/documents/{doc_id}/content").json()
+
+    assert body["editable"] is False
+    assert body["truncated"] is True
+    assert body["text"] == ""
+    assert "too large" in body["readOnlyReason"]
 
 
 def _ingest_bytes(filename: str, body: bytes) -> str:

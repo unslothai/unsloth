@@ -11,8 +11,10 @@ import { type IndexJob, terminalJobStatus } from "../types/rag";
  */
 
 export const JOB_POLL_MS = 700;
-// Long enough for a large re-index, bounded so a worker that dies without
-// writing a terminal status cannot hang the caller forever.
+// How long a job may go without visibly advancing before it is treated as dead. This
+// bounds *silence*, not total duration: embedding a near-limit source on a slow CPU can
+// take far longer than this and is not a failure, so the budget is renewed every time the
+// job's stage or progress moves. Only a worker that stops saying anything trips it.
 export const JOB_WAIT_TIMEOUT_MS = 5 * 60_000;
 
 /** Poll until a job reaches a terminal status, and return it.
@@ -23,9 +25,11 @@ export const JOB_WAIT_TIMEOUT_MS = 5 * 60_000;
  * progress; `useRagDocuments` keeps the streaming path for the list.
  *
  * A finished-and-failed job is returned, not thrown: that is an outcome the
- * caller reports, distinct from the wait itself breaking. Only a job that never
- * settles throws, so a dead worker surfaces as an error rather than a spinner
- * that never ends.
+ * caller reports, distinct from the wait itself breaking. Only a job that stops
+ * advancing throws, so a dead worker surfaces as an error rather than a spinner
+ * that never ends -- while a live slow one is waited out. Converting elapsed time
+ * into failure would report a save as lost and offer a retry that can only 409
+ * against the job still holding the claim, and the edit would then land anyway.
  */
 export async function pollJobUntilTerminal(
   fetchJob: (jobId: string) => Promise<IndexJob>,
@@ -35,10 +39,18 @@ export async function pollJobUntilTerminal(
     pollMs = JOB_POLL_MS,
   }: { timeoutMs?: number; pollMs?: number } = {},
 ): Promise<IndexJob> {
-  const deadline = Date.now() + timeoutMs;
+  let deadline = Date.now() + timeoutMs;
+  let lastSeen: string | null = null;
   for (;;) {
     const job = await fetchJob(jobId);
     if (terminalJobStatus(job.status)) return job;
+    // A live worker moves through stages and reports progress as it goes. Any change is
+    // proof it is still there, so the budget starts again from that moment.
+    const seen = `${job.status} ${job.stage ?? ""} ${job.progress ?? ""}`;
+    if (seen !== lastSeen) {
+      lastSeen = seen;
+      deadline = Date.now() + timeoutMs;
+    }
     if (Date.now() >= deadline) {
       throw new Error("Timed out waiting for indexing to finish");
     }

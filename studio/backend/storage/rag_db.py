@@ -437,13 +437,22 @@ def reconcile_orphaned_ingestion_jobs() -> int:
             # An edit claims its original with status='running' and the worker hands that
             # claim back on every non-successful exit -- but a crash never reaches that
             # finally, and the relationship died with the process. The replacement row
-            # records it, so release the original here: whichever branch below runs, this
-            # job did not retire it, and left claimed it would poll as indexing forever
-            # and refuse both a retry and a removal.
-            if doc is not None and doc["replaces_document_id"]:
+            # records it, so this is the last thing able to settle the pair. Exactly one of
+            # them survives, matching what the worker would have done:
+            #
+            # * the replacement completed, so the crash landed between marking it and
+            #   retiring the original. It is a finished, chunked document, so it wins and
+            #   the original is retired -- releasing the claim instead would publish both.
+            # * anything else means the replacement never landed. The branch below fails it
+            #   and drops its chunks, so the original is handed back to the user.
+            replaced_id = doc["replaces_document_id"] if doc is not None else None
+            if replaced_id and doc["status"] == "completed":
+                _delete_document_chunks(conn, replaced_id)
+                conn.execute("DELETE FROM documents WHERE id=?", (replaced_id,))
+            elif replaced_id:
                 conn.execute(
                     "UPDATE documents SET status='completed' WHERE id=? AND status='running'",
-                    (doc["replaces_document_id"],),
+                    (replaced_id,),
                 )
             if doc is not None and doc["status"] == "completed":
                 # The worker finished indexing before the crash but did not retire the job row: mark it completed

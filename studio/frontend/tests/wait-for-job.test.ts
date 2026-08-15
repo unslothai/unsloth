@@ -69,6 +69,49 @@ test("a job that never settles times out instead of hanging", async () => {
   );
 });
 
+test("a job that keeps advancing is waited out, however long it takes", async () => {
+  // The timeout bounds silence, not duration. Embedding a near-limit source on a slow
+  // CPU can outlast any fixed budget, and calling that a failure reports a save as lost
+  // while the job still holds the claim -- so the retry can only 409, and the edit then
+  // lands anyway behind the error message.
+  let progress = 0;
+  const fetchJob = async (jobId: string) => {
+    progress += 0.1;
+    return {
+      id: jobId,
+      documentId: "doc-1",
+      status: progress < 0.55 ? "running" : "completed",
+      stage: "embedding",
+      progress,
+    } as never;
+  };
+  // Six polls 10ms apart outlast the 25ms budget several times over, but no single gap
+  // does -- so this settles only because each advance renewed it.
+  const result = await pollJobUntilTerminal(fetchJob, "job-1", {
+    pollMs: 10,
+    timeoutMs: 25,
+  });
+  assert.equal(result.status, "completed");
+});
+
+test("a job frozen at one stage still times out", async () => {
+  // The other half of the same rule: unchanging stage and progress is what "dead" looks
+  // like, so a worker that stops advancing must not be waited on forever. Same budget and
+  // cadence as above, and this one is not renewed.
+  const fetchJob = async (jobId: string) =>
+    ({
+      id: jobId,
+      documentId: "doc-1",
+      status: "running",
+      stage: "embedding",
+      progress: 0.5,
+    }) as never;
+  await assert.rejects(
+    () => pollJobUntilTerminal(fetchJob, "job-1", { pollMs: 10, timeoutMs: 25 }),
+    /Timed out waiting for indexing/,
+  );
+});
+
 test("a transport failure propagates rather than looping forever", async () => {
   const fetchJob = async () => {
     throw new Error("network down");
