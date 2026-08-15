@@ -4410,3 +4410,97 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         "call_a",
         "call_b",
     ]
+
+
+def test_structured_call_id_arriving_after_the_opening_delta_updates_that_call(monkeypatch):
+    """llama-server can open a call with no id and send the real one later.
+
+    The opening slot holds the synthetic ``call_0`` until then, and treating
+    that placeholder as a rival id forked a second nameless slot: the fork was
+    dropped for having no function name and the original call ran on truncated
+    arguments.
+    """
+
+    stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":'},
+                    }
+                ]
+            }
+        ),
+        _tool_call_fragment(0, '"late"}', call_id = "call_late"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [{"name": "web_search", "arguments": {"query": "late"}}]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == ["call_late"]
+
+
+def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
+    """A first round at indices 0 and 1, then a second round back at index 0.
+
+    The fork belongs at the end: it arrived after both first-round calls, and
+    running it ahead of the index-1 call reorders side effects for stateful
+    tools. Grouping every fork next to the index it reused did exactly that.
+    """
+
+    stream = [
+        _tool_call_opening(0, "call_a", "web_search", '{"query":"a"}'),
+        _tool_call_opening(1, "call_b", "web_search", '{"query":"b"}'),
+        _tool_call_opening(0, "call_c", "web_search", '{"query":"c"}'),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append(arguments)
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search three times"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [{"query": "a"}, {"query": "b"}, {"query": "c"}]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a",
+        "call_b",
+        "call_c",
+    ]
+    asst = next(m for m in payloads[1]["messages"] if m.get("tool_calls"))
+    assert [tc["id"] for tc in asst["tool_calls"]] == ["call_a", "call_b", "call_c"]

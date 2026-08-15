@@ -475,17 +475,6 @@ def _finalize_reasoning_only_cumulative(
     return cumulative + "</think>" + visible_fallback
 
 
-def _structured_call_order_key(key: Any) -> tuple[Any, int]:
-    """Sort key for the structured tool-call accumulator.
-
-    Keys are the delta index for the call that opened it and ``(index, id)``
-    for a second call that reused the same index, so a plain ``sorted`` would
-    compare an int against a tuple. Forks follow the call they split from, and
-    several forks at one index keep arrival order through the stable sort.
-    """
-    return (key[0], 1) if isinstance(key, tuple) else (key, 0)
-
-
 # Only large streamed tool payloads get an early provisional card; render_html
 # is exempt because it needs immediate artifact feedback.
 _PROVISIONAL_ARGS_MIN_CHARS = 256
@@ -19172,6 +19161,7 @@ class LlamaCppBackend:
                 tool_calls_acc = {}  # Structured delta.tool_calls fragments
                 # accumulator key each index maps to now, (index, call_id) after a fork
                 tool_calls_open_key: dict[Any, Any] = {}
+                tool_calls_synthetic_ids: set[Any] = set()  # slots still on a placeholder id
                 has_structured_tc = False
                 _iter_usage = None
                 _iter_timings = None
@@ -19277,7 +19267,12 @@ class LlamaCppBackend:
                                         acc_key = tool_calls_open_key.get(idx, idx)
                                         if isinstance(tc_id, str) and tc_id:
                                             open_id = tool_calls_acc.get(acc_key, {}).get("id")
-                                            if open_id and open_id != tc_id:
+                                            # a synthetic placeholder is not a rival call, so a first real id still lands on the slot that is open
+                                            if (
+                                                open_id
+                                                and acc_key not in tool_calls_synthetic_ids
+                                                and open_id != tc_id
+                                            ):
                                                 first_id = tool_calls_acc.get(idx, {}).get("id")
                                                 acc_key = idx if first_id == tc_id else (idx, tc_id)
                                         tool_calls_open_key[idx] = acc_key
@@ -19290,10 +19285,13 @@ class LlamaCppBackend:
                                                     "arguments": "",
                                                 },
                                             }
+                                            if not tc_id:
+                                                tool_calls_synthetic_ids.add(acc_key)
                                         elif tc_id:
                                             # Update ID if a real one
                                             # arrives on a later delta.
                                             tool_calls_acc[acc_key]["id"] = tc_id
+                                            tool_calls_synthetic_ids.discard(acc_key)
                                         func = tc_d.get("function", {})
                                         if func.get("name"):
                                             tool_calls_acc[acc_key]["function"]["name"] += func[
@@ -19891,10 +19889,11 @@ class LlamaCppBackend:
                     if has_structured_tc:
                         # Drop incomplete fragments (e.g. from max_tokens
                         # truncation or disconnect).
+                        # first-seen order: a call forked onto a reused index arrived after every call already open, so it must execute and replay last
                         tool_calls = [
-                            tool_calls_acc[k]
-                            for k in sorted(tool_calls_acc, key = _structured_call_order_key)
-                            if (tool_calls_acc[k].get("function", {}).get("name", "").strip())
+                            call
+                            for call in tool_calls_acc.values()
+                            if (call.get("function", {}).get("name", "").strip())
                         ] or None
                     if not tool_calls:
                         # Unconditional re-parse: we only reach DRAINING when the buffer looked like a
