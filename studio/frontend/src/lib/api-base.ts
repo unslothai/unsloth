@@ -90,7 +90,16 @@ export function getApiBase(): string {
   return apiBase
 }
 
+// The placeholder base a caller may have baked in before the port arrived.
+const PLACEHOLDER_BASE = 'http://127.0.0.1:0'
+
 export function apiUrl(path: string): string {
+  // A URL built before the real port is known would otherwise pass straight
+  // through the http check below and hit the placeholder, which is exactly the
+  // request apiBaseReady exists to prevent.
+  if (path.startsWith(PLACEHOLDER_BASE)) {
+    return `${apiBase}${path.slice(PLACEHOLDER_BASE.length)}`
+  }
   if (path.startsWith('http')) return path
   return `${apiBase}${path}`
 }
