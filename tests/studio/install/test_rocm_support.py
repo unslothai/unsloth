@@ -2393,11 +2393,7 @@ class TestInstallShStructure:
                     f.write("#!/bin/sh\nexit 1\n")
                 os.chmod(p, 0o755)
 
-            script = (
-                "set -euo pipefail\n"
-                + script_body
-                + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
-            )
+            script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
             env = dict(
                 os.environ,
                 PATH = d + os.pathsep + os.environ.get("PATH", ""),

@@ -698,11 +698,7 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 raw = result.stdout.decode().strip().split("\n")[0]
                 parts = raw.split(".")
-                if (
-                    len(parts) >= 2
-                    and parts[0].isdigit()
-                    and parts[1].split("-")[0].isdigit()
-                ):
+                if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
                     _record(
                         "hipconfig",
                         int(parts[0]),
@@ -790,8 +786,7 @@ def _detect_rocm_version() -> tuple[int, int] | None:
 
     if len(distinct) > 1:
         details = ", ".join(
-            f"{source}=rocm{version[0]}.{version[1]}"
-            for source, version in readings
+            f"{source}=rocm{version[0]}.{version[1]}" for source, version in readings
         )
         _safe_print(
             f"WARNING: ROCm version sources disagree ({details}) -- "
