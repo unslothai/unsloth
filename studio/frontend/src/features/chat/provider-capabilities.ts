@@ -135,8 +135,8 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
-  // MiniMax (M3 family on connected/cloud providers).
-  { providerType: "minimax", prefixes: ["minimax", "m3"], cap: 1048576 },
+  // MiniMax M3: 1M context window, 262K max output tokens.
+  { providerType: "minimax", prefixes: ["minimax-m3"], cap: 262144 },
 ];
 
 /**

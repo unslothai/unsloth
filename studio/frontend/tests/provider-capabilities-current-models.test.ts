@@ -172,11 +172,7 @@ test("Custom overrides cannot alter documented caps for other providers", () => 
 test("OpenRouter Minimax ids use the Minimax cap instead of 32k fallback", () => {
   assert.equal(
     getExternalMaxOutputTokens("openrouter", "minimax/minimax-m3"),
-    1048576,
-  );
-  assert.equal(
-    getExternalMaxOutputTokens("openrouter", "minimax/m3-large"),
-    1048576,
+    262144,
   );
 });
 
