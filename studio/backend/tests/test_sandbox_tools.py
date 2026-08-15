@@ -425,7 +425,7 @@ class TestSandboxEnvIsolation:
         assert _sandbox_temp_dir(str(gone)) == str(gone)
         assert not gone.exists()
 
-    def test_temp_dir_is_never_followed_through_a_link(self, tmp_path):
+    def test_temp_dir_is_never_followed_out_of_the_workdir(self, tmp_path):
         # tool code runs in the workdir and can replace the name with a link.
         from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
 
@@ -438,6 +438,55 @@ class TestSandboxEnvIsolation:
         except (OSError, NotImplementedError):
             pytest.skip("symlinks unavailable (Windows without developer mode)")
         assert _sandbox_temp_dir(str(workdir)) == str(workdir)
+
+    def test_temp_dir_refuses_an_escape_islink_cannot_see(self, monkeypatch, tmp_path):
+        """A Windows directory junction carries a different reparse tag, so
+        os.path.islink is False for it while os.path.isdir follows it. Blinding
+        islink stands in for that: containment is decided by the resolved path,
+        or a junction would point TMPDIR out of the session sandbox.
+        """
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        workdir = tmp_path / "sandbox"
+        workdir.mkdir()
+        try:
+            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(outside, target_is_directory = True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable (Windows without developer mode)")
+        monkeypatch.setattr(tools_mod.os.path, "islink", lambda path: False)
+        assert _sandbox_temp_dir(str(workdir)) == str(workdir)
+
+    def test_temp_dir_keeps_a_link_that_stays_inside_the_workdir(self, tmp_path):
+        # containment is the rule, not the kind of entry: inside the sandbox is fine.
+        from core.inference.tools import _SANDBOX_TEMP_DIRNAME, _sandbox_temp_dir
+
+        workdir = tmp_path / "sandbox"
+        (workdir / "real").mkdir(parents = True)
+        try:
+            (workdir / _SANDBOX_TEMP_DIRNAME).symlink_to(
+                workdir / "real", target_is_directory = True
+            )
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable (Windows without developer mode)")
+        assert _sandbox_temp_dir(str(workdir)) == str(workdir / _SANDBOX_TEMP_DIRNAME)
+
+    def test_the_scratch_dir_does_not_spend_a_path_segment(self, tmp_path):
+        """/tmp/a/b/c/result.csv used to reach the workdir as a four-segment path
+        and was downloadable. Nesting TMPDIR one level deeper must not push it
+        past _MAX_SANDBOX_PATH_SEGMENTS and drop it from the card.
+        """
+        from core.inference.tools import _sandbox_temp_dir, _snapshot_workdir_files
+
+        scratch = Path(_sandbox_temp_dir(str(tmp_path)))
+        (scratch / "a/b/c").mkdir(parents = True)
+        (scratch / "a/b/c/result.csv").write_bytes(b"x")
+        (scratch / "a/b/c/d").mkdir()
+        (scratch / "a/b/c/d/toodeep.csv").write_bytes(b"x")
+        # the cap still applies, it is just measured from inside the scratch dir.
+        assert sorted(_snapshot_workdir_files(str(tmp_path))) == ["tmp/a/b/c/result.csv"]
 
     def test_scratch_files_are_still_offered_as_artifacts(self, tmp_path):
         """On Windows this directory is what /tmp resolves to, so a model writing

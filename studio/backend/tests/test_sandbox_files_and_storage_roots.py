@@ -750,6 +750,29 @@ def test_a_real_file_still_blocks_removal(tmp_path, monkeypatch):
     assert (workdir / "sales.csv").is_file()
 
 
+def test_the_download_route_serves_the_full_depth_under_the_scratch_dir(tmp_path, monkeypatch):
+    """The card and the route enforce the same segment cap, so the route has to
+    discount the scratch container exactly as the snapshot walk does."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from fastapi import HTTPException
+
+    from core.inference import tools
+    from routes.inference import _contained_sandbox_path
+
+    tools._workdirs.clear()
+    session = "__LOCALID_depth1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    scratch = Path(tools._sandbox_temp_dir(str(workdir)))
+    (scratch / "a/b/c").mkdir(parents = True)
+    (scratch / "a/b/c/result.csv").write_bytes(b"x")
+
+    _, path = _contained_sandbox_path(session, "tmp/a/b/c/result.csv")
+    assert Path(path) == scratch / "a/b/c/result.csv"
+    with pytest.raises(HTTPException):
+        _contained_sandbox_path(session, "tmp/a/b/c/d/toodeep.csv")
+
+
 def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 

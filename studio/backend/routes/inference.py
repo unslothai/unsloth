@@ -16239,6 +16239,7 @@ from core.inference.tools import (
     _MAX_SNAPSHOT_DIRS,
     _MAX_SNAPSHOT_FILES,
     _servable_segment,
+    _user_path_parts,
 )
 
 
@@ -16251,7 +16252,7 @@ def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
     out of the sandbox is refused like any other escape.
     """
     parts = [part for part in filename.replace("\\", "/").split("/") if part not in ("", ".")]
-    if not parts or len(parts) > _MAX_SANDBOX_PATH_SEGMENTS:
+    if not parts or len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS:
         raise HTTPException(status_code = 404, detail = "Not found")
     for part in parts:
         # os.path.join would let an absolute segment (or a Windows drive) throw
@@ -16282,7 +16283,8 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
             return names
-        depth = base[len(sandbox_dir) :].count(os.sep)
+        relative = base[len(sandbox_dir) :].strip(os.sep)
+        depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
         # depth 0 is the sandbox itself, whose files are one segment.
         # Segments the route would refuse are dropped here too, so the two walks agree.
         dirs[:] = (
