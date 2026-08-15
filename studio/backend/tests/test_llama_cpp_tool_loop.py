@@ -4280,3 +4280,133 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
     assert executed == []  # nothing parsed, nothing ran
     assert ends, "provisional card left dangling (no tool_end)"
     assert ends[-1]["tool_call_id"] == "call_0"
+
+
+def _tool_call_fragment(
+    index: int,
+    arguments: str,
+    call_id: str | None = None,
+) -> str:
+    delta: dict = {"index": index, "function": {"arguments": arguments}}
+    if call_id is not None:
+        delta["id"] = call_id
+    return _sse({"tool_calls": [delta]})
+
+
+def _tool_call_opening(index: int, call_id: str, name: str, arguments: str) -> str:
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": index,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            ]
+        }
+    )
+
+
+def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch):
+    """Two tool rounds in one llama-server response, both streamed at index 0.
+
+    llama-server restarts ``delta.tool_calls[].index`` at 0 for every round
+    while giving each call its own id, and the continuation fragments carrying
+    the rest of the arguments arrive bare. Keying the accumulator on the index
+    alone appended round two's name and argument tail to round one, leaving a
+    single ``web_searchweb_search`` entry that matched no enabled tool, so
+    neither call ran.
+    """
+
+    stream = [
+        _tool_call_opening(0, "call_a", "web_search", '{"query":'),
+        _tool_call_fragment(0, '"first"}'),
+        _tool_call_opening(0, "call_b", "web_search", '{"query":'),
+        _tool_call_fragment(0, '"second"}'),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search twice"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [
+        {"name": "web_search", "arguments": {"query": "first"}},
+        {"name": "web_search", "arguments": {"query": "second"}},
+    ]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a",
+        "call_b",
+    ]
+
+    # The replayed conversation must list both calls with their own arguments.
+    asst = next(m for m in payloads[1]["messages"] if m.get("tool_calls"))
+    assert [tc["id"] for tc in asst["tool_calls"]] == ["call_a", "call_b"]
+    assert [tc["function"]["arguments"] for tc in asst["tool_calls"]] == [
+        '{"query":"first"}',
+        '{"query":"second"}',
+    ]
+
+
+def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch):
+    """Two calls at index 0 with the id repeated on every argument fragment.
+
+    The latest-index mapping only exists to place fragments that carry no id,
+    so a fragment naming the call the index opened first has to go back to it
+    rather than fork a third slot. Forking left that call with truncated JSON
+    and dropped the fragment for having no function name.
+    """
+
+    stream = [
+        _tool_call_opening(0, "call_a", "web_search", '{"query":'),
+        _tool_call_opening(0, "call_b", "web_search", '{"query":'),
+        _tool_call_fragment(0, '"first"}', call_id = "call_a"),
+        _tool_call_fragment(0, '"second"}', call_id = "call_b"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search twice"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [
+        {"name": "web_search", "arguments": {"query": "first"}},
+        {"name": "web_search", "arguments": {"query": "second"}},
+    ]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a",
+        "call_b",
+    ]
