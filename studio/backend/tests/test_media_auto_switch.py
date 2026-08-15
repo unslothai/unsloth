@@ -1598,6 +1598,50 @@ def test_the_ltx23_extras_check_names_the_exact_companions(tmp_path, monkeypatch
     assert asked == [("a.safetensors", "b.safetensors")]
 
 
+def test_the_chat_probe_counts_a_parked_switcher_once(monkeypatch):
+    # A waiter is marked inside its own switch, so counting both discounted it twice and an
+    # active chat stream read as idle, which the final gated drain no longer re-checks.
+    import core.inference.llama_keepwarm as chat
+    monkeypatch.setattr(chat, "other_inference_request_count", lambda **kw: 2)
+    with mas._note_switcher(arb.DIFFUSION), mas._note_switcher(arb.VIDEO):
+        with mas._note_waiter(arb.VIDEO):
+            assert mas._chat_busy() is True
+
+
+def test_a_cached_ltx23_repo_pick_is_still_header_checked(tmp_path, monkeypatch):
+    # A cached GGUF is represented by its repo id, so the path does not exist; the checkpoint
+    # is on disk all the same and the loader reads 2.3 straight out of its header.
+    import core.inference.diffusion_families as families
+    import core.inference.video_families as video_families
+    import core.inference.video_ltx2 as ltx2
+
+    checkpoint = tmp_path / "generic-Q4_K_M.gguf"
+    checkpoint.write_bytes(b"")
+    pick = mas.MediaModelPick("org/ltx", "org/ltx", checkpoint.name, "gguf")
+    monkeypatch.setattr(
+        video_families, "detect_video_family", lambda *a, **k: types.SimpleNamespace(name = "ltx-2")
+    )
+    monkeypatch.setattr(mas, "_cached_snapshot_file", lambda repo, name: str(checkpoint))
+    monkeypatch.setattr(ltx2, "is_ltx23_checkpoint", lambda path: True)
+    monkeypatch.setattr(ltx2, "ltx23_extras_files", lambda path: ("a.safetensors",))
+    monkeypatch.setattr(families, "cache_holds_files", lambda repo, files: False)
+
+    assert mas._hidden_ltx23_extras(arb.VIDEO, pick) is True
+
+
+def test_a_sharded_encoder_without_its_index_is_incomplete(monkeypatch):
+    # One shard and no index is an interrupted pull of a repo that is always sharded, so
+    # from_pretrained would fetch the index and the rest.
+    import core.inference.diffusion_families as families
+
+    monkeypatch.setattr(families, "_upstream_is_cached", lambda *a, **k: True)
+    monkeypatch.setattr(mas, "_cached_snapshot_file", lambda repo, name: None)
+
+    assert mas._encoder_repo_complete("unsloth/Meta-Llama-3.1-8B-Instruct") is False
+    # An unsharded repo keeps the single-file reading.
+    assert mas._encoder_repo_complete("org/unsharded-encoder") is True
+
+
 def test_the_images_route_switches_before_it_checks_what_is_loaded(monkeypatch):
     import core.inference.diffusion as diffusion_module
     import core.inference.image_gallery as gallery_module

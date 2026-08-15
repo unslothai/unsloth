@@ -558,9 +558,10 @@ def _chat_busy() -> bool:
     except Exception:  # noqa: BLE001 -- no chat stack means no chat work
         return False
     try:
-        # Chat's counter covers every inference request, media included, so the switchers and
-        # the requests parked behind them are discounted: none of them is using chat.
-        parked = _switcher_count() + _waiter_count(DIFFUSION) + _waiter_count(VIDEO)
+        # Chat's counter covers every inference request, media included, so requests performing
+        # a switch are discounted: none of them is using chat. Counted once, since a request
+        # parked on a switch lock is marked as a waiter inside its own switch.
+        parked = _switcher_count()
         counted = other_inference_request_count(current_request_counted = True)
         return max(0, counted - max(0, parked - 1)) > 0
     except Exception:  # noqa: BLE001
@@ -756,6 +757,9 @@ def _refuse(
 # The image family whose pipeline loads a separate encoder repo, and the video family whose
 # partitions are a load-time choice. Both make a directory on disk an incomplete answer.
 _EXTERNAL_ENCODER_FAMILIES = frozenset({"hidream-i1"})
+# Encoder repos that always ship sharded, where a missing index is an interrupted download
+# rather than a single-file layout.
+_SHARDED_ENCODER_REPOS = frozenset({"unsloth/Meta-Llama-3.1-8B-Instruct"})
 _H3_FAMILY = "minimax-h3"
 
 
@@ -778,11 +782,16 @@ def _hidden_ltx23_extras(owner: str, pick: MediaModelPick) -> bool:
     if fam is None or getattr(fam, "name", None) != "ltx-2":
         return False
     root = Path(pick.model_path).expanduser()
-    if not root.exists():
-        # A repo id: the planner reads the same remote listing the loader will, so it knows.
-        return False
     try:
-        checkpoint = resolve_local_gguf_child(root, pick.gguf_filename)
+        if root.exists():
+            checkpoint = resolve_local_gguf_child(root, pick.gguf_filename)
+        else:
+            # A cached repo id: the checkpoint is on disk all the same, and the loader reads
+            # its header from there, so the name-based plan can still be wrong about 2.3.
+            cached = _cached_snapshot_file(pick.model_path, pick.gguf_filename)
+            if cached is None:
+                return False
+            checkpoint = Path(cached)
     except Exception:  # noqa: BLE001 -- an unreadable pick is refused by the load itself
         return False
     if not is_ltx23_checkpoint(checkpoint):
@@ -832,8 +841,9 @@ def _encoder_repo_complete(repo_id: str) -> bool:
         return False
     index = _cached_snapshot_file(repo_id, "model.safetensors.index.json")
     if index is None:
-        # Unsharded, so the single weight file the check above found is the whole thing.
-        return True
+        # A repo known to be sharded has no unsharded reading: a missing index means the pull
+        # was interrupted before it landed, and from_pretrained would fetch it and the rest.
+        return repo_id not in _SHARDED_ENCODER_REPOS
     with open(index, encoding = "utf-8") as handle:
         shards = sorted(set((json.load(handle).get("weight_map") or {}).values()))
     return bool(shards) and cache_holds_files(repo_id, shards)
