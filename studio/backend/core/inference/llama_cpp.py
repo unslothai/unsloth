@@ -6823,8 +6823,12 @@ class LlamaCppBackend:
                 pass
         # a container or systemd scope is OOM-killed at its own memory.max, not the host's
         try:
-            from unsloth.dataset_num_proc import _cgroup_free_bytes
-            cgroup_free = _cgroup_free_bytes()
+            # via _shared_policy: unsloth's package __init__ would load the model stack
+            from utils.hardware.hardware import _shared_policy
+
+            _policy = _shared_policy()
+            _cgroup_free_bytes = getattr(_policy, "_cgroup_free_bytes", None)
+            cgroup_free = _cgroup_free_bytes() if _cgroup_free_bytes else None
             if cgroup_free is not None and cgroup_free >= 0:
                 cgroup_mib = int(cgroup_free // (1024 * 1024))
                 avail = cgroup_mib if avail is None else min(avail, cgroup_mib)
@@ -13462,6 +13466,8 @@ class LlamaCppBackend:
                 kv_cache_bytes: Optional[int] = None
                 _mtp_reserve_bytes = 0
                 _cpu_draft_weights = 0
+                # manual + auto layers omits -c and lets --fit size the window from the floor
+                _manual_auto_fit = gpu_memory_mode == "manual" and (gpu_layers or 0) < 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -13800,9 +13806,13 @@ class LlamaCppBackend:
                         except Exception:
                             _cpu_draft_weights = 0
                         try:
+                            # the fit floor the main kv guard uses, for the same zero context
+                            _draft_kv_ctx = effective_ctx
+                            if _draft_kv_ctx <= 0 and _manual_auto_fit:
+                                _draft_kv_ctx = _AUTO_FIT_MIN_CTX
                             _cpu_draft_weights += (
                                 self._mtp_draft_kv_bytes(
-                                    effective_ctx,
+                                    _draft_kv_ctx,
                                     drafter_path = _mtp_draft_for_budget,
                                     n_parallel = n_parallel,
                                 )
@@ -14878,9 +14888,11 @@ class LlamaCppBackend:
 
                 # manual with an explicit count emits --fit off below, past this seeded use_fit
                 _manual_layers = gpu_memory_mode == "manual" and (gpu_layers or 0) >= 0
+                # a --device naming no gpu offloads nothing, fit or no fit
+                _guard_cpu_only = _device_selection_is_cpu(extra_args, os.environ)
                 # same ceiling for a discrete gpu, where only the spill lands in host ram
                 if (
-                    use_fit
+                    (use_fit or _guard_cpu_only)
                     and model_size is not None
                     and kv_cache_bytes is not None
                     and not (_manual_layers and (gpu_layers or 0) > 0)
@@ -14893,12 +14905,7 @@ class LlamaCppBackend:
                 ):
                     # manual + auto omits -c, so a zero context still allocates the fit floor
                     _guard_kv_bytes = kv_cache_bytes
-                    if (
-                        not _guard_kv_bytes
-                        and effective_ctx <= 0
-                        and gpu_memory_mode == "manual"
-                        and (gpu_layers or 0) < 0
-                    ):
+                    if not _guard_kv_bytes and effective_ctx <= 0 and _manual_auto_fit:
                         _guard_kv_bytes = _kv_bytes(_AUTO_FIT_MIN_CTX)
                     try:
                         from utils.model_memory_settings import should_mlock
@@ -14908,10 +14915,8 @@ class LlamaCppBackend:
                         _guard_mlocked = False
                     # both toggles off preserves a hand-typed --mlock / --no-mmap
                     _guard_mlocked = _guard_mlocked or any(
-                        resolve_effective_memory_state(extra_args)
+                        resolve_effective_memory_state(extra_args, os.environ)
                     )
-                    # a --device naming no gpu leaves the child nothing to offload onto
-                    _guard_cpu_only = _device_selection_is_cpu(extra_args, os.environ)
                     # a page-locked mapping is pinned whole and --device none holds no vram
                     _fit_vram_mib = (
                         0

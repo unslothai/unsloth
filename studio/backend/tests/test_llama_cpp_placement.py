@@ -1082,10 +1082,45 @@ def test_a_cgroup_limit_caps_the_available_ram_reading(monkeypatch):
     fake_psutil.virtual_memory = lambda: types.SimpleNamespace(available = 64 * 1024**3)
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
-    fake_dnp = types.ModuleType("unsloth.dataset_num_proc")
-    fake_dnp._cgroup_free_bytes = lambda: 3 * 1024**3
-    monkeypatch.setitem(sys.modules, "unsloth.dataset_num_proc", fake_dnp)
+    import utils.hardware.hardware as hw
+
+    fake_policy = types.SimpleNamespace(_cgroup_free_bytes = lambda: 3 * 1024**3)
+    monkeypatch.setattr(hw, "_shared_policy", lambda: fake_policy)
     assert mod.LlamaCppBackend._available_system_memory_mib() == 3 * 1024
 
-    fake_dnp._cgroup_free_bytes = lambda: None
+    fake_policy._cgroup_free_bytes = lambda: None
     assert mod.LlamaCppBackend._available_system_memory_mib() == 64 * 1024
+
+    # no policy module at all leaves the host reading untouched
+    monkeypatch.setattr(hw, "_shared_policy", lambda: None)
+    assert mod.LlamaCppBackend._available_system_memory_mib() == 64 * 1024
+
+
+def test_a_cpu_override_is_guarded_even_when_the_fit_succeeded(tmp_path, monkeypatch):
+    """A successful fit clears use_fit, but a retained `--device none` still loads the
+    whole model on the CPU. The host check has to run on the placement, not the fit."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 40_000, 48_000)])
+    backend._get_gguf_size_bytes = lambda _path: int(13.3 * 1024**3)
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--device", "none"])
+
+
+def test_an_inherited_mlock_env_prices_the_whole_mapping(tmp_path, monkeypatch):
+    """scrub_memory_env keeps an inherited LLAMA_ARG_MLOCK when both toggles are off,
+    so the resolver has to see the environment, not just argv."""
+    import utils.model_memory_settings as mms
+
+    monkeypatch.setattr(mms, "should_mlock", lambda: False)
+    monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 4877)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
