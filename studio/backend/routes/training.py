@@ -1438,6 +1438,8 @@ async def start_training(
             "warmup_ratio": request.warmup_ratio,
             "max_steps": request.max_steps,
             "save_steps": request.save_steps,
+            "checkpoint_backup": request.checkpoint_backup.model_dump()
+            if request.checkpoint_backup else None,
             "weight_decay": request.weight_decay,
             "max_grad_norm": request.max_grad_norm,
             "max_grad_value": request.max_grad_value,
@@ -1971,6 +1973,11 @@ def _build_training_status(
         warnings = warnings,
         details = details,
         metric_history = metric_history,
+        checkpoint_backup = (
+            backend._checkpoint_backup_manager.progress.snapshot(job_id).to_dict()
+            if exposes_owner_state and backend._checkpoint_backup_manager is not None
+            else None
+        ),
     )
 
 
