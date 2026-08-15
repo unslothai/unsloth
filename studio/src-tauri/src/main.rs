@@ -8,6 +8,7 @@ mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod install;
+mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod loopback_http;

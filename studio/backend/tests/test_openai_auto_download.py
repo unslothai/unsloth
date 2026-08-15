@@ -1172,7 +1172,7 @@ def test_setter_round_trips_auto_download_in_one_transaction(monkeypatch):
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
 
     result = settings.set_openai_auto_switch(True, 120, None, True)
-    assert result == (True, 120, True, True, False)
+    assert result == (True, 120, True, True, False, 0)
     assert len(calls) == 1
     assert calls[0][settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY] is True
 

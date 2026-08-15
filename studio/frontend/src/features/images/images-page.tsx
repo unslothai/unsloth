@@ -56,11 +56,13 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
+import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
+import { useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -171,7 +173,11 @@ import {
 } from "./train/train-base-selector";
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per artifact via loadSpecFor.
-const MODELS: ModelOption[] = catalogToModelOptions(IMAGE_CATALOG);
+// Host-dependent, so it is built per render rather than once at module load: a host that can
+// only run the native engine is not offered the pipeline rows it would be refused at load.
+function useImageModels(host: HostClass): ModelOption[] {
+  return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
+}
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) the loaded model must support; null = always available.
 // The images each conditioned workflow consumed, named for the restore toast: a recipe keeps the scalar settings but not the uploads.
@@ -1163,6 +1169,8 @@ type LoadAdvanced = Pick<
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
   const { isMobile, pinned } = useSidebar();
+  const hostClass = useHostClass();
+  const imageModels = useImageModels(hostClass);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
@@ -3590,10 +3598,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // The chat-style layout gives this page no outer top inset, so clear the custom
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      {/* Below 50rem, equal side tracks keep the mode switch centered without overlaying
-          either action group. Above it, the 408px rail continues through the header and
-          Create / Train centers over the preview pane. */}
-      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2 @[50rem]:grid-cols-[408px_minmax(0,1fr)] @[50rem]:gap-0">
+      {/* Keep the tabs centered over the preview region at every width. The model rail
+          holds at 408px when space permits and shrinks only to preserve the controls. */}
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -3617,14 +3624,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               />
             ) : (
               <ModelSelector
-                models={MODELS}
+                models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
                 variant="ghost"
-                className="!h-[34px] max-w-full overflow-hidden"
+                className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+                triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 placeholder="Select image model"
@@ -3651,8 +3659,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           </div>
         </div>
-        <div className="contents @[50rem]:grid @[50rem]:h-full @[50rem]:min-w-0 @[50rem]:grid-cols-[1fr_auto_1fr]">
-          <div className="pointer-events-auto justify-self-center pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:col-start-2">
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               ariaLabel="Page mode"
               value={pageMode}
@@ -3665,7 +3673,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               ]}
             />
           </div>
-          <div className="pointer-events-none flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:col-start-3">
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <MediaPageLink
                 to="/video"

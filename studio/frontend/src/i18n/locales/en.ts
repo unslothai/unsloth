@@ -152,7 +152,34 @@ export const en = {
       data: "Data",
       apiKeys: "API",
       agents: "Agents",
+      debugging: "Logs",
       about: "About",
+    },
+    debugging: {
+      logSection: "Log file",
+      source: "Log file",
+      sourceHint: "The model runners write their own logs, so a failed load or generation is often explained there rather than in the server log.",
+      path: "Location",
+      pathCopy: "Copy path",
+      refreshSection: "Refresh",
+      mode: "Mode",
+      modeLive: "Live",
+      modeInterval: "Every 3 seconds",
+      modeManual: "Manual",
+      refreshNow: "Refresh now",
+      privacyNote: "Credentials are masked in this view. The file on disk is not masked.",
+      copyVisible: "Copy visible log",
+      empty: "Nothing has been logged yet.",
+      disabled: "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "No log file was found.",
+      unreadable: "The log file could not be read.",
+      timeout: "The log request timed out. The server may be unreachable.",
+      droppedNotice: "Some lines were skipped: the log was written faster than it could be read.",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      // Not rendered: extra terms the settings search matches this tab on, so
+      // the pane is still reachable by searching for debug or an error.
+      keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
       title: "Voice",
@@ -367,6 +394,12 @@ export const en = {
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
         idleSecondsAriaLabel: "Idle auto-unload seconds",
+        mediaIdleUnload: "Idle auto-unload for image and video",
+        mediaIdleUnloadDescription:
+          "Free VRAM by unloading the image and video models after this many idle seconds. Its own setting: the one above covers the chat model only. 0 keeps them loaded, minimum 60.",
+        mediaIdleSecondsAriaLabel: "Image and video idle auto-unload seconds",
+        mediaIdlePaused:
+          "Paused while Keep model in GPU memory or Only unload models loaded by the API is on.",
         idleNeedsEnable: "Turn on Switch model by request first.",
         idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
@@ -1284,6 +1317,12 @@ export const en = {
         "This dataset is not on this device yet. Training will download it automatically.",
       noticeDatasetPartial:
         "Training will complete the partial dataset download before reading it.",
+      noticeTransformersUpgrade:
+        "No installed transformers supports this architecture yet. Starting the run offers to install transformers {version} first.",
+      noticeSixteenBitOnly:
+        "This architecture trains in 16-bit LoRA: 4-bit is not available for it, so the run needs far more VRAM than QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installing that release instead of keeping the model's own code switches this run to 16-bit LoRA, which needs far more VRAM than QLoRA.",
       advancedSettings: "Advanced settings",
       defaultAdvancedSettings: "Defaults",
       nonDefaultAdvancedSettings: "{count} non-default",
