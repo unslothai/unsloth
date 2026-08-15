@@ -659,12 +659,10 @@ def test_bound_dataset_rows_keeps_seed_zero():
 
     # 0 is a legitimate seed, not a missing one: it must not collapse onto the
     # default, or every run configured with it trains on the same other subset.
-    assert bound_dataset_rows(source, 1024, 0)["row"] != bound_dataset_rows(
-        source, 1024, 3407
-    )["row"]
-    assert bound_dataset_rows(source, 1024, 0)["row"] == bound_dataset_rows(
-        source, 1024, 0
-    )["row"]
+    assert (
+        bound_dataset_rows(source, 1024, 0)["row"] != bound_dataset_rows(source, 1024, 3407)["row"]
+    )
+    assert bound_dataset_rows(source, 1024, 0)["row"] == bound_dataset_rows(source, 1024, 0)["row"]
 
 
 def test_bound_dataset_rows_survives_a_hostile_seed():
@@ -716,9 +714,7 @@ def test_checkpoint_predates_row_bound(tmp_path):
     def _checkpoint(name, *, step, epoch):
         path = tmp_path / name
         path.mkdir()
-        (path / "trainer_state.json").write_text(
-            json.dumps({"global_step": step, "epoch": epoch})
-        )
+        (path / "trainer_state.json").write_text(json.dumps({"global_step": step, "epoch": epoch}))
         return str(path)
 
     # 15 steps x 8 rows against 192,523 rows: a run that saw the whole corpus.

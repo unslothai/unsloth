@@ -105,6 +105,7 @@ logger = get_logger(__name__)
 # source on every eval step. Cap it so each evaluation terminates.
 STREAMING_EVAL_MAX_SAMPLES = 500
 
+
 def _build_report_targets(training_args) -> list[str] | str:
     report_to: list[str] = []
     if training_args.get("enable_wandb", False):
@@ -3040,6 +3041,7 @@ class UnslothTrainer:
                 and dataset_slice_start is None
                 and dataset_slice_end is None
             ):
+
                 def _log_bound(kept, total):
                     logger.info(
                         f"Bounded dataset to {kept} of {total} rows for a "
