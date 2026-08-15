@@ -41,6 +41,17 @@ _ENCODER_METADATA_FILES = ("config.json", "tokenizer.json", "tokenizer_config.js
 # suffixes a weight-bearing pipeline component can satisfy from_pretrained with
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".msgpack", ".onnx")
 
+# any one of these is the vocabulary a tokenizer class builds itself from
+_TOKENIZER_ASSETS = (
+    "tokenizer.json",
+    "vocab.json",
+    "vocab.txt",
+    "merges.txt",
+    "spiece.model",
+    "tokenizer.model",
+    "sentencepiece.bpe.model",
+)
+
 
 def detected_image_family(pick: MediaModelPick) -> Any:
     """The diffusion family for *pick*, tried against its path and then its id.
@@ -265,8 +276,8 @@ def _pipeline_components_present(root: Path) -> bool:
     from_pretrained discovers the gap, leaving the API with no model at all.
 
     Judged on what can be seen without reading weights. A directory carrying neither index is
-    not this function's business, and a modular entry whose spec names another repository is
-    left to the planner, which is what actually covers a hosted component.
+    not this function's business. A modular entry whose spec names another repository is checked
+    against the cache instead, since the load pulls that repository itself.
     """
     import json
 
@@ -289,20 +300,63 @@ def _pipeline_components_present(root: Path) -> bool:
             if len(entry) not in (2, 3) or not entry[1]:
                 continue
             # a modular entry is [library, class, spec], and its spec can name another repo,
-            # which the planner covers and this directory is never expected to hold
-            if len(entry) == 3 and _entry_is_hosted(entry[2]):
+            # which this directory is never expected to hold but the load still pulls
+            hosted = _hosted_source(entry[2]) if len(entry) == 3 else None
+            if hosted is not None:
+                if not _hosted_component_cached(*hosted):
+                    return False
                 continue
             if not _component_present(root / component):
                 return False
     return True
 
 
-def _entry_is_hosted(spec: Any) -> bool:
-    """Whether a modular index entry sources its component from another repository."""
+def _hosted_source(spec: Any) -> Optional[tuple[str, str]]:
+    """The ``(repo, subfolder)`` a modular index entry sources its component from, or None."""
     if not isinstance(spec, dict):
-        return False
+        return None
     source = spec.get("pretrained_model_name_or_path") or spec.get("repo")
-    return isinstance(source, str) and bool(source.strip())
+    if not isinstance(source, str) or not source.strip():
+        return None
+    subfolder = spec.get("subfolder")
+    return source.strip(), (subfolder if isinstance(subfolder, str) else "") or ""
+
+
+def _cached_snapshot_root(repo_id: str) -> Optional[Path]:
+    """The cached snapshot directory for *repo_id*, or None when nothing of it is downloaded."""
+    from core.inference.diffusion import hub_cache_dir
+
+    repo_dir = Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+    try:
+        return next((child for child in sorted(repo_dir.iterdir()) if child.is_dir()), None)
+    except OSError:
+        return None
+
+
+def _hosted_component_cached(source: str, subfolder: str) -> bool:
+    """Whether a modular component the index sources elsewhere is already on disk.
+
+    ``load_components`` pulls each repository the index names, and the video planner omits its
+    base manifest whenever the selected path exists, so a local modular directory with a missing
+    hosted component would otherwise verify clean and download it after the eviction.
+    """
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    local = Path(source).expanduser()
+    try:
+        if local.is_dir():
+            return _component_present(local / subfolder) if subfolder else True
+    except OSError:
+        return False
+    snapshot = _cached_snapshot_root(source)
+    if snapshot is None:
+        return False
+    if subfolder:
+        return _component_present(snapshot / subfolder)
+    try:
+        return bool(_upstream_is_cached(source))
+    except Exception:  # noqa: BLE001 -- an unreadable cache is not proof of locality
+        return False
 
 
 def _component_present(component: Path) -> bool:
@@ -321,9 +375,13 @@ def _component_present(component: Path) -> bool:
         return True
     # a weight-bearing component declares config.json; schedulers, tokenizers and processors
     # carry their own *_config.json instead and ship no weights at all
-    if not (component / "config.json").is_file():
-        return True
-    return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in entries)
+    if (component / "config.json").is_file():
+        return any(entry.suffix.lower() in _WEIGHT_SUFFIXES for entry in entries)
+    # a tokenizer ships no weights but is still useless without its vocabulary, and which file
+    # that is varies by class, so any one of the known spellings answers for all of them
+    if (component / "tokenizer_config.json").is_file():
+        return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
+    return True
 
 
 def _shards_present(component: Path) -> bool:

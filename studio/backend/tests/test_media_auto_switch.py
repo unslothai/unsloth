@@ -1813,13 +1813,15 @@ def test_a_component_holding_only_its_config_is_refused(catalog, enabled, tmp_pa
 
 
 def test_a_weightless_component_is_still_accepted(catalog, enabled, tmp_path, backend, loads):
-    # Schedulers, tokenizers and processors ship no weights at all, and they declare their own
-    # *_config.json rather than config.json, so requiring a weight file must not refuse them.
+    # Schedulers and processors ship no weights at all and declare their own *_config.json
+    # rather than config.json, so requiring a weight file must not refuse them. A tokenizer
+    # ships no weights either but is useless without its vocabulary, so that one is required.
     pipeline = tmp_path / "z-image"
     (pipeline / "scheduler").mkdir(parents = True)
     (pipeline / "scheduler" / "scheduler_config.json").write_text("{}")
     (pipeline / "tokenizer").mkdir(parents = True)
     (pipeline / "tokenizer" / "tokenizer_config.json").write_text("{}")
+    (pipeline / "tokenizer" / "vocab.json").write_text("{}")
     (pipeline / "model_index.json").write_text(
         '{"_class_name": "ZImagePipeline", "scheduler": ["diffusers", "FlowMatchEulerScheduler"],'
         ' "tokenizer": ["transformers", "Qwen2Tokenizer"]}'
@@ -1829,6 +1831,26 @@ def test_a_weightless_component_is_still_accepted(catalog, enabled, tmp_path, ba
     _switch("Tongyi-MAI/Z-Image-Turbo")
 
     assert [pick.model_id for _owner, pick in loads] == ["Tongyi-MAI/Z-Image-Turbo"]
+
+
+def test_a_tokenizer_without_its_vocabulary_is_refused(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # tokenizer_config.json alone builds no tokenizer: from_pretrained fetches the vocabulary,
+    # and by then the resident pipeline is already gone.
+    pipeline = tmp_path / "z-image"
+    (pipeline / "tokenizer").mkdir(parents = True)
+    (pipeline / "tokenizer" / "tokenizer_config.json").write_text("{}")
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline", "tokenizer": ["transformers", "Qwen2Tokenizer"]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
 
 
 def test_an_incomplete_local_video_pipeline_is_refused_too(
@@ -1939,22 +1961,40 @@ def test_a_modular_component_the_index_keeps_locally_is_checked(
     assert loads == []
 
 
-def test_a_hosted_modular_component_is_left_to_the_planner(
-    catalog, enabled, tmp_path, backend, loads
+@pytest.mark.parametrize("cached", [True, False])
+def test_a_hosted_modular_component_is_checked_against_the_cache(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch, cached
 ):
-    # Every component sourced from another repository, so the directory holds none of them and
-    # refusing on that would refuse every modular pipeline there is.
+    # load_components pulls each repository the modular index names, and the video planner omits
+    # its base manifest whenever the local path exists, so a hosted component that is not on
+    # disk would be downloaded after the resident pipeline had already gone.
+    import core.inference.diffusion as diffusion_module
+
+    cache = tmp_path / "hub"
+    component = cache / "models--unsloth--MiniMax-H3" / "snapshots" / ("a" * 40) / "vae"
+    if cached:
+        component.mkdir(parents = True)
+        (component / "config.json").write_text("{}")
+        (component / "model.safetensors").write_bytes(b"")
+    monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
+
     modular = tmp_path / "h3"
     modular.mkdir()
     (modular / "modular_model_index.json").write_text(
-        '{"text_encoder": ["transformers", "Qwen3VLModel",'
-        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3"}]}'
+        '{"vae": ["diffusers", "AutoencoderKLMiniMaxH3",'
+        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3", "subfolder": "vae"}]}'
     )
     catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
 
-    _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+    if cached:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+        assert [pick.model_id for _owner, pick in loads] == ["MiniMaxAI/MiniMax-H3"]
+        return
 
-    assert [pick.model_id for _owner, pick in loads] == ["MiniMaxAI/MiniMax-H3"]
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+    assert excinfo.value.status_code == 409
+    assert loads == []
 
 
 def test_a_cached_single_checkpoint_the_loader_cannot_open_is_not_advertised(catalog, tmp_path):
