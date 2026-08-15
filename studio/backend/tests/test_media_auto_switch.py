@@ -2339,9 +2339,7 @@ def test_chat_admitted_before_the_gate_still_stops_the_switch(
     assert loads == []
 
 
-def test_a_scheduler_without_its_config_is_refused(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_a_scheduler_without_its_config_is_refused(catalog, enabled, tmp_path, backend, loads):
     # A metadata-only component IS its config, so a directory holding a stray file and nothing
     # else builds nothing and would be fetched after the resident model had gone.
     pipeline = tmp_path / "z-image"
@@ -2359,9 +2357,7 @@ def test_a_scheduler_without_its_config_is_refused(
     assert loads == []
 
 
-def test_two_h3_partitions_of_one_quant_are_told_apart(
-    catalog, enabled, tmp_path, backend, loads
-):
+def test_two_h3_partitions_of_one_quant_are_told_apart(catalog, enabled, tmp_path, backend, loads):
     # Both denoisers share a directory and a quant token, but status publishes h3_task and
     # partition_matches reads it, so marking them indistinguishable reloaded on every request.
     for partition in ("fl2va", "ref2va"):

@@ -168,9 +168,7 @@ async def drain(
             and not (
                 cross_owner
                 and check_chat
-                and await bounded_probe(
-                    functools.partial(chat_busy, count_pending), None, probe_by
-                )
+                and await bounded_probe(functools.partial(chat_busy, count_pending), None, probe_by)
             )
         ):
             return True
