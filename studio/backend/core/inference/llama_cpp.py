@@ -6824,7 +6824,7 @@ class LlamaCppBackend:
         cmd: Iterable[str],
         detected_gpus: Iterable[tuple],
         *,
-        gpu_masked_off: bool = False,
+        child_has_no_gpu: bool = False,
     ) -> Optional[str]:
         """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
 
@@ -6837,9 +6837,9 @@ class LlamaCppBackend:
 
         Read from the finished argv, so the model path is the one the child opens. An
         unsized model abstains rather than guessing, and so does an empty GPU pool,
-        which means the probe threw. ``gpu_masked_off`` is the launch saying the child
-        is masked off every card, which is a known placement rather than an unknown
-        one: there the whole model is host-resident and takes no VRAM credit.
+        which means the probe threw. ``child_has_no_gpu`` is the launch reporting a
+        placement it already knows reaches no card, rather than one it could not read:
+        there the whole model is host-resident and takes no VRAM credit.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
@@ -6851,9 +6851,9 @@ class LlamaCppBackend:
             model_bytes = self._get_gguf_size_bytes(model_path)
         except Exception:
             return None
-        gpus = [] if gpu_masked_off else list(detected_gpus or ())
+        gpus = [] if child_has_no_gpu else list(detected_gpus or ())
         # an empty pool means the probe threw, not that the child has no gpu
-        if not model_bytes or (not gpus and not gpu_masked_off):
+        if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
         free_vram_mib = sum(max(0, row[1]) for row in gpus)
         return self._host_offload_shortfall_message(
@@ -16018,7 +16018,11 @@ class LlamaCppBackend:
                 _offload_msg = self._launch_host_shortfall_message(
                     cmd,
                     _detected_gpus,
-                    gpu_masked_off = _cpu_only_zero_offload or _arch_gate_forced_cpu,
+                    child_has_no_gpu = (
+                        _cpu_only_zero_offload
+                        or _arch_gate_forced_cpu
+                        or self._backend_lacks_gpu_lib(binary)
+                    ),
                 )
                 if _offload_msg:
                     raise RuntimeError(_offload_msg)

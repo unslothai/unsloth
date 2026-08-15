@@ -1029,7 +1029,7 @@ def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
 
     assert (
         backend._launch_host_shortfall_message(
-            ["llama-server", "-m", str(gguf)], [], gpu_masked_off = True
+            ["llama-server", "-m", str(gguf)], [], child_has_no_gpu = True
         )
         is not None
     )
@@ -1048,7 +1048,7 @@ def test_a_masked_off_child_takes_no_vram_credit(tmp_path, monkeypatch):
 
     assert backend._launch_host_shortfall_message(argv, [(0, 20_000)]) is None
     assert (
-        backend._launch_host_shortfall_message(argv, [(0, 20_000)], gpu_masked_off = True) is not None
+        backend._launch_host_shortfall_message(argv, [(0, 20_000)], child_has_no_gpu = True) is not None
     )
 
 
@@ -1063,3 +1063,50 @@ def test_an_unprobed_pool_still_abstains_when_nothing_was_masked(tmp_path, monke
     )
 
     assert backend._launch_host_shortfall_message(["llama-server", "-m", str(gguf)], []) is None
+
+
+def test_a_cpu_only_build_takes_no_vram_credit(tmp_path, monkeypatch):
+    """A split-library build shipping no cuda/hip/vulkan backend cannot offload, so the
+    cards the hardware probe still enumerates are unreachable. Crediting their VRAM
+    priced a spill the child never takes: it places the whole model in RAM."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 16_384, 24_000)])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_192)
+    )
+    argv = ["llama-server", "-m", str(gguf)]
+
+    # 20 GiB - 16 GiB free VRAM reads as a 4 GiB spill an 8 GiB host can hold.
+    assert backend._launch_host_shortfall_message(argv, [(0, 16_384)]) is None
+    assert (
+        backend._launch_host_shortfall_message(argv, [(0, 16_384)], child_has_no_gpu = True)
+        is not None
+    )
+
+
+def test_an_unknown_backend_layout_keeps_its_vram_credit(tmp_path):
+    """_backend_lacks_gpu_lib fails open on a static or unrecognised layout, so a custom
+    GPU build is never mistaken for a CPU-only one and refused."""
+    assert LlamaCppBackend._backend_lacks_gpu_lib("/nonexistent/llama-server") is False
+
+
+def test_the_launch_reports_a_cpu_only_build_to_the_guard(tmp_path, monkeypatch):
+    """End to end: the call site must pass the CPU-only-build state, not just accept it.
+    A 20 GiB model over 16 GiB of free VRAM reads as a 4 GiB spill an 8 GiB host holds,
+    so only the build state separates the launch from the refusal."""
+    gpu_build, gguf = _offload_backend(
+        tmp_path, gguf_gb = 20, free_mib = 16_384, avail_mib = 8_192, monkeypatch = monkeypatch
+    )
+    gpu_build._backend_lacks_gpu_lib = lambda _binary = None: False
+    assert _launch(gpu_build, gguf)["cmd"]
+
+    cpu_dir = tmp_path / "cpu"
+    cpu_dir.mkdir()
+    cpu_build, gguf2 = _offload_backend(
+        cpu_dir, gguf_gb = 20, free_mib = 16_384, avail_mib = 8_192,
+        monkeypatch = monkeypatch,
+    )
+    cpu_build._backend_lacks_gpu_lib = lambda _binary = None: True
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(cpu_build, gguf2)
