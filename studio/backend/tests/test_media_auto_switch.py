@@ -2164,3 +2164,149 @@ def test_a_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path):
     mas.invalidate_index()
 
     assert mas.resolve_local_media_model("z-image", task = mas.IMAGE_TASK) is not None
+
+
+def test_a_pinned_component_revision_is_the_one_checked(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # ComponentSpec.load is handed the whole spec, so a pinned revision is what gets fetched;
+    # a complete default snapshot must not answer for it.
+    import core.inference.diffusion as diffusion_module
+
+    cache = tmp_path / "hub"
+    repo = cache / "models--unsloth--MiniMax-H3"
+    main = repo / "snapshots" / ("a" * 40) / "vae"
+    main.mkdir(parents = True)
+    (main / "config.json").write_text("{}")
+    (main / "model.safetensors").write_bytes(b"")
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("a" * 40)
+    monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
+
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text(
+        '{"vae": ["diffusers", "AutoencoderKLMiniMaxH3",'
+        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3", "subfolder": "vae",'
+        ' "revision": "' + "c" * 40 + '"}]}'
+    )
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_pinned_component_variant_needs_its_own_weights(
+    catalog, enabled, tmp_path, backend, loads, monkeypatch
+):
+    # from_pretrained asks for the named variant's files rather than falling back to the
+    # default ones, so a component holding only the default weights is not complete for it.
+    import core.inference.diffusion as diffusion_module
+
+    cache = tmp_path / "hub"
+    component = cache / "models--unsloth--MiniMax-H3" / "snapshots" / ("a" * 40) / "vae"
+    component.mkdir(parents = True)
+    (component / "config.json").write_text("{}")
+    (component / "diffusion_pytorch_model.safetensors").write_bytes(b"")
+    monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(cache))
+
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text(
+        '{"vae": ["diffusers", "AutoencoderKLMiniMaxH3",'
+        ' {"pretrained_model_name_or_path": "unsloth/MiniMax-H3", "subfolder": "vae",'
+        ' "variant": "fp16"}]}'
+    )
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+
+    (component / "diffusion_pytorch_model.fp16.safetensors").write_bytes(b"")
+    mas.invalidate_index()
+    loads.clear()
+
+    _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert [pick.model_id for _owner, pick in loads] == ["MiniMaxAI/MiniMax-H3"]
+
+
+def test_a_local_component_source_is_checked_without_a_subfolder(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # A spec pointing straight at a local directory was accepted for existing at all, so an
+    # empty or half-copied one passed and load_components discovered it after the eviction.
+    empty = tmp_path / "vae-src"
+    empty.mkdir()
+    modular = tmp_path / "h3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text(
+        '{"vae": ["diffusers", "AutoencoderKLMiniMaxH3",'
+        ' {"pretrained_model_name_or_path": "' + str(empty) + '"}]}'
+    )
+    catalog.append(_info("MiniMaxAI/MiniMax-H3", modular, task = mas.VIDEO_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("MiniMaxAI/MiniMax-H3", owner = arb.VIDEO, openai_errors = False)
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_shard_index_declaring_nothing_is_not_proof(
+    catalog, enabled, tmp_path, backend, loads
+):
+    # An empty weight_map names no shard, so nothing is missing by that reading, and the mere
+    # presence of the index was being taken as the component being complete.
+    pipeline = tmp_path / "z-image"
+    (pipeline / "transformer").mkdir(parents = True)
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "transformer" / "model.safetensors.index.json").write_text('{"weight_map": {}}')
+    (pipeline / "model_index.json").write_text(
+        '{"_class_name": "ZImagePipeline",'
+        ' "transformer": ["diffusers", "ZImageTransformer2DModel"]}'
+    )
+    catalog.append(_info("Tongyi-MAI/Z-Image-Turbo", pipeline, task = mas.IMAGE_TASK))
+
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("Tongyi-MAI/Z-Image-Turbo")
+
+    assert excinfo.value.status_code == 409
+    assert loads == []
+
+
+def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path, monkeypatch):
+    # An active cache is loaded by repo id, which skipped the split check entirely, while the
+    # planners look only at the selected first shard and report nothing missing.
+    import core.inference.diffusion as diffusion_module
+
+    repo_dir, snapshot = _hf_cache_repo(
+        tmp_path,
+        "unsloth/Z-Image-Turbo-GGUF",
+        files = ["z-image-Q4_K_M-00001-of-00002.gguf"],
+    )
+    monkeypatch.setattr(diffusion_module, "hub_cache_dir", lambda: str(tmp_path))
+    catalog.append(
+        _info(
+            "unsloth/Z-Image-Turbo-GGUF",
+            repo_dir,
+            task = mas.IMAGE_TASK,
+            model_format = "gguf",
+            source = "hf_cache",
+        )
+    )
+
+    assert mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK) is None
+
+    (snapshot / "z-image-Q4_K_M-00002-of-00002.gguf").write_bytes(b"")
+    mas.invalidate_index()
+
+    assert (
+        mas.resolve_local_media_model("unsloth/Z-Image-Turbo-GGUF", task = mas.IMAGE_TASK)
+        is not None
+    )

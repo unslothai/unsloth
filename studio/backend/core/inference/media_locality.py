@@ -311,35 +311,54 @@ def _pipeline_components_present(root: Path) -> bool:
     return True
 
 
-def _hosted_source(spec: Any) -> Optional[tuple[str, str]]:
-    """The ``(repo, subfolder)`` a modular index entry sources its component from, or None."""
+def _hosted_source(spec: Any) -> Optional[tuple[str, str, str, str]]:
+    """What a modular index entry asks the loader for: repo, subfolder, revision and variant.
+
+    ``ComponentSpec.load`` is handed the whole spec, so a component can pin a commit or a named
+    weight variant. Checking the default snapshot for those would approve a switch and then
+    download the pinned files after the resident pipeline is gone.
+    """
     if not isinstance(spec, dict):
         return None
     source = spec.get("pretrained_model_name_or_path") or spec.get("repo")
     if not isinstance(source, str) or not source.strip():
         return None
-    subfolder = spec.get("subfolder")
-    return source.strip(), (subfolder if isinstance(subfolder, str) else "") or ""
+
+    def _text(key: str) -> str:
+        value = spec.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    return source.strip(), _text("subfolder"), _text("revision"), _text("variant")
 
 
-def _cached_snapshot_root(repo_id: str) -> Optional[Path]:
+def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
     """The cached snapshot a load of *repo_id* would read, or None when it is not downloaded.
 
-    The revision ``refs/main`` names, the one from_pretrained resolves to, rather than whichever
-    snapshot sorts first: a superseded revision can hold a complete component while the active
-    one is partial, and approving the old copy is how the load ends up fetching the new one.
+    The revision the loader asks for: the pinned one where a spec names it, else the one
+    ``refs/main`` resolves to, rather than whichever snapshot sorts first. A superseded revision
+    can hold a complete component while the active one is partial, and approving the old copy is
+    how the load ends up fetching the new one.
     """
     from core.inference.diffusion import hub_cache_dir
 
     repo_dir = Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
     snapshots = repo_dir / "snapshots"
-    try:
-        ref = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
-    except OSError:
-        ref = ""
-    if ref:
-        active = snapshots / ref
-        return active if active.is_dir() else None
+    # a pinned revision is a commit sha, or a branch or tag the cache records under refs/, and
+    # it is the only candidate: falling back to main is how the default snapshot approves a pin
+    for candidate in [revision] if revision else ["main"]:
+        pinned = snapshots / candidate
+        if pinned.is_dir():
+            return pinned
+        try:
+            ref = (repo_dir / "refs" / candidate).read_text(encoding = "utf-8").strip()
+        except OSError:
+            continue
+        resolved = snapshots / ref if ref else None
+        if resolved is not None and resolved.is_dir():
+            return resolved
+    if revision:
+        # pinned and not cached under that name: the default snapshot is not what will load
+        return None
     try:
         # no ref file means a commit-pinned download, where any cached revision is the one
         return next((child for child in sorted(snapshots.iterdir()) if child.is_dir()), None)
@@ -347,7 +366,7 @@ def _cached_snapshot_root(repo_id: str) -> Optional[Path]:
         return None
 
 
-def _hosted_component_cached(source: str, subfolder: str) -> bool:
+def _hosted_component_cached(source: str, subfolder: str, revision: str, variant: str) -> bool:
     """Whether a modular component the index sources elsewhere is already on disk.
 
     ``load_components`` pulls each repository the index names, and the video planner omits its
@@ -357,19 +376,23 @@ def _hosted_component_cached(source: str, subfolder: str) -> bool:
     local = Path(source).expanduser()
     try:
         if local.is_dir():
-            return _component_present(local / subfolder) if subfolder else True
+            return _component_present(local / subfolder if subfolder else local, variant)
     except OSError:
         return False
-    snapshot = _cached_snapshot_root(source)
+    snapshot = _cached_snapshot_root(source, revision)
     if snapshot is None:
         return False
     # the same component rules either way: _upstream_is_cached's no-manifest branch is satisfied
     # by a single weight file, which an interrupted sharded pull leaves behind
-    return _component_present(snapshot / subfolder if subfolder else snapshot)
+    return _component_present(snapshot / subfolder if subfolder else snapshot, variant)
 
 
-def _component_present(component: Path) -> bool:
-    """Whether one named pipeline component holds what from_pretrained will ask it for."""
+def _component_present(component: Path, variant: str = "") -> bool:
+    """Whether one named pipeline component holds what from_pretrained will ask it for.
+
+    ``variant`` is the named weight set a modular spec can pin (``fp16`` and the like), which
+    from_pretrained requires by name rather than falling back to the default files.
+    """
     try:
         if not component.is_dir():
             return False
@@ -380,8 +403,11 @@ def _component_present(component: Path) -> bool:
         return False
     if not _shards_present(component):
         return False
+    if variant and not any(f".{variant}." in entry.name for entry in entries):
+        return False
     if any(entry.name.endswith(".index.json") for entry in entries):
-        return True
+        # an index is proof only once it declares something; an empty weight_map declares nothing
+        return _shards_declared(component)
     # a weight-bearing component declares config.json; schedulers, tokenizers and processors
     # carry their own *_config.json instead and ship no weights at all
     if (component / "config.json").is_file():
@@ -391,6 +417,20 @@ def _component_present(component: Path) -> bool:
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
     return True
+
+
+def _shards_declared(component: Path) -> bool:
+    """Whether any shard index in *component* names at least one weight file."""
+    import json
+
+    for index_file in component.glob("*.index.json"):
+        try:
+            with open(index_file, encoding = "utf-8-sig") as handle:
+                if (json.load(handle) or {}).get("weight_map"):
+                    return True
+        except Exception:  # noqa: BLE001 -- an unreadable index declares nothing
+            return False
+    return False
 
 
 def _shards_present(component: Path) -> bool:

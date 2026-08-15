@@ -140,20 +140,35 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
     Advertising a name the loader then refuses costs a 400 on every request for a model the
     lister shows as downloaded, so an unopenable build is left out of the index.
     """
+    from utils.models.model_config import colocated_split_shards
+
     root = Path(load_path)
     if not root.is_dir():
-        return True
+        # a repo id loads from the cache, where the containment rule does not apply but the
+        # split set still has to be whole; an uncached child is the download guard's business
+        cached = _cached_repo_file(load_path, filename)
+        return True if cached is None else bool(colocated_split_shards(cached)[1])
     from core.inference.diffusion_families import resolve_local_gguf_child
-
-    from utils.models.model_config import colocated_split_shards
 
     try:
         child = resolve_local_gguf_child(root, filename)
     except Exception:  # noqa: BLE001 -- whatever the loader refuses, the index does not advertise
         return False
     # a split checkpoint opens its siblings implicitly, so an incomplete set fails at load time
-    _shards, complete = colocated_split_shards(child)
-    return bool(complete)
+    return bool(colocated_split_shards(child)[1])
+
+
+def _cached_repo_file(repo_id: str, filename: str) -> Optional[Path]:
+    """The cached path of *filename* in *repo_id*, or None when it is not downloaded."""
+    from huggingface_hub import try_to_load_from_cache
+
+    from core.inference.diffusion import hub_cache_dir
+
+    try:
+        hit = try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir())
+    except Exception:  # noqa: BLE001 -- an unreadable cache is not an answer about the shards
+        return None
+    return Path(hit) if isinstance(hit, str) else None
 
 
 def _add_gguf_picks(
