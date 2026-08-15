@@ -3,8 +3,10 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
-  normalizeGgufVariantIdentity,
-  normalizeModelIdentity,
+  ggufVariantsMatch,
+  isStandaloneGgufPath,
+  modelIdsMatch,
+  residentModelIdMatches,
 } from "@/features/hub/lib/model-identity";
 
 /** The names one model pick answers to: the catalog id its picker row shows, and the
@@ -30,6 +32,10 @@ export type ResidentModelStatus = {
  * publishes the clean public id next to the raw load identifier. Loading a model that is
  * already resident returns `already_loaded` without touching llama-server, so a caller that
  * recognises it here can skip both the reload and the confirmation that goes with it.
+ *
+ * A standalone `.gguf` is exempt from the variant comparison: it is one file with no quant to
+ * choose between, and the backend labels the resident copy from its filename while the picker
+ * row deliberately carries none.
  */
 export function residentModelMatchesPick(
   status: ResidentModelStatus,
@@ -38,22 +44,20 @@ export function residentModelMatchesPick(
   if (!status.active_model) {
     return false;
   }
+  // see settingsGgufVariantForRow: the row for a standalone file carries no quant label
+  const picksItsOwnVariant = !(
+    !pick.ggufVariant && isStandaloneGgufPath(pick.loadPath ?? pick.id)
+  );
   // a quant switch within one repo is a real reload, so the variant has to agree too
   if (
-    normalizeGgufVariantIdentity(status.gguf_variant) !==
-    normalizeGgufVariantIdentity(pick.ggufVariant)
+    picksItsOwnVariant &&
+    !ggufVariantsMatch(status.gguf_variant, pick.ggufVariant)
   ) {
     return false;
   }
-  const residentNames = new Set(
-    [status.model_identifier, status.active_model]
-      .filter((name): name is string => Boolean(name))
-      .map(normalizeModelIdentity),
+  return (
+    residentModelIdMatches(status.active_model, pick.id, pick.loadPath) ||
+    modelIdsMatch(status.model_identifier, pick.id) ||
+    modelIdsMatch(status.model_identifier, pick.loadPath)
   );
-  for (const name of [pick.id, pick.loadPath]) {
-    if (name && residentNames.has(normalizeModelIdentity(name))) {
-      return true;
-    }
-  }
-  return false;
 }

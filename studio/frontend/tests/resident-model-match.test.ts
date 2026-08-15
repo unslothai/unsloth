@@ -75,6 +75,33 @@ test("a different quant of the same repo is a real reload", () => {
   );
 });
 
+/** A local file load derives its quant label from the filename, so the status reports one the
+ * picker row never carries. Comparing them left the reported bug in place for On Device files. */
+test("a standalone .gguf matches the label the backend derived for it", () => {
+  assert.equal(
+    residentModelMatchesPick(
+      {
+        active_model: "/Users/dev/models/Qwen3-8B-Q4_K_M.gguf",
+        model_identifier: "/Users/dev/models/Qwen3-8B-Q4_K_M.gguf",
+        gguf_variant: "Q4_K_M",
+      },
+      { id: "/Users/dev/models/Qwen3-8B-Q4_K_M.gguf" },
+    ),
+    true,
+  );
+});
+
+/** The exemption is for the file's own derived label, not for picking a different quant. */
+test("a repo row still has to name the resident quant", () => {
+  assert.equal(
+    residentModelMatchesPick(pinnedStatus, {
+      id: REPO_ID,
+      ggufVariant: undefined,
+    }),
+    false,
+  );
+});
+
 test("another model does not match the resident one", () => {
   assert.equal(
     residentModelMatchesPick(pinnedStatus, {
@@ -117,4 +144,10 @@ test("selectModel checks residency before prompting to stop running chats", () =
   assert.ok(residencyCheck > 0, "selectModel no longer checks residency");
   assert.ok(confirmPrompt > 0, "selectModel no longer confirms running chats");
   assert.ok(residencyCheck < confirmPrompt);
+  // gating the check on an external checkpoint is the shape that left #8893 open
+  assert.doesNotMatch(
+    source.slice(Math.max(0, residencyCheck - 500), residencyCheck),
+    /isExternalModelId\(selectedCheckpoint\)/,
+    "the residency check is gated on an external checkpoint again",
+  );
 });

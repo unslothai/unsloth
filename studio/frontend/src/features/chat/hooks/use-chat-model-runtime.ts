@@ -656,6 +656,7 @@ export function useChatModelRuntime() {
       if (bailIfLoadInFlight()) return;
 
       // ask the backend, not params.checkpoint: an external pick leaves the local model resident, and a pinned cached row is loaded under a name its picker row never shows
+      // forceReload is what keeps Apply out of this: a staged config always carries it, so applying settings still reloads and still prompts
       const selectedCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
       if (!forceReload) {
