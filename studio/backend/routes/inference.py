@@ -5230,9 +5230,11 @@ def _resident_id_is_namespaced() -> bool:
         )
     else:
         orchestrator = get_inference_backend()
+        active = getattr(orchestrator, "active_model_name", None)
+        # The alias outlives an unload, so it only describes a resident model while
+        # active_model_name is set, the same gate every other alias reader applies.
         candidates = (
-            getattr(orchestrator, "active_model_name", None),
-            getattr(orchestrator, "_openai_advertised_id", None),
+            (active, getattr(orchestrator, "_openai_advertised_id", None)) if active else ()
         )
     return any("/" in (public_model_id(c) or "") for c in candidates if c)
 

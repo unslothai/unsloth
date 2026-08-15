@@ -8623,3 +8623,31 @@ def test_the_advertised_alias_is_cleared_before_a_replacement_load(tmp_path):
     clear = src.index("\n        backend._openai_advertised_id = None")
     load = src.index("\n            backend.load_model,")
     assert clear < load, "the alias must be cleared before load_model publishes the new model"
+
+
+def test_an_nvfp4_checkpoint_is_not_switchable(tmp_path, monkeypatch):
+    # Codex P2: NVFP4 wears an MLX-shaped quantization block, but the loader rejects its
+    # per-module metadata, so advertising it costs the resident model for a certain fail.
+    from types import SimpleNamespace
+    from utils.hardware import hardware as hw
+
+    path = _local_checkpoint(tmp_path, "NVFP4")
+    (path / "config.json").write_text(
+        '{"architectures": ["Qwen3ForCausalLM"],'
+        ' "quantization": {"group_size": 16, "bits": 4, "mode": "nvfp4"}}'
+    )
+    info = SimpleNamespace(id = str(path), path = str(path))
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    assert resolver.local_servable_model(info) is None
+
+
+def test_a_stale_alias_after_unload_is_not_a_resident_identity(monkeypatch):
+    # Codex P2: the alias outlives an unload, so reading it ungated made an unrelated
+    # org/model request look like a mismatch against a model that is no longer loaded.
+    class _FakeOrchestrator:
+        active_model_name = None
+        _openai_advertised_id = "unsloth/Qwen3-MLX"
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(None))
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _FakeOrchestrator())
+    assert inference_route._resident_id_is_namespaced() is False

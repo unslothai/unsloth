@@ -292,6 +292,15 @@ def _host_has_a_non_gguf_backend() -> bool:
 _FP8_QUANT_METHODS = ("fp8", "fbgemm_fp8")
 
 
+def _mentions_nvfp4(config: dict) -> bool:
+    """Whether a config declares NVFP4 anywhere in its quantization metadata."""
+    for key in ("quantization", "quantization_config"):
+        block = config.get(key)
+        if isinstance(block, dict) and "nvfp4" in str(block).lower():
+            return True
+    return False
+
+
 def _fp8_suits_host(quant_method: str) -> bool:
     """Whether this host can load an FP8 checkpoint, mirroring the loader's own gates.
 
@@ -325,6 +334,10 @@ def _quantization_suits_host(config: dict) -> bool:
     mismatch loads only after the resident model has already been unloaded.
     """
     mlx_host = _host_serves_mlx()
+    # NVFP4 wears an MLX-shaped block but the loader rejects its per-module metadata,
+    # so it is not loadable on any host this resolver feeds.
+    if _mentions_nvfp4(config):
+        return False
     if isinstance(config.get("quantization"), dict) and "group_size" in config["quantization"]:
         return mlx_host
     method = (config.get("quantization_config") or {}).get("quant_method")
