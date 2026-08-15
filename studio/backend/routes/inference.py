@@ -11656,7 +11656,6 @@ def _audio_decoder_is_available() -> bool:
     GGUF-only install does not ship. find_spec keeps this off the import path."""
     try:
         from importlib.util import find_spec
-
         return find_spec("torchaudio") is not None
     except Exception:
         return False
