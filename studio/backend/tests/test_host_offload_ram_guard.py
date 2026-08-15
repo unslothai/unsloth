@@ -23,7 +23,8 @@ class TestHostOffloadShortfall:
         offload = int(16.2 * _GB) - int(4.8 * _GB)
         msg = _shortfall(offload, 10 * _MIB_PER_GB)
         assert msg is not None
-        assert "11 GB" in msg and "10 GB" in msg
+        # need rounds up and usable rounds down, so the pair never reads as a tie
+        assert "12 GB" in msg and "10 GB" in msg and "8 GB usable" in msg
         assert "quantized GGUF" in msg
 
     def test_same_spill_on_a_large_ram_host_allows(self):
@@ -43,3 +44,10 @@ class TestHostOffloadShortfall:
         # 20 GB spill, headroom 2 GB. avail 23 GB -> fits; 21 GB -> refuse.
         assert _shortfall(20 * _GB, 23 * _MIB_PER_GB) is None
         assert _shortfall(20 * _GB, 21 * _MIB_PER_GB) is not None
+
+    def test_a_refusal_never_prints_a_need_at_or_under_the_usable_figure(self):
+        """A spill inside available RAM but inside the headroom too is still refused, so
+        the message must not read as 7 GB not fitting in 8 GB."""
+        msg = _shortfall(7 * _GB, 8 * _MIB_PER_GB)
+        assert msg is not None
+        assert "About 7 GB" in msg and "6 GB usable" in msg
