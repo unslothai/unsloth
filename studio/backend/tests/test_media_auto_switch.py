@@ -97,6 +97,20 @@ def enabled(monkeypatch):
     monkeypatch.setattr(settings, "get_media_auto_switch_enabled", lambda: True)
 
 
+@pytest.fixture
+def takes_the_gpu(monkeypatch):
+    """Pin the load to the GPU-taking path instead of inheriting the host's device.
+
+    Whether the switch waits on chat and on the other media backend, and which gates it holds,
+    is decided by ``load_takes_the_gpu`` -- so a test about that wait reads the running host
+    unless it says otherwise, and passes on a CUDA box while failing on every CPU-only CI
+    runner. Both bindings, like the CPU test below: the drain sizes its wait with one, the
+    switch decides on the gpu lock with the other.
+    """
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: True)
+
+
 # ── resolving a name ────────────────────────────────────────────────
 
 
@@ -1135,7 +1149,7 @@ async def _lock_is_held(owner):
 
 @pytest.mark.parametrize("busy", ["other media backend", "chat"])
 def test_a_switch_waits_for_work_the_gpu_handoff_would_cancel(
-    flux, enabled, backend, loads, monkeypatch, busy
+    flux, enabled, backend, loads, monkeypatch, takes_the_gpu, busy
 ):
     # The load takes the GPU through the arbiter, whose cross-owner handoff unloads whoever
     # holds it, cancelling a video generation or a streaming completion this request never met.
@@ -1201,7 +1215,9 @@ def test_a_cpu_load_does_not_wait_on_chat_or_the_other_backend(
     assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
 
 
-def test_a_stalled_gate_does_not_pin_the_switch_lock(flux, enabled, backend, monkeypatch):
+def test_a_stalled_gate_does_not_pin_the_switch_lock(
+    flux, enabled, backend, monkeypatch, takes_the_gpu
+):
     # A gate held elsewhere must not keep the setup task, and with it the switch lock, alive
     # past the budget: acquisition happens before the non-cancellable phase.
     import core.inference.media_keepwarm as keepwarm
@@ -2310,7 +2326,7 @@ def test_a_cached_split_gguf_missing_a_shard_is_not_advertised(catalog, tmp_path
 
 
 def test_chat_admitted_before_the_gate_still_stops_the_switch(
-    flux, enabled, backend, loads, monkeypatch
+    flux, enabled, backend, loads, monkeypatch, takes_the_gpu
 ):
     # A chat request that passed the lifecycle gate after the outer drain's last probe is
     # already running when the switch takes that gate, and the GPU handoff would terminate it.
