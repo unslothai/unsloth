@@ -6841,11 +6841,34 @@ class LlamaCppBackend:
             _cgroup_free_bytes = getattr(_policy, "_cgroup_free_bytes", None)
             cgroup_free = _cgroup_free_bytes() if _cgroup_free_bytes else None
             if cgroup_free is not None and cgroup_free >= 0:
+                # memory.current counts the GGUF's own page cache, which the kernel
+                # reclaims under pressure; leaving it out charges those pages twice.
+                cgroup_free += LlamaCppBackend._cgroup_reclaimable_file_bytes()
                 cgroup_mib = int(cgroup_free // (1024 * 1024))
                 avail = cgroup_mib if avail is None else min(avail, cgroup_mib)
         except Exception:
             pass
         return avail
+
+    @staticmethod
+    def _cgroup_reclaimable_file_bytes() -> int:
+        """Page cache the binding cgroup can reclaim rather than OOM on, or 0.
+
+        Only ``inactive_file``: active pages may be in use, so counting them would
+        overstate what a new allocation can actually take."""
+        try:
+            with open("/proc/self/cgroup", encoding = "utf-8") as f:
+                rel = next((l[3:].strip() for l in f if l.startswith("0::")), None)
+            if rel is None:
+                return 0
+            stat = os.path.join("/sys/fs/cgroup", rel.lstrip("/"), "memory.stat")
+            with open(stat, encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("inactive_file "):
+                        return max(0, int(line.split()[1]))
+        except Exception:
+            pass
+        return 0
 
     @staticmethod
     def _apu_ram_shortfall_message(
@@ -14795,7 +14818,17 @@ class LlamaCppBackend:
                     # launch floors --fit-ctx unless the extras pass their own.
                     _guard_ctx = effective_ctx
                     if _guard_ctx <= 0 and _manual_auto_fit:
-                        _guard_ctx = _extra_args_fit_ctx(extra_args) or _AUTO_FIT_MIN_CTX
+                        _guard_ctx = _extra_args_fit_ctx(extra_args) or 0
+                        # a build without --fit-ctx never gets the floor, so the fitter is
+                        # free to pick a smaller window and pricing 8192 would over-charge.
+                        if not _guard_ctx:
+                            try:
+                                _fit_ctx_supported = bool(
+                                    (_launch_caps(binary) or {}).get("supports_fit_ctx")
+                                )
+                            except Exception:
+                                _fit_ctx_supported = False
+                            _guard_ctx = _AUTO_FIT_MIN_CTX if _fit_ctx_supported else 0
                     if _guard_ctx != effective_ctx:
                         _guard_kv_override = _kv_bytes(_guard_ctx)
                         _mtp_reserve_bytes = _mtp_bytes(_guard_ctx) if _mtp_will_engage else 0
@@ -14912,14 +14945,20 @@ class LlamaCppBackend:
 
                 # manual with an explicit count emits --fit off below, past this seeded use_fit
                 _manual_layers = gpu_memory_mode == "manual" and (gpu_layers or 0) >= 0
-                # a --device naming no gpu offloads nothing, unless an explicit pick strips it
-                _guard_cpu_only = not gpu_ids and _device_selection_is_cpu(extra_args, os.environ)
+                # a --device naming no gpu, or an -ngl 0 override, offloads nothing
+                try:
+                    _extras_ngl = parse_gpu_layers_override(extra_args)
+                except ValueError:
+                    _extras_ngl = None
+                _guard_cpu_only = _extras_ngl == 0 or (
+                    not gpu_ids and _device_selection_is_cpu(extra_args, os.environ)
+                )
                 # same ceiling for a discrete gpu, where only the spill lands in host ram
                 if (
                     (use_fit or _guard_cpu_only)
                     and model_size is not None
                     and kv_cache_bytes is not None
-                    and not (_manual_layers and (gpu_layers or 0) > 0)
+                    and not (_manual_layers and (gpu_layers or 0) > 0 and not _guard_cpu_only)
                     # the pinned devices, so an arch-gated apu cannot skip the discrete guard
                     and not self._amd_apu_wants_unified_memory(
                         list(gpu_indices)
@@ -14943,16 +14982,13 @@ class LlamaCppBackend:
                         # both toggles off preserves a hand-typed --mlock / --no-mmap
                         or any(resolve_effective_memory_state(extra_args, os.environ))
                     )
-                    # --device none holds no vram, unless an explicit pick supersedes it
+                    # nothing reaches a gpu, so no allocation of any kind is offset
+                    _no_gpu_at_all = (
+                        _paravirtual_cpu_forced or _arch_gate_forced_cpu or _guard_cpu_only
+                    )
                     _fit_vram_mib = (
                         0
-                        if (
-                            _paravirtual_cpu_forced
-                            or _arch_gate_forced_cpu
-                            or _guard_cpu_only
-                            # gated to 0 layers above, so the gpus hold nothing
-                            or _manual_layers
-                        )
+                        if _no_gpu_at_all
                         else sum(
                             max(0, _free)
                             for _idx, _free in _detected_gpus
@@ -14964,8 +15000,10 @@ class LlamaCppBackend:
                     # a cpu-resident kv is not fungible with weights the gpus can take
                     _kv_on_host = not _kv_offload_from_args(extra_args)
                     _gpu_kv_bytes = 0 if _kv_on_host else _guard_kv_bytes
-                    # mlock duplicates the WEIGHT mapping in ram; kv and mtp stay on the card
-                    if _guard_mlocked:
+                    # page-locking duplicates the WEIGHT mapping in ram, and manual 0 layers
+                    # leaves it there; either way a companion-visible launch still holds its
+                    # kv and drafter on the card, so those keep the vram offset.
+                    if not _no_gpu_at_all and (_guard_mlocked or _manual_layers):
                         _host_bytes = model_size + max(
                             0, _mtp_reserve_bytes + _gpu_kv_bytes - _fit_vram_mib * 1024 * 1024
                         )

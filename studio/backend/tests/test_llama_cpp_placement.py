@@ -973,6 +973,8 @@ def test_manual_auto_fit_prices_the_kv_cache_it_will_actually_allocate(tmp_path,
     backend._can_estimate_kv = lambda: True
     # 4 GB at the fit floor, which is the term the zero context dropped.
     backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(4 * 1024**3) if ctx else 0
+    # the floor only applies on a build that gets --fit-ctx emitted
+    backend.probe_server_capabilities = lambda _binary = None: {"supports_fit_ctx": True}
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
     )
@@ -1178,3 +1180,64 @@ def test_a_pass_through_fit_ctx_is_priced_over_the_floor(tmp_path, monkeypatch):
             n_ctx = 0,
             extra_args = ["--fit-ctx", "65536"],
         )
+
+
+def test_an_extras_layer_override_of_zero_takes_no_vram_credit(tmp_path, monkeypatch):
+    """`--gpu-layers 0` is appended after Studio's own flags and wins, moving the whole
+    model back to host RAM, so the card's free VRAM is credit the launch never gets."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 12_000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf, extra_args = ["--gpu-layers", "0"])
+
+
+def test_a_cpu_override_beats_the_positive_manual_exemption(tmp_path, monkeypatch):
+    """Manual mode skips the guard at a positive layer count because the split cannot be
+    sized, but a `--device none` override makes the placement fully known again."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 13.3, free_mib = 12_000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8_000)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(
+            backend, gguf, gpu_memory_mode = "manual", gpu_layers = 10,
+            extra_args = ["--device", "none"],
+        )
+
+
+def test_manual_zero_layers_keeps_the_card_for_its_kv(tmp_path, monkeypatch):
+    """At 0 layers the weights sit in host RAM but a companion-visible launch still keeps
+    its KV on the card, so that cache must not be charged to RAM as well."""
+    backend, gguf = _offload_backend(tmp_path, gguf_gb = 6, free_mib = 24 * 1024)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(10 * 1024**3)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
+    )
+
+    assert _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)["cmd"]
+
+
+def test_reclaimable_cgroup_cache_is_added_back(monkeypatch, tmp_path):
+    """memory.current charges the GGUF's own page cache, which the kernel reclaims
+    instead of OOM-ing, so leaving it out would charge those pages twice."""
+    import core.inference.llama_cpp as mod
+
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.virtual_memory = lambda: types.SimpleNamespace(available = 64 * 1024**3)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(
+        hw, "_shared_policy", lambda: types.SimpleNamespace(
+            _cgroup_free_bytes = lambda: 12 * 1024**3
+        )
+    )
+    monkeypatch.setattr(
+        mod.LlamaCppBackend, "_cgroup_reclaimable_file_bytes", staticmethod(lambda: 8 * 1024**3)
+    )
+    assert mod.LlamaCppBackend._available_system_memory_mib() == 20 * 1024
