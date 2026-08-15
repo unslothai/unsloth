@@ -5657,6 +5657,7 @@ async def _maybe_auto_switch_model(
     if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
         return
     auto_switch_on = get_openai_auto_switch_enabled()
+
     # The reload-stash path also runs when idle-unload is active on its own (a
     # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
     # loop freed is restored on the next request. The resolver-based switch still
@@ -5679,9 +5680,7 @@ async def _maybe_auto_switch_model(
         raise HTTPException(
             status_code = 400,
             detail = (
-                error_body_for_path(
-                    path, message, status = 400, code = "invalid_value", param = "model"
-                )
+                error_body_for_path(path, message, status = 400, code = "invalid_value", param = "model")
                 if isinstance(path, str)
                 else message
             ),

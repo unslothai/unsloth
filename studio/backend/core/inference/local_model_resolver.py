@@ -242,11 +242,12 @@ def _model_type_has_a_causal_head(model_type) -> bool:
     if "transformers" in sys.modules:
         try:
             from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-
             return name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
         except Exception:
             pass
     return not (name in _NON_CHAT_MODEL_TYPES or name.split("-")[0] in _NON_CHAT_MODEL_TYPES)
+
+
 # The chat loader reaches these weights through causal and vision auto classes, so an
 # encoder-only or classifier checkpoint has no head it can generate with.
 _AUDIO_TYPES_THE_CHAT_SWITCH_SERVES = ("audio_vlm",)
