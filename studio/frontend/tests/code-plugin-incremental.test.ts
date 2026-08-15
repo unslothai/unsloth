@@ -351,8 +351,7 @@ test("re-opening a thread answers every fence from cache", async () => {
   for (const code of blocks) {
     first.push(await highlightOnce(plugin, { code, language, themes: THEMES }));
   }
-  // A thread is mounted whole, so the second pass asks for all of them again.
-  // The same object back means the tokenizer was never reached.
+  // A thread mounts whole: the same object back means no tokenizer was reached.
   const reused = blocks.filter(
     (code, index) =>
       plugin.highlight({ code, language, themes: THEMES }) === first[index],
@@ -406,16 +405,14 @@ test("a single line past the throttle keeps its text and settles exact", async (
 test("a shorter prefix sibling fence keeps the longer one highlighted", async () => {
   const plugin = createCodePlugin({ themes: THEMES });
   const language = "json" as HighlightOptions["language"];
-  // Single-line, so the longer fence commits no line and its whole body stays
-  // reachable by a prefix match.
+  // Single-line, so the longer fence commits nothing and stays prefix-reachable.
   const shorter = `{"values": [${Array.from({ length: 300 }, (_, i) => `"item-${i}"`).join(", ")}`;
   const longer = `${shorter}, "only-in-the-longer-fence"]}`;
 
   await highlightOnce(plugin, { code: longer, language, themes: THEMES });
   await highlightOnce(plugin, { code: shorter, language, themes: THEMES });
 
-  // A thread re-renders every block in document order, so the shorter fence
-  // follows the longer one inside one refresh interval.
+  // Document order renders the shorter fence next, within one refresh interval.
   let rendered: HighlightResult | null = null;
   for (let frame = 0; frame < 3; frame += 1) {
     rendered = plugin.highlight({ code: longer, language, themes: THEMES });
