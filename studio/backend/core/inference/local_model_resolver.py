@@ -396,7 +396,7 @@ def _weight_shards_all_present(load_dir) -> bool:
     """
     import json
     import re
-    from pathlib import Path
+    from pathlib import PurePosixPath
 
     # A shard names its set in the filename, so one present without the index that
     # declares the rest is a half-downloaded directory. Only when the shards are the
@@ -422,16 +422,15 @@ def _weight_shards_all_present(load_dir) -> bool:
         if not isinstance(weight_map, dict) or not weight_map:
             return False
         for shard in set(weight_map.values()):
-            # Resolved relative to the index, so a subdirectory is valid; only a path
-            # escaping the checkpoint is not, and following one would leave the repo.
-            if not isinstance(shard, str) or not shard or Path(shard).is_absolute():
+            # Confinement is judged on the written path, not a resolved one: an HF cache
+            # snapshot symlinks its weights into blobs/, so resolving would place every
+            # cached checkpoint outside its own directory and withhold all of them.
+            if not isinstance(shard, str) or not shard:
                 return False
-            try:
-                target = (load_dir / shard).resolve()
-                target.relative_to(load_dir.resolve())
-            except (OSError, ValueError):
+            relative = PurePosixPath(shard.replace("\\", "/"))
+            if relative.is_absolute() or ".." in relative.parts:
                 return False
-            if not target.is_file():
+            if not (load_dir / relative).is_file():
                 return False
     return True
 

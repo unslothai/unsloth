@@ -8791,3 +8791,25 @@ def test_an_index_naming_shards_in_a_subdirectory_still_serves(tmp_path):
         '{"weight_map": {"a": "../escape.safetensors"}}'
     )
     assert resolver.local_servable_model(info) is None
+
+
+def test_a_symlinked_hf_snapshot_is_not_withheld(tmp_path):
+    # An HF cache snapshot symlinks its weights into blobs/, so judging shard confinement
+    # on a resolved path put every cached checkpoint outside its own directory and
+    # withheld all of them. Caught end to end, not by the file-backed fixtures above.
+    from types import SimpleNamespace
+
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    blob = blobs / "deadbeef"
+    blob.write_bytes(b"x" * 32)
+    snapshot = tmp_path / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(_CHAT_CONFIG)
+    (snapshot / "tokenizer.json").write_text("{}")
+    (snapshot / "model.safetensors").symlink_to(blob)
+    (snapshot / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model.safetensors"}}'
+    )
+    info = SimpleNamespace(id = str(snapshot), path = str(snapshot))
+    assert resolver.local_servable_model(info) == (False, ())
