@@ -58,8 +58,12 @@ pub fn pill_set_config(
         config.hotkey = current.hotkey.clone();
         config.ask_hotkey = current.ask_hotkey.clone();
     }
-    *state.config.lock().unwrap() = config.clone();
+    // Commit only once it is on disk and the hotkey is applied. Updating first
+    // left a failed write with in-memory values the next frontend sync reads
+    // back as already-applied, so it skipped the retry and the shortcut stayed
+    // stale for the session.
     persist_and_apply(&app, &config)?;
+    *state.config.lock().unwrap() = config.clone();
     Ok(make_status(config))
 }
 
