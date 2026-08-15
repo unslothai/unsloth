@@ -24,8 +24,9 @@ export function resetApiBase() {
   apiBase = initialApiBase
 }
 
-export function setApiBase(port: number) {
-  apiBase = `http://127.0.0.1:${port}`
+export function setApiBase(port: number, host = '127.0.0.1') {
+  const urlHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  apiBase = `http://${urlHost}:${port}`
 }
 
 export function getApiBase(): string {

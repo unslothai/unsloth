@@ -62,7 +62,7 @@ fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
 }
 
 fn auth_url(port: u16, route: &str) -> String {
-    format!("http://127.0.0.1:{port}/api/auth/{route}")
+    crate::process::backend_url(port, &format!("/api/auth/{route}"))
 }
 
 fn home_dir() -> Result<PathBuf, String> {

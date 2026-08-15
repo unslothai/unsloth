@@ -63,6 +63,7 @@ type DesktopPreflightDisposition =
 interface DesktopPreflightResult {
   disposition: DesktopPreflightDisposition;
   reason: string | null;
+  host: string;
   port: number | null;
   can_auto_repair: boolean;
   managed_bin: string | null;
@@ -257,7 +258,7 @@ export function useTauriBackend() {
             setBackendError("Desktop preflight found a backend without a port.");
             return;
           }
-          setApiBase(preflight.port);
+          setApiBase(preflight.port, preflight.host);
           portRef.current = preflight.port;
           setIsExternalServer(true);
           setStartupMessage(SERVER_STARTUP_MESSAGE);
@@ -270,7 +271,7 @@ export function useTauriBackend() {
             setBackendError("Desktop preflight found an owned backend without a port.");
             return;
           }
-          setApiBase(preflight.port);
+          setApiBase(preflight.port, preflight.host);
           portRef.current = preflight.port;
           setIsExternalServer(false);
           stopExternalServerPoll();
@@ -324,7 +325,7 @@ export function useTauriBackend() {
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      // backend/run.py keeps the 8888-8908 fallback via server-port/TAURI_PORT.
+      // The backend reports its selected port through server-port/TAURI_PORT.
       await invoke("start_managed_server", { port: 8888 });
 
       // Rust emits server-port only after validating the desktop-owned process.
@@ -335,7 +336,6 @@ export function useTauriBackend() {
       );
 
       if (startupResult.status === "ready") {
-        setApiBase(startupResult.port);
         setRunningStatus();
         startingRef.current = false;
         return;
@@ -626,12 +626,12 @@ export function useTauriBackend() {
         setBackendError(e.payload, "repair-error");
       });
 
-      register<number>("server-port", (e) => {
-        portRef.current = e.payload;
+      register<{ host: string; port: number }>("server-port", (e) => {
+        portRef.current = e.payload.port;
         // A validated port means startup finished after all, so a later crash is
         // a real crash and deserves the generic message.
         startTimedOutRef.current = false;
-        setApiBase(e.payload);
+        setApiBase(e.payload.port, e.payload.host);
       });
 
       register<void>("server-crashed", () => {

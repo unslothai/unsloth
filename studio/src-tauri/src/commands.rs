@@ -339,7 +339,7 @@ async fn check_health_inner(port: u16) -> Result<BackendLiveness, reqwest::Error
     let mut json = None;
     for path in ["/api/liveness", "/api/health"] {
         let resp = client
-            .get(format!("http://127.0.0.1:{}{}", port, path))
+            .get(crate::process::backend_url(port, path))
             .send()
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND && path == "/api/liveness" {

@@ -74,11 +74,16 @@ fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
     }
 }
 
+fn configured_backend_host() -> String {
+    crate::process::backend_connect_host().to_string()
+}
+
 fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPreflightResult {
     match (backend, managed) {
         (BackendProbe::ExternalConflict { port, reason }, managed) => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::ExternalConflict,
             reason: Some(reason),
+            host: configured_backend_host(),
             port: Some(port),
             can_auto_repair: false,
             managed_bin: managed_bin_for_result(&managed),
@@ -86,6 +91,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
         (BackendProbe::Ready { port }, managed) => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::AttachedReady,
             reason: None,
+            host: configured_backend_host(),
             port: Some(port),
             can_auto_repair: false,
             managed_bin: managed_bin_for_result(&managed),
@@ -94,6 +100,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             ManagedProbe::Ready { bin } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedReady,
                 reason: None,
+                host: configured_backend_host(),
                 port: None,
                 can_auto_repair: false,
                 managed_bin: Some(bin),
@@ -103,12 +110,14 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
                 // The repair needs the same home directory, so do not offer it.
                 can_auto_repair: release_auto_repair() && !managed::is_context_reason(&reason),
                 reason: Some(reason),
+                host: configured_backend_host(),
                 port: None,
                 managed_bin: Some(bin),
             },
             ManagedProbe::Missing => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::NotInstalled,
                 reason: None,
+                host: configured_backend_host(),
                 port: None,
                 can_auto_repair: false,
                 managed_bin: None,
@@ -117,6 +126,7 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             ManagedProbe::Unavailable { reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
                 reason: Some(reason),
+                host: configured_backend_host(),
                 port: None,
                 can_auto_repair: false,
                 managed_bin: None,
@@ -137,6 +147,7 @@ fn choose_owned_preflight(
         OwnedBackendReadiness::Ready => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::OwnedReady,
             reason: None,
+            host: configured_backend_host(),
             port: Some(owned.port),
             can_auto_repair: false,
             managed_bin: managed_bin_for_result(managed),
@@ -144,6 +155,7 @@ fn choose_owned_preflight(
         OwnedBackendReadiness::Stale { reason } => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::OwnedStale,
             reason: Some(stale_reason(managed, reason)),
+            host: configured_backend_host(),
             port: Some(owned.port),
             can_auto_repair: stale_auto_repair(managed),
             managed_bin: managed_bin_for_result(managed),
@@ -159,6 +171,7 @@ fn choose_unmanageable_owned_preflight(
     DesktopPreflightResult {
         disposition: DesktopPreflightDisposition::ExternalConflict,
         reason: Some(owned_unmanageable_reason(&reason)),
+        host: configured_backend_host(),
         port: Some(port),
         can_auto_repair: false,
         managed_bin: managed_bin_for_result(managed),
@@ -172,6 +185,7 @@ fn choose_owned_transitional_preflight(
     DesktopPreflightResult {
         disposition: DesktopPreflightDisposition::ExternalConflict,
         reason: Some("desktop_owned_backend_starting".to_string()),
+        host: configured_backend_host(),
         port,
         can_auto_repair: false,
         managed_bin: managed_bin_for_result(managed),
@@ -188,6 +202,7 @@ fn choose_ownerless_spawned_preflight(
             DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::OwnedReady,
                 reason: None,
+                host: configured_backend_host(),
                 port: Some(*port),
                 can_auto_repair: false,
                 managed_bin: managed_bin_for_result(managed),
@@ -197,6 +212,7 @@ fn choose_ownerless_spawned_preflight(
             DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::OwnedStale,
                 reason: Some(stale_reason(managed, reason)),
+                host: configured_backend_host(),
                 port: Some(*port),
                 can_auto_repair: stale_auto_repair(managed),
                 managed_bin: managed_bin_for_result(managed),

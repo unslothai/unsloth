@@ -29,7 +29,7 @@ pub(super) struct BackendHealth {
 
 pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Option<BackendHealth> {
     let started = Instant::now();
-    let url = format!("http://127.0.0.1:{port}/api/health");
+    let url = crate::process::backend_url(port, "/api/health");
     let response = client.get(url).send().await.ok()?;
     if !response.status().is_success() {
         return None;
@@ -205,7 +205,7 @@ pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
     }
 
     let response = client
-        .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
+        .post(crate::process::backend_url(port, "/api/auth/desktop-login"))
         .json(&DesktopLoginProbe {
             secret: "desktop-preflight-invalid-secret",
         })
@@ -283,7 +283,7 @@ pub(super) async fn backend_desktop_auth_status(
         }
     }
 
-    let url = format!("http://127.0.0.1:{port}/api/auth/desktop-login");
+    let url = crate::process::backend_url(port, "/api/auth/desktop-login");
     let response = client
         .post(url)
         .json(&DesktopLoginProbe {

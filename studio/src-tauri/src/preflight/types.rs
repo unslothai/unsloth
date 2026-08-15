@@ -17,6 +17,7 @@ pub enum DesktopPreflightDisposition {
 pub struct DesktopPreflightResult {
     pub disposition: DesktopPreflightDisposition,
     pub reason: Option<String>,
+    pub host: String,
     pub port: Option<u16>,
     pub can_auto_repair: bool,
     pub managed_bin: Option<PathBuf>,

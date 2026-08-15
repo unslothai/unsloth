@@ -2260,10 +2260,41 @@ mod tests {
     }
 
     #[test]
-    fn backend_args_always_enable_api_only() {
+    fn desktop_launch_args_accept_network_bind_and_port() {
         assert_eq!(
-            backend_args(8888),
-            vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
+            desktop_launch_args(
+                [
+                    "--hidden".to_string(),
+                    "-H".to_string(),
+                    "0.0.0.0".to_string(),
+                    "-p".to_string(),
+                    "9999".to_string(),
+                    "--verbose".to_string(),
+                    "--disable-tools".to_string(),
+                ],
+                8888,
+            ),
+            Ok(DesktopLaunchArgs {
+                bind_host: "0.0.0.0".parse().unwrap(),
+                connect_host: "127.0.0.1".parse().unwrap(),
+                port: 9999,
+                passthrough: vec!["--verbose".to_string(), "--disable-tools".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn desktop_launch_args_rejects_unsafe_or_cli_only_options() {
+        assert!(desktop_launch_args(["--host=desktop.local".to_string()], 8888).is_err());
+        assert!(desktop_launch_args(["--port=0".to_string()], 8888).is_err());
+        assert!(desktop_launch_args(["--cloudflare".to_string()], 8888).is_err());
+    }
+
+    #[test]
+    fn backend_urls_bracket_ipv6_hosts() {
+        assert_eq!(
+            backend_url_for("::1".parse().unwrap(), 8888, "/api/health"),
+            "http://[::1]:8888/api/health"
         );
     }
 
@@ -2724,18 +2755,164 @@ pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "Unsloth binary not found. Please install Unsloth first.".to_string())
 }
 
-fn backend_args(port: u16) -> Vec<String> {
-    [
-        "studio",
-        "--api-only",
-        "-H",
-        "127.0.0.1",
-        "-p",
-        &port.to_string(),
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DesktopLaunchArgs {
+    bind_host: std::net::IpAddr,
+    connect_host: std::net::IpAddr,
+    port: u16,
+    passthrough: Vec<String>,
+}
+
+fn desktop_launch_args(
+    args: impl IntoIterator<Item = String>,
+    default_port: u16,
+) -> Result<DesktopLaunchArgs, String> {
+    let mut host = "127.0.0.1"
+        .parse::<std::net::IpAddr>()
+        .expect("valid loopback IP");
+    let mut port = default_port;
+    let mut passthrough = Vec::new();
+    let mut args = args.into_iter();
+
+    while let Some(arg) = args.next() {
+        let value = match arg.as_str() {
+            "--hidden" => continue,
+            "-H" | "--host" | "-p" | "--port" => args.next().ok_or_else(|| {
+                format!("{arg} requires a value. Use -H 0.0.0.0 -p {default_port}.")
+            })?,
+            "--api-only" => continue,
+            "--silent" | "-q" | "--verbose" | "-v" | "--enable-tools" | "--disable-tools"
+            | "--disable-dns-pinning" => {
+                passthrough.push(arg);
+                continue;
+            }
+            _ => {
+                if let Some(value) = arg.strip_prefix("--host=") {
+                    host = parse_bind_host(value)?;
+                    continue;
+                }
+                if let Some(value) = arg.strip_prefix("--port=") {
+                    port = parse_port(value)?;
+                    continue;
+                }
+                return Err(format!(
+                    "{arg} conflicts with Unsloth Desktop. Use `unsloth studio` for standalone server options."
+                ));
+            }
+        };
+        match arg.as_str() {
+            "-H" | "--host" => host = parse_bind_host(value)?,
+            "-p" | "--port" => port = parse_port(value)?,
+            _ => unreachable!(),
+        }
+    }
+
+    let connect_host = match host {
+        // A wildcard listener remains reachable through loopback, which preserves
+        // the Desktop app's local authentication and process ownership path.
+        std::net::IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1"
+            .parse()
+            .expect("valid loopback IP"),
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() => {
+            "::1".parse().expect("valid loopback IP")
+        }
+        _ => host,
+    };
+
+    Ok(DesktopLaunchArgs {
+        bind_host: host,
+        connect_host,
+        port,
+        passthrough,
+    })
+}
+
+fn parse_bind_host(value: impl AsRef<str>) -> Result<std::net::IpAddr, String> {
+    let value = value.as_ref();
+    value.parse().map_err(|_| {
+        format!(
+            "Invalid host: {value}. Unsloth Desktop accepts a local IP address, not a hostname."
+        )
+    })
+}
+
+fn parse_port(value: impl AsRef<str>) -> Result<u16, String> {
+    let value = value.as_ref();
+    let port = value.parse::<u16>().map_err(|_| format!("Invalid port: {value}"))?;
+    if port == 0 {
+        return Err("Invalid port: 0. Choose a port from 1 to 65535.".to_string());
+    }
+    Ok(port)
+}
+
+fn current_desktop_launch_args(default_port: u16) -> Result<DesktopLaunchArgs, String> {
+    #[cfg(test)]
+    {
+        return desktop_launch_args(Vec::new(), default_port);
+    }
+    #[cfg(not(test))]
+    desktop_launch_args(std::env::args().skip(1), default_port)
+}
+
+fn validate_bind_host(host: std::net::IpAddr) -> Result<(), String> {
+    std::net::TcpListener::bind((host, 0))
+        .map(|listener| drop(listener))
+        .map_err(|error| format!("{host} is not a local address this computer can bind: {error}"))
+}
+
+fn backend_url_for(host: std::net::IpAddr, port: u16, path: &str) -> String {
+    let host = host.to_string();
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    format!("http://{host}:{port}{path}")
+}
+
+pub(crate) fn backend_url(port: u16, path: &str) -> String {
+    backend_url_for(backend_connect_host(), port, path)
+}
+
+pub(crate) fn backend_connect_host() -> std::net::IpAddr {
+    #[cfg(test)]
+    return "127.0.0.1".parse().expect("valid loopback IP");
+
+    #[cfg(not(test))]
+    {
+        static CONNECT_HOST: std::sync::OnceLock<Result<std::net::IpAddr, String>> =
+            std::sync::OnceLock::new();
+        CONNECT_HOST
+            .get_or_init(|| {
+                let launch = current_desktop_launch_args(8888)?;
+                validate_bind_host(launch.bind_host)?;
+                Ok(launch.connect_host)
+            })
+            .as_ref()
+            .ok()
+            .copied()
+        // Never send desktop credentials to a host the local machine cannot bind.
+            .unwrap_or_else(|| "127.0.0.1".parse().expect("valid loopback IP"))
+    }
+}
+
+pub(crate) fn requested_backend_port(default_port: u16) -> u16 {
+    current_desktop_launch_args(default_port)
+        .map(|launch| launch.port)
+        .unwrap_or(default_port)
+}
+
+fn backend_args(launch: &DesktopLaunchArgs) -> Vec<String> {
+    let mut args = vec![
+        "studio".to_string(),
+        "--api-only".to_string(),
+        "-H".to_string(),
+        launch.bind_host.to_string(),
+        "-p".to_string(),
+        launch.port.to_string(),
+    ];
+    args.extend(launch.passthrough.iter().cloned());
+    args
 }
 
 /// Spawn the backend process and wire up stdout/stderr reader threads.
@@ -2797,7 +2974,9 @@ pub fn start_backend(
         }
     };
 
-    let args = backend_args(port);
+    let launch = current_desktop_launch_args(port)?;
+    validate_bind_host(launch.bind_host)?;
+    let args = backend_args(&launch);
     // Built before ownership is claimed: a missing managed interpreter must not
     // leave a pending owner behind for a backend that was never spawned.
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -3060,7 +3239,7 @@ async fn generic_backend_health_ok(port: u16) -> bool {
     let mut json = None;
     for path in ["/api/liveness", "/api/health"] {
         let response = match client
-            .get(format!("http://127.0.0.1:{port}{path}"))
+            .get(backend_url(port, path))
             .send()
             .await
         {
@@ -3276,7 +3455,10 @@ async fn validate_candidate_port(
     if should_emit {
         diagnostics::record_backend_port(&diagnostics_state, &session_id, port);
         info!("Validated backend port: {}", port);
-        let _ = app.emit("server-port", port);
+        let _ = app.emit(
+            "server-port",
+            serde_json::json!({ "host": backend_connect_host().to_string(), "port": port }),
+        );
     }
 }
 
@@ -5289,9 +5471,10 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn backend_args_are_unchanged_by_the_working_directory_fix() {
+        let launch = desktop_launch_args(Vec::new(), 8888).unwrap();
         assert_eq!(
-            backend_args(8888),
-            vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
+            &backend_args(&launch)[..6],
+            ["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
     }
 

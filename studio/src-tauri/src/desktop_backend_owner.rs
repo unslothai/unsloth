@@ -25,7 +25,7 @@ const STUDIO_INSTALL_ID_BYTES: usize = STUDIO_INSTALL_ID_HEX_LEN / 2;
 const STUDIO_INSTALL_ID_LOCK_FILE: &str = ".studio_install_id.lock";
 const OWNER_TOKEN_BYTES: usize = 32;
 const DESKTOP_PORT_START: u16 = 8888;
-const DESKTOP_PORT_END: u16 = 8908;
+const DESKTOP_PORT_FALLBACK_COUNT: u16 = 20;
 const LOCAL_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
@@ -139,7 +139,8 @@ struct TokenResponse {
 }
 
 pub(crate) fn desktop_candidate_ports() -> std::ops::RangeInclusive<u16> {
-    DESKTOP_PORT_START..=DESKTOP_PORT_END
+    let start = crate::process::requested_backend_port(DESKTOP_PORT_START);
+    start..=start.saturating_add(DESKTOP_PORT_FALLBACK_COUNT)
 }
 
 pub(crate) fn is_valid_studio_root_id(value: &str) -> bool {
@@ -807,7 +808,7 @@ async fn fetch_liveness(
     let client = crate::loopback_http::client(timeout)?;
     for path in ["/api/liveness", "/api/health"] {
         let response = client
-            .get(format!("http://127.0.0.1:{port}{path}"))
+            .get(crate::process::backend_url(port, path))
             .send()
             .await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND && path == "/api/liveness" {
@@ -841,7 +842,7 @@ async fn fetch_health(
     access_token: Option<&str>,
 ) -> Result<Option<HealthResponse>, String> {
     let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
-    let mut request = client.get(format!("http://127.0.0.1:{port}/api/health"));
+    let mut request = client.get(crate::process::backend_url(port, "/api/health"));
     if let Some(access_token) = access_token {
         request = request.bearer_auth(access_token);
     }
@@ -870,7 +871,7 @@ async fn desktop_login_route_compatible(port: u16, timeout: Duration) -> bool {
         Err(_) => return false,
     };
     match client
-        .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
+        .post(crate::process::backend_url(port, "/api/auth/desktop-login"))
         .json(&DesktopLoginPayload {
             secret: "desktop-owner-adoption-invalid-secret",
         })
@@ -885,7 +886,7 @@ async fn desktop_login_route_compatible(port: u16, timeout: Duration) -> bool {
 async fn desktop_secret_login(port: u16, secret: &str) -> Result<String, String> {
     let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
-        .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
+        .post(crate::process::backend_url(port, "/api/auth/desktop-login"))
         .json(&DesktopLoginPayload { secret })
         .send()
         .await
@@ -1161,7 +1162,7 @@ pub(crate) fn exact_port_http_shutdown_blocking(port: u16) -> Result<(), String>
 }
 
 pub(crate) fn port_is_listening_blocking(port: u16, timeout: Duration) -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::new(crate::process::backend_connect_host(), port);
     TcpStream::connect_timeout(&addr, timeout).is_ok()
 }
 
@@ -1183,9 +1184,9 @@ fn http_request_blocking(
     extra_headers: &[String],
     body: &[u8],
 ) -> Result<SimpleHttpResponse, String> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::new(crate::process::backend_connect_host(), port);
     let mut stream = TcpStream::connect_timeout(&addr, LOCAL_HTTP_TIMEOUT)
-        .map_err(|e| format!("connect to 127.0.0.1:{port}: {e}"))?;
+        .map_err(|e| format!("connect to {addr}: {e}"))?;
     stream
         .set_read_timeout(Some(LOCAL_HTTP_TIMEOUT))
         .map_err(|e| e.to_string())?;
@@ -1194,7 +1195,7 @@ fn http_request_blocking(
         .map_err(|e| e.to_string())?;
 
     let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
     )
     .into_bytes();
