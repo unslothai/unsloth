@@ -5032,18 +5032,27 @@ def _spec(n, bind):
         return False
     if s is None:
         return False
-    if not bind:
-        # an editable install resolves THROUGH its finder into the checkout, which
-        # is the whole point there, so location cannot bind
-        return True
-    # otherwise the module must live under the selected distribution's own root:
-    # -I still runs site processing, so an executable .pth can put a same-named
-    # copy on sys.path and answer for a payload that is gone
-    _where = [x for x in list(getattr(s, 'submodule_search_locations', None) or []) if x]
-    if s.origin:
-        _where.append(s.origin)
-    _base = os.path.abspath(str(d.locate_file('')))
-    return any(os.path.abspath(x).startswith(_base + os.sep) for x in _where)
+    # bind=False for an editable install: it resolves THROUGH its finder into the
+    # checkout, which is the whole point there, so location cannot bind. Otherwise
+    # the module must live under the selected distribution's own root -- -I still
+    # runs site processing, so an executable .pth can put a same-named copy on
+    # sys.path and answer for a payload that is gone.
+    _base = os.path.abspath(str(d.locate_file(''))) if bind else None
+    def _inside(p):
+        return _base is None or os.path.abspath(p).startswith(_base + os.sep)
+    if s.origin and s.origin != 'namespace':
+        return _inside(s.origin)
+    # A namespace spec is not payload on its own: an emptied package directory
+    # still answers find_spec with its own path. A real PEP 420 namespace holds
+    # modules, so require the directory to contain something that is not just the
+    # bytecode cache left behind when the sources were quarantined.
+    for _p in list(getattr(s, 'submodule_search_locations', None) or []):
+        try:
+            if _p and _inside(_p) and [_e for _e in os.listdir(_p) if _e != '__pycache__']:
+                return True
+        except OSError:
+            continue
+    return False
 if not rows and not damaged:
     if tops:
         damaged = not all(_spec(t, not _edit) for t in tops if t)
