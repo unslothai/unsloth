@@ -291,6 +291,8 @@ const PageDragContext = createContext(false);
 // instead of aui.thread() so queues can keep advancing in the background.
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
+  /** The project this queue was started in, for a chat with no row to read. */
+  getQueueProjectId: () => string | null;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
   append: (prompt: string) => void | Promise<void>;
@@ -486,11 +488,8 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     return true;
   }
   const threadId = item.target.getDocumentThreadId();
-  if (!threadId) {
-    return false;
-  }
   try {
-    if (item.target.usesThreadDocuments) {
+    if (threadId && item.target.usesThreadDocuments) {
       const documents = await listThreadDocuments(threadId);
       if (documents.some(indexingDocument)) {
         return true;
@@ -499,8 +498,12 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     // The chat's project sources are retrieved whatever the Docs pill says
     // (chat-adapter's rag_scope), and isIndexing() above only answers while the
     // bar that watches them is mounted and current. A queue waiting in the
-    // background has neither, so ask for the project directly.
-    const projectId = await resolveProjectId(threadId);
+    // background has neither, so ask for the project directly. A chat still
+    // waiting for its own row has no project to resolve, so the queue falls
+    // back to the one it was started in.
+    const projectId = threadId
+      ? await resolveProjectId(threadId)
+      : item.target.getQueueProjectId();
     if (!projectId) {
       return false;
     }
@@ -2856,6 +2859,12 @@ const Composer: FC<{
     }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
+    // A chat whose row does not exist yet has no project to look up, and the
+    // store holds whichever project is on screen when the queue polls, which is
+    // not this one after the user navigates away. Read it here instead.
+    const projectIdAtQueueStart = incognitoAtQueueStart
+      ? null
+      : (chatStateAtQueueStart.activeProjectId ?? null);
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
@@ -3062,6 +3071,7 @@ const Composer: FC<{
         promptQueueTargetMountedRef.current &&
         isTargetCurrentThread() &&
         indexingActiveRef.current,
+      getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,

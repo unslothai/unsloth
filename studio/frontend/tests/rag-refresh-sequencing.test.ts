@@ -809,7 +809,7 @@ test("a background prompt queue checks the project it will send to", () => {
     thread,
     /if \(!item\.target\.usesThreadDocuments\) \{\s*return false;/,
   );
-  assert.match(thread, /const projectId = await resolveProjectId\(threadId\);/);
+  assert.match(thread, /\? await resolveProjectId\(threadId\)/);
   // Work in flight counts as well as rows: an upload has no row until it lands.
   assert.match(
     thread,
@@ -819,4 +819,29 @@ test("a background prompt queue checks the project it will send to", () => {
     thread,
     /const projectDocuments = await listProjectDocuments\(projectId\);\s*return projectDocuments\.some\(indexingDocument\);/,
   );
+});
+
+// A queue started in a chat that has no row yet cannot look its project up: the row is
+// not there, and the store holds whichever project is on screen when the poll lands,
+// which is not this one once the user navigates away. Without the project the poll
+// dispatches the prompt while a project source is still indexing.
+test("a queue in a chat with no row still waits on its project", () => {
+  const src = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  // Captured at queue start, beside the other snapshots, and never for incognito
+  // (which has no project and no row to reconcile against).
+  assert.match(
+    src,
+    /const projectIdAtQueueStart = incognitoAtQueueStart\s*\?\s*null\s*:\s*\(chatStateAtQueueStart\.activeProjectId \?\? null\);/,
+  );
+  assert.match(src, /getQueueProjectId: \(\) => projectIdAtQueueStart,/);
+  // The thread lookup stays the source of truth wherever there is a thread.
+  assert.match(
+    src,
+    /const projectId = threadId\s*\?\s*await resolveProjectId\(threadId\)\s*:\s*item\.target\.getQueueProjectId\(\);/,
+  );
+  // And the thread-document read is still only made when there is a thread.
+  assert.match(src, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
 });
