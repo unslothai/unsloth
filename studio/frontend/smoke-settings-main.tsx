@@ -27,7 +27,9 @@ import "./src/index.css";
 
 declare global {
   interface Window {
-    __settingsSmoke: {
+    // Optional: this entry is in the app's typecheck project, and app code must not be
+    // able to reach a handle that only the harness page installs.
+    __settingsSmoke?: {
       open: (tab?: string) => void;
       close: () => void;
       setTab: (tab: string) => void;

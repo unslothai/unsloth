@@ -113,6 +113,21 @@ def settle(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
     return last
 
 
+def settle_panel(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
+    """Settle, but do not accept a placeholder as the answer.
+
+    The panel renders from a deferred value, so a switch keeps the outgoing content on
+    screen until the incoming panel is ready. Under load that hand-off can hold still for
+    longer than SETTLE_MS, and settling on it reports a placeholder as the final panel.
+    """
+    deadline = time.time() + timeout_s
+    latest = settle(page, timeout_s = timeout_s)
+    while latest.get("elements", 0) < 5 and time.time() < deadline:
+        page.wait_for_timeout(100)
+        latest = settle(page, timeout_s = max(1.0, deadline - time.time()))
+    return latest
+
+
 def click_tab_and_observe(page, tab: str) -> dict:
     """Click a tab; record how long the panel keeps the old content and whether it blanks."""
     before = snapshot(page)
@@ -131,7 +146,7 @@ def click_tab_and_observe(page, tab: str) -> dict:
             changed_ms = round((time.time() - started) * 1000)
             break
         page.wait_for_timeout(20)
-    final = settle(page)
+    final = settle_panel(page)
     return {
         "before_sig": before.get("sig"),
         "changed_ms": changed_ms,
@@ -149,9 +164,9 @@ def open_dialog(page, tab: str | None = None) -> None:
 def run_chunk_fail(page) -> None:
     """One panel's module is blocked. The dialog must survive it, and so must the app."""
     open_dialog(page)
-    settle(page)
+    settle_panel(page)
     page.locator('[data-testid="settings-tab-general"]').click(force = True, timeout = 15000)
-    settle(page)
+    settle_panel(page)
     page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]').click(force = True, timeout = 15000)
     page.wait_for_timeout(3000)
     state = page.evaluate(
@@ -189,7 +204,7 @@ def run_chunk_fail(page) -> None:
         log("the dialog and its twelve nav entries survived")
     # Another tab must still work.
     page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
-    after = settle(page)
+    after = settle_panel(page)
     report["chunk_fail_recovery"] = after
     if not after.get("present") or after.get("elements", 0) < 5:
         fail(f"after a failed panel, another tab no longer renders ({after})")
@@ -203,10 +218,10 @@ def run(page) -> None:
         return
     # --- 1. every tab renders when selected -----------------------------------------
     open_dialog(page)
-    settle(page)
+    settle_panel(page)
     # Start from a tab that is not the persisted one, so the first iteration is a real switch.
     page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
-    settle(page)
+    settle_panel(page)
     for tab in TABS:
         obs = click_tab_and_observe(page, tab)
         report["tabs"][tab] = obs
@@ -231,7 +246,7 @@ def run(page) -> None:
     for tab in ("voice", "api-keys", "data", "about", "connections"):
         open_dialog(page, tab)
         state = page.evaluate("() => window.__settingsSmoke.state()")
-        snap = settle(page)
+        snap = settle_panel(page)
         report.setdefault("deep_open", {})[tab] = {"state": state, "settled": snap}
         if state["activeTab"] != tab:
             fail(f"deep-open {tab}: store activeTab is {state['activeTab']}")
@@ -255,7 +270,7 @@ def run(page) -> None:
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
     query = target_label.split()[0]
     open_dialog(page, "about")
-    settle(page)
+    settle_panel(page)
     search = page.locator('div[role="dialog"] aside input').first
     search.fill(query)
     page.wait_for_timeout(400)
@@ -287,7 +302,7 @@ def run(page) -> None:
                 break
             page.wait_for_timeout(30)
         report["search"]["flashed"] = flashed
-        report["search"]["settled"] = settle(page)
+        report["search"]["settled"] = settle_panel(page)
         if not flashed:
             fail(
                 f"search jump to '{target_label}': never flashed "
@@ -300,6 +315,12 @@ def run(page) -> None:
     report["steps"].append("search-jump")
 
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
+
+
+def write_report() -> None:
+    OUT.parent.mkdir(parents = True, exist_ok = True)
+    OUT.write_text(json.dumps(report, indent = 2))
+    log(f"report -> {OUT}")
 
 
 def main() -> int:
@@ -363,12 +384,18 @@ def main() -> int:
                 if report["error_boundary"] and not CHUNK_FAIL:
                     fail(f"error boundary tripped: {report['error_boundary']}")
             browser.close()
+    except Exception as exc:
+        # The dev server occasionally does not serve a module on a cold start, which
+        # strands the page before any of this is under test. Report it as what it is
+        # rather than dying with no record of how far the run got.
+        report["aborted"] = f"{type(exc).__name__}: {exc}"
+        fail(f"harness aborted: {report['aborted'].splitlines()[0]}")
+        write_report()
+        raise
     finally:
         stop_process(vite)
 
-    OUT.parent.mkdir(parents = True, exist_ok = True)
-    OUT.write_text(json.dumps(report, indent = 2))
-    log(f"report -> {OUT}")
+    write_report()
     if report["failures"]:
         log(f"{len(report['failures'])} FAILURES")
         for f in report["failures"]:
