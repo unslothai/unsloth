@@ -96,6 +96,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
+      showMore: "もっと見る",
+      showLess: "表示を減らす",
       settings: "設定",
       api: "API",
       lightMode: "ライトモード",
@@ -109,6 +111,44 @@ export const ja = {
       title: "ページが見つかりません",
       description: "{path} は存在しません。",
       backToChat: "チャットに戻る",
+    },
+    selection: {
+      pinProjects: "プロジェクトをピン留め",
+      unpinProjects: "ピン留めを解除",
+      deleteProjects: "プロジェクトを削除",
+      deleteProjectsTitle: "プロジェクトを削除",
+      deleteProjectsDescription:
+        "{count} 件のプロジェクトを削除しますか。含まれるチャットは完全に削除されます。",
+      deleteProjectsFilesDescription:
+        "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
+      countSelected: "{count} 件選択中",
+      pinChats: "チャットをピン留め",
+      unpinChats: "ピン留めを解除",
+      archiveChats: "チャットをアーカイブ",
+      markUnread: "未読にする",
+      deleteChats: "チャットを削除",
+      deleteTitle: "チャットを削除",
+      deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
+      deleteFilesDescription:
+        "各チャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
+      deleteFilesLabel: "ファイルとサンドボックスフォルダーを削除",
+      deleteChatFilesDescription:
+        "このチャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内に書き込んだファイルは、そのプロジェクトのワークスペースに残ります。",
+    },
+    organize: {
+      sidebarHeading: "サイドバーの整理",
+      byProject: "プロジェクト別",
+      inOneList: "1つのリストで",
+      sortChatsBy: "チャットの並び順",
+      sortPinnedBy: "ピン留めの並び順",
+      priority: "優先度",
+      lastUpdated: "最終更新",
+      manualOrder: "手動で並べ替え",
+      moveUp: "上へ移動",
+      moveDown: "下へ移動",
+      organizeChats: "チャットを整理",
+      organizeProjects: "プロジェクトを整理",
+      sortPinnedChats: "ピン留めチャットを並べ替え",
     },
     dialog: {
       deleteChat: {
@@ -388,13 +428,16 @@ export const ja = {
         idleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         idleSecondsAriaLabel: "アイドル時の自動アンロードまでの秒数",
+        mediaEnable: "リクエストごとに画像・動画モデルを切り替え",
+        mediaEnableDescription:
+          "API リクエストで指定されたダウンロード済みの画像・動画モデルを、生成前に読み込みます。上の設定はチャットモデルのみが対象で、これは独立した設定です。デフォルトではオフです。",
         mediaIdleUnload: "画像と動画のアイドル時の自動アンロード",
         mediaIdleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。これは独立した設定です。上の設定はチャットモデルのみが対象です。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mediaIdleSecondsAriaLabel:
           "画像と動画のアイドル時の自動アンロードまでの秒数",
         mediaIdlePaused:
-          "「モデルを GPU メモリに保持」または「API が読み込んだモデルのみアンロード」がオンの間は一時停止します。",
+          "「モデルを GPU メモリに保持」がオンの間は一時停止します。",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
@@ -925,6 +968,9 @@ export const ja = {
       },
     },
     chat: {
+      projectsSection: "プロジェクトセクションを表示",
+      projectsSectionDescription:
+        "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       title: "チャット",
       description: "このデバイスでのチャットの動作をカスタマイズします。",
       modelSelection: {
@@ -946,6 +992,9 @@ export const ja = {
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
       },
+      pastedTextThreshold: "長い貼り付けを圧縮",
+      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。",
+      pastedTextThresholdOff: "オフ",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
@@ -1053,6 +1102,9 @@ export const ja = {
       confirmBeforeDeleting: "削除前に確認する",
       confirmBeforeDeletingDescription:
         "チャットを削除する前に確認を求めます。オフにすると即座に削除します。",
+      alwaysDeleteFiles: "常にファイルを削除",
+      alwaysDeleteFilesDescription:
+        "チャットを削除すると、そのチャット専用のサンドボックスフォルダーもディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
       filesSection: "ファイル",
       uploadedFiles: "アップロード済みファイル",
       uploadedFilesDescription:

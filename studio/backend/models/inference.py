@@ -1056,6 +1056,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
             "used ngram-mod or spec-off instead -- updating won't help; choose "
             "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
+            "has an embedded Hybrid Mamba MTP head and the placement offloads "
+            "only part of it, where the recurrent rollback copies cost more "
+            "layers than the drafting wins back -- updating won't help; choose "
+            "MTP in Settings to force it. "
             "None when the requested strategy engaged or was not requested."
         ),
     )
@@ -3659,6 +3664,12 @@ class VideoGenerateRequest(BaseModel):
     prompt: str = Field(..., min_length = 1, description = "Text prompt")
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
+    )
+    model: Optional[str] = Field(
+        None,
+        description = "Video model to generate on. Only read when media auto-switch is on, "
+        "where a downloaded model that is not the resident one is loaded first; omit to use "
+        "whatever is loaded. The Video page never sends it.",
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
     # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The

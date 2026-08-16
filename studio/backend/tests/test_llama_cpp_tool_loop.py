@@ -4939,3 +4939,283 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
     assert executed == []  # nothing parsed, nothing ran
     assert ends, "provisional card left dangling (no tool_end)"
     assert ends[-1]["tool_call_id"] == "call_0"
+
+
+def _tool_call_fragment(
+    index: int,
+    arguments: str,
+    call_id: str | None = None,
+) -> str:
+    delta: dict = {"index": index, "function": {"arguments": arguments}}
+    if call_id is not None:
+        delta["id"] = call_id
+    return _sse({"tool_calls": [delta]})
+
+
+def _tool_call_opening(index: int, call_id: str, name: str, arguments: str) -> str:
+    return _sse(
+        {
+            "tool_calls": [
+                {
+                    "index": index,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments},
+                }
+            ]
+        }
+    )
+
+
+def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch):
+    """Two tool rounds in one llama-server response, both streamed at index 0.
+
+    llama-server restarts ``delta.tool_calls[].index`` at 0 for every round
+    while giving each call its own id, and the continuation fragments carrying
+    the rest of the arguments arrive bare. Keying the accumulator on the index
+    alone appended round two's name and argument tail to round one, leaving a
+    single ``web_searchweb_search`` entry that matched no enabled tool, so
+    neither call ran.
+    """
+
+    stream = [
+        _tool_call_opening(0, "call_a", "web_search", '{"query":'),
+        _tool_call_fragment(0, '"first"}'),
+        _tool_call_opening(0, "call_b", "web_search", '{"query":'),
+        _tool_call_fragment(0, '"second"}'),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search twice"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [
+        {"name": "web_search", "arguments": {"query": "first"}},
+        {"name": "web_search", "arguments": {"query": "second"}},
+    ]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a",
+        "call_b",
+    ]
+
+    # The replayed conversation must list both calls with their own arguments.
+    asst = next(m for m in payloads[1]["messages"] if m.get("tool_calls"))
+    assert [tc["id"] for tc in asst["tool_calls"]] == ["call_a", "call_b"]
+    assert [tc["function"]["arguments"] for tc in asst["tool_calls"]] == [
+        '{"query":"first"}',
+        '{"query":"second"}',
+    ]
+
+
+def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch):
+    """Two calls at index 0 with the id repeated on every argument fragment.
+
+    The latest-index mapping only exists to place fragments that carry no id,
+    so a fragment naming the call the index opened first has to go back to it
+    rather than fork a third slot. Forking left that call with truncated JSON
+    and dropped the fragment for having no function name.
+    """
+
+    stream = [
+        _tool_call_opening(0, "call_a", "web_search", '{"query":'),
+        _tool_call_opening(0, "call_b", "web_search", '{"query":'),
+        _tool_call_fragment(0, '"first"}', call_id = "call_a"),
+        _tool_call_fragment(0, '"second"}', call_id = "call_b"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search twice"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [
+        {"name": "web_search", "arguments": {"query": "first"}},
+        {"name": "web_search", "arguments": {"query": "second"}},
+    ]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a",
+        "call_b",
+    ]
+
+
+def test_structured_call_id_arriving_after_the_opening_delta_updates_that_call(monkeypatch):
+    """llama-server can open a call with no id and send the real one later.
+
+    The opening slot holds the synthetic ``call_0`` until then, and treating
+    that placeholder as a rival id forked a second nameless slot: the fork was
+    dropped for having no function name and the original call ran on truncated
+    arguments.
+    """
+
+    stream = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"query":'},
+                    }
+                ]
+            }
+        ),
+        _tool_call_fragment(0, '"late"}', call_id = "call_late"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [{"name": "web_search", "arguments": {"query": "late"}}]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == ["call_late"]
+
+
+def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
+    """A first round at indices 0 and 1, then a second round back at index 0.
+
+    The fork belongs at the end: it arrived after both first-round calls, and
+    running it ahead of the index-1 call reorders side effects for stateful
+    tools. Grouping every fork next to the index it reused did exactly that.
+    """
+
+    stream = [
+        _tool_call_opening(0, "call_a", "web_search", '{"query":"a"}'),
+        _tool_call_opening(1, "call_b", "web_search", '{"query":"b"}'),
+        _tool_call_opening(0, "call_c", "web_search", '{"query":"c"}'),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append(arguments)
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search three times"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert calls == [{"query": "a"}, {"query": "b"}, {"query": "c"}]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a",
+        "call_b",
+        "call_c",
+    ]
+    asst = next(m for m in payloads[1]["messages"] if m.get("tool_calls"))
+    assert [tc["id"] for tc in asst["tool_calls"]] == ["call_a", "call_b", "call_c"]
+
+
+def test_parallel_disabled_suppresses_provisional_for_reused_index(monkeypatch):
+    """A later call at reused index 0 is not the first accumulated call.
+
+    ``parallel_tool_calls=false`` permits a provisional card only for the call
+    that can execute. Checking the raw index admitted every fork at index 0,
+    leaving a card for the truncated call that could only close empty.
+    """
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    big_cmd = "echo start\n" + "\n".join(f"echo line {i}" for i in range(60))
+    python_args = json.dumps({"code": big_code})
+    terminal_args = json.dumps({"command": big_cmd})
+    stream = [
+        _tool_call_opening(0, "call_py", "python", python_args[:-1]),
+        _tool_call_fragment(0, python_args[-1]),
+        _tool_call_opening(0, "call_term", "terminal", terminal_args[:-1]),
+        _tool_call_fragment(0, terminal_args[-1]),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream, final_stream], payloads)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "OK"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "do the first only"}],
+            tools = [
+                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+            disable_parallel_tool_use = True,
+            permission_mode = "off",
+        )
+    )
+
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
+    assert [e["tool_call_id"] for e in provisional] == ["call_py"]
+    assert calls == [("python", {"code": big_code})]
+    assert not [
+        e
+        for e in events
+        if e.get("tool_call_id") == "call_term"
+        and e.get("type") in {"tool_start", "tool_args", "tool_end"}
+    ]
