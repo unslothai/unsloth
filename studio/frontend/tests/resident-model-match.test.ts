@@ -149,7 +149,7 @@ test("selectModel checks residency before prompting to stop running chats", () =
     "utf8",
   );
   const residencyCheck = source.indexOf(
-    "residentModelMatchesPick(residentStatus",
+    "residentModelMatchesPick(status",
   );
   const confirmPrompt = source.indexOf(
     "await confirmStopRunningChatsIfNeeded(",

@@ -361,12 +361,8 @@ test("selectModel weighs the config and the lease before confirming a reload", (
     "utf8",
   );
   // Newline-tolerant: the call wraps once its argument list grows.
-  const configCheck = source.search(
-    /residentRuntimeMatchesConfig\(\s*residentStatus/,
-  );
-  const identityCheck = source.indexOf(
-    "residentModelMatchesPick(residentStatus",
-  );
+  const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
+  const identityCheck = source.indexOf("residentModelMatchesPick(status");
   const confirmPrompt = source.indexOf(
     "await confirmStopRunningChatsIfNeeded(",
   );
@@ -1145,9 +1141,7 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
     ),
     "utf8",
   );
-  const configCheck = source.search(
-    /residentRuntimeMatchesConfig\(\s*residentStatus/,
-  );
+  const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
   const rollback = source.indexOf("restorePreviousConfig();", configCheck);
   const reapply = source.indexOf("pickedMaxSeqLength", configCheck);
   assert.ok(
@@ -1172,6 +1166,57 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
 });
 
 /**
+ * The status that opens the window is not the one adopted.
+ *
+ * Between the first /api/inference/status and the decision there are awaits: the GPU
+ * device cache, the llama-flags catalogue, and the two server-wide settings reads. Another
+ * tab can swap the resident model inside that window, and this one is never told
+ * (subscribeModelLifecycle dispatches on its own window), so adopting the opening status
+ * would leave the picker naming this model while prompts went to the one now loaded.
+ */
+test("the shortcut re-reads and re-judges the status before adopting", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // The verdict is a named predicate, so it can be applied to more than one status.
+  assert.match(
+    source,
+    /const adoptable = \(status: InferenceStatusResponse\) =>/,
+    "the residency verdict is no longer callable against a second status",
+  );
+  const decision = source.search(
+    /const confirmedStatus = await getInferenceStatus\(\)/,
+  );
+  assert.ok(
+    decision > 0,
+    "the shortcut adopts the status it opened with, across every await above it",
+  );
+  assert.match(
+    source.slice(decision, decision + 200),
+    /if \(confirmedStatus && adoptable\(confirmedStatus\)\)/,
+    "the re-read is not judged, only fetched",
+  );
+  // And the adopted status is the fresh one, not the one the window opened with.
+  const adopt = source.indexOf("applyActiveModelStatusToStore(", decision);
+  assert.match(
+    source.slice(adopt, adopt + 60),
+    /applyActiveModelStatusToStore\(confirmedStatus/,
+  );
+  // A failed re-read must not adopt either: falling out of the block reaches /load.
+  assert.ok(
+    source.indexOf("await getInferenceStatus().catch(() => null)", decision) ===
+      decision + "const confirmedStatus = ".length,
+    "the re-read no longer tolerates a failed status",
+  );
+});
+
+/**
  * The comparison must be against what /load would send, and with no saved config that is
  * the live runtime store: the caller ran applyModelLoadConfigToRuntime(null) first, which
  * resets it to DEFAULT_PER_MODEL_CONFIG, and performLoad reads the store for every field
@@ -1188,9 +1233,7 @@ test("with no saved config the gate compares the live runtime, not nothing", () 
     ),
     "utf8",
   );
-  const configCheck = source.search(
-    /residentRuntimeMatchesConfig\(\s*residentStatus/,
-  );
+  const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
   assert.match(
     source.slice(configCheck, configCheck + 200),
     /pendingConfig\s*\?\?\s*currentRuntimePerModelConfig\(\)/,

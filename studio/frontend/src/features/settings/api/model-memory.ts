@@ -85,8 +85,17 @@ async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
  * Always refetches: `reloadRequired` and `memlockLimitBytes` describe the
  * currently loaded process, so a cached copy goes stale as soon as a model is
  * loaded or swapped. Concurrent calls still share one request.
+ *
+ * `force` drops that sharing, as the VRAM budget's reader does: a read that started
+ * before a save or a model transition answers about the state being replaced, and a
+ * caller deciding whether to reload for a policy change must not be handed it.
  */
-export async function loadModelMemorySettings() {
+export async function loadModelMemorySettings(
+  options: { force?: boolean } = {},
+) {
+  if (options.force) {
+    inFlightModelMemory = null;
+  }
   inFlightModelMemory ??= fetchModelMemorySettings()
     .then(publishModelMemory)
     .finally(() => {

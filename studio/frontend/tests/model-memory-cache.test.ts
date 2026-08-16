@@ -84,6 +84,32 @@ test("concurrent reads share one request", async () => {
   assert.deepEqual(b, c);
 });
 
+test("a forced read does not join one already in flight", async () => {
+  // Sharing is right for two panels painting the same answer and wrong for the
+  // resident-model shortcut: a read that started before a policy save describes the
+  // policy it replaced, and a reloadRequired false from that would suppress the very
+  // load the save was made for.
+  calls = [];
+  const joined = loadModelMemorySettings();
+  // The fake snapshots the body when the request goes out, so the second GET carries the
+  // saved policy and the first still carries the one it replaced.
+  nextBody = { ...API, reload_required: true };
+  const forced = loadModelMemorySettings({ force: true });
+  assert.equal(calls.length, 2, "the forced read must issue its own GET");
+  const [stale, fresh] = await Promise.all([joined, forced]);
+  assert.equal(
+    stale.reloadRequired,
+    false,
+    "the shared read keeps its own answer",
+  );
+  assert.equal(
+    fresh.reloadRequired,
+    true,
+    "the forced read sees the saved policy",
+  );
+  nextBody = { ...API };
+});
+
 test("a later read is NOT served from a cache", async () => {
   calls = [];
   await loadModelMemorySettings();

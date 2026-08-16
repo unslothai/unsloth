@@ -77,7 +77,11 @@ import {
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import { type CpuFallbackReason, isMultimodalResponse } from "../types/api";
+import {
+  type CpuFallbackReason,
+  type InferenceStatusResponse,
+  isMultimodalResponse,
+} from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
@@ -129,7 +133,10 @@ export type SelectedModelInput = {
 /** The two settings reads `serverWideReloadRequired` judges, fetched together. */
 async function readServerWideReloadHints(): Promise<boolean> {
   const [modelMemory, vramBudget] = await Promise.all([
-    loadModelMemorySettings().catch(() => null),
+    // Forced, like the budget below: a read that started before a save answers about
+    // the policy it replaced, and a false from that would suppress the very reload the
+    // save was made for.
+    loadModelMemorySettings({ force: true }).catch(() => null),
     // Forced: a shared read that started before the last load answers about the child
     // being replaced, not about the one resident now.
     loadVramBudgetSettings({ force: true }).catch(() => null),
@@ -701,9 +708,11 @@ export function useChatModelRuntime() {
         const managedFlags = residentStatus
           ? await loadManagedLlamaFlags().catch(() => null)
           : null;
-        if (
-          residentStatus &&
-          residentModelMatchesPick(residentStatus, {
+        // Hoisted so it can run twice: everything above was awaited, and in that window
+        // another tab can swap the resident model, which this one is never told about
+        // (the lifecycle events are dispatched on its own window).
+        const adoptable = (status: InferenceStatusResponse) =>
+          residentModelMatchesPick(status, {
             id: modelId,
             loadPath,
             ggufVariant,
@@ -713,7 +722,7 @@ export function useChatModelRuntime() {
           // next load retries the drafter. Short-circuiting would suppress that and strand
           // the user with speculation off, so let /load through and let the backend decide.
           !residentSpeculativeNeedsRepair(
-            residentStatus,
+            status,
             normalizeSpeculativeType(pendingConfig?.speculativeType) ??
               readPersistedSpeculativeType(),
           ) &&
@@ -727,7 +736,7 @@ export function useChatModelRuntime() {
           // both doors: reset to defaults after a hub or handoff pick, and still the
           // resident values where nothing reset it.
           residentRuntimeMatchesConfig(
-            residentStatus,
+            status,
             pendingConfig ?? currentRuntimePerModelConfig(),
             {
               // What the applier fills an unset field with, so the comparison is against
@@ -744,7 +753,7 @@ export function useChatModelRuntime() {
                   modelId,
                   ggufVariant,
                   // Identity matched above, so the resident model is this pick.
-                  isGguf: residentStatus.is_gguf,
+                  isGguf: status.is_gguf,
                   customContextLength,
                   ggufContextLength: live.ggufContextLength,
                   currentCheckpoint: live.params.checkpoint,
@@ -762,61 +771,72 @@ export function useChatModelRuntime() {
                 reconcilePersistedGpuIds(
                   ids,
                   savedIndexKind,
-                  residentStatus.is_diffusion ?? false,
+                  status.is_diffusion ?? false,
                 ),
               normalizeSpeculative: normalizeSpeculativeType,
             },
-          ) &&
+          );
+        if (
+          residentStatus &&
+          adoptable(residentStatus) &&
           // Both are server-wide, so a save leaves the pick and its config identical while
           // adopt_load_intent_if_matched forces a reload anyway. Without them a policy or
           // budget change made between two picks of one model would never reach the child.
           !(await readServerWideReloadHints())
         ) {
-          // Same window as the confirm below: a rival load may have started during that GET,
-          // and it owns the resident model now.
-          if (bailIfLoadInFlight()) return;
-          // Roll back the config pre-applied for the load that is not happening, before
-          // hydrating, so the resident status wins over the staged snapshot. The helper form
-          // carries the loaded diffusion flag a resident image model needs.
-          restorePreviousConfig();
-          // ...except for maxSeqLength, which the rollback has the last word on: it is a
-          // client-side generation cap, no status field echoes it, and applyActiveModelStatus
-          // below therefore cannot correct it. Leaving it rolled back would hand this model
-          // the OUTGOING one's cap, which is visible in truncation but nowhere on screen.
-          // An absent cap is not silence either: applyPerModelConfigToRuntime resolves it to
-          // defaultInferenceParams.maxSeqLength, so leaving it unset kept the outgoing cap.
-          const pickedMaxSeqLength =
-            normalizeMaxSeqLength(pendingConfig?.maxSeqLength) ??
-            defaultInferenceParams.maxSeqLength;
-          const restored = useChatRuntimeStore.getState();
-          if (restored.params.maxSeqLength !== pickedMaxSeqLength) {
-            restored.setParams({
-              ...restored.params,
-              maxSeqLength: pickedMaxSeqLength,
+          // Read again, and judge again. A status fetched before those awaits describes the
+          // model that was resident then, and adopting it would leave the picker naming
+          // this model while prompts went to the one now loaded. A read that fails, or a
+          // verdict that no longer holds, falls through to /load, where a real
+          // disagreement belongs.
+          const confirmedStatus = await getInferenceStatus().catch(() => null);
+          if (confirmedStatus && adoptable(confirmedStatus)) {
+            // Same window as the confirm below: a rival load may have started during that GET,
+            // and it owns the resident model now.
+            if (bailIfLoadInFlight()) return;
+            // Roll back the config pre-applied for the load that is not happening, before
+            // hydrating, so the resident status wins over the staged snapshot. The helper form
+            // carries the loaded diffusion flag a resident image model needs.
+            restorePreviousConfig();
+            // ...except for maxSeqLength, which the rollback has the last word on: it is a
+            // client-side generation cap, no status field echoes it, and applyActiveModelStatus
+            // below therefore cannot correct it. Leaving it rolled back would hand this model
+            // the OUTGOING one's cap, which is visible in truncation but nowhere on screen.
+            // An absent cap is not silence either: applyPerModelConfigToRuntime resolves it to
+            // defaultInferenceParams.maxSeqLength, so leaving it unset kept the outgoing cap.
+            const pickedMaxSeqLength =
+              normalizeMaxSeqLength(pendingConfig?.maxSeqLength) ??
+              defaultInferenceParams.maxSeqLength;
+            const restored = useChatRuntimeStore.getState();
+            if (restored.params.maxSeqLength !== pickedMaxSeqLength) {
+              restored.setParams({
+                ...restored.params,
+                maxSeqLength: pickedMaxSeqLength,
+              });
+            }
+            const previousGgufVariant =
+              useChatRuntimeStore.getState().activeGgufVariant;
+            // Adopt this pick's own pin, by the rule a completed load writes it: the poll skips
+            // its clearing while an external pick is active, so a pin taken for an earlier
+            // resident would survive and Apply would reload that old model.
+            useChatRuntimeStore.setState({
+              activeLoadId: loadPath === modelId ? null : loadPath,
             });
+            useChatRuntimeStore
+              .getState()
+              .setCheckpoint(modelId, confirmedStatus.gguf_variant);
+            applyActiveModelStatusToStore(confirmedStatus, {
+              previousCheckpoint: selectedCheckpoint,
+              previousGgufVariant,
+              // Id and variant matched above: same model, only the tab moved.
+              readoptingSameModel: true,
+            });
+            syncModelCapabilities(modelId, confirmedStatus);
+            // setCheckpoint above blanked the bar, this path returns before the post-load recount,
+            // and a mounted thread does not rerun its history loader, so the bar would stay empty.
+            void refreshContextUsage({ afterModelLoad: true });
+            return;
           }
-          const previousGgufVariant =
-            useChatRuntimeStore.getState().activeGgufVariant;
-          // Adopt this pick's own pin, by the rule a completed load writes it: the poll skips
-          // its clearing while an external pick is active, so a pin taken for an earlier
-          // resident would survive and Apply would reload that old model.
-          useChatRuntimeStore.setState({
-            activeLoadId: loadPath === modelId ? null : loadPath,
-          });
-          useChatRuntimeStore
-            .getState()
-            .setCheckpoint(modelId, residentStatus.gguf_variant);
-          applyActiveModelStatusToStore(residentStatus, {
-            previousCheckpoint: selectedCheckpoint,
-            previousGgufVariant,
-            // Id and variant matched above: same model, only the tab moved.
-            readoptingSameModel: true,
-          });
-          syncModelCapabilities(modelId, residentStatus);
-          // setCheckpoint above blanked the bar, this path returns before the post-load recount,
-          // and a mounted thread does not rerun its history loader, so the bar would stay empty.
-          void refreshContextUsage({ afterModelLoad: true });
-          return;
         }
       }
 
