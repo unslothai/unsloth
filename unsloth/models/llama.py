@@ -63,10 +63,9 @@ from unsloth_zoo.hf_utils import (
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 
 try:
-    # The same three values the device map planner sizes the head's card from.
     from unsloth_zoo.device_map_planner import detect_logit_transforms
 except ImportError:
-    # Older unsloth_zoo. Fall back to reading the fields directly.
+    # Older unsloth_zoo: fall back to reading the config fields directly.
     detect_logit_transforms = None
 from ..device_type import (
     is_hip,
@@ -1529,11 +1528,10 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
-        # Which field carries the scale is per family: cohere multiplies by
-        # logit_scale (0.125), granite divides by logits_scaling (16), falcon_h1
-        # multiplies by lm_head_multiplier. detect_logit_transforms knows all of
-        # them, and the device map planner sizes the head's card from the same
-        # answer, so a new architecture is taught once instead of twice.
+        # Which field carries the scale is per family: cohere multiplies by logit_scale,
+        # granite divides by logits_scaling, falcon_h1 multiplies by lm_head_multiplier.
+        # detect_logit_transforms knows all of them, and the device map planner sizes the
+        # head's card from the same answer, so a new family is taught once, not twice.
         # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
         # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
         if detect_logit_transforms is not None:

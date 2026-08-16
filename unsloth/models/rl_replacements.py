@@ -42,11 +42,9 @@ from unsloth_zoo.log import logger
 from unsloth_zoo.device_type import device_synchronize
 
 try:
-    # The device map planner sizes the head's card from the same three values,
-    # so both read them here rather than each deriving its own.
     from unsloth_zoo.device_map_planner import detect_logit_transforms
 except ImportError:
-    # Older unsloth_zoo. Fall back to reading the fields directly.
+    # Older unsloth_zoo: fall back to reading the config fields directly.
     detect_logit_transforms = None
 import importlib.util
 from ..device_type import (
@@ -1727,8 +1725,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
             if detect_logit_transforms is not None:
-                # model_config, not model: under DDP/Accelerate `model` is a wrapper
-                # that never forwards `.config`, so the helper would read zeros.
+                # model_config, not model: under DDP/Accelerate `model` is a wrapper that
+                # does not forward `.config`, so the helper would report zeros.
                 _transforms = detect_logit_transforms(model_config)
                 logit_softcapping = _transforms["logit_softcapping"]
                 logit_scale_multiply = _transforms["logit_scale_multiply"]
@@ -2628,9 +2626,8 @@ RL_PRE_ITEMS["grpo_trainer"].append(
     "    except Exception:\n"
     "        UNSLOTH_GRPO_PREFIX_GROUPER_ON = False\n"
 )
-# The inlined grpo functions call detect_logit_transforms, and getsource copies their
-# bodies but not this file's imports, so the generated cache needs its own guarded
-# import or the call raises NameError.
+# getsource inlines the grpo function bodies but not this file's imports, so the
+# generated cache needs its own guarded import or detect_logit_transforms is a NameError.
 RL_PRE_ITEMS["grpo_trainer"].append(
     "try:\n"
     "    from unsloth_zoo.device_map_planner import detect_logit_transforms\n"
@@ -2747,9 +2744,9 @@ def grpo_trainer_compute_loss(function_name, function):
 
         # Get logit softcapping and logit scale
         model_config = _unsloth_get_model_config(model)
-        # Same source as _get_per_token_logps_and_entropies: the old and reference
-        # logps come from there and the gradient logps from here, so both have to read
-        # the transforms the same way or the ratio compares two different policies.
+        # The old and reference logps come from _get_per_token_logps_and_entropies and the
+        # gradient logps from here, so both must read the transforms the same way or the
+        # importance ratio compares two different policies.
         if detect_logit_transforms is not None:
             # model_config, not model: see _get_per_token_logps_and_entropies.
             _transforms = detect_logit_transforms(model_config)

@@ -34,10 +34,9 @@ def test_grpo_logit_scaling_uses_model_config_helper():
 def test_detect_logit_transforms_reads_the_unwrapped_config():
     """The shared helper must be handed model_config, never the bare model.
 
-    detect_logit_transforms only does getattr(x, "config", x), so a DDP or
-    Accelerate wrapper (which does not forward .config) makes it read the
-    transforms off the wrapper and report zeros. That silently drops Gemma
-    softcapping and Cohere/Granite/Falcon-H1 scaling on multi-GPU runs.
+    A DDP/Accelerate wrapper does not forward .config, so passing the model makes
+    the helper report zeros, silently dropping Gemma softcapping and
+    Cohere/Granite/Falcon-H1 scaling on multi-GPU runs.
     """
     src = _read_source()
     assert "detect_logit_transforms(model)" not in src
@@ -47,12 +46,11 @@ def test_detect_logit_transforms_reads_the_unwrapped_config():
 def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
     """Behavioural counterpart: the resolved config must yield the transforms.
 
-    Deliberately does not assert what the helper does with the *bare* wrapper.
-    Older unsloth_zoo only did ``getattr(x, "config", x)`` and reported nothing;
-    newer versions unwrap ``.module`` / ``._orig_mod`` themselves. Both are fine,
-    and pinning either would make this test track the zoo's internals. What must
-    hold on every version is that the config we resolve and pass in is the one
-    the transforms come back from, which is why the call sites pass model_config.
+    Deliberately does not assert what the helper does with the *bare* wrapper: older
+    unsloth_zoo reported nothing, newer versions unwrap ``.module`` / ``._orig_mod``
+    themselves, and pinning either would make this test track the zoo's internals.
+    What holds on every version is that the config we resolve is the one the
+    transforms come back from, which is why the call sites pass model_config.
     """
     torch = __import__("importlib").import_module("torch")
     transformers = __import__("importlib").import_module("transformers")
@@ -75,8 +73,7 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
 
     inner = _Inner()
     wrapped = _Wrapper(inner)
-    # The wrapper itself exposes no .config, which is the whole reason the
-    # call sites have to resolve it before handing it over.
+    # No .config on the wrapper, which is why call sites resolve it first.
     assert not hasattr(wrapped, "config")
     config = _unsloth_get_model_config_reference(wrapped)
     assert config is inner.config
@@ -84,8 +81,8 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
 
 
 def _unsloth_get_model_config_reference(model):
-    """Mirror of rl_replacements._unsloth_get_model_config, kept local so this
-    test does not need to import the heavyweight module."""
+    """Mirror of rl_replacements._unsloth_get_model_config, kept local to avoid
+    importing the heavyweight module."""
     config = getattr(model, "config", None)
     if config is None and hasattr(model, "module"):
         config = getattr(model.module, "config", None)

@@ -2,18 +2,17 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Pins the logit transforms the GRPO path applies, per model family.
 
-The GRPO loss recomputes log-probs from hidden states, so whatever the model's
-own ``forward`` does to its logits has to be reproduced here exactly. Getting a
-factor wrong does not raise: it silently shifts every log-prob, and with it the
-importance ratio the policy gradient is built from.
+The GRPO loss recomputes log-probs from hidden states, so it has to reproduce what
+the model's own ``forward`` does to its logits. A wrong factor does not raise: it
+silently shifts every log-prob, and with it the importance ratio.
 
-``unsloth_zoo.device_map_planner.detect_logit_transforms`` owns the field names.
-This test owns the expected *values*, so that a change in the helper's coverage
-shows up here as a diff to read rather than as a quiet numerics shift.
+``detect_logit_transforms`` owns the field names, this test owns the expected
+*values*, so a change in its coverage shows up here as a diff rather than a quiet
+numerics shift.
 
-The order the loss applies them in is multiply, then divide, then soft cap
-(``unsloth_zoo/rl_replacements.py``), which matches what each family's
-``modeling_*.py`` does on the line after ``lm_head``.
+The loss applies them in the order multiply, divide, soft cap
+(``unsloth_zoo/rl_replacements.py``), matching what each family's ``modeling_*.py``
+does on the line after ``lm_head``.
 """
 
 from __future__ import annotations
@@ -33,12 +32,8 @@ pytestmark = pytest.mark.skipif(
 
 
 class _Cfg:
-    """Minimal stand-in for a PretrainedConfig.
-
-    Built by hand rather than imported, because the three families that changed
-    most recently only exist on transformers 5.9+, and this test has to keep
-    running on the pinned version.
-    """
+    """Stand-in for a PretrainedConfig, built by hand because the newest families
+    here only exist on transformers 5.9+ and this test runs on the pinned version."""
 
     def __init__(self, **fields):
         for key, value in fields.items():
@@ -89,8 +84,8 @@ def test_stable_families(name, config, expected, why):
     assert _grpo_transforms(config) == expected, why
 
 
-# Families whose bucketing the helper only learned recently. Each entry records
-# what the GRPO path used to apply, so the behaviour change stays legible.
+# Families the helper only bucketed recently. Each entry records what the GRPO path
+# used to apply, so the behaviour change stays legible.
 _RECENT = [
     (
         "muse_glimmer",
@@ -126,8 +121,8 @@ _RECENT = [
 def test_recently_rebucketed_families(name, config, expected, previously, why):
     """These three changed what the GRPO path applies. Deliberate, see the PR body.
 
-    Skips rather than fails on an unsloth_zoo that predates the coverage, so the
-    suite stays green across the version window instead of pinning one release.
+    Skips rather than fails on an unsloth_zoo predating the coverage, so the suite
+    stays green across the version window instead of pinning one release.
     """
     got = _grpo_transforms(config)
     if got == previously:
