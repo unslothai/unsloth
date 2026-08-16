@@ -8,9 +8,9 @@ import { useEffect } from "react";
 import { isTauri } from "@/lib/api-base";
 import {
   fetchPillSettings,
-  interactiveSaveMark,
   syncNativePillConfig,
   updatePillSettings,
+  withNativeApplyLock,
 } from "./api";
 import { isMacPlatform, pillSetConfig, pillStatus } from "@/lib/pill-native";
 
@@ -33,51 +33,49 @@ async function syncConfigToNative(): Promise<void> {
   if (lastSyncSucceededAt && Date.now() - lastSyncSucceededAt < 30_000) return;
   syncInFlight = true;
   try {
-    // Read and apply are separated because they fail for different reasons: a
-    // failed read means the backend is not up yet and the next trigger retries,
-    // while a failed apply means the shortcut could not be taken.
-    const mark = interactiveSaveMark();
-    let settings;
-    try {
-      settings = await fetchPillSettings();
-    } catch {
-      return;
-    }
-    // The settings tab may have saved and natively applied a newer value while
-    // this snapshot was being read. Applying it now would undo that edit in
-    // Rust while the backend and UI keep the new value, and recording success
-    // would suppress the retry that could repair it, so stand down and let the
-    // interactive save own the state.
-    if (interactiveSaveMark() !== mark) return;
-    try {
-      await syncNativePillConfig(settings);
-      lastSyncSucceededAt = Date.now();
-    } catch {
-      // Nothing here renders native status, so a backend left saying enabled
-      // would keep the settings switch claiming a bar with no shortcut behind
-      // it. Undo it, exactly as the settings tab does on the same failure.
-      if (!settings.enabled) return;
+    // The read and the apply run under the shared lock as one unit, so an
+    // interactive save cannot land between them and be overwritten by this
+    // older snapshot. Whichever path acquires second reads current state.
+    await withNativeApplyLock(async () => {
+      // Read and apply are separated because they fail for different reasons: a
+      // failed read means the backend is not up yet and the next trigger retries,
+      // while a failed apply means the shortcut could not be taken.
+      let settings;
       try {
-        const reverted = await updatePillSettings({ enabled: false });
-        // Write the disabled config to disk. Rust reports disabled after a
-        // failed registration but selection-pill.json still says enabled, and
-        // that file is what init reads: left alone it would re-register the
-        // shortcut on a later launch, against a UI and backend now saying
-        // disabled. syncNativePillConfig cannot do this, because the managed
-        // status is already disabled and its equality check would skip the
-        // write that is the entire point, so call the command directly.
-        const status = await pillStatus();
-        if (status.supported) {
-          await pillSetConfig({
-            enabled: false,
-            hotkey: status.hotkey,
-            excludedApps: reverted.excludedApps,
-          });
-        }
+        settings = await fetchPillSettings();
       } catch {
-        // Could not undo it either; the next open reads the backend.
+        return;
       }
-    }
+      try {
+        await syncNativePillConfig(settings);
+        lastSyncSucceededAt = Date.now();
+      } catch {
+        // Nothing here renders native status, so a backend left saying enabled
+        // would keep the settings switch claiming a bar with no shortcut behind
+        // it. Undo it, exactly as the settings tab does on the same failure.
+        if (!settings.enabled) return;
+        try {
+          const reverted = await updatePillSettings({ enabled: false });
+          // Write the disabled config to disk. Rust reports disabled after a
+          // failed registration but selection-pill.json still says enabled, and
+          // that file is what init reads: left alone it would re-register the
+          // shortcut on a later launch, against a UI and backend now saying
+          // disabled. syncNativePillConfig cannot do this, because the managed
+          // status is already disabled and its equality check would skip the
+          // write that is the entire point, so call the command directly.
+          const status = await pillStatus();
+          if (status.supported) {
+            await pillSetConfig({
+              enabled: false,
+              hotkey: status.hotkey,
+              excludedApps: reverted.excludedApps,
+            });
+          }
+        } catch {
+          // Could not undo it either; the next open reads the backend.
+        }
+      }
+    });
   } finally {
     syncInFlight = false;
     if (syncQueued) {

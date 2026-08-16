@@ -22,18 +22,23 @@ export async function fetchPillSettings(): Promise<PillSettings> {
   return (await response.json()) as PillSettings;
 }
 
-// Bumped by every interactive save. The startup sync applies a snapshot it
-// took seconds earlier, so it samples this before reading and again before
-// applying: if a save happened in between, its snapshot is stale and applying
-// it would undo the edit natively while the backend and UI keep the new value.
-let interactiveSaves = 0;
+// Two paths write the native config: the settings tab and the startup sync.
+// Checking a marker before applying was not enough, because the apply itself
+// awaits two IPC round trips and a save can land inside that window, leaving
+// the older snapshot to be applied last. So they take turns instead: whoever
+// holds this runs its read and its apply as one unit, which makes a stale
+// snapshot impossible rather than merely unlikely.
+let nativeApplyChain: Promise<unknown> = Promise.resolve();
 
-export function noteInteractiveSave(): void {
-  interactiveSaves += 1;
-}
-
-export function interactiveSaveMark(): number {
-  return interactiveSaves;
+export function withNativeApplyLock<T>(run: () => Promise<T>): Promise<T> {
+  const next = nativeApplyChain.then(run, run);
+  // Swallowed here only so one caller's rejection cannot poison the queue for
+  // the next; the original promise still rejects for its own caller.
+  nativeApplyChain = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
 }
 
 export async function updatePillSettings(
