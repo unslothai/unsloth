@@ -3740,6 +3740,9 @@ class TestGGUFSafetensorsHealingParity:
             "I'll check once you say.",
             "I'll help.\n- Are you on Windows or Linux?\nTell me and I'll check.",
             "Why do you need this information? Once you tell me, I'll recommend an option.",
+            "Which version of the package are you using? Once you tell me, I'll inspect it.",
+            # the model quoting its own question is not the user's words echoed back.
+            'One question: "Which repository should I inspect?" Once you answer, I\'ll check it.',
             # "when" waits on the user, unlike the "if"/"whether" closings below.
             "Let me know when you're ready and I'll start the run.",
         ):

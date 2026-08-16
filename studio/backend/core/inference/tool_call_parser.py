@@ -213,15 +213,19 @@ _CLARIFICATION_REQUEST = re.compile(
     r"(?:clarify|specify|confirm|provide|share|tell\s+me)\b"
     r"|\bd(?:o|id)\s+you\s+mean\b"
     # an interrogative putting the choice on the user; "what you should do" is advice and keeps its own word order
-    r"|\b(?:what|which|where|when|who|why|how)\s+(?:\w+\s+){0,2}?"
+    r"|\b(?:what|which|where|when|who|why|how)\s+(?:\w+\s+){0,4}?"
     r"(?:should|would|shall|do|did|is|are|was|were|can|could|have)\s+(?:i|you)\b"
     # copular question opening a line; a bare "is this ..." is as often the lookup the model just promised
     r"|(?:^|[.!?:]\s+|\n\s*[-*]?\s*)"
     r"(?:(?:is|are|was|were)\s+you\b|(?:is|are|was|were)\s+(?:this|that|it)\s+about\b)"
     r")"
 )
-# a quoted span is the user's words echoed back, so an ask inside one is not the model asking
-_QUOTED_SPAN = re.compile(r"[\"“][^\"”]{0,300}[\"”]")
+# a quote the model attributes to the user is the prompt echoed back, so an ask inside it is not the model asking
+_ECHOED_USER_QUOTE = re.compile(
+    r"(?i)(?:(?:you|the\s+user)\s+(?:asked|said|wrote|mentioned)"
+    r"|your\s+(?:question|request|message|prompt))"
+    r"[^\"“]{0,40}[\"“][^\"”]{0,300}[\"”]"
+)
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
 # times since #5620); safetensors and MLX inherit the same cap from here.
 MAX_ACT_REPROMPTS = 3
@@ -235,7 +239,7 @@ def is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
     if not 0 < len(stripped) < REPROMPT_MAX_CHARS:
         return False
-    if _CLARIFICATION_REQUEST.search(_QUOTED_SPAN.sub(" ", stripped)):
+    if _CLARIFICATION_REQUEST.search(_ECHOED_USER_QUOTE.sub(" ", stripped)):
         return False
     return INTENT_SIGNAL.search(stripped) is not None
 

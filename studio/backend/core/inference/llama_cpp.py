@@ -104,7 +104,7 @@ from core.inference.tool_call_parser import (
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
     _CLARIFICATION_REQUEST,
-    _QUOTED_SPAN,
+    _ECHOED_USER_QUOTE,
     is_reprompt_repeat as _is_reprompt_repeat,
     is_reprompt_restatement as _is_reprompt_restatement,
     is_short_intent_without_action as _is_short_intent_without_action,
@@ -627,7 +627,7 @@ def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> boo
     if _FINAL_ANSWER_SIGNAL.search(stripped):
         return False
     # a question to the user is the whole point of the turn, even behind an obligation plan
-    if _CLARIFICATION_REQUEST.search(_QUOTED_SPAN.sub(" ", stripped)):
+    if _CLARIFICATION_REQUEST.search(_ECHOED_USER_QUOTE.sub(" ", stripped)):
         return False
     plan = _FORCED_PLAN_INTENT.search(stripped)
     if plan is not None:
