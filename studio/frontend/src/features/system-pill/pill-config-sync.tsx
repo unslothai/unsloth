@@ -50,7 +50,14 @@ async function syncConfigToNative(): Promise<void> {
       // it. Undo it, exactly as the settings tab does on the same failure.
       if (!settings.enabled) return;
       try {
-        await updatePillSettings({ enabled: false });
+        const reverted = await updatePillSettings({ enabled: false });
+        // Push the disabled config down as well. Rust reports disabled after a
+        // failed registration but selection-pill.json still says enabled, and
+        // that file is what init reads: left alone it would re-register the
+        // shortcut on a later launch, against a UI and backend now saying
+        // disabled. Disabling only unregisters, so this apply cannot fail the
+        // way the enable just did.
+        await syncNativePillConfig(reverted);
       } catch {
         // Could not undo it either; the next open reads the backend.
       }
