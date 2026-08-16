@@ -314,10 +314,19 @@ def test_bounded_synthesis_evidence_keeps_every_step_on_small_budget():
     assert all(f"### Step {index}" in evidence for index in range(12))
 
 
-def test_report_is_recovered_from_substantial_synthesis_reasoning():
+@pytest.mark.parametrize(
+    "heading",
+    (
+        "**Executive Summary**",
+        "## Zusammenfassung",
+        "## Overview",
+        "### Findings",
+    ),
+)
+def test_report_is_recovered_from_substantial_synthesis_reasoning(heading):
     from core import research_runs as worker
 
-    report = "**Executive Summary**\n\n" + ("Evidence-based conclusion. " * 30)
+    report = heading + "\n\n" + ("Evidence-based conclusion. " * 30)
     reasoning = "I will organize the final answer.\n" + report
     assert worker._recover_report_from_reasoning(reasoning) == report.strip()
 

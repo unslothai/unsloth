@@ -265,9 +265,8 @@ def _parse_and_validate_plan(response: str, reasoning: str, max_steps: int) -> d
 def _recover_report_from_reasoning(reasoning: str) -> str:
     text = reasoning.strip()
     marker = re.search(
-        r"(?m)^(?:#{1,2}\s+(?:Executive\s+)?Summary\b|\*\*(?:Executive\s+)?Summary\*\*)",
+        r"(?m)^(?:#{1,6}[ \t]+\S[^\r\n]*|\*\*\S(?:[^\r\n]*\S)?\*\*)[ \t]*\r?$",
         text,
-        flags = re.IGNORECASE,
     )
     if marker is None:
         return ""
