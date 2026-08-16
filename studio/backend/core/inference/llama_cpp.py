@@ -151,6 +151,8 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
+    # A cached file and every shard's byte count, already verified for this repo and variant.
+    verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
     dspark_draft_path: Optional[str] = None
@@ -1498,6 +1500,31 @@ def _cached_variant_candidates(
             yield str(main_path), main, shards, snap
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
+
+
+def _cached_variant_sizes(
+    repo_id: str, hf_variant: str, main_path: str
+) -> Optional[tuple[tuple[str, int], ...]]:
+    """Sorted ``(filename, size)`` pairs for the cached variant copy at ``main_path``.
+
+    None when no complete cached copy resolves to that path. ``_cached_variant_candidates``
+    owns the shard set and every read is local, so recording this and comparing it later
+    catches a truncated, resized or dropped file without a Hub lookup.
+    """
+    target = os.path.abspath(main_path)
+    for cached_main, main, shards, snap in _cached_variant_candidates(repo_id, hf_variant):
+        if os.path.abspath(cached_main) != target:
+            continue
+        try:
+            return tuple(
+                sorted(
+                    (name, os.path.getsize(snap.joinpath(*name.replace("\\", "/").split("/"))))
+                    for name in (main, *shards)
+                )
+            )
+        except OSError:
+            return None
+    return None
 
 
 def _cached_candidate_matches_revision_size(
@@ -8320,6 +8347,44 @@ class LlamaCppBackend:
         return probe._non_chat_gguf_refusal(gguf_path)
 
     @classmethod
+    def _verified_cached_gguf(cls, intent, hf_repo, hf_variant) -> Optional[str]:
+        """Return a carried file only if it still matches the load and active cache."""
+        verified = getattr(intent, "verified_gguf", None)
+        if not verified:
+            return None
+        try:
+            repo, variant, path, sizes = verified
+        except (TypeError, ValueError):
+            return None
+        if (repo or "").lower() != (hf_repo or "").lower():
+            return None
+        if (variant or "").lower() != (hf_variant or "").lower():
+            return None
+        if not path:
+            return None
+        try:
+            if not Path(path).is_file():
+                return None
+            from utils.hf_cache_settings import get_hf_cache_paths
+            hub_cache = Path(os.path.abspath(get_hf_cache_paths().hub_cache))
+        except Exception:  # noqa: BLE001 -- an unreadable cache setting is not a reusable path
+            return None
+        # Cache settings can change while a load is in flight.
+        try:
+            if not Path(os.path.abspath(path)).is_relative_to(hub_cache):
+                return None
+        except (OSError, ValueError):
+            return None
+        # Recheck the recorded byte count of every shard against the set this
+        # snapshot still holds. Both are local, so reuse still avoids Hub calls.
+        try:
+            if _cached_variant_sizes(_resolve_repo_id_casing(repo), variant, path) != sizes:
+                return None
+        except OSError:
+            return None
+        return path
+
+    @classmethod
     def non_chat_gguf_refusal_for_intent(cls, intent) -> Optional[str]:
         """The header verdict for a resolved load intent, or None.
 
@@ -8335,6 +8400,11 @@ class LlamaCppBackend:
                 return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
             if hf_repo:
                 hf_variant = getattr(intent, "hf_variant", None)
+                verified = cls._verified_cached_gguf(intent, hf_repo, hf_variant)
+                if verified:
+                    verdict = cls._non_chat_gguf_refusal_for_path(verified, identifier)
+                    cls._hand_over_route_verdict(hf_repo, hf_variant, verdict)
+                    return verdict
                 # Same offline window as the download: the probe asks the Hub before reading
                 # any local header, and those calls would otherwise wait out their retry
                 # backoff on an unreachable Hub.
@@ -12948,11 +13018,18 @@ class LlamaCppBackend:
                     )
                     hf_repo = _resolved_repo
                 with _hf_offline_if_unreachable():
-                    model_path = _preflight_model_path or self._download_gguf(
-                        hf_repo = hf_repo,
-                        hf_variant = hf_variant,
-                        hf_token = hf_token,
-                    )
+                    model_path = _preflight_model_path
+                    if model_path is None:
+                        # Revalidate the carried file before skipping download resolution.
+                        model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
+                        if model_path:
+                            logger.info("Reusing verified cached GGUF: %s", model_path)
+                    if model_path is None:
+                        model_path = self._download_gguf(
+                            hf_repo = hf_repo,
+                            hf_variant = hf_variant,
+                            hf_token = hf_token,
+                        )
                     # Auto-download mmproj for vision models unless opted out.
                     if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
@@ -16936,8 +17013,10 @@ class LlamaCppBackend:
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
-                # watch this load for a mid-generation crash.
-                self._last_load_intent = intent
+                # watch this load for a mid-generation crash. The verified-cache hint is
+                # dropped: a respawn replays this snapshot arbitrarily later, so recovery
+                # re-resolves the file instead of trusting a path this request verified.
+                self._last_load_intent = replace(intent, verified_gguf = None)
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
