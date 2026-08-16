@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import {
   deleteChatItem,
+  useChatPreferencesStore,
   useChatRuntimeStore,
   type SidebarItem,
 } from "@/features/chat";
@@ -95,6 +96,9 @@ export function RecentDictationsView({
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
   const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
   const navigate = useNavigate();
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
+  );
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
   const selected =
     recentDictations.find((dictation) => dictation.id === selectedId) ?? null;
@@ -170,6 +174,7 @@ export function RecentDictationsView({
               search: { new: crypto.randomUUID() },
             });
           },
+          { deleteFiles: alwaysDeleteChatFiles },
         );
       } catch (error) {
         toast.error(t("settings.voice.recents.deleteWithChatFailed"), {

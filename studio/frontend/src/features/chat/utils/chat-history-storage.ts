@@ -987,13 +987,17 @@ export interface ClearStoredChatsResult {
 
 let clearStoredChatsPromise: Promise<ClearStoredChatsResult> | null = null;
 
-export function clearStoredChats(): Promise<ClearStoredChatsResult> {
+export function clearStoredChats(
+  options: { deleteFiles?: boolean } = {},
+): Promise<ClearStoredChatsResult> {
+  // A clear already in flight wins: the dedupe is what keeps two clears from
+  // racing, and only one caller can start one.
   if (clearStoredChatsPromise) return clearStoredChatsPromise;
 
   threadRecordClearEpoch += 1;
   failedThreadRecordByThreadId.clear();
   const reopenAdmission = threadRecordWrites.closeAdmission();
-  const operation = clearStoredChatsWithAdmissionClosed();
+  const operation = clearStoredChatsWithAdmissionClosed(options);
   const tracked = operation.finally(() => {
     reopenAdmission();
     if (clearStoredChatsPromise === tracked) {
@@ -1004,7 +1008,9 @@ export function clearStoredChats(): Promise<ClearStoredChatsResult> {
   return tracked;
 }
 
-async function clearStoredChatsWithAdmissionClosed(): Promise<ClearStoredChatsResult> {
+async function clearStoredChatsWithAdmissionClosed(
+  options: { deleteFiles?: boolean },
+): Promise<ClearStoredChatsResult> {
   // Admission is closed before this one-shot fence snapshot.
   const pendingThreadIds = threadRecordWrites.idsRequiringFence();
   const operationId = crypto.randomUUID();
@@ -1026,6 +1032,7 @@ async function clearStoredChatsWithAdmissionClosed(): Promise<ClearStoredChatsRe
     clearBackendChats({
       notify: false,
       operationId,
+      deleteFiles: options.deleteFiles,
       // the transaction finds existing rows itself; these ids additionally fence legacy rows and
       // writes that have not committed yet
       tombstoneThreadIds: idsToFence,

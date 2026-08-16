@@ -28,12 +28,15 @@ test("a saved payload without the key still defaults to off", async () => {
 });
 
 test("every chat delete path honours the preference", async () => {
-  // Three places delete a chat. One of them skipping the setting would leave
-  // sandbox folders behind depending on which button was used.
+  // Five places delete chats. One skipping the setting would leave sandbox
+  // folders behind depending on which button was used, and after a clear-all
+  // there is no chat row left to reach them from.
   const files = [
     "../src/components/app-sidebar.tsx",
     "../src/features/chat/chat-page.tsx",
     "../src/features/settings/components/archived-chats-dialog.tsx",
+    "../src/features/settings/components/recent-dictations-view.tsx",
+    "../src/features/settings/tabs/data-tab.tsx",
   ];
   for (const file of files) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
@@ -43,4 +46,22 @@ test("every chat delete path honours the preference", async () => {
       `${file} deletes chats without reading the preference`,
     );
   }
+});
+
+test("the clear-all chain carries deleteFiles to the request", async () => {
+  // Three hops: data-tab -> clearAllChats -> clearStoredChats -> the DELETE.
+  // Any hop dropping the option loses it silently, since each still compiles.
+  const read = (path: string) =>
+    readFile(new URL(path, import.meta.url), "utf8");
+
+  const clearAll = await read("../src/features/chat/utils/clear-all-chats.ts");
+  assert.match(clearAll, /clearStoredChats\(options\)/);
+
+  const storage = await read(
+    "../src/features/chat/utils/chat-history-storage.ts",
+  );
+  assert.match(storage, /deleteFiles: options\.deleteFiles/);
+
+  const api = await read("../src/features/chat/api/chat-api.ts");
+  assert.match(api, /options\.deleteFiles \? "\?delete_files=true" : ""/);
 });

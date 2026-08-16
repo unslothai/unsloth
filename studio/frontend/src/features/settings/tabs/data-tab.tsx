@@ -411,9 +411,12 @@ export function DataTab() {
   const handleClear = async () => {
     setClearing(true);
     try {
-      const result = await clearAllChats();
+      const result = await clearAllChats({
+        deleteFiles: alwaysDeleteChatFiles,
+      });
       const clearedCount = result.deletedThreadIds.length;
-      // Clear-all has no switch, so the same offer the sidebar makes.
+      // A sandbox the backend could not remove, asked for or not.
+      // After a clear there is no row left to reach it from.
       offerToDeleteKeptSandboxes(result.sandboxesKept);
       const hasFailedStore =
         result.backend === "failed" || result.legacy === "failed";
