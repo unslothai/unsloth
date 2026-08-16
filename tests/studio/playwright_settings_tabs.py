@@ -171,7 +171,9 @@ def run_chunk_fail(page) -> None:
     # unhandled rejection for a tab the user never opened.
     errors = page.evaluate("() => window.__settingsSmoke.errors()")
     report["chunk_fail_window_errors"] = errors
-    unhandled = [e for e in errors if "dynamically imported module" in e or "Importing a module" in e]
+    unhandled = [
+        e for e in errors if "dynamically imported module" in e or "Importing a module" in e
+    ]
     if unhandled:
         fail(f"blocking the {CHUNK_FAIL} panel left an unhandled rejection: {unhandled}")
     else:
