@@ -95,6 +95,45 @@ def test_layout_is_classified_correctly(tmp_path, layout, expected):
     assert f"LAYOUT={expected}" in out.stdout, out.stdout + out.stderr
 
 
+_NO_EAGER_IMPORT = textwrap.dedent(
+    """
+    import sys
+    # Import unsloth BEFORE the layout is visible, so this measures the classifier only and not
+    # some unrelated consumer of flash_attn further down the import graph.
+    from unsloth.import_fixes import _flash_attn_layout, _flash_attn_4_present
+    sys.modules.pop("flash_attn", None)
+    sys.path.insert(0, sys.argv[1])
+    import importlib
+    importlib.invalidate_caches()
+    _flash_attn_layout()
+    _flash_attn_4_present()
+    mod = sys.modules.get("flash_attn")
+    # A namespace package has no __file__ and executes nothing; a REGULAR flash-attn 2 package
+    # would have run its __init__ (and loaded flash_attn_2_cuda) if we had imported it.
+    print("EXECUTED=" + str(getattr(mod, "__file__", None) is not None))
+    """
+)
+
+
+@pytest.mark.parametrize("layout", ["absent", "flash_attn_2", "flash_attn_4_only", "both"])
+def test_classification_never_imports_flash_attn(tmp_path, layout):
+    """`import unsloth` must not drag in flash-attn.
+
+    `importlib.util.find_spec("flash_attn.flash_attn_interface")` resolves the dotted name by
+    IMPORTING the parent first, so classifying that way would execute `flash_attn/__init__.py`
+    (and its CUDA extension) on every machine that has flash-attn 2, for users who never asked
+    for it. The classifier probes the package's search locations on disk instead.
+    """
+    root = _write_layout(tmp_path, layout)
+    out = subprocess.run(
+        [sys.executable, "-c", _NO_EAGER_IMPORT, str(root)],
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    assert "EXECUTED=False" in out.stdout, out.stdout + out.stderr
+
+
 def test_fix_is_a_noop_when_flash_attn_is_absent(monkeypatch):
     """Nothing here may change behaviour on a machine with no flash-attn."""
     monkeypatch.setattr(import_fixes, "_flash_attn_layout", lambda: "absent")
