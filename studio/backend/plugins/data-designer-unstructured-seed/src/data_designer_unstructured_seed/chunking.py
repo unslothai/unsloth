@@ -20,10 +20,8 @@ _PANDAS = None
 
 
 def _pandas():
-    # Imported on use, not at module scope: routes.data_recipe.seed imports this
-    # module eagerly, so main's import graph paid for pandas on every startup.
-    # Held in a module global after the first call, so a repeat is a global read
-    # rather than an import statement (33ns against 69ns measured).
+    # On use, not at module scope, so importing this module costs nothing.
+    # Cached in a global so a repeat is a global read, not an import statement.
     global _PANDAS
     if _PANDAS is None:
         try:

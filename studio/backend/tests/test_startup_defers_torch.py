@@ -21,9 +21,9 @@ pandas arrived by a fifth, through the data-recipe seed route:
                                 designer engine, which imports pandas and pyarrow
 
 Importing the submodule runs the package first, so dropping only the chunking-level
-import left the whole cost in place. The route resolves the plugin on first use now.
-The Startup profile workflow measured the edge at 2.247s of a 7.284s ``import main``
-on windows-latest, 901ms self on macos-15.
+import left the cost in place. The route resolves the plugin on first use now. The
+Startup profile workflow measured this edge at 2.247s of a 7.284s ``import main`` on
+windows-latest, 901ms self on macos-15.
 
 All of them are lazy. A fresh interpreter is used for the import invariant, since
 importing in-process would measure an already-warm sys.modules. CPU-only, no network,
@@ -96,8 +96,6 @@ def test_import_main_does_not_import_torch():
         "routes.models",
         "utils.hf_xet_fallback",
         "core.rag.embeddings",
-        # The seed route imports the unstructured plugin at module scope, so the
-        # plugin is what has to stay free of pandas.
         "routes.data_recipe.seed",
     ],
 )
@@ -118,8 +116,8 @@ def test_module_import_does_not_pull_torch(module_path: str):
 
 
 def _module_scope_imports(tree: ast.Module) -> list[ast.stmt]:
-    """Every import that runs on `import <module>`: the module body and any try/if/with
-    nested in it, but nothing inside a function or class."""
+    """Imports that run on `import <module>`: module body and nesting like try/if,
+    but nothing inside a function or class."""
     found: list[ast.stmt] = []
     stack: list[ast.stmt] = list(tree.body)
     while stack:
@@ -138,9 +136,8 @@ def _module_scope_imports(tree: ast.Module) -> list[ast.stmt]:
     [("routes/data_recipe/seed.py", "data_designer_unstructured_seed")],
 )
 def test_module_scope_does_not_import_the_seed_plugin(rel_path: str, banned: str):
-    """The runtime guards above pass vacuously wherever the optional plugin is not
-    installed, which is most CI jobs: the route falls back to "unavailable" and imports
-    nothing. This one reads the source, so it holds in either environment."""
+    """The runtime guards above pass vacuously wherever the plugin is not installed,
+    which is most CI jobs. This one reads the source, so it holds either way."""
     tree = ast.parse((_BACKEND_DIR / rel_path).read_text(encoding = "utf-8"))
     offenders = [
         node.lineno

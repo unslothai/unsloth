@@ -224,7 +224,7 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
 
 
 class _BlockPlugin:
-    """Meta path finder that makes the optional seed plugin look uninstalled."""
+    """Meta path finder making the optional seed plugin look uninstalled."""
 
     def __init__(self, name: str = "data_designer_unstructured_seed"):
         self.name = name
@@ -281,7 +281,7 @@ def test_unstructured_preview_reports_unavailable_without_the_plugin(monkeypatch
 
 
 def test_missing_plugin_is_probed_once(monkeypatch, tmp_path):
-    """A failed probe is remembered, so a preview call is not an import attempt every time."""
+    """A failed probe is remembered, so previews do not retry the import every time."""
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     blocker = _without_plugin(monkeypatch, seed_route)
 
@@ -291,18 +291,18 @@ def test_missing_plugin_is_probed_once(monkeypatch, tmp_path):
 
 
 def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_path):
-    """normalize_unstructured_text lives in the plugin; without it the raw text stands."""
+    """normalize_unstructured_text lives in the plugin; without it raw text stands."""
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     _without_plugin(monkeypatch, seed_route)
     source = tmp_path / "notes.txt"
     source.write_text("a\n\n\n\nb", encoding = "utf-8")
 
-    # Unnormalized: the plugin is what collapses the run of blank lines.
+    # The plugin is what collapses the run of blank lines.
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
 
 
 def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_path):
-    """With the plugin installed the same call sites go through it, as before."""
+    """With the plugin installed the same call sites still go through it."""
     pytest.importorskip("data_designer_unstructured_seed")
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     seed_route._CHUNKING = None

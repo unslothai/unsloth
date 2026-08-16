@@ -41,11 +41,11 @@ from models.data_recipe import (
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Resolved on first use, not at module scope. The plugin package re-exports its
-# config and reader, which drag in the data designer engine, pandas and pyarrow,
-# so importing it here put all of that in main's startup graph and uvicorn bound
-# the port that much later. False records "tried once, not installed", so a None
-# return still means exactly what it did before: unstructured seed unavailable.
+# Resolved on first use, not at module scope: the plugin package re-exports its
+# config and reader, which pull the data designer engine, pandas and pyarrow, so
+# importing it here delayed uvicorn binding the port. False records "tried once,
+# not installed", so a None return still means what it did before: unstructured
+# seed unavailable.
 _CHUNKING: Any = None
 
 
