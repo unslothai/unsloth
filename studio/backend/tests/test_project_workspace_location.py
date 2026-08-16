@@ -59,9 +59,7 @@ def test_the_override_still_wins(tmp_path, monkeypatch):
     """Whatever Documents resolves to, this is the documented way out."""
     monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "elsewhere"))
     assert documents_root() == tmp_path / "elsewhere"
-    assert project_workspaces_root() == (
-        tmp_path / "elsewhere" / "Unsloth Studio" / "Projects"
-    )
+    assert project_workspaces_root() == (tmp_path / "elsewhere" / "Unsloth Studio" / "Projects")
 
 
 def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
