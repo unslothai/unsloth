@@ -16727,9 +16727,7 @@ class LlamaCppBackend:
                         # --fit off retry and let the caller latch it.
                         _startup_output = "\n".join(self._stdout_lines[-50:])
                         _split_axis_crash = self._is_tensor_split_assert(_startup_output)
-                        _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(
-                            _startup_output
-                        )
+                        _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         if (
                             _spawn_attempt == 0
                             and _startup_crashed

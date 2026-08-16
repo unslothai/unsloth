@@ -175,9 +175,7 @@ class TestLinuxUnchanged:
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
         )
-        env = LlamaCppBackend._llama_server_env_for_binary(
-            str(binary), use_system_rocm = False
-        )
+        env = LlamaCppBackend._llama_server_env_for_binary(str(binary), use_system_rocm = False)
         parts = env["LD_LIBRARY_PATH"].split(":")
         assert parts[0] == "/wsl/rocm"
         assert "/opt/rocm/lib" not in parts
