@@ -175,13 +175,11 @@ def _run(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
     )
-    # Pin the worker count for the same reason. resolve_worker_count sizes itself
-    # from CPU affinity and the cgroup quota and returns 0 when the host cannot
-    # spare MIN_ONLINE_WORKERS, which vetoes before the pass count is ever
-    # compared. A two-core macOS or Windows runner therefore turned every case in
-    # this file into an assertion about the runner rather than about the wiring,
-    # and the veto reason it produced was the worker one, not the one under test.
-    # The worker gate has its own coverage in test_online_tokenization.py.
+    # Pin the worker count for the same reason: resolve_worker_count sizes itself from
+    # CPU affinity and the cgroup quota and returns 0 below MIN_ONLINE_WORKERS, vetoing
+    # before the pass count is compared. On a two-core runner every case here asserted
+    # about the runner, on the wrong veto reason. The worker gate is covered by
+    # test_online_tokenization.py.
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.resolve_worker_count",
         lambda desired = None: 4,
@@ -452,9 +450,8 @@ def test_world_size_scales_the_rows_a_step_consumes(monkeypatch):
 
 
 # 200 steps x 2 x 4 = 1600 rows per replica over a 10_005-row split: 0.16 passes on
-# one process, 1.28 on eight. Every launcher below advertises the same eight, so the
-# only thing separating these cases from the control at the bottom is whether the
-# variable is read at all.
+# one process, 1.28 on eight. Every launcher below advertises the same eight, so these
+# cases differ from the control at the bottom only in whether the variable is read.
 _EIGHT_RANK_STEPS = 200
 
 
@@ -515,9 +512,8 @@ def test_an_inline_hosts_payload_scales_the_rows_a_step_consumes(monkeypatch):
     _eight_ranks(monkeypatch, MLX_HOSTFILE = payload)
 
 
-# Only values that RAISE. "0" and "-4" also read as one process, but the old
-# expression's max(1, int(...)) already answered 1 for those, so they would pass
-# against the bug and belong with dataset_bounds' own coercion tests, not here.
+# Only values that RAISE: the old max(1, int(...)) already answered 1 for "0" and
+# "-4", so those would pass against the bug and belong in dataset_bounds' own tests.
 @pytest.mark.parametrize("junk", ["auto", "", "eight"])
 def test_a_junk_world_size_no_longer_disables_online_tokenization(monkeypatch, junk):
     """The direction this used to fail in was not the obvious one.

@@ -29,11 +29,10 @@ MIN_MAX_STEPS_ROWS = 1024
 # Launchers that advertise a data-parallel process count. Read as env because this
 # module is torch-free and the bound is computed before any process group exists, so
 # torch.distributed cannot be asked: at bound time it is almost never initialised.
-# The same names routes/inference.py reads, but not the same test: that one pairs each
-# size with its rank partner and requires size > 1, because it is deciding whether to
-# refuse a request. This is sizing a row bound, so a bare size is enough and an absent
-# one costs nothing. Annotated with what actually sets each, since several of these are
-# widely miscited.
+# The MPI names routes/inference.py reads, plus the torchrun ones it does not, and a
+# looser test: it pairs each size with its rank partner because it refuses requests;
+# sizing a row bound only needs a bare size. Annotated per variable, several of which
+# are widely miscited.
 WORLD_SIZE_ENV_VARS = (
     "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed. NOT set by any MPI
     "LOCAL_WORLD_SIZE",  # torchrun's --nproc-per-node; it sets WORLD_SIZE too
@@ -44,13 +43,11 @@ WORLD_SIZE_ENV_VARS = (
     "MPI_WORLD_SIZE",  # likewise undocumented in every MPI checked
     "MV2_COMM_WORLD_SIZE",  # MVAPICH2, and only under its mpirun_rsh launcher
 )
-# The count an mlx.launch advertises when it is not a number in the env: of its five
-# backends only NCCL (CUDA) exports MLX_WORLD_SIZE. Ring and JACCL export a path to a
-# JSON file with one entry per rank instead, and the world size is exactly the length
-# of that outer list. Without these two an mlx.launch reads as one process and the MLX
-# loader under-counts, which is the direction that recycles rows, so the Apple path --
-# the only one MLX training actually runs on -- would keep the bug this module's world
-# size exists to fix.
+# An mlx.launch world size that is not a number in the env: of its five backends only
+# NCCL (CUDA) exports MLX_WORLD_SIZE; ring and JACCL export a path to a JSON file whose
+# outer list has one entry per rank, and that length is the world size. Without these
+# two an mlx.launch reads as one process, and under-counting recycles rows -- so the
+# Apple path, the only one MLX training runs on, would keep the bug this fixes.
 WORLD_SIZE_ENV_FILES = (
     "MLX_HOSTFILE",  # ring backend: a path to [["ip:port", ...], ...], one per rank
     "MLX_IBV_DEVICES",  # jaccl backend: a path to the N x N RDMA matrix, one row per rank
@@ -114,10 +111,10 @@ def world_size_from_rank_files(environ: Any = None) -> int:
             if value.lstrip()[:1] in ("[", "{"):
                 payload = json.loads(value[:MAX_WORLD_SIZE_FILE_BYTES])
             elif os.path.isfile(value):
-                # Binary, so the cap is the bytes it says it is. A text handle's
-                # read() counts CHARACTERS, and a file of 4-byte codepoints would
-                # pull four times the cap off disk. json.loads takes bytes and
-                # raises UnicodeDecodeError, a ValueError, on anything not UTF-8.
+                # Binary, so the cap really is bytes: a text read() counts
+                # CHARACTERS, so 4-byte codepoints would pull 4x the cap off disk.
+                # json.loads takes bytes; non-UTF-8 raises UnicodeDecodeError (a
+                # ValueError), caught below.
                 with open(value, "rb") as handle:
                     payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
             else:

@@ -821,21 +821,20 @@ def test_a_rank_file_read_is_capped_in_bytes_not_characters(tmp_path):
         world_size_from_rank_files,
     )
 
-    # Sized so the two readings disagree: fewer characters than the cap, more
-    # bytes than the cap. A text handle would read the file whole and answer 8; a
-    # binary one truncates and the launch reads as one process. Under-counting is
-    # the safe direction here, and reading the whole file is what the cap forbids.
+    # Sized so the readings disagree: under the cap in characters, over it in bytes.
+    # A text handle reads it whole and answers 8; binary truncates to one process,
+    # the safe direction, and reading the whole file is what the cap forbids.
     wide = tmp_path / "wide.json"
     filler = "\U0001f600" * (MAX_WORLD_SIZE_FILE_BYTES // 3)  # 4 bytes per character
     hosts = [filler] + [f"10.0.0.{rank}:5000" for rank in range(7)]
-    # ensure_ascii would escape every codepoint back to ASCII and make the two
-    # readings agree, which is exactly what this test needs them not to do.
+    # ensure_ascii would escape the codepoints back to ASCII and make the two
+    # readings agree, which is what this test needs them not to do.
     wide.write_text(json.dumps(hosts, ensure_ascii = False), encoding = "utf-8")
     assert len(wide.read_text(encoding = "utf-8")) < MAX_WORLD_SIZE_FILE_BYTES
     assert wide.stat().st_size > MAX_WORLD_SIZE_FILE_BYTES
     assert world_size_from_rank_files({"MLX_HOSTFILE": str(wide)}) == 1
 
-    # Bytes that are not UTF-8 at all must be discarded, not raised.
+    # Non-UTF-8 bytes must be discarded, not raised.
     invalid = tmp_path / "invalid.bin"
     invalid.write_bytes(b'["\xff\xfe10.0.0.1:5000"]')
     assert world_size_from_rank_files({"MLX_HOSTFILE": str(invalid)}) == 1
