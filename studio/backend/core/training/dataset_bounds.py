@@ -26,6 +26,36 @@ from typing import Any, Optional
 MAX_STEPS_ROW_SLACK = 4
 # Below this a subset is small enough to skew a run for no meaningful saving.
 MIN_MAX_STEPS_ROWS = 1024
+# Launchers that advertise a data-parallel process count. Read as env because this
+# module is torch-free and the bound is computed before any process group exists, so
+# torch.distributed cannot be asked: at bound time it is almost never initialised.
+# MLX_WORLD_SIZE and the MPI pairs mirror the set routes/inference.py already trusts
+# to detect an mlx.launch, so both loaders learn their rank count the same way.
+WORLD_SIZE_ENV_VARS = (
+    "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed
+    "LOCAL_WORLD_SIZE",  # torchrun, and the only one it sets per node
+    "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend, which is CUDA-only
+    "OMPI_COMM_WORLD_SIZE",
+    "PMI_SIZE",
+    "PMIX_SIZE",
+    "MPI_WORLD_SIZE",
+    "MV2_COMM_WORLD_SIZE",
+)
+# The count an mlx.launch on Apple silicon advertises, which is not a number in the
+# env: of its four backends only NCCL (CUDA) exports MLX_WORLD_SIZE. Ring and JACCL
+# export a path to a JSON file with one entry per rank instead, and MLX documents the
+# world size as exactly the length of that list. Without these two an mlx.launch reads
+# as one process and the MLX loader under-counts, which is the direction that recycles
+# rows, so the Apple path -- the only one MLX training actually runs on -- would keep
+# the bug this module's world size exists to fix.
+WORLD_SIZE_ENV_FILES = (
+    "MLX_HOSTFILE",  # ring backend: one "ip:port" list per rank
+    "MLX_IBV_DEVICES",  # jaccl backend: the RDMA matrix, one row per rank
+)
+# A hostfile is a few hundred bytes per rank. Read a bounded prefix so a wrong path
+# (an env var pointed at something enormous) cannot pull a file into memory; a
+# truncated read fails to parse as JSON and is discarded, which is the safe answer.
+MAX_WORLD_SIZE_FILE_BYTES = 1 << 20
 # Written into a run's output directory at its first start; read back on resume.
 # Its absence is the signal that a checkpoint predates the bound.
 ROW_BOUND_MARKER_FILE = "unsloth_row_bound.json"
@@ -54,18 +84,88 @@ def _seed_int(value: Any, default: int) -> int:
     return number if number >= 0 else default
 
 
+def world_size_from_rank_files(environ: Any = None) -> int:
+    """Ranks an mlx.launch listed in a hostfile, or 1 when there is no readable one.
+
+    Only a list counts, and its length is the count. Anything else -- no such file, a
+    Either representation the rest of the repo accepts: the payload inline in the
+    variable, or a path to a file holding it. `unsloth_cli/_inference.py`'s
+    `_json_rank_count_from_env` reads the same two variables the same way, down to the
+    {"hosts": [...]} object form, so the two must not disagree about how many ranks a
+    launch has.
+
+    Only a list of ranks counts, and its length is the count. Anything else -- no such
+    file, a truncated or malformed payload, some other object, an empty ring hostfile
+    (which is what mlx.launch writes for a single host) -- reads as 1, the count of
+    Studio's own launch. Never raises: a row bound must not be what fails a run.
+
+    A path must name a regular file. mlx.launch writes a temp file, and opening
+    whatever else a variable happens to name could block a run forever on a fifo.
+    """
+    source = os.environ if environ is None else environ
+    sizes = [1]
+    for name in WORLD_SIZE_ENV_FILES:
+        try:
+            value = source.get(name)
+            if not value:
+                continue
+            if value.lstrip()[:1] in ("[", "{"):
+                payload = json.loads(value[:MAX_WORLD_SIZE_FILE_BYTES])
+            elif os.path.isfile(value):
+                with open(value, encoding = "utf-8") as handle:
+                    payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
+            else:
+                continue
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(payload, dict):
+            payload = payload.get("hosts")
+        if isinstance(payload, list):
+            sizes.append(len(payload))
+    return max(sizes)
+
+
+def world_size_from_env(environ: Any = None) -> int:
+    """Data-parallel processes the launcher advertises, or 1 when none does.
+
+    The largest wins: a torchrun launch sets WORLD_SIZE and LOCAL_WORLD_SIZE, and on
+    one node they agree, while a multi-node one must be sized by the global count.
+    Anything unusable (unset, empty, a stray "auto", 0, negative) reads as 1, which
+    is the count Studio's own single-process launch has.
+
+    Some launchers advertise the count as a file rather than a number; see
+    WORLD_SIZE_ENV_FILES.
+    """
+    source = os.environ if environ is None else environ
+    numbers = max(_positive_int(source.get(name), 1) for name in WORLD_SIZE_ENV_VARS)
+    return max(numbers, world_size_from_rank_files(source))
+
+
 def max_steps_dataset_rows(
-    max_steps: Any, batch_size: Any, gradient_accumulation_steps: Any
+    max_steps: Any,
+    batch_size: Any,
+    gradient_accumulation_steps: Any,
+    *,
+    world_size: Any = None,
 ) -> Optional[int]:
     """Rows a max_steps run can reach, or None when it is unbounded.
 
-    A step draws batch_size * gradient_accumulation_steps rows.
+    A step draws batch_size * gradient_accumulation_steps rows on every data-parallel
+    replica, so world_size times that in total: DDP hands each rank its own shard of
+    the step, and DataParallel splits the batch over the visible devices. Leaving the
+    factor out spends the whole slack on rank count alone, and from four replicas up
+    a run re-reads rows it has already trained on.
+
+    world_size is what the caller established (the CUDA worker also counts visible
+    CUDA devices, which env cannot report); anything unusable falls back to the
+    launcher env, and that falls back to 1, which is Studio's own launch.
     """
     steps = _positive_int(max_steps, 0)
     if steps <= 0:
         return None
+    replicas = _positive_int(world_size, 0) or world_size_from_env()
     per_step = _positive_int(batch_size, 1) * _positive_int(gradient_accumulation_steps, 1)
-    return max(MIN_MAX_STEPS_ROWS, steps * per_step * MAX_STEPS_ROW_SLACK)
+    return max(MIN_MAX_STEPS_ROWS, steps * per_step * replicas * MAX_STEPS_ROW_SLACK)
 
 
 def effective_packing(config: dict, branch_never_packs: bool = False) -> bool:
@@ -88,11 +188,20 @@ def effective_packing(config: dict, branch_never_packs: bool = False) -> bool:
     return not branch_never_packs
 
 
-def max_train_rows_for_config(config: dict, branch_never_packs: bool = False) -> Optional[int]:
+def max_train_rows_for_config(
+    config: dict,
+    branch_never_packs: bool = False,
+    *,
+    world_size: Any = None,
+) -> Optional[int]:
     """The bound for a worker config, or None when the run is not bounded.
 
     Streaming and an explicit train-split range opt out further down, in the
     loaders, where those values live.
+
+    world_size is not read from the config: it belongs to the launch, not to what
+    the user configured, and a stale one carried across a spawn would size the
+    subset for the wrong machine.
     """
     if effective_packing(config, branch_never_packs = branch_never_packs):
         return None
@@ -100,6 +209,7 @@ def max_train_rows_for_config(config: dict, branch_never_packs: bool = False) ->
         config.get("max_steps", 0) or 0,
         config.get("batch_size", 2),
         config.get("gradient_accumulation_steps", 4),
+        world_size = world_size,
     )
 
 
