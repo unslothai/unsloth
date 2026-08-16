@@ -15148,9 +15148,7 @@ async def openai_chat_completions(
                     ),
                 )
                 api_monitor.finish(monitor_id)
-                return _model_json_response_with_context_truncation(
-                    response, _context_truncation
-                )
+                return _model_json_response_with_context_truncation(response, _context_truncation)
 
             except asyncio.CancelledError:
                 cancel_event.set()
