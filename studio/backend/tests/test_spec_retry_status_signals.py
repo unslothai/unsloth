@@ -22,6 +22,10 @@ The ``drafter_not_found`` arm excludes the kinds whose absence is not transient,
 ``_spec_dspark_sidecar_absent`` publishes that too: retrying a DSpark drafter no repo but
 one publishes would relaunch an identical server forever.
 
+``_arch_gate_dropped_tensor_parallel`` is here for the same reason: the gate rewrites a
+tensor-parallel request to layer mode, so status reports the launched mode rather than
+the requested one, and the backend accepts the same request back against it.
+
 The helper is extracted from the route module's source rather than imported, so the test
 costs nothing and does not drag FastAPI in behind it.
 """
@@ -184,6 +188,23 @@ def test_the_dspark_arm_reports_permanent_absence():
 
     assert helper(_Dspark(True)) is True
     assert helper(_Dspark(False)) is False
+
+    class _Bare:
+        def __getattr__(self, name):
+            raise AttributeError(name)
+
+    assert helper(_Bare()) is None
+
+
+def test_the_arch_gate_drop_is_reported():
+    helper = _load_helper("_arch_gate_dropped_tensor_parallel")
+
+    class _Gated:
+        def __init__(self, dropped):
+            self._arch_gate_dropped_tensor_parallel = dropped
+
+    assert helper(_Gated(True)) is True
+    assert helper(_Gated(False)) is False
 
     class _Bare:
         def __getattr__(self, name):

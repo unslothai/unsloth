@@ -387,6 +387,8 @@ export interface InferenceStatusResponse {
   spec_dflash_retry_pending?: boolean | null;
   /** The DSpark drafter is absent for good, not transiently unfetchable. */
   spec_dspark_sidecar_absent?: boolean | null;
+  /** The architecture gate normalized a tensor-parallel request to layer mode. */
+  tensor_parallel_dropped_by_arch_gate?: boolean | null;
 }
 
 export interface ApiMonitorEntry {

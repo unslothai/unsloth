@@ -1098,6 +1098,15 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "client need not reload for it. None on a backend too old to report it."
         ),
     )
+    tensor_parallel_dropped_by_arch_gate: Optional[bool] = Field(
+        None,
+        description = (
+            "The GPU architecture gate normalized a tensor-parallel request to layer "
+            "mode, so tensor_parallel reads false while the request that produced it was "
+            "true. _runtime_matches_intent accepts the same true request against this "
+            "runtime. None on a backend too old to report it."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (

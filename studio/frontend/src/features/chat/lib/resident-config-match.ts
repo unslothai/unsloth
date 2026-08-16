@@ -26,6 +26,7 @@ type ResidentRuntime = Pick<
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "tensor_parallel_dropped_by_arch_gate"
   | "tensor_split"
   | "cpu_fallback_reason"
 >;
@@ -269,9 +270,11 @@ const SETTING_CHECKS: SettingCheck[] = [
         standing.speculativeType),
   },
   {
-    pinned: () => true,
-    agrees: (c, s) =>
-      (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
+    // Only when the pick names one, as _runtime_matches_intent is guarded on
+    // `intent.spec_draft_n_max is not None`: an unset limit asks for no change, so
+    // comparing null against the count the resident load was launched with was a reload.
+    pinned: (c) => c.specDraftNMax != null,
+    agrees: (c, s) => c.specDraftNMax === (s.spec_draft_n_max ?? null),
   },
   {
     // Unknown default: null against the status's resolved count is a reload, the safe
@@ -293,7 +296,13 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
     pinned: () => true,
-    agrees: (c, s) => c.tensorParallel === (s.tensor_parallel ?? false),
+    agrees: (c, s) =>
+      c.tensorParallel === (s.tensor_parallel ?? false) ||
+      // A split the architecture gate normalized away: that layer-mode runtime IS this
+      // request as the gate rewrote it, and the backend accepts it back unchanged.
+      (c.tensorParallel === true &&
+        s.tensor_parallel !== true &&
+        s.tensor_parallel_dropped_by_arch_gate === true),
   },
   {
     // Blank-trimmed on both ends: the applier and the load both send "" as null.

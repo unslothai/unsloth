@@ -7038,6 +7038,20 @@ def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
         return None
 
 
+def _arch_gate_dropped_tensor_parallel(llama_backend) -> Optional[bool]:
+    """Whether the GPU architecture gate normalized a tensor-parallel request away.
+
+    ``_runtime_matches_intent`` accepts the same true request against the resulting
+    layer-mode runtime, since that runtime IS the request as the gate rewrote it. Status
+    reports the mode that launched, so a client comparing it raw prompts to stop running
+    chats on every re-pick of a model whose split was gated off.
+    """
+    try:
+        return bool(llama_backend._arch_gate_dropped_tensor_parallel)
+    except Exception:
+        return None
+
+
 def _spec_dspark_sidecar_absent(llama_backend) -> Optional[bool]:
     """Whether the DSpark drafter is missing permanently rather than transiently.
 
@@ -10584,6 +10598,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
                 spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
                 spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
+                tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
+                    llama_backend
+                ),
                 spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,

@@ -810,6 +810,51 @@ test("a permanently absent drafter does not decline the shortcut", () => {
   );
 });
 
+test("a tensor split the architecture gate normalized away still matches", () => {
+  // The gate rewrites a tensor-parallel request to layer mode, so status reports false
+  // for a launch the request produced, and the backend accepts the same true request
+  // back. Comparing raw prompted on every re-pick of a model whose split was gated off.
+  const gated = {
+    ...DEFAULTS,
+    tensor_parallel: false,
+    tensor_parallel_dropped_by_arch_gate: true,
+  };
+  assert.equal(matches(gated, { ...BLANK, tensorParallel: true }), true);
+  // Without the drop it is an ordinary disagreement.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, tensor_parallel: false },
+      { ...BLANK, tensorParallel: true },
+    ),
+    false,
+  );
+  // A backend too old to report the drop keeps the coarser answer.
+  assert.equal(
+    matches(
+      {
+        ...DEFAULTS,
+        tensor_parallel: false,
+        tensor_parallel_dropped_by_arch_gate: null,
+      },
+      { ...BLANK, tensorParallel: true },
+    ),
+    false,
+  );
+  // It only ever excuses a true request: a pick asking for no split against a runtime
+  // that has one is still a reload.
+  assert.equal(
+    matches(
+      {
+        ...DEFAULTS,
+        tensor_parallel: true,
+        tensor_parallel_dropped_by_arch_gate: true,
+      },
+      BLANK,
+    ),
+    false,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.
@@ -928,7 +973,6 @@ test("unset nullable settings ask for the default, not for the resident value", 
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
     mlx_kv_bits_requested: 4,
-    spec_draft_n_max: 16,
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,
@@ -940,7 +984,6 @@ test("unset nullable settings ask for the default, not for the resident value", 
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
     mlx_kv_bits_requested: 4,
-    spec_draft_n_max: 16,
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,
@@ -952,6 +995,18 @@ test("unset nullable settings ask for the default, not for the resident value", 
       `${key} pinned on the resident load must not be adopted by a blank config`,
     );
   }
+  // spec_draft_n_max is the exception, and it is the backend's: _runtime_matches_intent
+  // rejects a draft-count difference only when `intent.spec_draft_n_max is not None`, so
+  // an unset limit asks for no change and /load answers already_loaded. Reloading for it
+  // could not deliver the default anyway, since that same answer leaves the count alone.
+  assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), true);
+  assert.equal(
+    matches(
+      { ...DEFAULTS, spec_draft_n_max: 16 },
+      { ...BLANK, specDraftNMax: 8 },
+    ),
+    false,
+  );
   // And the default-against-default case still adopts, which is the whole point of #8893.
   assert.equal(matches(DEFAULTS, BLANK), true);
 });
