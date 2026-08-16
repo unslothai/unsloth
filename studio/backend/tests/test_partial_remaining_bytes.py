@@ -21,8 +21,11 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from hub.services.models.gguf_variants import variant_remaining_bytes
-from hub.utils import download_registry, hf_cache_state
+from hub.services.models.gguf_variants import (
+    variant_remaining_bytes,
+    variant_remaining_bytes_from_state,
+)
+from hub.utils import download_manifest, download_registry, hf_cache_state, state_dir
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf_plan import plan_from_expected_files
 
@@ -101,3 +104,52 @@ def test_a_complete_variant_has_nothing_left_to_fetch(blobs):
     _write(blobs / SHARD_A, 2 * GB)
     _write(blobs / SHARD_B, 2 * GB)
     assert variant_remaining_bytes("Org/Model", _split_plan()) == 0
+
+
+# --------------------------------------------------------------------------------------------
+# Offline and local-cache listings, which have no hub plan to price from. The on-device card
+# asks for those (preferLocalCache), so leaving them unpriced showed the full total there.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def state(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    return tmp_path
+
+
+def _write_manifest(files):
+    assert download_manifest.write_manifest("model", "Org/Model", "Q4_K_M", files, "http")
+
+
+def test_the_worker_manifest_prices_a_local_partial(blobs, state):
+    _write_manifest(
+        [
+            ExpectedFile(path = "model-Q4_K_M-00001-of-00002.gguf", size = 2 * GB, sha256 = SHARD_A),
+            ExpectedFile(path = "model-Q4_K_M-00002-of-00002.gguf", size = 2 * GB, sha256 = SHARD_B),
+        ]
+    )
+    _write(blobs / SHARD_A, 2 * GB)
+
+    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None, 4 * GB) == 2 * GB
+
+
+def test_a_row_with_no_manifest_stays_unpriced(blobs, state):
+    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None, 4 * GB) is None
+
+
+def test_the_price_never_exceeds_the_row_total(blobs, state):
+    # The manifest counts a companion the row's own size does not, so an uncapped reading
+    # would advertise more left than the row says it is.
+    _write_manifest(
+        [
+            ExpectedFile(path = "model-Q4_K_M.gguf", size = 4 * GB, sha256 = SHARD_A),
+            ExpectedFile(path = "mmproj-F16.gguf", size = 1 * GB, sha256 = SHARD_B),
+        ]
+    )
+
+    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None, 4 * GB) == 4 * GB
+
+
+def test_an_unnamed_variant_is_not_priced(blobs, state):
+    assert variant_remaining_bytes_from_state("Org/Model", "", None, 4 * GB) is None
