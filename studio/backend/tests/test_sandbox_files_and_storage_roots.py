@@ -9,6 +9,7 @@ compiled cache landed in the launcher's CWD, and a deleted chat left its folder
 behind. Verified on Windows, macOS and Linux.
 """
 
+import functools
 import hashlib
 import json
 import os
@@ -27,14 +28,33 @@ import pytest
 _FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
 
 
+@functools.lru_cache(maxsize = None)
+def _frontend_text(*rel: str) -> str:
+    """The named frontend sources concatenated, read once per distinct scope.
+
+    Two scopes, deliberately different sizes. A promise the dialog MUST make is looked for where
+    user-visible copy legitimately lives, so an unrelated occurrence elsewhere cannot satisfy it;
+    a promise it must NOT make is looked for everywhere, where breadth only makes the check
+    stricter. The cache matters because the wide scope is ~1200 files.
+    """
+    paths: list[Path] = []
+    for r in rel:
+        target = _FRONTEND_SRC / r
+        if target.is_dir():
+            paths += [p for p in sorted(target.rglob("*")) if p.suffix in (".ts", ".tsx")]
+        else:
+            paths.append(target)
+    return "\n".join(p.read_text(encoding = "utf-8") for p in paths if p.is_file())
+
+
+def _frontend_copy_text() -> str:
+    """Where the sidebar's user-visible strings live: the locales, and the component itself."""
+    return _frontend_text("i18n/locales", "components/app-sidebar.tsx")
+
+
 def _frontend_src_text() -> str:
-    """Every frontend source file concatenated, for copy that must exist somewhere: strings migrate
-    between the component and the locale file, and a single-file grep reads that as a deletion."""
-    return "\n".join(
-        p.read_text(encoding = "utf-8")
-        for p in sorted(_FRONTEND_SRC.rglob("*"))
-        if p.suffix in (".ts", ".tsx") and p.is_file()
-    )
+    """Every frontend source file, for asserting a string is absent from all of them."""
+    return _frontend_text(".")
 
 
 def _sidebar_function_body(name: str) -> str:
@@ -1959,11 +1979,12 @@ def test_the_delete_switch_does_not_promise_project_files():
     """A chat moved back to Recents wrote its earlier files into the project
     workspace, which chat deletion does not touch."""
     # The copy is the contract, not where it lives: #8932 moved these strings into the locale file
-    # unchanged and broke a grep of app-sidebar.tsx. Searching all of src survives the next move
-    # while still failing on a reworded promise.
-    src = _frontend_src_text()
-    assert "This chat's own sandbox folder is removed from disk." in src
-    assert "Anything this chat's tools wrote is removed from disk." not in src
+    # unchanged and broke a grep of app-sidebar.tsx.
+    # The promise it must make: looked for where the sidebar's user-visible copy lives, not
+    # across the whole tree, or an occurrence in an unrelated file would satisfy it.
+    assert "This chat's own sandbox folder is removed from disk." in _frontend_copy_text()
+    # The promise it must not make: looked for everywhere, where breadth only tightens it.
+    assert "Anything this chat's tools wrote is removed from disk." not in _frontend_src_text()
 
 
 def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch):
