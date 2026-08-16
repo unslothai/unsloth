@@ -178,7 +178,7 @@ _ACTION_VERB = (
 # request and never precede a tool call. "help you" keeps its plan reading when an
 # action follows it ("I'll help you search the web").
 # name no work of their own, so they only ever sign off a question to the user (#8907)
-_SIGN_OFF = r"(?:dig\s+in|help\s+analy[sz]e)\b(?![\s,;:]*\w)"
+_SIGN_OFF = r"(?:dig\s+in|help\s+analy[sz]e)\b(?=[^\w]*\Z)"  # \Z not $: a later line is still work
 _HELP_OFFER = (
     r"(?:do(?:ing)?\s+my\s+best|try\s+my\s+best|be\s+(?:able|happy|glad)\s+to\b"
     r"|assist\b|help\s+you\b(?!\s+" + _ACTION_VERB + r")|give\s+you\s+accurate\b"

@@ -3678,6 +3678,8 @@ class TestGGUFSafetensorsHealingParity:
             "I'll dig into the source now and report back.",
             "I'll dig in and search the web for the latest numbers.",
             "I'll dig in, then run the numbers.",
+            "I'll dig in. Starting with a web search.",
+            "I'll dig in.\nStarting with a web search.",
             "I'll help analyze the sales data now.",
             # "let me assist" names work without a "to", so only the sign-offs skip that gate.
             "Let me assist by searching the web now.",
