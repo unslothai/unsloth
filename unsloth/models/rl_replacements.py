@@ -1727,7 +1727,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
             if detect_logit_transforms is not None:
-                _transforms = detect_logit_transforms(model)
+                # model_config, not model: under DDP/Accelerate `model` is a wrapper
+                # that never forwards `.config`, so the helper would read zeros.
+                _transforms = detect_logit_transforms(model_config)
                 logit_softcapping = _transforms["logit_softcapping"]
                 logit_scale_multiply = _transforms["logit_scale_multiply"]
                 logit_scale_divide = _transforms["logit_scale_divide"]
@@ -2749,7 +2751,8 @@ def grpo_trainer_compute_loss(function_name, function):
         # logps come from there and the gradient logps from here, so both have to read
         # the transforms the same way or the ratio compares two different policies.
         if detect_logit_transforms is not None:
-            _transforms = detect_logit_transforms(model)
+            # model_config, not model: see _get_per_token_logps_and_entropies.
+            _transforms = detect_logit_transforms(model_config)
             logit_softcapping = _transforms["logit_softcapping"]
             logit_scale_multiply = _transforms["logit_scale_multiply"]
             logit_scale_divide = _transforms["logit_scale_divide"]
