@@ -36,8 +36,15 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  PROMPT_QUEUE_DRAG_TYPE,
   attachmentsPastedText,
+  hasPendingPromptQueueStart,
   isPastedTextFile,
+  isPromptQueueChord,
+  isPromptQueueDragTypes,
+  pastedTextQueueKey,
+  promptQueueActiveItemChanged,
+  reorderPromptQueueItems,
   pasteClipboardFiles,
   extractYoutubeVideoId,
   pasteLongTextAsFile,
@@ -183,17 +190,6 @@ import {
   type SentTextGuard,
 } from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
-import {
-  promptQueueActiveItemChanged,
-  reorderPromptQueueItems,
-} from "@/features/chat/utils/prompt-queue-reorder";
-import {
-  PROMPT_QUEUE_DRAG_TYPE,
-  hasPendingPromptQueueStart,
-  isPromptQueueChord,
-  isPromptQueueDragTypes,
-  pastedTextQueueKey,
-} from "@/features/chat/utils/prompt-queue-input";
 import {
   getStoredChatThread,
   updateStoredChatThread,
