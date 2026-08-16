@@ -44,19 +44,13 @@ function sameGpuSet(
 }
 
 /**
- * What a field of the config resolves to when it is left unset.
+ * What a config field resolves to when left unset.
  *
- * Four of these are NOT per-model, so leaving them out of a config is not silence: the
- * applier fills them from a standing preference or a constant, and the load then sends
- * that. `applyPerModelConfigToRuntime` is the definition -- speculative mode and GPU memory
- * mode fall back to `readPersistedSpeculativeType()` / `readPersistedGpuMemoryMode()`, GPU
- * layers to `GPU_LAYERS_AUTO` and CPU MoE layers to 0 -- and `loadSpeculativeType` in
- * `selectModel` sends the resolved value verbatim.
- *
- * The caller supplies them rather than this module reading the store, so the comparison
- * stays a pure function of its inputs. It is required, not optional: an optional resolver
- * is one a caller forgets, and forgetting it here silently keeps a runtime the user did not
- * ask for.
+ * These four are not per-model, so omitting them is not silence: the applier fills them
+ * from a standing preference or a constant (`applyPerModelConfigToRuntime`), and the load
+ * sends that. The caller supplies them rather than this module reading the store, so the
+ * comparison stays a pure function of its inputs. Required, not optional: a resolver a
+ * caller can forget is one that silently keeps a runtime the user did not ask for.
  */
 export type StandingConfigDefaults = {
   /** `readPersistedSpeculativeType()`, already normalized. */
@@ -77,12 +71,10 @@ export type StandingConfigDefaults = {
 };
 
 /**
- * One setting the resident load can disagree about.
- *
- * `pinned` answers whether the config expresses an opinion at all, and `agrees` whether the
- * running server already satisfies it. Keeping them apart is the whole point: a field the
- * config leaves unset must not be read as a demand for the default -- except for the four
- * above, which are always pinned because the applier always resolves them.
+ * One setting the resident load can disagree about. `pinned` is whether the config has an
+ * opinion at all, `agrees` whether the running server satisfies it. Keeping them apart is
+ * the point: an unset field must not read as a demand for the default, except the four
+ * above, which the applier always resolves and so are always pinned.
  */
 type SettingCheck = {
   pinned: (config: PerModelConfig) => boolean;
@@ -95,11 +87,8 @@ type SettingCheck = {
 
 const set = (value: unknown): boolean => value != null;
 
-/**
- * Mirrors the fields `LlamaCppBackend._runtime_matches_intent` reloads for, plus the MLX
- * pair `_mlx_runtime_settings_match` compares. Anything the status cannot report is left
- * out and handled by the caller, not silently treated as agreement.
- */
+/** Mirrors the fields `_runtime_matches_intent` reloads for, plus the MLX pair
+ * `_mlx_runtime_settings_match` compares. */
 const SETTING_CHECKS: SettingCheck[] = [
   {
     pinned: (c) => set(c.customContextLength),
@@ -151,8 +140,8 @@ const SETTING_CHECKS: SettingCheck[] = [
       c.chatTemplateOverride === (s.chat_template_override ?? null),
   },
   {
-    // undefined means this copy never read the stored value; null means the user cleared
-    // the box, which only agrees with a load invoked with no pass-through args.
+    // undefined: never read the stored value. null: the user cleared the box, which agrees
+    // only with a load invoked with no pass-through args.
     pinned: (c) => c.llamaExtraArgs !== undefined,
     agrees: (c, s) => sameList(c.llamaExtraArgs, s.requested_llama_extra_args),
   },
@@ -185,23 +174,17 @@ const SETTING_CHECKS: SettingCheck[] = [
 /**
  * Whether the resident load already runs the settings this pick would ask for.
  *
- * Identity is not the whole of a load. `LlamaCppBackend` reuses a running server only when
+ * Identity is not the whole of a load: `LlamaCppBackend` reuses a running server only when
  * the request also agrees on context, KV dtype, slots, batch sizes, placement, speculative
- * mode, chat template and pass-through args; a pick carrying a remembered config that
- * differs from any of those is a real reload, however well the model id matches.
+ * mode, chat template and pass-through args. An unset field expresses no opinion and agrees
+ * with whatever is running, which is what keeps the common case (no config at all) working.
  *
- * A field the config leaves unset expresses no opinion, so it agrees with whatever is
- * running. That is what keeps this from swallowing the common case: a model the user never
- * configured reaches `selectModel` with no config at all, and a model they did configure
- * still adopts the resident copy whenever the two already agree.
+ * The bias is one-sided on purpose. "Differs" costs one reload, which is what happened
+ * before any of this existed; a wrong "matches" leaves the user on settings they did not
+ * ask for, with the panel rolled back to the resident model so nothing says so.
  *
- * The bias is deliberate and one-sided. Answering "differs" costs one reload, which is what
- * happened before any of this existed; answering "matches" wrongly leaves the user with
- * settings they did not ask for and nothing on screen to say so, because the caller rolls
- * the panel back to the resident model either way.
- *
- * `maxSeqLength` is not compared: it is a client-side generation cap that no status field
- * echoes, and it never reaches llama-server's invocation.
+ * `maxSeqLength` is not compared: a client-side generation cap no status echoes, and it
+ * never reaches llama-server's invocation.
  */
 export function residentRuntimeMatchesConfig(
   status: ResidentRuntime,

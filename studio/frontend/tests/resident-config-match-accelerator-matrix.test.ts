@@ -2,25 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * `residentRuntimeMatchesConfig` across the accelerators Studio runs on, and across every
+ * `residentRuntimeMatchesConfig` across the accelerators Studio runs on, crossed with every
  * setting a remembered config can pin.
  *
- * Two different failures live here and they are not symmetric. A wrong FALSE costs one
- * reload, which is what happened before #8893 was fixed. A wrong TRUE leaves the user on a
- * server invoked differently from what they asked for, with the panel rolled back to the
- * resident model so nothing on screen says so. The sweep below therefore checks both
- * directions for every field rather than sampling.
+ * The two failures are not symmetric. A wrong FALSE costs one reload, which is what
+ * happened before #8893. A wrong TRUE leaves the user on a server invoked differently from
+ * what they asked for, with the panel rolled back so nothing says so. Hence both directions
+ * for every field rather than sampling.
  *
- * The accelerator axis is real for this function even though it compares no paths: the
- * fields it reads are the GPU ones. A CUDA or ROCm host reports a placement pool and an
- * offload mode; a CPU-only host reports `manual` with zero layers; an Apple MLX server
- * reports none of them and a KV width instead. A check written against one shape has to
- * behave on the others, and "the status does not carry this field" must never read as
- * agreement.
+ * The accelerator axis is real even though no paths are compared, because the fields read
+ * are the GPU ones: CUDA and ROCm report a placement pool and an offload mode, a CPU-only
+ * host reports `manual` with zero layers, MLX reports none of them and a KV width instead.
+ * "The status does not carry this field" must never read as agreement.
  *
- * The structural test at the bottom is the one that matters over time: it fails when a
- * field is added to `PerModelConfig` without being classified here, so a new setting
- * cannot be silently dropped by an adopted pick.
+ * The structural test at the bottom is the one that lasts: it fails when a field is added
+ * to `PerModelConfig` without being classified here.
  */
 
 import assert from "node:assert/strict";
@@ -71,11 +67,8 @@ const BLANK = {
   chatTemplateOverride: null,
 };
 
-/**
- * What `/api/inference/status` reports on each host, as measured against a running Studio
- * rather than copied from the type: a default CUDA load answers gpu_memory_mode "auto",
- * gpu_layers -1, n_cpu_moe 0, requested_gpu_ids null, tensor_parallel false.
- */
+/** What `/api/inference/status` reports per host, measured against a running Studio rather
+ * than copied from the type: a default CUDA load answers auto / -1 / 0 / null / false. */
 const ACCELERATORS: Record<string, Record<string, unknown>> = {
   "nvidia-cuda": {
     gpu_memory_mode: "auto",
@@ -88,9 +81,8 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
     gpu_memory_mode: "auto",
     gpu_layers: -1,
     n_cpu_moe: 0,
-    // ROCm placement is physical indices, and more than one of them is the common case
-    // this function has to compare as a SET. The split flag stays off here so BLANK agrees
-    // with every base; tensor_parallel true is covered by the sweep below.
+    // ROCm placement is physical indices, and several of them is the common case this
+    // compares as a SET. The split flag stays off so BLANK agrees with every base.
     requested_gpu_ids: [0, 1],
     tensor_parallel: false,
   },
@@ -230,8 +222,7 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
     });
 
     test(`[${accelerator}] ${field.key} pinned against a status that omits it is a reload`, () => {
-      // The direction that must never be read as agreement: a field the running server
-      // cannot report is a field this function cannot verify.
+      // Never agreement: a field the server cannot report is one this cannot verify.
       const status = { ...base } as Record<string, unknown>;
       delete status[field.statusKey];
       assert.equal(
@@ -239,8 +230,8 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
           ...BLANK,
           [field.key]: field.same,
         }),
-        // tensorParallel is the one field with no unset state: false is a real request for
-        // a layer split, and a status omitting the flag ran without one, so they agree.
+        // tensorParallel has no unset state: false is a real request for a layer split,
+        // and a status omitting the flag ran without one, so they agree.
         field.key === "tensorParallel" ? field.same === false : false,
       );
     });
@@ -248,8 +239,7 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
 }
 
 test("placement compares as a set on a multi-GPU host, not as an order", () => {
-  // The backend narrows and reorders the pool at fit time, so an order difference is not a
-  // difference. A membership difference is.
+  // The backend narrows and reorders the pool at fit time, so only membership counts.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["amd-rocm"], requested_gpu_ids: [0, 1] },
@@ -279,8 +269,8 @@ test("automatic placement pins nothing, so it adopts any pool", () => {
 });
 
 test("a CPU-only host distinguishes zero offloaded layers from automatic", () => {
-  // gpu_layers 0 under manual is "keep it all on the CPU"; -1 is "let llama.cpp size it".
-  // They are different loads, and 0 must not be read as an absent value.
+  // gpu_layers 0 under manual is "all on the CPU", -1 is "let llama.cpp size it": two
+  // different loads, and 0 must not read as absent.
   assert.equal(
     residentRuntimeMatchesConfig(
       { ...ACCELERATORS["cpu-only"], gpu_memory_mode: "manual", gpu_layers: 0 },
@@ -307,12 +297,10 @@ test("a CPU-only host distinguishes zero offloaded layers from automatic", () =>
 });
 
 test("a config stored by an older Studio does not throw and does not over-adopt", () => {
-  // Blobs written before a field existed simply lack the key. The optional ones express no
-  // opinion, which adopts; tensorParallel has no unset state, so an old blob missing it
-  // reads as a demand the status cannot confirm and reloads. Neither may throw.
-  // Typed as the parameter and cast at the boundary: these blobs come off localStorage,
-  // where a version that predates a field simply has no key for it, so the point of the
-  // test is precisely the shapes the current type says cannot occur.
+  // Blobs written before a field existed lack the key. Optional ones express no opinion
+  // and adopt; a missing tensorParallel cannot be confirmed and reloads. Neither throws.
+  // Cast at the boundary on purpose: these come off localStorage, so the point is the
+  // shapes the current type says cannot occur.
   const legacyBlobs = [
     // Pre-GPU-controls, pre-extra-args, pre-MLX.
     {
@@ -345,8 +333,7 @@ test("a config stored by an older Studio does not throw and does not over-adopt"
       ACCELERATORS["nvidia-cuda"],
       legacyBlobs[1] as PerModelConfig,
     ),
-    // tensorParallel absent, status false: `undefined === false` is false, so it reloads.
-    // Conservative, and the direction that cannot lose a setting.
+    // tensorParallel absent vs status false: reloads, the direction that loses nothing.
     false,
   );
 });
@@ -357,15 +344,14 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
       { ...ACCELERATORS["nvidia-cuda"], requested_gpu_ids: [0, 1] },
       { ...BLANK, selectedGpuIds: [] },
     ),
-    // set() treats [] as pinned, and sameGpuSet([], [0,1]) is false, so this reloads.
-    // Recorded rather than asserted as desirable: the panel writes null for Automatic.
+    // set() treats [] as pinned, so this reloads. Recorded, not endorsed: the panel
+    // writes null for Automatic.
     false,
   );
 });
 
 test("every PerModelConfig field is either compared or deliberately excluded", () => {
-  // The guard that survives this PR. A new setting added to the config and not classified
-  // here is a setting an adopted pick would drop silently.
+  // A new setting not classified here is one an adopted pick would drop silently.
   const source = readFileSync(
     fileURLToPath(
       new URL(
@@ -386,19 +372,17 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
 
   const compared = new Set(FIELDS.map((field) => field.key));
   const excluded = new Set([
-    // A client-side generation cap. No status field echoes it and it never reaches
-    // llama-server's invocation, so it cannot be a reason to reload.
+    // A client-side generation cap: no status echoes it, so it cannot force a reload.
     "maxSeqLength",
-    // Qualifies selectedGpuIds rather than adding a dimension: the kind is decided by the
-    // running llama.cpp build, not by the pick, so a resident server and a pick evaluated
-    // against it always share it. /status publishes no field to check it against either.
+    // Qualifies selectedGpuIds rather than adding a dimension: the running llama.cpp build
+    // decides the kind, so a resident server and any pick share it, and /status omits it.
     "selectedGpuIndexKind",
   ]);
   const unclassified = [...declared].filter(
     (field) => !compared.has(field) && !excluded.has(field),
   );
   assert.deepEqual(unclassified, []);
-  // And the reverse, so a field removed from the config does not leave a dead check here.
+  // And the reverse, so a removed field leaves no dead check here.
   const stale = [...compared, ...excluded].filter(
     (field) => !declared.has(field),
   );

@@ -2,19 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * residentModelMatchesPick decides whether a pick skips its reload, so a wrong TRUE keeps
- * weights the user did not ask for and a wrong FALSE reloads for nothing. Both answers
- * depend on strings the BACKEND chose, and those differ by host and by Studio version:
+ * A wrong TRUE here keeps weights the user did not ask for; a wrong FALSE reloads for
+ * nothing. Both answers depend on strings the BACKEND chose, which differ on two axes:
  *
- *   host      an HF snapshot path is POSIX on Linux and macOS, a drive path or a UNC share
- *             on Windows, and /mnt/<letter> under WSL; separators and case fold differently
- *             on each, and a standalone .gguf can be named any of them
- *   version   older backends published no model_identifier at all, and older ones still put
- *             the RAW path in active_model where a current one puts the public repo id; a
- *             native-lease load withholds the raw path on every version
+ *   host      a snapshot path is POSIX on Linux and macOS, a drive path or UNC share on
+ *             Windows, /mnt/<letter> under WSL; separators and case fold differently
+ *   version   older backends published no model_identifier, or put the RAW path in
+ *             active_model; a native lease withholds it on every version
  *
- * The table below is the cross product of those two axes with the model kinds Studio can
- * load. Every row states the answer the USER needs, not the answer the code happens to give.
+ * The table is those two crossed with the model kinds Studio loads. Every row states the
+ * answer the USER needs, not the one the code happens to give.
  */
 
 import assert from "node:assert/strict";

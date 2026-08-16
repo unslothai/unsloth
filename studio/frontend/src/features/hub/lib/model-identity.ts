@@ -108,13 +108,8 @@ function hfCacheRepoId(path: string): string | null {
 }
 
 /**
-* Whether *identifier* is an HF cache snapshot dir, so its public id names the REPO and not
-* the revision inside it.
-*
-* Load-bearing wherever a public id is used to decide that a model is already resident: one
-* repo's snapshots all collapse onto the same id, so that comparison cannot say which
-* revision is running. Mirrors ``hf_cache_repo_id`` in core/inference/model_ids.py, which
-* only recognises the real cache layout.
+* Whether *identifier* is an HF cache snapshot dir, so its public id names the repo rather
+* than the revision inside it. Mirrors ``hf_cache_repo_id`` in core/inference/model_ids.py.
 */
 export function isHfCacheSnapshotPath(
   identifier: string | null | undefined,

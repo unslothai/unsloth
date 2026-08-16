@@ -10,8 +10,8 @@ import {
   residentModelIdMatches,
 } from "@/features/hub/lib/model-identity";
 
-/** The names one model pick answers to: the catalog id its picker row shows, and the
- * `model_path` its load sends, which differ whenever a cached row pins a snapshot dir. */
+/** The two names one pick answers to: its picker row's catalog id, and the `model_path`
+ * its load sends. They differ whenever a cached row pins a snapshot dir. */
 export type ModelPickNames = {
   id: string;
   loadPath?: string | null;
@@ -26,21 +26,12 @@ export type ResidentModelStatus = {
 };
 
 /**
- * Whether the model already resident on the inference server is the one this pick names.
+ * Whether the resident model is the one this pick names.
  *
- * Both sides hold two strings for one model and they need not be the same one: a pinned
- * cached row loads by snapshot path while its picker row keeps the repo id, and the status
- * publishes the clean public id next to the raw load identifier. Loading a model that is
- * already resident returns `already_loaded` without touching llama-server, so a caller that
- * recognises it here can skip both the reload and the confirmation that goes with it.
- *
- * A standalone `.gguf` is exempt from the variant comparison: it is one file with no quant to
- * choose between, and the backend labels the resident copy from its filename while the picker
- * row deliberately carries none.
- *
- * The public id is not enough on its own. Two snapshots of one cached repo report the same
- * `active_model`, and the inventory repoints `load_id` at the newest, so a repo that advanced
- * under a resident older snapshot would read as resident and keep serving stale weights.
+ * Each side holds two strings for one model and they need not be equal: a pinned cached row
+ * loads by snapshot path while its row keeps the repo id, and the status publishes the public
+ * id beside the raw one. Recognising that here skips a reload `/load` would have answered
+ * `already_loaded`, and the confirmation that goes with it.
  */
 export function residentModelMatchesPick(
   status: ResidentModelStatus,
@@ -49,35 +40,34 @@ export function residentModelMatchesPick(
   if (!status.active_model) {
     return false;
   }
-  // see settingsGgufVariantForRow: the row for a standalone file carries no quant label
+  // A standalone file has no quant to choose between, and its row carries no label
+  // (settingsGgufVariantForRow) while the backend derives one from the filename.
   const picksItsOwnVariant = !(
     !pick.ggufVariant && isStandaloneGgufPath(pick.loadPath ?? pick.id)
   );
-  // a quant switch within one repo is a real reload, so the variant has to agree too
+  // a quant switch within one repo is a real reload
   if (
     picksItsOwnVariant &&
     !ggufVariantsMatch(status.gguf_variant, pick.ggufVariant)
   ) {
     return false;
   }
-  // the public id names every snapshot of a repo, so only the raw identifier settles which weights are resident, as LlamaCppBackend.matches_load_source
+  // Only the raw identifier says WHICH weights are resident, as matches_load_source does:
+  // every snapshot of a repo publishes the same public id.
   if (status.model_identifier) {
     return modelIdsMatch(status.model_identifier, pick.loadPath ?? pick.id);
   }
-  // No raw identifier to settle it. A literal match on the name this pick would LOAD BY
-  // still names one revision, so take that first: an older backend put the raw path in
-  // active_model, and a pick with no pin is its own load id.
+  // No raw identifier. The name this pick loads by still names one revision, so try it
+  // literally first: an older backend put the raw path in active_model.
   const loadName = pick.loadPath ?? pick.id;
   if (modelIdsMatch(status.active_model, loadName)) {
     return true;
   }
-  // Anything further compares a public id, and every snapshot of one repo publishes the
-  // same one, so it cannot say WHICH revision is resident. For a pick pinned to a snapshot
-  // dir that is the difference between adopting the weights asked for and keeping the ones
-  // already there, so reload -- which is what happened before any of this existed.
+  // What is left collapses onto a public id, which cannot tell one snapshot of a repo from
+  // another, so a pick pinned to one reloads rather than risk keeping the old weights.
   if (isHfCacheSnapshotPath(loadName)) {
     return false;
   }
-  // a native-lease load withholds the raw path and reports its display label alone
+  // a native lease withholds the raw path and reports its display label alone
   return residentModelIdMatches(status.active_model, pick.id, pick.loadPath);
 }
