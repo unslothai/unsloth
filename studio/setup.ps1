@@ -5998,23 +5998,37 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
                     # an absent pre sorts ABOVE any pre unless this is a bare dev build
                     $_pre = if ($null -eq $_post -and $null -ne $_dev) { @(-1, 0) } else { @(9, 0) }
                 }
-                # release padded so 1.0 and 1.0.1 compare segment by segment
-                $_key = [System.Collections.ArrayList]@($_ep)
-                for ($_i = 0; $_i -lt 6; $_i++) { [void]$_key.Add($(if ($_i -lt $_rel.Count) { $_rel[$_i] } else { 0 })) }
-                [void]$_key.Add($_pre[0]); [void]$_key.Add($_pre[1])
-                [void]$_key.Add($(if ($null -eq $_post) { -1 } else { $_post }))
-                # dev numbers are unbounded, so an absent dev needs a real infinity
-                [void]$_key.Add($(if ($null -eq $_dev) { [double]::PositiveInfinity } else { [double]$_dev }))
-                return $_key.ToArray()
+                # The release stays variable-length and is padded against the OTHER
+                # version at compare time: padding to a fixed width here would tie
+                # two versions that first differ past that width.
+                return @{
+                    Ep   = $_ep
+                    Rel  = $_rel.ToArray()
+                    Pre  = $_pre
+                    Post = $(if ($null -eq $_post) { -1 } else { $_post })
+                    # dev numbers are unbounded, so an absent dev needs a real infinity
+                    Dev  = $(if ($null -eq $_dev) { [double]::PositiveInfinity } else { [double]$_dev })
+                }
             }
             $_pk = & $_pepKey $PostVer
             $_lk = & $_pepKey $LatestVer
             if ($null -ne $_pk -and $null -ne $_lk) {
-                for ($_ri = 0; $_ri -lt $_pk.Count; $_ri++) {
-                    if ($_pk[$_ri] -gt $_lk[$_ri]) { $_updateOk = $true; break }
-                    if ($_pk[$_ri] -lt $_lk[$_ri]) { break }
-                    if ($_ri -eq $_pk.Count - 1) { $_updateOk = $true }
+                $_cmp = 0
+                if ($_pk.Ep -ne $_lk.Ep) { $_cmp = $(if ($_pk.Ep -gt $_lk.Ep) { 1 } else { -1 }) }
+                if ($_cmp -eq 0) {
+                    $_segs = [Math]::Max($_pk.Rel.Count, $_lk.Rel.Count)
+                    for ($_i = 0; $_i -lt $_segs; $_i++) {
+                        $_a = $(if ($_i -lt $_pk.Rel.Count) { $_pk.Rel[$_i] } else { 0 })
+                        $_b = $(if ($_i -lt $_lk.Rel.Count) { $_lk.Rel[$_i] } else { 0 })
+                        if ($_a -ne $_b) { $_cmp = $(if ($_a -gt $_b) { 1 } else { -1 }); break }
+                    }
                 }
+                foreach ($_pair in @(@($_pk.Pre[0], $_lk.Pre[0]), @($_pk.Pre[1], $_lk.Pre[1]),
+                                     @($_pk.Post, $_lk.Post), @($_pk.Dev, $_lk.Dev))) {
+                    if ($_cmp -ne 0) { break }
+                    if ($_pair[0] -gt $_pair[1]) { $_cmp = 1 } elseif ($_pair[0] -lt $_pair[1]) { $_cmp = -1 }
+                }
+                $_updateOk = ($_cmp -ge 0)
             }
         }
         if (-not $_updateOk -and $pypiJson -and $pypiJson.releases) {
