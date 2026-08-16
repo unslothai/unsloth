@@ -132,6 +132,18 @@ test("the inlined-entry layout is measured, not rejected", () => {
   assert.ok(out.includes("2 chunks"), out);
 });
 
+test("preload links without a module entry are a shape change, not a measurement", () => {
+  // A modulepreload link announces the entry's static import closure, so links
+  // surviving while the entry does not means the entry was misread. The links are
+  // numerous enough to carry a total-only guard on their own, and the chunk that
+  // goes missing is the largest one on the startup path.
+  const html = INDEX_HTML.replace(/<script type="module"[^>]*><\/script>\n?/, "");
+  const { code, err } = runIn(fixture({ html }));
+  assert.equal(code, 2);
+  assert.ok(err.includes("no module entry"), err);
+  assert.ok(err.includes("nothing trustworthy to measure"), err);
+});
+
 test("hrefs that are not site-root asset paths are reported, not silently skipped", () => {
   // `base: "./"` or `base: "/studio/"` emits every href in a form this does not
   // read. Measuring the empty remainder as 0 bytes would pass forever.

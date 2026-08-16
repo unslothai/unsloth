@@ -441,11 +441,22 @@ function main(): number {
   //
   // Counting scripts and links together rather than requiring both: when the entry
   // module is nothing but imports, Vite inlines it into one `<script>` per imported
-  // chunk and emits no preload links at all, which is a complete measurement.
+  // chunk and emits no preload links at all, which is a complete measurement. So
+  // the total is what decides whether this is a code-split build.
+  //
+  // But at least one entry is required on top of that total, because preloads
+  // without one is not a build shape Vite emits: a modulepreload link exists to
+  // announce the entry's static import closure, so links surviving while the entry
+  // does not means the entry was read wrong, not that it is absent. Left to the
+  // total alone, the app's 48 links carry the guard while the largest single chunk
+  // in the startup path silently leaves the measurement -- which is exactly how
+  // two mis-parses of this file's own making stayed invisible.
   const fromVite = entry.length + preloads.length;
-  if (fromVite < 2) {
+  if (entry.length === 0 || fromVite < 2) {
     console.error(
-      `dist/index.html yielded ${fromVite} eager chunk(s) from Vite, so there is nothing trustworthy to measure here.`,
+      entry.length === 0
+        ? `dist/index.html yielded no module entry (and ${preloads.length} preload link(s)), so there is nothing trustworthy to measure here.`
+        : `dist/index.html yielded ${fromVite} eager chunk(s) from Vite, so there is nothing trustworthy to measure here.`,
     );
     console.error(
       'A code-split build served from the site root gives a `<script type="module" src="/assets/...">` plus one `<link rel="modulepreload" href="/assets/...">` per statically imported chunk. If the shape changed on purpose -- `build.modulePreload` turned off, a non-root or relative `base`, a different `build.assetsDir`, `renderBuiltUrl` pointing at a CDN -- teach scripts/check-bundle-budget.ts the new shape rather than leaving a gate that measures nothing.',
