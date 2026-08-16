@@ -3128,6 +3128,37 @@ const Composer: FC<{
     };
   }, [aui, referenceThreadId]);
 
+  // Whether a pending start is already going to be refused when it resolves,
+  // so a retry replaces it rather than being turned away as a duplicate and
+  // leaving neither gesture to queue anything. Only the checks that need no
+  // queue target are here; the model boundary stays with the reservation,
+  // where usesLocalModel is known, so this can never be the stricter of the
+  // two and start a second queue for the same prompt.
+  const pendingQueueStartIsStale = useCallback(
+    (pending: {
+      cancelled: boolean;
+      temporary: boolean;
+      queuedSettingsEpoch: number;
+      historyClearGeneration?: number;
+    }): boolean => {
+      if (pending.cancelled) return true;
+      if (
+        pending.historyClearGeneration !== undefined &&
+        chatHistoryClearBoundary.capture() !== pending.historyClearGeneration
+      ) {
+        return true;
+      }
+      const chatState = useChatRuntimeStore.getState();
+      return shouldAbortPendingQueueForSettingsChange({
+        capturedEpoch: pending.queuedSettingsEpoch,
+        currentEpoch: chatState.queuedSettingsEpoch,
+        capturedTemporary: pending.temporary,
+        currentTemporary: chatState.incognito,
+      });
+    },
+    [],
+  );
+
   const startHydratedPromptQueue = useCallback(
     (
       items: string[],
@@ -3147,7 +3178,10 @@ const Composer: FC<{
         items,
         waitForCurrentRun,
       ]);
-      if (promptQueueStartPendingRef.current.has(reservationKey)) {
+      // A reservation that is still going to start owns this prompt. One that
+      // is already invalid is replaced, so the retry is the one that queues.
+      const existing = promptQueueStartPendingRef.current.get(reservationKey);
+      if (existing && !pendingQueueStartIsStale(existing)) {
         return false;
       }
       const reservation = {
@@ -3191,7 +3225,12 @@ const Composer: FC<{
           ) {
             startPromptQueue(items, target, waitForCurrentRun);
             onStarted?.();
-          } else {
+          } else if (
+            promptQueueStartPendingRef.current.get(reservationKey) ===
+            reservation
+          ) {
+            // Superseded reservations stay quiet: the one that replaced this
+            // is still going, so nothing has been lost to report.
             onAborted?.();
           }
         })
@@ -3212,34 +3251,7 @@ const Composer: FC<{
         });
       return true;
     },
-    [createPromptQueueTarget, referenceThreadId],
-  );
-
-  // Whether a read in flight is already going to be refused when it resolves.
-  // Only the checks that need no queue target are here; the model boundary is
-  // one of them and stays with the reservation, where the target is known.
-  const pendingPastedTextReadIsStale = useCallback(
-    (read: {
-      cancelled: boolean;
-      temporary: boolean;
-      queuedSettingsEpoch: number;
-      historyClearGeneration: number;
-    }): boolean => {
-      if (read.cancelled) return true;
-      if (
-        chatHistoryClearBoundary.capture() !== read.historyClearGeneration
-      ) {
-        return true;
-      }
-      const chatState = useChatRuntimeStore.getState();
-      return shouldAbortPendingQueueForSettingsChange({
-        capturedEpoch: read.queuedSettingsEpoch,
-        currentEpoch: chatState.queuedSettingsEpoch,
-        capturedTemporary: read.temporary,
-        currentTemporary: chatState.incognito,
-      });
-    },
-    [],
+    [createPromptQueueTarget, pendingQueueStartIsStale, referenceThreadId],
   );
 
   // The queue carries text, and a long paste is text the composer parked in a
@@ -3271,7 +3283,7 @@ const Composer: FC<{
       // baselines have already gone stale is going to abort, so it must not
       // absorb the retry as well, or neither gesture queues anything.
       const inFlight = pastedTextQueuePendingRef.current.get(pendingKey);
-      if (inFlight && !pendingPastedTextReadIsStale(inFlight)) return true;
+      if (inFlight && !pendingQueueStartIsStale(inFlight)) return true;
       // Every baseline the reservation would otherwise take after the read, so
       // a setting or boundary changed during it still aborts the queue.
       const chatState = useChatRuntimeStore.getState();
@@ -3291,7 +3303,7 @@ const Composer: FC<{
         .then((texts) => {
           // Stopped, cleared, or replaced while the read was in flight.
           if (
-            pendingPastedTextReadIsStale(pendingRead) ||
+            pendingQueueStartIsStale(pendingRead) ||
             pastedTextQueuePendingRef.current.get(pendingKey) !== pendingRead
           ) {
             return;
@@ -3341,7 +3353,7 @@ const Composer: FC<{
     [
       aui,
       clearStoredDraft,
-      pendingPastedTextReadIsStale,
+      pendingQueueStartIsStale,
       referenceThreadId,
       startHydratedPromptQueue,
     ],
