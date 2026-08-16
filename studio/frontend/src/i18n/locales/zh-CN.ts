@@ -92,6 +92,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
+      showMore: "显示更多",
+      showLess: "显示更少",
       settings: "设置",
       api: "API",
       lightMode: "浅色模式",
@@ -105,6 +107,44 @@ export const zhCN = {
       title: "页面未找到",
       description: "{path} 不存在。",
       backToChat: "返回聊天",
+    },
+    selection: {
+      pinProjects: "置顶项目",
+      unpinProjects: "取消置顶项目",
+      deleteProjects: "删除项目",
+      deleteProjectsTitle: "删除项目",
+      deleteProjectsDescription:
+        "删除 {count} 个项目？其中的对话将被永久删除。",
+      deleteProjectsFilesDescription:
+        "每个项目的工作区文件夹会从磁盘中删除。",
+      countSelected: "已选择 {count} 个",
+      pinChats: "置顶对话",
+      unpinChats: "取消置顶",
+      archiveChats: "归档对话",
+      markUnread: "标记为未读",
+      deleteChats: "删除对话",
+      deleteTitle: "删除对话",
+      deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
+      deleteFilesDescription:
+        "每个对话自己的沙盒文件夹会从磁盘中删除。它们在项目内写入的文件仍保留在该项目的工作区中。",
+      deleteFilesLabel: "删除文件和沙盒文件夹",
+      deleteChatFilesDescription:
+        "此对话自己的沙盒文件夹将从磁盘中移除。它在项目中写入的文件仍保留在该项目的工作区内。",
+    },
+    organize: {
+      sidebarHeading: "整理侧边栏",
+      byProject: "按项目",
+      inOneList: "合并为一个列表",
+      sortChatsBy: "对话排序方式",
+      sortPinnedBy: "置顶排序方式",
+      priority: "优先级",
+      lastUpdated: "最近更新",
+      manualOrder: "手动排序",
+      moveUp: "上移",
+      moveDown: "下移",
+      organizeChats: "整理对话",
+      organizeProjects: "整理项目",
+      sortPinnedChats: "对置顶对话排序",
     },
     dialog: {
       deleteChat: {
@@ -379,12 +419,15 @@ export const zhCN = {
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         idleSecondsAriaLabel: "空闲自动卸载秒数",
+        mediaEnable: "按请求切换图像和视频模型",
+        mediaEnableDescription:
+          "在生成前加载 API 请求中指定的已下载图像或视频模型。这是独立的设置：上面那项仅适用于聊天模型。默认关闭。",
         mediaIdleUnload: "图像和视频的空闲自动卸载",
         mediaIdleUnloadDescription:
           "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。这是独立的设置：上面那项仅适用于聊天模型。设为 0 则保持加载，最小值为 60 秒。",
         mediaIdleSecondsAriaLabel: "图像和视频空闲自动卸载秒数",
         mediaIdlePaused:
-          "当“将模型保留在显存中”或“仅卸载由 API 加载的模型”开启时暂停。",
+          "当“将模型保留在 GPU 内存中”开启时暂停。",
         idleNeedsEnable: "请先开启“按请求切换模型”。",
         idleActiveViaEnv: "已通过 UNSLOTH_MODEL_IDLE_TTL 启用。",
         loadError: "加载模型自动切换设置失败。",
@@ -912,6 +955,9 @@ export const zhCN = {
       },
     },
     chat: {
+      projectsSection: "显示项目分区",
+      projectsSectionDescription:
+        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {
@@ -933,6 +979,9 @@ export const zhCN = {
         compareChat: "对比聊天",
         exportChat: "导出聊天",
       },
+      pastedTextThreshold: "压缩长粘贴内容",
+      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。",
+      pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       modelDisclaimer: "显示模型免责声明",
@@ -1044,6 +1093,9 @@ export const zhCN = {
       confirmBeforeDeleting: "删除前确认",
       confirmBeforeDeletingDescription:
         "删除聊天前先询问确认。关闭后将立即删除。",
+      alwaysDeleteFiles: "始终删除文件",
+      alwaysDeleteFilesDescription:
+        "删除对话时，同时从磁盘中删除它自己的沙盒文件夹。它在项目内写入的文件仍保留在该项目的工作区中。",
       filesSection: "文件",
       uploadedFiles: "上传的文件",
       uploadedFilesDescription: "查看和管理上传到聊天、项目和知识库的文件。",

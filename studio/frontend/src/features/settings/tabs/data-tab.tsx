@@ -30,6 +30,7 @@ import {
   bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
+  DeleteChatFilesSwitch,
   downloadArchivedChatExport,
   downloadChatExport,
   exportFineTuneJsonl,
@@ -96,6 +97,9 @@ export function DataTab() {
     (s) => s.consumeArchivedChatsRequest,
   );
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Preselected from the preference, so the dialog shows what is about to
+  // happen and can still be turned off for this one clear.
+  const [deleteFilesOnClear, setDeleteFilesOnClear] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
@@ -175,6 +179,12 @@ export function DataTab() {
 
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
+  );
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (state) => state.alwaysDeleteChatFiles,
+  );
+  const setAlwaysDeleteChatFiles = useChatPreferencesStore(
+    (state) => state.setAlwaysDeleteChatFiles,
   );
   const setConfirmDeleteChats = useChatPreferencesStore(
     (state) => state.setConfirmDeleteChats,
@@ -405,9 +415,12 @@ export function DataTab() {
   const handleClear = async () => {
     setClearing(true);
     try {
-      const result = await clearAllChats();
+      const result = await clearAllChats({
+        deleteFiles: deleteFilesOnClear,
+      });
       const clearedCount = result.deletedThreadIds.length;
-      // Clear-all has no switch, so the same offer the sidebar makes.
+      // A sandbox the backend could not remove, asked for or not.
+      // After a clear there is no row left to reach it from.
       offerToDeleteKeptSandboxes(result.sandboxesKept);
       const hasFailedStore =
         result.backend === "failed" || result.legacy === "failed";
@@ -721,6 +734,16 @@ export function DataTab() {
         </SettingsRow>
 
         <SettingsRow
+          label={t("settings.data.alwaysDeleteFiles")}
+          description={t("settings.data.alwaysDeleteFilesDescription")}
+        >
+          <Switch
+            checked={alwaysDeleteChatFiles}
+            onCheckedChange={setAlwaysDeleteChatFiles}
+          />
+        </SettingsRow>
+
+        <SettingsRow
           label={t("settings.chat.exportHistory")}
           description={t("settings.chat.exportHistoryDescription")}
         >
@@ -813,7 +836,10 @@ export function DataTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setConfirmOpen(true)}
+            onClick={() => {
+              setDeleteFilesOnClear(alwaysDeleteChatFiles);
+              setConfirmOpen(true);
+            }}
             disabled={count === 0}
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
@@ -911,6 +937,13 @@ export function DataTab() {
               {t("settings.chat.clearChatsConfirmDescription")}
             </DialogDescription>
           </DialogHeader>
+          <DeleteChatFilesSwitch
+            id="clear-chats-delete-files"
+            checked={deleteFilesOnClear}
+            onCheckedChange={setDeleteFilesOnClear}
+            // Every chat at once, so the per-chat wording does not fit.
+            description={t("shell.selection.deleteFilesDescription")}
+          />
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
               {t("common.cancel")}

@@ -3597,6 +3597,9 @@ class ModelConfig:
     audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
+    # ``(repo, variant, path, sizes)`` for a GGUF verified during config resolution;
+    # ``sizes`` covers that file and every shard beside it.
+    gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
@@ -3833,33 +3836,32 @@ class ModelConfig:
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
                 variant = gguf_variant
+                verified_file: Optional[str] = None
                 if variant:
                     from core.inference.llama_cpp import (
                         _gguf_files_for_variant,
                         cached_gguf_for_load,
                     )
 
-                    # Reject before the load path unloads the resident model.
-                    # Only a live, complete repo listing can prove the variant
-                    # absent; without one, let the load path resolve it. The
-                    # cache escape mirrors the load path's own reuse predicate.
-                    try:
-                        from huggingface_hub import list_repo_files
-                        repo_files = list_repo_files(identifier, token = hf_token)
-                    except Exception:
-                        repo_files = None
-                    if (
-                        repo_files
-                        and not _gguf_files_for_variant(repo_files, variant)
-                        and not cached_gguf_for_load(
-                            identifier, variant, verify_sizes = True, hf_token = hf_token
-                        )
-                    ):
-                        available = ", ".join(v.quant for v in variants)
-                        raise ValueError(
-                            f"GGUF variant '{variant}' not found in {identifier}. "
-                            f"Available variants: {available}"
-                        )
+                    # A verified cached file also proves that the requested variant exists.
+                    verified_file = cached_gguf_for_load(
+                        identifier, variant, verify_sizes = True, hf_token = hf_token
+                    )
+                    if verified_file is None:
+                        # Reject before the load path unloads the resident model.
+                        # Only a live, complete repo listing can prove the variant
+                        # absent; without one, let the load path resolve it.
+                        try:
+                            from huggingface_hub import list_repo_files
+                            repo_files = list_repo_files(identifier, token = hf_token)
+                        except Exception:
+                            repo_files = None
+                        if repo_files and not _gguf_files_for_variant(repo_files, variant):
+                            available = ", ".join(v.quant for v in variants)
+                            raise ValueError(
+                                f"GGUF variant '{variant}' not found in {identifier}. "
+                                f"Available variants: {available}"
+                            )
                 if not variant:  # auto-select best quant
                     # ROOT rows when there are any. _pick_best_gguf keeps whichever filename it
                     # met first among equals, so an LTX-style listing that puts distilled/...-Q6_K
@@ -3881,6 +3883,27 @@ class ModelConfig:
                     else:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
+                    from core.inference.llama_cpp import cached_gguf_for_load
+
+                    verified_file = cached_gguf_for_load(
+                        identifier, variant, verify_sizes = True, hf_token = hf_token
+                    )
+
+                verified_gguf = None
+                if verified_file:
+                    from core.inference.llama_cpp import (
+                        _cached_variant_sizes,
+                        _resolve_repo_id_casing,
+                    )
+
+                    # Every shard's byte count, so the load can spot damage from here
+                    # on without asking the Hub again.
+                    sizes = _cached_variant_sizes(
+                        _resolve_repo_id_casing(identifier), variant, verified_file
+                    )
+                    if sizes:
+                        verified_gguf = (identifier, variant, verified_file, sizes)
+
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "
@@ -3896,6 +3919,7 @@ class ModelConfig:
                     is_lora = False,
                     is_gguf = True,
                     gguf_file = None,
+                    gguf_verified = verified_gguf,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )
