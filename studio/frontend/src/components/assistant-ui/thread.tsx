@@ -2135,6 +2135,9 @@ const Composer: FC<{
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      // A paste is a user gesture, unlike a queued stale write, so it retires
+      // the guard and re-pasting the prompt just sent goes through.
+      justSentRef.current = null;
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
       if (extractYoutubeVideoId(pastedText)) {
         setYoutubeLink(pastedText.trim());
@@ -2626,8 +2629,18 @@ const Composer: FC<{
     if (!composer.getState().isEditing) return;
     // A save that raced the send still holds the sent text; restoring it would
     // undo the clear. Keyed on the thread that sent, so another thread's
-    // identical draft still restores.
-    if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey, Date.now())) {
+    // identical draft still restores. Drop it and show this thread's real
+    // state, which is empty: returning early would leave whatever the previous
+    // thread put in the shared composer on screen under this thread.
+    if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
+      // Written inline rather than via clearStoredDraft, which is declared
+      // below this effect. Cancel the pending save too, or it rewrites the key.
+      if (draftSaveTimerRef.current !== null) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+      if (draftKey) writeComposerDraft(draftKey, "");
+      composer.setText("");
       return;
     }
     composer.setText(draft);
@@ -2694,11 +2707,7 @@ const Composer: FC<{
   // Call wherever the composer is emptied because its text left as a message,
   // whether it was sent or queued.
   const armJustSent = useCallback((...texts: string[]) => {
-    justSentRef.current = armSentTextGuard(
-      texts,
-      draftKeyRef.current,
-      Date.now(),
-    );
+    justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
   }, []);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
@@ -3962,15 +3971,11 @@ function useImeComposerInputHandlers({
       }
       // Refuse a write that is the sent message coming back.
       if (justSentRef) {
-        const result = applySentTextGuard(
-          justSentRef.current,
-          {
-            value,
-            replacesText: isTextReplacement(nativeEvent),
-            composerIsEmpty: composer.getState().text.length === 0,
-          },
-          Date.now(),
-        );
+        const result = applySentTextGuard(justSentRef.current, {
+          value,
+          replacesText: isTextReplacement(nativeEvent),
+          composerIsEmpty: composer.getState().text.length === 0,
+        });
         justSentRef.current = result.guard;
         if (!result.accept) {
           return false;
