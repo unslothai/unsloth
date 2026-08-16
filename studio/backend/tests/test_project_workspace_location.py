@@ -86,17 +86,20 @@ def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monk
     An existing project keeps a recorded rootPath that can sit anywhere, so the
     configured projects root is not always the folder that failed.
     """
+    from storage import studio_db
     from storage.studio_db import ProjectWorkspaceError, _ensure_project_workspace
 
-    blocked = tmp_path / "read-only"
-    blocked.mkdir()
-    blocked.chmod(0o555)
-    try:
-        with pytest.raises(ProjectWorkspaceError) as caught:
-            _ensure_project_workspace(str(blocked / "child"))
-    finally:
-        blocked.chmod(0o755)
-    assert caught.value.path == str(blocked / "child")
+    blocked = tmp_path / "read-only" / "child"
+
+    # The refusal is stubbed rather than staged with chmod: root ignores a
+    # read-only directory, and Windows does not enforce one this way at all.
+    def refuse(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(studio_db, "ensure_dir", refuse)
+    with pytest.raises(ProjectWorkspaceError) as caught:
+        _ensure_project_workspace(str(blocked))
+    assert caught.value.path == str(blocked)
 
 
 def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
