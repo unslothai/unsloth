@@ -49,7 +49,7 @@ def _positive_int(value: Any, default: int) -> int:
 
 
 def _seed_int(value: Any, default: int) -> int:
-    """_int_or for seeds, where 0 is legitimate but negatives are not."""
+    """_int_or for seeds, where 0 is legitimate but numpy rejects negatives."""
     number = _int_or(value, default)
     return number if number >= 0 else default
 
