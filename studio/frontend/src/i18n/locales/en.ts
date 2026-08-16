@@ -167,6 +167,7 @@ export const en = {
       recordingHint: "Press the new chord, or Esc to cancel.",
       needsModifier: "Add ⌘, Ctrl or Alt. A bare key would swallow typing.",
       conflict: "Also used by another shortcut",
+      conflictShadowed: "Another shortcut has this chord and runs instead",
       edit: "Change shortcut",
       clear: "Remove shortcut",
       reset: "Restore default",

@@ -9,6 +9,7 @@ import {
 } from "../lib/keyboard-shortcuts";
 import {
   resolveBinding,
+  shortcutOwningBinding,
   useKeyboardShortcutsStore,
 } from "../stores/keyboard-shortcuts-store";
 
@@ -45,6 +46,14 @@ export function useShortcut(
   const value = useKeyboardShortcutsStore((s) =>
     resolveBinding(s.overrides, id),
   );
+  // A chord claimed by two actions is consumed by whichever listener runs
+  // first, so only its owner registers. Otherwise the winner would follow mount
+  // order and change from route to route.
+  const owned = useKeyboardShortcutsStore(
+    (s) =>
+      shortcutOwningBinding(s.overrides, resolveBinding(s.overrides, id)) ===
+      id,
+  );
   const binding = useMemo(() => parseBinding(value), [value]);
   // The handler usually closes over fresh props, so keep it in a ref rather
   // than tearing down and re-adding the listener on every render.
@@ -52,7 +61,7 @@ export function useShortcut(
   handlerRef.current = handler;
 
   useEffect(() => {
-    if (!binding || !enabled) return;
+    if (!binding || !enabled || !owned) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       if (!matchesBinding(binding, event)) return;
@@ -62,5 +71,5 @@ export function useShortcut(
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [binding, enabled, skipInTextFields]);
+  }, [binding, enabled, owned, skipInTextFields]);
 }

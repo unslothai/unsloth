@@ -17,7 +17,9 @@ import {
   findConflicts,
   resolveAllBindings,
   resolveBinding,
+  shortcutOwningBinding,
 } from "../src/features/settings/stores/keyboard-shortcuts-store.ts";
+import { SETTINGS_TABS } from "../src/features/settings/stores/settings-dialog-store.ts";
 
 function keyEvent(
   code: string,
@@ -209,4 +211,38 @@ test("cleared actions never count as conflicting", () => {
 test("ids from an older build are rejected", () => {
   assert.ok(isShortcutId("newChat"));
   assert.equal(isShortcutId("someRemovedAction"), false);
+});
+
+test("a contested chord is owned by the earlier action in registry order", () => {
+  // searchChats is declared before toggleSidebar, so it keeps Mod+K.
+  const overrides = { toggleSidebar: "Mod+KeyK" };
+  assert.equal(shortcutOwningBinding(overrides, "Mod+KeyK"), "searchChats");
+  // The loser keeps its own binding elsewhere, so ownership is per chord.
+  assert.equal(shortcutOwningBinding(overrides, "Mod+Comma"), "openSettings");
+});
+
+test("exactly one owner exists per contested chord", () => {
+  const overrides = { toggleSidebar: "Mod+KeyK", newChat: "Mod+KeyK" };
+  const contested = [...findConflicts(overrides)];
+  assert.equal(contested.length, 3);
+  const owners = new Set(
+    contested.map(() => shortcutOwningBinding(overrides, "Mod+KeyK")),
+  );
+  assert.equal(owners.size, 1);
+  // newChat is declared first, so it wins over searchChats and toggleSidebar.
+  assert.equal(shortcutOwningBinding(overrides, "Mod+KeyK"), "newChat");
+});
+
+test("an unbound or unclaimed chord has no owner", () => {
+  assert.equal(shortcutOwningBinding({}, null), null);
+  assert.equal(shortcutOwningBinding({}, "Mod+Alt+KeyZ"), null);
+  // A cleared action does not own the chord it used to have.
+  assert.equal(shortcutOwningBinding({ searchChats: null }, "Mod+KeyK"), null);
+});
+
+test("every settings tab survives a reload", () => {
+  // The persisted-tab check reads this same list, so a tab added to the union
+  // alone can no longer be rejected back to General.
+  assert.ok(SETTINGS_TABS.includes("keyboard-shortcuts"));
+  assert.equal(new Set(SETTINGS_TABS).size, SETTINGS_TABS.length);
 });

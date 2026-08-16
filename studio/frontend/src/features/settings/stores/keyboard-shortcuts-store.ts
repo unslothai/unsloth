@@ -72,9 +72,24 @@ export function resolveAllBindings(
 }
 
 /**
- * Ids sharing a binding with at least one other action. Two actions on one
- * chord would both fire, so the tab flags them rather than silently refusing
- * the edit.
+ * Which action a chord runs when more than one claims it. The first window
+ * listener consumes the event, so without a rule the winner would be whichever
+ * component mounted first, and that varies by route. Registry order decides.
+ */
+export function shortcutOwningBinding(
+  overrides: ShortcutOverrides,
+  value: string | null,
+): ShortcutId | null {
+  if (!value) return null;
+  for (const def of SHORTCUT_DEFS) {
+    if (resolveBinding(overrides, def.id) === value) return def.id;
+  }
+  return null;
+}
+
+/**
+ * Ids sharing a binding with at least one other action. Only the owner above
+ * runs, so the tab flags the clash rather than silently refusing the edit.
  */
 export function findConflicts(overrides: ShortcutOverrides): Set<ShortcutId> {
   const byValue = new Map<string, ShortcutId[]>();

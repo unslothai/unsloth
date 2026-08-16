@@ -37,6 +37,7 @@ import {
 import {
   findConflicts,
   resolveBinding,
+  shortcutOwningBinding,
   useKeyboardShortcutsStore,
 } from "../stores/keyboard-shortcuts-store";
 
@@ -178,6 +179,9 @@ export function KeyboardShortcutsTab() {
     const parsed = parseBinding(value);
     const recording = recordingId === def.id;
     const conflicted = conflicts.has(def.id) && !recording;
+    // Say which side of a clash this row is on, since only the owner runs.
+    const shadowed =
+      conflicted && shortcutOwningBinding(overrides, value) !== def.id;
     const label = recording
       ? t("settings.keyboardShortcuts.recording")
       : parsed
@@ -205,7 +209,9 @@ export function KeyboardShortcutsTab() {
                   strokeWidth={1.75}
                   className="size-3.5 shrink-0"
                 />
-                {t("settings.keyboardShortcuts.conflict")}
+                {shadowed
+                  ? t("settings.keyboardShortcuts.conflictShadowed")
+                  : t("settings.keyboardShortcuts.conflict")}
               </span>
             ) : null}
           </span>
