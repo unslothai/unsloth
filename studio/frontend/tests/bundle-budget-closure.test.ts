@@ -60,6 +60,14 @@ test("a deferred or async classic script does not hold up the first screen", () 
   assert.deepEqual(eagerChunksFromHtml(html), []);
 });
 
+test("a script type is judged on whether the browser runs it", () => {
+  const html =
+    '<script type="application/javascript" src="/legacy.js"></script>' +
+    '<script type="importmap" src="/map.js"></script>' +
+    '<script type="application/json" src="/data.js"></script>';
+  assert.deepEqual(eagerChunksFromHtml(html), ["legacy.js"]);
+});
+
 test("a cross-origin classic script is not ours to budget", () => {
   const html =
     '<script src="https://cdn.example/x.js"></script>' +

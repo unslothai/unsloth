@@ -84,6 +84,18 @@ export type EagerSet = {
   blocking: string[];
 };
 
+/**
+ * A `type` the browser still runs as a classic script. An absent type is the same
+ * thing; anything else (`importmap`, `application/json`, a template) is not code
+ * that runs, and `module` is handled on its own.
+ */
+const CLASSIC_TYPES = new Set([
+  "text/javascript",
+  "application/javascript",
+  "application/ecmascript",
+  "text/ecmascript",
+]);
+
 /** Same-origin, build-relative, and not a traversal out of `dist/`. */
 function distRelative(url: string | undefined): string | undefined {
   if (!url?.startsWith("/") || url.startsWith("//")) {
@@ -111,7 +123,7 @@ export function eagerSetFromHtml(html: string): EagerSet {
     if (type === "module") {
       // Vite's entry, always one of its own hashed assets.
       add(set.entry, attr(tag, "src"), "assets/");
-    } else if (!type || type === "text/javascript") {
+    } else if (!type || CLASSIC_TYPES.has(type)) {
       // A classic script blocks the parser wherever it sits, so it counts from
       // anywhere in the build, not just assets/. `defer`/`async` do not: those
       // do not hold up the first screen.
