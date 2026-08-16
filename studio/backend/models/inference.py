@@ -1124,6 +1124,16 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "re-probe, and nothing else does, so a client must not skip /load for it."
         ),
     )
+    diffusion_split_supported: Optional[bool] = Field(
+        None,
+        description = (
+            "A diffusion launch right now would honour --ngl. _runtime_matches_intent "
+            "rejects an otherwise identical request once this is true and gpu_layers "
+            "differs from diffusion_requested_ngl, so a split an older shim dropped can "
+            "be applied. None off a diffusion runner, and on a backend too old to report "
+            "it."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (

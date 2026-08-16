@@ -162,6 +162,16 @@ async function readServerWideReloadHints(): Promise<boolean> {
   return serverWideReloadRequired({ modelMemory, vramBudget });
 }
 
+/** Placement is a set: the backend narrows and reorders it at fit time. */
+function sameGpuSelection(
+  left: readonly number[] | null | undefined,
+  right: readonly number[] | null | undefined,
+): boolean {
+  const a = [...(left ?? [])].sort((x, y) => x - y);
+  const b = [...(right ?? [])].sort((x, y) => x - y);
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
 const approvedRemoteCodeFingerprints = new Map<string, string>();
 function rememberApprovedRemoteCode(
   checkpoint: string,
@@ -881,6 +891,24 @@ export function useChatModelRuntime() {
               readoptingSameModel: true,
             });
             syncModelCapabilities(modelId, confirmedStatus);
+            // The pick's own GPU selection, which the hydration above would otherwise
+            // widen back. adopt_load_intent_if_matched records the incoming pool when it
+            // adopts on the fitted subset (_record_matching_gpu_request), and skipping
+            // /load skips that, so the status still names the GPUs the user removed.
+            if (pendingConfig?.selectedGpuIds !== undefined) {
+              const picked = reconcilePersistedGpuIds(
+                pendingConfig.selectedGpuIds,
+                pendingConfig.selectedGpuIndexKind,
+                confirmedStatus.is_diffusion ?? false,
+              );
+              const hydrated = useChatRuntimeStore.getState();
+              if (!sameGpuSelection(hydrated.selectedGpuIds, picked)) {
+                useChatRuntimeStore.setState({
+                  selectedGpuIds: picked,
+                  loadedGpuIds: picked,
+                });
+              }
+            }
             // setCheckpoint above blanked the bar, this path returns before the post-load recount,
             // and a mounted thread does not rerun its history loader, so the bar would stay empty.
             void refreshContextUsage({ afterModelLoad: true });

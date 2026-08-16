@@ -34,6 +34,7 @@ type ResidentRuntime = Pick<
   | "is_gguf"
   | "is_diffusion"
   | "diffusion_requested_ngl"
+  | "diffusion_split_supported"
   | "tensor_parallel_dropped_by_arch_gate"
   | "gpu_placement_paravirtual"
   | "tensor_split"
@@ -448,8 +449,20 @@ const SETTING_CHECKS: SettingCheck[] = [
     // rejected a load that deduplicates.
     diffusionOnly: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      diffusionManualNgl(c, standing) === (s.diffusion_requested_ngl ?? null),
+    agrees: (c, s, standing) => {
+      const ngl = diffusionManualNgl(c, standing);
+      if (ngl !== (s.diffusion_requested_ngl ?? null)) {
+        return false;
+      }
+      // The request is retained even when an older shim dropped the split, so once the
+      // installed shim gains --ngl support the same request has to go through and finally
+      // apply it. The backend rejects it for exactly that window.
+      return !(
+        ngl !== null &&
+        s.gpu_layers !== ngl &&
+        s.diffusion_split_supported === true
+      );
+    },
   },
 ];
 

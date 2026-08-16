@@ -254,3 +254,29 @@ def test_a_pending_audio_probe_is_reported():
         pass
 
     assert helper(_Bare()) is False
+
+
+def test_the_diffusion_split_support_is_reported_for_diffusion_only():
+    # Off a diffusion runner there is no split to apply, and answering False there would
+    # tell a client the recheck does not apply when the question never arose.
+    helper = _load_helper("_diffusion_split_supported")
+
+    class _Runner:
+        def __init__(self, diffusion, supported = True, raises = False):
+            self._is_diffusion = diffusion
+            self._supported = supported
+            self._raises = raises
+            self.calls = 0
+
+        def diffusion_split_supported(self):
+            self.calls += 1
+            if self._raises:
+                raise RuntimeError("no shim")
+            return self._supported
+
+    chat = _Runner(False)
+    assert helper(chat) is None
+    assert chat.calls == 0
+    assert helper(_Runner(True, supported = True)) is True
+    assert helper(_Runner(True, supported = False)) is False
+    assert helper(_Runner(True, raises = True)) is None

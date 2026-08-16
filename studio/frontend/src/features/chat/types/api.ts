@@ -393,6 +393,8 @@ export interface InferenceStatusResponse {
   gpu_placement_paravirtual?: boolean | null;
   /** The post-launch audio probe did not finish; only a load retries it. */
   audio_probe_pending?: boolean | null;
+  /** A diffusion launch right now would honour --ngl. */
+  diffusion_split_supported?: boolean | null;
 }
 
 export interface ApiMonitorEntry {

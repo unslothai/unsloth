@@ -7038,6 +7038,22 @@ def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
         return None
 
 
+def _diffusion_split_supported(llama_backend) -> Optional[bool]:
+    """Whether a diffusion launch right now would honour --ngl.
+
+    Only meaningful for a resident diffusion runner. ``_runtime_matches_intent`` rejects
+    an otherwise identical request once this turns true and the live gpu_layers differs
+    from the requested NGL, so the split an older shim dropped can finally be applied.
+    A client comparing only the retained request would skip that load.
+    """
+    if not getattr(llama_backend, "_is_diffusion", False):
+        return None
+    try:
+        return bool(llama_backend.diffusion_split_supported())
+    except Exception:
+        return None
+
+
 def _audio_probe_pending(llama_backend) -> bool:
     """Whether the post-launch audio probe still has to be retried.
 
@@ -10628,6 +10644,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
                 gpu_placement_paravirtual = _gpu_placement_paravirtual(),
                 audio_probe_pending = _audio_probe_pending(llama_backend),
+                diffusion_split_supported = _diffusion_split_supported(llama_backend),
                 tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
                     llama_backend
                 ),

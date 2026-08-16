@@ -973,6 +973,52 @@ test("a diffusion resident is not judged on the chat-only invocation fields", ()
   assert.equal(matches({ ...diffusion, cache_type_kv: "q8_0" }, BLANK), false);
 });
 
+test("a dropped diffusion split is rechecked once the shim can apply it", () => {
+  // diffusion_requested_ngl retains the request even when an older shim ignored it, so
+  // once the installed shim gains --ngl support the same request must go through and
+  // finally apply the split. _runtime_matches_intent rejects it for exactly that window.
+  const manual = { ...BLANK, gpuMemoryMode: "manual" as const, gpuLayers: 12 };
+  const dropped = {
+    ...DEFAULTS,
+    is_diffusion: true,
+    diffusion_requested_ngl: 12,
+    gpu_layers: 0,
+  };
+  assert.equal(
+    matches({ ...dropped, diffusion_split_supported: true }, manual),
+    false,
+  );
+  // Still no support: the request is as satisfied as it can be, so this adopts.
+  assert.equal(
+    matches({ ...dropped, diffusion_split_supported: false }, manual),
+    true,
+  );
+  // A backend too old to report it keeps the coarser answer, which is to adopt.
+  assert.equal(matches(dropped, manual), true);
+  // Nothing to apply when the launch already runs the requested count.
+  assert.equal(
+    matches(
+      { ...dropped, gpu_layers: 12, diffusion_split_supported: true },
+      manual,
+    ),
+    true,
+  );
+  // And no NGL was requested at all, so there is no split to recheck.
+  assert.equal(
+    matches(
+      {
+        ...DEFAULTS,
+        is_diffusion: true,
+        diffusion_requested_ngl: null,
+        gpu_layers: 8,
+        diffusion_split_supported: true,
+      },
+      BLANK,
+    ),
+    true,
+  );
+});
+
 test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it", () => {
   // matches_gpu_ids takes [sorted(gpu_ids)[0]] for a diffusion runner, which drives one
   // device, and the status reports only that id. Comparing the configured set rejected a
@@ -1536,6 +1582,15 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
   assert.match(
     source.slice(adopt, adopt + 60),
     /applyActiveModelStatusToStore\(confirmedStatus/,
+  );
+  // The pick's own GPU selection survives the hydration, which would otherwise widen it
+  // back: the backend records the incoming pool when it adopts on a fitted subset, and
+  // skipping /load skips that, so the status still names the GPUs the user removed.
+  const restore = source.indexOf("selectedGpuIds: picked", decision);
+  const hydrate = source.indexOf("applyActiveModelStatusToStore(", decision);
+  assert.ok(
+    restore > hydrate,
+    "the adopted pick no longer keeps its own GPU selection",
   );
   // A failed re-read must not adopt either: falling out of the block reaches /load.
   assert.ok(
