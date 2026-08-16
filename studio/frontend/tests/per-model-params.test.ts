@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat settings hold one set of sampling params, so switching models used to hand
-// the next model the previous one's temperature and system prompt. These pin the
-// rules the per-model memory follows, including the cases where it must NOT act:
-// a model with nothing remembered keeps what is on screen, and an edit that moved
+// The rules the per-model memory follows, including where it must NOT act: a
+// model with nothing remembered keeps what is on screen, and an edit that moved
 // nothing must not mark the map dirty.
 
 import assert from "node:assert/strict";
@@ -119,10 +117,8 @@ test("a model returns to the prompt it was last used with", () => {
   assert.equal(backOnA.temperature, 0.2);
 });
 
-// The interactive local load never calls setCheckpoint first: it calls
-// setParams with the destination checkpoint and the backend's recommended
-// params. Replay has to happen on that call or the common switch restores
-// nothing. This walks that exact sequence through the two helpers setParams uses.
+// The interactive local load calls setParams with the destination checkpoint,
+// not setCheckpoint, so replaying only there left the common switch dead.
 test("a local model load replays memory over the backend's recommendation", () => {
   let memory: Record<string, ReturnType<typeof pickRememberedParams>> = {};
   let live = params({ checkpoint: QWEN });
@@ -156,9 +152,8 @@ test("a local model load replays memory over the backend's recommendation", () =
   );
 });
 
-// A model is only recorded once something is edited, so without snapshotting the
-// model being left, an install upgrading from the single global set loses the
-// active model's settings the first time the user switches away.
+// Without snapshotting the model being left, an install upgrading from the
+// single global set loses whatever the resident model ran with.
 test("the model being switched away from is remembered", () => {
   // Startup after an upgrade: global params hydrated, nothing remembered yet.
   const onA = params({ checkpoint: QWEN, temperature: 0.2, systemPrompt: "A" });
@@ -175,9 +170,8 @@ test("the model being switched away from is remembered", () => {
   assert.equal(backOnA.temperature, 0.2);
 });
 
-// The auto-load calls setCheckpoint and then setParams with the load response,
-// which carries the model's context length as maxTokens. Replay has to run on
-// that second call too or the remembered output limit is lost every load.
+// The auto-load follows setCheckpoint with setParams carrying the load
+// response, so replay must run there too or the load's budget wins.
 test("a load response does not overwrite a remembered token budget", () => {
   const memory = {
     [QWEN]: { ...pickRememberedParams(params()), maxTokens: 4096 },
@@ -211,10 +205,8 @@ test("a load response does not overwrite a remembered token budget", () => {
   assert.equal(withForcedReplay.maxTokens, 4096);
 });
 
-// A load or status response re-applies the model's defaults over whatever is on
-// screen. Replaying afterwards is what keeps the model's own settings, and it
-// leaves a model with nothing remembered on its recommendation, which standing
-// the default hooks down globally would not.
+// A load or status re-applies the model's defaults, so replaying afterwards is
+// what keeps its own settings while leaving an unremembered model its default.
 test("a model's defaults do not outrank what it is remembered with", async () => {
   const { mergeBackendRecommendedInference } = await import(
     "../src/features/chat/presets/preset-policy.ts"

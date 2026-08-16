@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Per-model parameter memory. Chat settings hold one set of sampling params, so
-// switching models used to hand the next model the previous one's temperature and
-// prompt. These keep a per-checkpoint record alongside the global set: an edit is
-// filed against the model it was made for, and a switch replays that model's own
-// settings. No store or network imports, so the rules stay unit-testable.
+// Per-model parameter memory: a per-checkpoint record alongside the global set,
+// so a switch no longer hands the next model the previous one's settings. No
+// store or network imports, so the rules stay unit-testable.
 
 import type {
   InferenceParams,
@@ -14,8 +12,7 @@ import type {
 
 export type PersistedInferenceParamKey = keyof PersistedInferenceParams;
 
-/** Params that persist across a reload. `checkpoint` names the model, so it is
- * the key rather than one of the values. */
+/** Params that persist across a reload. `checkpoint` is the key, not a value. */
 export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "temperature",
   "topP",
@@ -31,10 +28,8 @@ export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];
 
-/** What the per-model memory records. `maxSeqLength` is left out: the context a
- * model loads with is already kept per model by its load config, and that is the
- * value the load uses. A second copy replayed over it would leave the runtime
- * advertising a context the backend never loaded. */
+/** What the memory records. `maxSeqLength` is left out: the context belongs to
+ * the load config, and a second copy would advertise one never loaded. */
 export const REMEMBERED_INFERENCE_PARAM_KEYS =
   PERSISTED_INFERENCE_PARAM_KEYS.filter(
     (key): key is PersistedInferenceParamKey => key !== "maxSeqLength",
@@ -48,8 +43,7 @@ export function setInferenceParam(
   (params as Record<PersistedInferenceParamKey, unknown>)[key] = value;
 }
 
-/** The remembered subset of a params object. No version-bumping side effect,
- * unlike getChangedInferenceParams. */
+/** The remembered subset. No version bump, unlike getChangedInferenceParams. */
 export function pickRememberedParams(
   params: InferenceParams,
 ): PersistedInferenceParams {
@@ -70,10 +64,9 @@ function movedRememberedParam(changed: PersistedInferenceParams): boolean {
   );
 }
 
-/** Just the keys an edit moved that the memory keeps. What goes to the server
- * for a model it already has an entry for: it merges per key, so sending the
- * whole snapshot would put this browser's copy of every other key over one
- * another tab may have changed since. */
+/** Just the keys an edit moved. What goes to the server for a model that already
+ * has an entry: it merges per key, so a whole snapshot would put this browser's
+ * copy of every other key over another tab's. */
 export function pickRememberedChanges(
   changed: PersistedInferenceParams,
 ): PersistedInferenceParams {
@@ -88,8 +81,7 @@ export function pickRememberedChanges(
 }
 
 /** The map after an edit, or null when there is nothing to record (off, no model,
- * or no persisted param moved). Null leaves the map and its hydration version
- * untouched. */
+ * no persisted param moved), which leaves the map and its version untouched. */
 export function getRememberedParamsPatch(
   enabled: boolean,
   paramsByModel: Record<string, PersistedInferenceParams>,
@@ -100,18 +92,14 @@ export function getRememberedParamsPatch(
   if (!(enabled && modelId && movedRememberedParam(changedParams))) {
     return null;
   }
-  // The whole snapshot, not just what moved: replay overlays the entry onto the
-  // outgoing model's params, so a partial entry would leave the gaps filled by
-  // whichever model was on screen last.
+  // The whole snapshot: replay overlays the entry, so a partial one would leave
+  // the gaps filled by whichever model was on screen last.
   return { ...paramsByModel, [modelId]: snapshot };
 }
 
-/** The params a model switch should land on. A model with nothing remembered
- * keeps what is on screen rather than snapping to defaults. Returns `current` by
- * identity when nothing was replayed, so callers can tell the two apart.
- *
- * `maxTokensCap` is the context the model just loaded with, when the caller
- * knows it: a budget remembered from a larger context does not fit. */
+/** The params a switch should land on. A model with nothing remembered keeps what
+ * is on screen, and `current` comes back by identity so callers can tell that
+ * apart. `maxTokensCap` is the context the model just loaded with. */
 export function getReplayedParams(
   enabled: boolean,
   paramsByModel: Record<string, PersistedInferenceParams>,
@@ -121,9 +109,7 @@ export function getReplayedParams(
   maxTokensCap?: number,
 ): InferenceParams {
   // The cap describes the load, not the memory, so it applies even when nothing
-  // replays: a budget carried over from a larger model does not fit this one
-  // whether or not it has an entry. Identity is preserved when it already fits,
-  // which is how callers tell "replayed" from "untouched".
+  // replays. Identity survives when the budget already fits.
   const capped = (params: InferenceParams): InferenceParams =>
     maxTokensCap !== undefined && params.maxTokens > maxTokensCap
       ? { ...params, maxTokens: maxTokensCap }
@@ -135,9 +121,8 @@ export function getReplayedParams(
   if (!remembered) {
     return capped(current);
   }
-  // Key by key, not a spread: the row accepts every persisted key (maxSeqLength
-  // included) from any writer, and spreading one would replay a context the
-  // backend never loaded, plus any stale key, into the live params.
+  // Key by key, not a spread: the row accepts every persisted key from any
+  // writer, and a spread would carry maxSeqLength and stale keys into params.
   const replayed = { ...current };
   for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
     const value = remembered[key];

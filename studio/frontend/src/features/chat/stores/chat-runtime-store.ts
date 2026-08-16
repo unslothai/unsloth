@@ -345,9 +345,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // stored `kb` one keeps `kbId`, which the backend's thread variant forbids.
 const ATOMIC_SETTING_KEYS = new Set<string>(["ragSource"]);
 
-// Maps of per-model objects, merged a level further in. Two edits to different
-// fields of one model inside a debounce window each send a one-field object,
-// and a single level of merging would let the second replace the first.
+// Maps of per-model objects, merged a level further in: two edits to different
+// fields inside one debounce window must not replace each other.
 const NESTED_MAP_SETTING_KEYS = new Set<string>(["inferenceParamsByModel"]);
 
 function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
@@ -2414,12 +2413,10 @@ type ChatRuntimeStore = {
     options?: {
       persist?: boolean;
       trackQueuedSettings?: boolean;
-      /** These params are the model's defaults (a load or status response, or
-       * the built-in per-family values), so the model's remembered settings are
+      /** These params are the model's defaults, so its remembered settings are
        * laid back over them even though the checkpoint did not change. */
       fromModelDefaults?: boolean;
-      /** The context the model just loaded with. A remembered output budget
-       * from a larger context would not fit it. */
+      /** The context the model just loaded with. */
       maxTokensCap?: number;
     },
   ) => void;
@@ -2672,9 +2669,7 @@ const SCALAR_SETTING_KEYS = [
 ] as const satisfies readonly ScalarSettingKey[];
 
 // Ids this browser holds a local answer for. Hydration keeps these and merges
-// the rest, so an edit that lands before the settings response cannot drop
-// other models. A switch away files a snapshot here too, which is why the
-// narrower set below exists.
+// the rest, so a pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
 const inferenceParamMutationVersions = Object.fromEntries(
   PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
@@ -2743,9 +2738,9 @@ function backfillMirroredSettings(settings: PersistedChatSettings): void {
   if (hasKeys(patch)) saveSettingsPatch(patch);
 }
 
-/** `bumpVersions` fences the moved keys against a hydration response already in
- * flight. A model's own defaults do not get that: they must not outrank the
- * settings the user saved for it, which is what hydration is delivering. */
+/** `bumpVersions` fences the moved keys against a hydration response in flight.
+ * A model's own defaults do not get that: they must not outrank the settings the
+ * user saved for it. */
 function getChangedInferenceParams(
   nextParams: InferenceParams,
   currentParams: InferenceParams,
@@ -2783,10 +2778,9 @@ function persistReplayedParams(
   }
 }
 
-/** Same contract as the inference-param versions: a local edit must not be
- * clobbered by a hydration response already in flight. Recorded per model so
- * only the edited one is fenced. Before hydration there is nothing to fence
- * against and the params are placeholders, so nothing is recorded either. */
+/** Same fence as the inference-param versions, recorded per model so only the
+ * edited one is protected. Before hydration the params are placeholders, so
+ * nothing is recorded. */
 function trackParamsByModel(
   state: ChatRuntimeStore,
   paramsByModel: Record<string, PersistedInferenceParams> | null,
@@ -2812,15 +2806,12 @@ function getReplayStatePatch(
   return outgoing ? { paramsByModel: outgoing } : {};
 }
 
-/** The per-model map after a setParams call: the destination's new snapshot,
- * falling back to whatever the outgoing snapshot already produced. A
- * non-persisting update (a background load preserving what is on screen) must
- * not rewrite durable memory, so it keeps the outgoing result only.
+/** The map after a setParams call, falling back to the outgoing snapshot. A
+ * non-persisting update (a background load) must not rewrite durable memory.
  *
- * Only an edit is recorded. A model's defaults are not settings it was used
- * with, and recording them would make the next defaults hook replay them over
- * itself; staged load params describe the model about to load, not the current
- * one. Both are picked up by the snapshot taken when the model is left. */
+ * Only an edit is recorded: defaults are not settings the model was used with,
+ * and staged load params describe the model about to load. Both are picked up
+ * by the snapshot taken when the model is left. */
 function getParamsByModelAfterEdit(
   state: ChatRuntimeStore,
   outgoing: Record<string, PersistedInferenceParams> | null,
@@ -2845,9 +2836,8 @@ function getParamsByModelAfterEdit(
   return recorded ?? outgoing;
 }
 
-/** Snapshot the model being switched away from. Without this, a model is only
- * remembered once edited, so the settings it was actually used with are lost --
- * including the checkpoint restored at startup, which predates the map. */
+/** Snapshot the model being switched away from, so a model that was never edited
+ * still keeps what it ran with. */
 function rememberOutgoingModel(
   state: ChatRuntimeStore,
   outgoing: InferenceParams,
@@ -2856,10 +2846,9 @@ function rememberOutgoingModel(
     modelLeftBeforeHydration = outgoing.checkpoint;
   }
   const snapshot = pickRememberedParams(outgoing);
-  // Only to seed a model with no entry: that is what this snapshot is for, and
-  // every later change is written by the edit that made it, key by key. A full
-  // snapshot for a model that already has one would put this browser's copy of
-  // keys it never touched over another tab's.
+  // Only to seed a model with no entry: later changes are written key by key by
+  // the edit that made them, and a full snapshot would put this browser's copy
+  // of untouched keys over another tab's.
   const seeding = state.paramsByModel[outgoing.checkpoint] === undefined;
   const next = trackParamsByModel(
     state,
@@ -2872,11 +2861,8 @@ function rememberOutgoingModel(
     ),
     outgoing.checkpoint,
   );
-  // The server deep-merges per key, so a full snapshot rewrites every field of
-  // this model's entry. Send one only when this browser has something to say
-  // about the model: an edit made here, or an entry that does not exist yet.
-  // Otherwise a second tab switching models, with no edit at all, would put its
-  // stale copy over settings the first tab has since changed.
+  // A full snapshot rewrites every field, so send one only when this browser has
+  // something to say: an edit made here, or an entry that does not exist yet.
   if (next && state.settingsHydrated && outgoing.checkpoint && seeding) {
     saveSettingsPatch({
       inferenceParamsByModel: { [outgoing.checkpoint]: snapshot },
@@ -2885,8 +2871,7 @@ function rememberOutgoingModel(
   return next;
 }
 
-/** Write an edit to the global set, and to the model's own set when one is
- * selected. Only the touched model is patched, so others are left alone. */
+/** Write an edit to the global set, and to the selected model's own set. */
 function persistParamEdit(
   changedParams: PersistedInferenceParams,
   paramsByModel: Record<string, PersistedInferenceParams> | null,
@@ -2895,9 +2880,8 @@ function persistParamEdit(
   if (!hasKeys(changedParams)) {
     return;
   }
-  // Only what moved, not the snapshot the local map keeps. The server merges
-  // per key, so sending the rest would put this browser's copy of every other
-  // key over one another tab may have changed since.
+  // Only what moved: the server merges per key, so sending the rest would put
+  // this browser's copy of every other key over another tab's.
   const rememberedChanges = pickRememberedChanges(changedParams);
   saveSettingsPatch({
     inferenceParams: changedParams,
@@ -2956,8 +2940,8 @@ function getHydratedPresetState(
   return nextState;
 }
 
-/** Keys the user moved while the settings request was in flight. The same fence
- * that keeps the server's values off them, read the other way round. */
+/** Keys the user moved while the request was in flight: the same fence, read the
+ * other way round. */
 function pickLocallyEditedParams(
   params: InferenceParams,
   versions: SettingsHydrationVersions,
@@ -2971,11 +2955,9 @@ function pickLocallyEditedParams(
   return edited;
 }
 
-/** The context published for the model on screen by the last load or status
- * that carried one. ggufContextLength answers this for a GGUF and is null for
- * every other kind, so without it a safetensors model has nothing to clamp the
- * hydration replay against. Keyed by checkpoint: a cap belongs to the model it
- * was reported for. */
+/** The context the last load or status published for the model on screen.
+ * ggufContextLength covers only GGUF, so without this a safetensors model has
+ * nothing to clamp the hydration replay against. Keyed by checkpoint. */
 let loadedContext: { checkpoint: string; cap: number } | null = null;
 
 function noteLoadedContext(checkpoint: string, cap: number | undefined): void {
@@ -2988,16 +2970,14 @@ function loadedContextFor(checkpoint: string): number | null {
   return loadedContext?.checkpoint === checkpoint ? loadedContext.cap : null;
 }
 
-/** A model that took over from another one while the settings request was in
- * flight. Its defaults lose to its own remembered entry, but they outrank the
- * global set, which belongs to whichever model was used last. Not narrowed to
- * the keys that moved: a default equal to the outgoing model's value is still
- * this model's, and the global set is still the other model's. */
+/** A model that took over from another while the request was in flight. Its
+ * defaults lose to its own entry but outrank the global set, which belongs to
+ * whichever model was used last. Not narrowed to the keys that moved. */
 let modelLoadedBeforeHydration: string | null = null;
 
-/** A model stepped off before hydration. Nothing can be filed for it yet -- the
- * params are placeholders -- but the global set the response is about to deliver
- * is what it was running with, so this says which model to file that under. */
+/** A model stepped off before hydration. Nothing can be filed for it yet, but the
+ * global set the response will deliver is what it ran with, so this says which
+ * model to file that under. */
 let modelLeftBeforeHydration: string | null = null;
 
 function noteModelDefaultsBeforeHydration(
@@ -3065,10 +3045,9 @@ function getHydratedSettingsState(
       versions.scalarSettings.rememberParamsPerModel
       ? settings.rememberParamsPerModel
       : state.rememberParamsPerModel;
-  // A model loaded while this request was in flight has no entry to restore its
-  // defaults from, so the global set would overwrite them with the last model's.
-  // Only while the memory is on: with it off the global set IS this model's
-  // settings, and suppressing it strands the model on transient load defaults.
+  // A model loaded mid-flight has no entry to restore its defaults from, so the
+  // global set would overwrite them with the last model's. Only while the memory
+  // is on: with it off that global set IS this model's settings.
   const keepModelDefaults =
     remembersPerModel &&
     loadedBeforeHydration &&
@@ -3079,9 +3058,8 @@ function getHydratedSettingsState(
     if (
       value !== undefined &&
       !keepModelDefaults &&
-      // The context belongs to the load that just happened, not to the global
-      // set, which is the previous model's. No entry ever carries one, so the
-      // replay below cannot put it back once this loop overwrites it.
+      // The context belongs to the load, not to the previous model's global set,
+      // and no entry carries one for the replay below to put back.
       !(loadedBeforeHydration && key === "maxSeqLength") &&
       inferenceParamMutationVersions[key] === versions.inferenceParams[key]
     ) {
@@ -3094,12 +3072,9 @@ function getHydratedSettingsState(
     for (const [modelId, entry] of Object.entries(
       settings.inferenceParamsByModel,
     )) {
-      // Stored as written. A gap is a key this model never pinned, and there is
-      // no honest value to invent for it: the global set is whichever model was
-      // used last, and the shipped defaults would overwrite the backend's own
-      // recommendation for this one. The replay lays the entry over the params
-      // a load or status just published, which is where a gap belongs, and the
-      // first switch away from the model writes a complete entry anyway.
+      // Stored as written: a gap is a key this model never pinned, and there is
+      // no honest value to invent. The replay lays the entry over what a load
+      // just published, which is where a gap belongs.
       hydrated[modelId] = entry;
     }
     for (const modelId of locallyRememberedModels) {
@@ -3108,9 +3083,8 @@ function getHydratedSettingsState(
         hydrated[modelId] = local;
       }
     }
-    // The edit is fenced out of params above, but the entry arriving for that
-    // model was written before it. Lay it over the entry too, or the next
-    // update that re-applies model defaults replays the stale one over it.
+    // The entry arriving for this model predates the fenced edit, so lay the
+    // edit over it or the next defaults update replays the stale one.
     if (checkpoint) {
       const edited = pickLocallyEditedParams(params, versions);
       if (hasKeys(edited)) {
@@ -3119,10 +3093,9 @@ function getHydratedSettingsState(
     }
     nextState.paramsByModel = hydrated;
   } else if (checkpoint) {
-    // No map in the response: an install upgraded from before per-model memory.
-    // The edit is fenced out of the global set above, but with no entry the next
-    // update that re-applies model defaults has nothing to replay and puts the
-    // recommendation back over it.
+    // No map in the response: an install upgraded from before this feature. With
+    // no entry the next defaults update has nothing to replay and puts the
+    // recommendation back over the fenced edit.
     const edited = pickLocallyEditedParams(params, versions);
     if (hasKeys(edited)) {
       nextState.paramsByModel = {
@@ -3131,11 +3104,9 @@ function getHydratedSettingsState(
       };
     }
   }
-  // A model stepped off before this response landed could not be filed at the
-  // time, and the global set it was running with is only now known. Without
-  // this it has no entry at all, so switching back to it inherits whatever the
-  // model that replaced it is running -- the bleed this feature exists to stop,
-  // on the upgrade path where the global set is the only record there is.
+  // A model stepped off before this response landed could not be filed then, and
+  // the global set it ran with is only now known. Without this it has no entry,
+  // so switching back inherits whatever replaced it.
   const left = modelLeftBeforeHydration;
   modelLeftBeforeHydration = null;
   const byModel = nextState.paramsByModel ?? state.paramsByModel;
@@ -3211,10 +3182,9 @@ function getHydratedSettingsState(
       (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
     }
   }
-  // The model already selected when this lands -- restored from storage, or
-  // published by a status response that beat it -- never crossed a checkpoint
-  // transition, so nothing replayed its memory. Without this it runs on the
-  // global set, which belongs to whichever model was used last.
+  // The model already selected when this lands never crossed a checkpoint
+  // transition, so nothing replayed its memory and it would run on the global
+  // set, which belongs to whichever model was used last.
   const remembered = (nextState.paramsByModel ?? state.paramsByModel)[
     params.checkpoint
   ];
@@ -3222,10 +3192,9 @@ function getHydratedSettingsState(
     (nextState.rememberParamsPerModel ?? state.rememberParamsPerModel) &&
     remembered
   ) {
-    // Same fence as the global set above: a key the user moved while this
-    // request was in flight is their edit, and the memory does not outrank it.
-    // REMEMBERED, not PERSISTED, as in getReplayedParams: a maxSeqLength the row
-    // happens to carry must not replace the context the model loaded with.
+    // Same fence as the global set above: a key the user moved mid-flight is
+    // their edit. REMEMBERED, not PERSISTED, as in getReplayedParams: a
+    // maxSeqLength the row carries must not replace the loaded context.
     const replayed = { ...params };
     for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
       const value = remembered[key];
@@ -3236,13 +3205,11 @@ function getHydratedSettingsState(
         setInferenceParam(replayed, key, value);
       }
     }
-    // The same cap the load and status replays apply: a status that beat this
-    // response has already published the context the model actually loaded
-    // with, and a budget remembered from a larger one does not fit it.
+    // The same cap the load and status replays apply.
     nextState.params = replayed;
   }
-  // Outside the replay: an installation with only a global set has no entry to
-  // replay, and the budget restored from it does not fit the load either.
+  // Outside the replay: an install with only a global set has no entry, and the
+  // budget restored from it does not fit the load either.
   const capped = nextState.params ?? params;
   // ggufContextLength describes whatever is resident, which an external pick
   // leaves loaded, so it is not this checkpoint's context to clamp against.
@@ -4033,9 +4000,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      // An unload or eviction leaves the model the same way a switch does, so
-      // record what it was running with. Without this the next model to be
-      // edited becomes what this one replays.
+      // An unload leaves the model the same way a switch does, so record what it
+      // was running with.
       ...(() => {
         const outgoing = rememberOutgoingModel(state, state.params);
         return outgoing ? { paramsByModel: outgoing } : {};
@@ -4447,10 +4413,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           },
         });
       }
-      // Turning it off makes the settings on screen the one shared set. They
-      // reached the screen by replay, and a hidden load replays without
-      // persisting, so the global set can still be the last model's: without
-      // this the next launch restores that one instead of what is on screen.
+      // Turning it off makes the settings on screen the one shared set. The
+      // global set can still be the last model's, so write it or the next launch
+      // restores that instead.
       if (!rememberParamsPerModel && state.settingsHydrated) {
         saveSettingsPatch({ inferenceParams: snapshot });
       }

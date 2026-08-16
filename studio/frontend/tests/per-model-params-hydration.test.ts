@@ -175,12 +175,8 @@ test("a pre-hydration edit outranks the replay", async () => {
 });
 
 // A stored entry can be partial: an older write, or a field that did not
-// survive sanitising. It is kept as written. There is no honest value to invent
-// for a gap: the saved global set is whichever model was used last, and storing
-// it here would grow this model's entry to hold that one's settings for good,
-// while the shipped defaults would overwrite the backend's recommendation for
-// this model. The replay lays the entry over what a load or status published,
-// which is where a gap belongs.
+// survive sanitising. It is kept as written and the replay lays it over what
+// the load just published, which is where a gap belongs.
 test("a partial stored entry is neither filled nor borrowed from", async () => {
   settingsHttp.settings = {
     inferenceParams: { temperature: 0.5, topP: 0.9, systemPrompt: "saved" },
@@ -223,10 +219,8 @@ test("a partial stored entry is neither filled nor borrowed from", async () => {
   );
 });
 
-// The context a model loads with is already kept per model by its load config,
-// and that is the copy the load uses. Recording a second one here is what let a
-// load stage the next model's context into the model being left, and what let a
-// replay leave the runtime advertising a context the backend never loaded.
+// The context belongs to the load config. A second copy recorded here is what
+// would later replay over the context the backend actually loaded.
 test("the context length is not part of what a model remembers", () => {
   useChatRuntimeStore.setState({
     params: {
@@ -264,9 +258,8 @@ test("the context length is not part of what a model remembers", () => {
   );
 });
 
-// A model loaded while the settings request is in flight has no entry to
-// restore its defaults from, so the hydrated global set would hand it the
-// sampling of whichever model was used last.
+// A model loaded mid-flight has no entry, so the hydrated global set would hand
+// it the previous model's sampling.
 test("a model loaded before hydration keeps its own defaults", async () => {
   settingsHttp.settings = {
     inferenceParams: { temperature: 0.42, systemPrompt: "the last model's" },
@@ -294,9 +287,8 @@ test("a model loaded before hydration keeps its own defaults", async () => {
   assert.equal(params.topP, 0.5);
 });
 
-// The model already resident when Studio starts is the one the saved global set
-// describes, so its recommendation must not stand in front of the settings the
-// user saved for it. An upgraded install has only that global set.
+// The resident model is the one the saved global set describes, so its
+// recommendation must not stand in front of those settings.
 test("the resident model keeps the settings saved for it", async () => {
   settingsHttp.settings = {
     inferenceParams: { temperature: 0.2, systemPrompt: "tuned" },
@@ -368,9 +360,8 @@ test("a visible switch remembers the model being left", () => {
   );
 });
 
-// A default that happens to equal the outgoing model's value never moved, so it
-// was not covered. It is still this model's default, and the global set is
-// still the other model's.
+// A default equal to the outgoing model's value never moved, so it is not
+// covered by the changed keys, but it is still this model's default.
 test("a default equal to the previous model's value is still kept", async () => {
   settingsHttp.settings = {
     inferenceParams: { temperature: 0.2 },
@@ -427,10 +418,8 @@ test("the replay at hydration fits the context already published", async () => {
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
 });
 
-// A model's defaults are not settings it was used with. Recording them makes
-// the next defaults hook replay them over itself: a fresh Qwen3 load applied
-// the load response, recorded it, and then the thinking-mode params were
-// immediately replaced by what had just been recorded.
+// A model's defaults are not settings it was used with: recording them makes
+// the next defaults hook replay them over itself.
 test("model defaults are replayed over, not recorded", () => {
   useChatRuntimeStore.setState({
     params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
@@ -519,10 +508,8 @@ test("every site that re-applies model defaults asks for the replay", () => {
   }
 });
 
-// The user drags a slider while the settings GET is still out. The fence keeps
-// the server's value off the slider, but the entry that arrives for the model
-// is from before the drag, so the next update that re-applies model defaults
-// replays it and the drag is undone.
+// The user drags a slider while the GET is still out. The fence keeps the
+// server's value off it, but the entry arriving for the model predates it.
 test("an edit made before hydration is kept by the model's entry", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
@@ -563,9 +550,8 @@ test("an edit made before hydration is kept by the model's entry", async () => {
   );
 });
 
-// A safetensors model reloaded at a smaller sequence length: the load sets the
-// budget to that context, then the memory replays a larger one over it and the
-// next request asks for more than the load can hold.
+// A safetensors reload at a smaller sequence length: the load sets the budget
+// to that context and the memory would replay a larger one over it.
 test("a remembered budget is capped by a non-GGUF load", () => {
   const runtime = readFileSync(
     new URL(
@@ -659,9 +645,7 @@ test("turning the memory off is persisted and hydrated back", async () => {
 });
 
 // A safetensors load publishes its context through the cap, not through
-// ggufContextLength, which is null for everything that is not a GGUF. Without
-// keeping it, the hydration replay has nothing to clamp against and restores a
-// budget the load cannot hold.
+// ggufContextLength, which is null for everything that is not a GGUF.
 test("a safetensors context also caps the hydration replay", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
@@ -729,10 +713,8 @@ test("a kept context does not follow the next model", async () => {
   );
 });
 
-// The settings on screen got there by replay, and a hidden load replays
-// without persisting, so the global set can still be the previous model's.
-// Turning the memory off has to promote what is on screen, or the next launch
-// restores that other model's set instead.
+// The settings on screen got there by replay and a hidden load replays without
+// persisting, so the global set can still be the previous model's.
 test("turning the memory off keeps the settings on screen", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: true,
@@ -770,10 +752,8 @@ test("turning the memory off keeps the settings on screen", async () => {
   assert.equal(globals?.systemPrompt, "B");
 });
 
-// An installation upgraded from before the memory has a global set and no
-// per-model entries at all, so the replay never runs and the cap that rides
-// with it never applied. The budget restored from the global set does not fit
-// the load either.
+// An install upgraded from before the memory has no entries at all, so the
+// replay never runs and the cap that rides with it never applies.
 test("the loaded context caps a global budget with no entry to replay", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
@@ -909,10 +889,8 @@ test("a model with no entry is still seeded when it is left", async () => {
   assert.equal(written[QWEN]?.temperature, 0.31);
 });
 
-// Two fields of one model changed inside the settings debounce window each send
-// a one-field object now that edits are patched key by key. Merged one level
-// only, the second would replace the first and the earlier edit would be gone
-// on the next launch.
+// Two fields of one model changed inside the debounce window each send a
+// one-field object, and one level of merging would drop the first.
 test("two edits to one model inside a debounce window both survive", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
@@ -947,9 +925,8 @@ test("two edits to one model inside a debounce window both survive", async () =>
   );
 });
 
-// Picking an external model leaves whatever was loaded resident, so
-// ggufContextLength goes on describing a local model that has nothing to do
-// with the provider's budget.
+// Picking an external model leaves the local one resident, so ggufContextLength
+// goes on describing a model that has nothing to do with the pick.
 test("a resident GGUF context does not cap an external model", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
