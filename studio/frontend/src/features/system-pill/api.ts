@@ -22,6 +22,20 @@ export async function fetchPillSettings(): Promise<PillSettings> {
   return (await response.json()) as PillSettings;
 }
 
+// Bumped by every interactive save. The startup sync applies a snapshot it
+// took seconds earlier, so it samples this before reading and again before
+// applying: if a save happened in between, its snapshot is stale and applying
+// it would undo the edit natively while the backend and UI keep the new value.
+let interactiveSaves = 0;
+
+export function noteInteractiveSave(): void {
+  interactiveSaves += 1;
+}
+
+export function interactiveSaveMark(): number {
+  return interactiveSaves;
+}
+
 export async function updatePillSettings(
   update: Partial<PillSettings>,
 ): Promise<PillSettings> {

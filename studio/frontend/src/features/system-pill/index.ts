@@ -5,6 +5,7 @@ export { PillConfigSync } from "./pill-config-sync";
 export {
   fetchPillModelOptions,
   fetchPillSettings,
+  noteInteractiveSave,
   syncNativePillConfig,
   updatePillSettings,
 } from "./api";

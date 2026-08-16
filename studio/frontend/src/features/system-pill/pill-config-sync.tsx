@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import { isTauri } from "@/lib/api-base";
 import {
   fetchPillSettings,
+  interactiveSaveMark,
   syncNativePillConfig,
   updatePillSettings,
 } from "./api";
@@ -35,12 +36,19 @@ async function syncConfigToNative(): Promise<void> {
     // Read and apply are separated because they fail for different reasons: a
     // failed read means the backend is not up yet and the next trigger retries,
     // while a failed apply means the shortcut could not be taken.
+    const mark = interactiveSaveMark();
     let settings;
     try {
       settings = await fetchPillSettings();
     } catch {
       return;
     }
+    // The settings tab may have saved and natively applied a newer value while
+    // this snapshot was being read. Applying it now would undo that edit in
+    // Rust while the backend and UI keep the new value, and recording success
+    // would suppress the retry that could repair it, so stand down and let the
+    // interactive save own the state.
+    if (interactiveSaveMark() !== mark) return;
     try {
       await syncNativePillConfig(settings);
       lastSyncSucceededAt = Date.now();
