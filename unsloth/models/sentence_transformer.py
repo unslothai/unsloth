@@ -15,7 +15,7 @@
 import logging
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
-from .loader_utils import UNSLOTH_DEVICE_MAP
+from .loader_utils import UNSLOTH_DEVICE_MAP, requested_device_map
 from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
@@ -1500,6 +1500,9 @@ class FastSentenceTransformer(FastModel):
         # `RuntimeError: Expected one of cpu, cuda, ... device type at start of device string:
         # unsloth`. Planning is no use here either: that same `.to()` would pull a split model
         # back onto one card. So decline, exactly as resolve_unsloth_device_map does.
+        # Resolve the env-var opt-in too, or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan here
+        # without ever naming the sentinel.
+        device_map = requested_device_map(device_map)
         if device_map == UNSLOTH_DEVICE_MAP:
             print(
                 "Unsloth: Not planning a device map; SentenceTransformer moves the assembled "
@@ -1806,6 +1809,14 @@ class FastSentenceTransformer(FastModel):
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
 
+        # The decline above spends the sentinel on our copy, but FastModel re-reads
+        # UNSLOTH_AUTO_DEVICE_MAP and upgrades the "sequential" we hand it straight back to
+        # "unsloth", so the model is planned across cards while `st_device` below still says
+        # "sequential" and SentenceTransformer pulls it onto one. Pin the switch off for the
+        # load, the way UNSLOTH_WARN_UNINITIALIZED already is.
+        old_auto_device_map = os.environ.get("UNSLOTH_AUTO_DEVICE_MAP")
+        os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = "0"
+
         is_distilbert = "distilbert" == model_type.lower()
         is_mpnet = "mpnet" == model_type.lower()
 
@@ -1877,6 +1888,10 @@ class FastSentenceTransformer(FastModel):
             )
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
+            if old_auto_device_map is None:
+                os.environ.pop("UNSLOTH_AUTO_DEVICE_MAP", None)
+            else:
+                os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = old_auto_device_map
 
         from sentence_transformers import SentenceTransformer
 

@@ -130,3 +130,60 @@ def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers(
     assert (
         min(node.lineno for node in spends) < first_st_device
     ), "the sentinel is spent after st_device is derived from device_map"
+
+
+def test_sentence_transformer_decline_survives_the_env_var():
+    """The decline has to outlive the re-entry into `FastModel.from_pretrained`.
+
+    `FastSentenceTransformer` spends the sentinel on its own `device_map` and then hands
+    the resulting "sequential" to `FastModel.from_pretrained`, which runs
+    `requested_device_map` again -- so `UNSLOTH_AUTO_DEVICE_MAP=1` upgrades it straight
+    back to "unsloth" and plans a split map, while the `st_device` blocks still read
+    "sequential" and `SentenceTransformer` pulls the split model onto one card. Without
+    the pin, `device_map = "unsloth"` plus the env var makes the decline a no-op.
+    """
+    source = _source("sentence_transformer.py")
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
+    )
+
+    # The decline itself must read the env var, not the raw argument.
+    assert any(
+        isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "requested_device_map"
+        for node in ast.walk(function)
+    ), "the decline reads device_map raw, so UNSLOTH_AUTO_DEVICE_MAP=1 walks past it"
+
+    # And the switch must be pinned off across the FastModel load, or FastModel re-upgrades.
+    pins = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Subscript)
+        and ast.unparse(node.targets[0]) == "os.environ['UNSLOTH_AUTO_DEVICE_MAP']"
+        and getattr(node.value, "value", None) == "0"
+    ]
+    assert pins, "UNSLOTH_AUTO_DEVICE_MAP is not pinned off across FastModel.from_pretrained"
+
+    fastmodel_call = min(
+        node.lineno
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "FastModel.from_pretrained"
+    )
+    assert min(node.lineno for node in pins) < fastmodel_call, (
+        "the pin lands after FastModel has already planned"
+    )
+
+    # The pin is restored, so one embedding load does not disable planning process-wide.
+    restores = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Try)
+        and any(
+            "UNSLOTH_AUTO_DEVICE_MAP" in ast.unparse(stmt) for stmt in node.finalbody
+        )
+    ]
+    assert restores, "UNSLOTH_AUTO_DEVICE_MAP is never restored"
