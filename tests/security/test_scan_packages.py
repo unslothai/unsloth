@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
 import subprocess
 import sys
+import time
+import tokenize
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -200,9 +204,9 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     findings = sp.scan_archive(str(bad), "broken_fixture")
     assert findings, "scan_archive returned 0 findings on corrupt wheel"
     corrupted = [f for f in findings if f.check == "archive_corrupted"]
-    assert corrupted, (
-        "no archive_corrupted finding; got " f"{[(f.severity, f.check) for f in findings]}"
-    )
+    assert (
+        corrupted
+    ), f"no archive_corrupted finding; got {[(f.severity, f.check) for f in findings]}"
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 
     # Same for a corrupted tarball.
@@ -295,6 +299,1041 @@ def test_anti_analysis_no_longer_flags_cross_platform_code():
     findings = sp.check_py_file(crossplat, "pkg/_compat.py", "pkg")
     anti = [f for f in findings if "Anti-analysis" in f.check]
     assert anti == [], f"cross-platform code should not be anti-analysis: {anti}"
+
+
+def test_module_eval_is_not_read_as_the_exec_builtin():
+    # `\b` matches after a dot, so the old pattern read `model.eval()` as the eval
+    # builtin. Paired with a dynamic import that scored HIGH "obfuscation + exec/eval",
+    # and HIGH is what fails the scan: unsloth_zoo/device_map_planner.py tripped it on
+    # a plain inference path, which is the whole of what that file does.
+    inference = (
+        "def build(mod_path, config):\n"
+        "    module = __import__(mod_path, fromlist=['compute_module_sizes'])\n"
+        "    model = module.AutoModel.from_config(config)\n"
+        "    model.eval()\n"
+        "    return model\n"
+    )
+    findings = sp.check_py_file(inference, "pkg/device_map_planner.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"ordinary .eval() inference code must not be HIGH: {high}"
+
+
+def test_the_builtin_reached_through_a_dot_is_still_flagged():
+    # `builtins.exec(...)` and `__builtins__.eval(...)` ARE the builtin, reached
+    # through an attribute. Excluding every dotted form to spare `model.eval()`
+    # would hand a payload a one-line way under the HIGH finding.
+    for call in ("builtins.exec(marshal.loads(BLOB))", "__builtins__.eval(BLOB)"):
+        payload = f"import builtins, marshal, zlib\nmod = __import__('os')\n{call}\n"
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{call} must still be flagged"
+
+
+def test_the_builtin_reached_through_an_alias_is_still_flagged():
+    # `import builtins as b; b.exec(...)` and `from builtins import exec as run;
+    # run(...)` are the builtin under another name. The alias is bound where it is
+    # created and required again at the call, so this costs nothing against
+    # `model.eval()`: an arbitrary object qualifies only if the file aliased
+    # `builtins` to that exact name.
+    aliased = (
+        ("import builtins as b\nmod = __import__('os')\nb.exec(marshal.loads(BLOB))\n"),
+        ("from builtins import exec as run\nmod = __import__('os')\nrun(marshal.loads(BLOB))\n"),
+    )
+    for payload in aliased:
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"aliased builtin must still be flagged:\n{payload}"
+
+    # And importing builtins does not by itself make an unrelated .eval() suspicious.
+    benign = "import builtins\nmod = __import__('os')\nmodel = load()\nmodel.eval()\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"unaliased model.eval() must stay clean: {high}"
+
+
+def test_a_function_alias_call_is_recorded_as_evidence():
+    # `from builtins import exec as run` then `run(payload)` fires the finding,
+    # but the evidence came back empty: the whole-file scan sees the call, while
+    # the per-line pass that renders evidence short-circuits on "does this line
+    # even contain the word exec or eval" - and `run(payload)` contains neither.
+    # An empty `Exec:` means the baseline key binds no payload line at all, so
+    # the payload can be swapped under a reviewed entry without reopening it.
+    payload = (
+        "from builtins import exec as run\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "code = marshal.loads(BLOB)\n"
+        "run(code)\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a function-alias call must be flagged"
+    # Read the exec side of the evidence specifically: the obfuscation side names
+    # the marshal line, which would satisfy a whole-string match on its own.
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev, f"the finding recorded no exec evidence: {[f.evidence for f in high]}"
+    assert "run(code)" in exec_ev[0], f"the call must be evidence: {exec_ev[0]!r}"
+
+    # The alias is required at the call site, so an unrelated `run(...)` in a file
+    # that never aliased the builtin stays clean.
+    benign = "import marshal\nmod = __import__('os')\ncode = marshal.loads(BLOB)\nrun(code)\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"`run()` without the alias must stay clean: {high}"
+
+
+def test_a_parenthesized_builtins_module_is_still_the_builtin():
+    # `(builtins).exec(...)` is the same call with one pair of parentheses. It
+    # reaches neither the qualified branch (the name is not glued to the dot) nor
+    # the bare branch (which refuses a leading dot), so it needs its own spelling.
+    for payload in (
+        "mod = __import__('os')\n(builtins).exec(marshal.loads(BLOB))\n",
+        "mod = __import__('os')\n(__builtins__).eval(BLOB)\n",
+        "mod = __import__('os')\n((builtins)).exec(BLOB)\n",
+    ):
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"parenthesized builtin must be flagged:\n{payload}"
+
+
+def test_an_alias_bound_after_the_call_site_is_still_flagged():
+    # Python resolves `b` when the function runs, not where it is written, so a
+    # module-level import below the body still makes this the builtin. Pairing the
+    # alias with its call inside the regex could only search forward from the
+    # import, and missed exactly this.
+    payload = (
+        "def go():\n    b.exec(marshal.loads(BLOB))\nmod = __import__('os')\nimport builtins as b\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an alias imported below its call must still be flagged"
+
+
+def test_a_rebound_alias_is_not_treated_as_the_builtin():
+    # `import builtins as m` then `m = load_model()` leaves `m.eval()` an ordinary
+    # torch call. Treating every later use of the spelling as the module would
+    # reintroduce the false positive this whole rule exists to remove.
+    payload = "import builtins as m\nplugin = __import__(name)\nm = load_model()\nm.eval()\n"
+    findings = sp.check_py_file(payload, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a rebound alias must not read as the builtin: {high}"
+
+
+def test_a_call_above_the_rebinding_of_its_alias_is_still_flagged():
+    # Dropping a rebound alias for the whole file is order-blind, and one
+    # trailing line then erases every call above it: `import builtins as b` ...
+    # `b.exec(BLOB)` ... `b = harmless` runs the builtin and reads as clean.
+    # Module-level code runs top to bottom, so the rebinding cancels the alias
+    # from where it is written, not from the top of the file.
+    payload = (
+        "import builtins as b\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "code = marshal.loads(BLOB)\n"
+        "b.exec(code)\n"
+        "b = harmless\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a call above the rebinding of its alias must be flagged"
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev, f"the finding recorded no exec evidence: {[f.evidence for f in high]}"
+    assert "b.exec(code)" in exec_ev[0], f"the call must be evidence: {exec_ev[0]!r}"
+
+    # The cutoff runs the other way too: below the rebinding the name is the
+    # model, so the false positive this whole rule exists to remove stays gone
+    # even when the same file has a real call above it.
+    below = (
+        "import builtins as m\nimport marshal\nmod = __import__('os')\nm = load_model()\nm.eval()\n"
+    )
+    findings = sp.check_py_file(below, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a call below the rebinding must stay clean: {high}"
+
+
+def test_a_rebinding_the_call_cannot_see_does_not_cancel_the_alias():
+    # The cutoff is by offset, so any earlier assignment to the spelling silenced
+    # every call below it whatever scope or branch it sat in. That is a free
+    # suppression: a local `b = model` in some helper, or a branch body that
+    # never runs, cancels a module-level payload underneath. A rebinding only
+    # reaches a call at least as deeply indented as itself, so neither does now.
+    for label, guard in (
+        ("a branch body", "if False:\n    b = model\n"),
+        ("a function local", "def f():\n    b = model\n    return b\n"),
+        ("a class attribute", "class C:\n    b = model\n"),
+    ):
+        payload = "import builtins as b\nimport marshal\n" + guard + "b.exec(marshal.loads(BLOB))\n"
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{label} must not cancel a module-level call: {payload!r}"
+
+    # A rebinding that does reach the call still cancels it, at its own indent
+    # as well as at column 0 - that is the false positive the cutoff exists for.
+    local = (
+        "import builtins as m\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "def infer():\n"
+        "    m = load_model()\n"
+        "    m.eval()\n"
+    )
+    findings = sp.check_py_file(local, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a rebinding in the call's own scope must cancel it: {high}"
+
+
+def test_a_rebinding_in_a_sibling_scope_does_not_cancel_the_alias():
+    # Indent alone conflates siblings: a `b = model` at column 4 inside one
+    # function silenced every column-4 call after it, including one in the next
+    # function, which resolves the global alias instead. So the cutoff is a
+    # span - the block the rebinding is written in - and it ends at the first
+    # statement written no deeper than it.
+    for label, guard in (
+        ("a sibling function", "def a():\n    b = model\n    return b\n"),
+        ("a sibling class body", "class A:\n    b = model\n"),
+        ("a sibling branch", "if flag:\n    b = model\nelse:\n    pass\n"),
+    ):
+        payload = (
+            "import builtins as b\nimport marshal\n"
+            + guard
+            + "def go():\n    b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{label} must not cancel a call in the next scope: {payload!r}"
+
+    # Each scope still cancels its own calls, so the false positive the cutoff
+    # exists for stays gone in every one of them.
+    clean = (
+        "import builtins as m\nimport marshal\n"
+        "def first():\n    m = load_model()\n    m.eval()\n"
+        "def second():\n    m = load_model()\n    m.eval()\n"
+    )
+    findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"each scope must cancel its own call: {high}"
+
+
+def test_a_loop_over_an_attribute_target_rebinds_nothing():
+    # `for holder.b in (): pass` assigns the attribute and never touches the
+    # standalone name, but every NAME before `in` was recorded as rebound, so
+    # that no-op loop cancelled a live alias and the payload under it read as
+    # clean. The target binds what an ordinary assignment target would.
+    for target in ("holder.b", "holder[b]"):
+        payload = (
+            "import builtins as b\nimport marshal\n"
+            f"for {target} in (): pass\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"`for {target} in` must not cancel the alias: {payload!r}"
+
+    # A loop that does bind the name cancels it inside the body, where the name
+    # is the item, tuple targets included.
+    for target in ("m", "m, rest", "(m, rest)"):
+        clean = (
+            "import builtins as m\nimport marshal\n"
+            "mod = __import__('os')\n"
+            f"for {target} in rows:\n"
+            "    m.eval()\n"
+        )
+        findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high == [], f"`for {target} in` must cancel the alias: {high}"
+
+
+def test_a_loader_call_binds_the_alias_past_its_optional_arguments():
+    # `__import__` and `import_module` both take arguments after the module
+    # name, and requiring the literal to sit immediately before the closing
+    # parenthesis dropped the binding: `b = __import__('builtins', fromlist=[])`
+    # left the later `b.exec(...)` an ordinary method call. The module name is
+    # the first argument, whatever follows it.
+    for loader in (
+        "__import__('builtins', fromlist=[])",
+        "__import__('builtins', globals(), locals(), [], 0)",
+        "importlib.import_module('builtins', package=None)",
+        "import_module('builtins', None)",
+    ):
+        payload = (
+            "import marshal, importlib\n"
+            "from importlib import import_module\n"
+            f"b = {loader}\n"
+            "mod = __import__('os')\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"`{loader}` must bind the alias:\n{payload}"
+
+    # The first argument still has to name the module: loading anything else
+    # binds nothing, so `.eval()` on it stays an ordinary method call.
+    benign = (
+        "import marshal\n"
+        "b = __import__('torch', fromlist=['builtins'])\n"
+        "mod = __import__('os')\n"
+        "b.eval(BLOB)\n"
+    )
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"another module in the first argument must stay clean: {high}"
+
+
+def test_a_parenthesized_loader_callable_is_still_a_loader_call():
+    # `(__import__)(name)` returns exactly what `__import__(name)` returns, but
+    # the loader name is followed by `)` rather than `(`, so the receiver test
+    # never saw a loader and the call fell back to an ordinary method.
+    for receiver in (
+        "(__import__)(name)",
+        "((__import__))(name)",
+        "(importlib.import_module)(name)",
+        "(import_module)(name)",
+    ):
+        payload = (
+            "import importlib, marshal\n"
+            "from importlib import import_module\n"
+            "name = 'buil' + 'tins'\n"
+            f"{receiver}.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{receiver}.exec must be flagged: {payload!r}"
+
+    # Parenthesizing something else does not make it a loader.
+    clean = "import marshal\n(load_model)(name).eval()\n"
+    findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a parenthesized ordinary callable must stay clean: {high}"
+
+
+def test_a_renamed_import_builtin_is_still_a_loader():
+    # `from builtins import __import__ as load` renames the loader, and only
+    # `exec`/`eval` were collected from a builtins import, so `load(name)` read
+    # as an ordinary call and `load(name).exec(...)` as an ordinary method.
+    payload = (
+        "from builtins import __import__ as load\n"
+        "import marshal\n"
+        "name = 'buil' + 'tins'\n"
+        "load(name).exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a renamed __import__ must still be a loader"
+
+    # The name has to come from that import: an unrelated `load()` is not one.
+    clean = "import marshal\nfrom registry import load\nload(name).eval()\n"
+    findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"an unrelated load() must stay clean: {high}"
+
+
+def test_the_receiver_walk_does_not_rescan_the_whole_call_chain():
+    # Every `.exec` in a chain restarted the backward receiver walk over all the
+    # calls to its left, so `builtins.exec(x).exec(x)...` cost O(calls^2): 25 KB
+    # of it took 4.3 s, on archive members allowed up to 64 MiB. The assertion is
+    # the growth rate, not the absolute time, so a contended runner moves both
+    # measurements together.
+    def chain(n):
+        return "import marshal\nbuiltins" + ".exec(x)" * n + "\n"
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            hit = sp.RE_EXEC_EVAL.search(src)
+            out.append(time.monotonic() - start)
+        assert hit is not None, "the chained builtin call must still be found"
+        return min(out)
+
+    small = best_of(chain(1_600))
+    large = best_of(chain(3_200))
+    assert (
+        large < 3.0 * small
+    ), f"the receiver walk grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
+def test_a_loader_call_receiver_is_the_builtins_module_whatever_it_is_handed():
+    # `__import__('builtins').exec(...)` is only recognised because the literal
+    # says `builtins`, so putting the name in a variable first hid the call
+    # while the pre-token scan caught it. The receiver here is the loader call
+    # itself, not a name to be traced, so accepting it needs no dataflow - and
+    # `model.eval()` can never be one.
+    for receiver in (
+        "__import__(name)",
+        "importlib.import_module(name)",
+        "import_module(name)",
+    ):
+        payload = (
+            "import importlib, marshal\n"
+            "from importlib import import_module\n"
+            "name = 'buil' + 'tins'\n"
+            f"{receiver}.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{receiver}.exec must stay flagged: {high}"
+
+    # The receiver has to be the call. An attribute of the same spelling is not
+    # one, so an ordinary object keeps its own `eval`.
+    clean = "import marshal\nmodel = registry.import_module\nmodel.eval()\n"
+    findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"an attribute of that name is not a loader call: {high}"
+
+
+def test_evidence_extraction_does_not_rescan_every_alias_per_line():
+    # `_extract_evidence` re-searches the pattern line by line, and the alias
+    # pre-filter tested every collected function alias against every line as a
+    # substring: N aliases beside N other lines is N*N searches, on members
+    # allowed up to 64 MiB. Measured on this file shape before the fix: 2.0 s at
+    # N=4,000 and 7.2 s at N=8,000 (4x per doubling); after, 0.58 s and 1.19 s.
+    # The assertion is the growth rate, not the absolute time, so a slow or
+    # contended runner moves both measurements together.
+    def hostile(n):
+        return (
+            "import marshal\n"
+            + "".join(f"from builtins import eval as f{i}\n" for i in range(n))
+            + "".join(f"value_{i} = compute_{i}(payload_{i})\n" for i in range(n))
+            + "f0(marshal.loads(BLOB))\n"
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
+            out.append(time.monotonic() - start)
+        assert [
+            f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)
+        ], "the aliased call must still be flagged"
+        return min(out)
+
+    small = best_of(hostile(2_000))
+    large = best_of(hostile(4_000))
+    assert (
+        large < 3.0 * small
+    ), f"alias pre-filtering grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
+def test_alias_matching_stays_linear_on_hostile_source():
+    # Archive members are allowed up to 64 MiB and check_py_file searches this
+    # pattern more than once, so pairing each candidate import with a call by
+    # rescanning the tail of the file (quadratic) is a way to stall the scanner.
+    # 3,000 distinct aliases in ~75 KB took about 5.5 s that way.
+    hostile = "".join(f"import builtins as b{i}\n" for i in range(3_000))
+    start = time.monotonic()
+    assert sp.RE_EXEC_EVAL.search(hostile) is None
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"alias collection is not linear: {elapsed:.2f}s"
+
+
+def test_closing_a_rebinding_block_does_not_walk_every_alias():
+    # Every statement closes the rebinding spans its block has left, and only a
+    # rebinding opens one. Checking each name ever opened made that per-statement
+    # walk cost the alias count, so N aliases rebound in one block followed by N
+    # ordinary statements cost N**2 - a way to stall a scan on members allowed
+    # up to 64 MiB. Measured on this shape before the fix: 0.64 s at N=3,000 and
+    # 1.92 s at N=6,000 (3.0x per doubling); after, 0.33 s and 0.68 s (2.05x).
+    # The assertion is the growth rate, so a slow runner moves both together.
+    def hostile(n):
+        return (
+            "import marshal\n"
+            + "".join(f"import builtins as a{i}\n" for i in range(n))
+            + "if flag:\n"
+            + "".join(f"    a{i} = m\n" for i in range(n))
+            + "".join(f"v{i} = 1\n" for i in range(n))
+            + "a0.exec(marshal.loads(BLOB))\n"
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
+            out.append(time.monotonic() - start)
+        # The rebindings sit in a block the call is below, so the alias is live
+        # again by the time it is called and the payload must still be flagged.
+        assert [
+            f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)
+        ], "the call below the closed block must still be flagged"
+        return min(out)
+
+    small = best_of(hostile(3_000))
+    large = best_of(hostile(6_000))
+    assert (
+        large < 2.6 * small
+    ), f"closing rebindings grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
+def test_the_real_exec_builtin_is_still_flagged():
+    # The narrowing must not cost a true positive: a bare builtin call beside the
+    # same dynamic import is what the rule is for.
+    payload = (
+        "import zlib, base64\n"
+        "mod = __import__('os')\n"
+        "exec(zlib.decompress(base64.b64decode(BLOB)))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "obfuscation plus a real exec() must still be flagged"
+
+
+def test_a_dynamically_imported_builtins_module_is_still_the_builtin():
+    # `__import__('builtins').exec(BLOB)` never spells the module as a name, so a
+    # matcher that wants a literal `builtins` identifier in front of the dot sees
+    # only an anonymous receiver and reads the call as an ordinary `.exec()`
+    # method - a one-line way under the finding, with the obfuscation already in
+    # the same expression.
+    for call in (
+        "__import__('builtins').exec(marshal.loads(BLOB))",
+        "importlib.import_module('builtins').eval(BLOB)",
+    ):
+        payload = f"import marshal, importlib\nmod = __import__('os')\n{call}\n"
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a dynamically imported builtins must be flagged: {call}"
+
+
+def test_a_dynamic_import_parked_in_a_name_still_binds_the_alias():
+    # The same dynamic import, split over two lines: `b = __import__('builtins')`
+    # then `b.exec(...)`. The receiver at the call is a bare name, so nothing in
+    # that line says it is the module - only the assignment does, and an alias
+    # pass that reads imports alone never sees it. The pre-rule text scan caught
+    # this by accident, because its bare `exec\s*\(` matched `b.exec(` too, so
+    # leaving it out is a real regression rather than a pre-existing gap.
+    for loader in (
+        "b = __import__('builtins')",
+        "b = importlib.import_module('builtins')",
+        "b = import_module('builtins')",
+        "b = builtins",
+    ):
+        payload = (
+            "import marshal, builtins, importlib\n"
+            "from importlib import import_module\n"
+            f"{loader}\n"
+            "mod = __import__('os')\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a builtins module parked in a name must be flagged:\n{payload}"
+        assert "b.exec" in "".join(f.evidence for f in high), "the call must be evidence"
+
+    # An alias of `importlib` reaches the same loader.
+    payload = (
+        "import marshal\nimport importlib as il\n"
+        "b = il.import_module('builtins')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an aliased importlib must reach the same loader"
+
+    # Loading anything else binds nothing, so `.eval()` on it stays an ordinary
+    # method call - the assignment has to name `builtins` to make the alias.
+    benign = "import marshal\nb = __import__('torch')\nmod = __import__('os')\nb.eval(BLOB)\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a dynamic import of another module must stay clean: {high}"
+
+
+def test_an_assigned_alias_obeys_the_same_rebinding_cutoff():
+    # An alias made by assignment is cancellable exactly like an imported one,
+    # from the point the rebinding is written: the call above it still runs the
+    # builtin, and `b.eval()` below it is whatever `load_model()` returned.
+    payload = (
+        "import marshal\n"
+        "b = __import__('builtins')\n"
+        "mod = __import__('os')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+        "b = load_model()\n"
+        "b.eval()\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "the call above the rebinding must be flagged"
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev and "b.exec" in exec_ev[0], f"the call must be evidence: {exec_ev}"
+
+    # Nothing but the rebinding: the assignment that creates the alias must not
+    # read as a rebinding of it, or the alias cancels itself where it is born.
+    clean = (
+        "import marshal\n"
+        "b = __import__('builtins')\n"
+        "mod = __import__('os')\n"
+        "b = load_model()\n"
+        "b.eval()\n"
+    )
+    findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a rebound assigned alias must not read as the builtin: {high}"
+
+    # And the reverse order re-arms it: the module lands in the name after the
+    # ordinary assignment, so the call below is the builtin again.
+    rearmed = (
+        "import marshal\n"
+        "b = load_model()\n"
+        "b = __import__('builtins')\n"
+        "mod = __import__('os')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(rearmed, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a name rebound to the module must be the builtin again"
+
+
+def test_a_comma_separated_import_still_binds_the_builtins_alias():
+    # `import os, builtins as b` binds `b` exactly as `import builtins as b`
+    # does. Requiring `builtins` immediately after `import` drops the alias, and
+    # the later `b.exec(...)` then reads as an ordinary method call.
+    payload = (
+        "import os, builtins as b\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an alias bound by a comma-separated import must be flagged"
+    assert "b.exec" in "".join(f.evidence for f in high), "the call must be evidence"
+
+
+def test_a_rebinding_written_inside_a_string_is_not_a_rebinding():
+    # Dropping rebound aliases is what keeps `import builtins as m` ... `m =
+    # load_model()` from re-flagging `m.eval()`. Deciding "is this name rebound"
+    # on raw text hands that back to the payload: a string literal is not code,
+    # but a text scan reads the `b = harmless` inside one as an assignment and
+    # discards the live alias. Tokens cannot be fooled - a string is one token.
+    payload = (
+        "import builtins as b\n"
+        "import marshal\n"
+        'mod = __import__("os")\n'
+        'decoy = """\nb = harmless\n"""\n'
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a decoy assignment inside a string must not drop the alias"
+
+
+def test_whitespace_around_the_attribute_dot_is_not_the_bare_builtin():
+    # `model . eval()` and `model. eval()` are the same call as `model.eval()`.
+    # A fixed-width lookbehind for the dot sees a space instead and reads them as
+    # the bare builtin, which is the false positive this whole rule removes.
+    for call in ("model . eval()", "model. eval()", "model .eval()"):
+        inference = (
+            "def build(mod_path, config):\n"
+            "    module = __import__(mod_path, fromlist=['compute_module_sizes'])\n"
+            "    model = module.AutoModel.from_config(config)\n"
+            f"    {call}\n"
+            "    return model\n"
+        )
+        findings = sp.check_py_file(inference, "pkg/device_map_planner.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high == [], f"`{call}` is an attribute call, not the builtin: {high}"
+
+
+def test_a_method_named_eval_is_a_definition_not_a_call():
+    # `def eval(self, expr):` is a declaration; the parenthesis is its parameter
+    # list. Text cannot tell it from `eval(expr)`, which is how a package that
+    # merely defines an `eval` method (every expression evaluator, every mock)
+    # ends up flagged next to an unrelated dynamic import.
+    library = (
+        "class Interpreter:\n"
+        "    def eval(self, expr):\n"
+        "        return self.ops[expr]\n"
+        "    def exec(self, stmt):\n"
+        "        return self.run(stmt)\n"
+        "mod = __import__('os')\n"
+    )
+    findings = sp.check_py_file(library, "pkg/interp.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"defining eval/exec is not calling the builtin: {high}"
+
+    # The definition must not shadow a real call elsewhere in the same file.
+    armed = library + "import marshal\neval(marshal.loads(BLOB))\n"
+    findings = sp.check_py_file(armed, "pkg/interp.py", "pkg")
+    assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+
+
+def test_an_exec_inside_an_fstring_is_still_the_builtin():
+    # PEP 701 landed in 3.12; below it `tokenize` returns a whole f-string as one
+    # STRING token, so `f'{exec(marshal.loads(BLOB))}'` is a call the statement
+    # scan cannot see even though the interpolation runs at import. This repo's
+    # requires-python starts at 3.9, so the interpolations have to be adjudicated
+    # on those interpreters too.
+    payload = (
+        "import marshal\ncode = marshal.loads(BLOB)\nx = f'{exec(code)}'\nmod = __import__('os')\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an exec() inside an f-string must be flagged"
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev, f"the finding recorded no exec evidence: {[f.evidence for f in high]}"
+    assert "f'{exec(code)}'" in exec_ev[0], f"the call must be evidence: {exec_ev[0]!r}"
+
+    # And an ordinary `.eval()` interpolated the same way stays clean, so the
+    # f-string route does not smuggle the false positive back in.
+    benign = "import marshal\nmodel = load()\ny = f'{model.eval()}'\nmod = __import__('os')\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"an interpolated model.eval() must stay clean: {high}"
+
+    # On 3.12+ the tokenizer splits the literal, so the two checks above run
+    # through the ordinary statement scan and say nothing about the pre-3.12
+    # path. Drive that path directly: one opaque STRING token, scanned for the
+    # calls inside it, with the offsets mapped back onto the file.
+    aliases = sp._Aliases({"b"}, set(), {})
+    for literal, expected in (
+        ("f'{exec(marshal.loads(BLOB))}'", "exec("),
+        ('f"pre {b.eval(BLOB)} post"', "b.eval("),
+        ("f'{exec(BLOB)!r:>10}'", "exec("),
+        ("f'{{eval(x)}} {exec(BLOB)}'", "exec("),  # `{{` is an escaped brace
+        ("""f'{f"{exec(BLOB)}"}'""", "exec("),  # nested f-string
+        ('''f"it's {exec(BLOB)}"''', "exec("),  # apostrophe in the literal text
+        ("f'{model.eval()}'", None),
+        ("f'{model . eval()}'", None),
+        ("f'no interpolation, just eval( text'", None),
+        # Only the replacement fields are code. A string nested inside one is
+        # data, and the text around them is not code at all, so neither can
+        # manufacture a call out of the characters `exec(`.
+        ("""f'{v.replace("exec(", "")}'""", None),
+        ("""f'{d["eval("]}'""", None),
+        ("f'literal exec( text {value}'", None),
+    ):
+        line = f"x = {literal}\n"
+        tok = sp.tokenize.TokenInfo(
+            sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line
+        )
+        out: list = []
+        sp._fstring_spans(tok, aliases, sp._Offsets(line), out)
+        got = [line[s.start() : s.end()] for s in out]
+        if expected is None:
+            assert got == [], f"{literal} must not read as the builtin: {got}"
+        else:
+            assert got == [expected], f"{literal} must yield {expected!r}: {got}"
+
+
+def test_a_renamed_loader_is_a_receiver_inside_an_opaque_fstring():
+    # Below 3.12 an f-string is one opaque STRING token, so its interpolations
+    # are adjudicated by the regex pass rather than the statement walk. That pass
+    # spelled the loaders out - `__import__`, `import_module` - instead of using
+    # the file's own names for them, so `from builtins import __import__ as load`
+    # with `f"{load(name).exec(marshal.loads(BLOB))}"` produced no match and came
+    # back MEDIUM on 3.9-3.11. The same call outside an f-string was HIGH, and so
+    # was the unaliased loader inside one, so only the rename was being lost.
+    payload = (
+        "from builtins import __import__ as load\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        'x = f"{load(name).exec(marshal.loads(BLOB))}"\n'
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a renamed loader called inside an f-string must be flagged"
+
+    # On 3.12+ the tokenizer splits the literal, so the check above runs through
+    # the ordinary statement scan and says nothing about the pre-3.12 path.
+    # Drive that path directly, with `load` bound as the file's loader name.
+    aliases = sp._Aliases(set(), set(), {}, {"load"})
+    for literal, expected in (
+        ('f"{load(name).exec(BLOB)}"', "load(name).exec("),
+        ('f"{__import__(name).exec(BLOB)}"', "__import__(name).exec("),
+        (
+            'f"{importlib.import_module(name).exec(BLOB)}"',
+            "importlib.import_module(name).exec(",
+        ),
+        # A call that is not a loader is still not a receiver, so the widened
+        # regex does not hand the false positive back: `model.compile(x).eval()`
+        # and an unknown `loader(name)` are ordinary methods.
+        ('f"{model.compile(x).eval(BLOB)}"', None),
+        ('f"{loader(name).exec(BLOB)}"', None),
+    ):
+        line = f"x = {literal}\n"
+        tok = sp.tokenize.TokenInfo(
+            sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line
+        )
+        out: list = []
+        sp._fstring_spans(tok, aliases, sp._Offsets(line), out)
+        got = [line[s.start() : s.end()] for s in out]
+        if expected is None:
+            assert got == [], f"{literal} must not read as the builtin: {got}"
+        else:
+            assert got == [expected], f"{literal} must yield {expected!r}: {got}"
+
+
+def test_a_class_attribute_does_not_cancel_the_global_alias():
+    # `class C: b = model` binds an attribute of C. Python methods do not close
+    # over the class namespace, so a `b.exec(...)` written in one still resolves
+    # `b` to whatever `import builtins as b` bound - confirmed by running the
+    # shape: the class attribute is the model, and the method's call is the
+    # builtin. Treating the class binding as visible in the methods under it
+    # suppressed that real call and dropped the payload from HIGH to MEDIUM,
+    # which is the severity the enforced scan gates on.
+    head = "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+    call = "b.exec(marshal.loads(BLOB))\n"
+    for body in (
+        f"class C:\n    b = model\n    def run(self):\n        {call}",
+        f"class C:\n    b = model\n    async def run(self):\n        {call}",
+        f"class C:\n    b = model\n    @deco\n    def run(self):\n        {call}",
+        f"class A:\n    class B:\n        b = model\n        def run(self):\n            {call}",
+        f"def outer():\n    class C:\n        b = model\n        def run(self):\n            {call}",
+        f"class C: b = model\ndef run():\n    {call}",
+    ):
+        findings = sp.check_py_file(head + body, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a class attribute must not cancel the global alias:\n{body}"
+
+    # The rebindings that really do reach the call must still cancel it, or the
+    # false positive this rule exists to remove comes straight back.
+    for body in (
+        f"b = model\n{call}",
+        f"def run():\n    b = model\n    {call}",
+        f"def outer():\n    b = model\n    def inner():\n        {call}",
+        f"class C:\n    def run(self):\n        b = model\n        {call}",
+    ):
+        findings = sp.check_py_file(head + body, "pkg/_infer.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high == [], f"a rebinding the call can see must still cancel:\n{body}"
+
+
+def test_a_deeply_nested_fstring_is_scanned_to_the_grammar_ceiling():
+    # The pre-3.12 masker stopped after two levels of nested f-string, so the
+    # third blanked a real call: `f'''{f\"\"\"{f'{f\"{exec(p)}\"}'}\"\"\"}'''` produced no
+    # match at all. A pre-3.12 f-string may not reuse the quote style that
+    # delimits it, so four is the deepest one STRING token can nest - checked
+    # against `compile()` on 3.11 - and the masker has to reach it.
+    quotes = ('"""', "'''", '"', "'")
+
+    def nest(depth):
+        out = "exec(BLOB)"
+        for level in range(depth):
+            quote = quotes[(depth - 1 - level) % len(quotes)]
+            out = "f" + quote + "{" + out + "}" + quote
+        return out
+
+    for depth in range(1, len(quotes) + 1):
+        literal = nest(depth)
+        line = f"x = {literal}\n"
+        tok = sp.tokenize.TokenInfo(
+            sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line
+        )
+        out: list = []
+        sp._fstring_spans(tok, sp._Aliases(set(), set(), {}), sp._Offsets(line), out)
+        got = [line[s.start() : s.end()] for s in out]
+        assert got == ["exec("], f"{depth} levels of nesting must still match: {literal}"
+
+    # The literal text around a replacement field is still not code, however
+    # deep the nesting goes.
+    literal = """f'{f"{v.replace(chr(34), exec_name)}"}'"""
+    line = f"x = {literal}\n"
+    tok = sp.tokenize.TokenInfo(sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line)
+    out = []
+    sp._fstring_spans(tok, sp._Aliases(set(), set(), {}), sp._Offsets(line), out)
+    assert out == [], f"a nested literal must not read as a call: {out}"
+
+
+def test_an_fstring_call_above_its_aliases_rebinding_is_still_flagged():
+    # Below 3.12 the whole literal is one STRING token, and that fallback used
+    # the file-wide `safe_*` sets, which drop any alias rebound anywhere. So a
+    # trailing `run = model` erased an `f'{run(BLOB)}'` written above it, even
+    # though the ordinary token path applies the cutoff by call position. The
+    # f-string sits at a known offset, so it gets the same cutoff.
+    aliases = sp._Aliases(set(), {"run"}, {"run": [[100, 0, None]]})
+    literal = "f'{run(marshal.loads(BLOB))}'"
+    line = f"x = {literal}\n"
+    tok = sp.tokenize.TokenInfo(sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line)
+    out: list = []
+    sp._fstring_spans(tok, aliases, sp._Offsets(line), out, True, 0)
+    assert [line[s.start() : s.end()] for s in out] == [
+        "run("
+    ], f"a call above the rebinding must still match: {out}"
+
+    # And below the rebinding the name is the model again, so the false positive
+    # the cutoff exists for does not come back through the f-string.
+    aliases = sp._Aliases(set(), {"run"}, {"run": [[0, 0, None]]})
+    out = []
+    sp._fstring_spans(tok, aliases, sp._Offsets(line), out, True, 0)
+    assert out == [], f"a call below the rebinding must stay clean: {out}"
+
+
+def test_alias_matching_does_not_grow_with_the_number_of_aliases():
+    # One matcher branch per alias is O(aliases) per character: 3,000 aliases in
+    # 75 KB cost ~0.07 s a search and 15,000 in 370 KB cost ~1.3 s, on members
+    # allowed up to 64 MiB and searched more than once per file. Checking a
+    # candidate identifier against the alias set instead is flat in the count.
+    hostile = "".join(f"import builtins as b{i}\n" for i in range(15_000))
+    start = time.monotonic()
+    assert sp.RE_EXEC_EVAL.search(hostile) is None
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"alias matching scales with the alias count: {elapsed:.2f}s"
+
+    # And the alias still resolves when one of those 15,000 names is called.
+    armed = hostile + "b7777.exec(marshal.loads(BLOB))\n"
+    assert sp.RE_EXEC_EVAL.search(armed) is not None
+
+
+def test_unparseable_source_still_reaches_the_regex_fallback():
+    # The scanner reads arbitrary third-party source, including files the
+    # tokenizer rejects outright (inconsistent indentation, a truncated string).
+    # Those never produce a token stream, so the direct forms must still be
+    # caught by the text fallback rather than silently going unscanned.
+    broken = (
+        "import zlib, base64\n"
+        "mod = __import__('os')\n"
+        "def f():\n"
+        "    a = 1\n"
+        "  b = 2\n"
+        "exec(zlib.decompress(BLOB))\n"
+    )
+    assert sp.RE_EXEC_EVAL.search(broken) is not None
+    findings = sp.check_py_file(broken, "pkg/_broken.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "exec() in a file the tokenizer rejects must still be flagged"
+
+    truncated = "import zlib\nmod = __import__('os')\nexec(BLOB)\nx = '''unterminated\n"
+    assert sp.RE_EXEC_EVAL.search(truncated) is not None
+
+
+def test_an_escaped_module_name_still_names_the_builtins_module():
+    # `__import__('buil\x74ins')` loads exactly what `__import__('builtins')`
+    # loads - Python compares the value the literal evaluates to, not the way it
+    # was spelled. Comparing the source text instead let one backslash park the
+    # module in a name the scanner did not know was an alias, so the `b.exec(...)`
+    # below it read as an ordinary method call. The pre-rule text scan caught
+    # that line through its bare `exec\s*\(`, so losing it is a regression.
+    for literal in (r"'buil\x74ins'", r"'buil\164ins'", r"'builtins'"):
+        payload = (
+            "import marshal\n"
+            "mod = __import__('os')\n"
+            f"b = __import__({literal})\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"an escaped module name must still be the builtin:\n{payload}"
+
+    # Same escape as the receiver of the call rather than parked in a name.
+    direct = (
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        r"__import__('builtins').exec(marshal.loads(BLOB))"
+        "\n"
+    )
+    findings = sp.check_py_file(direct, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an escaped receiver must still be the builtin"
+
+    # A raw literal has no escape to decode, so `r'buil\x74ins'` really is a
+    # module of that name and the call through it stays an ordinary method call.
+    raw = (
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        r"b = __import__(r'buil\x74ins')"
+        "\nb.eval(BLOB)\n"
+    )
+    findings = sp.check_py_file(raw, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a raw literal must not decode to builtins: {high}"
+    assert sp._string_body(r"'buil\x74ins'") == "builtins"
+    assert sp._string_body(r"r'buil\x74ins'") == r"buil\x74ins"
+
+
+def test_an_identifier_is_matched_the_way_python_resolves_it():
+    # PEP 3131 normalizes every identifier to NFKC before it is looked up, while
+    # `tokenize` hands back the source spelling. So a call on a mathematical
+    # double-struck b IS a call on `b`, and comparing raw tokens missed it - the
+    # previous attribute regex still caught the ASCII `.exec(` suffix, so losing
+    # it is a regression. It runs the other way too: an alias rebound in a
+    # decorated spelling has to cancel the ASCII name, or the rule hands back the
+    # `model.eval()` false positive it exists to remove.
+    fancy = "\U0001d553"
+    assert unicodedata.normalize("NFKC", fancy) == "b"
+
+    for src in (
+        f"import builtins as b\nimport marshal\nmod = __import__('os')\n"
+        f"{fancy}.exec(marshal.loads(BLOB))\n",
+        f"import builtins as {fancy}\nimport marshal\nmod = __import__('os')\n"
+        f"b.exec(marshal.loads(BLOB))\n",
+    ):
+        compile(src.replace("marshal.loads(BLOB)", "'1'"), "<payload>", "exec")
+        findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a normalized identifier must reach the builtin:\n{src}"
+
+    rebound = f"import builtins as b\nmod = __import__('os')\n{fancy} = load_model()\nb.eval()\n"
+    findings = sp.check_py_file(rebound, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a normalized rebinding must cancel the alias: {high}"
+
+
+def test_an_assignment_expression_parks_the_builtins_module_too():
+    # `(b := builtins)` binds the module exactly as `b = builtins` does, and an
+    # assignment expression is legal wherever an expression is - including the
+    # `if` header, where the plain-`=` reader never looked. The alias went
+    # unrecorded and `b.exec(...)` under it read as an ordinary method call,
+    # which the pre-rule text scan flagged through its bare `exec\s*\(`.
+    for binding in (
+        "if (b := builtins):",
+        "if (b := __import__('builtins')):",
+        "if (b := importlib.import_module('builtins')):",
+    ):
+        payload = (
+            "import builtins, importlib, marshal\n"
+            "mod = __import__('os')\n"
+            f"{binding}\n"
+            "    b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a walrus-bound builtins must be flagged:\n{payload}"
+
+    # And it re-arms an alias a rebinding had cancelled, the way `=` does.
+    rearmed = (
+        "import builtins, marshal\n"
+        "mod = __import__('os')\n"
+        "b = load_model()\n"
+        "if (b := builtins):\n"
+        "    b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(rearmed, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a walrus must re-arm an alias a rebinding cancelled"
+
+    # A walrus over anything else binds nothing, so `.eval()` on it stays the
+    # ordinary inference call this whole rule exists to leave alone.
+    benign = "import marshal\nmod = __import__('os')\nif (m := load_model()):\n    m.eval()\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a walrus over a model must stay clean: {high}"
+
+
+def test_assigning_an_alias_to_itself_leaves_it_the_builtin():
+    # `b = b` cannot make `b` anything other than what it already was, but the
+    # rebinding collector saw an assignment target and the binding reader saw a
+    # right-hand side that is not the module named outright. Between them the
+    # alias was dropped and the call under it read as an ordinary method call -
+    # one line under the finding, on a line the pre-rule text scan flagged.
+    for line in ("b = b", "b: object = b", "b = (b)"):
+        payload = (
+            "import builtins as b\n"
+            "import marshal\n"
+            "mod = __import__('os')\n"
+            f"{line}\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a self-assigned alias must stay the builtin:\n{payload}"
+
+    # Only that exact shape: `b = m = m` really does rebind `b`.
+    chained = "import builtins as b\nmod = __import__('os')\nb = m = m\nb.eval()\n"
+    findings = sp.check_py_file(chained, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a chained target must still cancel the alias: {high}"
 
 
 def test_proc_self_status_read_flags_anti_analysis():
@@ -1860,3 +2899,1460 @@ def test_the_duplicate_check_sees_through_normalization(tmp_path):
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps({"version": 1, "entries": entries}))
     assert len(sp._load_baseline(str(path))) == 1
+
+
+def _high(payload: str, filename: str = "pkg/_loader.py") -> list:
+    findings = sp.check_py_file(payload, filename, "pkg")
+    return [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+
+
+def test_the_first_statement_of_a_one_line_suite_is_a_statement():
+    # `def f(): import builtins as b; b.exec(BLOB)` is valid Python. The
+    # semicolon splits the call off, but the import stays glued to the header,
+    # so every collector that keys off the head token saw `def` and recorded no
+    # alias at all - which downgraded the executed builtin from HIGH to MEDIUM.
+    for header in ("def f():", "if x:", "for i in y:", "while x:", "with a as c:"):
+        payload = (
+            "import marshal\n"
+            "mod = __import__('os')\n"
+            f"{header} import builtins as b; b.exec(marshal.loads(BLOB))\n"
+        )
+        assert _high(payload), f"one-line {header!r} suite must be flagged:\n{payload}"
+
+    # The tail is read as its own statement, not merely appended to the header.
+    stmt = list(sp._statements("def f(): import builtins as b\n", []))
+    assert [t.string for t in stmt[-1]] == ["import", "builtins", "as", "b"]
+    assert stmt[0][0].string == "def", "the unsplit statement is still yielded"
+
+    # An annotated assignment named for a soft keyword is not a suite.
+    assert len(list(sp._statements("match: int = 5\n", []))) == 1
+
+
+def test_a_rebinding_cancels_only_after_its_own_right_hand_side():
+    # Python evaluates the value before it binds the target, so
+    # `b = b.exec(marshal.loads(BLOB))` runs the builtin and only then stops `b`
+    # being the module. Starting the cancellation at the statement's first token
+    # suppressed the call the same statement makes.
+    for stmt in ("b = b.exec(marshal.loads(BLOB))", "b += b.exec(marshal.loads(BLOB))"):
+        payload = f"import builtins as b\nimport marshal\nmod = __import__('os')\n{stmt}\n"
+        assert _high(payload), f"{stmt} must be flagged"
+
+    # And the rebinding still silences what comes after it.
+    after = "import builtins as b\nimport marshal\nmod = __import__('os')\nb = load()\nb.eval(x)\n"
+    assert _high(after, "pkg/_infer.py") == [], "a call past the rebinding is not the builtin"
+
+
+def test_a_global_declaration_outranks_an_enclosing_local():
+    # `global b` in a nested function resolves `b` at module level, whatever the
+    # enclosing function did to its own local of that name. Retaining the outer
+    # cancellation at the nested indent suppressed the real builtin call.
+    payload = (
+        "import builtins as b\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "def outer():\n"
+        "    b = model\n"
+        "    def inner():\n"
+        "        global b\n"
+        "        b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload), "a call under `global b` must be flagged"
+
+    # The declaration governs the whole scope, including the lines above it.
+    above = payload.replace(
+        "        global b\n        b.exec(marshal.loads(BLOB))\n",
+        "        b.exec(marshal.loads(BLOB))\n        global b\n",
+    )
+    assert _high(above), "`global` applies to the body written above it too"
+
+    # Without the declaration the enclosing local still cancels.
+    plain = payload.replace("        global b\n", "").replace(
+        "b.exec(marshal.loads(BLOB))", "b.eval(x)"
+    )
+    assert _high(plain, "pkg/_infer.py") == [], "the enclosing local still cancels"
+
+
+def test_import_module_is_a_loader_only_where_it_is_the_standard_one():
+    # `import_module` is not a builtin. Trusting the bare name in every file made
+    # any unrelated function of that name a builtins-module receiver, so ordinary
+    # `import_module(name).eval(x)` inference code scored HIGH.
+    for binding in (
+        "from registry import import_module\n",
+        "def import_module(n): return REG[n]\n",
+    ):
+        payload = f"{binding}import marshal\nmod = __import__('os')\nimport_module(name).eval(x)\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"not a loader:\n{payload}"
+
+    # Imported from importlib, or reached through it, it is the standard loader.
+    for call in (
+        "from importlib import import_module\nimport_module('builtins').exec(marshal.loads(BLOB))",
+        "import importlib\nimportlib.import_module('builtins').exec(marshal.loads(BLOB))",
+        "import importlib\n(importlib.import_module)('builtins').exec(marshal.loads(BLOB))",
+    ):
+        payload = f"import marshal\nmod = __import__('os')\n{call}\n"
+        assert _high(payload), f"the standard loader must be flagged:\n{payload}"
+
+
+def test_closed_rebinding_spans_do_not_cost_a_call_site_each():
+    # One rebinding inside each of N sibling functions leaves N closed spans on
+    # the name, and a linear frontier walk re-read all of them at every call
+    # below - quadratic in N on source an archive member chooses.
+    import time
+
+    def build(n: int) -> str:
+        lines = ["import builtins as b", "import marshal", "mod = __import__('os')"]
+        for i in range(n):
+            lines.append(f"def f{i}():")
+            lines.append("    b = model")
+        for i in range(n):
+            lines.append(f"b.exec(marshal.loads(P{i}))")
+        return "\n".join(lines) + "\n"
+
+    source = build(2000)
+    aliases = sp.RE_EXEC_EVAL.for_text(source).aliases
+    groups = aliases.cancel["b"]
+    # All 2000 rebindings sit at one indent, so they are one group. What a call
+    # site walks is the number of groups, and a bisection inside the one it
+    # lands in - not the 2000 spans the file retains.
+    assert [col for col, _ in groups] == [4]
+    assert len(groups[0][1][0]) == 2000, "every span is still recorded"
+
+    # Spans at one indent are disjoint and in source order, which is what makes
+    # the bisection sound: only the last one starting at or before an offset can
+    # contain it.
+    entries = groups[0][1][1]
+    assert all(
+        entries[i][2] is not None and entries[i][2] <= entries[i + 1][0]
+        for i in range(len(entries) - 1)
+    ), "spans at one indent must not overlap"
+
+    start = time.perf_counter()
+    findings = sp.check_py_file(build(4000), "pkg/_loader.py", "pkg")
+    elapsed = time.perf_counter() - start
+    # Generous, because this is a floor test on shared hardware: the quadratic
+    # walk took 1.2s here and grew fourfold per doubling, so anything under this
+    # cannot be quadratic at this size.
+    assert elapsed < 30, f"scanning 217 KB took {elapsed:.1f}s"
+
+    # And the detection survives: every call is past its rebinding's block.
+    assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+
+
+def test_a_parenthesized_or_destructured_target_still_binds_the_alias():
+    # `(b) = builtins` and `[b] = [builtins]` bind `b` exactly as `b = builtins`
+    # does. Requiring the target to be one NAME token read both as a tuple or
+    # subscript target, dropped the alias, and left the call below unflagged.
+    prelude = "import builtins\nimport marshal\nmod = __import__('os')\n"
+    for target in ("(b) = builtins", "((b)) = builtins", "(b) = (builtins)", "[b] = [builtins]"):
+        payload = f"{prelude}{target}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"{target} must be flagged"
+
+    # A one-element sequence on ONE side is not a destructuring of the module.
+    for benign in ("b = [builtins]", "[b] = xs", "[a, b] = [x, builtins]"):
+        payload = f"{prelude}{benign}\nb.eval(y)\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"{benign} must stay clean"
+
+
+def test_a_comprehension_target_does_not_rebind_the_surrounding_alias():
+    # A comprehension's target is scoped to the comprehension on every supported
+    # Python 3, so `[x for b in xs]` leaves the module alias exactly as it was.
+    # Reading it as an ordinary `for` cancelled `b` at the call below.
+    prelude = "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+    for comprehension in (
+        "ys = [x for b in xs]",
+        "ys = sum(x for b in xs)",
+        "ys = {k: v for b in xs}",
+    ):
+        payload = f"{prelude}{comprehension}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"{comprehension} must not cancel the alias"
+
+    # A real `for` statement rebinds the name inside its body, where the loop
+    # variable is the item.
+    statement = f"{prelude}for b in xs:\n    b.eval(y)\n"
+    assert _high(statement, "pkg/_infer.py") == [], "a `for` body binds the target"
+
+
+def test_an_exception_alias_does_not_outlive_its_handler():
+    # `except E as b` binds nothing when no exception is raised, and when one is
+    # Python deletes the name at the end of the handler. Either way no code below
+    # sees the exception. Recording the header as a rebinding cancelled the alias
+    # for the rest of the file, and because the header sits at the same indent as
+    # the code below it, nothing ever closed that span.
+    prelude = "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+    payload = (
+        f"{prelude}try:\n    f()\nexcept Exception as b:\n    pass\nb.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload), "a call after the handler must still be flagged"
+
+    # Inside a function the answer is the other one, and for a reason the module
+    # level does not have: the handler stores to `b`, so `b` is a local of `g`
+    # throughout. With no exception it was never bound and with one Python
+    # deletes it, so the call below raises `UnboundLocalError` either way and
+    # never reaches the module-level alias. Only at module level, where there is
+    # no local to make, does the call still run the builtin.
+    indented = (
+        f"{prelude}def g():\n    try:\n        f()\n    except Exception as b:\n"
+        "        pass\n    b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(indented, "pkg/_infer.py") == [], "the handler makes `b` a local of `g`"
+
+    # `with ... as b` really does bind past its block, and still cancels.
+    with_stmt = f"{prelude}with open(f) as b:\n    pass\nb.eval(y)\n"
+    assert _high(with_stmt, "pkg/_infer.py") == [], "`with ... as` still rebinds"
+
+
+def test_a_loop_target_cancels_its_body_and_nothing_after_it():
+    # `for b in ():` never runs, so the alias below the loop is still the module
+    # and `b.exec(BLOB)` is the builtin. Recording the target as a persistent
+    # rebinding cancelled it to the end of the file, which downgraded the
+    # payload to the non-blocking MEDIUM obfuscation finding.
+    prelude = "import builtins as b\nimport marshal\n"
+    payload = f"{prelude}for b in ():\n    pass\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(payload), "an empty loop cannot cancel the alias below it"
+
+    # A one-line suite and an `else` clause are both outside the body.
+    oneline = f"{prelude}for b in xs: pass\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(oneline), "the call after a one-line loop is still the builtin"
+    with_else = f"{prelude}for b in xs:\n    pass\nelse:\n    b.exec(marshal.loads(BLOB))\n"
+    assert _high(with_else), "the `else` clause runs whether the loop bound anything"
+
+    # Inside the body the name is the item, whatever the iterable held.
+    body = f"{prelude}mod = __import__('os')\nfor b in xs:\n    b.eval(y)\n"
+    assert _high(body, "pkg/_infer.py") == [], "the body sees the loop variable"
+
+
+def test_a_parameter_shadows_the_alias_for_the_whole_body():
+    # `def process(run):` binds `run` to the argument for the length of the body,
+    # so the call inside it is the callback and not the builtin. Only the
+    # function's own name was recorded, so this was a false HIGH that failed the
+    # enforced scan on an ordinary callback.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    for params in ("run", "*run", "**run", "a, /, run, *, kw = 1", "a: int = 1, run: Any = None"):
+        payload = f"{prelude}def process({params}):\n    run(marshal.loads(BLOB))\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`def process({params})` shadows the alias"
+
+    # A method's parameter reaches its own body and not its sibling's.
+    method = (
+        f"{prelude}class C:\n    def m(self, run):\n        pass\n"
+        "    def n(self, data):\n        run(marshal.loads(data))\n"
+    )
+    assert _high(method), "a sibling method still sees the module-level alias"
+
+    # The parameter list is not the body: a default runs in the enclosing scope.
+    default = f"{prelude}def process(cb = run(marshal.loads(BLOB))):\n    pass\n"
+    assert _high(default), "a default value is evaluated where the `def` is written"
+
+    # And nothing after the function is shadowed by it.
+    after = f"{prelude}def process(run):\n    pass\nrun(marshal.loads(BLOB))\n"
+    assert _high(after), "a parameter binds nothing outside its function"
+
+
+def test_an_exception_target_is_the_exception_inside_its_handler():
+    # A handler runs only when the exception is raised, so inside the suite the
+    # name is that exception - `run(payload)` there is not the builtin. Ignoring
+    # the binding entirely kept the outer alias alive after the handler, which is
+    # right, but left the call inside it a false HIGH.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    payload = (
+        f"{prelude}try:\n    go()\nexcept CallableError as run:\n    run(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload, "pkg/_infer.py") == [], "the handler binds its own `run`"
+
+    nested = (
+        f"{prelude}def f():\n    try:\n        go()\n    except CallableError as run:\n"
+        "        if x:\n            run(marshal.loads(BLOB))\n"
+    )
+    assert _high(nested, "pkg/_infer.py") == [], "the whole suite is the handler"
+
+    # The name does not survive the handler, so the call below it is the builtin.
+    after = (
+        f"{prelude}try:\n    go()\nexcept CallableError as run:\n    pass\n"
+        "run(marshal.loads(BLOB))\n"
+    )
+    assert _high(after), "a call after the handler is still the builtin"
+
+
+def test_an_import_inside_a_function_is_not_visible_to_a_sibling():
+    # `from builtins import exec as run` in one function binds a local. The
+    # sibling below it resolves its own `run`, so reading that call as the
+    # builtin was a false HIGH on a file that never exposes the alias.
+    tail = "def sibling(data):\n    run(marshal.loads(data))\n"
+    payload = f"import marshal\ndef loader():\n    from builtins import exec as run\n    return run\n{tail}"
+    assert _high(payload, "pkg/_infer.py") == [], "the alias does not leave `loader`"
+
+    # In its own scope, and in a scope written inside it, it is the builtin.
+    inside = "import marshal\ndef loader(data):\n    from builtins import exec as run\n    run(marshal.loads(data))\n"
+    assert _high(inside), "the importing function still runs the builtin"
+    nested = (
+        "import marshal\ndef loader():\n    import builtins as b\n"
+        "    def inner(data):\n        b.exec(marshal.loads(data))\n    return inner\n"
+    )
+    assert _high(nested), "a nested function closes over the alias"
+
+    # Anything that also binds the name file-wide keeps it visible everywhere:
+    # a module-level import, an assignment, or a `global` declaration.
+    imported = (
+        "import marshal\nfrom builtins import exec as run\n"
+        f"def loader():\n    from builtins import exec as run\n{tail}"
+    )
+    assert _high(imported), "a module-level import of the same name is visible everywhere"
+    assigned = (
+        "import marshal\ndef loader():\n    import builtins as b\n"
+        "b = __import__('builtins')\n"
+        "def sibling(data):\n    b.exec(marshal.loads(data))\n"
+    )
+    assert _high(assigned), "a module-level assignment binds the alias too"
+    declared = (
+        "import marshal\ndef loader():\n    global run\n"
+        f"    from builtins import exec as run\n{tail}"
+    )
+    assert _high(declared), "`global run` binds the module-level name"
+
+    # A class body binds an attribute, not a local, and is left file-wide.
+    in_class = (
+        "import marshal\nclass C:\n    from builtins import exec as run\n"
+        "    def m(self, data):\n        run(marshal.loads(data))\n"
+    )
+    assert _high(in_class), "a class-body import is not scoped away"
+
+
+def test_a_module_name_split_across_adjacent_literals_still_loads_builtins():
+    # The compiler joins adjacent literals and folds `+` between two of them, so
+    # `__import__('built' 'ins')` returns the same module `__import__('builtins')`
+    # does. Requiring one STRING token left the alias unrecorded, which demoted an
+    # executed builtin from the scan-blocking HIGH to a MEDIUM obfuscation note.
+    tail = "b.exec(marshal.loads(BLOB))\n"
+    for spelling in (
+        "__import__('built' 'ins')",
+        "__import__('bu' 'ilt' 'ins')",
+        "__import__(('builtins'))",
+        "__import__('built' + 'ins')",
+        "__import__(\n    'built'\n    'ins'\n)",
+    ):
+        payload = f"import marshal\nb = {spelling}\n{tail}"
+        assert _high(payload), f"{spelling} loads builtins:\n{payload}"
+
+    walrus = f"import marshal\nif (b := __import__('built' 'ins')):\n    {tail}"
+    assert _high(walrus), "a walrus binding reads the joined literal too"
+    loader = (
+        "import marshal\nfrom importlib import import_module\n"
+        f"b = import_module('built' 'ins')\n{tail}"
+    )
+    assert _high(loader), "the other loader joins its literals the same way"
+
+    # The join is what is read, not the fact that a literal was split: a run that
+    # spells anything else is still an unknown module.
+    for spelling in (
+        "__import__('js' 'on')",
+        "__import__('builtins' 'x')",
+        "__import__(b'built' b'ins')",
+    ):
+        payload = f"import marshal\nb = {spelling}\n{tail}"
+        assert _high(payload, "pkg/_infer.py") == [], f"{spelling} is not builtins:\n{payload}"
+
+
+def test_a_function_that_assigns_an_alias_shadows_it_over_the_whole_body():
+    # Python decides what is local by scanning the block, not by running it, so
+    # a call written above the assignment raises `UnboundLocalError` instead of
+    # reaching the module-level alias. Cutting only from the assignment onwards
+    # read `def f(): run(marshal.loads(x)); run = model` as an executed builtin.
+    payload = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def f():\n    run(marshal.loads(BLOB))\n    run = model\n"
+    )
+    assert (
+        _high(payload, "pkg/_infer.py") == []
+    ), f"the call is unbound, not the builtin:\n{payload}"
+    nested = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def f():\n    run(marshal.loads(BLOB))\n    if x:\n        run = model\n"
+    )
+    assert _high(nested, "pkg/_infer.py") == [], "an assignment anywhere in the body makes it local"
+    in_fstring = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def f():\n    y = f'{run(marshal.loads(BLOB))}'\n    run = model\n"
+    )
+    assert _high(in_fstring, "pkg/_infer.py") == [], "the f-string scan reads the same shadow"
+
+    # It is the assigning function that is shadowed, and only it.
+    sibling = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def g():\n    run = model\ndef f():\n    run(marshal.loads(BLOB))\n"
+    )
+    assert _high(sibling), "a sibling function still resolves the module-level alias"
+    module_level = (
+        "from builtins import exec as run\nimport marshal\nrun(marshal.loads(BLOB))\nrun = model\n"
+    )
+    assert _high(module_level), "module-level code runs top to bottom, so the call above stands"
+    rearmed = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    b = model\n    b = __import__('builtins')\n"
+        "    b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(rearmed), "putting the module back in the name re-arms it"
+    imported = (
+        "import marshal\ndef f():\n    run = model\n"
+        "    from builtins import exec as run\n    run(marshal.loads(BLOB))\n"
+    )
+    assert _high(imported), "a local import re-arms the alias too"
+    declared = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    global b\n    b.exec(marshal.loads(BLOB))\n    b = model\n"
+    )
+    assert _high(declared), "`global b` stops the assignment creating a local"
+
+
+def test_an_assignment_under_a_global_declaration_cancels_the_alias():
+    # `global b` makes the assignment write the module-level name, so `b` really
+    # is the model at the call below it. Skipping every indented cancellation for
+    # a scope that declared the name global emitted a HIGH for that call.
+    payload = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    global b\n    b = model\n    b.eval(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload, "pkg/_infer.py") == [], f"`b` is the model at the call:\n{payload}"
+
+    # Only the declaring scope's own rebinding counts; an enclosing function's
+    # local is still outranked by the declaration.
+    enclosing = (
+        "import builtins as b\nimport marshal\nmod = __import__('os')\n"
+        "def outer():\n    b = model\n    def inner():\n        global b\n"
+        "        b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(enclosing), "an enclosing local does not reach a call declared global"
+    without = (
+        "import builtins as b\nimport marshal\n"
+        "def f():\n    global b\n    b.eval(marshal.loads(BLOB))\n"
+    )
+    assert _high(without), "the declaration alone cancels nothing"
+
+
+def test_a_one_element_tuple_unpacks_the_module():
+    # `(b,) = (builtins,)` binds `b` to the module exactly as `[b] = [builtins]`
+    # does. The comma made the one-element reader reject BOTH sides, so the
+    # `b.exec(...)` under it fell to the non-blocking MEDIUM obfuscation
+    # finding - a spelling change was all it took to get a payload past the gate.
+    prelude = "import builtins\nimport marshal\n"
+    for target, value in (("(b,)", "(builtins,)"), ("b,", "builtins,"), ("[b]", "(builtins,)")):
+        payload = f"{prelude}{target} = {value}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`{target} = {value}` binds the module"
+
+    # A comma with a second item is a tuple target, and a one-tuple VALUE bound
+    # to a plain name is the tuple itself - neither puts the module in `b`.
+    for target, value in (("(b, c)", "(builtins, 1)"), ("b", "(builtins,)"), ("(b,)", "xs")):
+        payload = f"{prelude}{target} = {value}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`{target} = {value}` is not the module"
+
+
+def test_a_fieldless_fstring_names_the_module():
+    # `__import__(f'builtins')` loads exactly what `__import__('builtins')`
+    # loads: with no replacement field the f-string is the same constant. Every
+    # `f` prefix was rejected, so the alias went unrecorded and the executed
+    # builtin under it was demoted to MEDIUM. 3.12 splits an f-string into
+    # START/MIDDLE/END tokens and older versions hand over one STRING, so both
+    # spellings have to be read.
+    prelude = "import marshal\n"
+    for literal in ("f'builtins'", "rf'builtins'", "f'buil\\x74ins'", "'buil' f'tins'"):
+        payload = f"{prelude}b = __import__({literal})\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`__import__({literal})` loads the module"
+
+    # A replacement field is computed at runtime, and another module is another
+    # module however it is spelled.
+    for literal in ("f'buil{x}ins'", "f'{mod}'", "f'os'"):
+        payload = f"{prelude}b = __import__({literal})\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`__import__({literal})` is not builtins"
+
+
+def test_a_loader_names_its_module_by_keyword():
+    # `name` is the first parameter of both loaders and both accept it by
+    # keyword, so `__import__(name='builtins')` returns the module. Handing the
+    # whole argument to the constant reader let the leading `name =` tokens
+    # reject it, and the payload dropped to the non-blocking MEDIUM finding.
+    prelude = "import marshal\nimport importlib\n"
+    for call in (
+        "__import__(name='builtins')",
+        "importlib.import_module(name='builtins')",
+        "__import__(fromlist=[], name='builtins')",
+        "__import__(name=f'builtins')",
+    ):
+        payload = f"{prelude}b = {call}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`{call}` loads the module"
+
+    # A keyword naming something else, or nothing constant, says nothing.
+    for call in ("__import__(name='os')", "__import__(name=mod)", "__import__(fromlist=[])"):
+        payload = f"{prelude}b = {call}\nb.exec(marshal.loads(BLOB))\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`{call}` is not builtins"
+
+
+def test_a_walrus_value_is_read_to_its_real_end():
+    # The value was read for a fixed number of tokens, so padding a working
+    # binding with redundant parentheses or extra loader arguments pushed the
+    # module past the cutoff and the `b.exec(...)` under it was demoted to
+    # MEDIUM. Any of these is a one-line evasion, so the value runs to the
+    # bracket or separator that actually ends it.
+    prelude = "import builtins\nimport marshal\n"
+    padded = "((((((((((((((((builtins))))))))))))))))"
+    args = ", ".join(f"'{c}'" for c in "abcdefghijklm")
+    for value in (
+        padded,
+        f"__import__('builtins', fromlist=[{args}])",
+        "__import__('b' 'u' 'iltins')",
+    ):
+        payload = f"{prelude}if (b := {value}):\n    b.exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`b := {value}` is the module"
+
+    # The end of the value is still where the expression ends: a separator or the
+    # bracket that closes it, and another module is still another module.
+    for value in (f"__import__('os', fromlist=[{args}])", "((((((((load_model()))))))))"):
+        payload = f"{prelude}if (b := {value}):\n    b.exec(marshal.loads(BLOB))\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`b := {value}` is not the module"
+
+
+def test_nonlocal_stops_an_assignment_making_a_local():
+    # `nonlocal b` says the assignments below it write the ENCLOSING function's
+    # binding, so they create no local and the call above one still reads the
+    # outer alias. Only `global` was recorded, so the assignment was read as an
+    # inner local over the whole body and the executed builtin went unflagged.
+    payload = (
+        "import marshal\n"
+        "def outer():\n    import builtins as b\n\n    def inner():\n        nonlocal b\n"
+        "        b.exec(marshal.loads(BLOB))\n        b = model\n    inner()\n"
+    )
+    assert _high(payload), "`nonlocal b` leaves the outer alias reachable"
+
+    # Without the declaration the assignment does make a local, and the call
+    # above it raises `UnboundLocalError` rather than reaching the module.
+    plain = (
+        "import builtins as b\nimport marshal\n"
+        "def inner():\n    b.exec(marshal.loads(BLOB))\n    b = model\n"
+    )
+    assert _high(plain, "pkg/_infer.py") == [], "a plain assignment shadows the whole body"
+
+
+def test_a_loop_or_handler_target_is_local_to_the_whole_function():
+    # Python decides a name is local by scanning the block, so `for b in ...` or
+    # `except E as b` anywhere in a function makes `b` that function's local
+    # THROUGHOUT it: the call above the loop raises `UnboundLocalError` instead
+    # of reaching the module-level alias. Recording only the suite span left
+    # that call reported as a builtin, which is a false HIGH on ordinary code.
+    prelude = "import builtins as b\nimport marshal\n"
+    loop = f"{prelude}def go(items):\n    b.eval(marshal.loads(BLOB))\n    for b in items:\n        pass\n"
+    assert _high(loop, "pkg/_infer.py") == [], "the loop target is a local of `go`"
+    handler = (
+        f"{prelude}def go():\n    b.eval(marshal.loads(BLOB))\n"
+        "    try:\n        pass\n    except Exception as b:\n        pass\n"
+    )
+    assert _high(handler, "pkg/_infer.py") == [], "the handler target is a local of `go`"
+
+    # There is no local to make at module level, and one function's local is not
+    # its sibling's - both calls still run the builtin.
+    module_level = f"{prelude}for b in ():\n    pass\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(module_level), "an empty module-level loop cannot cancel the alias"
+    sibling = (
+        f"{prelude}def go(items):\n    for b in items:\n        pass\n\n\n"
+        "def other():\n    b.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(sibling), "a sibling function still sees the module-level alias"
+
+
+def test_a_comprehension_target_shadows_only_the_comprehension():
+    # A comprehension has a scope of its own, so `[run(x) for run, x in cb]`
+    # calls an element of `cb` rather than a `from builtins import exec as run`
+    # above it. The target was skipped outright, which reported an ordinary
+    # callback table as builtin eval.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    for comp in (
+        "[run(marshal.loads(x)) for run, x in cb]",
+        "[run(marshal.loads(x)) for (run, x) in cb]",
+        "{k: run(marshal.loads(k)) for run, k in cb}",
+        "list(run(marshal.loads(x)) for run, x in cb)",
+        "[y for run, y in cb if run(marshal.loads(y))]",
+        "[y for run in cb for y in run(marshal.loads(y))]",
+    ):
+        payload = f"{prelude}xs = {comp}\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"the target shadows the alias in {comp}"
+
+    # The OUTERMOST iterable is evaluated where the comprehension is written and
+    # passed in, so it is the one part the target does not shadow - and the
+    # alias is untouched on either side of the comprehension.
+    outer_iterable = f"{prelude}xs = [y for run in run(marshal.loads(BLOB))]\n"
+    assert _high(outer_iterable), "the outermost iterable runs in the enclosing scope"
+    after = f"{prelude}xs = [q for run, q in cb]\nrun(marshal.loads(BLOB))\n"
+    assert _high(after), "the alias is back after the comprehension"
+    other_target = f"{prelude}xs = [run(marshal.loads(x)) for x in cb]\n"
+    assert _high(other_target), "a different target shadows nothing"
+
+
+def test_a_lambda_parameter_shadows_the_alias_over_its_body():
+    # A lambda is a scope like any other function, so `(lambda run: run(x))(cb)`
+    # calls the argument and not the `from builtins import exec as run` above
+    # it. Only `def` and `class` headers were read for parameters, which left an
+    # ordinary callback an unconditional false HIGH - and HIGH fails the scan.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    for params in ("run", "*run", "a, run", "a = 1, *, run", "run, **kw"):
+        payload = f"{prelude}cb = (lambda {params}: run(marshal.loads(BLOB)))(model.exec)\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`lambda {params}` shadows the alias"
+
+    # A module alias is shadowed the same way.
+    module = "import builtins as b\nimport marshal\n"
+    shadowed = f"{module}cb = (lambda b: b.exec(marshal.loads(BLOB)))(model)\n"
+    assert _high(shadowed, "pkg/_infer.py") == [], "the parameter is the receiver in the body"
+
+    # The parameter list is not the body: a default is evaluated where the
+    # lambda is written, so the alias still resolves there.
+    default = f"{prelude}cb = (lambda run = run(marshal.loads(BLOB)): run)()\n"
+    assert _high(default), "a default value runs in the enclosing scope"
+
+    # A different parameter shadows nothing, and neither does the lambda reach
+    # past its own body.
+    other = f"{prelude}cb = (lambda x: run(marshal.loads(BLOB)))(1)\n"
+    assert _high(other), "a different parameter leaves the alias alone"
+    after = f"{prelude}cb = (lambda run: run)(1)\nrun(marshal.loads(BLOB))\n"
+    assert _high(after), "the alias is back after the lambda"
+    sibling = f"{prelude}cb = [(lambda run: run)(1), run(marshal.loads(BLOB))]\n"
+    assert _high(sibling), "the body ends at the comma, not at the bracket"
+
+
+def test_re_arming_an_alias_keeps_what_the_earlier_rebinding_decided():
+    # `import builtins as b` ... `b = model` ... `b.eval(x)` ... `import
+    # builtins as b` calls `model.eval`: the re-arm at the end of the file
+    # cannot reach back over the call above it. Dropping the whole cancellation
+    # record instead of ending it at the re-arm read that as the builtin.
+    prelude = "import builtins as b\nimport marshal\n"
+    call = "b.eval(marshal.loads(BLOB))\n"
+    for rearm in ("import builtins as b\n", "b = __import__('builtins')\n"):
+        cancelled = f"{prelude}b = model\n{call}{rearm}"
+        assert _high(cancelled, "pkg/_infer.py") == [], f"the call is `model.eval` before {rearm!r}"
+
+        # Below the re-arm the name is the module again, and a rebinding after
+        # that cancels it once more.
+        live = f"{prelude}b = model\n{rearm}{call}"
+        assert _high(live), f"the call below {rearm!r} runs the builtin"
+        again = f"{prelude}b = model\n{rearm}b = model\n{call}"
+        assert _high(again, "pkg/_infer.py") == [], "the second rebinding cancels the re-arm"
+
+    # And a call written before the rebinding is untouched by either.
+    before = f"{prelude}{call}b = model\nimport builtins as b\n"
+    assert _high(before), "a call above the rebinding still runs the builtin"
+
+
+def test_the_builtin_parked_on_an_attribute_is_still_a_finding():
+    # `holder.eval = eval` then `holder.eval(payload)` runs the builtin, and the
+    # call site is the same three tokens as `model.eval()` - restricting
+    # attribute calls to the builtins module is what keeps that clean, so the
+    # assignment is where this route has to be read or it is a bypass.
+    marshal_blob = "import marshal\n"
+    for value in ("eval", "builtins.eval", "run"):
+        payload = (
+            f"{marshal_blob}import builtins\nfrom builtins import eval as run\n"
+            f"holder.eval = {value}\nholder.eval(marshal.loads(BLOB))\n"
+        )
+        assert _high(payload), f"`holder.eval = {value}` hands over the builtin"
+    parked_exec = f"{marshal_blob}holder.exec = exec\nholder.exec(marshal.loads(BLOB))\n"
+    assert _high(parked_exec), "`holder.exec = exec` hands over the builtin"
+
+    # An ordinary method assigned to an attribute is not the builtin, and
+    # neither is a method of that name declared or called.
+    other = f"{marshal_blob}holder.eval = model.eval\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(other, "pkg/_infer.py") == [], "`model.eval` is a method, not the builtin"
+    inference = f"{marshal_blob}model = torch.load(marshal.loads(BLOB))\nmodel.eval()\n"
+    assert _high(inference, "pkg/_infer.py") == [], "`model.eval()` is ordinary inference"
+
+
+def test_a_self_assignment_inside_a_function_is_still_a_local():
+    # `run = run` in a function makes `run` local for the whole body, so the
+    # statement itself raises `UnboundLocalError` and no call in there can reach
+    # a module-level alias. Exempting the shape outright - which is right at
+    # module level, where it rebinds the name to its own value - left the call
+    # below it a false HIGH.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    local = f"{prelude}def go():\n    run = run\n    return run(marshal.loads(BLOB))\n"
+    assert _high(local, "pkg/_infer.py") == [], "`run = run` makes `run` a local of `go`"
+    above = f"{prelude}def go():\n    run(marshal.loads(BLOB))\n    run = run\n"
+    assert _high(above, "pkg/_infer.py") == [], "the local covers the lines above it too"
+
+    # `global` is what stops an assignment creating a local, and at module level
+    # there is no local to make - both still run the builtin.
+    declared = (
+        f"{prelude}def go():\n    global run\n    run = run\n"
+        "    return run(marshal.loads(BLOB))\n"
+    )
+    assert _high(declared), "`global run` keeps the module-level alias"
+    module_level = f"{prelude}run = run\nrun(marshal.loads(BLOB))\n"
+    assert _high(module_level), "`run = run` at module level rebinds nothing"
+
+    # A class body resolves a name it assigns outward, so the methods under it
+    # still see the module-level alias.
+    class_body = (
+        f"{prelude}class C:\n    run = run\n\n"
+        "    def go(self):\n        return run(marshal.loads(BLOB))\n"
+    )
+    assert _high(class_body), "a class attribute does not shadow the global"
+
+    # A sibling function is untouched by it.
+    sibling = f"{prelude}def go():\n    run = run\n\n\ndef other():\n    run(marshal.loads(BLOB))\n"
+    assert _high(sibling), "one function's local is not its sibling's"
+
+
+def test_scope_containment_stays_linear_on_hostile_source():
+    # A member of sibling functions that each import and call the same alias
+    # asks one containment question per call against one span per function, and
+    # walking the spans for each made that quadratic: 16,000 such functions fit
+    # in about 1.1 MiB and took 4.8 s, on members allowed up to 64 MiB. Measured
+    # on this shape before the fix: 0.45 s at N=4,000 and 1.41 s at N=8,000
+    # (3.1x per doubling); after, 0.22 s and 0.43 s (2.0x). The assertion is the
+    # growth rate, so a slow runner moves both together.
+    def hostile(n):
+        return "".join(
+            f"def f{i}():\n    from builtins import eval as run\n    return run(DATA)\n"
+            for i in range(n)
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            spans = list(sp.RE_EXEC_EVAL.finditer(src))
+            out.append(time.monotonic() - start)
+        # Each function imports the alias itself, so every call is the builtin
+        # and none of them may be lost to the index.
+        assert len(spans) == src.count("return run(DATA)"), "every aliased call must be found"
+        return min(out)
+
+    small = best_of(hostile(4_000))
+    large = best_of(hostile(8_000))
+    assert (
+        large < 2.6 * small
+    ), f"scope containment grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
+def test_a_copy_of_a_module_alias_is_the_module_too():
+    # `import builtins as b` then `c = b` puts the module in `c` as plainly as
+    # the import put it in `b`, and refusing to follow the copy left
+    # `c.exec(payload)` reported as the non-blocking MEDIUM - an enforced scan
+    # passed a file that runs the builtin.
+    prelude = "import builtins as b\nimport marshal\n"
+    copied = f"{prelude}c = b\nc.exec(marshal.loads(BLOB))\n"
+    assert _high(copied), "`c = b` copies the module into `c`"
+    chained = f"{prelude}c = b\nd = c\nd.exec(marshal.loads(BLOB))\n"
+    assert _high(chained), "the copy can itself be copied"
+    walrus = f"{prelude}if (c := b):\n    c.exec(marshal.loads(BLOB))\n"
+    assert _high(walrus), "a walrus copies it too"
+
+    # Only a copy of a name this file bound to `builtins` is one.
+    other = "import model as b\nimport marshal\nc = b\nc.exec(marshal.loads(BLOB))\n"
+    assert _high(other, "pkg/_infer.py") == [], "`model` is not the builtins module"
+    rebound = f"{prelude}b = model\nc = b\nc.exec(marshal.loads(BLOB))\n"
+    assert _high(rebound, "pkg/_infer.py") == [], "a copy of a rebound alias is not the module"
+
+
+def test_global_declaration_lookup_stays_linear_on_hostile_source():
+    # One dummy function assigning the alias, then N siblings that each declare
+    # `global b` and call `b.eval(...)`, asks one containment question per call
+    # against one span per sibling; walking them all made that quadratic.
+    # Measured on this shape before the fix: 1.32 s at N=4,000 and 3.75 s at
+    # N=8,000 (2.8x per doubling); after, 0.73 s and 1.50 s (2.0x). The
+    # assertion is the growth rate, so a slow runner moves both together.
+    def hostile(n):
+        head = "import builtins as b\n\n\ndef seed():\n    b = 1\n\n\n"
+        return head + "".join(
+            f"def f{i}():\n    global b\n    return b.eval(DATA)\n\n\n" for i in range(n)
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            spans = list(sp.RE_EXEC_EVAL.finditer(src))
+            out.append(time.monotonic() - start)
+        # `global b` is what keeps every one of those calls the module's, so
+        # none of them may be lost to the index.
+        assert len(spans) == src.count("return b.eval(DATA)"), "every aliased call must be found"
+        return min(out)
+
+    small = best_of(hostile(4_000))
+    large = best_of(hostile(8_000))
+    assert (
+        large < 2.6 * small
+    ), f"global lookup grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
+def test_a_lambda_in_a_default_keeps_the_outer_parameter_list():
+    # `lambda run=lambda x: x: run(BLOB)` is valid Python and `run` is always
+    # the outer lambda's parameter; abandoning the parameter list at the nested
+    # `lambda` dropped the shadow and reported the body as the imported builtin.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    nested = f"{prelude}x = lambda run=lambda y: y: run(marshal.loads(BLOB))\n"
+    assert _high(nested, "pkg/_infer.py") == [], "`run` is the outer lambda's parameter"
+    greedy = f"{prelude}x = lambda run=lambda y, z: y: run(marshal.loads(BLOB))\n"
+    assert _high(greedy, "pkg/_infer.py") == [], "the inner lambda owns the comma between them"
+    deep = f"{prelude}x = lambda run=lambda a=lambda c: c: a: run(marshal.loads(BLOB))\n"
+    assert _high(deep, "pkg/_infer.py") == [], "the colons pair off innermost first"
+
+    # The default itself is evaluated where the lambda is written, and a lambda
+    # that never binds the name does not shadow it.
+    in_default = f"{prelude}x = lambda y=run(marshal.loads(BLOB)): y\n"
+    assert _high(in_default), "a call in a default runs in the enclosing scope"
+    other_param = f"{prelude}x = lambda a=lambda run: run: run(marshal.loads(BLOB))\n"
+    assert _high(other_param), "the inner parameter does not reach the outer body"
+
+
+def test_an_annotated_attribute_still_parks_the_builtin():
+    # `holder.eval: object = eval` hands the builtin over exactly as the
+    # unannotated spelling does, and the `holder.eval(payload)` below it is the
+    # same three tokens as `model.eval()` - so the assignment is where the route
+    # has to be read or it is a bypass.
+    marshal_blob = "import marshal\n"
+    annotated = f"{marshal_blob}holder.eval: object = eval\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(annotated), "an annotation does not stop the assignment"
+    aliased = (
+        f"{marshal_blob}from builtins import exec as run\n"
+        "holder.exec: object = run\nholder.exec(marshal.loads(BLOB))\n"
+    )
+    assert _high(aliased), "the value may be an alias of the builtin"
+
+    # An annotation with no value binds nothing, and an ordinary method is not
+    # the builtin however it is annotated.
+    declared = f"{marshal_blob}holder.eval: object\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(declared, "pkg/_infer.py") == [], "`holder.eval: object` assigns nothing"
+    method = f"{marshal_blob}holder.eval: object = model.eval\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(method, "pkg/_infer.py") == [], "`model.eval` is a method, not the builtin"
+    mapping = f"{marshal_blob}table = {{holder.eval: 1}}\nholder.eval(marshal.loads(BLOB))\n"
+    assert _high(mapping, "pkg/_infer.py") == [], "a dict key is not an assignment"
+
+
+def test_the_dunder_builtins_key_names_the_module():
+    # `globals()['__builtins__']` is the standard way to reach the module
+    # through the globals mapping, and a script run as `__main__` gets the
+    # module itself there. Recognising only the string `builtins` let the
+    # `.exec(payload)` under it fall to the non-blocking MEDIUM.
+    marshal_blob = "import marshal\n"
+    for key in ("__builtins__", "builtins"):
+        payload = f"{marshal_blob}globals()['{key}'].exec(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`globals()['{key}']` is the builtins module"
+    other = f"{marshal_blob}globals()['model'].exec(marshal.loads(BLOB))\n"
+    assert _high(other, "pkg/_infer.py") == [], "another key is another object"
+
+
+def test_a_class_statement_replaces_a_module_alias():
+    # A module-level `class b:` binds `b` in the module namespace exactly as an
+    # assignment does, so the `b.exec(payload)` under it resolves to the class.
+    # Reading the header itself as "inside a class body" discarded that
+    # rebinding and reported the call as the builtin.
+    prelude = "import builtins as b\nimport marshal\n"
+    replaced = f"{prelude}\n\nclass b:\n    pass\n\n\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(replaced, "pkg/_infer.py") == [], "`class b:` replaces the alias"
+    one_line = f"{prelude}\n\nclass b: pass\n\n\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(one_line, "pkg/_infer.py") == [], "a one-line class body binds it too"
+
+    # A call above the class still reaches the module, and an assignment made
+    # INSIDE a class body is an attribute that shadows nothing.
+    above = f"{prelude}b.exec(marshal.loads(BLOB))\n\n\nclass b:\n    pass\n"
+    assert _high(above), "module-level code runs top to bottom"
+    attribute = f"{prelude}\n\nclass Holder:\n    b = 1\n\n\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(attribute), "a class attribute does not replace the global"
+
+
+def test_a_one_line_definition_binds_before_its_own_body():
+    # `def run(): return run(BLOB)` binds `run` before the body runs, so the
+    # call in there is the recursion and not the imported builtin. The body is
+    # re-yielded as its own statement AFTER the header, so measuring the
+    # binding from the header's last token put it past the call it governs.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    one_line = f"{prelude}def run(): return run(marshal.loads(BLOB))\n"
+    assert _high(one_line, "pkg/_infer.py") == [], "the body resolves `run` to the definition"
+    multiline = f"{prelude}def run():\n    return run(marshal.loads(BLOB))\n"
+    assert _high(multiline, "pkg/_infer.py") == [], "the multiline spelling was already clean"
+
+    # A definition of some other name leaves the alias alone, and a call above
+    # the definition still runs the builtin.
+    other = f"{prelude}def go(): return run(marshal.loads(BLOB))\n"
+    assert _high(other), "`def go()` does not rebind `run`"
+    above = f"{prelude}run(marshal.loads(BLOB))\n\n\ndef run(): return 1\n"
+    assert _high(above), "the call above the definition is the builtin"
+
+
+def test_deleting_an_alias_unbinds_it():
+    # `del b` unbinds the name, so `b.eval(payload)` below it raises
+    # `NameError`; ignoring `del` left that a false HIGH on ordinary cleanup.
+    prelude = "import builtins as b\nimport marshal\n"
+    deleted = f"{prelude}del b\nb.eval(marshal.loads(BLOB))\n"
+    assert _high(deleted, "pkg/_infer.py") == [], "`del b` unbinds the alias"
+    local = (
+        "from builtins import exec as run\nimport marshal\n"
+        "def go():\n    run(marshal.loads(BLOB))\n    del run\n"
+    )
+    assert _high(local, "pkg/_infer.py") == [], "a `del` makes the name local to the whole body"
+
+    # A call above a module-level deletion still runs, and a deletion that
+    # unbinds something else leaves the alias exactly where it was.
+    above = f"{prelude}b.eval(marshal.loads(BLOB))\ndel b\n"
+    assert _high(above), "module-level code runs top to bottom"
+    for target in ("c", "holder.b", "cache[b]"):
+        payload = f"{prelude}del {target}\nb.eval(marshal.loads(BLOB))\n"
+        assert _high(payload), f"`del {target}` does not unbind `b`"
+
+
+def test_a_combining_mark_stays_inside_an_identifier():
+    # PEP 3131 normalizes an identifier to NFKC before it is looked up, so an
+    # alias imported as `é` is called by `e` + U+0301 and the other way round.
+    # `\w` drops a combining mark, which split the second spelling into `e` and
+    # missed the call - on 3.9-3.11, where `tokenize` splits it the same way,
+    # that was every route rather than only the f-string one.
+    nfc = "\u00e9"
+    decomposed = "e\u0301"
+    assert unicodedata.normalize("NFKC", decomposed) == nfc
+    for alias in (nfc, decomposed):
+        for call in (nfc, decomposed):
+            plain = (
+                f"from builtins import exec as {alias}\nimport marshal\n"
+                f"{call}(marshal.loads(BLOB))\n"
+            )
+            assert _high(plain), f"{alias!r} called as {call!r} runs the builtin"
+            fstring = (
+                f"from builtins import exec as {alias}\nimport marshal\n"
+                f'x = f"{{{call}(marshal.loads(BLOB))}}"\n'
+            )
+            assert _high(fstring), f"{alias!r} inside an f-string runs it too"
+            module = (
+                f"import builtins as {alias}\nimport marshal\n"
+                f"{call}.exec(marshal.loads(BLOB))\n"
+            )
+            assert _high(module), f"{alias!r} as a module alias runs it too"
+
+    # The same normalization decides a rebinding, so an alias assigned away
+    # under either spelling is no longer the builtin.
+    for spelling in (nfc, decomposed):
+        rebound = (
+            f"from builtins import exec as {nfc}\nimport marshal\n"
+            f"{spelling} = None\n{nfc}(marshal.loads(BLOB))\n"
+        )
+        assert _high(rebound, "pkg/_infer.py") == [], "the rebinding is the same name"
+
+
+def test_a_member_without_exec_or_eval_never_reaches_the_tokenizer():
+    # Every route to the builtin spells one of the two words: a module alias at
+    # its call site, a function alias at its import. So a member holding
+    # neither has no alias worth deriving, and the alias pass - a tokenize over
+    # the whole member - used to run anyway on every file that merely mentions
+    # `builtins`. Measured on 1.3 MiB of ordinary `builtins` statements: 0.45 s
+    # before, 0.0007 s after, on members allowed up to 64 MiB.
+    quiet = "import builtins as b\n" + "".join(f"v{i} = b.len([{i}])\n" for i in range(200))
+    assert "exec" not in quiet and "eval" not in quiet
+    matcher = sp._ExecEvalPattern().for_text(quiet)
+    assert "b" not in matcher.receivers, "the file's own alias is not derived"
+    assert not matcher.funcs
+    assert list(matcher.finditer(quiet)) == []
+
+    # The pass still runs the moment the word is there, whichever route brings
+    # it: the skip may only drop work `_scan` would refuse a moment later.
+    for call, live in (
+        ("b.exec(marshal.loads(BLOB))", "receivers"),
+        ("run(marshal.loads(BLOB))", "funcs"),
+    ):
+        payload = f"{quiet}from builtins import exec as run\nimport marshal\n{call}\n"
+        loud = sp._ExecEvalPattern().for_text(payload)
+        assert getattr(loud, live), f"{call} still binds an alias"
+        assert list(loud.finditer(payload)), f"{call} is still reported"
+        assert _high(payload), f"{call} is still a HIGH"
+
+
+def test_an_unconditional_suite_keeps_its_rebinding_after_the_dedent():
+    # `if True:` always runs, and the statement below the block is reached only
+    # by falling off the end of that suite - so the rebinding it made is the
+    # live binding there. Ending the span at the dedent read the call below as
+    # the builtin again.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    call = "run(marshal.loads(BLOB))\n"
+    for cond in ("True", "1"):
+        payload = f"{prelude}if {cond}:\n    run = callback\n{call}"
+        assert _high(payload, "pkg/_infer.py") == [], f"`if {cond}:` always runs"
+    assert (
+        _high(f"{prelude}if True: run = callback\n{call}", "pkg/_infer.py") == []
+    ), "a one-line suite is the same suite"
+    assert (
+        _high(f"{prelude}if True:\n    if True:\n        run = callback\n{call}", "pkg/_infer.py")
+        == []
+    ), "a nested unconditional block is still unconditional"
+
+    # Every other header may not run, or may not run to the end, so its
+    # rebinding still stops at the dedent - and a call above the rebinding runs
+    # the builtin whatever the header is.
+    for header in ("if flag:", "while True:", "for x in items:", "try:", "with lock:"):
+        payload = f"{prelude}{header}\n    run = callback\n{call}"
+        assert _high(payload), f"`{header}` may leave the alias alone"
+    nested = f"{prelude}if flag:\n    if True:\n        run = callback\n{call}"
+    assert _high(nested), "an unconditional block inside a conditional one is conditional"
+    above = f"{prelude}if True:\n    {call}    run = callback\n"
+    assert _high(above), "the call above the rebinding runs the builtin"
+    rearmed = f"{prelude}if True:\n    run = callback\nfrom builtins import exec as run\n{call}"
+    assert _high(rearmed), "the import puts the builtin back in the name"
+
+
+def test_a_builtin_parked_through_an_unpacking_assignment_is_read():
+    # `holder.eval, spare = eval, None` hands the builtin to an attribute
+    # exactly as `holder.eval = eval` does. The comma is the only difference,
+    # and it left the assignment unread - so the call below it was excluded as
+    # an ordinary method and the file kept only the non-blocking MEDIUM.
+    prelude = "import marshal\n"
+    call = "holder.eval(marshal.loads(BLOB))\n"
+    for parked in ("holder.eval, spare = eval, None", "a, holder.eval = None, eval"):
+        assert _high(f"{prelude}{parked}\n{call}"), f"`{parked}` parks the builtin"
+
+    # The route is positional, so an element that is not the builtin parks
+    # nothing, and a shape the positions cannot be read from is left alone
+    # rather than guessed at.
+    for benign in (
+        "holder.eval, spare = compute, None",
+        "holder.eval, spare = pair",
+        "*rest, holder.eval = values",
+        "holder.eval, spare = None, eval",
+    ):
+        assert (
+            _high(f"{prelude}{benign}\n{call}", "pkg/_infer.py") == []
+        ), f"`{benign}` hands the attribute something else"
+
+
+def test_a_case_pattern_captures_the_subject():
+    # A bare name in a `case` pattern binds the subject, so the call in the
+    # suite is the subject rather than the imported builtin.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    call = "run(marshal.loads(BLOB))"
+    captured = f"{prelude}match callback:\n    case run:\n        {call}\n"
+    assert _high(captured, "pkg/_infer.py") == [], "`case run:` binds the subject"
+    assert (
+        _high(f"{prelude}match callback:\n    case run: {call}\n", "pkg/_infer.py") == []
+    ), "a one-line case suite is the same suite"
+    assert (
+        _high(f"{prelude}match s:\n    case Point(x = run):\n        {call}\n", "pkg/_infer.py")
+        == []
+    ), "a keyword pattern captures into its value"
+
+    # A value pattern reads a name, it does not bind one; a guard is an
+    # ordinary expression; and a case that does not match binds nothing, so the
+    # capture reaches its own suite and nothing below the `match`.
+    assert _high(
+        f"{prelude}match callback:\n    case mod.run:\n        {call}\n"
+    ), "`case mod.run:` is a value pattern"
+    assert _high(
+        f"{prelude}match s:\n    case _ if {call}:\n        pass\n"
+    ), "a guard reads the alias"
+    assert _high(
+        f"{prelude}match callback:\n    case run:\n        pass\n{call}\n"
+    ), "the capture does not reach below the match"
+    assert _high(
+        f"{prelude}match = 5\ncase = 6\n{call}\n"
+    ), "`match` and `case` are ordinary names here"
+
+
+def test_a_one_line_suite_starts_where_its_header_ends():
+    # `def f(run): return run(BLOB)` keeps the body glued to the header, so the
+    # last token is the call's - and measuring the parameter shadow from there
+    # started it after the very call the parameter governs.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    payload = f"{prelude}def f(run): return run(marshal.loads(BLOB))\n"
+    assert _high(payload, "pkg/_infer.py") == [], "the parameter is what is called"
+    module = "import builtins as b\nimport marshal\n"
+    for header, shadowed in (
+        ("for b in items:", "b.exec(marshal.loads(BLOB))"),
+        ("with open(p) as b:", "b.exec(marshal.loads(BLOB))"),
+    ):
+        one_line = f"{module}{header} {shadowed}\n"
+        assert _high(one_line, "pkg/_infer.py") == [], f"`{header}` shadows its own suite"
+
+    # The shadow reaches the suite and nothing else: a parameter of some other
+    # name leaves the alias alone, and the call below the block is the builtin.
+    assert _high(
+        f"{prelude}def f(x): return run(marshal.loads(x))\n"
+    ), "a parameter of another name shadows nothing"
+    assert _high(
+        f"{module}for x in items: b.exec(marshal.loads(BLOB))\n"
+    ), "a loop target of another name shadows nothing"
+    assert _high(
+        f"{module}for b in items: pass\nb.exec(marshal.loads(BLOB))\n"
+    ), "an empty loop leaves the alias exactly where it was"
+
+
+def test_a_re_arm_inside_a_function_does_not_reopen_an_outer_alias():
+    # `b = load_model()` at module level takes the module out of `b`, and a
+    # `def f(): b = __import__('builtins')` under it binds f's OWN local - it
+    # cannot put the module back in the module-level name. So the
+    # `b.exec(...)` written after f is `model.exec`, and ending the outer
+    # cancellation on the nested binding reported it as the builtin.
+    module = "import builtins as b\nimport marshal\nmod = __import__('os')\nb = load_model()\n"
+    call = "b.exec(marshal.loads(BLOB))\n"
+    for rearm in ("b = __import__('builtins')\n", "import builtins as b\n"):
+        nested = f"{module}def f():\n    {rearm}{call}"
+        assert _high(nested, "pkg/_infer.py") == [], f"a nested {rearm!r} re-armed the outer alias"
+
+        # A sibling function reads the same module-level name, so it is the
+        # model there too.
+        sibling = f"{module}def f():\n    {rearm}def g():\n    {call}"
+        assert _high(sibling, "pkg/_infer.py") == [], f"a sibling saw the nested {rearm!r}"
+
+        # A class body binds an attribute, which is no more the global than a
+        # local is.
+        attribute = f"{module}class C:\n    {rearm}{call}"
+        assert _high(attribute, "pkg/_infer.py") == [], f"a class body re-armed with {rearm!r}"
+
+        # The body that re-arms still reaches the module: below the binding, in
+        # that scope, the name really is `builtins`.
+        inside = f"{module}def f():\n    {rearm}    {call}"
+        assert _high(inside), f"the call under a local {rearm!r} runs the builtin"
+
+        # And `global b` is what makes the binding the module-level one, so the
+        # re-arm reaches the whole file again.
+        declared = f"{module}def f():\n    global b\n    {rearm}{call}"
+        assert _high(declared), f"a `global` {rearm!r} re-arms the module-level name"
+
+
+def test_a_parked_alias_is_read_with_the_liveness_of_a_call():
+    # `holder.exec = run` hands over whatever `run` is on that line, so the
+    # right-hand side needs the liveness a call site already applies: past
+    # `run = safe` the name is the safe local, and past `b = model` the
+    # `b.exec` attribute is a method of the model. Accepting the name outright
+    # made either one a HIGH beside the marshal marker.
+    marker = "import marshal\nmod = __import__('os')\ncode = marshal.loads(BLOB)\n"
+    alias = f"from builtins import exec as run\n{marker}"
+    assert (
+        _high(f"{alias}run = safe\nholder.exec = run\n", "pkg/_infer.py") == []
+    ), "a rebound alias parks the safe local, not the builtin"
+    assert (
+        _high(f"{alias}def f():\n    run = safe\n    holder.exec = run\n", "pkg/_infer.py") == []
+    ), "an alias the function assigns is its local everywhere in the body"
+    scoped = (
+        f"{marker}def f():\n    from builtins import exec as run\ndef g():\n    holder.exec = run\n"
+    )
+    assert (
+        _high(scoped, "pkg/_infer.py") == []
+    ), "an alias imported in one function is not the builtin in a sibling"
+    assert _high(
+        f"{marker}def f():\n    from builtins import exec as run\n    holder.exec = run\n"
+    ), "the function that imported it parks the builtin"
+    module_alias = f"import builtins as b\n{marker}"
+    assert (
+        _high(f"{module_alias}b = model\nholder.exec = b.exec\n", "pkg/_infer.py") == []
+    ), "`b.exec` past `b = model` is a method of the model"
+
+    # A live alias still parks the builtin, whichever spelling reaches it.
+    assert _high(f"{alias}holder.exec = run\n"), "a live alias parks the builtin"
+    assert _high(f"{module_alias}holder.exec = b.exec\n"), "a live module alias parks the builtin"
+    assert _high(
+        f"{module_alias}b = model\nholder.exec = builtins.exec\n"
+    ), "the module named outright is not something a rebinding can take away"
+    # The bare builtin is not an alias and has no liveness to test, exactly as
+    # at a call site: `eval = safe_eval` then `eval(BLOB)` is a HIGH too.
+    assert _high(
+        f"{marker}eval = safe_eval\nholder.eval = eval\n"
+    ), "a shadowed bare builtin is read as the builtin here and at a call site"
+    assert _high(
+        f"{marker}eval = safe_eval\neval(marshal.loads(BLOB))\n"
+    ), "the call site reads a shadowed bare builtin the same way"
+
+
+# The marker pair every route needs to reach the blocking finding: a dynamic
+# import and a marshal payload. On its own it is the non-blocking MEDIUM.
+_OBFUSCATION = "import marshal\nmod = __import__('os')\n"
+_ALIAS_CALL = "b.exec(marshal.loads(BLOB))\n"
+# `builtins` in mathematical bold, an identifier the compiler NFKC-normalizes
+# to the module name before it looks it up.
+_BOLD_BUILTINS = "".join(
+    chr(c) for c in (0x1D41B, 0x1D42E, 0x1D422, 0x1D425, 0x1D42D, 0x1D422, 0x1D427, 0x1D42C)
+)
+
+
+def test_a_decorated_spelling_of_the_module_still_binds_the_alias():
+    # PEP 3131 normalizes every identifier to NFKC before it is resolved, so
+    # `import 𝐛𝐮𝐢𝐥𝐭𝐢𝐧𝐬 as b` imports builtins while the ASCII word never appears
+    # in the source. The substring test that keeps the tokenize pass off ordinary
+    # files read that as "no alias here", and `b.exec(marshal.loads(BLOB))` fell
+    # to the non-blocking MEDIUM.
+    assert unicodedata.normalize("NFKC", _BOLD_BUILTINS) == "builtins"
+    assert _high(
+        f"import {_BOLD_BUILTINS} as b\n{_OBFUSCATION}{_ALIAS_CALL}"
+    ), "a decorated import binds the alias its call reaches"
+
+    # The pass is admitted by the characters, not by "this file is not ASCII":
+    # prose in another alphabet folds into none of `builtins`, so the ordinary
+    # file keeps the substring test it has always had.
+    assert not sp._folds_to_builtins("# résumé of the café\n")
+    assert sp._folds_to_builtins(f"import {_BOLD_BUILTINS} as b\n")
+
+    # And running the pass on a decorated file invents nothing: a name that is
+    # not the module leaves `.eval()` an ordinary inference call.
+    batch = "".join(chr(c) for c in (0x1D41B, 0x1D41A, 0x1D42D, 0x1D41C, 0x1D421))
+    assert (
+        _high(f"{_OBFUSCATION}{batch} = load_model()\n{batch}.eval()\n", "pkg/_infer.py") == []
+    ), "a decorated name that is not the module must stay clean"
+
+
+def test_a_target_list_still_binds_the_module_alias():
+    # `b, spare = builtins, None` binds `b` to the module exactly as
+    # `b = builtins` does. Reading the target group whole rejected it as a tuple
+    # target, so the `b.exec(...)` under it was demoted to MEDIUM.
+    for binding in (
+        "b, spare = builtins, None",
+        "spare, b = None, builtins",
+        "b, spare = __import__('builtins'), None",
+    ):
+        assert _high(
+            f"import builtins\n{_OBFUSCATION}{binding}\n{_ALIAS_CALL}"
+        ), f"a target list must bind the alias: {binding}"
+
+    # Read positionally, so the module reaches the name that really receives it.
+    # `b, spare = None, builtins` leaves `b` None and `b.eval(...)` clean.
+    assert (
+        _high(
+            f"import builtins\n{_OBFUSCATION}b, spare = None, builtins\nb.eval(BLOB)\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "the module goes to the target in its own position, not to every target"
+    assert (
+        _high(
+            f"import builtins\n{_OBFUSCATION}b, spare = load_model(), None\nb.eval()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a target list that unpacks no module binds no alias"
+
+    # The other targets of the same statement are ordinary rebindings: `spare`
+    # takes None here, so `spare.eval(...)` below it is not the builtin while
+    # the `b` that took the module still is.
+    unpacked = f"import builtins as spare\n{_OBFUSCATION}spare, b = None, builtins\n"
+    assert _high(f"{unpacked}{_ALIAS_CALL}"), "the target that takes the module keeps the alias"
+    assert (
+        _high(f"{unpacked}spare.eval(BLOB)\n", "pkg/_infer.py") == []
+    ), "a target the same statement binds to something else still cancels"
+
+
+def test_a_short_circuited_walrus_does_not_cancel_the_alias():
+    # `False and (b := model)` never runs its assignment expression, so `b` is
+    # still the module below it - and cancelling the alias there dropped the
+    # `b.exec(marshal.loads(BLOB))` under it to the non-blocking MEDIUM.
+    for skipped in (
+        "False and (b := model)",
+        "True or (b := model)",
+        "spare = None if flag else (b := model)",
+    ):
+        assert _high(
+            f"import builtins as b\n{_OBFUSCATION}{skipped}\n{_ALIAS_CALL}"
+        ), f"a walrus that may not run must not cancel the alias: {skipped}"
+
+    # A walrus that always runs still cancels it, or `model.eval()` past one is
+    # the false positive this rule exists to remove. The separator is what tells
+    # the second case apart: the `and` guards its own operand, not the argument
+    # written after the comma.
+    for taken in (
+        "(b := model) and flag",
+        "print(flag and other, (b := model))",
+        "if (b := model):\n    pass",
+    ):
+        assert (
+            _high(f"import builtins as b\n{_OBFUSCATION}{taken}\n{_ALIAS_CALL}", "pkg/_infer.py")
+            == []
+        ), f"a walrus that always runs must still cancel the alias: {taken}"
+
+
+def test_a_renamed_module_loader_is_followed_through_a_copy():
+    # `from builtins import __import__ as load` then `copy = load` leaves `copy`
+    # the loader, so `copy(name).exec(...)` reaches the builtin under a second
+    # name. Only module aliases were propagated, so one rename carried the call
+    # under the enforced gate.
+    for source in (
+        "from builtins import __import__ as load\ncopy = load\n",
+        "import importlib\nimp = importlib.import_module\ncopy = imp\n",
+    ):
+        assert _high(
+            f"{source}{_OBFUSCATION}copy(name).exec(marshal.loads(BLOB))\n"
+        ), f"a copied loader must still be a loader:\n{source}"
+
+    # Only a copy of a loader is one: `copy = load_model` then
+    # `copy(path).eval()` is ordinary inference code, in a file that does reach
+    # the pass.
+    assert (
+        _high(
+            f"from importlib import import_module\n{_OBFUSCATION}copy = load_model\n"
+            "copy(path).eval()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a copy of something that is not a loader must stay clean"
+
+
+# `exec` in mathematical bold: the compiler NFKC-normalizes the NAME token to
+# `exec` before it resolves it, so this calls the builtin.
+_BOLD_EXEC = "".join(chr(c) for c in (0x1D41E, 0x1D431, 0x1D41E, 0x1D41C))
+
+
+def test_a_decorated_spelling_of_the_builtin_is_still_a_call_to_it():
+    # `𝐞𝐱𝐞𝐜(marshal.loads(BLOB))` runs the builtin, but neither ASCII word is in
+    # the source - so the substring test in front of the tokenize pass returned
+    # before anything could normalize the token, and the payload kept the
+    # non-blocking MEDIUM while the enforced HIGH gate saw no exec/eval at all.
+    assert unicodedata.normalize("NFKC", _BOLD_EXEC) == "exec"
+    for call in (
+        f"{_BOLD_EXEC}(marshal.loads(BLOB))",
+        "ｅｖａｌ(marshal.loads(BLOB))",  # fullwidth `eval`
+        f"b.{_BOLD_EXEC}(marshal.loads(BLOB))",  # through a plain module alias
+    ):
+        assert _high(
+            f"import builtins as b\n{_OBFUSCATION}{call}\n"
+        ), f"a decorated builtin must still be read as one: {call}"
+
+    # Admitted by the characters, not by "this file is not ASCII": prose in
+    # another alphabet folds into none of `exec`/`eval`, so the ordinary file
+    # keeps the substring test it has always had.
+    assert not sp._folds_to_exec_eval("# ordinary prose, plus 你好\n")
+    assert sp._folds_to_exec_eval(f"{_BOLD_EXEC}(payload)\n")
+
+    # And reading a decorated file invents nothing: a decorated method name on
+    # an ordinary object is not the builtin.
+    assert (
+        _high(f"{_OBFUSCATION}model = load_model()\nmodel.{_BOLD_EXEC}(x)\n", "pkg/_infer.py") == []
+    ), "a decorated attribute of something that is not the module must stay clean"
+
+
+def test_a_star_import_of_importlib_binds_the_loader():
+    # `from importlib import *` binds every name in the module's `__all__`, and
+    # `import_module` is one of them - so `import_module(n).exec(...)` under it
+    # reaches the builtin exactly as the explicit import does. Only an explicit
+    # `import_module` was recorded, so the star spelling was demoted to MEDIUM.
+    assert "import_module" in importlib.__all__
+    for call in (
+        "import_module(name).exec(marshal.loads(BLOB))",
+        "b = import_module('builtins')\nb.exec(marshal.loads(BLOB))",
+    ):
+        assert _high(
+            f"from importlib import *\n{_OBFUSCATION}{call}\n"
+        ), f"a star-imported loader must still be a loader: {call}"
+
+    # The star still has to be importlib's: a file that star-imports something
+    # else and calls its own `import_module` is ordinary code.
+    assert (
+        _high(
+            f"from os.path import *\n{_OBFUSCATION}b = import_module(name)\nb.eval()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a star import of another module binds no loader"
+
+
+def test_a_copy_written_above_its_import_is_still_the_module():
+    # A function body reads its names when it is called, so it sees what the
+    # module binds BELOW it: `def f(): c = b` above `import builtins as b`
+    # copies the module and `c.exec(marshal.loads(BLOB))` runs the builtin. The
+    # collecting pass reads the file in source order, so `c` was never recorded
+    # and the payload kept the non-blocking MEDIUM.
+    for body, call, tail in (
+        ("c = b", "c.exec(marshal.loads(BLOB))", "import builtins as b"),
+        ("c = b\nd = c", "d.exec(marshal.loads(BLOB))", "import builtins as b"),
+        # The same rename one step earlier: a copy of the LOADER, which only
+        # becomes one when the import below the body names it.
+        (
+            "copy = import_module",
+            "copy(name).exec(marshal.loads(BLOB))",
+            "from importlib import import_module",
+        ),
+    ):
+        indented = "\n".join("    " + line for line in body.splitlines())
+        payload = f"{_OBFUSCATION}def f():\n{indented}\n    {call}\n{tail}\n"
+        assert _high(payload), f"a deferred copy must be resolved:\n{payload}"
+
+    # The copy still has to be of an alias: a name the file never binds to the
+    # module leaves the call an ordinary one.
+    assert (
+        _high(
+            f"{_OBFUSCATION}def f():\n    c = b\n    c.eval()\nimport builtins\nb = load_model()\n",
+            "pkg/_infer.py",
+        )
+        == []
+    ), "a copy of a name that is not the module must stay clean"
+
+
+def test_a_walrus_in_a_scope_of_its_own_does_not_cancel_the_alias():
+    # A lambda body binds its own local, and a comprehension only binds the
+    # containing scope once its element expression runs - a generator nobody
+    # consumes never runs it, and an eager comprehension over an empty or fully
+    # filtered iterable does not either. So none of these changes the outer `b`,
+    # and cancelling the alias there dropped a real `b.exec(marshal.loads(BLOB))`
+    # to the non-blocking MEDIUM.
+    for nested in (
+        "f = lambda: (b := model)",
+        "g = ((b := y) for y in items)",
+        "n = sum((b := y) for y in items)",
+        "xs = [(b := safe) for _ in []]",
+        "xs = [(b := safe) for y in items if False]",
+        "xs = {(b := safe) for y in items}",
+        "xs = [f((b := safe)) for y in items]",
+    ):
+        assert _high(
+            f"import builtins as b\n{_OBFUSCATION}{nested}\n{_ALIAS_CALL}"
+        ), f"a walrus that may not run must not cancel the alias: {nested}"
+
+    # A walrus that is evaluated where it is written still cancels, or
+    # `model.eval()` past one is the false positive this pass exists to remove.
+    # A lambda DEFAULT is one: it is evaluated in the enclosing scope.
+    for cancels in (
+        "spare = (b := model)",
+        "if (b := model):\n    pass",
+        "f = lambda x = (b := model): x",
+    ):
+        assert (
+            _high(f"import builtins as b\n{_OBFUSCATION}{cancels}\n{_ALIAS_CALL}", "pkg/_infer.py")
+            == []
+        ), f"a walrus that really rebinds must still cancel the alias: {cancels}"
+
+
+def test_a_line_continuation_inside_a_literal_still_names_the_module():
+    # The compiler drops a backslash-newline before it uses a literal's value,
+    # so `__import__('b\<newline>uiltins')` loads the real module while the word
+    # never appears on any one line. The prefilter that admits a file to the
+    # alias pass knew every other escape but not this one, so the alias was
+    # never derived and the payload kept the non-blocking MEDIUM.
+    split = "b = __import__('b\\\nuiltins')\n"
+    assert eval(split.split("=", 1)[1].strip().replace("__import__", "str")) == "builtins"
+    assert _high(f"{_OBFUSCATION}{split}{_ALIAS_CALL}"), "a split literal still names the module"
+
+    # Padding the literal with continuations does not push it past the decode
+    # cap either: they contribute nothing to the value, so what the cap has to
+    # measure is the value they leave behind.
+    padded = "b = __import__('b" + "\\\n" * 400 + "uiltins')\n"
+    assert _high(f"{_OBFUSCATION}{padded}{_ALIAS_CALL}"), "continuation padding is not a cap bypass"
+
+    # A literal that names something else is still something else.
+    assert (
+        _high(f"{_OBFUSCATION}b = __import__('nu\\\nmpy')\nb.eval()\n", "pkg/_infer.py") == []
+    ), "a split literal naming another module must stay clean"
+
+
+def test_every_legal_identifier_continuation_is_glued_back_on():
+    # Below 3.12 `tokenize` splits identifiers on `\w`, so a legal continuation
+    # character that is not alphanumeric arrives as its own ERRORTOKEN and the
+    # name the interpreter resolves is never assembled. Reading only the
+    # combining marks left `import builtins as b<U+203F>` and its
+    # `b<U+203F>.exec(...)` two different names, which demoted the call to the
+    # non-blocking MEDIUM on those runtimes. Tested on the function itself, so
+    # the assertion holds whatever tokenizer the runtime ships.
+    def _tok(kind, string, start, end):
+        return tokenize.TokenInfo(kind, string, start, end, "")
+
+    name = _tok(tokenize.NAME, "b", (1, 0), (1, 1))
+    for cont in ("‿", "́", "·"):  # connector, mark, Other_ID_Continue
+        assert ("b" + cont).isidentifier(), cont
+        glued = _tok(tokenize.ERRORTOKEN, cont, (1, 1), (1, 2))
+        assert sp._continues_name([name], glued), f"{cont!r} continues the name before it"
+
+    # Adjacency and legality both still decide it: a continuation behind
+    # whitespace starts nothing, and a character that cannot be part of an
+    # identifier is not glued on.
+    assert not sp._continues_name([name], _tok(tokenize.ERRORTOKEN, "‿", (1, 2), (1, 3)))
+    assert not sp._continues_name([name], _tok(tokenize.ERRORTOKEN, "$", (1, 1), (1, 2)))
+    assert not sp._continues_name([], _tok(tokenize.ERRORTOKEN, "‿", (1, 1), (1, 2)))
+
+    # And the whole file reads as one name end to end.
+    assert _high(
+        f"import builtins as b‿\n{_OBFUSCATION}b‿.exec(marshal.loads(BLOB))\n"
+    ), "an identifier with a connector still binds the alias its call reaches"
