@@ -175,6 +175,7 @@ export const ko = {
       disabled: "파일 로깅이 꺼져 있습니다 (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "로그 파일을 찾을 수 없습니다.",
       unreadable: "로그 파일을 읽을 수 없습니다.",
+      viewLogs: "로그 보기",
       timeout: "로그 요청 시간이 초과되었습니다. 서버에 연결할 수 없을 수 있습니다.",
       droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
       morePending: "아직 더 많은 줄을 읽고 있습니다. 다음 새로 고침에 표시됩니다.",

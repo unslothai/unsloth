@@ -38,10 +38,17 @@ interface SettingsDialogState {
   // Set when something asks to jump straight to an archive listing (the archive
   // toast). DataTab uses it as its initial subpage, then clears it.
   archivedRequested: ArchivedShelf | null;
+  // Set when a failure elsewhere in the app offers "View logs". The Logs tab reads it
+  // as its initial source family, then clears it. A FAMILY rather than a source id:
+  // ids are a digest of the real path the frontend cannot compute, and at the moment
+  // of a failure the newest file in the family is the attempt that just failed.
+  logFamilyRequested: string | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: "images" | "videos") => void;
   consumeArchivedChatsRequest: () => void;
+  openLogs: (family?: string) => void;
+  consumeLogFamilyRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
@@ -90,6 +97,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   scrollTarget: null,
   opener: null,
   archivedRequested: null,
+  logFamilyRequested: null,
   openDialog: (tab, options) =>
     set((state) => ({
       open: true,
@@ -114,6 +122,15 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       opener: captureOpener(),
     }),
   consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
+  openLogs: (family) =>
+    set({
+      open: true,
+      activeTab: "debugging",
+      scrollTarget: null,
+      logFamilyRequested: family ?? null,
+      opener: captureOpener(),
+    }),
+  consumeLogFamilyRequest: () => set({ logFamilyRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,

@@ -177,6 +177,7 @@ export const ptBR = {
       disabled: "O log em arquivo está desativado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Nenhum arquivo de log foi encontrado.",
       unreadable: "Não foi possível ler o arquivo de log.",
+      viewLogs: "Ver registros",
       timeout: "A solicitacao do registro expirou. O servidor pode estar inacessivel.",
       droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
       morePending: "Mais linhas ainda estao sendo lidas; elas chegam na proxima atualizacao.",

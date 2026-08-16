@@ -173,6 +173,7 @@ export const zhCN = {
       disabled: "文件日志已关闭 (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
       missing: "未找到日志文件。",
       unreadable: "无法读取日志文件。",
+      viewLogs: "查看日志",
       timeout: "日志请求超时。服务器可能无法访问。",
       droppedNotice: "已跳过部分行：日志的写入速度超过了读取速度。",
       morePending: "仍在读取更多行，它们将在下次刷新时显示。",

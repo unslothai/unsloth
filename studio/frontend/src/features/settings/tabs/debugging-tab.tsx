@@ -31,6 +31,7 @@ import {
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
@@ -98,10 +99,21 @@ export function DebuggingTab() {
           options.signal,
         );
         setSources(result.sources);
+        // A "View logs" action from a failure names the family that just failed.
+        // Its newest source is that attempt: the picker's usual warning that the
+        // newest is often not the right one applies to browsing, not to arriving
+        // here from the failure itself.
+        const requested = useSettingsDialogStore.getState().logFamilyRequested;
+        const fromFailure = requested
+          ? result.sources.find((source) => source.family === requested)
+          : undefined;
+        if (fromFailure) useSettingsDialogStore.getState().consumeLogFamilyRequest();
         setSourceId((current) =>
-          options.reselect
-            ? result.defaultSourceId
-            : (current ?? result.defaultSourceId),
+          fromFailure
+            ? fromFailure.id
+            : options.reselect
+              ? result.defaultSourceId
+              : (current ?? result.defaultSourceId),
         );
       } catch {
         // The log read reports the real reason; this just leaves the picker empty.

@@ -167,6 +167,7 @@ import {
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
+import { viewLogsAction } from "@/features/settings/lib/view-logs-action";
 import {
   TrainBaseSelector,
   type TrainFamilyOption,
@@ -3385,7 +3386,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           stopRequested: cancelRequested.current && cancelAcked.current,
         })
       )
-        toast.error(msg);
+        toast.error(msg, { action: viewLogsAction("server") });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
