@@ -3296,6 +3296,64 @@ const Composer: FC<{
 
       const attachmentIds = attachments.map((attachment) => attachment.id);
       const textAtQueue = composer.getState().text.trim();
+      const queueTexts = (
+        texts: string[],
+        // Captured before an awaited read, when there was one.
+        capturedAt?: {
+          localModelBoundaryGeneration: number;
+          queuedSettingsEpoch: number;
+          temporary: boolean;
+        },
+      ) => {
+        const queuedPrompt = [textAtQueue, ...texts]
+          .filter((part) => part.trim().length > 0)
+          .join("\n\n");
+        if (queuedPrompt.length === 0) return;
+        startHydratedPromptQueue(
+          [queuedPrompt],
+          waitForCurrentRun,
+          () => {
+            const state = composer.getState();
+            // Only clear the composer this prompt was queued from.
+            if (
+              state.text.trim() !== textAtQueue ||
+              state.attachments.length !== attachmentIds.length ||
+              !state.attachments.every(
+                (attachment, index) => attachment.id === attachmentIds[index],
+              )
+            ) {
+              return;
+            }
+            void composer.clearAttachments();
+            flushResourcesSync(() => {
+              composer.setText("");
+            });
+            clearStoredDraft();
+          },
+          () => {
+            toast.info("Pasted text was not queued", {
+              description: "The chat settings changed. Send it again.",
+            });
+          },
+          capturedAt,
+        );
+      };
+
+      // The body is already in memory: createPastedTextFile records it under
+      // the File identity isPastedTextFile just matched. Queue from that rather
+      // than reading the File back, because a gesture that awaits joins the
+      // queue behind any later one that does not, which reverses the two.
+      const cachedTexts: string[] = [];
+      for (const file of files) {
+        const text = pastedTextOf(file);
+        if (text === undefined) break;
+        cachedTexts.push(text);
+      }
+      if (cachedTexts.length === files.length) {
+        queueTexts(cachedTexts);
+        return true;
+      }
+
       // Registered before the read, or a submit during it takes the send path
       // and this queues the same text again once the read finishes.
       const pendingKey = pastedTextQueueKey(
@@ -3340,35 +3398,7 @@ const Composer: FC<{
           ) {
             return;
           }
-          const queuedPrompt = [textAtQueue, ...texts]
-            .filter((part) => part.trim().length > 0)
-            .join("\n\n");
-          if (queuedPrompt.length === 0) return;
-          startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
-            const state = composer.getState();
-            // Only clear the composer this prompt was queued from.
-            if (
-              state.text.trim() !== textAtQueue ||
-              state.attachments.length !== attachmentIds.length ||
-              !state.attachments.every(
-                (attachment, index) => attachment.id === attachmentIds[index],
-              )
-            ) {
-              return;
-            }
-            void composer.clearAttachments();
-            flushResourcesSync(() => {
-              composer.setText("");
-            });
-            clearStoredDraft();
-          },
-          () => {
-            toast.info("Pasted text was not queued", {
-              description: "The chat settings changed. Send it again.",
-            });
-          },
-          pendingRead,
-        );
+          queueTexts(texts, pendingRead);
         })
         .catch(() => {
           toast.error("Could not queue the pasted text.", {
