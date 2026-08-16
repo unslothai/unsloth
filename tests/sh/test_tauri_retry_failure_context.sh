@@ -68,7 +68,10 @@ UNSLOTH_INSTALL_RETRY_DELAY=0
 _stdout_file=$(mktemp)
 _stderr_file=$(mktemp)
 trap 'rm -f "$_stdout_file" "$_stderr_file" "$_test_attempt_file"' EXIT
-run_install_cmd_retry "install PyTorch" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! run_install_cmd_retry "install PyTorch" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: recovered retry returned non-zero; it never recovered"
+    exit 1
+fi
 # `|| true`: grep -c reports 0 with status 1, and under set -e that aborts here with
 # no output, which is how a missing helper in the block above reads as silence.
 _stdout_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stdout_file" || true)
@@ -116,7 +119,10 @@ fi
 _test_command() {
     return 0
 }
-run_install_cmd_retry "fallback PyTorch build" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! run_install_cmd_retry "fallback PyTorch build" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: fallback build returned non-zero"
+    exit 1
+fi
 if ! grep -q '^\[TAURI:ERROR_CLEAR\] fallback PyTorch build recovered$' "$_stdout_file" ||
     ! grep -q '^\[TAURI:ERROR_CLEAR\] fallback PyTorch build recovered$' "$_stderr_file"; then
     echo "  FAIL: successful fallback retained the preferred build failure"
@@ -127,7 +133,10 @@ echo "  PASS: successful fallback clears an exhausted preferred failure"
 _test_command() {
     return 0
 }
-run_install_cmd "successful unstructured fallback" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! run_install_cmd "successful unstructured fallback" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: unstructured fallback returned non-zero"
+    exit 1
+fi
 if ! grep -q '^\[TAURI:ERROR_CLEAR\] successful unstructured fallback recovered$' "$_stdout_file" ||
     ! grep -q '^\[TAURI:ERROR_CLEAR\] successful unstructured fallback recovered$' "$_stderr_file"; then
     echo "  FAIL: initial success did not clear unstructured failure context"
@@ -166,7 +175,10 @@ _test_command() {
     _cmd_rc=9
     return 0
 }
-run_install_cmd "verbose clobbering success" _test_command >"$_stdout_file" 2>"$_stderr_file"
+if ! run_install_cmd "verbose clobbering success" _test_command >"$_stdout_file" 2>"$_stderr_file"; then
+    echo "  FAIL: verbose success returned non-zero"
+    exit 1
+fi
 if ! grep -q '^\[TAURI:ERROR_CLEAR\] verbose clobbering success recovered$' "$_stdout_file"; then
     echo "  FAIL: verbose success inherited a status variable written by the wrapped function"
     exit 1
@@ -228,7 +240,7 @@ if [ "$_exit_code" -ne 7 ] || [ -s "$_stdout_file" ] || [ -s "$_stderr_file" ]; 
 fi
 echo "  PASS: setup failures emit explicit context only in Tauri mode"
 
-_setup_mode_count=$(grep -c 'UNSLOTH_TAURI_MODE="$TAURI_MODE"' "$INSTALL_SH")
+_setup_mode_count=$(grep -c 'UNSLOTH_TAURI_MODE="$TAURI_MODE"' "$INSTALL_SH" || true)
 if [ "$_setup_mode_count" -ne 2 ]; then
     echo "  FAIL: Unix installer does not pass Tauri mode to both setup invocations"
     exit 1
@@ -323,7 +335,7 @@ _rollback_block=$(sed -n \
     '/^_restore_studio_venv_replacement()/,/^}/p' \
     "$INSTALL_SH")
 _rollback_progress_count=$(printf '%s\n' "$_rollback_block" |
-    grep -c 'rollback_substep')
+    grep -c 'rollback_substep' || true)
 if [ "$_rollback_progress_count" -ne 2 ]; then
     echo "  FAIL: successful Unix rollback output can replace failure context"
     exit 1
@@ -365,7 +377,7 @@ if ! grep -q '\$env:UNSLOTH_TAURI_MODE = if (\$TauriMode)' "$INSTALL_PS1"; then
     exit 1
 fi
 
-_ps_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_PS1")
+_ps_setup_exit_count=$(grep -Ec '^[[:space:]]*exit[[:space:]]+' "$SETUP_PS1" || true)
 if [ "$_ps_setup_exit_count" -ne 1 ] ||
     ! grep -q '^[[:space:]]*exit \$Code$' "$SETUP_PS1"; then
     echo "  FAIL: Windows setup has explicit exits outside Exit-SetupFailure"
