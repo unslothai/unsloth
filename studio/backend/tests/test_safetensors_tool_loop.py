@@ -3725,11 +3725,17 @@ class TestGGUFSafetensorsHealingParity:
             # the ask can follow the intent too; order carries no meaning here.
             "Let me check I have this right: could you confirm the repo is unslothai/unsloth?",
             "I'll look that up. Let me know your question, and I'll assist you!",
-            "If a tool is needed, I will call web_search accordingly. "
-            "Let me know if you need me to use any of the tools.",
         ):
             assert shared_re.search(asks), f"regex missed {asks!r}"
             assert not shared_fn(asks), f"helper wrongly fired on {asks!r}"
+
+        # "let me know if ..." closes a turn rather than blocking it, so the plan behind one still needs the nudge
+        for closing in (
+            "I'll search the web for the current release now. "
+            "Let me know if you have any other questions.",
+            "I will run the query now. Let me know if that is not what you wanted.",
+        ):
+            assert shared_fn(closing), f"helper missed {closing!r}"
 
     def test_max_reprompts_equal_on_both_backends(self):
         # Both loops draw the cap from the shared constant, so they stay equal.
