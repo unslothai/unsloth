@@ -165,9 +165,11 @@ export {
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-// v2 added nBatch / nUbatch and v3 llamaExtraArgs; a client from before either
-// would normalize the field it does not know straight back out of the record.
-const STORAGE_SCHEMA_VERSION = 3;
+// v2 added nBatch / nUbatch, v3 llamaExtraArgs and v4 disableVision; a client
+// from before any of them would normalize the field it does not know straight
+// back out of the record.
+const STORAGE_SCHEMA_VERSION = 4;
+const PRE_VISION_SCHEMA_VERSION = 3;
 const PRE_EXTRA_ARGS_SCHEMA_VERSION = 2;
 const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
@@ -756,9 +758,14 @@ function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
   // Stamped with the OLDEST version that still understands every field present, so
   // a record an older client can safely rewrite is not needlessly locked away from
   // it. Only a record carrying a newer field is put out of that client's reach.
-  const version =
-    normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
-      ? STORAGE_SCHEMA_VERSION
+  // Only a TRUE disableVision needs the v4 stamp. The default is false, which
+  // is what a pre-vision client reconstructs anyway, so a record that merely
+  // carries the key at its default loses nothing by staying in that client's
+  // reach -- and stamping every record v4 would put the whole store out of it.
+  const version = normalized.disableVision
+    ? STORAGE_SCHEMA_VERSION
+    : normalized.llamaExtraArgs != null && normalized.llamaExtraArgs.length > 0
+      ? PRE_VISION_SCHEMA_VERSION
       : normalized.nBatch != null || normalized.nUbatch != null
         ? PRE_EXTRA_ARGS_SCHEMA_VERSION
         : PRE_BATCH_SCHEMA_VERSION;
