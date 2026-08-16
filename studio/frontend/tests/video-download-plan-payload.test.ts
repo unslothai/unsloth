@@ -26,49 +26,94 @@ test("the video download plan is asked with the selected precision", () => {
   );
   assert.ok(call.length > 0, "the plan call must exist");
   assert.ok(
-    call.includes("transformer_quant:"),
-    "the plan must be asked with the precision the load will use",
+    call.includes("transformer_quant: advanced.transformer_quant"),
+    "the plan must use the precision snapshot",
   );
-  // Under the same pipeline-only rule the load applies: a GGUF / single-file DiT runs the
-  // precision its checkpoint carries, and the stale control value must not reach either call.
-  assert.ok(call.includes('opts.kind === "pipeline"'));
+  const snapshot = source.slice(
+    source.indexOf("const currentLoadAdvanced = useCallback("),
+    source.indexOf("const handleLoad = useCallback("),
+  );
+  assert.ok(snapshot.includes("loadControlsRef.current"));
+
+  assert.ok(snapshot.includes('kind === "pipeline"'));
 });
 
-test("the staged plan reads the precision live, not the value it closed over", () => {
-  // loadOrStage is memoized on [stage, pickGuard] so its consumers keep a stable identity. A
-  // plain capture of transformerQuant therefore froze at the value selected when the callback
-  // was built, and the ordinary auto -> FP8 change sent the plan no precision at all: the
-  // pre-download refusal was skipped and tens of GB were staged before the load refused it.
-  const call = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 900,
+test("the staged plan pins its controls through the eventual load", () => {
+  const flow = source.slice(
+    source.indexOf("const loadOrStage = useCallback("),
+    source.indexOf("// A GGUF pick can arrive"),
   );
-  assert.ok(
-    call.includes("transformerQuantRef.current"),
-    "the plan must read the precision through the ref",
-  );
-  assert.ok(
-    !/transformerQuant\s*[!=]==/.test(call),
-    "a direct read of the memoized capture is the stale value",
-  );
-  assert.ok(
-    source.includes("transformerQuantRef.current = transformerQuant"),
-    "the ref must be kept current on every render",
-  );
+  const advancedAt = flow.indexOf("const advanced = currentLoadAdvanced(opts.kind);");
+  const planAt = flow.indexOf("await getVideoDownloadPlan({");
+  assert.ok(advancedAt >= 0, "the staged flow must compute the advanced snapshot");
+  assert.ok(planAt >= 0, "the staged flow must request the download plan");
+  assert.ok(advancedAt < planAt, "the snapshot must precede the plan request");
+  assert.match(flow, /pendingStagedLoad\.current = \{\s*repoId,\s*opts,\s*advanced,/);
+  assert.ok(source.includes("pending.opts, pending.advanced"));
+
+  assert.ok(flow.includes("handleLoadRef.current(repoId, opts, advanced)"));
 });
 
+test("the video picker resolves the full GGUF footprint", () => {
+  assert.ok(source.includes("const resolveDownloadFootprint = useCallback("));
+  assert.ok(source.includes("const requiredBytes = plan.required_bytes"));
+  assert.ok(source.includes("resolveDownloadFootprint={resolveDownloadFootprint}"));
+});
 test("the staged plan carries the memory request too", () => {
-  // The route refuses an explicit precision under balanced or low_vram only when it can see the
-  // memory mode. Omitting it here meant the plan succeeded, tens of GB were staged, and the
-  // identical pick was then rejected by /video/load -- the regression the plan gate exists for.
-  const call = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 1200,
+  assert.equal(source.match(/memory_mode: advanced\.memory_mode/g)?.length, 3);
+});
+
+test("the selected H3 task reaches both the plan and the load", () => {
+  // The STAGING plan, sliced out of loadOrStage rather than found by the first
+  // `getVideoDownloadPlan` in the file: the row-sizing footprint probe calls it earlier and only
+  // ever for a named GGUF file, where the partition is the filename, not a task flag.
+  const flow = source.slice(
+    source.indexOf("const loadOrStage = useCallback("),
+    source.indexOf("// A GGUF pick can arrive"),
   );
-  assert.ok(call.includes("memory_mode:"), "the plan must be asked with the memory request");
+  const planAt = flow.indexOf("await getVideoDownloadPlan({");
+  assert.ok(planAt >= 0, "the staged flow must request the download plan");
+  const planCall = flow.slice(planAt, planAt + 1500);
+  const loadCall = source.slice(
+    source.indexOf("const startRequest = loadVideoModel({"),
+    source.indexOf("const startRequest = loadVideoModel({") + 1500,
+  );
+  assert.ok(planCall.includes("h3_task: opts.h3Task"));
+  assert.ok(loadCall.includes("h3_task: opts.h3Task"));
+  assert.ok(source.includes('chooseH3Task("fl2va")'));
+  assert.ok(source.includes('chooseH3Task("ref2va")'));
+});
+
+test("a routed H3 pipeline pick asks for the task instead of loading a default", () => {
+  // The chat picker cannot load a diffusion model, so a pick there arrives on this page as
+  // ?model=. That route calls loadOrStage directly: without the same interception the direct
+  // pick makes, a cached MiniMax H3 silently staged the fl2va denoiser, tens of GB, and left no
+  // way to ask for References.
+  const routeEffect = source.slice(
+    source.indexOf("const pick = diffusionRoutePick("),
+    source.indexOf("const chooseH3Task = useCallback"),
+  );
+  assert.ok(routeEffect.length > 0, "the routed pick branch must exist");
   assert.ok(
-    call.includes("memoryModeRef.current"),
-    "and read it live, like the precision",
+    routeEffect.includes("isH3PipelinePick(pick.repoId, pick.opts.kind)"),
+    "the routed branch must intercept an H3 pipeline pick",
   );
-  assert.ok(source.includes("memoryModeRef.current = memoryMode"));
+  const intercept = routeEffect.indexOf("isH3PipelinePick(");
+  const load = routeEffect.indexOf("void loadOrStage(pick.repoId");
+  assert.ok(
+    intercept >= 0 && load > intercept,
+    "the interception must come before the unconditional load",
+  );
+  assert.ok(routeEffect.includes("setPendingH3Load({"));
+  // One predicate, so the two entry points cannot drift apart again.
+  assert.ok(source.includes("function isH3PipelinePick("));
+  assert.ok(source.includes("isH3PipelinePick(id, spec.kind)"));
+});
+
+test("reapply preserves the loaded H3 task", () => {
+  const reapply = source.slice(
+    source.indexOf("const handleReapply = useCallback"),
+    source.indexOf("const handleReapply = useCallback") + 600,
+  );
+  assert.ok(reapply.includes("h3Task: l.h3Task"));
 });

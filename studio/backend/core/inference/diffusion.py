@@ -18,6 +18,7 @@ bar. GPU-handoff policy lives in the arbiter the routes call, not here.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import os
@@ -58,8 +59,13 @@ from .diffusion_families import (
 from .diffusion_compat import assert_flux2_pick_compatible, flux2_pick_mismatch
 from .diffusion_device import (
     DiffusionDeviceTarget,
+    apply_diffusion_device_ordinal,
+    diffusion_device_scope,
     diffusion_device_target_from_torch_device,
+    pin_cuda_ordinal,
+    placed_cuda_ordinal,
     resolve_diffusion_device_target,
+    resolve_selected_cuda_ordinal,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_hidream import HIDREAM_FAMILY_NAME, hidream_te4_kwargs
@@ -170,15 +176,11 @@ install_torchao_windows_rocm_stub()
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
 
-def _record_sha(shas_out: Optional[dict[str, str]], repo_id: str, info: Any) -> None:
-    """Note the commit ``info`` describes so a cache probe can pin to it.
-
-    No ``sha`` just means the plan cannot pin, and stages as before."""
-    if shas_out is None:
-        return
+def _record_revision(out: Optional[dict[str, str]], repo_id: str, info: Any) -> None:
+    """Remember the commit a ``model_info`` answer described, when the Hub reports one."""
     sha = getattr(info, "sha", None)
-    if isinstance(sha, str) and sha:
-        shas_out[repo_id] = sha
+    if out is not None and isinstance(sha, str) and sha:
+        out[repo_id] = sha
 
 
 def hub_cache_dir() -> str:
@@ -425,6 +427,27 @@ def _clamp_max_side(img: Any, max_side: int) -> Any:
     return img.resize((nw, nh), Image.LANCZOS)
 
 
+def _fit_within(img: Any, max_w: int, max_h: int) -> Any:
+    """Downscale a PIL image to fit inside a ``max_w`` x ``max_h`` box, preserving aspect ratio;
+    a no-op when it already fits. NEVER enlarges -- growing a source is the Upscale workflow.
+
+    img2img takes its output size from the upload, which left the Resolution control inert for
+    Transform: a 4000px photo generated at the 2048 clamp and the refusal it raised named a size
+    the sliders could not change. Bounding the upload by the requested box makes that control
+    mean what it says."""
+    from PIL import Image
+
+    w, h = img.size
+    bw = max(1, int(max_w))
+    bh = max(1, int(max_h))
+    if w <= bw and h <= bh:
+        return img
+    scale = min(bw / float(w), bh / float(h))
+    nw = max(1, int(round(w * scale)))
+    nh = max(1, int(round(h * scale)))
+    return img.resize((nw, nh), Image.LANCZOS)
+
+
 def _image_variant_hint(
     family_name: Optional[str],
     single_file_name: Optional[str],
@@ -486,6 +509,10 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "black-forest-labs/flux.2-klein-base-4b",
         "black-forest-labs/flux.2-klein-base-9b",
         "tongyi-mai/z-image-turbo",
+        # The undistilled Z-Image: the base the upstream DreamBooth recipe trains on, and the
+        # base_model tag of unsloth/Z-Image-GGUF. Leaving it out made that tag untrusted, so the
+        # GGUF fell back to the Turbo companions and denoised on its shift 3.0 scheduler.
+        "tongyi-mai/z-image",
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
@@ -532,7 +559,7 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
-def _assert_local_base_is_pipeline(base_repo: str) -> None:
+def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = False) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
     ANY existing local path, so without this a local base that is not a pipeline dir would pass the
@@ -541,7 +568,14 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
     by the trust check (it is neither an existing path nor an unsloth/*/allowlisted repo); a bare
     remote id is left for the loader to resolve. Shared by the image, video, and training preflights
     so their local-base shape check stays in sync. Never evicts; raises ValueError on a bad local
-    base."""
+    base.
+
+    ``allow_modular`` accepts ``modular_model_index.json`` as well, for a caller whose loader is
+    ``ModularPipeline.from_pretrained``: that IS the valid on-disk layout for a Modular Diffusers
+    pipeline (MiniMax-H3 ships no ``model_index.json`` at all), and the local-model scanners
+    already count either index. Off by default -- a conventional ``DiffusionPipeline`` load still
+    needs the conventional index, and accepting a modular directory there would only move the
+    failure back into the loader."""
     base = (base_repo or "").strip()
     if not base:
         return
@@ -552,9 +586,13 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
         return  # invalid path characters -> a remote id, not a local path
     if not exists:
         return
-    if not root.is_dir() or not (root / "model_index.json").is_file():
+    indexes = ["model_index.json"]
+    if allow_modular:
+        indexes.append("modular_model_index.json")
+    if not root.is_dir() or not any((root / name).is_file() for name in indexes):
         raise ValueError(
-            f"Local base_repo is not a diffusers pipeline directory (no model_index.json): {base}"
+            f"Local base_repo is not a diffusers pipeline directory "
+            f"(no {' or '.join(indexes)}): {base}"
         )
 
 
@@ -579,6 +617,8 @@ def _assert_base_repo_accessible(
     base_repo: str,
     hf_token: Optional[str],
     probe_file: str = "model_index.json",
+    *,
+    local_files_only: bool = False,
 ) -> Optional[str]:
     """Fail up front, with the licence URL, when a companion base cannot be read.
 
@@ -591,7 +631,14 @@ def _assert_base_repo_accessible(
     Returns the base's snapshot dir when an ACCESS verdict was excused by a copy living only under
     huggingface_hub's import-time root, so the caller can load off disk: ``from_pretrained`` is
     pinned to ``hub_cache_dir()`` and cannot see it, and the failure that earned the escape also
-    empties the size estimate. None otherwise."""
+    empties the size estimate. None otherwise.
+
+    Under ``local_files_only`` the Hub half stands down and only the cache probe runs. This whole
+    function exists to name the repo whose BYTES a download is about to fail on; a load that is
+    forbidden to download has no such fetch to pre-empt, so the verdict it would compute is about a
+    request that will never be made. The one thing worth keeping is the other-root escape, which is
+    a pure cache read, and it is exactly what lets a base staged under huggingface_hub's
+    import-time root still load off disk."""
     repo = (base_repo or "").strip()
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
@@ -646,6 +693,15 @@ def _assert_base_repo_accessible(
         except Exception:  # noqa: BLE001 — a cache we cannot read is not an access verdict
             pass
         return False
+
+    if local_files_only:
+        # Cache read only: no model_info, no metadata HEAD. ``_already_downloaded`` is called for
+        # its side effect (it sets ``other_root_snapshot``), and its bool is deliberately dropped
+        # -- a miss here is not a refusal. The loader is the one that raises for a file that is not
+        # on disk, with the file's own name in it, which is a better answer than this probe's
+        # "add a token" text for a load that was never going to fetch anything.
+        _already_downloaded()
+        return other_root_snapshot
 
     def _is_auth_error(exc: Any) -> bool:
         """A 401/403 that hf_raise_for_status did not classify: an expired token 401s "Invalid
@@ -745,6 +801,14 @@ class _LoadState:
     resolved: Optional[dict] = None
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
+    # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
+    # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
+    gpu_ordinal: Optional[int] = None
+    # The card the weights are ACTUALLY on, including the automatic case, where it is whichever
+    # device the load thread was pointing at. Only for re-pinning a pooled generate worker that a
+    # previous pinned load left on another card; the target and the reported build read
+    # gpu_ordinal, so the automatic path still resolves a bare device.
+    placed_ordinal: Optional[int] = None
     # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids).
     # Stored rather than rebuilt so generate()'s activation re-check budgets with the SAME
     # distilled / edit multipliers the load did, and the two can never drift apart.
@@ -1066,11 +1130,15 @@ class DiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
-    def _pick_device_and_dtype(self) -> tuple[str, Any]:
+    def _pick_device_and_dtype(self, ordinal: Optional[int] = None) -> tuple[str, Any]:
         """(device, dtype) for the current host. Thin wrapper over the device
         policy module, kept as a method so tests can still monkeypatch it."""
-        target = resolve_diffusion_device_target()
-        return target.device, target.dtype
+        if ordinal is None:
+            target = resolve_diffusion_device_target()
+            return target.device, target.dtype
+        target = resolve_diffusion_device_target(ordinal = ordinal)
+        # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
+        return target.torch_device, target.dtype
 
     # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
     # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
@@ -1083,6 +1151,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         memory_mode: Optional[str] = None,
         cpu_offload: bool = False,
+        gpu_ordinal: Optional[int] = None,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -1101,8 +1170,34 @@ class DiffusionBackend:
         te_mode = normalize_te_quant(text_encoder_quant)
         if pinned is None and te_mode is None:
             return
-        # One probe for both checks (it reads the live device).
-        target = self._resolve_device_target(fam)
+        # One probe for both checks, asked of the card THIS load will use: on a mixed box the
+        # default device can be a different generation, which would refuse a scheme the selected
+        # card supports, or pass one it does not and fail only after eviction. Scoped, because the
+        # route calls this on a pooled thread and the probes below use argument-less CUDA calls.
+        with diffusion_device_scope(gpu_ordinal):
+            target = self._target_for_ordinal(fam, gpu_ordinal)
+            return self._assert_precision_for_target(
+                fam,
+                target,
+                model_kind = model_kind,
+                pinned = pinned,
+                te_mode = te_mode,
+                memory_mode = memory_mode,
+                cpu_offload = cpu_offload,
+            )
+
+    def _assert_precision_for_target(
+        self,
+        fam: Optional[DiffusionFamily],
+        target: DiffusionDeviceTarget,
+        *,
+        model_kind: str,
+        pinned: Optional[str],
+        te_mode: Optional[str],
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+    ) -> None:
+        """The body of ``assert_precision_available``, run with the selected card current."""
         if pinned is not None and pinned != TQ_AUTO:
             reason = None
             if model_kind != "gguf":
@@ -1194,7 +1289,12 @@ class DiffusionBackend:
                 )
             )
 
-    def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
+    def _resolve_device_target(
+        self,
+        fam: Optional[DiffusionFamily],
+        *,
+        ordinal: Optional[int] = None,
+    ) -> DiffusionDeviceTarget:
         """The device target with the family fp16 guard applied.
 
         Routes through _pick_device_and_dtype() (so a monkeypatched override still
@@ -1202,16 +1302,63 @@ class DiffusionBackend:
         families (Z-Image), rebuilding the target so dtype + capability flags stay
         consistent with the effective dtype.
         """
-        device, dtype = self._pick_device_and_dtype()
+        # Called with no argument on the automatic path so a monkeypatched seam keeps working.
+        device, dtype = (
+            self._pick_device_and_dtype()
+            if ordinal is None
+            else self._pick_device_and_dtype(ordinal)
+        )
         effective = _resolve_diffusion_compute_dtype(fam, dtype)
         if effective is not dtype:
             logger.warning(
                 "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
                 getattr(fam, "name", None),
             )
+        # Builds only. Pinning is the CALLER's decision: a worker thread is dedicated and takes
+        # the permanent pin, while a route preflight runs on a pooled executor thread where an
+        # unrestored set_device would leak this request's card into the next one.
         return diffusion_device_target_from_torch_device(device, effective)
 
-    def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
+    def _target_for_ordinal(
+        self, fam: Optional[DiffusionFamily], ordinal: Optional[int]
+    ) -> DiffusionDeviceTarget:
+        """``_resolve_device_target`` with the ordinal only when there is one, so a monkeypatched
+        seam taking just ``fam`` keeps working on the automatic path."""
+        if ordinal is None:
+            return self._resolve_device_target(fam)
+        return self._resolve_device_target(fam, ordinal = ordinal)
+
+    def _state_device_target(self, state: _LoadState) -> DiffusionDeviceTarget:
+        """The resident pipeline's target, pinned onto the calling thread.
+
+        Every worker touching the loaded pipeline goes through this rather than resolving bare:
+        the weights are on ``state.gpu_ordinal`` while ``state.device`` is un-indexed, so an
+        unpinned thread would resolve to its own default card.
+        """
+        target = self._target_for_ordinal(state.family, state.gpu_ordinal)
+        apply_diffusion_device_ordinal(target)
+        # And put an AUTOMATIC load back on its own card. generate() runs on a pooled
+        # asyncio.to_thread worker, so a previous pinned model leaves that thread set to its GPU
+        # for good; with no ordinal to pin, the bare "cuda" Generators below would then target that
+        # card while these weights sit on the default one.
+        pin_cuda_ordinal(state.placed_ordinal)
+        return target
+
+    def _resolve_gguf_path(
+        self,
+        repo_id: str,
+        gguf_filename: str,
+        hf_token: Optional[str],
+        local_files_only: bool = False,
+    ) -> str:
+        """The local path of this pick's checkpoint, downloading it when it is not on disk.
+
+        ``local_files_only`` makes both resolutions below cache lookups. The prefetch already
+        staged this file under the same flag, so the promise looks kept -- but this call re-resolves
+        the revision against the Hub, and a checkpoint republished upstream since the cache was
+        filled (or removed between the staging and here) is a multi-GB pull taken under the
+        generation lock, after the resident pipeline was evicted, where unload cannot preempt it and
+        progress already reads 100%. It is the last unrestricted byte-mover on the image path."""
         local_root = Path(repo_id).expanduser()
         if local_root.exists():
             return str(resolve_local_gguf_child(local_root, gguf_filename))
@@ -1234,13 +1381,23 @@ class DiffusionBackend:
                 if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                     try:
                         return hf_hub_download(
-                            repo_id, gguf_filename, token = hf_token, cache_dir = None
+                            repo_id,
+                            gguf_filename,
+                            token = hf_token,
+                            cache_dir = None,
+                            local_files_only = local_files_only,
                         )
                     except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
                         return elsewhere
         except Exception:  # noqa: BLE001 — an unreadable cache is not a verdict, just download
             pass
-        return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir)
+        return hf_hub_download(
+            repo_id,
+            gguf_filename,
+            token = hf_token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
 
     def _dense_quant_prefetch_needed(
         self,
@@ -1281,74 +1438,98 @@ class DiffusionBackend:
                 return False
             if mm is None and kwargs.get("cpu_offload"):
                 return False
-            target = self._resolve_device_target(fam)
-            # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
-            # plan must not stage the base transformer/ shards either.
-            if (
-                auto
-                # Active weights only: disagreeing with the load stages shards it never reads.
-                and not _has_active_lora(kwargs.get("loras"))
-                and _uncached_prequant_repo(
+            # The card this load will land on, and SCOPED: the selectors below use argument-less
+            # capability, smoke and memory probes, so building an indexed target is not enough to
+            # move them off the default card.
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                return self._dense_quant_prefetch_decision(
                     fam,
-                    target,
-                    mode,
-                    base_repo = kwargs.get("base_repo"),
-                    prequant_path = kwargs.get("transformer_prequant_path"),
-                )
-                is not None
-            ):
-                return False
-            # The same rule, applied to the base repo's own dense shards. The fast path loads
-            # transformer/ INSTEAD of the GGUF, so on a pick the user made BY QUANT an uncached
-            # base means fetching a second, much larger denoiser and never opening the first:
-            # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
-            # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
-            # path, and an EXPLICIT transformer_quant still opts in as before.
-            #
-            # This returns the same False a PREQUANT candidate returns below, so a cached
-            # pre-quant reaches the load with no transformer/ staged and NOT because a download
-            # was refused. That is why the load side re-asks the resolver rather than reading an
-            # empty stage as a decline: same verdict here, two different reasons there.
-            if (
-                auto
-                and not _has_active_lora(kwargs.get("loras"))
-                and not _dense_transformer_cached(
-                    kwargs.get("base_repo"),
+                    kwargs,
+                    auto = auto,
+                    mode = mode,
                     companion_files = companion_files,
                     transformer_files = transformer_files,
                 )
-            ):
-                return False
-            # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
-            candidate = resolve_dense_quant_candidate(
-                fam = fam,
-                target = target,
-                requested = mode,
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the GGUF
+            return False
+
+    def _dense_quant_prefetch_decision(
+        self,
+        fam: DiffusionFamily,
+        kwargs: dict,
+        *,
+        auto: bool,
+        mode: str,
+        companion_files: Optional[Sequence[str]] = None,
+        transformer_files: Optional[Sequence[str]] = None,
+    ) -> bool:
+        """``_dense_quant_prefetch_needed``'s body, run with the selected card current."""
+        target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+        # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
+        # plan must not stage the base transformer/ shards either.
+        if (
+            auto
+            # Active weights only: disagreeing with the load stages shards it never reads.
+            and not _has_active_lora(kwargs.get("loras"))
+            and _uncached_prequant_repo(
+                fam,
+                target,
+                mode,
                 base_repo = kwargs.get("base_repo"),
                 prequant_path = kwargs.get("transformer_prequant_path"),
-                # An all-zero list bakes nothing; sizing it dense stages shards the load never reads.
-                force_dense = _has_active_lora(kwargs.get("loras")),
-                logger = None,
             )
-            # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
-            if candidate is None or candidate.prequant:
-                return False
-            # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense path anyway.
-            from .diffusion_memory import (
-                _reserve_mib,
-                snapshot_device_memory,
-            )
-
-            memory = snapshot_device_memory(target)
-            total = memory.total_mib
-            steady = getattr(candidate, "steady_total_mib", None)
-            if total is not None and steady is not None:
-                budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
-                if int(steady) > budget:
-                    return False
-            return True
-        except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
+            is not None
+        ):
             return False
+        # The same rule, applied to the base repo's own dense shards. The fast path loads
+        # transformer/ INSTEAD of the GGUF, so on a pick the user made BY QUANT an uncached
+        # base means fetching a second, much larger denoiser and never opening the first:
+        # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
+        # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
+        # path, and an EXPLICIT transformer_quant still opts in as before.
+        #
+        # This returns the same False a PREQUANT candidate returns below, so a cached
+        # pre-quant reaches the load with no transformer/ staged and NOT because a download
+        # was refused. That is why the load side re-asks the resolver rather than reading an
+        # empty stage as a decline: same verdict here, two different reasons there.
+        if (
+            auto
+            and not _has_active_lora(kwargs.get("loras"))
+            and not _dense_transformer_cached(
+                kwargs.get("base_repo"),
+                companion_files = companion_files,
+                transformer_files = transformer_files,
+            )
+        ):
+            return False
+        # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
+        candidate = resolve_dense_quant_candidate(
+            fam = fam,
+            target = target,
+            requested = mode,
+            base_repo = kwargs.get("base_repo"),
+            prequant_path = kwargs.get("transformer_prequant_path"),
+            # An all-zero list bakes nothing; sizing it dense stages shards the load never reads.
+            force_dense = _has_active_lora(kwargs.get("loras")),
+            logger = None,
+        )
+        # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
+        if candidate is None or candidate.prequant:
+            return False
+        # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense path anyway.
+        from .diffusion_memory import (
+            _reserve_mib,
+            snapshot_device_memory,
+        )
+
+        memory = snapshot_device_memory(target)
+        total = memory.total_mib
+        steady = getattr(candidate, "steady_total_mib", None)
+        if total is not None and steady is not None:
+            budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
+            if int(steady) > budget:
+                return False
+        return True
 
     @staticmethod
     def _auto_prequant_retry_scheme(
@@ -1406,6 +1587,7 @@ class DiffusionBackend:
         hf_token: Optional[str],
         cancel_event: Optional[threading.Event] = None,
         fetch_base: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Optional[str]:
         """Pre-download the GGUF + the given ``base_files`` into the HF cache,
         WITHOUT the lock and honoring ``cancel_event`` (this load's own event, so a
@@ -1417,7 +1599,14 @@ class DiffusionBackend:
         the pipeline manifest, so from_pretrained can load from disk instead of
         re-sweeping the hub (its own sweep also pulls files the scoped list skips,
         e.g. the 24 GB packaged root singles in each FLUX.1 repo); None otherwise
-        (estimate failure, config-only base, local repo) -> hub id as before."""
+        (estimate failure, config-only base, local repo) -> hub id as before.
+
+        ``local_files_only`` makes every resolution below a CACHE LOOKUP: the file is returned when
+        it is on disk and ``LocalEntryNotFoundError`` is raised when it is not. This is the one call
+        in the staging phase that moves multi-GB bytes, so a dropped flag here is the whole
+        no-download promise -- a checkpoint that vanished after the switch's locality check, or a
+        check that read the cache as more complete than it is, becomes a pull on the user's
+        connection that nobody asked for."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         # Only the BYTES move; the caller keeps the upstream id. ``fetch_base`` is the load-wide
@@ -1437,6 +1626,7 @@ class DiffusionBackend:
                 hf_token,
                 cancel_event = cancel,
                 reuse_other_cache_root = True,
+                local_files_only = local_files_only,
             )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
@@ -1448,7 +1638,12 @@ class DiffusionBackend:
             if cancel.is_set():
                 raise RuntimeError("Cancelled")
             local = hf_hub_download_with_xet_fallback(
-                base, rfilename, hf_token, cancel_event = cancel, reuse_other_cache_root = True
+                base,
+                rfilename,
+                hf_token,
+                cancel_event = cancel,
+                reuse_other_cache_root = True,
+                local_files_only = local_files_only,
             )
             # The resolved path minus the file's own relative path, so a subfolder entry yields the
             # same root as a top-level one. Not resolve()d: that follows the symlink into blobs/.
@@ -1522,8 +1717,7 @@ class DiffusionBackend:
         # The companion base repo also loads via from_pretrained, so it must clear the same trust bar.
         if base_repo and base_repo.strip() and not _is_trusted_diffusion_repo(base_repo):
             raise ValueError(
-                f"base_repo is restricted to unsloth/* repos (or a local path); got "
-                f"'{base_repo}'."
+                f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction.
         _assert_local_base_is_pipeline(base_repo)
@@ -1614,6 +1808,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -1630,10 +1825,26 @@ class DiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
         loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's
+        # 400 rather than a load that dies mid-download, and only once so free VRAM cannot re-rank
+        # the choice after the weights land. Gated on the resolved backend, since XPU / MPS / CPU
+        # ignore physical ids and would otherwise 400 a selection the contract says to drop.
+        # Re-ranked only when the caller did not already do it: free VRAM moves between the
+        # route's preflight and here (network preflight, engine activation, arbiter eviction), so
+        # resolving twice can approve a scheme against one card and place the weights on another.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         # base_repo is gated at the route pre-eviction; this only cheap-fails the resolved repo/family.
         fam = self.validate_load_request(
             repo_id,
@@ -1650,6 +1861,7 @@ class DiffusionBackend:
             model_kind = resolve_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            gpu_ordinal = gpu_ordinal,
         )
 
         with self._lock:
@@ -1670,6 +1882,7 @@ class DiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
                 family_override = family_override,
@@ -1686,6 +1899,7 @@ class DiffusionBackend:
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
                 loras = loras,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1697,6 +1911,13 @@ class DiffusionBackend:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
+        # An API-initiated load promises to download NOTHING: it may only open what is already
+        # cached. Read once here and threaded into the staging phase below, the same way the video
+        # path does it -- the flag reached load_pipeline and nothing before it, so the prefetch that
+        # actually moves the bytes ran unrestricted and the promise was carried only by the locality
+        # check the flag exists to stop relying on.
+        # READ, not popped: load_pipeline takes it too (it is in this thread's kwargs by contract).
+        local_files_only = bool(kwargs.get("local_files_only"))
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
             fam = detect_family_for_pick(
@@ -1713,7 +1934,11 @@ class DiffusionBackend:
             kwargs["base_repo"] = base
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
             te_prequant_files = self._te_prequant_plan_files(
-                fam, kwargs.get("text_encoder_quant"), kwargs.get("hf_token")
+                fam,
+                kwargs.get("text_encoder_quant"),
+                kwargs.get("hf_token"),
+                kwargs.get("gpu_ordinal"),
+                local_files_only = local_files_only,
             )
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
@@ -1739,6 +1964,7 @@ class DiffusionBackend:
                     else False
                 ),
                 skip_te_components = tuple(te_prequant_files),
+                local_files_only = local_files_only,
             )
             # Only shards this prefetch staged may be materialised by the dense fallback, so read it
             # off the staged list: a failed size estimate drops every base file too. A LOCAL base
@@ -1756,7 +1982,9 @@ class DiffusionBackend:
             # refusing the upstream id would reject the gated picks the ungated mirror rescues.
             # Everything above is metadata, so no byte has moved yet. Returns a snapshot dir when it
             # excused the base off a copy only the import-time root holds.
-            base_snapshot = _assert_base_repo_accessible(fetch_base, kwargs.get("hf_token"))
+            base_snapshot = _assert_base_repo_accessible(
+                fetch_base, kwargs.get("hf_token"), local_files_only = local_files_only
+            )
             # And the same size-pairing preflight the plan and the route run, here because a direct
             # begin_load (a saved config, the deploy path) reaches neither. Still metadata only, so
             # it lands before _prefetch_files stages the base and before load_pipeline unloads the
@@ -1783,6 +2011,7 @@ class DiffusionBackend:
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     fetch_base = fetch_base,
+                    local_files_only = local_files_only,
                 )
                 or base_snapshot
             )
@@ -1862,13 +2091,24 @@ class DiffusionBackend:
 
     @staticmethod
     def _te_prequant_plan_files(
-        fam: Any, text_encoder_quant: Optional[str], hf_token: Optional[str]
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        hf_token: Optional[str],
+        gpu_ordinal: Optional[int] = None,
+        local_files_only: bool = False,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
         """``{component: (repo_id, [(rfilename, size)])}`` for the text encoders this pick will
         take PRE-CAST from a hosted checkpoint instead of the base repo's dense weights.
 
         Empty unless the request asked for a scheme with a hosted artifact AND that artifact
-        really resolves, so a plan can never drop a dense encoder the load still wants."""
+        really resolves, so a plan can never drop a dense encoder the load still wants.
+
+        Empty under ``local_files_only``: ``te_prequant_hub_files`` is a ``model_info`` per source,
+        and the only consumer is the size estimate, which has already stood down. Empty is the
+        answer an unresolvable pre-cast gives today, and it is the safe one -- it keeps the dense
+        shards in the list rather than dropping weights the load may still open."""
+        if local_files_only:
+            return {}
         try:
             from huggingface_hub import HfApi
 
@@ -1877,7 +2117,12 @@ class DiffusionBackend:
             sources = te_prequant_sources(
                 fam,
                 te_quant_mode = text_encoder_quant,
-                target = resolve_diffusion_device_target(),
+                # The selected card, for the same reason the dense-quant probe uses it.
+                target = (
+                    resolve_diffusion_device_target()
+                    if gpu_ordinal is None
+                    else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+                ),
             )
             if not sources:
                 return {}
@@ -1886,6 +2131,112 @@ class DiffusionBackend:
         except Exception as exc:  # noqa: BLE001 -- an unresolvable pre-cast keeps the dense encoder
             logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
             return {}
+
+    def _dit_prequant_plan_source(
+        self, fam: Any, kind: str, hf_token: Optional[str], kwargs: dict[str, Any]
+    ) -> Optional[tuple[str, str, int]]:
+        """The hosted PRE-QUANTIZED transformer this pick loads INSTEAD of the base repo's dense
+        shards, as ``(repo, filename, declared_size)``, or None when no such artifact is used.
+
+        Those shards are already excluded for a GGUF pick, so without this the plan neither counts
+        nor stages the multi-GB denoiser the load really keeps on disk: the footprint reads short
+        and the file is pulled INLINE during the load, outside the manager's progress, cancel and
+        disk preflight. Mirrors the prequant gates in ``_load_dense_quant_pipeline`` so the plan
+        and the load agree."""
+        if kind != "gguf" or fam is None:
+            return None
+        try:
+            raw = kwargs.get("transformer_quant")
+            # Same tri-state as load_pipeline: unset or "auto" means the hardware ladder decides.
+            auto = raw is None or str(raw).strip().lower() in ("", "auto")
+            # An AUTO quant under an explicit Speed="off" is forced to "off" by load_pipeline, which
+            # normalizes to None and skips the fast path entirely, so no prequant is ever fetched.
+            # An EXPLICIT quant still takes it: that force applies only to the auto tri-state.
+            speed = kwargs.get("speed_mode")
+            if auto and speed is not None and str(speed).strip().lower() == SPEED_OFF:
+                return None
+            mode = TQ_AUTO if auto else normalize_transformer_quant(raw)
+            if mode is None:
+                return None
+            # A LoRA bake forces the DENSE path, so no prequant is fetched.
+            if _has_active_lora(kwargs.get("loras")):
+                return None
+            # A definite-offload policy keeps the GGUF: the fast path needs either a plan with no
+            # offload or a quant-sized replan that came back with none, and balanced/low_vram
+            # offload BY MODE, so no replan can clear it. Same gate _dense_quant_prefetch_needed
+            # applies, for the same reason.
+            mm = normalize_memory_mode(kwargs.get("memory_mode"))
+            if mm in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM):
+                return None
+            if mm is None and kwargs.get("cpu_offload"):
+                return None
+            # The card this load will land on, and SCOPED for the same reason as the dense-quant
+            # probe: the selectors below read the current device, so an indexed target alone
+            # leaves them on the default card.
+            with diffusion_device_scope(kwargs.get("gpu_ordinal")):
+                target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
+                # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
+                # those bytes never land. Only a cached one, or an explicit request, counts.
+                if (
+                    auto
+                    and _uncached_prequant_repo(
+                        fam,
+                        target,
+                        mode,
+                        base_repo = kwargs.get("base_repo"),
+                        prequant_path = kwargs.get("transformer_prequant_path"),
+                    )
+                    is not None
+                ):
+                    return None
+                scheme = select_transformer_quant_scheme(
+                    target, mode, family = getattr(fam, "name", None)
+                )
+                if scheme is None:
+                    return None
+                source = usable_prequant_source(
+                    fam,
+                    scheme,
+                    path_override = kwargs.get("transformer_prequant_path"),
+                    base_repo = kwargs.get("base_repo"),
+                )
+
+                if source is None and auto:
+                    retry = self._auto_prequant_retry_scheme(
+                        target,
+                        fam,
+                        mode,
+                        scheme,
+                        base_repo = kwargs.get("base_repo"),
+                        path_override = kwargs.get("transformer_prequant_path"),
+                        loras = kwargs.get("loras"),
+                    )
+                    if retry is not None:
+                        source = usable_prequant_source(
+                            fam,
+                            retry,
+                            path_override = kwargs.get("transformer_prequant_path"),
+                            base_repo = kwargs.get("base_repo"),
+                        )
+                # A local override is the operator's own file: already on disk, never downloaded.
+                if source is None or source.kind != "repo":
+                    return None
+                from huggingface_hub import HfApi
+
+                info = HfApi(token = hf_token or None).model_info(
+                    source.location, files_metadata = True
+                )
+                sizes = {
+                    s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])
+                }
+                # Primary name first, then the legacy one, in the order the loader tries them.
+                for name in (source.filename, source.fallback_filename):
+                    if name and name in sizes:
+                        return (source.location, name, int(sizes[name]))
+                return None
+        except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
+            logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
+            return None
 
     @staticmethod
     def _estimate_download_bytes(
@@ -1898,18 +2249,19 @@ class DiffusionBackend:
         single_file_is_pipeline: bool = False,
         include_transformer: "bool | Callable[[Sequence[str], Sequence[str]], bool]" = False,
         sizes_out: Optional[dict[str, int]] = None,
-        file_sizes_out: Optional[dict[tuple[str, str], int]] = None,
-        shas_out: Optional[dict[str, str]] = None,
+        file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
+        revisions_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
+        failures_out: Optional[list] = None,
+        local_files_only: bool = False,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
 
         ``sizes_out``, when given, is filled with per-repo byte totals so the download
         plan can size one job per repo off this same single pair of Hub lookups.
-        ``file_sizes_out`` is the per (repo, filename) breakdown, so the plan can drop cached
-        files and size the rest. ``shas_out`` is each repo's CURRENT commit, so a cache hit
-        counts only in that revision.
+        ``revisions_out`` records the commit each lookup described, so a cache probe can ask
+        about the SAME revision the sizes came from instead of whatever ``main`` is locally.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1929,7 +2281,15 @@ class DiffusionBackend:
         encoder for a pre-cast load wastes tens of GB (FLUX.2-dev's Mistral-24B is ~48 GB,
         Qwen-Image's Qwen2.5-VL ~16.6 GB) and nothing ever opens them. Everything else in the
         component folder (config, shard index, tokenizer) is kept -- the pre-cast loader
-        meta-inits the encoder from the base repo's config."""
+        meta-inits the encoder from the base repo's config.
+
+        ``local_files_only`` returns the "metadata unavailable" answer -- ``(0, [])`` -- instead of
+        asking. Every byte this counts belongs to a download that is not permitted, and the empty
+        file list is what makes the prefetch below stage nothing: ``from_pretrained`` resolves the
+        cached snapshot itself. Callers already handle it, because it is the same pair a failed
+        lookup produces."""
+        if local_files_only:
+            return 0, []
         from huggingface_hub import HfApi
 
         # No swap on purpose: the Hub gates only the BYTE endpoint, so model_info answers
@@ -1948,7 +2308,6 @@ class DiffusionBackend:
         try:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
-                _record_sha(shas_out, repo_id, info)
                 picked = [
                     s
                     for s in info.siblings
@@ -1965,21 +2324,33 @@ class DiffusionBackend:
                         continue
                     base_files.append(s.rfilename)
                     total += s.size or 0
-                    if file_sizes_out is not None:
-                        file_sizes_out[(repo_id, s.rfilename)] = s.size or 0
                 if sizes_out is not None:
                     sizes_out[repo_id] = total
+                if file_sizes_out is not None:
+                    file_sizes_out[repo_id] = {
+                        s.rfilename: int(s.size or 0)
+                        for s in picked
+                        if not (
+                            s.rfilename.endswith(".bin")
+                            and s.rfilename.rsplit("/", 1)[0] in st_dirs
+                        )
+                    }
+                _record_revision(revisions_out, repo_id, info)
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
-                _record_sha(shas_out, repo_id, info)
                 gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
                 total += gguf_bytes
                 if sizes_out is not None:
                     sizes_out[repo_id] = gguf_bytes
                 if file_sizes_out is not None:
-                    file_sizes_out[(repo_id, gguf_filename)] = gguf_bytes
+                    file_sizes_out[repo_id] = {
+                        s.rfilename: int(s.size or 0)
+                        for s in info.siblings
+                        if s.rfilename == gguf_filename
+                    }
+                _record_revision(revisions_out, repo_id, info)
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1989,7 +2360,7 @@ class DiffusionBackend:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
-            _record_sha(shas_out, base_repo, base_info)
+            _record_revision(revisions_out, base_repo, base_info)
             if callable(include_transformer):
                 kept = [s.rfilename for s in base_info.siblings if not _dense_te_shard(s.rfilename)]
                 companions = tuple(
@@ -2003,85 +2374,34 @@ class DiffusionBackend:
                 )
                 # Rebinding before base_filter is ever CALLED, so the loop below reads the answer.
                 include_transformer = bool(include_transformer(companions, transformer_files))
+            # Do not stage a combined repo's checkpoint again as a companion.
+            counted = {gguf_filename} if base_repo == repo_id and gguf_filename else set()
             base_bytes = 0
+            base_sizes: dict[str, int] = {}
             for s in base_info.siblings:
-                if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename):
-                    base_files.append(s.rfilename)
-                    base_bytes += s.size or 0
-                    if file_sizes_out is not None:
-                        file_sizes_out[(base_repo, s.rfilename)] = s.size or 0
+                if not base_filter(s.rfilename) or _dense_te_shard(s.rfilename):
+                    continue
+                if s.rfilename in counted:
+                    continue
+                base_files.append(s.rfilename)
+                base_bytes += s.size or 0
+                base_sizes[s.rfilename] = int(s.size or 0)
             total += base_bytes
+            # ACCUMULATE, never assign: on a combined repo both branches key the same repo id, and
+            # a plain assignment drops the checkpoint's size and file map.
             if sizes_out is not None:
-                sizes_out[base_repo] = base_bytes
+                sizes_out[base_repo] = sizes_out.get(base_repo, 0) + base_bytes
+            if file_sizes_out is not None:
+                file_sizes_out.setdefault(base_repo, {}).update(base_sizes)
+            _record_revision(revisions_out, base_repo, base_info)
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
+            # Recorded so a caller that must not guess (media auto-switch refuses rather than
+            # download) can tell a partial file list from a complete one; the estimate itself
+            # stays best-effort for the UI, whose fallback is the inline pull.
+            if failures_out is not None:
+                failures_out.append(exc)
         return total, base_files
-
-    @staticmethod
-    def _files_already_cached(
-        repo_id: str,
-        files: list[str],
-        revision: Optional[str] = None,
-    ) -> set[str]:
-        """Of ``files``, the names ONE root serves whole at ``revision``: all of them, or none.
-
-        Both roots are searched -- Studio's live setting, and ``cache_dir = None`` for
-        huggingface_hub's constant -- but hits are never UNIONED. A set split between the roots is
-        complete in neither: ``_prefetch_files`` hands back a snapshot only when every file came
-        from the SAME root, else None, and ``from_pretrained`` is then pinned to ``hub_cache_dir()``
-        and cannot see the other root, so dropping the repo moves its refetch inline, outside the
-        panel's progress and disk preflight. One root holding all of it still drops.
-
-        ``revision`` is REQUIRED to drop anything: defaulted, ``try_to_load_from_cache`` reads the
-        cache's OWN ``refs/main``, which a republished repo leaves on the superseded commit, so the
-        stale blob would leave the plan and the loader would pull the new one inline.
-
-        Only a str is a cached path. Never raises: an unreadable cache means "stage it"."""
-        if not revision or not files:
-            return set()
-        try:
-            from huggingface_hub import try_to_load_from_cache
-
-            # Once, inside the try: hub_cache_dir is a SQLite read plus Path.home(), which raises
-            # with no home -- per file and outside, it was the one way this could 500.
-            roots = (hub_cache_dir(), None)
-        except Exception:  # noqa: BLE001 — no hub package / unreadable settings: stage everything
-            return set()
-        wanted = set(files)
-        live_root, fallback_root = roots
-
-        def _hits(root: Optional[str]) -> set[str]:
-            found: set[str] = set()
-            for name in wanted:
-                try:
-                    hit = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
-                except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
-                    continue
-                # is_file() is belt and braces: hub already ends on os.path.isfile today.
-                if isinstance(hit, str) and Path(hit).is_file():
-                    found.add(name)
-            return found
-
-        live = _hits(live_root)
-        if live == wanted:
-            return wanted
-        # A partial live hit IS the split: no single-root snapshot, so the pinned load refetches
-        # the fallback's share.
-        if live:
-            return set()
-        return wanted if _hits(fallback_root) == wanted else set()
-
-    @staticmethod
-    def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
-        """``repo_id``'s current commit, or None when the Hub does not say.
-
-        Only for the MIRROR: it is a separate repo with its own history, so the vendor sha
-        ``_estimate_download_bytes`` recorded would never hit."""
-        try:
-            from huggingface_hub import HfApi
-            return getattr(HfApi().model_info(repo_id, token = hf_token), "sha", None) or None
-        except Exception:  # noqa: BLE001 — no sha means no skip, never a failed plan
-            return None
 
     def download_plan(
         self,
@@ -2112,6 +2432,12 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
             base = repo_id  # the full pipeline IS the repo
+        elif fam is None and not (base_repo or "").strip():
+            # An unrecognised GGUF (a neutral repo whose id and filename match no family) has no
+            # companion set to resolve, and the family fallback would raise. The pick still loads:
+            # an empty plan just means nothing to pre-stage. The picker asks for a plan on EVERY
+            # hub pick, so raising here would 500 the route rather than plan no work.
+            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         # Reported, not raised. The images page falls back to /images/load on ANY plan failure, so
@@ -2120,12 +2446,14 @@ class DiffusionBackend:
         # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
         incompatible = flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
-        te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
+        te_files = self._te_prequant_plan_files(
+            fam, text_encoder_quant, hf_token, load_kwargs.get("gpu_ordinal")
+        )
         sizes: dict[str, int] = {}
-        file_sizes: dict[tuple[str, str], int] = {}
-        shas: dict[str, str] = {}
-        # Total discarded: it counts every file the pick needs, not what is left to fetch.
-        _estimate_total, base_files = self._estimate_download_bytes(
+        file_sizes: dict[str, dict[str, int]] = {}
+        revisions: dict[str, str] = {}
+        plan_failures: list = []
+        required_total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
             base,
@@ -2151,8 +2479,9 @@ class DiffusionBackend:
             ),
             sizes_out = sizes,
             file_sizes_out = file_sizes,
-            shas_out = shas,
+            revisions_out = revisions,
             skip_te_components = tuple(te_files),
+            failures_out = plan_failures,
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
         # answers model_info anonymously, so the plan would otherwise be confident and the 401 land
@@ -2161,75 +2490,335 @@ class DiffusionBackend:
         fetch_base = prefer_ungated_mirror(base, hf_token, files = base_files)
         _assert_base_repo_accessible(fetch_base, hf_token)
         entries: list[dict[str, Any]] = []
+        checkpoint_bytes = 0
+        if gguf_filename:
+            checkpoint_bytes = int(
+                file_sizes.get(repo_id, {}).get(gguf_filename, sizes.get(repo_id, 0))
+            )
+        required_total += sum(int(size) for files in te_files.values() for _name, size in files[1])
+        # The dense transformer/ shards are excluded for a GGUF pick, so a hosted prequant that
+        # replaces them is real footprint the plan would otherwise never report. Sized against the
+        # RESOLVED base, as the load passes it: a variant base picks its own prequant repo.
+        dit_prequant = self._dit_prequant_plan_source(
+            fam, kind, hf_token, {**load_kwargs, "base_repo": base}
+        )
+        if dit_prequant is not None:
+            required_total += dit_prequant[2]
 
-        def _stage(
+        scoped_files: dict[str, list[str]] = {}
+        scoped_gguf: dict[str, Optional[str]] = {}
+        missing_checkpoints: set[str] = set()
+
+        def add_missing_entry(
             repo: str,
             files: list[str],
-            sized: dict[str, int],
-            gguf: Optional[str],
-            revision: Optional[str] = None,
+            declared_sizes: dict[str, int],
+            *,
+            gguf: Optional[str] = None,
+            checkpoint: bool = False,
         ) -> None:
-            """Queue the files the cache is missing at ``revision``.
+            """Add only files the loader cannot already resolve from either cache root.
 
-            Entries are what the Downloads panel lists, so an all-cached pick yields none rather
-            than reading as a re-download of a model the user already has. No revision drops
-            nothing, so an unpinnable repo stages in full as it always did.
+            The picker knows whether its checkpoint is cached, but not whether companion repos
+            are. Keeping this decision in the plan makes a cached GGUF + missing text encoder one
+            explicit dependency download, and prevents a cached GGUF from being staged again.
 
-            All or nothing per repo, never a subset: every diffusion entry for a repo rides the one
-            "@diffusion" scope slot, and download_registry refuses a claim whose scoped_files differ
-            from the live job's, so a shrinking list would 409 a second pick sharing this base where
-            it used to adopt the running job. Staging a cached file costs nothing anyway, since
-            hf_hub_download returns the pointer without a transfer.
+            The probe asks about the revision this plan's sizes came from, so a companion that
+            republished a file is a MISS here rather than a silent inline fetch during the load.
+            One entry per repo: same-repo groups share a scope variant, so a second job for the
+            same repo would fight the first over progress, manifest and cancellation.
 
-            "Cached" is per ROOT, never a union across the two; see ``_files_already_cached``."""
-            cached = self._files_already_cached(repo, files, revision)
-            if files and cached.issuperset(files):
+            ``checkpoint`` marks the entry that holds the SELECTED model, so the panel can label
+            it without re-deriving the answer from the repo id: only this planner knows a gated
+            base was swapped for an ungated mirror, which leaves the entry's repo id different
+            from the id the caller picked.
+            """
+
+            scope = scoped_files.setdefault(repo, [])
+            scope.extend(name for name in files if name not in scope)
+            scoped_gguf[repo] = scoped_gguf.get(repo) or gguf
+            revision = revisions.get(repo)
+            live = hub_cache_dir()
+
+            # Preserve main's stable-scope invariant: a running @diffusion job is adopted only
+            # when a second claim names the same complete file set. This strict, pinned fast path
+            # drops a repo only when one cache root already serves the whole snapshot. The
+            # per-file probes below remain necessary for size-corroborated unrelated commits and
+            # for accurate remaining-byte accounting.
+            if self._files_already_cached(repo, files, revision, declared_sizes).issuperset(files):
+                for entry in entries:
+                    if entry["repo_id"] == repo:
+                        entry["files"].extend(name for name in scope if name not in entry["files"])
+                        entry["gguf_filename"] = scoped_gguf[repo]
+                        break
+                return
+
+            def _where(name: str) -> Optional[str]:
+                size = declared_sizes.get(name)
+                if self._hub_file_is_cached(repo, name, revision, size, roots = (live,)):
+                    return "live"
+                if not self._hub_file_is_cached(repo, name, revision, size, roots = (None,)):
+                    return None
+                # The other root holds a good copy, but reuse_other_cache_root only switches roots
+                # when the live lookup finds NOTHING. A stale live copy (right name, wrong bytes)
+                # therefore shadows the good one and gets served, or re-fetched inline. Passing no
+                # size asks presence alone, which is exactly what that switch tests.
+                if self._hub_file_is_cached(repo, name, revision, None, roots = (live,)):
+                    return None
+                return "other"
+
+            where = {name: _where(name) for name in files}
+            # A repo whose files STRADDLE the two roots cannot be handed to from_pretrained as one
+            # snapshot: _prefetch_files returns no _base_local_dir in that state and the assembly is
+            # pinned to hub_cache_dir(), so the old-root subset is invisible to it. Stage that subset
+            # instead, or the load re-pulls it inline past the plan's own progress, cancel and disk
+            # preflight, and fails offline after a plan that reported nothing left to do. A repo
+            # living entirely in the other root is fine, which is what reuse_other_cache_root is for.
+            # A file that is missing everywhere will be downloaded INTO the live root, so it counts
+            # as live here: dropping it would read a genuinely-mixed repo as unsplit and stage only
+            # the missing part, manufacturing the very split this branch exists to avoid.
+            split = {w or "live" for w in where.values()} == {"live", "other"}
+            missing = [n for n, w in where.items() if w is None or (split and w != "live")]
+            if not missing:
+                return
+
+            if checkpoint:
+                missing_checkpoints.add(repo)
+            for entry in entries:
+                if entry["repo_id"] != repo:
+                    continue
+                newly_missing = [n for n in missing if n not in entry["files"]]
+                added = [n for n in scope if n not in entry["files"]]
+                entry["files"].extend(added)
+                entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in newly_missing))
+                entry["gguf_filename"] = scoped_gguf[repo]
+                entry["checkpoint"] = repo in missing_checkpoints
                 return
             entries.append(
                 {
                     "repo_id": repo,
-                    "files": files,
-                    "bytes": int(sum(sized.get(name, 0) for name in files)),
-                    "gguf_filename": gguf,
+                    # Stable across a warming cache so a second pick can adopt the same live
+                    # scoped job. Cached names are cheap no-op hf_hub_download calls; only the
+                    # genuinely missing subset contributes to bytes/preflight below.
+                    "files": list(scope),
+                    "bytes": int(sum(declared_sizes.get(name, 0) for name in missing)),
+                    "gguf_filename": scoped_gguf[repo],
+                    "checkpoint": repo in missing_checkpoints,
                 }
             )
 
         for repo, files in te_files.values():
-            # No revision: te_prequant_hub_files reports names and sizes only, so a pre-cast
-            # checkpoint stages whole, not off a stale refs/main. Worth surfacing its info.sha:
-            # these replace tens of GB.
-            _stage(repo, [n for n, _s in files], dict(files), None)
+            add_missing_entry(
+                repo,
+                [name for name, _size in files],
+                {name: int(size) for name, size in files},
+            )
         if gguf_filename and not Path(repo_id).expanduser().exists():
-            _stage(
+            add_missing_entry(
                 repo_id,
                 [gguf_filename],
-                # file_sizes, not sizes: a base repo equal to this one overwrote sizes[repo_id]
-                # with the base total, mis-sizing this row.
-                {gguf_filename: int(file_sizes.get((repo_id, gguf_filename), 0))},
-                gguf_filename,
-                shas.get(repo_id),
+                file_sizes.get(repo_id, {gguf_filename: int(sizes.get(repo_id, 0))}),
+                gguf = gguf_filename,
+                checkpoint = True,
             )
         if base_files and not Path(base).expanduser().exists():
             # STAGED before the loader runs, so it must name the MIRROR: a gated upstream here 401s
             # an anonymous user at staging and the swap downstream is never reached. status(), the
             # API base repo, saved configs and LoRA tags keep the vendor id; sizes key on it too.
-            # The commit follows the id: the sizes came from the vendor, the probe must not.
-            base_rev = (
-                shas.get(base) if fetch_base == base else self._current_sha(fetch_base, hf_token)
-            )
-            _stage(
+            if fetch_base != base and fetch_base not in revisions:
+                mirror_revision = self._current_sha(fetch_base, hf_token)
+                if mirror_revision:
+                    revisions[fetch_base] = mirror_revision
+            add_missing_entry(
                 fetch_base,
                 base_files,
-                {name: file_sizes.get((base, name), 0) for name in base_files},
-                None,
-                base_rev,
+                file_sizes.get(base, {}),
+                # A pipeline pick has no single file: the base IS the selected model (base = repo_id
+                # above). Flagged here rather than by comparing repo ids downstream, because the swap
+                # just above leaves this entry named after the MIRROR. Under a GGUF or single-file
+                # pick the base is a companion, so it stays unflagged.
+                checkpoint = kind == "pipeline",
             )
-        # Derived, never decremented: a carried total can only drift from the rows the panel shows.
+        if dit_prequant is not None:
+            # Staged, not just counted: _load_dense_quant_pipeline fetches this checkpoint during the
+            # load, under the load lock and after the previous pipeline was evicted, so leaving it
+            # out means a multi-GB inline pull with no progress, no cancel and no disk preflight.
+            # A companion of the checkpoint, never the selected model itself.
+            prequant_repo, prequant_file, prequant_size = dit_prequant
+            add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
         return {
             "entries": entries,
-            "total_bytes": int(sum(e["bytes"] for e in entries)),
+            "total_bytes": sum(entry["bytes"] for entry in entries),
+            "required_bytes": int(required_total),
+            "checkpoint_bytes": checkpoint_bytes,
             "incompatible_reason": incompatible,
+            # Companion discovery failed, so the file list above is partial. The UI stages what
+            # it can and the loader pulls the rest inline; a caller that must not download at
+            # all has to treat this plan as unverified rather than as nothing missing.
+            "plan_failed": bool(plan_failures),
         }
+
+    @staticmethod
+    def _files_already_cached(
+        repo_id: str,
+        files: list[str],
+        revision: Optional[str] = None,
+        declared_sizes: Optional[dict[str, int]] = None,
+    ) -> set[str]:
+        """Return all ``files`` only when one cache root serves the whole pinned snapshot.
+
+        A union across roots is not loadable as one snapshot. No revision is no verdict: the
+        size-aware per-file probe may still accept an unchanged file after an unrelated repo
+        commit, but this strict fast path never trusts a potentially stale local ``main`` ref.
+        """
+        if not revision or not files:
+            return set()
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            roots = (hub_cache_dir(), None)
+        except Exception:  # noqa: BLE001 -- unreadable cache means stage, never fail the plan
+            return set()
+        wanted = set(files)
+
+        def _hits(root: Optional[str]) -> set[str]:
+            found: set[str] = set()
+            for name in wanted:
+                try:
+                    value = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
+                except Exception:  # noqa: BLE001 -- keep checking the other files/root
+                    continue
+                if not isinstance(value, str):
+                    continue
+                path = Path(value)
+                if not path.is_file():
+                    continue
+                expected = (declared_sizes or {}).get(name)
+                if expected and expected > 0:
+                    try:
+                        if path.stat().st_size != expected:
+                            continue
+                    except OSError:
+                        continue
+                found.add(name)
+            return found
+
+        live = _hits(roots[0])
+        if live == wanted:
+            return wanted
+        if live:
+            return set()
+        return wanted if _hits(roots[1]) == wanted else set()
+
+    @staticmethod
+    def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
+        """The current Hub commit for a mirror repo, or None when metadata is unavailable."""
+        try:
+            from huggingface_hub import HfApi
+            return getattr(HfApi().model_info(repo_id, token = hf_token), "sha", None) or None
+        except Exception:  # noqa: BLE001 -- no SHA means conservative staging
+            return None
+
+    @staticmethod
+    def _hub_file_is_loadable(
+        repo_id: str,
+        filename: str,
+        revision: Optional[str] = None,
+        expected_size: Optional[int] = None,
+    ) -> bool:
+        """Whether the LOAD will actually resolve a good copy, which is stricter than being cached
+        somewhere. ``reuse_other_cache_root`` only switches roots when the live lookup finds
+        nothing, so a stale live copy under the right name shadows a good one in the other root:
+        the load reads the stale file, or refetches it inline, after a plan that saw the good copy
+        and staged nothing. Presence in the live root is asked separately from validity, because
+        presence alone is what that switch tests."""
+        live = hub_cache_dir()
+        if DiffusionBackend._hub_file_is_cached(
+            repo_id, filename, revision, expected_size, roots = (live,)
+        ):
+            return True
+        if not DiffusionBackend._hub_file_is_cached(
+            repo_id, filename, revision, expected_size, roots = (None,)
+        ):
+            return False
+        return not DiffusionBackend._hub_file_is_cached(
+            repo_id, filename, revision, None, roots = (live,)
+        )
+
+    @staticmethod
+    def _hub_file_is_cached(
+        repo_id: str,
+        filename: str,
+        revision: Optional[str] = None,
+        expected_size: Optional[int] = None,
+        roots: Optional[tuple[Optional[str], ...]] = None,
+    ) -> bool:
+        """Whether ``filename`` is complete in either cache root the loader reuses.
+
+        ``roots`` narrows the search; the default asks both, as the loader's own fetches do.
+
+        ``try_to_load_from_cache`` is network-free. A pinned miss proves nothing: ``revision`` is
+        the REPO head, so an unrelated README commit can name a snapshot that a healthy weight was
+        never downloaded into. In that case a size-corroborated local ``main`` hit is still valid.
+
+        A pinned HIT is different: it proves the current file exists locally. The loader omits
+        ``revision``, so it will open the snapshot selected by the local ``main`` ref. We may omit
+        the file from the staged plan only when that unpinned lookup resolves to the SAME snapshot
+        path. Otherwise a stale main ref would make the plan bless the current explicit-SHA copy
+        while the loader opens an older one (or revalidates inline outside the manager).
+
+        Every hit is also corroborated with the size declared by the same Hub lookup. A different
+        size means the file was republished or damaged and must be fetched through the manager.
+
+        A string alone is not enough on Windows, where a broken snapshot link can survive a
+        cancelled download, so the target must still be a real file.
+        """
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            search = (hub_cache_dir(), None) if roots is None else roots
+
+            def hit(root: Optional[str], rev: Optional[str]) -> Optional[str]:
+                value = try_to_load_from_cache(repo_id, filename, cache_dir = root, revision = rev)
+                return value if isinstance(value, str) and Path(value).is_file() else None
+
+            def sound(hit: str) -> bool:
+                """A hit is only proof if it also has the declared bytes. Naming the right commit
+                is not enough: a truncated or half-copied file can sit at that path (Windows has
+                no symlink to keep the blob out of it), and trusting the ref alone hands the load
+                a damaged cache entry it fails on, instead of restaging it through the manager."""
+                if not expected_size or expected_size <= 0:
+                    return True  # nothing declared to check against; trust the ref
+                try:
+                    return Path(hit).stat().st_size == expected_size
+                except OSError:
+                    return False
+
+            unpinned = [(root, value) for root in search if (value := hit(root, None))]
+            if revision is None:
+                return any(sound(value) for _root, value in unpinned)
+
+            # Presence, not soundness, is the branch condition: a damaged current snapshot must
+            # not fall back to and bless an older same-size main snapshot.
+            pinned = [(root, value) for root in search if (value := hit(root, revision))]
+            if not pinned:
+                return any(sound(value) for _root, value in unpinned)
+
+            def snapshot_path(value: str) -> Path:
+                # Do not resolve symlinks: their blob targets can be shared across snapshots, while
+                # the loader's unpinned choice is encoded by the snapshots/<sha>/... path itself.
+                return Path(value).absolute()
+
+            return any(
+                pinned_root == main_root
+                and sound(pinned_value)
+                and sound(main_value)
+                and snapshot_path(pinned_value) == snapshot_path(main_value)
+                for pinned_root, pinned_value in pinned
+                for main_root, main_value in unpinned
+            )
+        except Exception:  # noqa: BLE001 -- an unreadable cache is a miss, never a plan failure
+            pass
+        return False
 
     @staticmethod
     def _hub_cache_repo_dir(repo_id: str) -> Path:
@@ -2510,6 +3099,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -2527,6 +3117,8 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         # LoRA adapters to BAKE into a torchao int8/fp8 build. Ignored elsewhere (bf16/bnb take them at generate time).
         loras: Optional[list[tuple[str, float]]] = None,
+        # The torch ordinal begin_load resolved for this load, carried rather than re-derived.
+        gpu_ordinal: Optional[int] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         # True when the prefetch staged the base repo's ``transformer/`` shards, the only condition under which the dense-quant
@@ -2564,10 +3156,21 @@ class DiffusionBackend:
         # the only id handed to something that downloads. One decision per load (the background
         # path took it before staging), so nothing stages one repo and assembles from the other.
         fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
-        target = self._resolve_device_target(fam)
+        target = self._target_for_ordinal(fam, gpu_ordinal)
+        # A dedicated worker thread, so the pin is permanent and everything downstream -- the
+        # placement, the offload budget, the un-indexed state.device -- lands on the same card.
+        apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
 
         import diffusers
+
+        # diffusers hard-codes _tqdm_active = True at import and honours no env var, so
+        # setup_logging (which runs long before this lazy import) cannot reach it. Without
+        # this, "Loading pipeline components..." is drawn straight onto the log stream and
+        # can land mid-record on a structlog JSON line. Idempotent and cheap.
+        from loggers.config import quiet_third_party_progress_bars
+
+        quiet_third_party_progress_bars()
 
         # Pre-install the optional attention kernel before the load locks: the pip install can block unload for 600s.
         try:
@@ -2603,7 +3206,9 @@ class DiffusionBackend:
 
                 # Single-file kinds resolve a checkpoint path; the pipeline kind has none.
                 single_file_path = (
-                    self._resolve_gguf_path(repo_id, gguf_filename, hf_token)
+                    self._resolve_gguf_path(
+                        repo_id, gguf_filename, hf_token, local_files_only = local_files_only
+                    )
                     if kind in ("gguf", "single_file")
                     else None
                 )
@@ -2688,8 +3293,7 @@ class DiffusionBackend:
                     target
                 ):
                     transformer_quant_decline = (
-                        "this device cannot run a dense torchao quant (it needs a CUDA GPU in "
-                        "bf16)"
+                        "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
                     )
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 elif transformer_quant_pinned is not None and (
@@ -3225,6 +3829,7 @@ class DiffusionBackend:
                             lora_specs = loras,
                             text_encoder_quant = text_encoder_quant,
                             fetch_base = fetch_base,
+                            local_files_only = local_files_only,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -3295,6 +3900,9 @@ class DiffusionBackend:
                                 fetch_base,
                                 dtype,
                                 hf_token = hf_token,
+                                # The branch never sees pipe_kwargs, so the one keyword that keeps
+                                # the no-download promise has to be handed over with the rest.
+                                local_files_only = local_files_only,
                                 text_encoder = te_prequant_pipe_kwargs(
                                     fam,
                                     fetch_base,
@@ -3310,6 +3918,7 @@ class DiffusionBackend:
                             pipe = load_ideogram4_pipeline(fetch_base, dtype, hf_token = hf_token)
                         else:
                             pipe_kwargs: dict[str, Any] = {
+                                "local_files_only": local_files_only,
                                 "torch_dtype": dtype,
                                 "cache_dir": hub_cache_dir(),
                             }
@@ -3324,6 +3933,7 @@ class DiffusionBackend:
                                         fam = fam,
                                         te_quant_mode = text_encoder_quant,
                                         target = target,
+                                        local_files_only = local_files_only,
                                     )
                                 )
                             # A hosted pre-cast fp8 text encoder skips the dense TE download; the cast re-applies idempotently.
@@ -3345,6 +3955,7 @@ class DiffusionBackend:
                     elif kind == "single_file" and fam.single_file_is_pipeline:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline class with ``config`` on the base repo.
                         sf_pipe_kwargs: dict[str, Any] = {
+                            "local_files_only": local_files_only,
                             "torch_dtype": dtype,
                             # ``config`` is a REPO FETCH ahead of the mirrored load, so a gated id
                             # would 401 here first.
@@ -3363,6 +3974,11 @@ class DiffusionBackend:
                             "subfolder": "transformer",
                             "token": hf_token,
                             "cache_dir": hub_cache_dir(),
+                            # config is a REPO ID, and diffusers forwards this into the
+                            # load_config() that resolves it (single_file_model.py), so without the
+                            # flag this branch reaches the Hub on a load nobody asked for. The
+                            # pipeline assembly below was already guarded; this call was not.
+                            "local_files_only": local_files_only,
                         }
                         if kind == "gguf":
                             # Dequantise the GGUF transformer on-device at the compute dtype.
@@ -3382,6 +3998,10 @@ class DiffusionBackend:
                                 dtype,
                                 hf_token = hf_token,
                                 transformer = transformer,
+                                # Same reason as the full-pipeline branch: the single file supplies
+                                # only the denoiser, so the encoder, VAE and tokenizer below are
+                                # still GB this load promised not to fetch.
+                                local_files_only = local_files_only,
                                 # Same pre-cast TE hand-in as the full-pipeline branch.
                                 text_encoder = te_prequant_pipe_kwargs(
                                     fam,
@@ -3395,6 +4015,7 @@ class DiffusionBackend:
                             )
                         else:
                             pipe_kwargs = {
+                                "local_files_only": local_files_only,
                                 "torch_dtype": dtype,
                                 "transformer": transformer,
                                 "cache_dir": hub_cache_dir(),
@@ -3410,6 +4031,7 @@ class DiffusionBackend:
                                         fam = fam,
                                         te_quant_mode = text_encoder_quant,
                                         target = target,
+                                        local_files_only = local_files_only,
                                     )
                                 )
                             # Same pre-cast TE injection as above: the GGUF supplies the transformer, so the TE is the big download.
@@ -3622,7 +4244,14 @@ class DiffusionBackend:
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays honest.
                     effective_policy, effective_tiling = apply_memory_plan(
-                        pipe, plan, device = device, logger = logger
+                        pipe,
+                        plan,
+                        device = device,
+                        # Indexed when a card was selected: the CPU-offload APIs read the index off
+                        # this string and default to cuda:0 without one, which would page modules
+                        # onto a different card than the one generation runs on.
+                        placement_device = target.torch_device,
+                        logger = logger,
                     )
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is explicit.
@@ -3718,6 +4347,8 @@ class DiffusionBackend:
                         repo_id = repo_id,
                         base_repo = base,
                         device = device,
+                        gpu_ordinal = target.ordinal,
+                        placed_ordinal = placed_cuda_ordinal(target),
                         dtype = str(dtype).replace("torch.", ""),
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
@@ -3793,6 +4424,7 @@ class DiffusionBackend:
         lora_specs: Optional[list[tuple[str, float]]] = None,
         text_encoder_quant: Optional[str] = None,
         fetch_base: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -3845,6 +4477,11 @@ class DiffusionBackend:
                     scheme = scheme,
                     # Reject a checkpoint with a different Linear filter so prequant matches runtime-quant.
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                    # A load nobody asked for may not fetch this checkpoint either: it is a
+                    # multi-GB download like any other, and the switch verified only what the
+                    # plan listed. A cache miss falls out to the dense path, which is refused
+                    # for the same reason a line below.
+                    local_files_only = local_files_only,
                     # Only enforced when the caller forces fp8 fast-accum; a checkpoint that baked the other choice falls to the dense path.
                     fast_accum = fast_accum,
                     # The root _uncached_prequant_repo cleared this load against, so its hit is
@@ -3865,6 +4502,7 @@ class DiffusionBackend:
                         te_quant_mode = text_encoder_quant,
                         target = target,
                         fetch_base = fetch_base,
+                        local_files_only = local_files_only,
                     )
                     return pipe, scheme
 
@@ -3885,6 +4523,9 @@ class DiffusionBackend:
             torch_dtype = dtype,
             token = hf_token,
             cache_dir = hub_cache_dir(),
+            # The dense bf16 transformer is the largest single fetch on this path, so an
+            # API-initiated load has to be refused here rather than allowed to pull it.
+            local_files_only = local_files_only,
         )
         pipe = self._assemble_pipe(
             pipeline_cls,
@@ -3898,6 +4539,7 @@ class DiffusionBackend:
             te_quant_mode = text_encoder_quant,
             target = target,
             fetch_base = fetch_base,
+            local_files_only = local_files_only,
         )
         if _has_active_lora(lora_specs):
             # Bake the adapters BEFORE quantize_: peft wraps the dense Linears (post-quant torchao dispatch would TypeError),
@@ -3945,6 +4587,7 @@ class DiffusionBackend:
         te_quant_mode: Optional[str] = None,
         target: Any = None,
         fetch_base: Optional[str] = None,
+        local_files_only: bool = False,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions).
@@ -3972,10 +4615,14 @@ class DiffusionBackend:
                 hf_token = hf_token,
                 transformer = transformer,
                 text_encoder = krea_te,
+                # ``base_local_dir`` is None whenever nothing was staged, and then this is a repo
+                # id: the same guard the pipe_kwargs below carry for every other family.
+                local_files_only = local_files_only,
             )
             pipe.to(device)
             return pipe
         pipe_kwargs: dict[str, Any] = {
+            "local_files_only": local_files_only,
             "torch_dtype": dtype,
             "transformer": transformer,
             "cache_dir": hub_cache_dir(),
@@ -3991,6 +4638,7 @@ class DiffusionBackend:
                     fam = fam,
                     te_quant_mode = te_quant_mode,
                     target = target,
+                    local_files_only = local_files_only,
                 )
             )
         # Same pre-cast TE injection as the other branches: the dense path supplies only the transformer.
@@ -4402,6 +5050,55 @@ class DiffusionBackend:
             pass
 
     @staticmethod
+    def _make_vae_encode_dtype_safe(pipe: Any) -> None:
+        """Cast whatever tensor reaches ``vae.encode`` to the VAE's OWN dtype, so an
+        image-conditioned call cannot die on ``Input type (float) and bias type
+        (c10::BFloat16) should be the same``.
+
+        ``_align_vae_dtype`` pins the VAE to the DENOISER's dtype, but the img2img /
+        inpaint pipelines consult neither: they cast the upload to whatever the TEXT
+        ENCODER produced (``prompt_embeds[0].dtype`` in ``ZImageImg2ImgPipeline``), a
+        third dtype nobody reconciles. When that lands on fp32 against bf16 VAE weights
+        the first conv raises, and the user sees only an opaque failure toast.
+
+        Wrapping ``encode`` rather than widening ``_align_vae_dtype`` is deliberate: the
+        mismatch is between the pipeline's chosen input dtype and the VAE, so the fix has
+        to live at that boundary to hold for every family and diffusers version, instead
+        of tracking which attribute each pipeline reads this release. Latents come back
+        untouched -- ``scale_noise`` and the schedulers upcast to fp32 anyway.
+
+        Idempotent (a re-wrap on a warm pipe is a no-op) and best-effort: any failure
+        leaves the original ``encode`` in place."""
+        vae = getattr(pipe, "vae", None)
+        if vae is None or getattr(vae, "_unsloth_dtype_safe_encode", False):
+            return
+        try:
+            import torch
+
+            original = vae.encode
+
+            @functools.wraps(original)
+            def _encode(x: Any, *args: Any, **kwargs: Any) -> Any:
+                # Probed per call, not at wrap time: _align_vae_dtype and a txt2img decode
+                # both re-cast the VAE. A failed probe forwards the tensor as it arrived.
+                try:
+                    if isinstance(x, torch.Tensor):
+                        target = next(
+                            (p.dtype for p in vae.parameters() if p.dtype.is_floating_point),
+                            None,
+                        )
+                        if target is not None and x.dtype != target:
+                            x = x.to(dtype = target)
+                except (AttributeError, RuntimeError, StopIteration, TypeError):
+                    pass
+                return original(x, *args, **kwargs)
+
+            vae.encode = _encode
+            vae._unsloth_dtype_safe_encode = True
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+
+    @staticmethod
     def _resolve_lora_set(
         specs: list[tuple[str, float]],
         *,
@@ -4615,7 +5312,7 @@ class DiffusionBackend:
         from .diffusion_eager_patches import install_compile_safe_patches
         from .diffusion_arch_patches import install_arch_patches
 
-        target = self._resolve_device_target(state.family)
+        target = self._state_device_target(state)
         install_compile_safe_patches()
         install_arch_patches()
         object.__setattr__(state, "eager_patched", True)
@@ -4682,8 +5379,7 @@ class DiffusionBackend:
                 "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
             )
         logger.info(
-            "diffusion.speed: deferred profile engaged on generation 3 "
-            "(optims=%s, attention=%s)",
+            "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s)",
             ",".join(state.speed_optims) or "none",
             attention_engaged or "native",
         )
@@ -4735,6 +5431,11 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not read idle.
                 self._gen = _GenState(total_steps = steps)
             try:
+                # FIRST, before any device object exists. This worker is not the thread that loaded
+                # the pipeline, so until it is pinned the un-indexed state.device below -- and the
+                # ControlNet placement further down -- resolve to its own default card while the
+                # weights sit on the selected one.
+                self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image (prompt, seed) jobs
                 # up front: N prompts, one prompt x N seeds, or one prompt deriving base..base+batch_size-1 (as the native engine does).
                 jobs, seed = resolve_batch_jobs(
@@ -4897,7 +5598,13 @@ class DiffusionBackend:
                 # Snap odd-sized inputs (and the mask) to a multiple of 16 where the OUTPUT size comes from the input image.
                 if init_pil is not None and workflow in ("img2img", "inpaint", "edit"):
                     # img2img/inpaint take output size from the upload, so bound the longest side to 2048 (a phone photo would OOM).
-                    if workflow in ("img2img", "inpaint"):
+                    if workflow == "img2img":
+                        # ...and bound Transform by the REQUESTED size too, so the Resolution
+                        # control caps the output instead of being inert. img2img only: an
+                        # inpaint payload is the canvas the mask was painted against (Extend
+                        # sends a deliberately ENLARGED one), so shrinking it would break them.
+                        init_pil = _fit_within(init_pil, min(2048, width), min(2048, height))
+                    elif workflow == "inpaint":
                         init_pil = _clamp_max_side(init_pil, 2048)
                     init_pil = _snap_to_multiple(init_pil, 16)
                     if mask_pil is not None and mask_pil.size != init_pil.size:
@@ -4906,6 +5613,9 @@ class DiffusionBackend:
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
                     self._align_vae_dtype(pipe, state.family.denoiser_attr)
+                    # ...and with the dtype the PIPELINE hands the encoder, which is neither
+                    # of the two the line above reconciles.
+                    self._make_vae_encode_dtype_safe(pipe)
 
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
@@ -4989,13 +5699,17 @@ class DiffusionBackend:
                         # variant credits the same reclaimable bytes back arithmetically instead,
                         # so a warm allocator does not read as a full card and nothing is flushed.
                         device_memory = reclaimable_snapshot_device_memory(
-                            self._resolve_device_target(state.family)
+                            self._state_device_target(state)
                         ),
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
                         # The hint the load planned with, so the distilled / edit multipliers match.
                         family = state.variant_hint,
+                        # img2img is bounded by the Resolution control (see _fit_within), so
+                        # "generate at a smaller resolution" is actionable there; the rest size
+                        # from the upload alone and get the upload-side remedy.
+                        source_driven = workflow in ("inpaint", "upscale", "edit"),
                         logger = logger,
                     )
                 except ValueError:
@@ -5384,7 +6098,23 @@ def _resolve_base_repo(
             # base_model, both of which must stay the vendor id. An EXPLICIT base_repo is verbatim.
             base = canonical_base(tag)
     # Returns the UPSTREAM id; the swap happens at the fetch sites only.
-    return resolve_base_repo(fam, base)
+    resolved = resolve_base_repo(fam, base)
+    _remember_companion_base(repo_id, resolved)
+    return resolved
+
+
+def _remember_companion_base(repo_id: str, base: str) -> None:
+    """Record that *repo_id* takes its companions from *base*, for the delete/cleanup guards.
+
+    A card ``base_model`` tag is the one input this resolver has that a later offline scan cannot
+    reconstruct -- a GGUF pick caches only the .gguf, never the card -- so the link is written
+    where it is decided. Additive and best-effort: a failure here must never fail a load.
+    """
+    try:
+        from hub.utils.companion_assets import record_companion_link
+        record_companion_link(repo_id, base)
+    except Exception as exc:  # noqa: BLE001 -- bookkeeping only
+        logger.debug("diffusion.companion_link_record_failed: %s", exc)
 
 
 def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
@@ -5444,6 +6174,15 @@ def _base_file_downloaded(rfilename: str, *, include_transformer: bool = False) 
     ``include_transformer`` admits the ``transformer/`` shards for loads where the
     dense transformer-quant path will fetch them anyway (see
     ``_dense_quant_prefetch_needed``)."""
+    if rfilename == "transformer/config.json":
+        # The one transformer/ file that is ALWAYS needed, shards or not: from_single_file(config =
+        # <repo id>, subfolder = "transformer") resolves it through the Hub, so a load that promised
+        # to download nothing cannot keep that promise unless this ~1 KB file is already on disk.
+        # Excluding it made the locality gate pass and the load fetch it afterwards, AFTER the
+        # resident pipeline was evicted. Counting it here is what lets the gate refuse up front
+        # (cleanly, before eviction) or clear a pick that really can load offline. Video keeps the
+        # same exception at video.py's snapshot filter.
+        return True
     if rfilename.startswith("transformer/"):
         return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched

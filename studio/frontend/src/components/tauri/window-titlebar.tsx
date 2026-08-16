@@ -347,6 +347,30 @@ export function WindowTitlebar({
 
   return (
     <>
+      {showSidebarSurface && (
+        <div
+          data-slot="window-titlebar-decoration"
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
+        >
+          {pinned && (
+            <div
+              className="absolute top-0 size-3 -translate-x-px bg-sidebar"
+              style={{ left: sidebarWidth }}
+            />
+          )}
+          <div
+            className="absolute top-0 h-px bg-sidebar-border"
+            style={{ left: contentBorderLeft, right: 0 }}
+          />
+          {pinned && (
+            <div
+              className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
+              style={{ left: sidebarWidth }}
+            />
+          )}
+        </div>
+      )}
       <header
         className={cn(
           "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
@@ -354,27 +378,6 @@ export function WindowTitlebar({
         )}
         aria-label="Window titlebar"
       >
-        {showSidebarSurface && pinned && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"
-            style={{ left: sidebarWidth }}
-          />
-        )}
-        {showSidebarSurface && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-full h-px bg-sidebar-border"
-            style={{ left: contentBorderLeft, right: 0 }}
-          />
-        )}
-        {showSidebarSurface && pinned && (
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
-            style={{ left: sidebarWidth }}
-          />
-        )}
         {showSidebarSurface && (
           <div
             className={cn(

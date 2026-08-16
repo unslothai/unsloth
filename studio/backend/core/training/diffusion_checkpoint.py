@@ -191,6 +191,17 @@ def _revision_is_comparable(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("rev-")
 
 
+def _revision_repo(identity: "CheckpointIdentity") -> str:
+    """The repo ``identity.base_revision`` was read from, normalised for comparison.
+
+    A bundle written before mirrors existed has no ``base_revision_repo`` and always read the
+    canonical base, so it falls back to ``base_model``: that keeps an old bundle comparable with
+    a new one on a host that fetched the canonical repo, and only stops the comparison where it
+    genuinely cannot be made.
+    """
+    return str(getattr(identity, "base_revision_repo", None) or identity.base_model or "").lower()
+
+
 @dataclass(frozen = True)
 class CheckpointIdentity:
     """What a checkpoint was trained as. Two bundles are interchangeable only when every
@@ -253,6 +264,12 @@ class CheckpointIdentity:
     # Post-conversion, set by the DiT trainer once it knows whether fp8/mxfp8 took. None
     # everywhere else, which the optional rule reads as "cannot tell".
     base_precision_effective: Optional[str] = None
+    # WHICH repo ``base_revision`` was read from, which is not always ``base_model``: a gated base
+    # is fetched from its byte-identical ungated mirror, and the two repos have different commit
+    # SHAs for the same weights. Not a mismatch reason of its own -- it only says whether the two
+    # revisions are comparable at all. None means a bundle written before mirrors existed, whose
+    # revision came from the canonical base, so it reads as ``base_model`` below.
+    base_revision_repo: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -260,6 +277,7 @@ class CheckpointIdentity:
             "family": self.family,
             "base_model": self.base_model,
             "base_revision": self.base_revision,
+            "base_revision_repo": self.base_revision_repo,
             "dataset_fingerprint": self.dataset_fingerprint,
             "lora_target_modules": list(self.lora_target_modules),
             "lora_rank": int(self.lora_rank),
@@ -336,6 +354,7 @@ class CheckpointIdentity:
                 resolution = int(data.get("resolution") or 0),
                 kind = str(data.get("kind") or "image"),
                 base_revision = _optional_str(data.get("base_revision")),
+                base_revision_repo = _optional_str(data.get("base_revision_repo")),
                 dataset_fingerprint = _optional_str(data.get("dataset_fingerprint")),
             )
         except (TypeError, ValueError):
@@ -360,6 +379,12 @@ class CheckpointIdentity:
             if field == "base_revision" and not (
                 _revision_is_comparable(a) and _revision_is_comparable(b)
             ):
+                continue
+            # Two commit SHAs are only comparable when they name the same repo. A gated base is
+            # fetched from its byte-identical ungated mirror, so the same weights carry a
+            # different SHA depending on which repo the host happened to pull from, and comparing
+            # across the two reports a revision change that did not happen.
+            if field == "base_revision" and _revision_repo(self) != _revision_repo(other):
                 continue
             if a == b:
                 continue
@@ -548,7 +573,10 @@ def with_resolved_revision(identity: "CheckpointIdentity", base_model: Any) -> "
     resolved = source_revision(base_model)
     if not _revision_is_comparable(resolved) or resolved == identity.base_revision:
         return identity
-    return replace(identity, base_revision = resolved)
+    # The repo travels with the revision: callers pass the repo they FETCHED from, which for a
+    # gated base is the ungated mirror, and a SHA without the repo that produced it cannot be
+    # compared against one from the other repo.
+    return replace(identity, base_revision = resolved, base_revision_repo = str(base_model or ""))
 
 
 def identity_for_config(
@@ -569,6 +597,9 @@ def identity_for_config(
     from core.training.diffusion_train_extras import source_revision
 
     targets = tuple(resolved_targets) if resolved_targets else _resolve_lora_targets(cfg)
+    # ``base_model`` stays canonical everywhere else in the identity; only the revision pair
+    # below follows the repo the weights are pulled from.
+    fetch_base_model = str(getattr(cfg, "fetch_base_model", None) or cfg.base_model or "")
     return CheckpointIdentity(
         family = str(getattr(cfg, "resolved_family", "") or ""),
         base_model = str(cfg.base_model or ""),
@@ -601,7 +632,15 @@ def identity_for_config(
         base_precision = str(getattr(cfg, "base_precision", "") or ""),
         resolution = int(cfg.resolution),
         kind = kind,
-        base_revision = source_revision(cfg.base_model),
+        # The revision of the repo actually FETCHED, recorded together with which repo that was.
+        # Reading the canonical base instead loses the check entirely: the mirror is selected
+        # precisely BECAUSE the canonical repo is not cached, so it has no local ref and every
+        # mirror-backed bundle would record "unresolved", which mismatch_reason skips. Pairing
+        # the revision with its repo keeps the comparison wherever it is meaningful (same repo
+        # on both sides, including every pre-mirror bundle) and drops it only across a
+        # canonical/mirror pair, whose SHAs differ for byte-identical weights.
+        base_revision = source_revision(fetch_base_model),
+        base_revision_repo = fetch_base_model,
         dataset_fingerprint = dataset_fingerprint(dataset_pairs) if dataset_pairs else None,
     )
 

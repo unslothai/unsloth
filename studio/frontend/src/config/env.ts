@@ -27,6 +27,10 @@ interface PlatformState {
   // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
   // Train/Export instead of silently disabling them.
   chatOnlyReason: string | null;
+  // What specifically blocked that reason, when the backend can name it. Today only the
+  // MLX gate does: it is all-or-nothing across mlx, mlx-lm and mlx-vlm, so without this
+  // the greyed-out Train row can only repeat "run `unsloth studio update`".
+  chatOnlyDetail: string | null;
   // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
   // whether the server was launched with --secure.
   cloudflareUrl: string | null;
@@ -63,6 +67,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   // capabilitiesUnknown() first and hold, not gray a tab out on this.
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
+  chatOnlyDetail: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -172,7 +177,10 @@ export async function fetchDeviceType(options?: {
       const deviceType =
         data.device_type ?? (keepPlatform ? previous.deviceType : detectLocalPlatform());
       // A still-provisional reply keeps the stored verdict: see resolveVerdict.
-      const { chatOnly, chatOnlyReason } = resolveVerdict(data, previous);
+      const { chatOnly, chatOnlyReason, chatOnlyDetail } = resolveVerdict(
+        data,
+        previous,
+      );
       // Cache only a server-reported platform. Unauthenticated responses fall
       // back to the browser platform, which can differ from the host (WSL,
       // SSH); keeping fetched=false retries once a token exists.
@@ -180,6 +188,7 @@ export async function fetchDeviceType(options?: {
         deviceType,
         chatOnly,
         chatOnlyReason,
+        chatOnlyDetail,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

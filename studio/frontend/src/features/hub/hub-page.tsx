@@ -25,6 +25,8 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
@@ -59,6 +61,7 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -96,6 +99,7 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import { looksLikeLocalPath, routableToMediaPage } from "./lib/local-path";
 import {
   ggufVariantsMatch,
   modelIdsMatch,
@@ -106,6 +110,7 @@ import {
   matchesModelType,
 } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { studioPageForTask } from "./lib/unsloth-support";
 import { fingerprintToken } from "./lib/token-fingerprint";
 import {
   buildDiscoverRows,
@@ -574,6 +579,7 @@ export function ModelsPage() {
   const [inventoryTypeFilter, setInventoryTypeFilter] =
     useState<ModelTypeFilter>("all");
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
+  const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
   const [sortBrowseActive, setSortBrowseActive] = useState(false);
 
@@ -1233,6 +1239,7 @@ export function ModelsPage() {
     () => setFoldersDialogOpen(true),
     [],
   );
+  const handleFreeUpSpace = useCallback(() => setFreeUpSpaceOpen(true), []);
   const handleSwitchDevice = useCallback(
     () => handleTabChange("downloaded"),
     [handleTabChange],
@@ -1274,6 +1281,35 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      // An image / video model is run by its own page, not by chat: loading it here evicted
+      // the resident chat model for a llama.cpp load that could only fail. Same resolution
+      // and destination the chat picker uses, so both surfaces route a pick identically.
+      // `task` is not optional here: only CachedModelRepo carries pipelineTag, so every
+      // cached GGUF repo (the reported MiniMax-H3 case) reports its modality on `task`.
+      const mediaPage = studioPageForTask(
+        taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
+      );
+      // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
+      // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
+      // since the loader reuses whichever cache root holds it. That covers a filesystem row
+      // (left on today's route, and the backend preflight now refuses it by name) and a
+      // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
+      // the pages' containment check rejects anyway.
+      const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
+      if (
+        mediaPage &&
+        routableToMediaPage(selectedModel.kind, selectedModel.localSource) &&
+        routeId
+      ) {
+        void navigate({
+          to: `/${mediaPage}`,
+          // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
+          search: diffusionRouteSearch(routeId, {
+            ggufVariant: opts.ggufVariant ?? null,
+          }),
+        });
+        return;
+      }
       const configIdentity = modelConfigIdentity(
         selectedModel.kind,
         selectedModel.resource,
@@ -1299,6 +1335,11 @@ export function ModelsPage() {
         keepSpeculative: hasAppliedConfig,
         throwOnError: true,
         previousConfig,
+        // The runtime store is not enough: applyPerModelConfigToRuntime has no field
+        // for the launch flags, and /load only inherits them from the SAME resident
+        // model, so a cold launch or a switch from another model ran without the
+        // arguments this model was remembered with.
+        ...(rememberedConfig ? { config: rememberedConfig } : {}),
       })
         .then(() => {
           // Read fresh: the load is async, so the checkpoint may have changed.
@@ -1310,7 +1351,7 @@ export function ModelsPage() {
         .catch(() => undefined);
       openNewChat();
     },
-    [openNewChat, selectModel, selectedModel],
+    [navigate, openNewChat, selectModel, selectedModel],
   );
   const handleLoad = useCallback(
     (opts: ModelLoadOptions) =>
@@ -1447,6 +1488,11 @@ export function ModelsPage() {
         isLora: target.meta.isLora,
         keepSpeculative: true,
         forceReload: true,
+        // The submitted config, not only its echo in the runtime store: the store
+        // does not carry llamaExtraArgs, so without this the load omits the field
+        // and the route keeps the resident server's old list. Applying an edit, or
+        // clearing the box, would then do nothing on this page.
+        config,
         previousConfig,
       }).catch(() => undefined);
     },
@@ -1884,6 +1930,7 @@ export function ModelsPage() {
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
+          onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
         />
       </HubTopBar>
@@ -1991,6 +2038,11 @@ export function ModelsPage() {
         open={foldersDialogOpen}
         onOpenChange={setFoldersDialogOpen}
         onInventoryChange={refreshInventory}
+      />
+      <FreeUpSpaceDialog
+        open={freeUpSpaceOpen}
+        onOpenChange={setFreeUpSpaceOpen}
+        onChange={refreshInventory}
       />
       <ExternalLinkConfirmDialog />
     </div>

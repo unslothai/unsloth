@@ -153,11 +153,16 @@ def test_ltx2_spec_is_registered_and_bf16_only():
     assert spec.lora_targets == _LTX2_TARGETS
 
 
-def test_every_trainable_video_family_has_a_spec():
+def test_every_trainable_video_family_has_a_trainer():
     # The video registry has no trainable flag, so this set is the only gate; a name in it
-    # without a spec would pass resolve_trainable_family and then die in run_dit_lora_training.
-    assert TRAINABLE_VIDEO_FAMILIES <= set(_SPECS)
-    assert TRAINABLE_VIDEO_FAMILIES <= _DIT_TRAIN_FAMILIES
+    # that get_trainer cannot resolve would pass resolve_trainable_family and then raise after
+    # /diffusion/start had already evicted the resident GPU models. Not every trainable video
+    # family is a _SPECS family any more -- MiniMax-H3 has its own loop -- so the invariant is
+    # "has a trainer", checked one name at a time.
+    for name in TRAINABLE_VIDEO_FAMILIES:
+        assert callable(get_trainer(name)), name
+    assert "ltx-2" in _SPECS
+    assert "ltx-2" in _DIT_TRAIN_FAMILIES
     assert get_trainer("ltx-2") is dit.run_dit_lora_training
 
 

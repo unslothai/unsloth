@@ -728,7 +728,7 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
             return False
 
         def build_request(self, method, url, **kwargs):
-            return (method, url)
+            return {"method": method, "url": url, **kwargs}
 
         async def post(self, url, **kwargs):
             sent.append(url)
@@ -795,6 +795,41 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
             report_progress = False,
         )
     )
+
+
+def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
+    # Gathered page text lands in these prompts, and --enable-tools would otherwise
+    # override the request and expand an omitted enabled_tools to every built-in.
+    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    supervisor = _make_supervisor(_noop_check_active)
+    assert _run_stream(supervisor) == ("report", "", "stop", None)
+    assert len(sent) == 1
+    assert sent[0]["json"]["tool_choice"] == "none"
+    assert sent[0]["json"]["enabled_tools"] == []
+
+    assert sent[0]["json"]["thread_id"] == "research:run-1"
+
+
+def test_codex_research_hops_route_saved_provider_with_run_scoped_cache(monkeypatch):
+    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+    run["config"]["inferenceRequest"] = {
+        "model": "gpt-5.6-sol",
+        "providerId": "provider-1",
+        "providerType": "openai_codex",
+        "externalModel": "gpt-5.6-sol",
+    }
+
+    assert asyncio.run(
+        supervisor._stream_completion(run, [{"role": "user"}], report_progress = False)
+    ) == ("report", "", "stop", None)
+    body = sent[0]["json"]
+    assert body["provider_id"] == "provider-1"
+    assert body["provider_type"] == "openai_codex"
+    assert body["external_model"] == "gpt-5.6-sol"
+    assert body["thread_id"] == "research:run-1"
+    assert body["tool_choice"] == "none" and body["enabled_tools"] == []
 
 
 def _capture_backoff(monkeypatch) -> list:
@@ -1297,8 +1332,11 @@ def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
     real_discard = research_runs.ResearchSupervisor._discard_task
 
     async def _counting_discard(self, run_id, task, what):
-        discards.append(what)
-        return await real_discard(self, run_id, task, what)
+        started = time.monotonic()
+        try:
+            return await real_discard(self, run_id, task, what)
+        finally:
+            discards.append((what, time.monotonic() - started))
 
     monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
 
@@ -1334,12 +1372,15 @@ def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
 
     supervisor._check_active = _cancelled
 
-    started = time.monotonic()
     with pytest.raises(research_runs.RunCancelled):
         asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
-    elapsed = time.monotonic() - started
-    assert [w for w in discards if w == "send"] == ["send"], f"discards: {discards}"
-    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+    assert [w for w, _ in discards if w == "send"] == ["send"], f"discards: {discards}"
+    # Measured over the cleanup itself rather than over the test's wall clock. The bound is a
+    # TIMER, so a second one shows up as time spent waiting; everything before the cancellation
+    # is fixed setup that has nothing to do with this guarantee, and on a shared two-core runner
+    # that setup alone reached 0.9s and failed the old whole-test budget on machine speed.
+    waited = sum(seconds for _w, seconds in discards)
+    assert waited < 2 * research_runs._STREAM_CLEANUP_TIMEOUT_SECONDS, f"discards: {discards}"
 
 
 def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
@@ -1353,8 +1394,11 @@ def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
     real_discard = research_runs.ResearchSupervisor._discard_task
 
     async def _counting_discard(self, run_id, task, what):
-        discards.append(what)
-        return await real_discard(self, run_id, task, what)
+        started = time.monotonic()
+        try:
+            return await real_discard(self, run_id, task, what)
+        finally:
+            discards.append((what, time.monotonic() - started))
 
     monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
 
@@ -1389,13 +1433,13 @@ def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
 
     supervisor._check_active = _cancelled
 
-    started = time.monotonic()
     with pytest.raises(research_runs.RunCancelled):
         asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
-    elapsed = time.monotonic() - started
-    iterator_discards = [w for w in discards if w == "stream_iterator"]
+    iterator_discards = [w for w, _ in discards if w == "stream_iterator"]
     assert len(iterator_discards) == 1, f"discarded {len(iterator_discards)} times: {discards}"
-    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+    # The time spent WAITING on cleanup, not the test's wall clock: see the send-side test above.
+    waited = sum(seconds for _w, seconds in discards)
+    assert waited < 2 * research_runs._STREAM_CLEANUP_TIMEOUT_SECONDS, f"discards: {discards}"
 
 
 def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkeypatch):

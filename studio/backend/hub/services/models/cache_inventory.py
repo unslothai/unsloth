@@ -45,7 +45,7 @@ from hub.services.models.common import (
 # scan loop swallows per-repo exceptions and would drop every repo. Lives under
 # ``utils`` (not ``utils.models``) to avoid the eager model-config/checkpoint
 # imports in ``utils/models/__init__.py``.
-from utils.hidden_models import is_hidden_model
+from utils.hidden_models import is_curated_stt_repo_id, is_hidden_model
 
 logger = get_logger(__name__)
 
@@ -361,6 +361,7 @@ def _cache_inventory_fields(
     repo_info = None,
     hidden_infra: bool = False,
     companion: bool = False,
+    stt_only: bool = False,
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
@@ -399,6 +400,15 @@ def _cache_inventory_fields(
         else repo_info is not None and _repo_has_mmproj(repo_info)
     ):
         capabilities["supports_vision"] = True
+    # Qwen3-ASR's required mmproj is an audio projector, not a vision
+    # projector. Curated STT rows are visible only to task-scoped consumers and
+    # must never become eligible for chat auto-load.
+    # ``stt_only`` covers any repo whose config sniffs as Whisper, curated or not: a
+    # third-party checkpoint or a user's own fine-tune is just as unchattable, and can_chat
+    # is what auto-load and the chat picker filter on, neither of which looks at the task.
+    if stt_only or is_curated_stt_repo_id(repo_id):
+        capabilities["supports_vision"] = False
+        capabilities["can_chat"] = False
     if hidden_infra:
         capabilities["can_chat"] = False
     # A VAE / text-encoder mirror holds no language model, so it cannot chat whatever its weight
@@ -523,9 +533,12 @@ def _scan_cached_gguf(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
+                is_curated_stt = is_curated_stt_repo_id(repo_id)
                 # Hide infra repos unless the user downloaded a variant via
-                # the Hub; variant state only exists for user downloads.
-                if is_hidden_infra and not has_variant_state:
+                # the Hub; variant state only exists for user downloads. Exact
+                # curated STT repos are still emitted as management rows and
+                # the frontend's task allowlist keeps them out of Chat.
+                if is_hidden_infra and not is_curated_stt and not has_variant_state:
                     continue
                 if total_size == 0 and not has_variant_state:
                     continue
@@ -950,7 +963,6 @@ def _scan_cached_models(
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
-    skipped_stt = 0
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             inspected += 1
@@ -961,11 +973,15 @@ def _scan_cached_models(
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 # The non-GGUF embedder has no variant downloads; always hide.
-                if _is_hidden_infra_repo(
+                is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
-                ):
+                )
+                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                snapshot_metadata = _cached_model_local_metadata(repo_path, snapshot_path)
+                is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
+                if is_hidden_infra and not is_curated_stt and not is_whisper_stt:
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
@@ -987,10 +1003,13 @@ def _scan_cached_models(
                     payload_snapshots = payload.payload_snapshots,
                 )
                 load_snapshot = identity.load_snapshot
-                local_metadata = _cached_model_local_metadata(repo_path, load_snapshot)
-                if local_metadata.pop("_hidden_stt", False):
-                    skipped_stt += 1
-                    continue
+                # Reused when the row hands out the snapshot probed above: each call rereads two files.
+                local_metadata = (
+                    snapshot_metadata
+                    if load_snapshot == snapshot_path
+                    else _cached_model_local_metadata(repo_path, load_snapshot)
+                )
+                is_whisper_stt = local_metadata.pop("_hidden_stt", False)
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
@@ -1017,7 +1036,22 @@ def _scan_cached_models(
                 # serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
-                row_task = _cached_row_task(repo_info, gguf = False)
+                row_task = (
+                    "automatic-speech-recognition"
+                    if is_whisper_stt
+                    else (
+                        "text-to-speech"
+                        if local_metadata.get("pipeline_tag") == "text-to-speech"
+                        else _cached_row_task(repo_info, gguf = False)
+                    )
+                )
+                if is_whisper_stt:
+                    local_metadata["pipeline_tag"] = "automatic-speech-recognition"
+                    local_metadata["library_name"] = "transformers"
+                    tags = list(local_metadata.get("tags", []))
+                    if not any(tag.lower() == "whisper" for tag in tags):
+                        tags.append("whisper")
+                    local_metadata["tags"] = tags
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
@@ -1058,7 +1092,9 @@ def _scan_cached_models(
                         payload.model_format,
                         identity = identity,
                         partial = bool(row["partial"]),
+                        hidden_infra = is_hidden_infra,
                         companion = bool(row["companion"]),
+                        stt_only = bool(is_whisper_stt),
                     )
                 )
                 if _prefer_cache_row(row, existing):
@@ -1071,12 +1107,10 @@ def _scan_cached_models(
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
-        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d "
-        "skipped_stt=%d returned=%d",
+        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
         inspected,
         skipped_gguf,
         skipped_no_weights,
-        skipped_stt,
         len(cached),
     )
     return cached

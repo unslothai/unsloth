@@ -126,7 +126,10 @@ def test_profile_hardening_precedes_every_use_it_protects():
     for marker, what in (
         ("$env:UNSLOTH_NO_TORCH -in @(", "the first unset-env test"),
         ("Invoke-WebRequest", "the first in-process download"),
-        ("& $UnslothExe @studioArgs", "the setup handoff"),
+        (
+            "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+            "the setup handoff",
+        ),
     ):
         idx = _locate(code, marker, what)
         assert strict_idx < idx, f"{what} must be reached with strict mode pinned"
@@ -848,7 +851,11 @@ def test_the_handoff_is_published_only_around_the_setup_child():
     assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff" in source
     gate = _locate(source, "$previousSetupRuntimeGateHandoff =", "the runtime-gate handoff")
     proxy = _locate(source, "$previousProxyHandoff =", "the proxy handoff save")
-    call = _locate(source, "    try {\n        & $UnslothExe @studioArgs", "the child invocation")
+    call = _locate(
+        source,
+        "    try {\n        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
+        "the child invocation",
+    )
     assert gate < call and proxy < call, "the handoff must be in place before the child runs"
 
 
@@ -1580,7 +1587,7 @@ def test_the_proxy_handoff_does_not_outlive_the_installer():
     # Still dropped explicitly once the child it exists for has run.
     cleared = "$UnslothProxyHandoffJson = $null"
     assert cleared in installer
-    child = installer.index("& $UnslothExe @studioArgs")
+    child = installer.index("Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs")
     assert child < installer.index(cleared, child)
 
 
@@ -1647,6 +1654,11 @@ def _windows_probe_env(monkeypatch, host, module_path):
     return studio_cmd._profile_probe_env(host)
 
 
+# os.environ upper-cases keys on Windows, so a probe env built there carries PSMODULEPATH.
+def _module_path(env):
+    return env[next(k for k in env if k.upper() == "PSMODULEPATH")]
+
+
 _PS7_MODULE_PATH = (
     r"C:\Users\me\Documents\PowerShell\Modules;"
     r"C:\Program Files\PowerShell\7\Modules;"
@@ -1661,7 +1673,7 @@ def test_the_windows_powershell_probe_is_given_its_own_modules_first(monkeypatch
     profile importing one threw while it was dot-sourced and its proxy never reached setup."""
     env = _windows_probe_env(monkeypatch, "powershell.exe", _PS7_MODULE_PATH)
 
-    entries = env["PSModulePath"].split(";")
+    entries = _module_path(env).split(";")
     assert entries[0] == _WINDOWS_PS_MODULES
     # Reordered, not pruned: everything the caller had is still reachable, just second.
     assert entries[1:] == _PS7_MODULE_PATH.split(";")[:2]
@@ -1672,14 +1684,30 @@ def test_a_module_path_already_led_by_windows_powershell_is_left_alone(monkeypat
     already = _WINDOWS_PS_MODULES + r";C:\Program Files\PowerShell\7\Modules"
     env = _windows_probe_env(monkeypatch, "powershell.exe", already)
 
-    assert env["PSModulePath"] == already
+    assert _module_path(env) == already
 
 
 def test_the_pwsh_probe_keeps_the_inherited_module_path(monkeypatch):
     # PowerShell 7 prefixes its own paths at startup, so reordering here would only demote them.
     env = _windows_probe_env(monkeypatch, "pwsh.exe", _PS7_MODULE_PATH)
 
-    assert env["PSModulePath"] == _PS7_MODULE_PATH
+    assert _module_path(env) == _PS7_MODULE_PATH
+
+
+def test_the_probe_reads_the_module_path_windows_actually_exports(monkeypatch):
+    """dict(os.environ) on Windows is keyed PSMODULEPATH and a plain dict is case-sensitive, so
+    reading "PSModulePath" dropped the caller's entries and added a second, case-differing key."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.delenv("PSModulePath", raising = False)
+    monkeypatch.setenv("PSMODULEPATH", _PS7_MODULE_PATH)
+
+    env = studio_cmd._profile_probe_env("powershell.exe")
+
+    assert [k for k in env if k.upper() == "PSMODULEPATH"] == ["PSMODULEPATH"]
+    assert _module_path(env).split(";") == [_WINDOWS_PS_MODULES] + _PS7_MODULE_PATH.split(";")[:2]
 
 
 def test_the_module_path_is_untouched_off_windows(monkeypatch):
@@ -1688,7 +1716,7 @@ def test_the_module_path_is_untouched_off_windows(monkeypatch):
     monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Linux")
     monkeypatch.setenv("PSModulePath", _PS7_MODULE_PATH)
 
-    assert studio_cmd._profile_probe_env("powershell.exe")["PSModulePath"] == _PS7_MODULE_PATH
+    assert _module_path(studio_cmd._profile_probe_env("powershell.exe")) == _PS7_MODULE_PATH
 
 
 def test_each_probed_host_gets_its_own_module_path(monkeypatch):
@@ -1702,7 +1730,7 @@ def test_each_probed_host_gets_its_own_module_path(monkeypatch):
     seen: dict = {}
 
     def _run(argv, **kwargs):
-        seen[argv[0]] = kwargs["env"]["PSModulePath"]
+        seen[argv[0]] = _module_path(kwargs["env"])
         return _Result(_framed('{"Invoke-WebRequest:Proxy": "http://corp:8080"}'))
 
     monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Windows")

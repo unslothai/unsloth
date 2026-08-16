@@ -815,9 +815,73 @@ def test_delete_thread_cancels_active_research_run(research_home):
             state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
         )
     )
-    chat_history._cancel_active_research(request, ["thread-1"])
+    asyncio.run(
+        chat_history.delete_threads(
+            chat_history.ChatDeleteRequest(ids = ["thread-1"]),
+            request,
+            current_subject = "alice",
+        )
+    )
 
-    assert research_db.get_run("run-1")["status"] == "cancelling"
+    assert research_db.get_run("run-1") is None
+    assert cancelled == ["run-1"]
+
+
+def test_project_delete_cancels_runs_captured_by_delete_transaction(research_home):
+    from routes import chat_history
+
+    studio_db.upsert_chat_project(
+        {
+            "id": "project-1",
+            "name": "Research project",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    studio_db.update_chat_thread("thread-1", {"projectId": "project-1"})
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+
+    cancelled: list[str] = []
+    request = SimpleNamespace(
+        app = SimpleNamespace(
+            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
+        )
+    )
+
+    deleted = asyncio.run(
+        chat_history.delete_project(
+            "project-1", request, delete_files = False, current_subject = "alice"
+        )
+    )
+
+    assert deleted.id == "project-1"
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert research_db.get_run("run-1") is None
+    assert cancelled == ["run-1"]
+
+
+def test_clear_history_cancels_runs_captured_by_delete_transaction(research_home):
+    from routes import chat_history
+
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+
+    cancelled: list[str] = []
+    request = SimpleNamespace(
+        app = SimpleNamespace(
+            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
+        )
+    )
+
+    asyncio.run(chat_history.clear_history(request, current_subject = "alice"))
+
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert research_db.get_run("run-1") is None
     assert cancelled == ["run-1"]
 
 
@@ -2440,16 +2504,14 @@ def test_create_without_assistant_id_does_not_eagerly_create_message(research_ho
 
     before = studio_db.list_chat_messages("thread-1")
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
-    run = asyncio.run(
-        create_research_run(
-            CreateResearchRun(
-                threadId = "thread-1",
-                userMessageId = "user-1",
-                inferenceRequest = {"model": "local-model"},
-            ),
-            request,
-            current_subject = "alice",
-        )
+    run = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        request,
+        current_subject = "alice",
     )
 
     assert run["assistantMessageId"] is None
@@ -2483,16 +2545,14 @@ def test_route_rejects_textless_research_before_claim(research_home, content, at
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     with pytest.raises(HTTPException, match = "non-empty text") as caught:
-        asyncio.run(
-            create_research_run(
-                CreateResearchRun(
-                    threadId = "thread-1",
-                    userMessageId = "user-1",
-                    inferenceRequest = {"model": "local-model"},
-                ),
-                request,
-                current_subject = "alice",
-            )
+        create_research_run(
+            CreateResearchRun(
+                threadId = "thread-1",
+                userMessageId = "user-1",
+                inferenceRequest = {"model": "local-model"},
+            ),
+            request,
+            current_subject = "alice",
         )
 
     assert caught.value.status_code == 400
@@ -2520,16 +2580,14 @@ def test_route_accepts_canonical_text_content_shapes(research_home, content):
             "createdAt": 2,
         }
     )
-    run = asyncio.run(
-        create_research_run(
-            CreateResearchRun(
-                threadId = "thread-1",
-                userMessageId = "user-1",
-                inferenceRequest = {"model": "local-model"},
-            ),
-            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
-            current_subject = "alice",
-        )
+    run = create_research_run(
+        CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+        ),
+        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+        current_subject = "alice",
     )
 
     assert run["status"] == "planning"
@@ -2544,16 +2602,14 @@ def test_route_rejects_overlapping_active_run_for_thread(research_home):
     _create()
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(
-            create_research_run(
-                CreateResearchRun(
-                    threadId = "thread-1",
-                    userMessageId = "user-1",
-                    inferenceRequest = {"model": "local-model"},
-                ),
-                request,
-                current_subject = "alice",
-            )
+        create_research_run(
+            CreateResearchRun(
+                threadId = "thread-1",
+                userMessageId = "user-1",
+                inferenceRequest = {"model": "local-model"},
+            ),
+            request,
+            current_subject = "alice",
         )
     assert caught.value.status_code == 409
 
@@ -2673,14 +2729,12 @@ def test_shared_chat_subject_can_follow_and_cancel_research(research_home):
     )
 
     _create()
-    visible = asyncio.run(get_research_run("run-1", current_subject = "bob"))
-    active = asyncio.run(active_research_runs("thread-1", current_subject = "bob"))
-    cancelled = asyncio.run(
-        cancel_research_run(
-            "run-1",
-            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
-            current_subject = "bob",
-        )
+    visible = get_research_run("run-1", current_subject = "bob")
+    active = active_research_runs("thread-1", current_subject = "bob")
+    cancelled = cancel_research_run(
+        "run-1",
+        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+        current_subject = "bob",
     )
 
     assert visible["ownerSubject"] == "alice"
@@ -3285,7 +3339,7 @@ def test_route_maps_unstable_assistant_conflict_to_409(research_home):
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(create_research_run(payload, request, current_subject = "alice"))
+        create_research_run(payload, request, current_subject = "alice")
     assert caught.value.status_code == 409
 
 
@@ -3302,7 +3356,7 @@ def test_route_accepts_max_tokens_without_treating_it_as_a_credential(research_h
     )
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
-    run = asyncio.run(create_research_run(payload, request, current_subject = "alice"))
+    run = create_research_run(payload, request, current_subject = "alice")
 
     assert run["config"]["inferenceRequest"]["maxTokens"] == 1024
 

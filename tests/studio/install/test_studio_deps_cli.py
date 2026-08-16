@@ -277,3 +277,40 @@ def test_a_torn_tree_without_the_manifest_helper_is_incomplete(tmp_path, monkeyp
 
     assert state["ok"] is False, state
     assert state["reason"] == "studio_install_manifest_missing"
+
+
+# ── which prefix owns the manifest module ────────────────────────────
+
+
+def test_a_manifest_inside_a_venv_site_packages_is_owned_by_that_venv(tmp_path, deps):
+    """The wheel case: studio/ really is installed into that prefix."""
+    venv = tmp_path / "venv"
+    site_packages = venv / "lib" / "python3.11" / "site-packages"
+    (site_packages / "studio").mkdir(parents = True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
+    module_path = site_packages / "studio" / "install_manifest.py"
+    shutil.copy(MANIFEST_PATH, module_path)
+
+    module = _load(module_path, "manifest_in_site_packages")
+
+    assert deps._venv_root_for_module(module) == venv
+
+
+def test_an_editable_checkout_is_not_owned_by_a_surrounding_venv(tmp_path, deps):
+    """`./install.sh --local` leaves studio/install_manifest.py in the repo. When the
+    clone happens to live inside some other virtualenv's directory, the first
+    pyvenv.cfg above it belongs to a venv the managed install has nothing to do
+    with. Claiming it there made verify-install walk that venv's site-packages and
+    report every managed dependency as missing, so `unsloth studio verify-install`
+    exited 1 on a healthy install and setup.sh could never take its fast path."""
+    surrounding = tmp_path / "unrelated_venv"
+    (surrounding / "lib" / "python3.11" / "site-packages").mkdir(parents = True)
+    (surrounding / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
+    repo = surrounding / "repo"
+    (repo / "studio").mkdir(parents = True)
+    module_path = repo / "studio" / "install_manifest.py"
+    shutil.copy(MANIFEST_PATH, module_path)
+
+    module = _load(module_path, "manifest_in_editable_checkout")
+
+    assert deps._venv_root_for_module(module) is None

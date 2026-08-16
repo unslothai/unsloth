@@ -1793,7 +1793,7 @@ def test_legacy_resume_config_cannot_inject_cache_pins():
     assert resource_provenance_is_complete(source_config) is False
 
 
-@pytest.mark.parametrize("status", ["pending", "incomplete"])
+@pytest.mark.parametrize("status", ["incomplete"])
 def test_unattested_current_hub_model_resume_is_rejected(status):
     route = _load_route_module(f"training_route_unattested_hub_model_{status}")
     request = _request(hf_dataset = None)
@@ -1811,6 +1811,28 @@ def test_unattested_current_hub_model_resume_is_rejected(status):
         route._prepare_resume_resource_provenance(request, resume_run)
 
     assert exc_info.value.status_code == 409
+
+
+def test_pending_hub_model_resume_before_attestation_is_allowed():
+    route = _load_route_module("training_route_pending_hub_model_resume")
+    request = _request(hf_dataset = None)
+    resume_run = {
+        "model_name": "unsloth/test",
+        "config_json": {
+            "model_name": "unsloth/test",
+            "training_type": "LoRA/QLoRA",
+            "hf_dataset": "",
+            "resource_provenance": {"version": 1, "status": "pending"},
+        },
+    }
+
+    actual_repo_id, requires_exact_model, requires_exact_dataset, _, _ = (
+        route._prepare_resume_resource_provenance(request, resume_run)
+    )
+
+    assert actual_repo_id is None
+    assert requires_exact_model is False
+    assert requires_exact_dataset is False
 
 
 def test_foreign_absolute_resume_paths_are_rejected_on_native_host():

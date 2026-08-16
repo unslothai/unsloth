@@ -75,17 +75,43 @@ _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
 }
 
-# Owned sd.cpp roots (default $HOME/.unsloth/stable-diffusion.cpp + each custom root's
-# <parent>/stable-diffusion.cpp sibling), each gated on the install-time owner marker so we never
-# stop a user-managed sd-server from an unrelated checkout at one of these paths.
+# sd.cpp roots whose sd-server has to be stopped: the default
+# $HOME/.unsloth/stable-diffusion.cpp, plus for each custom root both
+# <root>/stable-diffusion.cpp, where the install now lives, and the legacy
+# <parent>/stable-diffusion.cpp sibling an older build wrote. The nested one matters most: a
+# resident sd-server survives unlinking its binary, and the custom root is removed wholesale
+# below, so without it the tree goes and the server keeps running.
+# The owner marker gates the paths that SURVIVE when unowned (the default and the sibling), so an
+# unrelated checkout there keeps its server. It does not gate the nested path of a root this run
+# deletes: the current-root finder can select an unmarked binary there, and deleting the tree out
+# from under a live server is exactly what leaves it holding its port.
 _owned_sd_cpp_roots() {
     _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
     [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
     _custom_studio_roots 2>/dev/null | while IFS= read -r _root; do
         [ -n "$_root" ] || continue
+        _sd_root="$_root/stable-diffusion.cpp"
+        if [ -f "$_sd_root/.unsloth-studio-owned" ] || _is_studio_root "$_root"; then
+            [ -d "$_sd_root" ] && printf '%s\n' "$_sd_root"
+        fi
+    done
+    _sd_cpp_sibling_bases 2>/dev/null | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
         _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
         [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
     done
+}
+
+# Every root an older build could have hung its sd.cpp sibling off: the canonicalized custom roots
+# and the lexical ones. They differ only when the Studio home is itself a symlink, and there the
+# lexical form is the one the old `dirname "$UNSLOTH_STUDIO_HOME"` produced, so canonicalizing
+# first looked beside the link's target and missed the tree entirely. Every use is gated on the
+# owner marker, which is what keeps an unrelated checkout at either path safe.
+_sd_cpp_sibling_bases() {
+    {
+        _custom_studio_roots 2>/dev/null
+        _custom_studio_roots lexical 2>/dev/null
+    } | awk '!seen[$0]++'
 }
 
 # pkill resident sd-server / sd-cli under an owned sd.cpp root before that tree is removed (a live
@@ -365,6 +391,9 @@ _custom_studio_data_dirs() {
 # the install root is three dirnames up. Prints each discovered non-default
 # root on its own line; the caller iterates and de-duplicates.
 _custom_studio_roots() {
+    # $1 = "lexical": skip the canonicalization (see the legacy sd.cpp sibling below). Reset on
+    # every call, so a plain call is never affected by a preceding lexical one.
+    _studio_roots_lexical="${1:-}"
     _seen=""
     _emit() {
         _r="$1"
@@ -379,9 +408,13 @@ _custom_studio_roots() {
         esac
         # Canonicalize so syntactic variants ($HOME/../$USER, trailing slash)
         # resolve to the same path and hit the _is_unsafe_root deny list.
-        # shellcheck disable=SC1007
-        _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
-        [ -n "$_canon" ] && _r="$_canon"
+        # Skipped for the lexical pass, which exists only to rebuild the path an
+        # older build derived with a plain dirname (see _sd_cpp_sibling_bases).
+        if [ "${_studio_roots_lexical:-}" != "lexical" ]; then
+            # shellcheck disable=SC1007
+            _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
+            [ -n "$_canon" ] && _r="$_canon"
+        fi
         case "$_r" in "$HOME/.unsloth/studio"|/|"") return 0 ;; esac
         case ":$_seen:" in *":$_r:"*) return 0 ;; esac
         _seen="$_seen:$_r"
@@ -424,6 +457,54 @@ _remove_cli_shim() {
     esac
 }
 
+# Print key $2 from the Info.plist $1. PlistBuddy also reads binary plists;
+# the awk fallback covers XML on hosts without it.
+_plist_string() {
+    [ -f "$1" ] || return 1
+    if [ -x /usr/libexec/PlistBuddy ]; then
+        /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null && return 0
+    fi
+    awk -v k="<key>$2</key>" 'index($0, k) { f = 1; next }
+         f && /<string>/ { sub(/.*<string>/, ""); sub(/<\/string>.*/, ""); print; exit }' "$1"
+}
+
+# True when the bundle $1 is the packaged desktop app carrying bundle id $2.
+# install.sh's shell launcher shares that id, so exclude it by its executable.
+_owns_bundle_id() {
+    [ -d "$1" ] || return 1
+    [ "$(_plist_string "$1/Contents/Info.plist" CFBundleIdentifier)" = "$2" ] || return 1
+    [ "$(_plist_string "$1/Contents/Info.plist" CFBundleExecutable)" != "launch-studio" ]
+}
+
+# Path of the installed app owning bundle id $1, empty if there is none. A renamed
+# bundle or a subdirectory such as "/Applications/AI & ML/Unsloth.app" is a supported
+# layout, so match on the identifier rather than on a fixed set of paths.
+_bundle_id_owner() {
+    # Overridable so tests can point the scan at a fixture dir.
+    _bio_apps="${UNSLOTH_APPLICATIONS_DIR:-/Applications}"
+    # Spotlight finds it anywhere on disk. Skipped for a fixture scan: a real
+    # install on the machine running the tests must not change the result.
+    if [ -z "${UNSLOTH_APPLICATIONS_DIR:-}" ] && command -v mdfind >/dev/null 2>&1; then
+        _bio_hit=$(mdfind "kMDItemCFBundleIdentifier == '$1'" 2>/dev/null |
+                   while IFS= read -r _bio_app; do
+                       _owns_bundle_id "$_bio_app" "$1" && { printf '%s\n' "$_bio_app"; break; }
+                   done | head -n 1)
+        if [ -n "$_bio_hit" ]; then
+            printf '%s\n' "$_bio_hit"
+            return 0
+        fi
+    fi
+    # Spotlight can be off or still indexing, so walk the usual roots too. No depth cap:
+    # -prune stops the walk at each bundle, so nesting is free and bundles are never entered.
+    find "$_bio_apps" "$HOME/Applications" -name '*.app' -type d -prune -print 2>/dev/null |
+    while IFS= read -r _bio_app; do
+        if _owns_bundle_id "$_bio_app" "$1"; then
+            printf '%s\n' "$_bio_app"
+            break
+        fi
+    done | head -n 1
+}
+
 _unsloth_uninstall_main() {
     # Reject unknown arguments before destructive work.
     for _arg in "$@"; do
@@ -461,14 +542,15 @@ _unsloth_uninstall_main() {
             continue
         fi
         _remove_root_recording_db "$_custom_root"
-        # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
-        # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
-        # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
-        # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
-        # and "stable-diffusion.cpp" is exactly what `git clone` of leejet/stable-diffusion.cpp
-        # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
-        # and keep any unowned checkout. A pre-marker Studio build is left behind, never a user
-        # file deleted. Guard the derived parent path the same way.
+        # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
+        # <root>/stable-diffusion.cpp, so the removal above already took it. Older builds put it
+        # BESIDE the root at <parent>/stable-diffusion.cpp (find_sd_cpp_binary derived it from
+        # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
+        # Only remove a sibling Studio installed: <parent> is a user-chosen dir and
+        # "stable-diffusion.cpp" is exactly what `git clone` of the upstream project produces, so
+        # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
+        # unowned checkout. A pre-marker Studio build is left behind, never a user file deleted.
+        # Guard the derived parent path the same way.
         _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
         if _is_unsafe_root "$_custom_sd_cpp"; then
             echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2
@@ -476,6 +558,31 @@ _unsloth_uninstall_main() {
             echo "  keeping sd.cpp without Studio owner marker: $_custom_sd_cpp" >&2
         else
             _remove_path "$_custom_sd_cpp"
+        fi
+    done
+    # The lexical parent as well. A home that is itself a symlink has its old sd.cpp tree beside
+    # the LINK, and the loop above only saw the canonicalized root, so that tree survived. Marker
+    # only, with no "keeping" notice: an unmarked directory at this path is somebody's checkout
+    # and the canonical pass has already reported the one it looked at.
+    _custom_studio_roots lexical 2>/dev/null | while IFS= read -r _lex_root; do
+        [ -n "$_lex_root" ] || continue
+        # The same ownership check the canonical loop makes before it touches anything. A stale or
+        # mistyped UNSLOTH_STUDIO_HOME still reaches here (the lexical pass has no cd -P to filter
+        # a path that is not there), and without this "/parent/typo" would take the marked
+        # /parent/stable-diffusion.cpp of somebody else's Studio with it.
+        _is_studio_root "$_lex_root" || continue
+        _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
+        [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
+        # The deny list is string-based, so it has to see the RESOLVED path: the lexical form can
+        # carry ".." or a symlinked ancestor and slip a protected tree ("/tmp/../usr/...") past it.
+        # Canonicalize a copy for the check only; the removal still uses the lexical path.
+        # shellcheck disable=SC1007
+        _lex_sd_canon=$(CDPATH= cd -P -- "$_lex_sd_cpp" 2>/dev/null && pwd -P)
+        [ -n "$_lex_sd_canon" ] || _lex_sd_canon="$_lex_sd_cpp"
+        if _is_unsafe_root "$_lex_sd_cpp" || _is_unsafe_root "$_lex_sd_canon"; then
+            echo "  refusing to remove unsafe path: $_lex_sd_cpp" >&2
+        else
+            _remove_path "$_lex_sd_cpp"
         fi
     done
     _remove_root_recording_db "$HOME/.unsloth/studio"
@@ -557,22 +664,30 @@ _unsloth_uninstall_main() {
                 "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
             fi
             # WKWebView data, keyed by bundle id. Created at first launch, not by install.sh.
+            # The packaged desktop app shares this bundle id and is the only thing that
+            # writes this data; the shell launcher just opens a browser. This script never
+            # removes that app, so it must not reset it either.
             _bid="ai.unsloth.studio"
-            echo "Removing WebView caches and app data ($_bid)..."
-            _remove_path "$HOME/Library/Caches/$_bid"
-            _remove_path "$HOME/Library/WebKit/$_bid"
-            _remove_path "$HOME/Library/Application Support/$_bid"
-            _remove_path "$HOME/Library/HTTPStorages/$_bid"
-            _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
-            _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
-            _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
-            # defaults, not rm: cfprefsd rewrites the plist from memory. ByHost is a separate
-            # domain. As the home's owner, or under sudo root just edits root's own domain.
-            if command -v defaults >/dev/null 2>&1; then
-                _run_as_home_owner defaults delete "$_bid" >/dev/null 2>&1 || true
-                _run_as_home_owner defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
+            _bid_owner=$(_bundle_id_owner "$_bid")
+            if [ -n "$_bid_owner" ]; then
+                echo "Keeping app data ($_bid): it belongs to $_bid_owner"
+            else
+                echo "Removing WebView caches and app data ($_bid)..."
+                _remove_path "$HOME/Library/Caches/$_bid"
+                _remove_path "$HOME/Library/WebKit/$_bid"
+                _remove_path "$HOME/Library/Application Support/$_bid"
+                _remove_path "$HOME/Library/HTTPStorages/$_bid"
+                _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
+                _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
+                _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
+                # defaults, not rm: cfprefsd rewrites the plist from memory. ByHost is a separate
+                # domain. As the home's owner, or under sudo root just edits root's own domain.
+                if command -v defaults >/dev/null 2>&1; then
+                    _run_as_home_owner defaults delete "$_bid" >/dev/null 2>&1 || true
+                    _run_as_home_owner defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
+                fi
+                _remove_path "$HOME/Library/Preferences/$_bid.plist"
             fi
-            _remove_path "$HOME/Library/Preferences/$_bid.plist"
             ;;
         Linux)
             if [ "$_is_wsl" = "1" ]; then

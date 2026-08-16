@@ -60,6 +60,21 @@ def test_resumable_statuses_report_no_blocker(status, resources_available):
     assert resource_provenance_allows_resume(config) is True
 
 
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"status": "pending"},
+        {"version": 2, "status": "pending"},
+    ],
+    ids = ["missing-version", "wrong-version"],
+)
+def test_malformed_pending_marker_reports_validation_blocker(marker):
+    config = _config(**{RESOURCE_PROVENANCE_KEY: marker})
+
+    assert resource_provenance_resume_blocker(config) == "The resource provenance is invalid."
+    assert resource_provenance_allows_resume(config) is False
+
+
 def test_an_unresumable_status_explains_itself(resources_available):
     config = _config(**{RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "failed"}})
 

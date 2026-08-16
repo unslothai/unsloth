@@ -269,7 +269,7 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
         big = route._estimate_gguf_required_gb(
             config, max_seq_length = 32768, n_batch = 65536, n_ubatch = 65536
         )
-    assert base == pytest.approx(1.0)
+    assert base > 1.5
     # ctx-capped ubatch (32768) x ctx x 2 x 1.5 mask safety ~= 3 GiB on top
     assert big > base + 2.0
 
@@ -583,6 +583,21 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
     assert chat_loud > chat_quiet + 0.7
 
 
+def test_embedding_guard_prices_the_slots_that_will_launch():
+    """The loader clamps embedding slots to a smaller physical micro-batch.
+    The training coexistence guard must not 409 that reduced process by pricing
+    the original slot request."""
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    embedding = dict(_QWEN3_8B, pooling_type = 2)
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**embedding)):
+        clamped = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 4, n_batch = 4, n_ubatch = 2)
+        launched = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 2, n_batch = 4, n_ubatch = 2)
+    assert clamped == pytest.approx(launched, abs = 0.01)
+
+
 def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     """self._n_ubatch is recorded next to _commit_effective_parallel_slots and the two are
     read together later (the slot save re-estimates the KV from both). The fit-time reduction
@@ -602,8 +617,8 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # the sizing pass, the fit-time reduction, and the post-launch record
-    assert len(calls) == 3, f"expected three re-derivations, found {len(calls)}"
+    # sizing pass, embedding slot clamp, fit-time reduction, then the post-launch record
+    assert len(calls) == 4, f"expected four re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
@@ -650,10 +665,12 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
         big_2 = _gb(n_parallel = 2, n_batch = 32768, n_ubatch = 32768)
         typical_4 = _gb(n_parallel = 4, n_batch = 2048, n_ubatch = 512)
 
-    # The term is per slot PAST the first, so one slot is unchanged by it and the
-    # llama.cpp defaults (which emit no flag at all) stay exactly at the weights.
-    assert blank_1 == pytest.approx(1.0) and blank_4 == pytest.approx(1.0)
-    # 262144 * 32768 * 4 = 32 GiB for the second slot, which the mask alone missed
+    # Unset fields still launch at llama.cpp's known default 512-token micro-batch.
+    assert blank_1 > 1.5
+    assert blank_4 > blank_1 + 1.5
+    # The remote header may enable embeddings, so the first output buffer is charged.
+    assert big_1 > blank_1 + 30.0
+    # 262144 * 32768 * 4 = 32 GiB for the second slot too.
     assert big_2 > big_1 + 30.0
     # and it stays proportionate where the values are ordinary
     assert typical_4 < 4.0

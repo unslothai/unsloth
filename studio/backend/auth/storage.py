@@ -3,6 +3,8 @@
 
 """SQLite storage for auth data (user credentials + JWT secret)."""
 
+from contextlib import contextmanager
+
 import hashlib
 import hmac
 import ipaddress
@@ -12,7 +14,7 @@ import sqlite3
 import tempfile
 import threading
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 from utils.paths import auth_db_path, ensure_dir
 
@@ -246,6 +248,26 @@ def _current_generation(conn: sqlite3.Connection, username: str) -> Optional[str
     return credential_generation(secret) if secret is not None else None
 
 
+@contextmanager
+def credential_generation_guard(username: str, expect_gen: Optional[str]) -> Iterator[None]:
+    """Hold the auth write lock while a credential-derived write commits elsewhere."""
+    conn = get_connection()
+    try:
+        if expect_gen is not None:
+            conn.execute("BEGIN IMMEDIATE")
+            if _current_generation(conn, username) != expect_gen:
+                raise CredentialRotated(
+                    "The credential this request authenticated with was revoked."
+                )
+        yield
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
     ensure_dir(DB_PATH.parent)
@@ -416,6 +438,45 @@ def get_or_create_identity_secret() -> bytes:
         conn.close()
 
     _identity_secret_cache = secret
+    return secret
+
+
+# Dedicated AES-256 key used to encrypt Studio credentials in studio.db.
+# It intentionally lives in auth.db so copying studio.db alone does not expose
+# provider or Hugging Face tokens, and survives password changes/resets.
+_CREDENTIAL_ENCRYPTION_KEY_DB_KEY = "credential_encryption_key_v1"
+_credential_encryption_key_cache: Optional[bytes] = None
+
+
+def get_or_create_credential_encryption_key() -> bytes:
+    """Return the install-local credential encryption key, creating it once."""
+    global _credential_encryption_key_cache
+    if _credential_encryption_key_cache is not None:
+        return _credential_encryption_key_cache
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY, secrets.token_hex(32)),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY,),
+            ).fetchone()
+        secret = bytes.fromhex(row["value"])
+        if len(secret) != 32:
+            raise ValueError("Invalid credential encryption key")
+    finally:
+        conn.close()
+
+    _credential_encryption_key_cache = secret
     return secret
 
 
@@ -976,6 +1037,15 @@ def clear_desktop_secret() -> None:
 
 API_KEY_PREFIX = "sk-unsloth-"
 
+# The ``name`` a workflow mints its internal key under. Studio mints internal
+# keys for more than one workflow and they do not carry the same authority, so
+# the name is the only thing that tells them apart after the fact. Deep Research
+# is durable: its hops outlive the session that started them, so they carry a key
+# instead of a JWT and still have to reach the saved connection the run was
+# created with. A data-recipe key is handed to a user-authored recipe subprocess
+# and needs nothing but this host's local /v1, so it must never gain that reach.
+DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
+
 
 def create_api_key(
     username: str,
@@ -1128,6 +1198,40 @@ def is_internal_api_key(raw_key: str) -> bool:
         _api_key_hash_cache[cache_id] = key_hash
         _api_key_internal_cache[cache_id] = internal
     return internal
+
+
+def internal_api_key_name(raw_key: str) -> Optional[str]:
+    """The workflow name *raw_key* was minted under, or ``None`` if it is not internal.
+
+    ``is_internal_api_key`` answers "is this Studio's own key", which is the right
+    question for a monitor label but far too coarse for authorization: a
+    data-recipe key runs inside a recipe the user authored, so treating it as
+    equal to the Deep Research hop would let that recipe spend any saved cloud
+    credential. The name is fixed when the key is minted and is the only durable
+    thing that separates the two.
+
+    Deliberately not memoized: this is read on the external-provider path only,
+    once per request that carries an API key, and a stale answer here would be a
+    stale authorization. The PBKDF2 derivation is taken from the shared hash
+    cache when it is warm, so the cost is one indexed lookup.
+    """
+    if not raw_key.startswith(API_KEY_PREFIX):
+        return None
+    cache_id = _api_key_cache_id(raw_key)
+    cached_hash = _api_key_hash_cache.get(cache_id)
+    key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT name FROM api_keys WHERE key_hash = ? AND is_internal = 1 AND is_active = 1",
+            (key_hash,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    name = row["name"]
+    return name if isinstance(name, str) else None
 
 
 def validate_api_key(raw_key: str) -> Optional[str]:

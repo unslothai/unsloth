@@ -34,7 +34,7 @@ from utils.api_errors import install_api_error_handlers
         ("unsloth/Z-Image-GGUF", (20, 4.0)),
         ("unsloth/FLUX.1-schnell-GGUF", (4, 0.0)),  # schnell entry, before the flux.1 entry
         ("black-forest-labs/FLUX.1-dev", (28, 3.5)),
-        ("unsloth/FLUX.2-klein-4B-GGUF", (4, 0.0)),
+        ("unsloth/FLUX.2-klein-4B-GGUF", (4, 1.0)),
         ("unsloth/Qwen-Image-2512-GGUF", (20, 4.0)),
         ("some/unknown-model", (9, 0.0)),  # fallback
         ("", (9, 0.0)),

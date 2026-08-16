@@ -72,11 +72,26 @@ def load_install_manifest_module(extra_roots: Sequence[Path] = ()):
 
 
 def _venv_root_for_module(module) -> Optional[Path]:
-    """Prefix owning a manifest module, which may be a venv other than ours."""
-    path = Path(getattr(module, "__file__", "") or "")
+    """Prefix owning a manifest module, which may be a venv other than ours.
+
+    A prefix only owns the module when the module actually lives in that
+    prefix's site-packages. An editable checkout (`./install.sh --local`) keeps
+    studio/install_manifest.py in the repo, so the first pyvenv.cfg above it is
+    whatever venv the clone happens to sit inside -- frequently an unrelated one
+    when the repo is cloned into a directory that is itself a virtualenv. Owning
+    it there would verify that venv's packages instead of the managed install and
+    report every managed dependency as missing.
+    """
+    path = _resolved(Path(getattr(module, "__file__", "") or ""))
     for parent in path.parents:
         if (parent / "pyvenv.cfg").is_file():
-            return parent
+            for site_packages in _venv_site_packages(parent):
+                try:
+                    path.relative_to(_resolved(site_packages))
+                except ValueError:
+                    continue
+                return parent
+            return None
     return None
 
 

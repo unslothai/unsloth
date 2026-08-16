@@ -28,6 +28,7 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_server_command,
     build_sd_cpp_upscale_command,
     build_sd_cpp_video_command,
+    device_backend_flags,
     is_ggml_unsupported_op_abort,
     metal_text_encoder_flags,
     native_speed_flags,
@@ -628,6 +629,39 @@ def test_minimax_h3_video_command_has_all_joint_av_components():
     assert cmd[-2:] == ["--diffusion-fa", "--offload-to-cpu"]
 
 
+def test_video_build_appends_extra_args_verbatim_and_last():
+    """The video mirror of the image builder's last-wins contract.
+
+    Token-wise de-duplication cannot express an override: the builder already sets --rng cpu, so
+    extra_args ["--rng", "cuda"] dropped the --rng it matched and appended a bare "cuda" for the
+    parser to choke on. Every sibling builder in this module appends the list verbatim.
+    """
+    files = SdCppModelFiles(
+        diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+        vae = "/m/video.safetensors",
+        audio_vae = "/m/audio.safetensors",
+        llm = "/m/qwen.gguf",
+    )
+    cmd = build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        files,
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            fps = 24,
+            seed = 1,
+        ),
+        output_path = "/o.webm",
+        extra_args = ["--rng", "cuda"],
+    )
+    assert cmd[-2:] == ["--rng", "cuda"]
+    assert cmd[-1] != "cuda" or cmd[-2] == "--rng"
+    # Studio's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
+    assert cmd.count("--rng") == 2
+
+
 def _h3_video_cmd(**params):
     return build_sd_cpp_video_command(
         "/bin/sd-cli",
@@ -708,3 +742,35 @@ def test_minimax_h3_video_command_carries_the_video_flow_shift():
     assert "--flow-shift" not in _h3_video_cmd()
     assert _pair(_h3_video_cmd(flow_shift = 8.5), "--flow-shift") == "8.5"
     assert _pair(_h3_video_cmd(flow_shift = 12.0), "--flow-shift") == "12"
+
+
+def test_device_backend_flags_pin_all_three_graphs():
+    # sd.cpp defaults to ordinal 0 unless told otherwise, so a selection only takes effect through --backend.
+    assert device_backend_flags("CUDA1") == ["--backend", "diffusion=CUDA1,te=CUDA1,vae=CUDA1"]
+    # No selection keeps sd.cpp's own choice rather than pinning ordinal 0 explicitly.
+    assert device_backend_flags(None) == []
+    assert device_backend_flags("") == []
+
+
+def test_device_backend_flags_leave_the_offloaded_modules_on_the_cpu():
+    # --clip-on-cpu / --vae-on-cpu ARE te=cpu / vae=cpu and the parser is last-wins, so pinning them would undo low_vram.
+    low_vram = offload_flags(OFFLOAD_MODEL)
+    assert "--clip-on-cpu" in low_vram and "--vae-on-cpu" in low_vram
+    assert device_backend_flags("CUDA1", low_vram) == [
+        "--backend",
+        "diffusion=CUDA1,te=cpu,vae=cpu",
+    ]
+    # The group policy offloads parameters but runs both on the device, so both are pinned.
+    assert device_backend_flags("CUDA1", offload_flags(OFFLOAD_GROUP)) == [
+        "--backend",
+        "diffusion=CUDA1,te=CUDA1,vae=CUDA1",
+    ]
+
+
+def test_device_backend_flags_are_appended_not_folded_into_the_policy():
+    # The pin is built per binary at the point the flags are handed over, so the policy list it
+    # reads must stay unchanged: a deferred install can replace the build after this is computed.
+    policy = offload_flags(OFFLOAD_GROUP)
+    before = list(policy)
+    device_backend_flags("CUDA1", policy)
+    assert policy == before

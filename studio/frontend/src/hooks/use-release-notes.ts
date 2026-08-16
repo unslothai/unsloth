@@ -5,15 +5,22 @@ import { authFetch, hasAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Keyed to one exact version, so a new update never pairs with older notes.
+// The newest release's notes. The version is carried only so a response the
+// popup has moved on from can be dropped.
 export interface ReleaseNotes {
   version: string;
   markdown: string | null;
+  // Release title, e.g. "Meta Muse Glimmer".
+  heading: string | null;
+  // Release tag, e.g. "v0.1.60-beta".
+  tag: string | null;
+  // The release page, preferred over the generic changelog for the link out.
+  htmlUrl: string | null;
   matched: boolean;
   truncated: boolean;
   source: string | null;
   releaseNotesUrl: string | null;
-  // Set when the lookup itself failed, as opposed to a version with no notes.
+  // Set when the lookup itself failed, as opposed to a release with no notes.
   error: string | null;
 }
 
@@ -50,6 +57,9 @@ function toReleaseNotes(value: unknown, version: string): ReleaseNotes | null {
   return {
     version,
     markdown,
+    heading: stringOrNull(payload, "heading"),
+    tag: stringOrNull(payload, "tag"),
+    htmlUrl: stringOrNull(payload, "html_url"),
     matched: payload.matched === true && markdown !== null,
     truncated: payload.truncated === true,
     source: stringOrNull(payload, "source"),

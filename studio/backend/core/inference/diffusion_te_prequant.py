@@ -108,6 +108,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "hidream-ai/hidream-i1-full",
         }
     ),
+    # Qwen3-4B text encoder: 3 shards, 8,044,982,000 bytes, identical sha256 set across the distilled Z-Image-Turbo and the undistilled base (only their transformers differ).
+    frozenset(
+        {
+            "tongyi-mai/z-image-turbo",
+            "tongyi-mai/z-image",
+        }
+    ),
 )
 
 

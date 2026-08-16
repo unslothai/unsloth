@@ -90,7 +90,9 @@ def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
 def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
     requirements = _EXTRAS_REQUIREMENTS.read_text(encoding = "utf-8")
     assert 'einx<0.4.3; sys_platform == "win32"' in requirements
-    assert 'einx; sys_platform != "win32"' in requirements
+    # einx dropped 3.9 in 0.4.0, so the non-Windows side is split by interpreter.
+    assert 'einx==0.4.3; sys_platform != "win32" and python_version >= "3.10"' in requirements
+    assert 'einx==0.3.0; sys_platform != "win32" and python_version < "3.10"' in requirements
 
 
 @pytest.mark.parametrize(

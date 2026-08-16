@@ -19,8 +19,16 @@ import { useMonitorFrameStore } from "../stores/monitor-frame-store";
  *
  * Re-measured on resize and through a ResizeObserver, because the composer
  * grows with its input and moves from centred to docked with no resize event.
+ *
+ * `coverable` says the stack may paint over this box rather than clip itself,
+ * for the windows too short to do both. Off by default: the Live monitor's
+ * controls have to stay clickable, and anything else that publishes here should
+ * decide deliberately rather than inherit the composer's answer.
  */
-export function usePublishedFrame(element: HTMLElement | null): void {
+export function usePublishedFrame(
+  element: HTMLElement | null,
+  { coverable = false }: { coverable?: boolean } = {},
+): void {
   // This caller's claim on the store, stable for the life of the component.
   const publisher = useMemo(() => ({}), []);
   const setFrame = useMonitorFrameStore((state) => state.setFrame);
@@ -44,6 +52,7 @@ export function usePublishedFrame(element: HTMLElement | null): void {
         top: box.top,
         right: box.right,
         bottom: box.bottom,
+        coverable,
       });
     };
     measure();
@@ -56,5 +65,5 @@ export function usePublishedFrame(element: HTMLElement | null): void {
       observer?.disconnect();
       clearFrame(publisher);
     };
-  }, [element, publisher, setFrame, clearFrame]);
+  }, [element, publisher, coverable, setFrame, clearFrame]);
 }

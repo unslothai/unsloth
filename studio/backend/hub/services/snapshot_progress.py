@@ -25,8 +25,8 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.state_dir import RepoType
 from hub.utils.hf_cache_state import (
-    INCOMPLETE_SUFFIX,
     blob_bytes_present,
+    incomplete_blob_hash,
     preferred_repo_cache_dirs,
     snapshot_selection_key,
 )
@@ -125,15 +125,17 @@ def _variant_bytes_on_disk(
     manifest: Optional[download_manifest.Manifest],
     snapshot_dir: Optional[Path],
     variant_file_matcher: Optional["VariantFileMatcher"],
+    active_partial_hashes: "frozenset[str]" = frozenset(),
 ) -> int:
     """Bytes a variant owns, read from the snapshot dir instead of ``blobs/``.
 
-    Only used when the expected blob hashes could not be resolved. The snapshot
-    dir is the one variant-scoped view of the cache: its entries are named per
-    file, so a sibling quant is excluded by name, whereas in the shared
-    ``blobs/`` dir a sibling's bytes are indistinguishable from this variant's
-    and counting them wholesale is the "instant ~900 MB" bug. ``stat`` follows
-    HF's symlink layout and reads the Windows copy layout directly.
+    The snapshot dir is the one variant-scoped view of the cache: its entries
+    are named per file, so a sibling quant is excluded by name, whereas in the
+    shared ``blobs/`` dir a sibling's bytes are indistinguishable from this
+    variant's and counting them wholesale is the "instant ~900 MB" bug.
+    ``stat`` follows HF's symlink layout and reads the Windows copy layout
+    directly. The latter matters even with resolved hashes: recent Hub clients
+    can materialize completed files without retaining a finalized blob entry.
     """
     if snapshot_dir is None:
         return 0
@@ -141,6 +143,11 @@ def _variant_bytes_on_disk(
     if manifest is not None:
         for expected in manifest.expected_files:
             if not download_manifest.expected_path_is_safe(expected.path):
+                continue
+            if expected.sha256 and expected.sha256 in active_partial_hashes:
+                # A force/retry can leave the previous materialized file in the snapshot while
+                # a replacement for the same logical blob is being written. Count the current
+                # partial, not both generations of the file.
                 continue
             try:
                 total += (snapshot_dir / expected.path).stat().st_size
@@ -372,24 +379,72 @@ def _snapshot_complete_on_disk(
     return False
 
 
+def _referenced_commits(entry: Path) -> "frozenset[str]":
+    """Commits this repo cache dir still points at.
+
+    HF records the commit a branch or tag resolved to in ``refs/<revision>`` on every
+    snapshot_download whose revision was not already a raw sha, so for the default ``main``
+    the file is always there. It is the one revision marker that survives without a manifest.
+    """
+    commits: set[str] = set()
+    try:
+        refs = list((entry / "refs").rglob("*"))
+    except OSError:
+        return frozenset()
+    for ref in refs:
+        try:
+            if not ref.is_file():
+                continue
+            commit = download_manifest.normalized_commit_hash(
+                ref.read_text(encoding = "utf-8").strip()
+            )
+        except (OSError, ValueError):
+            continue
+        if commit:
+            commits.add(commit)
+    return frozenset(commits)
+
+
+def _snapshot_is_stale_copy(
+    snapshot: Path, manifest: "Optional[download_manifest.Manifest]"
+) -> bool:
+    """Whether ``snapshot`` names a revision this cache dir has moved off.
+
+    Only asked where there is no symlink to read. HF names a snapshot dir after its commit, so
+    a dir named by neither the manifest's recorded commit nor any live ref is an older
+    revision, and its same-named files are not this download's bytes. Neither marker present
+    leaves the question unanswerable, and unanswerable is not a mismatch.
+    """
+    commit_hash = download_manifest.normalized_commit_hash(getattr(manifest, "commit_hash", None))
+    if commit_hash:
+        return snapshot.name != commit_hash
+    referenced = _referenced_commits(snapshot.parent.parent)
+    return bool(referenced) and snapshot.name not in referenced
+
+
 def _snapshot_resolves_to(
-    manifest: download_manifest.Manifest, snapshot: Path, expected_hashes: "frozenset[str]"
+    manifest: "Optional[download_manifest.Manifest]",
+    snapshot: Path,
+    expected_hashes: "frozenset[str]",
 ) -> bool:
     """Whether every expected file in ``snapshot`` points at one of ``expected_hashes``.
 
     HF names a blob by its hash and the snapshot entry links to it, so the link target settles
     which revision is materialized here. A copy-layout cache (Windows without symlinks) has no
-    target to read: unanswerable is not a mismatch, so it passes -- and it does not have to be
-    answered, because the byte tally that gates completion only ever counts blobs whose name IS
-    an expected hash, so the expected revision is already proven present in this cache dir.
+    target to read, and neither does a reading with no manifest to name the files, so both fall
+    back to dating the snapshot by revision.
     """
+    if manifest is None:
+        return not _snapshot_is_stale_copy(snapshot, None)
     for expected in getattr(manifest, "expected_files", ()) or ():
         if not download_manifest.expected_path_is_safe(expected.path):
             continue
         entry = snapshot / expected.path
         try:
             if not entry.is_symlink():
-                continue  # copy layout: nothing to compare against
+                if _snapshot_is_stale_copy(snapshot, manifest):
+                    return False
+                continue
             target = os.path.basename(os.readlink(entry))
         except OSError:
             continue
@@ -451,9 +506,11 @@ def compute_snapshot_progress(
     variant_file_set_unknown = variant is not None and not expected_hashes
     # Resolved at most once, and only if a reading gets far enough to need it.
     metadata_files: "_Lazy[tuple[download_manifest.ExpectedFile, ...]]" = _Lazy(
-        lambda: tuple(expected_files_resolver(repo_id, hf_token))
-        if expected_files_resolver is not None
-        else ()
+        lambda: (
+            tuple(expected_files_resolver(repo_id, hf_token))
+            if expected_files_resolver is not None
+            else ()
+        )
     )
 
     readings: list[tuple[int, int, Optional[str], bool, Optional[bool]]] = []
@@ -476,7 +533,10 @@ def compute_snapshot_progress(
     )
     for entry in cache_dirs:
         completed_bytes = 0
-        in_progress_bytes = 0
+        # Keyed by logical blob: a broken advisory lock leaves several process-unique writers
+        # racing on one etag, and each downloads the WHOLE file, so summing them overshoots.
+        partial_bytes: dict[str, int] = {}
+        completed_hashes: set[str] = set()
         # A partial this reading could not attribute to any target. It is not evidence FOR this
         # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
         # evidence against it either, and the by-name scan cannot see it because a partial is
@@ -508,21 +568,24 @@ def compute_snapshot_progress(
                 try:
                     if not f.is_file():
                         continue
-                    if f.name.endswith(INCOMPLETE_SUFFIX):
-                        blob_hash = f.name[: -len(INCOMPLETE_SUFFIX)]
+                    partial_hash = incomplete_blob_hash(f.name)
+                    if partial_hash is not None:
                         if expected_hashes:
-                            if blob_hash not in expected_hashes:
+                            if partial_hash not in expected_hashes:
                                 continue
                         elif not count_unscoped:
                             unattributable_partial = True
                             continue
-                        in_progress_bytes += blob_bytes_present(f)
+                        partial_bytes[partial_hash] = max(
+                            partial_bytes.get(partial_hash, 0), blob_bytes_present(f)
+                        )
                     else:
                         if expected_hashes:
                             if f.name not in expected_hashes:
                                 continue
                         elif not count_unscoped:
                             continue
+                        completed_hashes.add(f.name)
                         completed_bytes += f.stat().st_size
                 except OSError as exc:
                     # A blob we could not inspect is not a blob that is not there. Swallowing it
@@ -530,6 +593,25 @@ def compute_snapshot_progress(
                     # persisted download whose target may be intact behind the error.
                     scan_errors.append(exc)
                     continue
+        # A finalized blobs/<hash> supersedes every partial for the same logical blob: the racer
+        # that installed the file settled it, so a leftover writer's bytes are a duplicate, not
+        # progress. Counting both overshot the expected total and, because completion requires
+        # no bytes in flight, pinned a fully downloaded variant at 0.99 until the orphan was
+        # swept -- and an orphan outlives the process that would have unlinked it on the way out.
+        for blob_hash in completed_hashes:
+            partial_bytes.pop(blob_hash, None)
+        # Largest wins, deliberately, even though a killed attempt's partial can sit beside its
+        # replacement's under the same etag. Preferring the freshest mtime reads better against
+        # a corpse but oscillates between two GENUINELY live writers, which is what a broken
+        # advisory lock produces: each write makes a different one newest, so the bar would
+        # jump between the leader and the straggler.
+        #
+        # A corpse is not this reading's problem to solve, because it should not outlive the
+        # job that made it: a terminal job sweeps its own blobs without waiting out the
+        # abandonment grace, and a backend that died before it could is caught at boot. If one
+        # survives both (an unrelated client holding the blob lock over it) the bar over-reads
+        # until the next sweep, which is a smaller wrong than a reading that will not sit still.
+        in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)
         )
@@ -541,21 +623,29 @@ def compute_snapshot_progress(
                 hub_cache = entry.parent,
             )
         )
-        if variant_file_set_unknown:
+        if variant is not None:
             # The best reading across every retained snapshot, for the same reason presence is
             # established across all of them: the variant can live in an older revision while
             # the newest holds a sibling, and reading only the newest reported 0 bytes for a
-            # complete cached quant.
+            # complete cached quant. Do this even when hashes resolved: huggingface_hub 1.18's
+            # Windows copy layout can move a completed file directly into the snapshot and
+            # leave no finalized entry in blobs/, so a blob-only tally stays at zero.
+            manifest = entry_manifest.get()
             on_disk = max(
                 (
-                    _variant_bytes_on_disk(entry_manifest.get(), snap, variant_file_matcher)
+                    _variant_bytes_on_disk(
+                        manifest,
+                        snap,
+                        variant_file_matcher,
+                        frozenset(partial_bytes),
+                    )
                     for snap in snapshot_dirs.get()
+                    if not expected_hashes or _snapshot_resolves_to(manifest, snap, expected_hashes)
                 ),
                 default = 0,
             )
-            # Clamped, because the matcher behind the no-manifest half of that
-            # reading accepts every companion in the repo and so can overshoot.
-            # A bar reading "44 GB of 33 GB" is a worse answer than a pinned one.
+            # Clamped, because the matcher behind the no-manifest half of that reading accepts
+            # every companion in the repo and so can overshoot.
             if expected_total > 0:
                 on_disk = min(on_disk, expected_total)
             completed_bytes = max(completed_bytes, on_disk)

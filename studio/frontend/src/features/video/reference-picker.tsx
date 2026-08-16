@@ -14,6 +14,8 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
+import { readReferenceFile } from "./reference-budget";
+
 /** One staged reference file: the data URL the request carries, plus its name for the chip. */
 export interface ReferenceMedia {
   name: string;
@@ -41,17 +43,11 @@ export function ReferenceMediaPicker({
 
   const readFile = useCallback(
     (file: File | undefined | null) => {
-      if (!file || !file.type.startsWith(`${kind}/`)) {
-        if (file) toast.error(`Please choose ${kind === "video" ? "a video" : "an audio"} file`);
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () =>
-        onChange(
-          typeof reader.result === "string" ? { name: file.name, dataUrl: reader.result } : null,
-        );
-      reader.onerror = () => toast.error(`Could not read the ${kind} file`);
-      reader.readAsDataURL(file);
+      readReferenceFile(kind, file, {
+        onLoaded: (dataUrl) =>
+          onChange(dataUrl === null || !file ? null : { name: file.name, dataUrl }),
+        onError: (message) => toast.error(message),
+      });
     },
     [kind, onChange],
   );

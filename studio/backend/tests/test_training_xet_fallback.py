@@ -36,12 +36,6 @@ _lg = _types.ModuleType("loggers")
 _lg.get_logger = lambda name: logging.getLogger(name)
 _stub("loggers", _lg)
 _stub("structlog", _types.ModuleType("structlog"))
-_mpl = _types.ModuleType("matplotlib")
-_plt = _types.ModuleType("matplotlib.pyplot")
-_plt.Figure = type("Figure", (), {})  # referenced in a class-def annotation
-_mpl.pyplot = _plt
-_stub("matplotlib", _mpl)
-_stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
 _hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
@@ -63,8 +57,6 @@ from core.training.training import TrainingBackend
 for _name in (
     "loggers",
     "structlog",
-    "matplotlib",
-    "matplotlib.pyplot",
     "utils.hardware",
     "utils.native_path_leases",
     "utils.paths",

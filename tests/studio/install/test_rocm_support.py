@@ -47,6 +47,10 @@ stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
 _STACK_SPEC.loader.exec_module(stack_mod)
 
+# The probe prints its answer behind this marker, so chatter on either side of it cannot
+# be mistaken for the answer. Mocked stdout has to carry it too.
+_MARK = stack_mod._TORCH_PROBE_MARKER
+
 _detect_rocm_version = stack_mod._detect_rocm_version
 _ensure_rocm_torch = stack_mod._ensure_rocm_torch
 _has_rocm_gpu = stack_mod._has_rocm_gpu
@@ -55,6 +59,15 @@ _ROCM_TORCH_INDEX = stack_mod._ROCM_TORCH_INDEX
 _windows_rocm_index_url = stack_mod._windows_rocm_index_url
 _detect_windows_gfx_arch = stack_mod._detect_windows_gfx_arch
 _install_bnb_windows_rocm = stack_mod._install_bnb_windows_rocm
+
+
+@pytest.fixture(autouse = True)
+def _reset_torch_runtime_probe():
+    """The torch classification is memoized for the life of an install run, so one
+    test's mocked probe must not leak into the next."""
+    stack_mod._invalidate_torch_runtime_probe()
+    yield
+    stack_mod._invalidate_torch_runtime_probe()
 
 
 def _extract_sh_function_body(source: str, name: str) -> str:
@@ -76,6 +89,53 @@ def _extract_sh_function_body(source: str, name: str) -> str:
                 return source[start : i + 1]
         i += 1
     return source[start:]
+
+
+# A dpkg-query -W stand-in that renders whichever showformat string it is handed,
+# so this tests how install.sh ASKS for the version, not only how it parses the
+# answer. It answers for a package in ANY state because the real tool does: only
+# purged ones are left out, so a rocm-core removed with `apt remove` and never
+# purged keeps reporting the version it had.
+_DPKG_QUERY_STUB = r"""#!/bin/sh
+_status='__STATUS__'
+_ver='__VERSION__'
+# dpkg's Status field is "<want> <error-flag> <status>".
+case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
+_fmt=''
+_found=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -f=*)            _fmt=${1#-f=} ;;
+        --showformat=*)  _fmt=${1#--showformat=} ;;
+        -f|--showformat) shift; _fmt=$1 ;;
+        -*)              : ;;
+        rocm-core)       _found=1 ;;
+    esac
+    shift
+done
+[ -n "$_found" ] || exit 1
+[ -n "$_fmt" ] || _fmt='${Package}\t${Version}\n'
+# Unrecognised fields render empty, like the real dpkg-query.
+_out=$(printf '%s' "$_fmt" | sed \
+    -e "s|\${Package}|rocm-core|g" \
+    -e "s|\${Status}|$_want ok $_status|g" \
+    -e "s|\${db:Status-Status}|$_status|g" \
+    -e "s|\${db:Status-Want}|$_want|g" \
+    -e "s|\${db:Status-Eflag}|ok|g" \
+    -e "s|\${Version}|$_ver|g" \
+    -e "s|\${[^}]*}||g")
+printf "$_out"
+"""
+
+
+def _write_dpkg_query_stub(
+    path: str,
+    version: str,
+    status: str = "installed",
+) -> None:
+    with open(path, "w", encoding = "utf-8") as f:
+        f.write(_DPKG_QUERY_STUB.replace("__STATUS__", status).replace("__VERSION__", version))
+    os.chmod(path, 0o755)
 
 
 # ── Helper: build HostInfo for different scenarios ──────────────────────────
@@ -572,7 +632,7 @@ class TestEnsureRocmTorch:
         """Strix Halo without /dev/kfd must still get AMD gfx1151 wheels (unslothai#7301)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"|2.10.0+cpu\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -597,7 +657,7 @@ class TestEnsureRocmTorch:
         the AMD gfx wheels."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"|2.10.0+cpu\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -624,7 +684,7 @@ class TestEnsureRocmTorch:
         (Strix override / generic branch) decides instead."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"|2.10.0+cpu\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -648,7 +708,7 @@ class TestEnsureRocmTorch:
         and leave CPU torch in place -- the per-arch install runs."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"|2.10.0+cpu\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}):
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
@@ -673,7 +733,7 @@ class TestEnsureRocmTorch:
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         # Single-line probe: empty HIP marker before "|" for a CUDA build.
-        mock_probe.stdout = b"|2.10.0+cu126\n"
+        mock_probe.stdout = _MARK + "2.10.0+cu126||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -686,7 +746,7 @@ class TestEnsureRocmTorch:
 
         Returns the pip_install_try mock so callers can assert on the reinstall.
         """
-        probe = MagicMock(returncode = 0, stdout = b"yes\n")
+        probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+rocm7.1|7.1|\n")
         pip_try = MagicMock(return_value = True)
         with patch.dict(os.environ, {}, clear = False):
             os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
@@ -790,7 +850,7 @@ class TestEnsureRocmTorch:
         """If torch already has HIP, should skip ROCm reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.1.12345|2.10.0+rocm7.1\n"  # HIP marker + version
+        mock_probe.stdout = _MARK + "2.10.0+rocm7.1|7.1.12345|\n"  # HIP marker + version
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -807,7 +867,7 @@ class TestEnsureRocmTorch:
         and the reinstall fires."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"|2.10.0+cpu\n"
+        mock_probe.stdout = _MARK + "2.10.0+cpu||\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 with patch.object(stack_mod, "pip_install_try", return_value = True):
@@ -827,7 +887,7 @@ class TestEnsureRocmTorch:
         """CPU-only torch on ROCm host should trigger reinstall."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # empty = no GPU backend
+        mock_probe.stdout = "\n"  # empty = no GPU backend
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -846,7 +906,7 @@ class TestEnsureRocmTorch:
         """ROCm 6.3 should select rocm6.3 tag."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"
+        mock_probe.stdout = "\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -861,7 +921,7 @@ class TestEnsureRocmTorch:
         """ROCm version too old (below 6.0) should skip."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"
+        mock_probe.stdout = "\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -892,7 +952,7 @@ class TestEnsureRocmTorch:
         """ROCm 7.2 should select rocm7.2 tag (now in mapping with torch 2.11.0)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"
+        mock_probe.stdout = "\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -912,7 +972,7 @@ class TestEnsureRocmTorch:
         """ROCm 7.14 caps to rocm7.2 on pytorch.org; Strix must use AMD gfx index."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.14.60850|\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -939,7 +999,7 @@ class TestEnsureRocmTorch:
         # Strix and routes the install to the Strix-only AMD index.
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.14.60850|\n"
         buf = io.StringIO()
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1"}, clear = False):
             for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
@@ -969,7 +1029,7 @@ class TestEnsureRocmTorch:
         # Negative control: device 2 really is the Strix, so the reroute must still fire.
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.14.60850|\n"
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "2"}, clear = False):
             for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
                 os.environ.pop(_v, None)
@@ -1063,7 +1123,7 @@ Agent 4
         pinned torch index."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        mock_probe.stdout = "\n"  # cpu torch -> reinstall
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1141,7 +1201,7 @@ Agent 4
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         # HIP marker present (has_hip_torch=True) + installed +rocm6.4 wheel.
-        mock_probe.stdout = b"6.4.12345|2.10.0+rocm6.4\n"
+        mock_probe.stdout = _MARK + "2.10.0+rocm6.4|6.4.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
@@ -1165,7 +1225,7 @@ Agent 4
         The gfx probe may run for the bnb-skip flag but must not alter the pinned index."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"6.4.12345|2.10.0+rocm6.4\n"
+        mock_probe.stdout = _MARK + "2.10.0+rocm6.4|6.4.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1190,7 +1250,7 @@ Agent 4
         (no false reinstall of a correct ROCm venv)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.2.12345|2.11.0+rocm7.2\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.2.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
@@ -1224,7 +1284,7 @@ Agent 4
         specs for that arch, so re-flagging would reinstall-loop on every update."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"6.4.12345|2.10.0+rocm6.4\n"
+        mock_probe.stdout = _MARK + "2.10.0+rocm6.4|6.4.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx110X-all"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1250,7 +1310,7 @@ Agent 4
         is not the per-arch build the user pinned (Strix stays off the generic wheel)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.2.12345|2.11.0+rocm7.2\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.2.12345|\n"
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1324,7 +1384,7 @@ Agent 4
         not repair a broken installed torch, so returning would strand it (Codex P2)."""
         mock_probe = MagicMock()
         mock_probe.returncode = 1  # torch present but cannot import
-        mock_probe.stdout = b""
+        mock_probe.stdout = ""
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cpu"}
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1458,7 +1518,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        mock_probe.stdout = "\n"  # cpu torch -> reinstall
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1488,7 +1548,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"7.2.12345|2.11.0+rocm7.2\n"
+        mock_probe.stdout = _MARK + "2.11.0+rocm7.2|7.2.12345|\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1513,7 +1573,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"6.3.42131|2.7.0+rocm6.3\n"
+        mock_probe.stdout = _MARK + "2.7.0+rocm6.3|6.3.42131|\n"
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1539,7 +1599,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        mock_probe.stdout = "\n"  # cpu torch -> reinstall
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1564,7 +1624,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        mock_probe.stdout = "\n"  # cpu torch -> reinstall
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1591,7 +1651,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # cpu torch -> reinstall from the pinned index
+        mock_probe.stdout = "\n"  # cpu torch -> reinstall from the pinned index
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1617,7 +1677,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        mock_probe.stdout = "\n"  # cpu torch -> reinstall
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -1647,7 +1707,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
         mock_probe = MagicMock()
         mock_probe.returncode = 0
-        mock_probe.stdout = b"\n"  # cpu torch -> reinstall from the pinned index
+        mock_probe.stdout = "\n"  # cpu torch -> reinstall from the pinned index
         with patch("os.path.isdir", return_value = True):
             with patch("subprocess.run", return_value = mock_probe):
                 _ensure_rocm_torch()
@@ -2003,40 +2063,177 @@ class TestInstallShStructure:
         """An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY CPU pin is a request, not
         a detection failure: the */cpu wheel note must report the pin instead of
         claiming ROCm/HIP is unusable, the WSL setup guidance must be skipped,
-        and the gpu summary must not label a pinned AMD host "no usable ROCm"."""
+        and the gpu summary must not label a pinned AMD host "no usable ROCm".
+
+        The property is ORDER: the pin arm opens the chain the message sits in, so
+        a pinned host never reaches the message. This used to be approximated by a
+        character window before the message, which is a different claim -- it is a
+        budget on how much source may sit between the two, and every arm added to
+        the chain eats into it. #8529 added an unsupported-arch arm and pushed the
+        real distance to ~1121, so the window had to grow 400 -> 1400 for reasons
+        that had nothing to do with what the test is for. Walk the enclosing
+        if/elif chains instead: no distance, nothing to re-tune.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        note = source.find('substep "AMD GPU detected, but no usable ROCm/HIP install')
-        assert note != -1
-        assert (
-            '[ "$_torch_index_pinned" = true ]' in source[note - 400 : note]
-        ), "the */cpu note must check the explicit pin before diagnosing ROCm"
+        self._assert_guarded_by_pin_arm(
+            source,
+            'substep "AMD GPU detected, but no usable ROCm/HIP install',
+            'substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."',
+            "elif _has_amd_rocm_gpu; then",
+            "the */cpu note must check the explicit pin before diagnosing ROCm",
+        )
         assert (
             '[ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]' in source
         ), "ROCm-on-WSL guidance is detection advice; skip it for pinned installs"
-        summary = source.find('step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"')
-        assert summary != -1
-        assert (
-            '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
-        ), "the gpu summary must not claim no usable ROCm for a pinned index"
+        self._assert_guarded_by_pin_arm(
+            source,
+            'step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"',
+            'step "gpu" "AMD GPU (torch index pinned: $_torch_index_leaf)"',
+            "else",
+            "the gpu summary must not claim no usable ROCm for a pinned index",
+        )
+
+    _PIN_ARM = 'if [ "$_torch_index_pinned" = true ]'
+
+    # `fi` as a command of its own: at the start of the line, or after a `;`. install.sh
+    # closes chains inline too (`else :; fi`), and such a closure is invisible to a
+    # startswith("fi") test, leaving a closed chain looking open across the message.
+    _CLOSER = re.compile(r"(?:^|;)\s*fi\b")
+
+    # install.sh indents in 4-space steps, so a closure less than one step deeper than the
+    # arm closes the arm's own chain (or an enclosing one) rather than something nested in
+    # it. Comparing against the step, not the exact indent, keeps a `fi` re-indented by a
+    # space or two counting as the closure it is.
+    _INDENT_STEP = 4
+
+    @staticmethod
+    def _indent(line):
+        return len(line) - len(line.lstrip())
+
+    @classmethod
+    def _assert_guarded_by_pin_arm(cls, source, needle, pinned_note, arm, message):
+        """Assert ``needle`` sits in the ``arm`` arm of a still-open chain whose
+        first arm is the pin check and whose pin arm says ``pinned_note``.
+
+        Deliberately local rather than a whole-file walk of if/elif/fi. install.sh
+        embeds awk programs and PowerShell in quoted blocks, all of which contain
+        their own `if (...)`, and it closes some chains with a trailing `; fi`; a
+        global keyword walk mis-nests on both and can end up satisfying this guard
+        from an unrelated chain. Indentation is the structure install.sh is written
+        in and needs no parse: find the pin arm above the message, then require the
+        chain it opens to still be open (nothing closes it before the message) and
+        to have moved on to another arm (an `elif`/`else` at its indent).
+
+        The pin arm has to be the exact whole line and the arm the message sits in
+        has to be the exact expected one, or "a chain opened by something that
+        mentions the pin" is enough to pass: a never-firing `&& [ ... ]` extension
+        of the condition, or a decoy chain left open across the message with the
+        real guard deleted, both read as guards otherwise. And a guard that routes
+        pinned hosts to an empty arm still suppresses the message, so the pin arm
+        must be checked to carry its own note.
+        """
+        lines = source.splitlines()
+        # Skip comments: a commented-out `substep` is not a message users ever see.
+        hits = [
+            i
+            for i, line in enumerate(lines)
+            if needle in line and not line.lstrip().startswith("#")
+        ]
+        assert len(hits) == 1, f"expected exactly one {needle!r} in install.sh, found {len(hits)}"
+        message_line = hits[0]
+
+        opens = [i for i in range(message_line) if lines[i].strip() == cls._PIN_ARM + "; then"]
+        assert opens, f"{message}\nno pin check appears anywhere above the message"
+        pin_line = opens[-1]
+        indent = cls._indent(lines[pin_line])
+        between = range(pin_line + 1, message_line)
+
+        closed = [
+            i + 1
+            for i in between
+            if cls._CLOSER.search(lines[i].strip())
+            and cls._indent(lines[i]) < indent + cls._INDENT_STEP
+        ]
+        assert not closed, (
+            f"{message}\ninstall.sh:{pin_line + 1} opens on the pin check but the chain "
+            f"closes at install.sh:{closed[0]}, before the message at "
+            f"install.sh:{message_line + 1}, so the two are unrelated"
+        )
+        later_arms = [
+            i
+            for i in between
+            if re.match(r"^(elif|else)\b", lines[i].strip()) and cls._indent(lines[i]) == indent
+        ]
+        assert later_arms, (
+            f"{message}\nthe message at install.sh:{message_line + 1} is inside the pin "
+            f"arm opened at install.sh:{pin_line + 1}, so a pinned host still reaches it"
+        )
+        # The last arm before the message is the one the message is actually in.
+        enclosing_arm = lines[later_arms[-1]].strip()
+        assert enclosing_arm == arm, (
+            f"{message}\nthe message at install.sh:{message_line + 1} sits in "
+            f"`{enclosing_arm}` at install.sh:{later_arms[-1] + 1}, not in the expected "
+            f"`{arm}`, so the chain guarding it is not the one this test describes"
+        )
+        pin_body = lines[pin_line + 1 : later_arms[0]]
+        assert any(
+            pinned_note in line and not line.lstrip().startswith("#") for line in pin_body
+        ), (
+            f"{message}\nthe pin arm at install.sh:{pin_line + 1} no longer says "
+            f"{pinned_note!r}, so a pinned host is told nothing at all"
+        )
+
+    _ROCM_VERSION_SOURCES = (
+        "_rocm_tag_from_amd_smi",
+        "_rocm_tag_from_version_file",
+        "_rocm_tag_from_hipconfig",
+        "_rocm_tag_from_dpkg",
+        "_rocm_tag_from_rpm",
+    )
+
+    def _rocm_version_detection_script(self, source: str, rocm_prefix: str) -> str:
+        """The version-source helpers plus the resolver and the guarded
+        assignment that get_torch_index_url makes, as a runnable script.
+
+        /opt/rocm is redirected to `rocm_prefix` so the version file is a source
+        the test controls: a real ROCm host would otherwise answer one of the
+        probes and make the assertions machine-dependent."""
+        parts = []
+        # _run_bounded first: _rocm_tag_from_rpm routes its query through it, so
+        # omitting it makes that source answer nothing and the per-position
+        # assertions below pass for the wrong reason.
+        for name in (
+            "_run_bounded",
+            *self._ROCM_VERSION_SOURCES,
+            "_highest_rocm_tag",
+            "_detect_rocm_version_tag",
+        ):
+            body = _extract_sh_function_body(source, name)
+            assert body, f"install.sh no longer defines {name}()"
+            parts.append(body)
+        assignment = re.search(
+            r'^        _rocm_tag=\$\(_detect_rocm_version_tag.*?\|\| _rocm_tag=""\n',
+            source,
+            re.S | re.M,
+        )
+        assert assignment, "could not extract the guarded _rocm_tag assignment"
+        parts.append(assignment.group(0))
+        return "\n".join(parts).replace("/opt/rocm", rocm_prefix)
 
     def test_rocm_version_chain_survives_no_source_under_set_e(self):
         """When every ROCm version source is missing (e.g. rocminfo present but
-        rocm-core not installed, so dpkg-query/rpm exit 1), the _rocm_tag ||
-        chain fails as a whole; without the || guard set -e kills the installer
-        BEFORE the actionable no-version WARN it feeds. Executed, not text."""
+        rocm-core not installed, so dpkg-query/rpm exit 1), detection must still
+        return empty AND succeed; otherwise set -e kills the installer BEFORE the
+        actionable no-version WARN it feeds. Executed, not text."""
         shell = shutil.which("bash")
         if not shell:
             pytest.skip("bash needed to execute the version chain")
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        chain = re.search(
-            r'^        _rocm_tag=\$\(\{ command -v amd-smi.*?\|\| _rocm_tag=""\n',
-            source,
-            re.S | re.M,
-        )
-        assert chain, "could not extract the guarded _rocm_tag chain"
         with tempfile.TemporaryDirectory() as d:
+            # Nothing is created under this prefix, so every source comes up empty.
+            script_body = self._rocm_version_detection_script(source, os.path.join(d, "rocm"))
             # Tools exist on PATH but yield nothing usable, like a box with the
             # probe tools installed and no rocm-core package.
             for name in ("amd-smi", "hipconfig", "dpkg-query", "rpm"):
@@ -2045,13 +2242,101 @@ class TestInstallShStructure:
                     f.write("#!/bin/sh\nexit 1\n")
                 os.chmod(p, 0o755)
             script = (
-                "set -euo pipefail\n" + chain.group(0) + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
+                "set -euo pipefail\n" + script_body + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
             )
             env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
             r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
-            assert r.returncode == 0, f"version chain aborted under set -e: {r.stderr}"
-            assert r.stdout.startswith("SURVIVED:"), r.stdout
+            assert r.returncode == 0, f"version detection aborted under set -e: {r.stderr}"
+            assert r.stdout.strip() == "SURVIVED:", r.stdout
         assert "rocm" in source.lower()
+
+    def test_rocm_version_detection_takes_the_highest_source(self):
+        """Issue #8402: Debian 13 ships hipconfig 5.7 next to a 6.1 runtime, so
+        stopping at the first source that answered gated a working gfx1100 out to
+        CPU wheels. Every source is read and the highest wins. Executed, not
+        text, and asserted per source position so no single ordering passes by
+        accident."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        # Each source answers; whichever position holds the 6.4 reading must win.
+        # "version-file" is /opt/rocm/.info/version rather than a PATH tool.
+        outputs = {
+            "amd-smi": "AMDSMI Tool: 25.0.1 | ROCm version: {v}",
+            "version-file": "{v}.1-98",
+            "hipconfig": "{v}.31921-0",
+            "dpkg-query": "1:{v}.4-1",
+            "rpm": "{v}.4-1",
+        }
+        for winner in outputs:
+            with tempfile.TemporaryDirectory() as d:
+                rocm_prefix = os.path.join(d, "rocm")
+                script_body = self._rocm_version_detection_script(source, rocm_prefix)
+                for name, template in outputs.items():
+                    line = template.format(v = "6.4" if name == winner else "5.7")
+                    if name == "version-file":
+                        os.makedirs(os.path.join(rocm_prefix, ".info"), exist_ok = True)
+                        with open(
+                            os.path.join(rocm_prefix, ".info", "version"), "w", encoding = "utf-8"
+                        ) as f:
+                            f.write(line + "\n")
+                        continue
+                    if name == "dpkg-query":
+                        _write_dpkg_query_stub(os.path.join(d, name), line, "installed")
+                        continue
+                    p = os.path.join(d, name)
+                    with open(p, "w", encoding = "utf-8") as f:
+                        f.write(f"#!/bin/sh\necho '{line}'\n")
+                    os.chmod(p, 0o755)
+                script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                assert r.returncode == 0, r.stderr
+                assert r.stdout.strip() == "TAG:rocm6.4", (
+                    f"{winner} reported 6.4 while every other source reported 5.7, "
+                    f"but detection resolved {r.stdout.strip()}"
+                )
+
+    def test_removed_dpkg_rocm_core_cannot_pick_the_wheels(self):
+        """Highest-wins fixed the undershoot in #8402 and opened the symmetric
+        hole: a source reading HIGHER than the runtime now wins outright.
+        Undershoot lands on CPU wheels, which work; overshoot installs wheels the
+        runtime cannot load. `dpkg-query -W` reports packages left in "deinstall
+        ok config-files" by `apt remove` without `apt purge`, still carrying the
+        version they had, so a host that ran ROCm 7.0 and went back to 6.1 hands
+        dpkg a 7.0 that beats every live source. Only "installed" counts.
+        Executed, not text, and paired with the installed case so the assertion
+        cannot pass on the version alone."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        for status, expected in (("config-files", "TAG:rocm6.1"), ("installed", "TAG:rocm7.0")):
+            with tempfile.TemporaryDirectory() as d:
+                rocm_prefix = os.path.join(d, "rocm")
+                script_body = self._rocm_version_detection_script(source, rocm_prefix)
+                # The live runtime, via the version file: ROCm 6.1.
+                os.makedirs(os.path.join(rocm_prefix, ".info"), exist_ok = True)
+                with open(
+                    os.path.join(rocm_prefix, ".info", "version"), "w", encoding = "utf-8"
+                ) as f:
+                    f.write("6.1.2-98\n")
+                _write_dpkg_query_stub(os.path.join(d, "dpkg-query"), "1:7.0.0-1", status)
+                # Silence the rest so a real ROCm on the test host cannot answer.
+                for name in ("amd-smi", "hipconfig", "rpm"):
+                    p = os.path.join(d, name)
+                    with open(p, "w", encoding = "utf-8") as f:
+                        f.write("#!/bin/sh\nexit 1\n")
+                    os.chmod(p, 0o755)
+                script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                assert r.returncode == 0, r.stderr
+                assert r.stdout.strip() == expected, (
+                    f"dpkg rocm-core 7.0 in state {status!r} next to a 6.1 version file "
+                    f"resolved {r.stdout.strip()}, expected {expected}"
+                )
 
     def test_cuda_precedence(self):
         """ROCm detection runs only when NVIDIA is absent (check runtime ordering in get_torch_index_url)."""
@@ -2471,13 +2756,34 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        # The version helpers must be extracted too: without them get_torch_index_url
+        # calls a missing command, the guarded assignment swallows the 127, and the
+        # no-version endpoint is reached for the wrong reason. Verified by mutation
+        # (making _detect_rocm_version_tag return a real tag left this test green).
+        version_fns = [
+            _extract_sh_function_body(source, name)
+            for name in (
+                "_rocm_tag_from_amd_smi",
+                "_rocm_tag_from_version_file",
+                "_rocm_tag_from_hipconfig",
+                "_rocm_tag_from_dpkg",
+                "_rocm_tag_from_rpm",
+                "_highest_rocm_tag",
+                "_detect_rocm_version_tag",
+            )
+        ]
         assert fn and probe_fn and family_fn
+        assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
-            # /opt/rocm/.info/version directly (no tool to shim), which resolves
-            # a tag on a real ROCm box and skips the no-version endpoint under
-            # test. Same path-substitution technique as the KFD topology tests.
-            fn = fn.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
+            # /opt/rocm/.info/version directly (no tool to shim), which resolves a tag on
+            # a real ROCm box and skips the no-version endpoint under test. The read lives
+            # in _rocm_tag_from_version_file, so the rewrite has to land on the helper
+            # text; applying it to fn alone is a no-op.
+            version_fns = [
+                body.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
+                for body in version_fns
+            ]
             with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
                 f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
             # Silence every ROCm version source, not just amd-smi: a dev box with
@@ -2500,6 +2806,8 @@ class TestInstallShStructure:
                 + probe_fn
                 + "\n"
                 + family_fn
+                + "\n"
+                + "\n".join(version_fns)
                 + "\n"
                 + fn
                 + "\n"
@@ -3515,6 +3823,10 @@ class TestGfxArchNameFallback:
             ("AMD Ryzen AI 9 HX 370 w/ Radeon 890M", "gfx1150"),
             ("AMD Radeon RX 9070 XT", "gfx1201"),
             ("AMD Radeon RX 9070", "gfx1201"),  # Navi 48 like the XT, not Navi 44
+            # Navi 48 workstation card, gfx1201 per #7624 / #7307. Its name holds neither
+            # "9070" nor "9080", so it matched nothing and the install fell back to CPU.
+            ("AMD Radeon AI PRO R9700", "gfx1201"),
+            ("ATI Radeon 9700 PRO", None),  # a bare "9700" arm would claim this 2002 card
             ("AMD Radeon RX 9060 XT", "gfx1200"),  # Navi 44
             ("AMD Radeon RX 7700S", "gfx1102"),  # (?!S) lookahead must not hit gfx1101
             ("AMD Radeon RX 7700 XT", "gfx1101"),  # Navi 32
@@ -3809,7 +4121,10 @@ class TestSetupPs1ShadowingParity:
         assert "ConfigManagerErrorCode" in block
         # ... but when the filter would leave nothing, keep the parked card rather than
         # reporting no AMD GPU (matches the Python WMI path).
-        assert "if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }" in block
+        # @() around the WHOLE if, not each branch: an if-expression unrolls a one-element array,
+        # and a CimInstance scalar's .Count is $null on 5.1, so a host with exactly one Radeon
+        # reported no AMD GPU at all (#8335).
+        assert "@(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })" in block
 
     def test_index_picks_read_the_same_masks_as_the_pin_check(self):
         # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so every site
@@ -4379,9 +4694,11 @@ class TestRocmTorchInstalledEnvVar:
 
     @staticmethod
     def _ok_torch_probe(*a, **kw):
-        # Probe returns 0 when torch imports as ROCm.
+        # The shared probe exits 0 when torch imports and reports the build on stdout;
+        # a non-empty HIP version is what marks it as ROCm.
         rv = MagicMock()
         rv.returncode = 0
+        rv.stdout = _MARK + "2.10.0+rocm7.1|7.1|\n"
         return rv
 
     @patch.object(stack_mod, "_install_bnb_windows_rocm")
@@ -4446,7 +4763,7 @@ class TestWindowsRocmTorchaoGuard:
     def test_installed_torch_is_windows_rocm_accepts_rocm_probe(self):
         rv = MagicMock()
         rv.returncode = 0
-        rv.stdout = "yes"
+        rv.stdout = _MARK + "2.10.0+rocm7.1|7.1|"
         with (
             patch.object(stack_mod, "IS_WINDOWS", True),
             patch.object(stack_mod.subprocess, "run", return_value = rv),
@@ -4509,7 +4826,15 @@ class TestProgressStepCountMatchesTotal:
     base_total. Regression for a repair step added without incrementing base_total,
     which pushed _STEP past _TOTAL (Codex P2)."""
 
-    def _run_stack(self, tmp_path, *, is_windows, is_macos, is_mac_arm):
+    def _run_stack(
+        self,
+        tmp_path,
+        *,
+        is_windows,
+        is_macos,
+        is_mac_arm,
+        skip_base = True,
+    ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
         unstructured_plugin.mkdir()
@@ -4518,7 +4843,9 @@ class TestProgressStepCountMatchesTotal:
         sub.returncode = 0
         sub.stdout = ""
         with (
-            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1" if skip_base else "0"}),
+            patch.object(stack_mod, "_report_mlx_stack_health"),
+            patch.object(stack_mod, "_bitsandbytes_installed", return_value = False),
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "IS_MACOS", is_macos),
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
@@ -4545,6 +4872,29 @@ class TestProgressStepCountMatchesTotal:
     def test_linux_progress_reaches_total(self, tmp_path):
         step, total = self._run_stack(tmp_path, is_windows = False, is_macos = False, is_mac_arm = False)
         assert step == total, f"Linux progress {step} != total {total}"
+
+    @pytest.mark.parametrize("skip_base", [True, False])
+    @pytest.mark.parametrize(
+        "is_windows, is_macos, is_mac_arm",
+        [(False, False, False), (True, False, False), (False, True, True), (False, True, False)],
+        ids = ["linux", "windows", "macos_arm", "macos_intel"],
+    )
+    def test_progress_reaches_total_on_both_core_paths(
+        self, tmp_path, is_windows, is_macos, is_mac_arm, skip_base
+    ):
+        """Both the installer handoff and `studio update`, on every platform.
+
+        The update path on Apple Silicon runs the MLX step, which the earlier
+        SKIP_STUDIO_BASE=1-only cases never reached, so its slot went uncounted.
+        """
+        step, total = self._run_stack(
+            tmp_path,
+            is_windows = is_windows,
+            is_macos = is_macos,
+            is_mac_arm = is_mac_arm,
+            skip_base = skip_base,
+        )
+        assert step == total, f"progress {step} != total {total}"
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
@@ -6225,6 +6575,84 @@ class TestLlamaCppRuntimeWslOrdering:
         idx_binary = source.find("lib_dirs.append(binary_dir)")
         assert idx_helper != -1 and idx_binary != -1
         assert idx_helper < idx_binary
+
+
+class TestRocmWslSupplyChainPins:
+    """The ROCm-on-WSL bootstrap runs unattended and installs with sudo, so every piece of
+    code it fetches must come from an immutable ref: a moving branch would turn any rewrite
+    of that branch into root code execution on affected WSL hosts."""
+
+    def test_helper_is_fetched_from_a_pinned_commit_not_a_branch(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_bootstrap_rocm_wsl()")
+        assert start != -1
+        body = source[start : source.find("\n}", start)]
+        assert (
+            "unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" not in body
+        ), "the helper must not be fetched from the mutable main branch"
+        ref = re.search(r'_ROCM_WSL_HELPER_REF="([0-9a-f]+)"', body)
+        assert ref is not None, "the helper fetch must pin a full commit SHA"
+        assert len(ref.group(1)) == 40
+        assert "${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" in body
+        # And whatever that pin (or a user's older checkout) supplies, a helper without the
+        # pinned-source check is refused rather than trusted.
+        assert 'grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper"' in body
+        assert "predates the pinned-source check" in body
+
+    def test_librocdxg_ref_is_pinned_and_verified_before_build(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        assert (
+            "UNSLOTH_LIBROCDXG_REF:-develop" not in source
+        ), "librocdxg must not default to a moving branch"
+        sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', source)
+        assert sha is not None, "librocdxg must default to a pinned commit SHA"
+        # The ref itself must be that commit, so even a helper with no SHA check (an older
+        # fetched copy) resolves the same immutable revision rather than a movable tag.
+        ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-([0-9a-f]{40})\}"', source)
+        assert ref is not None and ref.group(1) == sha.group(1)
+        # The SHA check must run before anything from the clone is built or installed.
+        # A failed checkout must not fall through to the default branch.
+        assert "_co_failed=1" in source
+        assert "Refusing to build the repository's default branch instead" in source
+        idx_check = source.find("git rev-parse HEAD")
+        idx_cmake = source.find("cmake .. -DWIN_SDK")
+        idx_install = source.find("$SUDO make install")
+        assert idx_check != -1 and idx_check < idx_cmake < idx_install
+
+    def test_install_sh_forwards_the_same_librocdxg_pin_as_the_helper(self):
+        # install.sh forwards the pin so it also applies to a helper fetched from an older
+        # commit. The two copies must never disagree, or a bumped helper would be handed a
+        # stale pin by install.sh and build the wrong revision.
+        install_sh = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        helper = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        fwd_ref = re.search(r'_rw_dxg_ref="([0-9a-f]{40})"', install_sh)
+        fwd_sha = re.search(r'_rw_dxg_sha="\$_rw_dxg_ref"', install_sh)
+        own_ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-([0-9a-f]{40})\}"', helper)
+        own_sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', helper)
+        assert None not in (fwd_ref, fwd_sha, own_ref, own_sha)
+        assert fwd_ref.group(1) == own_ref.group(1) == own_sha.group(1)
+        # A SHA, whether ours or the operator's, is forwarded AS the ref, so even a helper
+        # that ignores UNSLOTH_LIBROCDXG_SHA resolves exactly the authorised commit.
+        assert 'if [ -n "$_rw_dxg_sha" ]; then\n        _rw_dxg_ref="$_rw_dxg_sha"' in install_sh
+        # A ref-only override must reach the helper untouched, so that path still works.
+        assert '_rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"' in install_sh
+        assert (
+            'UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha"'
+            in install_sh
+        )
+
+    def test_helper_contract_matches_what_install_sh_requires(self):
+        # install.sh runs only a helper declaring this contract, so the level it requires and
+        # the level the helper declares must move together, and the helper must actually
+        # implement both guarantees the level stands for.
+        install_sh = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        helper = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        required = re.search(r'grep -q "\^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)\$"', install_sh)
+        declared = re.search(r"^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)$", helper, re.M)
+        assert required is not None and declared is not None
+        assert required.group(1) == declared.group(1)
+        assert "git rev-parse HEAD" in helper
+        assert "_co_failed=1" in helper
 
 
 if __name__ == "__main__":

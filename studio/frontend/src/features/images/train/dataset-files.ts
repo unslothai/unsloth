@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// mirrors _DIFFUSION_DATASET_IMAGE_EXTS and _DIFFUSION_DATASET_TEXT_EXTS in backend/routes/training.py.
+// mirrors _DIFFUSION_DATASET_IMAGE_EXTS, _DIFFUSION_DATASET_CLIP_EXTS and
+// _DIFFUSION_DATASET_TEXT_EXTS in backend/routes/training.py.
 export const DATASET_IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
+// video containers, for the families that train from clips rather than stills.
+export const DATASET_CLIP_EXTS = [".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"];
+// the trainable unit, whichever kind: everything that pairs with a <stem>.txt caption.
+export const DATASET_MEDIA_EXTS = [...DATASET_IMAGE_EXTS, ...DATASET_CLIP_EXTS];
 export const DATASET_TEXT_EXTS = [".txt", ".caption", ".jsonl"];
-export const DATASET_FILE_ACCEPT = [...DATASET_IMAGE_EXTS, ...DATASET_TEXT_EXTS].join(",");
+export const DATASET_FILE_ACCEPT = [...DATASET_MEDIA_EXTS, ...DATASET_TEXT_EXTS].join(",");
 
-const ACCEPTED = new Set([...DATASET_IMAGE_EXTS, ...DATASET_TEXT_EXTS]);
+const ACCEPTED = new Set([...DATASET_MEDIA_EXTS, ...DATASET_TEXT_EXTS]);
 
 // a caption jsonl runs to kilobytes, so scan a prefix rather than decoding the whole upload.
 const METADATA_SCAN_BYTES = 1024 * 1024;
@@ -129,11 +134,12 @@ function inHiddenPath(file: File): boolean {
   return relative ? relative.split("/").slice(1).some(isHidden) : false;
 }
 
-/** whether two image names resolve to one `<stem>.txt` sidecar, as `_shares_sidecar` does:
- *  the stems clash on an exact match, so only an extension-case pair of one spelling is exempt. */
+/** whether two item names resolve to one `<stem>.txt` sidecar, as `_shares_sidecar` does:
+ *  the stems clash on an exact match, so only an extension-case pair of one spelling is exempt.
+ *  images and clips are compared together, since the sidecar is keyed on the stem alone. */
 function sharesSidecar(other: string, name: string): boolean {
   const otherExt = extensionOf(other);
-  if (other === name || !DATASET_IMAGE_EXTS.includes(otherExt)) return false;
+  if (other === name || !DATASET_MEDIA_EXTS.includes(otherExt)) return false;
   const otherStem = other.slice(0, other.length - otherExt.length);
   const stem = name.slice(0, name.length - extensionOf(name).length);
   if (otherStem.toLowerCase() !== stem.toLowerCase()) return false;
@@ -151,6 +157,7 @@ export interface DatasetFileSelection {
   /** the files to upload, in picked order. */
   files: File[];
   imageCount: number;
+  clipCount: number;
   captionCount: number;
   /** files left out because the endpoint does not accept their extension. */
   skipped: number;
@@ -162,8 +169,9 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
   const files: File[] = [];
   const collisions: DatasetCollision[] = [];
   const seen = new Map<string, string>();
-  const imageStems = new Map<string, Array<{ name: string; path: string }>>();
+  const mediaStems = new Map<string, Array<{ name: string; path: string }>>();
   let imageCount = 0;
+  let clipCount = 0;
   let captionCount = 0;
   let skipped = 0;
 
@@ -185,35 +193,37 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
       continue;
     }
     const isImage = DATASET_IMAGE_EXTS.includes(ext);
-    // two images sharing a stem resolve to one <stem>.txt caption, which the backend refuses.
+    const isClip = DATASET_CLIP_EXTS.includes(ext);
+    // two items sharing a stem resolve to one <stem>.txt caption, which the backend refuses.
     // every accepted variant is kept and compared, since the exemption is not transitive.
-    if (isImage) {
+    if (isImage || isClip) {
       const key = dest.slice(0, dest.length - ext.length).toLowerCase();
-      const variants = imageStems.get(key) ?? [];
+      const variants = mediaStems.get(key) ?? [];
       const clash = variants.find((v) => sharesSidecar(v.name, dest));
       if (clash !== undefined) {
         collisions.push({ kind: "stem", first: clash.path, second: path });
         continue;
       }
       variants.push({ name: dest, path });
-      imageStems.set(key, variants);
+      mediaStems.set(key, variants);
     }
     seen.set(dest, path);
     files.push(file);
     if (isImage) imageCount += 1;
+    else if (isClip) clipCount += 1;
     else captionCount += 1;
   }
 
-  return { files, imageCount, captionCount, skipped, collisions };
+  return { files, imageCount, clipCount, captionCount, skipped, collisions };
 }
 
-/** the first selected image the dataset folder already holds under a sidecar-sharing name, or
+/** the first selected item the dataset folder already holds under a sidecar-sharing name, or
  *  null. the backend compares each upload against the folder, so on a chunked top-up that 400
- *  lands with the slices before it already written. `existing` is the folder's image names. */
+ *  lands with the slices before it already written. `existing` is the folder's item names. */
 export function existingStemClash(files: File[], existing: string[]): DatasetCollision | null {
   for (const file of files) {
     const dest = destinationName(file);
-    if (!DATASET_IMAGE_EXTS.includes(extensionOf(dest))) continue;
+    if (!DATASET_MEDIA_EXTS.includes(extensionOf(dest))) continue;
     const clash = existing.find((name) => sharesSidecar(name, dest));
     if (clash !== undefined) return { kind: "stem", first: clash, second: displayPath(file) };
   }

@@ -57,7 +57,7 @@ test("a resolved pick applies its label and loads", async () => {
 test("an unresolvable pick prompts and loads nothing", async () => {
   const { handlers, log } = recorder({ resolve: () => Promise.resolve(null) });
   assert.equal(await runGgufRepoPick(handlers), false);
-  assert.deepEqual(log, ["ambiguous"]);
+  assert.deepEqual(log, ["ambiguous", "reverted"]);
 });
 
 test("a load that never starts takes its own label back", async () => {

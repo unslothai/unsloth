@@ -769,9 +769,9 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     load_dir = Path(rows[0]["load_id"])
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
-    assert [v.quant for v in variants], (
-        f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a " "companion drafter"
-    )
+    assert [
+        v.quant for v in variants
+    ], f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a companion drafter"
     assert load_dir == repo_dir / "snapshots" / OLDER
 
 
@@ -1628,6 +1628,73 @@ def _repo_with(
     for ref_name, commit in refs.items():
         (repo_dir / "refs" / ref_name).write_text(commit, encoding = "utf-8")
     return repo_dir
+
+
+def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"whisper","architectures":["WhisperForConditionalGeneration"]}',
+                "model.safetensors": b"\0" * 256,
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--user--speech-finetune",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+    assert len(rows) == 1
+    assert rows[0]["task"] == "automatic-speech-recognition"
+    assert rows[0]["pipeline_tag"] == "automatic-speech-recognition"
+    assert rows[0]["library_name"] == "transformers"
+    assert "whisper" in rows[0]["tags"]
+    assert rows[0]["capabilities"]["can_chat"] is False
+
+
+def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "README.md": b"---\npipeline_tag: text-to-speech\nlibrary_name: transformers\n---\n",
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--community--orpheus-tts",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert len(rows) == 1
+    assert rows[0]["task"] == "text-to-speech"
+    assert rows[0]["pipeline_tag"] == "text-to-speech"
 
 
 def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):

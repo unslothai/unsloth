@@ -4,9 +4,15 @@
 // What the bottom-right overlay stack has to keep clear of, in viewport
 // coordinates. The Live monitor is draggable and resizable and defaults to that
 // same corner; the chat composer docks to the bottom of the same column once a
-// thread has turns. Each publishes its box here while it is mounted.
+// thread has turns; the API monitor panel opens in that corner on its own. Each
+// publishes its box here while it is mounted.
+//
+// Read as well as written: the API monitor panel places itself against every
+// box but its own (api-monitor/panel-placement), so the three surfaces resolve
+// in one direction -- the monitor is placed by the user, the API panel steps
+// around the monitor, and the stack steps around both.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 
 export type MonitorFrame = {
@@ -14,6 +20,17 @@ export type MonitorFrame = {
   top: number;
   right: number;
   bottom: number;
+  /**
+   * Whether the stack may paint over this box when there is nowhere left to
+   * put itself. Off by default, because the box that started this store is the
+   * Live monitor and its Close button and resize grip have to stay clickable.
+   *
+   * The chat composer opts in. In a short window there is no arrangement that
+   * both dodges it and shows the cards whole, and the two ways to lose are not
+   * equal: a clipped card reads as broken, a card over the composer reads as a
+   * card over the composer and has a dismiss button on it.
+   */
+  coverable?: boolean;
 };
 
 /**
@@ -42,7 +59,8 @@ function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
     a.left === b.left &&
     a.top === b.top &&
     a.right === b.right &&
-    a.bottom === b.bottom
+    a.bottom === b.bottom &&
+    Boolean(a.coverable) === Boolean(b.coverable)
   );
 }
 
@@ -71,6 +89,10 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
+// Room the stack asks for before it has been measured. Deliberately small: guessing
+// high is what parked the loaded models card mid-window with the corner underneath it
+// empty. The real height arrives from the stack's ResizeObserver on the next frame.
+const ASSUMED_STACK_HEIGHT = 56;
 // The monitor's own controls, measured from its top edge: 12px of panel
 // padding, a 24px control row (the drag handle and the size-6 Close button),
 // an 8px rule and an 8px margin come to 54. Rounded up so a font or a border
@@ -100,25 +122,34 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
  *
  * This is the whole difference between the two composer layouts. Docked under a
  * thread it crowds the corner and has to be dodged, or the card covers Send. On
- * an empty chat the welcome layout pads it well clear of the bottom, and
- * lifting over it there is what put the banners in the middle of the page with
- * the corner underneath them empty.
+ * an empty chat it sits well clear of the bottom, and lifting over it there
+ * strands the stack mid-page with the corner underneath it empty.
  *
- * Derived from the cap rather than guessed, so the two cannot disagree: the
- * space below the box is what stackMaxHeight allows. Read as a bare "is it near
- * the bottom" instead, boxes ending just above the cutoff were left in the
- * capped branch with a cap that did not fit under them.
+ * So the room is measured, never guessed: `neededRoom` is the stack's own
+ * ResizeObserver height (see useStackGeometry). A fixed 120 once lifted an 80px
+ * card out of an 83px gap it fit in.
  *
  * Asked against the inset in force, never a fixed one: lifting over one box
  * moves the stack up into the next, and a box that had room at the corner may
  * have none there.
+ *
+ * A box that may be covered is asked against the floor instead. It has already
+ * said the stack outranks it, so a band holding every card whole is enough, and
+ * the height the cards would prefer is not worth leaving the corner for: a rail
+ * taller than the welcome composer's band was being parked mid-window for room
+ * it scrolls anyway.
  */
 function reachesStack(
   frame: MonitorFrame,
   viewportHeight: number,
   bottomInset: number,
+  neededRoom: number,
+  floorRoom: number = neededRoom,
 ): boolean {
-  return roomBelow(frame, viewportHeight, bottomInset) < MIN_STACK_ROOM;
+  const wanted = frame.coverable ? floorRoom : neededRoom;
+  // At least a pixel: a needed room of 0 lets the capped branch hand back a
+  // max-height of 0, which browsers honour, leaving the stack invisible.
+  return roomBelow(frame, viewportHeight, bottomInset) < Math.max(1, wanted);
 }
 
 /** The inset that clears this box's top edge, whether or not it fits there. */
@@ -169,6 +200,8 @@ export function stackBottomInset(
   frame: MonitorFrame | null,
   viewportWidth: number,
   viewportHeight: number,
+  neededRoom: number = ASSUMED_STACK_HEIGHT,
+  floorRoom: number = neededRoom,
 ): number {
   if (!frame) return STACK_INSET;
   // Only dodge a box that is in the stack's column and crowds its corner; one
@@ -176,7 +209,7 @@ export function stackBottomInset(
   // corner free.
   const inTheWay =
     inStackColumn(frame, viewportWidth) &&
-    reachesStack(frame, viewportHeight, STACK_INSET);
+    reachesStack(frame, viewportHeight, STACK_INSET, neededRoom, floorRoom);
   return inTheWay ? dodgeInset(frame, viewportHeight) : STACK_INSET;
 }
 
@@ -200,10 +233,12 @@ export function stackMaxHeight(
   viewportWidth: number,
   viewportHeight: number,
   bottomInset: number,
+  neededRoom: number = ASSUMED_STACK_HEIGHT,
+  floorRoom: number = neededRoom,
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  if (reachesStack(frame, viewportHeight, bottomInset)) {
+  if (reachesStack(frame, viewportHeight, bottomInset, neededRoom, floorRoom)) {
     // Lifted over: bottomInset already cleared it.
     if (liftFits(frame, viewportHeight)) return ownMargin;
     // Seated inside it instead. Stop below its header, or the Close button goes
@@ -234,13 +269,88 @@ export function stackGeometry(
   frames: MonitorFrame | null | readonly MonitorFrame[],
   viewportWidth: number,
   viewportHeight: number,
+  neededRoom: number = ASSUMED_STACK_HEIGHT,
+  // What the stack cannot give up, as opposed to what it would like. Defaults
+  // to `neededRoom` so a caller that knows only one number keeps the stricter
+  // reading of it.
+  floorRoom: number = neededRoom,
+  // Height of the run of cards at the bottom of the stack that the reader
+  // cannot dismiss. Covering is refused when that run would land on a box.
+  persistentTail = 0,
 ): StackGeometry {
   const list = frames === null ? [] : Array.isArray(frames) ? frames : [frames];
+  const placed = place(
+    list,
+    viewportWidth,
+    viewportHeight,
+    neededRoom,
+    floorRoom,
+  );
+  if (placed.maxHeight >= floorRoom || !list.some((f) => f.coverable)) {
+    return placed;
+  }
+  // Nowhere to put the stack even at its floor while dodging everything. Drop
+  // the boxes that said they may be covered and try again: the stack takes the
+  // corner and paints over the composer, which is what the cards being on top
+  // means. Clipping them instead is what the report was about, and a card
+  // sliced off at the rail's edge looks like it has slid behind the page.
+  //
+  // Tested against the floor and not the natural height on purpose. The cards
+  // are allowed to give up their notes, so a placement 3px short of the height
+  // they would prefer is still a placement that shows all of them, and covering
+  // the composer to win those 3px is a worse answer than a slightly shorter
+  // notes preview.
+  const uncoverable = list.filter((f) => !f.coverable);
+  const covering = place(
+    uncoverable,
+    viewportWidth,
+    viewportHeight,
+    neededRoom,
+    floorRoom,
+  );
+  // Where the run the reader cannot dismiss would actually land, measured from
+  // the placement being considered rather than from the corner. Dropping the
+  // composer does not always leave the stack at the bottom: an uncoverable
+  // monitor can still lift it, which carries the tail up onto the very box the
+  // corner-based reading had just cleared.
+  const tailTop = viewportHeight - covering.bottom - persistentTail;
+  const safeToCover = list.every(
+    (frame) => !frame.coverable || frame.bottom <= tailTop,
+  );
+  // Covering has to buy the thing it is for. A placement that takes the
+  // composer and STILL cannot show the cards at their floor has paid the whole
+  // price for nothing: the rail scrolls either way, so the one that leaves Send
+  // reachable is the better of two bad answers.
+  if (!safeToCover || covering.maxHeight < floorRoom) {
+    return placed;
+  }
+  return covering.maxHeight > placed.maxHeight ? covering : placed;
+}
+
+/** `stackGeometry` for one set of boxes, all of which must be dodged. */
+function place(
+  list: readonly MonitorFrame[],
+  viewportWidth: number,
+  viewportHeight: number,
+  neededRoom: number,
+  floorRoom: number = neededRoom,
+): StackGeometry {
   if (list.length === 0) {
-    const bottom = stackBottomInset(null, viewportWidth, viewportHeight);
+    const bottom = stackBottomInset(
+      null,
+      viewportWidth,
+      viewportHeight,
+      neededRoom,
+    );
     return {
       bottom,
-      maxHeight: stackMaxHeight(null, viewportWidth, viewportHeight, bottom),
+      maxHeight: stackMaxHeight(
+        null,
+        viewportWidth,
+        viewportHeight,
+        bottom,
+        neededRoom,
+      ),
     };
   }
   // Settled, not summed. Lifting over one box moves the stack up into the next,
@@ -251,7 +361,7 @@ export function stackGeometry(
   for (let pass = 0; pass <= column.length; pass += 1) {
     let next = bottom;
     for (const frame of column) {
-      if (reachesStack(frame, viewportHeight, bottom)) {
+      if (reachesStack(frame, viewportHeight, bottom, neededRoom, floorRoom)) {
         next = Math.max(next, dodgeInset(frame, viewportHeight));
       }
     }
@@ -262,14 +372,42 @@ export function stackGeometry(
     bottom,
     maxHeight: Math.min(
       ...list.map((f) =>
-        stackMaxHeight(f, viewportWidth, viewportHeight, bottom),
+        stackMaxHeight(
+          f,
+          viewportWidth,
+          viewportHeight,
+          bottom,
+          neededRoom,
+          floorRoom,
+        ),
       ),
     ),
   };
 }
 
-/** `stackGeometry` in px, recomputed as the monitor moves or resizes. */
-export function useStackGeometry(): StackGeometry {
+export type StackPlacement = StackGeometry & {
+  /** Attach to the stack container so its height feeds back into the placement. */
+  ref: (node: HTMLElement | null) => void;
+  /**
+   * The cards need more room than the cap allows, so the stack is scrolling.
+   * It is click-through the rest of the time, which also costs it its
+   * scrollbar, and a scroller nobody can drag hides the cards below the fold.
+   */
+  overflowing: boolean;
+};
+
+/**
+ * `stackGeometry` in px, recomputed as the monitor moves or resizes, and as the
+ * stack's own content grows.
+ *
+ * The measurement has to be taken with this hook's own `maxHeight` off. The
+ * overlays are `min-h-0` flex items with inner scrollers, so under the cap they
+ * shrink to it and `scrollHeight` reports the cap, not the content: 83px of
+ * content reads back as 40 under a 40px cap. Fed back in that is the placement
+ * reading its own output, so a stack taller than the gap under an obstacle would
+ * measure as exactly the gap, never ask to be lifted, and sit there clipped.
+ */
+export function useStackGeometry(): StackPlacement {
   const frames = useMonitorFrameStore((state) => state.frames);
   // Every published box, not their union: see stackGeometry.
   const published = useMemo(() => [...frames.values()], [frames]);
@@ -277,6 +415,9 @@ export function useStackGeometry(): StackGeometry {
     width: typeof window === "undefined" ? 0 : window.innerWidth,
     height: typeof window === "undefined" ? 0 : window.innerHeight,
   }));
+  const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
+  const [floorRoom, setFloorRoom] = useState(ASSUMED_STACK_HEIGHT);
+  const [persistentTail, setPersistentTail] = useState(0);
   useEffect(() => {
     const onResize = () =>
       setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -284,5 +425,172 @@ export function useStackGeometry(): StackGeometry {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return stackGeometry(published, viewport.width, viewport.height);
+  const ref = useCallback((node: HTMLElement | null) => {
+    if (node === null || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      // An empty stack asks for nothing, so nothing is dodged for it.
+      if (node.childElementCount === 0) {
+        setNeededRoom((current) => (current === 0 ? current : 0));
+        setFloorRoom((current) => (current === 0 ? current : 0));
+        return;
+      }
+      // Drop the cap and put it back in one synchronous block, so scrollHeight
+      // sees the unconstrained layout but nothing else ever sees the uncapped
+      // box. Through style, not state: React rewrites the same value next render.
+      // An uncapped box does not overflow, so lifting the cap clamps scrollTop
+      // to 0 and putting it back does not undo that: every descendant resize
+      // would throw a reader back to the first card. Restore it with the cap.
+      // `transition-property: all` reaches this box, so each write below starts
+      // a transition on max-height, and a transition's computed value is its
+      // *start* value until the timeline advances. Reading scrollHeight flushes
+      // style within the same frame, so the probe would read the cap it just
+      // replaced, and the restore would leave the box computing 0px while its
+      // inline style says otherwise: a rail with three whole cards laid out
+      // below a zero-height box, which is what the loaded models indicator
+      // turned up. Suppressed for the probe and restored with it.
+      const eased = node.style.transition;
+      node.style.transition = "none";
+      const capped = node.style.maxHeight;
+      // The rail's own scroll position is not the only one at stake. Uncapping
+      // it grows every scroller inside it, which shortens their scrollable
+      // range and clamps any that were scrolled past the new end: read the
+      // release notes to the bottom, let a download tick, and the list the
+      // reader was in jumps. The rail's cap comes back, but a clamped
+      // descendant does not come back with it, so each one is noted here and
+      // put back below.
+      const scrollers: Array<[Element, number]> = [];
+      for (const child of node.querySelectorAll("*")) {
+        if (child.scrollTop > 0) {
+          scrollers.push([child, child.scrollTop]);
+        }
+      }
+      const scrolled = node.scrollTop;
+      node.style.maxHeight = "none";
+      const natural = node.scrollHeight;
+      // Taken here, uncapped, and not after the cap goes back on. The tail
+      // panels are min-h-0 with their own scrollers, so under a tight cap they
+      // measure as almost nothing, the placement reads that as a tail it can
+      // safely put in the corner, the corner's larger cap lets them grow, and
+      // the next measurement says the opposite: the two placements would swap
+      // back and forth for as long as a download and an update card share the
+      // rail. One size that does not depend on the answer, as with the two
+      // heights above.
+      let tail = 0;
+      for (let i = node.children.length - 1; i >= 0; i -= 1) {
+        const child = node.children[i];
+        if (child.hasAttribute("data-overlay-dismissible")) break;
+        tail += child.getBoundingClientRect().height + STACK_GAP;
+      }
+      const persistent = Math.round(tail);
+      // And the other end of the same measurement: squeezed to nothing, what is
+      // left is what the cards refuse to give up. The difference between the two
+      // is the height the stack can donate to a dodge, and asking a placement to
+      // hold `natural` when it only has to hold `floor` is what made a 3px
+      // shortfall at 1280x830 give up on dodging the composer entirely.
+      node.style.maxHeight = "0px";
+      const floor = node.scrollHeight;
+      node.style.maxHeight = capped;
+      if (node.scrollTop !== scrolled) {
+        node.scrollTop = scrolled;
+      }
+      for (const [child, top] of scrollers) {
+        if (child.scrollTop !== top) {
+          child.scrollTop = top;
+        }
+      }
+      // Flush the restore under the suppression, or putting `transition` back
+      // hands the pending max-height change to a transition after all.
+      void node.scrollHeight;
+      node.style.transition = eased;
+      setNeededRoom((current) => (current === natural ? current : natural));
+      setFloorRoom((current) => (current === floor ? current : floor));
+      // How much of the stack, measured up from the corner, the reader cannot
+      // dismiss. The loaded models indicator and the download panel are last,
+      // so a covering placement puts them nearest the bottom edge: over Send
+      // that is #8210 again and permanently, rather than until a dismiss. The
+      // indicator ships off by default (#8346), which makes this whoever turned
+      // it on rather than nobody.
+      //
+      // A height rather than a flag, because whether it is a problem depends on
+      // where the composer is. Docked under a thread it sits on the bottom edge
+      // and the tail lands on it; on an empty chat it is centred and the corner
+      // below it is free, so the cards that reach it are the dismissible ones
+      // and there is nothing to protect.
+      setPersistentTail((current) =>
+        current === persistent ? current : persistent,
+      );
+    };
+    measure();
+    // Every box inside the stack, not just the stack itself. At its cap the container's
+    // border box does not move when its content grows, so a root-only observer never
+    // fires for a release-note image finishing its load, and childList says nothing
+    // either: the stack would keep the pre-load height and stay clipped.
+    // Height only. The llama.cpp update banner animates its progress bar's width on every
+    // frame, and that bar is inside this stack, so an unfiltered observer would remeasure
+    // at ~60Hz for a stack whose height never moved, each one forcing a synchronous layout
+    // to read scrollHeight with the cap lifted.
+    const heights = new WeakMap<Element, number>();
+    const observer = new ResizeObserver((entries) => {
+      let moved = false;
+      for (const entry of entries) {
+        const height =
+          entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
+        if (heights.get(entry.target) !== height) {
+          heights.set(entry.target, height);
+          moved = true;
+        }
+      }
+      if (moved) measure();
+    });
+    const observed = new Set<Element>();
+    const syncObserved = () => {
+      const wanted = new Set<Element>([node, ...node.querySelectorAll("*")]);
+      for (const element of observed) {
+        if (!wanted.has(element)) {
+          observer.unobserve(element);
+          observed.delete(element);
+        }
+      }
+      for (const element of wanted) {
+        if (!observed.has(element)) {
+          observer.observe(element);
+          observed.add(element);
+        }
+      }
+    };
+    syncObserved();
+    // A 0-height stack stays 0 as children come and go, so watch the child list too, and
+    // observe whatever just arrived.
+    const mutations = new MutationObserver(() => {
+      syncObserved();
+      measure();
+    });
+    mutations.observe(node, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      observed.clear();
+      mutations.disconnect();
+    };
+  }, []);
+  const geometry = stackGeometry(
+    published,
+    viewport.width,
+    viewport.height,
+    neededRoom,
+    floorRoom,
+    persistentTail,
+  );
+  return {
+    ...geometry,
+    ref,
+    // Derived from the placement, not read back off the node. A DOM reading
+    // latches: the stack is capped and scrolling for a frame, the placement
+    // then changes to one that fits, and nothing resizes afterwards to correct
+    // the flag, so a rail with nothing to scroll to keeps the pointer input it
+    // took. The cards absorb everything between their floor and their natural
+    // height, so a cap below the floor is exactly when the rail has to scroll.
+    // A pixel of slack, since the floor is a rounded scrollHeight and the cap
+    // is not.
+    overflowing: floorRoom > geometry.maxHeight + 1,
+  };
 }

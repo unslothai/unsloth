@@ -100,3 +100,66 @@ test("chat streaming bypasses Streamdown's starvable transition without visible 
     "{STREAMDOWN_IMMEDIATE_UPDATES}",
   );
 });
+
+test("token updates keep Streamdown's expensive configuration props stable", () => {
+  const streamdown = findChatStreamdown();
+  assert.ok(streamdown, "chat <Streamdown> is missing");
+
+  for (const [attribute, constant] of [
+    ["plugins", "STREAMDOWN_PLUGINS"],
+    ["controls", "STREAMDOWN_CONTROLS"],
+    ["shikiTheme", "STREAMDOWN_SHIKI_THEME"],
+  ]) {
+    assert.equal(
+      jsxAttribute(streamdown, attribute)?.initializer?.getText(source),
+      `{${constant}}`,
+      `${attribute} must retain object identity while raw tokens arrive`,
+    );
+  }
+});
+
+test("stream updates are paint-coalesced without a time or length throttle", () => {
+  const markdownSource = source.getText();
+  const hookStart = markdownSource.indexOf(
+    "function useCoalescedStreamingText",
+  );
+  const hookEnd = markdownSource.indexOf("const MarkdownTextImpl", hookStart);
+  assert.ok(hookStart >= 0 && hookEnd > hookStart);
+  const hook = markdownSource.slice(hookStart, hookEnd);
+
+  assert.ok(hook.includes("requestAnimationFrame"));
+  assert.ok(!hook.includes("setTimeout"));
+
+  // A running message can be replaced rather than appended to, as the audio
+  // path does when it swaps its placeholder for the player, so holding the last
+  // painted text has to be gated on the new text extending it.
+  assert.ok(hook.includes("text.startsWith(displayed.text)"));
+});
+
+test("streaming reparses only the active Markdown tail", () => {
+  const streamdown = findChatStreamdown();
+  assert.ok(streamdown, "chat <Streamdown> is missing");
+  assert.equal(
+    jsxAttribute(streamdown, "parseIncompleteMarkdown")?.initializer?.getText(
+      source,
+    ),
+    "{!incrementalRender}",
+  );
+  assert.equal(
+    jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
+      source,
+    ),
+    "{incrementalRender?.parseMarkdownIntoBlocks}",
+  );
+});
+
+test("dropping retained blocks moves Streamdown's render identity", () => {
+  // Streamdown compares only the Markdown string, so an edit that clears the
+  // retained blocks while leaving the live tail alone has to remount instead.
+  const streamdown = findChatStreamdown();
+  assert.ok(streamdown, "chat <Streamdown> is missing");
+  assert.equal(
+    jsxAttribute(streamdown, "key")?.initializer?.getText(source),
+    "{`${messageId}:${incrementalCache.renderGeneration}`}",
+  );
+});

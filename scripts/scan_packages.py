@@ -107,11 +107,15 @@ RE_BASE64 = re.compile(
 RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
+# ``httpx2`` is the pydantic-maintained successor and a separate import name, so the older
+# ``httpx``-only alternative did not see it. openai 3.0.0 requires httpx2 and routes every
+# call through it, which made the SDK's own HTTP invisible to each combined check that needs
+# a network half (secrets + network, IMDS + network, archive + network).
 RE_NETWORK = re.compile(
     r"\burllib\.request\b"
     r"|\burlopen\s*\("
     r"|\brequests\s*\.\s*(get|post|put|patch|delete|head|Session)\b"
-    r"|\bhttpx\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
+    r"|\b(?:httpx|httpx2)\s*\.\s*(get|post|put|patch|delete|Client|AsyncClient)\b"
     r"|\bsocket\s*\.\s*(socket|create_connection)\b"
     r"|\bhttp\.client\b"
     r"|\bhttp\.server\b",
@@ -275,9 +279,18 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    r"|\bhistory\b.*\bread\b"  # reading shell history
-    r"|\b\.bash_history\b"
-    r"|\b\.zsh_history\b"
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned
+    # the whole file and produced 9 of the 11 baselined CRITICALs here (httpx, urllib3, IPython,
+    # torch) -- each allowlisted, which suppressed this check for the whole file.
+    r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli|irb|sqlite)_history\b"
+    # Undotted history files, with a boundary that finds them however the path was built. fish
+    # writes fish_history and PowerShell writes PSReadLine/ConsoleHost_history.txt, neither with a
+    # leading dot. A quote counts as a boundary alongside a separator, so a basename assembled by
+    # Path.home() / "fish" / "fish_history" or os.path.join(h, "fish", "fish_history") still
+    # matches: there the character before the name is the quote, not a slash.
+    r"|(?:^|[/\\'\"])(?i:fish_history|ConsoleHost_history\.txt)\b"
+    r"|['\"~/]\.history\b"
+    r"|\bHISTFILE\b"
     r"|/etc/shadow"
     r"|/etc/passwd",
     re.DOTALL,

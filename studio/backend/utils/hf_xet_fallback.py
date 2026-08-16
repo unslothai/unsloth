@@ -217,12 +217,7 @@ def _load_optional(module_name: str) -> Any:
         return module
 
 
-def xet_health(**kwargs: Any) -> Any:
-    """The machine's Xet verdict, or ``None`` when unsloth_zoo cannot answer.
-
-    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
-    """
-    module = _load_optional("unsloth_zoo.hf_xet_health")
+def _xet_health_from(module: Any, **kwargs: Any) -> Any:
     if module is None:
         return None
     try:
@@ -231,6 +226,27 @@ def xet_health(**kwargs: Any) -> Any:
         import logging as _logging
         _logging.getLogger(__name__).debug("xet_health failed: %s", exc)
         return None
+
+
+def cached_xet_health(**kwargs: Any) -> Any:
+    """Return Zoo's Xet verdict only when its health module is already loaded.
+
+    Capability reads use this path so opening Hub cannot initialize Unsloth Zoo. A real
+    download calls :func:`xet_health`, which loads the optional module and populates this cache.
+    """
+    with _load_lock:
+        module = _optional_modules.get("unsloth_zoo.hf_xet_health", _UNTRIED)
+    return None if module is _UNTRIED else _xet_health_from(module, **kwargs)
+
+
+def xet_health(**kwargs: Any) -> Any:
+    """Load and query Zoo's Xet verdict for an actual download decision.
+
+    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
+    Read-only capability requests use :func:`cached_xet_health` instead.
+    """
+    module = _load_optional("unsloth_zoo.hf_xet_health")
+    return _xet_health_from(module, **kwargs)
 
 
 def record_xet_outcome(ok: bool, reason: str = "") -> None:
@@ -543,6 +559,7 @@ __all__ = [
     "DEFAULT_XET_ATTEMPTS",
     "DownloadStallError",
     "child_should_disable_xet",
+    "cached_xet_health",
     "is_data_phase_stall",
     "xet_attempts",
     "get_hf_download_state",
@@ -599,9 +616,18 @@ def hf_hub_download_with_xet_fallback(
     force_download: bool = False,
     cache_dir: Optional[str] = None,
     reuse_other_cache_root: bool = False,
+    local_files_only: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
     ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
+
+    ``local_files_only`` resolves from the cache and never from the network, raising
+    huggingface_hub's ``LocalEntryNotFoundError`` on a miss. It deliberately BYPASSES the shared
+    fallback rather than forwarding the kwarg: that ladder exists only to recover a wedged
+    network transfer, so with no transfer permitted there is nothing to watch, and -- decisively
+    -- ``start_watchdog``-style version skew means an older installed ``unsloth_zoo`` could drop
+    an unrecognised kwarg on the floor. A dropped ``local_files_only`` DOWNLOADS, which is the one
+    outcome this parameter exists to prevent, so it must not depend on the installed zoo.
 
     ``reuse_other_cache_root`` (opt-in) resolves a file cached ONLY under huggingface_hub's
     import-time root through that root. Studio's cache folder is a setting, so after it changes every
@@ -630,6 +656,27 @@ def hf_hub_download_with_xet_fallback(
                     cache_dir = None
         except Exception:  # noqa: BLE001 — a cache we cannot read just keeps the live root
             pass
+    if local_files_only:
+        # Straight to huggingface_hub, after the root switch above (which is pure cache lookups and
+        # is exactly what lets an offline caller reach a file left under the import-time root).
+        # Cancellation is still honoured either side, as the fallback path does it. ``force_download``
+        # is not forwarded: there is nothing to re-fetch offline, and huggingface_hub rejects the pair.
+        from huggingface_hub import hf_hub_download
+
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Cancelled")
+        path = hf_hub_download(
+            repo_id = repo_id,
+            filename = filename,
+            token = token,
+            repo_type = repo_type,
+            revision = revision,
+            cache_dir = cache_dir,
+            local_files_only = True,
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Cancelled")
+        return path
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait(),
     # where None blocks forever and a hung Xet download never falls back. Omitting also lets the
     # shared layer pick its per-transport defaults.

@@ -25,6 +25,38 @@ function reset(): void {
   store.clear();
 }
 
+test("the indicator is off until it is switched on", () => {
+  reset();
+  assert.equal(getShowLoadedModels(), false);
+});
+
+// Written either way, never removed. A pre-update tab reads a missing key as
+// on, so removing it on disable would let the storage event flip the card back
+// on over there.
+test("both toggles store a value the older reader also honours", () => {
+  reset();
+  setShowLoadedModels(true);
+  assert.equal(store.get(LOADED_MODELS_PREFERENCE_KEYS.show), "true");
+  setShowLoadedModels(false);
+  assert.equal(store.get(LOADED_MODELS_PREFERENCE_KEYS.show), "false");
+  assert.equal(getShowLoadedModels(), false);
+});
+
+// What the old build wrote when it was turned down. It must not now read as on.
+test("an older explicit false still reads as off", () => {
+  reset();
+  store.set(LOADED_MODELS_PREFERENCE_KEYS.show, "false");
+  assert.equal(getShowLoadedModels(), false);
+});
+
+// Reset all local preferences removes the key, and the default must survive it.
+test("a cleared key falls back to off, not on", () => {
+  reset();
+  setShowLoadedModels(true);
+  store.delete(LOADED_MODELS_PREFERENCE_KEYS.show);
+  assert.equal(getShowLoadedModels(), false);
+});
+
 test("the card is open until something closes it", () => {
   reset();
   assert.equal(getLoadedModelsDismissed(), false);
@@ -44,6 +76,7 @@ test("closing it stores the dismissal, reopening removes the key", () => {
 // The point of keeping them apart.
 test("closing the card does not switch the setting off", () => {
   reset();
+  setShowLoadedModels(true);
   setLoadedModelsDismissed(true);
   assert.equal(getShowLoadedModels(), true);
 });

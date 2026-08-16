@@ -204,7 +204,7 @@ test("the KB list's own 200 does not overrule its marker", () => {
   );
 });
 
-// Three call sites, because two of them bypass ragRequest.
+// four call sites, because three of them bypass ragRequest
 test("every RAG response path reports availability", async () => {
   const src = await readSrc("features/rag/api/rag-api.ts");
   assert.match(
@@ -229,12 +229,19 @@ test("every RAG response path reports availability", async () => {
     /noteRagResponse\(response\.status, json\)/,
     "ragUpload bypasses ragRequest, so its 503 is still dropped",
   );
-  const stream = functionBody(src, "streamJobEvents");
+  const stream = functionBody(src, "openEventStream");
   assert.match(
     stream,
     /noteRagResponse\(response\.status, body\)/,
-    "the SSE endpoint bypasses ragRequest too",
+    "the SSE endpoints bypass ragRequest too",
   );
+  for (const generator of ["streamJobEvents", "streamFolderSyncJobEvents"]) {
+    assert.match(
+      functionBody(src, generator),
+      /openEventStream\(/,
+      `${generator} opens its stream without the availability check`,
+    );
+  }
 });
 
 test("listKnowledgeBases reads the marker before returning the array", async () => {

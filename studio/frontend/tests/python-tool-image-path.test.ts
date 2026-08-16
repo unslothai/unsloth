@@ -7,9 +7,12 @@ import test from "node:test";
 import { pythonToolImagePath } from "../src/components/assistant-ui/python-tool-image-path.ts";
 
 test("escapes Python tool image path segments", () => {
+  // An id with a path separator now travels in the query rather than in the
+  // path: an encoded slash is rejected or decoded by proxies before the route
+  // sees it, so it did not survive the round trip.
   assert.equal(
     pythonToolImagePath("session/id", "loss curve #1.png"),
-    "/api/inference/sandbox/session%2Fid/loss%20curve%20%231.png",
+    "/api/inference/sandbox/_/loss%20curve%20%231.png?session=session%2Fid",
   );
 });
 

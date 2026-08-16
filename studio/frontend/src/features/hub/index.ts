@@ -27,7 +27,6 @@ export {
   LOCAL_MODEL_SOURCE,
   LOCAL_MODEL_SOURCES,
   type BaseModelSource,
-  type BrowseFoldersResponse,
   type CachedDatasetRepo,
   type CachedGgufRepo,
   type CachedInventoryRow,
@@ -54,7 +53,6 @@ export {
   type ResolvedInventoryResource,
   type ScanFolderInfo,
   addScanFolder,
-  browseFolders,
   buildCachedInventoryRow,
   buildLocalInventoryRows,
   dedupeSameSourceHubCacheRows,
@@ -117,6 +115,10 @@ export {
   DeleteConfirmDialog,
   UpdateConfirmDialog,
 } from "./catalog/download-card";
+export {
+  DeleteImpactSummary,
+  useDeleteImpact,
+} from "./catalog/delete-impact";
 export { HubOptionMenu, type HubOption } from "./catalog/hub-option-menu";
 export { DotTag } from "./catalog/dot-tag";
 export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";

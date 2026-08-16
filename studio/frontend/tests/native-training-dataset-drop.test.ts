@@ -111,7 +111,14 @@ test("classifies native drops before truncating long display filenames", () => {
   });
 });
 
-test("hit testing converts native physical coordinates to CSS pixels", () => {
+// Only WebView2 reports a device-pixel drop position; macOS and GTK already
+// report CSS pixels, so scaling those halved every hit test on a HiDPI display
+// and the zone never matched.
+test("hit testing scales a Windows drop position to CSS pixels", () => {
+  Object.defineProperty(globalThis, "navigator", {
+    value: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64)" },
+    configurable: true,
+  });
   const bounds = { left: 100, right: 300, top: 50, bottom: 150 };
   assert.equal(
     nativeDropPositionHitsBounds({ x: 400, y: 200 }, 2, bounds),
@@ -119,6 +126,22 @@ test("hit testing converts native physical coordinates to CSS pixels", () => {
   );
   assert.equal(
     nativeDropPositionHitsBounds({ x: 700, y: 200 }, 2, bounds),
+    false,
+  );
+});
+
+test("hit testing takes a macOS drop position as-is", () => {
+  Object.defineProperty(globalThis, "navigator", {
+    value: { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X)" },
+    configurable: true,
+  });
+  const bounds = { left: 100, right: 300, top: 50, bottom: 150 };
+  assert.equal(
+    nativeDropPositionHitsBounds({ x: 200, y: 100 }, 2, bounds),
+    true,
+  );
+  assert.equal(
+    nativeDropPositionHitsBounds({ x: 400, y: 200 }, 2, bounds),
     false,
   );
 });

@@ -62,6 +62,7 @@ export async function runGgufRepoPick(
   if (!handlers.isCurrent()) return false;
   if (!filename) {
     handlers.onAmbiguous();
+    handlers.onNotStarted();
     return false;
   }
   handlers.onResolved(filename);

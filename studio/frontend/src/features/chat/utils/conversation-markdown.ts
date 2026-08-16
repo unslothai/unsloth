@@ -534,7 +534,9 @@ function withoutGeneratedAudioBytes(text: string): string {
 
 export function contentBlocksToMarkdownBlocks(
   content: unknown,
-  normalizeToolResult: (result: unknown) => unknown = (result) => result,
+  normalizeToolResult: (result: unknown, toolName?: string) => unknown = (
+    result,
+  ) => result,
 ): ConversationMarkdownBlock[] {
   if (typeof content === "string") {
     return [{ kind: "text", text: withoutGeneratedAudioBytes(content) }];
@@ -562,11 +564,14 @@ export function contentBlocksToMarkdownBlocks(
             : "";
       if (thinkText) blocks.push({ kind: "thinking", text: thinkText });
     } else if (p.type === "tool-call") {
+      const toolName = typeof p.toolName === "string" ? p.toolName : "unknown";
       blocks.push({
         kind: "tool-call",
-        name: typeof p.toolName === "string" ? p.toolName : "unknown",
+        name: toolName,
         args: withoutNativePartBytes(p.args),
-        result: withoutGeneratedImageBytes(normalizeToolResult(p.result)),
+        result: withoutGeneratedImageBytes(
+          normalizeToolResult(p.result, toolName),
+        ),
       });
     } else if (
       p.type === "source" &&

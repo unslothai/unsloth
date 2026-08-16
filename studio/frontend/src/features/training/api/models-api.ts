@@ -73,6 +73,9 @@ export interface ModelConfigResponse {
   is_vision: boolean;
   is_embedding?: boolean;
   is_audio: boolean;
+  // False when the repo's tokenizer_config.json was unreadable (gated, offline,
+  // upstream error), so is_audio false means unknown rather than "not audio".
+  audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
   model_type?: "text" | "vision" | "audio" | "embeddings" | null;

@@ -169,10 +169,8 @@ EOF
         PYTHON_VERSION="3.13"
         # shellcheck disable=SC1090
         . "$_HELPERS"
-        run_install_cmd() {
+        _run_uv_venv() {
             shift  # label
-            shift  # uv
-            shift  # venv
             shift  # target dir
             shift  # --python
             echo "REQUEST=$1" >&2
@@ -225,7 +223,7 @@ if [ "$3" = true ]; then
     _VENV_ROLLBACK_ACTIVE=true
 fi
 _stub_rc="$4"
-run_install_cmd() { return "$_stub_rc"; }
+_run_uv_venv() { return "$_stub_rc"; }
 set -e
 # What _on_install_exit does for a non-zero status.
 trap '[ "$?" -eq 0 ] || _restore_studio_venv_replacement' EXIT

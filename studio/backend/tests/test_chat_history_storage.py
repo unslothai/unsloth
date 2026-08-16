@@ -128,6 +128,48 @@ def test_chat_thread_updated_at_bumps_on_message_writes(tmp_path, monkeypatch):
     assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
 
 
+def test_chat_export_reads_one_snapshot_during_concurrent_delete(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    project = studio_db.upsert_chat_project(_project())
+    thread = {**_thread(), "projectId": project["id"]}
+    studio_db.upsert_chat_thread(thread)
+    studio_db.upsert_chat_message(_message("msg-1", 1, "hello"))
+
+    original_get_connection = studio_db.get_connection
+    reader = original_get_connection()
+    deleted = False
+
+    class InterleavingConnection:
+        def execute(
+            self,
+            sql,
+            parameters = (),
+        ):
+            nonlocal deleted
+            cursor = reader.execute(sql, parameters)
+            if not deleted and "SELECT * FROM chat_threads" in sql:
+                deleted = True
+                writer = original_get_connection()
+                try:
+                    writer.execute("DELETE FROM chat_threads WHERE id = ?", (thread["id"],))
+                    writer.execute("DELETE FROM chat_projects WHERE id = ?", (project["id"],))
+                    writer.commit()
+                finally:
+                    writer.close()
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(reader, name)
+
+    monkeypatch.setattr(studio_db, "get_connection", lambda: InterleavingConnection())
+    projects, threads, messages = studio_db.build_chat_history_export()
+
+    assert deleted
+    assert [item["id"] for item in projects] == [project["id"]]
+    assert [item["id"] for item in threads] == [thread["id"]]
+    assert [item["id"] for item in messages] == ["msg-1"]
+
+
 def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     thread = studio_db.upsert_chat_thread(_thread())
@@ -266,6 +308,63 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     assert studio_db.get_chat_thread("thread-1") is None
     assert studio_db.list_chat_messages("thread-1") == []
     assert (tmp_path / "Projects" / "Research-project").exists()
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
+
+
+def test_thread_delete_blocks_a_late_create_with_the_same_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+
+    studio_db.delete_chat_threads(["late-thread"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("late-thread"))
+    assert studio_db.get_chat_thread("late-thread") is None
+
+
+def test_clear_blocks_a_stale_recreate_of_a_deleted_thread(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    studio_db.clear_chat_history_with_active_research_runs(["pending-thread"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("thread-1"))
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("pending-thread"))
+    assert studio_db.get_chat_thread("thread-1") is None
+    assert studio_db.get_chat_thread("pending-thread") is None
+
+
+def test_clear_reports_only_threads_that_had_a_row(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    _, deleted_ids = studio_db.clear_chat_history_with_active_research_runs(["never-committed"])
+
+    # the fenced id is still tombstoned, but reporting it would inflate the cleared count
+    assert deleted_ids == ["thread-1"]
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("never-committed"))
+
+
+def test_repeated_clear_operation_does_not_delete_later_threads(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("before-clear"))
+
+    _, first_deleted_ids = studio_db.clear_chat_history_with_active_research_runs(
+        operation_id = "clear-operation-1"
+    )
+    studio_db.upsert_chat_thread(_thread("after-clear"))
+
+    _, repeated_deleted_ids = studio_db.clear_chat_history_with_active_research_runs(
+        operation_id = "clear-operation-1"
+    )
+
+    assert first_deleted_ids == ["before-clear"]
+    assert repeated_deleted_ids == first_deleted_ids
+    assert studio_db.get_chat_thread("before-clear") is None
+    assert studio_db.get_chat_thread("after-clear") is not None
 
 
 def test_chat_project_delete_files_removes_workspace(
@@ -682,6 +781,24 @@ def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch)
     assert result is None
 
 
+def test_fork_chat_thread_rejects_a_deleted_target_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.upsert_chat_message(_msg("m1", None, 1))
+    studio_db.delete_chat_threads(["fork"])
+
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.fork_chat_thread(
+            source_thread_id = "src",
+            branch_message_id = "m1",
+            new_thread_id = "fork",
+            new_title = "f",
+            created_at = 2,
+            id_factory = lambda: "new-1",
+        )
+    assert studio_db.get_chat_thread("fork") is None
+
+
 def test_count_forks_for_message(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("src"))
@@ -944,3 +1061,50 @@ def test_an_empty_stored_parent_reads_as_the_root(tmp_path, monkeypatch):
         assert studio_db._surviving_parent_id(conn, "src", "a0", set()) is None
     finally:
         conn.close()
+
+
+def test_deleting_a_thread_signals_only_research_runs_a_worker_owns(tmp_path, monkeypatch):
+    # A fresh run sits in 'planning' with no lease. Deleting its thread cascades the row away, so
+    # no worker can ever claim it; signalling it would leave a cancellation event in the
+    # supervisor that nothing is left to consume.
+    _research_thread(tmp_path, monkeypatch)
+
+    assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == []
+
+
+def test_deleting_a_thread_signals_a_leased_research_run(tmp_path, monkeypatch):
+    # The same run once a worker owns it: that worker is still running and has to be told.
+    _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE research_runs SET lease_owner = 'worker-1', status = 'running' WHERE id = ?",
+            ("run-1",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == ["run-1"]
+
+
+def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, monkeypatch):
+    # The request that recorded the operation already signalled these runs on its way out. Its
+    # worker may have exited since, so a second signal would leave a cancellation event in the
+    # supervisor that nothing is left to consume.
+    _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE research_runs SET lease_owner = 'worker-1', status = 'running' WHERE id = ?",
+            ("run-1",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    first = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
+    assert first == (["run-1"], ["src"])
+
+    replay = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
+    assert replay == ([], ["src"])

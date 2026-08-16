@@ -17,6 +17,7 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { clearComposerDraft } from "../utils/composer-draft";
+import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
@@ -289,6 +290,7 @@ export async function deleteChatItem(
   item: SidebarItem,
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+  args: { deleteFiles?: boolean } = {},
 ) {
   const threadIds: string[] =
     item.type === "single"
@@ -319,7 +321,11 @@ export async function deleteChatItem(
   }
 
   try {
-    await deleteStoredChatThreads(threadIds);
+    const kept = await deleteStoredChatThreads(threadIds, args);
+    // Whether or not deletion was asked for: a sandbox that could not be
+    // removed leaves files with no card left to reach them from, and the chat
+    // is already gone, so this offer is the only notice and the only retry.
+    offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);
     notifyChatHistoryUpdated();

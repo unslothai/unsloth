@@ -14,8 +14,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.account",
     "settings.general.password",
     "settings.general.huggingFaceToken",
-    "settings.general.gettingStarted",
-    "settings.general.startOnboarding",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.general.notifications.sectionTitle",
@@ -94,10 +92,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.chatDefaults",
     "settings.general.autoTitleNewChats",
     "settings.profile.greetingSloth",
+    "settings.chat.thinking.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.modelDisclaimer",
+    "settings.chat.projectsSection",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
@@ -105,6 +105,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
     "settings.data.confirmBeforeDeleting",
+    "settings.data.alwaysDeleteFiles",
     "settings.data.uploadedFiles",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
@@ -147,6 +148,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
   ],
+  debugging: [
+    "settings.debugging.logSection",
+    "settings.debugging.source",
+    "settings.debugging.path",
+    "settings.debugging.refreshSection",
+    "settings.debugging.mode",
+    "settings.debugging.keywords",
+  ],
   about: [
     "settings.about.updates",
     "settings.about.releaseNotes",
@@ -160,9 +169,13 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
 };
 
-export function createSettingsSearchIndex(
-  desktop: boolean,
-): Record<SettingsTab, TranslationKey[]> {
+export function createSettingsSearchIndex({
+  desktop,
+  closeToTray,
+}: {
+  desktop: boolean;
+  closeToTray: boolean;
+}): Record<SettingsTab, TranslationKey[]> {
   if (!desktop) {
     return SETTINGS_SEARCH_INDEX;
   }
@@ -173,6 +186,7 @@ export function createSettingsSearchIndex(
       "settings.about.updates",
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
+      ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",

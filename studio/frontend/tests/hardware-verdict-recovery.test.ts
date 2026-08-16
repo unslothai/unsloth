@@ -151,15 +151,15 @@ test("the poll is mounted on every route that gates on the verdict", async () =>
   );
   const hidden = /const HIDDEN_NAVBAR_ROUTES = \[([^\]]*)\]/.exec(root);
   assert.ok(hidden, "could not find HIDDEN_NAVBAR_ROUTES in __root.tsx");
-  for (const path of ["/studio", "/video"]) {
-    assert.ok(
-      !hidden[1].includes(`"${path}"`),
-      `${path} renders without the sidebar, so nothing re-reads the verdict it waits on`,
-    );
-  }
+  assert.ok(
+    !hidden[1].includes('"/studio"'),
+    "/studio renders without the sidebar, so nothing re-reads the verdict it waits on",
+  );
   assert.match(root, /<AppSidebar \/>/, "the component that owns the poll is not rendered");
 
-  // Both pages read the same store rather than starting a second poll of their own.
+  // Neither page starts a poll of its own. Video needs none at all -- its answer is
+  // /api/system/hardware's, which settles detection before replying -- so it is absent from the
+  // waits-on-the-verdict assertion below, but a second /api/health poll would still be wrong.
   for (const page of [
     "../src/features/studio/studio-page.tsx",
     "../src/features/video/video-page.tsx",
@@ -169,10 +169,14 @@ test("the poll is mounted on every route that gates on the verdict", async () =>
       !/fetchDeviceType\(/.test(src),
       `${page} re-reads the verdict itself instead of reading the store`,
     );
-    assert.match(
-      src,
-      /capabilitiesUnknown/,
-      `${page} no longer waits on the verdict it shares with the poll`,
-    );
   }
+  const studio = await readFile(
+    new URL("../src/features/studio/studio-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    studio,
+    /capabilitiesUnknown/,
+    "the Train page no longer waits on the verdict it shares with the poll",
+  );
 });

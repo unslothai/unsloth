@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { FloatingMonitor } from "@/components/floating-monitor";
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +17,7 @@ import {
   BotIcon,
   Cancel01Icon,
   CloudIcon,
+  ComputerTerminal01Icon,
   CpuIcon,
   DatabaseSettingIcon,
   Globe02Icon,
@@ -51,6 +53,7 @@ import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
 import { DataTab } from "./tabs/data-tab";
+import { DebuggingTab } from "./tabs/debugging-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
@@ -116,10 +119,23 @@ const TABS: TabDef[] = [
     icon: DatabaseSettingIcon,
     badgeKey: "common.new",
   },
+  {
+    id: "debugging",
+    labelKey: "settings.tabs.debugging",
+    icon: ComputerTerminal01Icon,
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
-const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex(isTauri);
+const clientPlatform = getClientPlatform();
+const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
+  desktop: isTauri,
+  closeToTray:
+    isTauri &&
+    (clientPlatform.startsWith("win") ||
+      clientPlatform.includes("windows") ||
+      clientPlatform.includes("linux")),
+});
 
 function renderTab(tab: SettingsTab) {
   switch (tab) {
@@ -143,6 +159,8 @@ function renderTab(tab: SettingsTab) {
       return <ApiKeysTab />;
     case "agents":
       return <AgentsTab />;
+    case "debugging":
+      return <DebuggingTab />;
     case "about":
       return <AboutTab />;
   }
@@ -255,6 +273,7 @@ export function SettingsDialog() {
     data: null,
     "api-keys": null,
     agents: null,
+    debugging: null,
     about: null,
   });
 

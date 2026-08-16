@@ -98,6 +98,22 @@ class VideoFamily:
     # without one falls through to prequant_repos and, if that checkpoint was baked elsewhere, the
     # loader's base_model_id check sends the load back to the dense path.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the
+    # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
+    # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
+    # that asks for it by name and the old one to every build that does not. That is what lets a
+    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # otherwise refuse the v2 tag and fall all the way back to the dense download.
+    # A row may also be (scheme, task, filename), naming the artifact for ONE task; it beats the
+    # task-agnostic row and, unlike it, gets no filename fallback (see resolve_prequant_source).
+    prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
+    # Tasks whose denoiser is a DIFFERENT checkpoint partition from the one the task-agnostic
+    # ``prequant_filenames`` / ``prequant_repos`` rows describe. Such a task is served ONLY by its
+    # own (scheme, task, filename) row: the partitions share a base, a class, a config and a key
+    # set, so nothing downstream can tell them apart and an unnamed artifact would load cleanly
+    # and generate from the wrong partition. Empty for every family with a single denoiser, which
+    # is what makes this field free to ignore.
+    prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
     # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline. Its
     # components are loaded without pruning the workflow's routing blocks.
     modular_workflow: Optional[str] = None
@@ -146,7 +162,16 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
-        supports_torch_compile = False,
+        # Regionally compilable. The DiT declares _repeated_blocks (MiniMaxH3TransformerBlock +
+        # MiniMaxH3TokenRefinerBlock); every block sees (1, S, 5376) plus an (S,) index tensor,
+        # where S is the PACKED length (18,870 video + 207 audio rows + the caption's text rows at
+        # 960x544x124). The caption moves S by ~2% (19,096 at 19 tokens vs 19,479 at 402) and S
+        # cannot change mid-denoise, so dynamic=True traces once and holds: measured 1.298-1.342
+        # s/step eager vs 1.000-1.040 compiled (1.30x), first forward 10.2 s, zero recompiles
+        # across captions of 19/19/37/128/402 tokens. The loader engages this only when the
+        # denoiser is RESIDENT; compiling inside a full CPU-offload rotation measured slower than
+        # eager, so that case stays on the no-compile tier.
+        supports_torch_compile = True,
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through
         # its own from_pretrained, so there is no dense module to quantise in place: these are the
@@ -155,6 +180,28 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # the layout every image-side prequant repo already uses and the one prequant_repo_filename
         # builds without help.
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
+        # The INT8 denoiser is ConvRot-rotated (see diffusion_convrot): its weights live in a
+        # Hadamard-rotated basis and are wrong unless the loader rotates the activations to match,
+        # so it carries the v2 format tag a Studio predating that code refuses. Shipping it under
+        # its own name rather than over MiniMax-H3-INT8.pt keeps both true at once: this build
+        # gets the rotated artifact, and an older install still resolves the plain one instead of
+        # refusing the v2 tag and falling back to the 66.3 GB dense download.
+        # The reference (ref2va) denoiser is a SECOND partition in the same base repo, so it gets
+        # its own artifact under its own name for both schemes. The two partitions are otherwise
+        # indistinguishable to the loader -- same class, same config, same 635 keys, same
+        # base_model_id -- so the task, not any later check, is the only thing that keeps a
+        # reference load off the keyframe weights. Keyframe (fl2va, which also covers text-only)
+        # keeps resolving exactly what it resolved before: the rotated INT8 by name, FP8 by the
+        # derived MiniMax-H3-FP8.pt.
+        prequant_filenames = (
+            ("int8", "MiniMax-H3-INT8-ConvRot.pt"),
+            ("int8", "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
+            ("fp8", "ref2va", "MiniMax-H3-Ref2VA-FP8.pt"),
+        ),
+        # Keeps the two partitions honest: without a ref2va row above, a ref2va prequant pick is
+        # refused rather than served the keyframe checkpoint. Equal to H3_TASK_REFERENCES; the
+        # literal avoids importing the H3 helper module into the registry.
+        prequant_partition_tasks = ("ref2va",),
         # Both schemes are ~20.3 GB resident against the 66.3 GB dense denoiser; see the field.
         prequant_resident_gb = 20.3,
         modular_workflow = "fl2va",
@@ -381,11 +428,57 @@ def video_family_prequant_repo(
     return None
 
 
-def video_family_prequant_schemes(fam: VideoFamily) -> tuple[str, ...]:
+def video_family_prequant_task_specific(fam: VideoFamily, scheme: str, task: str) -> bool:
+    """True when the family names an artifact for exactly this ``(scheme, task)`` pair.
+
+    Reads the same ``prequant_filenames`` table ``resolve_prequant_source`` reads, through the
+    shared resolver, so the answer here and the file the load asks for cannot drift."""
+    wanted = (task or "").strip().lower()
+    if not wanted:
+        return False
+    try:
+        from .diffusion_families import family_prequant_filename
+        specific = family_prequant_filename(fam, scheme, task = wanted)
+    except Exception:  # noqa: BLE001 -- a bad table is "no artifact", never a 500
+        return False
+    return specific is not None and specific != family_prequant_filename(fam, scheme)
+
+
+def video_family_prequant_available(
+    fam: VideoFamily,
+    scheme: str,
+    *,
+    task: Optional[str] = None,
+    base_repo: Optional[str] = None,
+) -> bool:
+    """True when a hosted pre-quantized denoiser really covers ``(scheme, task)``.
+
+    ``video_family_prequant_repo`` answers "is there a checkpoint for this scheme"; this answers
+    the question a load actually has, which also names the PARTITION. A task listed in
+    ``prequant_partition_tasks`` is served only by its own ``(scheme, task, filename)`` row, so a
+    scheme that has the repo but not that row is unavailable for it -- the alternative is loading
+    another partition's denoiser, which passes every check and generates the wrong thing.
+
+    Every other task, and every family that declares no partition tasks, gets exactly the old
+    answer. Pure, and never raises: this runs on the refusal and download-planning paths."""
+    if video_family_prequant_repo(fam, scheme, base_repo) is None:
+        return False
+    wanted = (task or "").strip().lower()
+    partition_tasks = {
+        (t or "").strip().lower() for t in (getattr(fam, "prequant_partition_tasks", ()) or ())
+    }
+    if wanted and wanted in partition_tasks:
+        return video_family_prequant_task_specific(fam, scheme, wanted)
+    return True
+
+
+def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) -> tuple[str, ...]:
     """Every scheme this family has a hosted denoiser checkpoint for, in table order.
 
     Used to name the workable schemes in a refusal message, so a rejected request tells the caller
-    what to pick instead of only what failed. Malformed rows are skipped, as above."""
+    what to pick instead of only what failed. With ``task``, the list is narrowed to the schemes
+    that cover THAT task, so a reference-video refusal cannot advertise a keyframe-only scheme.
+    Malformed rows are skipped, as above."""
     schemes: list[str] = []
     for entry in getattr(fam, "prequant_repos", ()) or ():
         if isinstance(entry, (tuple, list)) and len(entry) == 2 and entry[0] not in schemes:
@@ -393,6 +486,8 @@ def video_family_prequant_schemes(fam: VideoFamily) -> tuple[str, ...]:
     for entry in getattr(fam, "prequant_variant_repos", ()) or ():
         if isinstance(entry, (tuple, list)) and len(entry) == 3 and entry[1] not in schemes:
             schemes.append(entry[1])
+    if task:
+        schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
     return tuple(schemes)
 
 
@@ -486,6 +581,14 @@ def validate_video_request_shape(
         step = max(1, fam.frame_step)
         offset = max(1, fam.frame_offset)
         count = int(num_frames)
+        # The window the family declares it was trained for. Hoisted out of the lattice branch
+        # because it is also enforced below: it used to exist only to WORD the lattice error
+        # ("supported counts run from 124 to 345") while a request outside it was accepted and
+        # silently snapped, so num_frames=5 rendered 124 frames and num_frames=872 rendered 345.
+        ceiling = MAX_VIDEO_NUM_FRAMES
+        if fam.max_num_frames is not None:
+            ceiling = min(ceiling, int(fam.max_num_frames))
+        floor = max(offset, int(fam.min_num_frames))
         if count < offset or (count - offset) % step != 0:
             # The two lattice points straddling the request say more than a prefix of the lattice would,
             # and stay short. Computed from the lattice rather than via snap_num_frames, which floors for
@@ -494,10 +597,6 @@ def validate_video_request_shape(
             above = below + step
             # Only name a point the caller could actually load: past the request model's own `le`, or
             # outside this family's declared range, it answers with a second, differently-shaped 422.
-            ceiling = MAX_VIDEO_NUM_FRAMES
-            if fam.max_num_frames is not None:
-                ceiling = min(ceiling, int(fam.max_num_frames))
-            floor = max(offset, int(fam.min_num_frames))
             loadable = [n for n in (below, above) if floor <= n <= ceiling]
             if len(loadable) == 2:
                 nearest = f"the nearest supported counts are {loadable[0]} and {loadable[1]}"
@@ -511,6 +610,119 @@ def validate_video_request_shape(
                 f"{step}, so a frame count must be k * {step} + {offset}; {nearest} "
                 f"(the default is {fam.default_num_frames})."
             )
+        # On the lattice but outside the trained window. The request model bounds num_frames at
+        # 1..1024, so a count well under the floor or well over the ceiling arrives here and used
+        # to be snapped in silence, which on the native path is a 25x compute surprise.
+        if count < floor or count > ceiling:
+            raise VideoShapeError(
+                f"{count} is not a supported frame count for {fam.name}. "
+                f"Supported counts run from {floor} to {ceiling} "
+                f"(the default is {fam.default_num_frames})."
+            )
+
+
+def validate_video_keyframe_conditioning(
+    fam: VideoFamily, h3_task: Optional[str], *, has_keyframes: bool
+) -> None:
+    """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
+
+    Pure in the family and the MiniMax-H3 partition, which is what lets the generate route judge
+    the checkpoint it is about to SWITCH TO by the same rules the backend applies to the loaded
+    one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
+    target for a request that was already known to be unservable.
+    """
+    if not has_keyframes:
+        return
+    from .video_minimax_h3 import H3_TASK_REFERENCES
+
+    if not fam.supports_keyframes:
+        raise ValueError(
+            f"{fam.name} generates from the prompt alone; it takes no first or last frame."
+        )
+    if h3_task == H3_TASK_REFERENCES:
+        raise ValueError(
+            "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
+            "rather than keyframes. Load a minimax_h3_fl2va checkpoint to generate from a first "
+            "or last frame."
+        )
+
+
+def validate_video_flow_controls(
+    fam: VideoFamily,
+    flow_shift: Optional[float],
+    audio_flow_shift: Optional[float],
+    *,
+    engine: Optional[str] = None,
+) -> None:
+    """Raise ``ValueError`` when a request sets a shift the checkpoint cannot honour.
+
+    The backend's flow-shift rules, kept here so the generate route can judge the checkpoint it
+    is about to switch TO by the same ones. ``engine`` is optional because a target's engine is
+    normally not chosen until the load runs; where it IS determined by the pick, as MiniMax-H3
+    GGUFs are, passing it refuses an unservable request before anything is evicted.
+    """
+    if flow_shift is not None and fam.default_flow_shift is None:
+        raise ValueError(f"{fam.name} does not expose a video flow_shift control.")
+    if audio_flow_shift is not None and fam.default_audio_flow_shift is None:
+        raise ValueError(f"{fam.name} does not expose an audio_flow_shift control.")
+    if (
+        audio_flow_shift is not None
+        and engine == "sd_cpp"
+        and audio_flow_shift != fam.default_audio_flow_shift
+    ):
+        raise ValueError(
+            "stable-diffusion.cpp derives the audio schedule against a fixed "
+            f"{fam.default_audio_flow_shift:g} shift, so audio_flow_shift needs the "
+            "Diffusers engine."
+        )
+
+
+def validate_video_reference_conditioning(
+    fam: VideoFamily,
+    h3_task: Optional[str],
+    *,
+    has_references: bool,
+    reference_image_size: Optional[str] = None,
+    engine: Optional[str] = None,
+) -> None:
+    """Raise ``ValueError`` when a checkpoint cannot be conditioned on the request's references.
+
+    The absence of references is a rule too: the Ref2VA partition has no text-only denoiser. See
+    ``validate_video_keyframe_conditioning`` for why these live here rather than inline.
+
+    ``engine`` is optional for the same reason it is on the flow controls: a target's engine is
+    normally unknown before the load, but where the pick decides it, passing it refuses an
+    unservable sizing policy before anything is evicted.
+    """
+    from .video_minimax_h3 import H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX, H3_TASK_REFERENCES
+
+    if not has_references:
+        if h3_task == H3_TASK_REFERENCES:
+            raise ValueError(
+                "The MiniMax-H3 checkpoint is the Ref2VA partition, which generates from "
+                "references. Add at least one reference image or video, or load a "
+                "minimax_h3_fl2va checkpoint for text-to-video."
+            )
+        return
+    if not fam.supports_references:
+        raise ValueError(f"{fam.name} takes no reference images, videos or audio.")
+    if h3_task != H3_TASK_REFERENCES:
+        raise ValueError(
+            "The MiniMax-H3 checkpoint is the FL2VA partition, which conditions on keyframes "
+            "rather than references. Load a minimax_h3_ref2va checkpoint to generate from "
+            "references."
+        )
+    policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
+    if policy not in (H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX):
+        raise ValueError(
+            f"reference_image_size must be '{H3_REF_SIZE_MATCH}' or '{H3_REF_SIZE_MAX}'."
+        )
+    if policy == H3_REF_SIZE_MAX and engine == "sd_cpp":
+        raise ValueError(
+            "stable-diffusion.cpp scales every reference to the generation's pixel area, so "
+            f"'{H3_REF_SIZE_MAX}' reference sizing needs the Diffusers engine. Use "
+            f"'{H3_REF_SIZE_MATCH}' with this checkpoint."
+        )
 
 
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific first.

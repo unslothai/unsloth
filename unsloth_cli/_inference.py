@@ -18,7 +18,9 @@ import typer
 # _CANONICAL_SPEC_MODES. Named once so the CLI's option annotations, the HTTP
 # payload builders and the in-process loader cannot drift apart when a mode is
 # added; typer reads it at runtime to validate --speculative-type.
-SpeculativeType = Literal["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"]
+SpeculativeType = Literal[
+    "auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off", "ngram-simple"
+]
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
@@ -474,6 +476,7 @@ def _load_gguf_backend(
             mmproj_path = model_config.gguf_mmproj_file,
             mtp_draft_path = model_config.gguf_mtp_file,
             dspark_draft_path = model_config.gguf_dspark_file,
+            dflash_draft_path = model_config.gguf_dflash_file,
         )
     if speculative_type is not None:
         intent_fields["speculative_type"] = speculative_type
