@@ -58,6 +58,7 @@ import {
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
+import { residentRuntimeMatchesConfig } from "../lib/resident-config-match";
 import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   mergeBackendRecommendedInference,
@@ -659,7 +660,14 @@ export function useChatModelRuntime() {
       // forceReload is what keeps Apply out of this: a staged config always carries it, so applying settings still reloads and still prompts
       const selectedCheckpoint =
         useChatRuntimeStore.getState().params.checkpoint;
-      if (!forceReload) {
+      const pendingConfig =
+        typeof selection !== "string" ? selection.config : undefined;
+      // nativePathToken is excluded for two reasons that point the same way: a leased file is
+      // named by a bare label two different files can share, and the lease itself is written
+      // only by a completed load (activeNativePathToken, beside the pin), so adopting here
+      // would keep a stale token. Every native call site forces a reload anyway; this pins
+      // the invariant where it can be seen.
+      if (!forceReload && !nativePathToken) {
         const residentStatus = await getInferenceStatus().catch(() => null);
         if (
           residentStatus &&
@@ -667,19 +675,29 @@ export function useChatModelRuntime() {
             id: modelId,
             loadPath,
             ggufVariant,
-          })
+          }) &&
+          // The id names the weights; it does not say the server was invoked the way this
+          // pick asks for. A remembered context length, drafter, placement or extra arg that
+          // the resident load does not already run is a real reload, and skipping it would
+          // drop the setting silently, since the rollback below makes the panel agree with
+          // the server either way.
+          residentRuntimeMatchesConfig(residentStatus, pendingConfig)
         ) {
           // Same window as the confirm below: a rival load may have started during that GET,
           // and it owns the resident model now.
           if (bailIfLoadInFlight()) return;
           // Roll back the config pre-applied for the load that is not happening BEFORE hydrating,
-          // so the resident model's status wins over the staged snapshot.
-          if (typeof selection !== "string" && selection.previousConfig) {
-            applyPerModelConfigToRuntime(selection.previousConfig);
-          }
+          // so the resident model's status wins over the staged snapshot. The helper form, not
+          // an inline apply: it also carries the loaded diffusion flag, which the restored
+          // config needs to stay correct for a resident image model.
+          restorePreviousConfig();
           const previousGgufVariant =
             useChatRuntimeStore.getState().activeGgufVariant;
-          // adopt this pick's own pin, as a completed load does: the poll skips its clearing while an external pick is active, so a pin taken for an earlier resident would otherwise survive and Apply would reload that old model
+          // Adopt this pick's own pin, by the same rule a completed load writes it: the poll
+          // skips its clearing while an external pick is active, so a pin taken for an earlier
+          // resident would otherwise survive and Apply would reload that old model. Only the
+          // pin, not the native lease fields the load writes beside it -- a pick carrying a
+          // token never reaches here.
           useChatRuntimeStore.setState({
             activeLoadId: loadPath === modelId ? null : loadPath,
           });
