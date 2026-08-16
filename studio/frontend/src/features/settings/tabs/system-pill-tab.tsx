@@ -61,22 +61,19 @@ export function SystemPillTab(): ReactElement {
   const applySettings = (update: Partial<PillSettings>): Promise<void> => {
     const seq = ++saveSeqRef.current;
     saveChainRef.current = saveChainRef.current.then(async () => {
+      // The write and the native apply fail for different reasons and need
+      // different recoveries, so they are handled separately rather than in
+      // one catch: a rejected write means we do not know what is stored, while
+      // a rejected apply means the backend holds a value the machine refused.
+      let saved: PillSettings;
       try {
-        const next = await updatePillSettings(update);
-        // A superseded save must not restore its own result over the newer one.
-        if (seq !== saveSeqRef.current) return;
-        // Fenced only once a save actually landed, so a failed edit cannot
-        // suppress the initial load and leave the tab showing defaults.
-        editedRef.current = true;
-        setSettings(next);
-        await syncNativePillConfig(next);
+        saved = await updatePillSettings(update);
       } catch {
         toast.error(t("systemPill.settings.saveError"));
         // A predecessor may have persisted and then skipped its own apply as
         // superseded by this save. With this one failed, nothing else will
-        // apply it, so read back what actually stuck rather than leaving the
-        // switch and the native hotkey disagreeing with the backend. Only the
-        // newest save reconciles; an older one still has a successor coming.
+        // apply it, so read back what actually stuck. Only the newest save
+        // reconciles; an older one still has a successor coming.
         if (seq !== saveSeqRef.current) return;
         try {
           const actual = await fetchPillSettings();
@@ -88,6 +85,33 @@ export function SystemPillTab(): ReactElement {
           await syncNativePillConfig(actual);
         } catch {
           // Backend unreachable too; the next open re-reads it.
+        }
+        return;
+      }
+
+      // A superseded save must not restore its own result over the newer one.
+      if (seq !== saveSeqRef.current) return;
+      // Fenced only once a save actually landed, so a failed edit cannot
+      // suppress the initial load and leave the tab showing defaults.
+      editedRef.current = true;
+      setSettings(saved);
+
+      try {
+        await syncNativePillConfig(saved);
+      } catch {
+        toast.error(t("systemPill.settings.saveError"));
+        // The backend took the value but the native layer refused it, which
+        // for an enable means the shortcut could not be registered. Leaving
+        // the backend enabled would keep the switch claiming a bar that does
+        // not exist, now and on every later launch, so undo it: the toggle
+        // falling back is the honest signal that it did not take.
+        if (!saved.enabled || seq !== saveSeqRef.current) return;
+        try {
+          const reverted = await updatePillSettings({ enabled: false });
+          if (seq !== saveSeqRef.current) return;
+          setSettings(reverted);
+        } catch {
+          // Could not undo it either; the next open reads the backend.
         }
       }
     });
