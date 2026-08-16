@@ -2074,10 +2074,15 @@ if not rows and not damaged:
         damaged = not all(_spec(t, _target if _edit else str(d.locate_file(''))) for t in tops if t)
     elif _edit:
         # An editable install with no top_level.txt: its RECORD lists only the
-        # site-packages shims, so nothing above can speak for the checkout. Validate
-        # the target directly -- direct_url.json records where it points, and a
-        # moved or emptied checkout has no importable module under it.
-        damaged = not (_target and _has_module(_target, 6))
+        # site-packages shims, so nothing above can speak for the checkout. Resolve
+        # the distribution's OWN module and bind it to the recorded target: any
+        # importable file under the checkout would otherwise do, and a checkout keeps
+        # a setup.py or noxfile.py long after its package directory is gone. The
+        # editable finder knows where the package really lives, so a src/ layout
+        # still resolves, while a deleted package or a same-named copy outside the
+        # checkout does not. Name-derived, like the RECORD-less branch below: without
+        # top_level.txt there is nothing better to key on.
+        damaged = not (_target and _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target))
     elif not d_record:
         # Nothing enumerates the payload: no RECORD at all (an interrupted install,
         # or a distro/conda package that legitimately ships none, which the CLI
