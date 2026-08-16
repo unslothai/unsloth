@@ -150,3 +150,16 @@ test("an autocorrect commit is still refused after the undo carve-out", () => {
     false,
   );
 });
+
+// The image-edit send wraps what the user typed, and the wrapper is built from
+// the trimmed text. A late DOM write carries the raw textarea value, so arming
+// the trimmed form alone misses it whenever the instruction had whitespace.
+test("the raw pre-send value is guarded, not just its trimmed form", () => {
+  const raw = "  make it brighter  ";
+  const guard = armSentTextGuard(
+    [`Apply this edit: ${raw.trim()}`, raw, raw.trim()],
+    KEY,
+  );
+  assert.equal(applySentTextGuard(guard, typed(raw)).accept, false);
+  assert.equal(applySentTextGuard(guard, typed(raw.trim())).accept, false);
+});

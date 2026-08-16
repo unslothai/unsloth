@@ -3276,7 +3276,7 @@ const Composer: FC<{
 
   // alsoGuard: text the composer showed before this path rewrote it, so a late
   // write carrying what the user actually typed is refused too.
-  const sendReservedComposer = useCallback((alsoGuard?: string) => {
+  const sendReservedComposer = useCallback((...alsoGuard: string[]) => {
     const assistantRuntime =
       aui.threads().__internal_getAssistantRuntime?.();
     let reservationToken: symbol | null = null;
@@ -3308,7 +3308,7 @@ const Composer: FC<{
       const sentText = aui.composer().getState().text;
       aui.composer().send();
       // Empty texts are dropped, so an attachment-only send still clears.
-      armJustSent(sentText, alsoGuard ?? "");
+      armJustSent(sentText, ...alsoGuard);
     } catch (error) {
       if (releasePreStreamRunReservation(reservationToken)) {
         notifyPromptQueueRunFailed(referenceThreadId);
@@ -3613,6 +3613,10 @@ const Composer: FC<{
             : {}),
           openaiReasoningItem: overlay.openaiReasoningItem,
         });
+        // Read live rather than from composerText, which is render-time state:
+        // a late DOM write carries exactly what the textarea held, whitespace
+        // and all, and that is the value the guard has to recognise.
+        const visibleBeforeWrap = aui.composer().getState().text;
         flushResourcesSync(() => {
           aui
             .composer()
@@ -3623,7 +3627,7 @@ const Composer: FC<{
         closeOverlay();
         event.preventDefault();
         // The wrapper replaced what the user typed, so guard that text as well.
-        sendReservedComposer(trimmed);
+        sendReservedComposer(visibleBeforeWrap, trimmed);
         return;
       }
 
