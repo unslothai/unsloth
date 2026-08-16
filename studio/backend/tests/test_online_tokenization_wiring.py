@@ -175,6 +175,17 @@ def _run(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
     )
+    # Pin the worker count for the same reason. resolve_worker_count sizes itself
+    # from CPU affinity and the cgroup quota and returns 0 when the host cannot
+    # spare MIN_ONLINE_WORKERS, which vetoes before the pass count is ever
+    # compared. A two-core macOS or Windows runner therefore turned every case in
+    # this file into an assertion about the runner rather than about the wiring,
+    # and the veto reason it produced was the worker one, not the one under test.
+    # The worker gate has its own coverage in test_online_tokenization.py.
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.resolve_worker_count",
+        lambda desired = None: 4,
+    )
     trainer = _fake_self(**(self_overrides or {}))
     config_args = _config_args(**(config_overrides or {}))
     wrapper = {"dataset": _dataset()} if wrapper is None else wrapper
