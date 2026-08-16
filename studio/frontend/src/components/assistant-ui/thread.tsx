@@ -174,6 +174,8 @@ import {
 import {
   applySentTextGuard,
   armSentTextGuard,
+  isGuardRetiringKey,
+  markSentTextGuardKeystroke,
   sentTextGuardBlocksDraft,
   type SentTextGuard,
 } from "@/features/chat/utils/composer-send-guard";
@@ -4039,6 +4041,11 @@ function useImeComposerInputHandlers({
   // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Before the IME return: committing one character through an IME is the
+      // same single write, and its keydown reports as composing.
+      if (justSentRef && isGuardRetiringKey(e)) {
+        justSentRef.current = markSentTextGuardKeystroke(justSentRef.current);
+      }
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
         composingRef.current = true;
         refreshStuckTimer();
@@ -4065,7 +4072,7 @@ function useImeComposerInputHandlers({
         e.currentTarget.form?.requestSubmit();
       }
     },
-    [refreshStuckTimer, setCompositionState, submitOnEnter],
+    [justSentRef, refreshStuckTimer, setCompositionState, submitOnEnter],
   );
 
   // On macOS, switching input methods (e.g. ABC → Pinyin) while the textarea

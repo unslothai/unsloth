@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   applySentTextGuard,
   armSentTextGuard,
+  isGuardRetiringKey,
+  markSentTextGuardKeystroke,
   sentTextGuardBlocksDraft,
 } from "../src/features/chat/utils/composer-send-guard.ts";
 
@@ -162,4 +164,71 @@ test("the raw pre-send value is guarded, not just its trimmed form", () => {
   );
   assert.equal(applySentTextGuard(guard, typed(raw)).accept, false);
   assert.equal(applySentTextGuard(guard, typed(raw.trim())).accept, false);
+});
+
+// Re-typing the sent prompt is normally several writes, and the first one
+// already differs. A one-character prompt arrives whole in a single write, so
+// equality alone swallowed it and kept the guard, blocking every retry.
+test("re-typing a one-character prompt is applied", () => {
+  const guard = markSentTextGuardKeystroke(armed(["?"]));
+  assert.deepEqual(applySentTextGuard(guard, typed("?")), {
+    accept: true,
+    guard: null,
+  });
+});
+
+// The stale write is queued before the send, so it is delivered before any
+// later keydown. Without one, equality still refuses it.
+test("a stale write with no keystroke behind it is still refused", () => {
+  assert.equal(applySentTextGuard(armed(["?"]), typed("?")).accept, false);
+});
+
+// The keystroke relaxes equality only. An autocorrect commit into an empty
+// composer stays stale whatever the user pressed.
+test("a keystroke does not let an autocorrect commit through", () => {
+  const guard = markSentTextGuardKeystroke(armed());
+  assert.equal(
+    applySentTextGuard(guard, replacement(`${PROMPT}!`)).accept,
+    false,
+  );
+});
+
+test("a keystroke does not unblock the raced draft", () => {
+  const guard = markSentTextGuardKeystroke(armed());
+  assert.equal(sentTextGuardBlocksDraft(guard, PROMPT, KEY), true);
+});
+
+test("marking an unarmed guard is a no-op", () => {
+  assert.equal(markSentTextGuardKeystroke(null), null);
+});
+
+const key = (k: string, mods: { metaKey?: boolean; ctrlKey?: boolean } = {}) =>
+  isGuardRetiringKey({
+    key: k,
+    metaKey: mods.metaKey ?? false,
+    ctrlKey: mods.ctrlKey ?? false,
+  });
+
+// Enter is the send itself: the guard is armed from inside that keydown, so
+// counting it would retire the guard before a single stale write could land.
+test("the sending Enter is not a keystroke boundary", () => {
+  assert.equal(key("Enter"), false);
+  assert.equal(key("Enter", { metaKey: true }), false);
+});
+
+test("characters and IME keys are keystroke boundaries", () => {
+  assert.equal(key("?"), true);
+  assert.equal(key("a"), true);
+  assert.equal(key("Process"), true);
+  assert.equal(key("Backspace"), true);
+});
+
+// A chord is a command, and paste has its own carve-out already.
+test("chords and bare modifiers are not keystroke boundaries", () => {
+  assert.equal(key("v", { metaKey: true }), false);
+  assert.equal(key("z", { ctrlKey: true }), false);
+  assert.equal(key("Shift"), false);
+  assert.equal(key("Meta"), false);
+  assert.equal(key("Escape"), false);
+  assert.equal(key("Tab"), false);
 });

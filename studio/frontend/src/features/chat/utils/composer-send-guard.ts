@@ -22,13 +22,52 @@ export type SentTextGuard = {
   readonly texts: readonly string[];
   /** Draft key the send cleared, so another thread's identical draft still restores. */
   readonly draftKey: string | null;
+  /** A key has been pressed since the send. See markSentTextGuardKeystroke. */
+  readonly typedSince: boolean;
 };
 
 export function armSentTextGuard(
   texts: readonly string[],
   draftKey: string | null,
 ): SentTextGuard {
-  return { texts: texts.filter((text) => text.length > 0), draftKey };
+  return {
+    texts: texts.filter((text) => text.length > 0),
+    draftKey,
+    typedSince: false,
+  };
+}
+
+/**
+ * Whether a keydown is the user starting to type again rather than part of the
+ * send. Enter is excluded because the send arms the guard from inside that very
+ * keydown, and a chord is excluded because it is a command, not a character.
+ */
+export function isGuardRetiringKey(event: {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+}): boolean {
+  if (event.metaKey || event.ctrlKey) return false;
+  if (event.key === "Enter" || event.key === "Escape" || event.key === "Tab") {
+    return false;
+  }
+  // Modifiers alone are not typing; the character keydown follows them.
+  return !["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key);
+}
+
+/**
+ * Records that the user pressed a key after the send.
+ *
+ * A write the send queued is delivered before any later keydown, so a keystroke
+ * proves the stale writes have already drained and this composer is the user's
+ * again. Only the equality check relaxes: the autocorrect rule and the draft
+ * suppression are unaffected, so this cannot widen into the original bug.
+ */
+export function markSentTextGuardKeystroke(
+  guard: SentTextGuard | null,
+): SentTextGuard | null {
+  if (guard === null || guard.typedSince) return guard;
+  return { ...guard, typedSince: true };
 }
 
 /** Whether a draft restore is the sent text coming back under the same key. */
@@ -61,7 +100,12 @@ export function applySentTextGuard(
 ): { accept: boolean; guard: SentTextGuard | null } {
   if (guard === null) return { accept: true, guard: null };
   if (write.isUndo) return { accept: true, guard: null };
-  if (guard.texts.includes(write.value)) return { accept: false, guard };
+  // Re-typing the whole prompt is only one write when it is one character, so
+  // equality alone would swallow every retry of a "?" or a single emoji.
+  if (guard.texts.includes(write.value)) {
+    if (guard.typedSince) return { accept: true, guard: null };
+    return { accept: false, guard };
+  }
   if (write.replacesText && write.composerIsEmpty) {
     return { accept: false, guard };
   }
