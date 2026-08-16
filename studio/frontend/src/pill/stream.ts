@@ -61,6 +61,14 @@ export async function* streamCompletion(
   // A dropped connection ends the body exactly like a finished stream, so
   // without this an answer cut mid-sentence is rendered as a complete one.
   let terminated = false;
+  // A thinking model can put its whole reply in reasoning_content and never
+  // emit visible content; the backend preserves such deltas deliberately. Hold
+  // the reasoning aside and use it only if nothing visible ever arrives, so a
+  // normal answer is never interleaved with its own thinking.
+  let sawContent = false;
+  let reasoning = "";
+  const promoteReasoning = (): string | null =>
+    !sawContent && reasoning ? reasoning : null;
 
   try {
     while (true) {
@@ -77,7 +85,11 @@ export async function* streamCompletion(
         for (const line of rawEvent.split(/\r?\n/)) {
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trimStart();
-          if (data === "[DONE]") return;
+          if (data === "[DONE]") {
+            const only = promoteReasoning();
+            if (only) yield only;
+            return;
+          }
           let chunk: ChatChunk;
           try {
             chunk = JSON.parse(data) as ChatChunk;
@@ -94,9 +106,26 @@ export async function* streamCompletion(
                 : chunk.error.message;
             throw new Error(message || "The model reported an error");
           }
-          if (chunk.choices?.[0]?.finish_reason) terminated = true;
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) yield delta;
+          const choice = chunk.choices?.[0];
+          const reason = choice?.finish_reason;
+          if (reason) {
+            // The stream ended properly either way, so this is a terminal
+            // frame. But only "stop" (and a tool hand-off) means the answer is
+            // whole: "length" is the token cap and "content_filter" is a
+            // refusal cut, and treating either as success shows a clipped
+            // reply as finished and then feeds it back as history.
+            terminated = true;
+            if (reason !== "stop" && reason !== "tool_calls") {
+              throw new Error(`The answer stopped early (${reason})`);
+            }
+          }
+          const delta = choice?.delta?.content;
+          if (delta) {
+            sawContent = true;
+            yield delta;
+          } else if (choice?.delta?.reasoning_content) {
+            reasoning += choice.delta.reasoning_content;
+          }
         }
         separatorIndex = buffer.search(/\r?\n\r?\n/);
       }
@@ -104,6 +133,9 @@ export async function* streamCompletion(
     if (!terminated) {
       throw new Error("Stream ended before the answer was complete");
     }
+    // Terminated by a finish_reason rather than a [DONE] sentinel.
+    const only = promoteReasoning();
+    if (only) yield only;
   } finally {
     reader.releaseLock();
   }
