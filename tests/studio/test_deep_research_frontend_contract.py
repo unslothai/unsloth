@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import re
 from pathlib import Path
 
 
@@ -215,7 +216,23 @@ def test_research_presentation_is_integrated() -> None:
         1
     ].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
-    assert "const permissionMode = loadPermissionMode();" in store
+    # #8686 hoisted the per-call `const permissionMode = loadPermissionMode();` up to a
+    # module-level constant, which left this pinned to a spelling that no longer exists.
+    # The contract it was written for is that the level comes out of storage rather than
+    # a hardcoded default, so assert that instead of the declaration's text.
+    permission_read = re.search(
+        r"const\s+(\w+)\s*(?::\s*PermissionMode\s*)?=\s*loadPermissionMode\(\)\s*;", store
+    )
+    assert permission_read, (
+        "chat-runtime-store must read the persisted permission mode through loadPermissionMode()"
+    )
+    assert re.search(
+        rf"\bpermissionMode:\s*(?:{permission_read.group(1)}\b|loadPermissionMode\(\))",
+        store,
+    ), (
+        "the store's initial permissionMode must come from loadPermissionMode(), not a "
+        "hardcoded level"
+    )
     assert "permissionMode," in store
 
 
