@@ -11858,30 +11858,38 @@ class LlamaCppBackend:
         """Whether the TARGET model requires K == V."""
         return self._requires_symmetric_kv(self._kv_lora_rank, getattr(self, "_architecture", None))
 
-    def _draft_kv_symmetry(self) -> Optional[bool]:
-        """Whether the DRAFTER requires K == V; None when it cannot be determined."""
-        return self._kv_symmetry_signals()[1]
+    def _draft_kv_symmetry(
+        self,
+        cmd: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> Optional[bool]:
+        """Whether the DRAFTER requires K == V; None when it cannot be determined.
 
-    def _kv_symmetry_signals(self) -> tuple[bool, Optional[bool]]:
-        """(target, drafter) "requires K == V" signals for a cache reset.
+        Derived from the drafter the launch actually resolves to, which is the one
+        named on the command being launched. The stored ``_mtp_draft_path`` is the
+        wrong source twice over: it only ever holds the managed sidecar, so an
+        ``extra_args`` ``--model-draft``/``--hf-repo-draft`` (the drafter llama.cpp
+        would really load) is invisible to it, and it is not assigned until after
+        the launch-site reset has already run, so it is stale there anyway. The
+        managed path emits ``--model-draft <sidecar>`` into the same command, so
+        reading the command covers both.
 
-        The drafter is a separate model with its own context, so its flags are
-        gated on its own metadata. None means "could not tell" (no drafter, or its
-        GGUF was unreadable) and leaves the caller on the target's answer.
+        None (falling the caller back to the target) when no drafter is named, or
+        when it is a Hugging Face repo id rather than a local file whose metadata
+        can be read.
         """
-        target = self._target_kv_symmetry()
-        draft: Optional[bool] = None
-        drafter_path = getattr(self, "_mtp_draft_path", None)
-        if drafter_path:
-            try:
-                db = self._draft_backend_for(drafter_path)
-            except Exception:  # unreadable drafter -> fall back to the target
-                db = None
-            if db is not None:
-                draft = self._requires_symmetric_kv(
-                    getattr(db, "_kv_lora_rank", None), getattr(db, "_architecture", None)
-                )
-        return target, draft
+        path, is_remote = _extra_args_mtp_draft_source(list(cmd or []), env)
+        if not path or is_remote:
+            return None
+        try:
+            db = self._draft_backend_for(path)
+        except Exception:  # unreadable drafter -> fall back to the target
+            db = None
+        if db is None:
+            return None
+        return self._requires_symmetric_kv(
+            getattr(db, "_kv_lora_rank", None), getattr(db, "_architecture", None)
+        )
 
     @staticmethod
     def _reset_quantized_v_cache(
@@ -15740,7 +15748,7 @@ class LlamaCppBackend:
                         cmd,
                         "this build has no --flash-attn",
                         mla = self._target_kv_symmetry(),
-                        draft_mla = self._draft_kv_symmetry(),
+                        draft_mla = self._draft_kv_symmetry(cmd, env),
                     )
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
@@ -15837,7 +15845,7 @@ class LlamaCppBackend:
                 if _flash_attn_known_off and self._drop_env_quantized_v_cache(
                     env,
                     mla = self._target_kv_symmetry(),
-                    draft_mla = self._draft_kv_symmetry(),
+                    draft_mla = self._draft_kv_symmetry(cmd, env),
                 ):
                     logger.info(
                         "Dropped inherited quantized V-cache env: this build has "
@@ -16675,7 +16683,7 @@ class LlamaCppBackend:
                         self._with_flash_attn_off(
                             _last_spawn_cmd,
                             mla = self._target_kv_symmetry(),
-                            draft_mla = self._draft_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
                         )
                         if self._is_signal_crash(_fa_rc)
                         else None
@@ -16693,7 +16701,7 @@ class LlamaCppBackend:
                         if self._drop_env_quantized_v_cache(
                             env,
                             mla = self._target_kv_symmetry(),
-                            draft_mla = self._draft_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
                         ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "
@@ -16747,7 +16755,7 @@ class LlamaCppBackend:
                         self._with_flash_attn_off(
                             _last_spawn_cmd,
                             mla = self._target_kv_symmetry(),
-                            draft_mla = self._draft_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
                         )
                         if self._is_signal_crash(_probe_rc)
                         else None
@@ -16765,7 +16773,7 @@ class LlamaCppBackend:
                         if self._drop_env_quantized_v_cache(
                             env,
                             mla = self._target_kv_symmetry(),
-                            draft_mla = self._draft_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
                         ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "

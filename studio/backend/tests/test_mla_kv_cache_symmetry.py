@@ -193,7 +193,7 @@ class TestTheSignalStudioAlreadyHas:
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert src.count("mla = self._target_kv_symmetry()") >= 2
-        assert src.count("draft_mla = self._draft_kv_symmetry()") == src.count(
+        assert src.count("draft_mla = self._draft_kv_symmetry(") == src.count(
             "mla = self._target_kv_symmetry()"
         )
 
@@ -271,3 +271,91 @@ class TestTheDrafterIsGatedOnItsOwnModel:
         }
         LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True, draft_mla = False)
         assert env == {"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
+
+
+class TestTheDraftSignalComesFromTheLaunchCommand:
+    """The drafter that matters is the one llama.cpp actually loads, which is the
+    one named on the command being launched."""
+
+    def _backend(self, drafters):
+        """A backend whose drafter metadata lookup is stubbed, not read from disk."""
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._kv_lora_rank = None
+        b._architecture = "llama"
+        b._mtp_draft_path = None
+
+        def _draft_backend_for(path):
+            meta = drafters.get(path)
+            if meta is None:
+                return None
+            db = LlamaCppBackend.__new__(LlamaCppBackend)
+            db._kv_lora_rank, db._architecture = meta
+            return db
+
+        b._draft_backend_for = _draft_backend_for
+        return b
+
+    def test_an_extra_args_drafter_is_the_one_that_counts(self):
+        """--model-draft in extras is the drafter llama.cpp loads, so an MLA one
+        must be seen even though the managed sidecar path is unset."""
+        b = self._backend({"/d/mla.gguf": (512, "deepseek2")})
+        cmd = ["llama-server", "-m", "t.gguf", "--model-draft", "/d/mla.gguf"]
+        assert b._draft_kv_symmetry(cmd, {}) is True
+
+    def test_the_managed_sidecar_is_seen_through_the_same_flag(self):
+        """_build_speculative_flags emits --model-draft <sidecar> into the same
+        command, so one source covers both."""
+        b = self._backend({"/d/plain.gguf": (None, "llama")})
+        cmd = ["llama-server", "-m", "t.gguf", "--model-draft", "/d/plain.gguf"]
+        assert b._draft_kv_symmetry(cmd, {}) is False
+
+    def test_the_stored_path_is_not_consulted(self):
+        """_mtp_draft_path is assigned after the launch-site reset has already run,
+        so it is stale there. Only the command decides."""
+        b = self._backend({"/d/mla.gguf": (512, "deepseek2")})
+        b._mtp_draft_path = "/d/mla.gguf"
+        assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
+
+    def test_the_last_draft_flag_wins(self):
+        b = self._backend(
+            {"/d/mla.gguf": (512, "deepseek2"), "/d/plain.gguf": (None, "llama")}
+        )
+        cmd = [
+            "llama-server",
+            "--model-draft",
+            "/d/mla.gguf",
+            "--model-draft",
+            "/d/plain.gguf",
+        ]
+        assert b._draft_kv_symmetry(cmd, {}) is False
+
+    def test_an_hf_repo_drafter_is_undeterminable(self):
+        """A repo id is not a local file, so its metadata cannot be read; None
+        falls the caller back to the target rather than guessing."""
+        b = self._backend({})
+        cmd = ["llama-server", "--hf-repo-draft", "org/drafter-GGUF"]
+        assert b._draft_kv_symmetry(cmd, {}) is None
+
+    def test_an_env_supplied_drafter_is_seen(self):
+        b = self._backend({"/d/mla.gguf": (512, "deepseek2")})
+        env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/d/mla.gguf"}
+        assert b._draft_kv_symmetry(["llama-server"], env) is True
+
+    def test_no_drafter_at_all_is_none(self):
+        b = self._backend({})
+        assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
+
+    def test_an_unreadable_drafter_is_none(self):
+        b = self._backend({})
+        cmd = ["llama-server", "--model-draft", "/d/missing.gguf"]
+        assert b._draft_kv_symmetry(cmd, {}) is None
+
+    def test_every_call_site_passes_a_command(self):
+        """A bare _draft_kv_symmetry() would silently read no drafter at all."""
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "self._draft_kv_symmetry()" not in src
+        assert src.count("self._draft_kv_symmetry(") == src.count(
+            "self._target_kv_symmetry()"
+        )
