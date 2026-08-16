@@ -2535,25 +2535,44 @@ html[data-chat-font] .aui-root {
 	/* Streamdown code-block stability hardening.
 	 *
 	 * Two streamdown internals cause a visible "reload"-style flicker on
-	 * trailing code blocks the moment streaming ends. Both are addressable
-	 * purely in CSS without patching the library:
+	 * trailing code blocks the moment streaming ends. Neither needs the
+	 * library patched; the first needs one attribute from the thread to say
+	 * when it is safe to stop compensating.
 	 *
 	 * 1. `content-visibility: auto` + `contain-intrinsic-size: auto 200px`
-	 *    (set inline by streamdown's <ot> wrapper). The IntersectionObserver
-	 *    that gates content-visibility flips rendered height between the
-	 *    200px placeholder and the actual code-block height as the block
-	 *    sits near the viewport edge during stream finalization. The
-	 *    height jump is small but visible. We force `visible` to keep the
-	 *    rendered height of code blocks fully determined by their actual
-	 *    content at all times.
+	 *    (set inline by streamdown's code-block wrapper). A block whose DOM
+	 *    node has never been rendered has no LAST REMEMBERED SIZE, so it
+	 *    lays out at the 200px fallback until the engine decides it is close
+	 *    enough to the viewport to render it. StreamdownBlockContent REPLACES
+	 *    the node when a fence closes (a bare <Block> becomes a <Block> inside
+	 *    `relative isolate`, and React reconciles a changed element type by
+	 *    remounting), so the block that finishes streaming is a new element
+	 *    with nothing recorded. Measured on this tree: one frame at 226px on
+	 *    a block that was 1722px, per fence.
 	 *
-	 *    This used to be justified by "thread length is bounded", which
-	 *    #8977 disproves. It is kept for the flicker alone. Do not reach
-	 *    back for `content-visibility: auto` here: WebKit below Safari 26
-	 *    cannot find skipped content with find-in-page (webkit.org/b/283846)
-	 *    and Studio has no in-thread search to fall back on. Containment on
-	 *    the message roots was measured as no help either; what grows with
-	 *    thread length is inherited-property style recalc, not layout.
+	 *    That is real, and it is why this used to force `visible` on every
+	 *    code block unconditionally. What the same measurement contradicts is
+	 *    the reason given for the blanket disable, that "thread length is
+	 *    bounded": from 25K to 300K characters of thread content the scroll
+	 *    gesture goes from 0 to 9 frames over 33ms, and the layout is all
+	 *    charged at mount precisely because nothing here is ever skipped.
+	 *
+	 *    So the override is held rather than removed, and only while a block
+	 *    could be one the engine has not measured yet: while the thread is
+	 *    building (`data-code-block-layout` absent or `building`, written by
+	 *    CodeBlockLayoutSignal), while the message part around it is running,
+	 *    and while the fence itself is still open. Once the thread is quiet
+	 *    every block has been laid out at its real height at least once, and
+	 *    `contain-intrinsic-size: auto` means the engine skips them at the
+	 *    size it measured rather than at the 200px guess.
+	 *
+	 *    `contain-intrinsic-size` is deliberately NOT overridden any more.
+	 *    Clobbering it to `none` removes the `auto` keyword, and CSS Sizing 4
+	 *    erases an element's last remembered size the moment that keyword
+	 *    goes. Measured on Chromium 151, WebKit 26.5 and Firefox 153: with
+	 *    the keyword left alone, switching a rendered off-screen element from
+	 *    `visible` to `auto` holds its height exactly; with it clobbered, the
+	 *    same switch collapses the column by 2,400 to 5,400px.
 	 *
 	 * 2. `[data-sd-animate]` (`sd-fadeIn`, 150ms). Streamdown wraps each
 	 *    streaming text segment in a span carrying this attribute. When
@@ -2562,9 +2581,10 @@ html[data-chat-font] .aui-root {
 	 *    whole block at once — exactly the visual that reads as the chat
 	 *    area "reloading for a frame." We disable the animation only
 	 *    inside code blocks; prose token fade-in elsewhere is untouched. */
-	.aui-thread-root [data-streamdown="code-block"] {
+	.aui-thread-root:not([data-code-block-layout="settled"]) [data-streamdown="code-block"],
+	.aui-thread-root [data-status="running"] [data-streamdown="code-block"],
+	.aui-thread-root [data-streamdown="code-block"][data-incomplete] {
 		content-visibility: visible !important;
-		contain-intrinsic-size: none !important;
 	}
 	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
 		animation: none !important;

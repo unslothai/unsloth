@@ -9,6 +9,7 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { CodeBlockLayoutSignal } from "@/components/assistant-ui/code-block-layout-signal";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
@@ -1663,6 +1664,11 @@ export const Thread: FC<{
   // handler skips them (no double-add).
   const [pageDragging, setPageDragging] = useState(false);
   const dragDepth = useRef(0);
+  // Handed to CodeBlockLayoutSignal, which writes `data-code-block-layout` onto this node.
+  // A ref rather than a rendered prop: this component is memoized precisely so that a parent
+  // render does not reconcile the whole message list, and subscribing it to the run state here
+  // would do exactly that twice a turn.
+  const threadRootRef = useRef<HTMLDivElement>(null);
   const hasFiles = (e: ReactDragEvent) =>
     Array.from(e.dataTransfer?.types ?? []).includes("Files");
   const onDragEnter = (e: ReactDragEvent) => {
@@ -1706,6 +1712,7 @@ export const Thread: FC<{
     <GeneratedImageOverlayProvider key={runtimeThreadId} threadId={threadId}>
       <PageDragContext.Provider value={pageDragging}>
       <ThreadPrimitive.Root
+        ref={threadRootRef}
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
         style={{
           ["--thread-max-width" as string]: "48rem",
@@ -1717,6 +1724,7 @@ export const Thread: FC<{
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        <CodeBlockLayoutSignal rootRef={threadRootRef} />
         <IntentAwareScrollProvider value={autoScrollContext}>
           <ThreadPrimitive.Viewport
             ref={composedViewportRef}
