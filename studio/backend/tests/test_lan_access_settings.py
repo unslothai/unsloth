@@ -60,6 +60,9 @@ def stored_settings(monkeypatch):
     yield stored
     lan_access.stop_lan_listener()
     lan_access.clear_lan_listener_error()
+    # drain watchers are daemon threads that outlive their test, so the shared
+    # counter has to be reset or a later decrement lands on the next test's state
+    lan_access._pending_drains = 0
     host_policy._reset_loopback_default_state()
 
 
@@ -669,21 +672,36 @@ def test_trust_outlives_the_sockets_until_accepted_requests_drain(monkeypatch):
     already accepted, and a request that arrived on the LAN stays a remote caller."""
     connections = {object()}
     server = SimpleNamespace(server_state = SimpleNamespace(connections = connections))
-    host_policy.set_lan_connector_active(True)
     monkeypatch.setattr(lan_access, "_DRAIN_TIMEOUT", 5.0)
 
-    drain = threading.Thread(target = lan_access._clear_trust_after_drain, args = (server,))
-    drain.start()
-    try:
-        time.sleep(0.2)
-        assert host_policy.remote_connector_active() is True, "cleared while a request ran"
-        connections.clear()
-        drain.join(timeout = 5)
-        assert host_policy.remote_connector_active() is False
-    finally:
-        connections.clear()
-        drain.join(timeout = 5)
-        host_policy.set_lan_connector_active(False)
+    with lan_access._lock:
+        lan_access._arm_drain_watcher(server)
+        lan_access._sync_lan_trust()
+    time.sleep(0.2)
+    assert host_policy.remote_connector_active() is True, "cleared while a request ran"
+
+    connections.clear()
+    assert _wait_for_trust(False)
+
+
+def test_a_repeated_stop_does_not_clear_trust_a_pending_drain_still_owns(monkeypatch):
+    """The second stop finds no server and would otherwise release the flag out from
+    under requests the first stop left draining."""
+    connections = {object()}
+    server = SimpleNamespace(server_state = SimpleNamespace(connections = connections))
+    monkeypatch.setattr(lan_access, "_DRAIN_TIMEOUT", 5.0)
+
+    with lan_access._lock:
+        lan_access._arm_drain_watcher(server)
+        lan_access._sync_lan_trust()
+    assert host_policy.remote_connector_active() is True
+
+    # the idempotent stop path: no server, but a drain still owns the flag
+    assert lan_access.stop_lan_listener() is True
+    assert host_policy.remote_connector_active() is True
+
+    connections.clear()
+    assert _wait_for_trust(False)
 
 
 def test_a_drain_that_finishes_after_a_restart_leaves_the_new_listener_trusted(monkeypatch):
@@ -711,11 +729,7 @@ def test_the_trust_flag_moves_with_the_listener_under_one_lock():
         if "set_lan_connector_active" in body:
             holders.add(node.name)
     # only the two helpers that run under _lock may touch it
-    assert holders == {
-        "start_lan_listener",
-        "_release_listener_state",
-        "_clear_trust_after_drain",
-    }, holders
+    assert holders == {"start_lan_listener", "_sync_lan_trust"}, holders
 
 
 def test_start_refuses_while_a_block_is_in_force():
@@ -796,9 +810,9 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():

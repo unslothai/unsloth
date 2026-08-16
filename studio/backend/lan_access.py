@@ -55,6 +55,9 @@ _serve_loop: Any = None
 _sockets: tuple[socket.socket, ...] = ()
 _port: Optional[int] = None
 _error: Optional[str] = None
+# stopped listeners whose accepted requests are still running; they remain remote
+# callers, so the trust flag stays up until every one of them has drained
+_pending_drains = 0
 # rebound whole, never mutated: request_on_lan_listener reads it without the lock
 _bound_addresses: tuple[str, ...] = ()
 
@@ -243,7 +246,7 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
             cause = future.exception(timeout = 0) if future.done() else None
             future.cancel()
             _close_sockets(sockets)
-            set_lan_connector_active(False)
+            _sync_lan_trust()
             _error = "listener_start_failed"
             logger.warning(
                 "LAN access listener did not start on port %s: %s",
@@ -259,22 +262,37 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
     return _bound_addresses
 
 
-def _release_listener_state(*, clear_trust: bool = True) -> None:
-    """Drop the listener references. The caller holds ``_lock``.
+def _sync_lan_trust() -> None:
+    """Publish the beyond-loopback flag from the authoritative state.
 
-    The beyond-loopback flag moves with the listener state under the same lock:
-    updating it from a caller let a concurrent start and stop interleave into a
-    live listener that ``remote_connector_active()`` reported as absent. Pass
-    ``clear_trust=False`` when connections accepted by the old listener may still
-    be running, and hand the flag to :func:`_clear_trust_after_drain`.
+    Derived rather than assigned by callers: a repeated stop, or a start racing a
+    stop in another worker thread, otherwise cleared a flag that a live listener
+    or a still-draining one owned. The caller holds ``_lock``.
     """
+    set_lan_connector_active(_server is not None or _pending_drains > 0)
+
+
+def _release_listener_state() -> None:
+    """Drop the listener references. The caller holds ``_lock``."""
     global _server, _serve_loop, _sockets, _port
 
     _server = _serve_loop = None
     _sockets = ()
     _port = None
-    if clear_trust:
-        set_lan_connector_active(False)
+    _sync_lan_trust()
+
+
+def _arm_drain_watcher(server) -> None:
+    """Own the trust flag until ``server``'s accepted requests end. Caller holds ``_lock``."""
+    global _pending_drains
+
+    _pending_drains += 1
+    threading.Thread(
+        target = _clear_trust_after_drain,
+        args = (server,),
+        name = "lan-access-drain",
+        daemon = True,
+    ).start()
 
 
 def _clear_trust_after_drain(server) -> None:
@@ -284,17 +302,19 @@ def _clear_trust_after_drain(server) -> None:
     the accepted ones, and a request that started on the LAN is still a remote
     caller for its whole life.
     """
+    global _pending_drains
+
     state = getattr(server, "server_state", None)
     deadline = time.monotonic() + _DRAIN_TIMEOUT
     while state is not None and state.connections and time.monotonic() < deadline:
         time.sleep(0.05)
     with _lock:
         if state is not None and state.connections:
-            logger.warning("LAN access left the trust flag on: connections did not drain")
+            # ownership is never given up: a request that never ended is still remote
+            logger.warning("LAN access kept the trust flag on: connections did not drain")
             return
-        # a listener started again while the old one drained, so it owns the flag now
-        if _server is None:
-            set_lan_connector_active(False)
+        _pending_drains -= 1
+        _sync_lan_trust()
 
 
 def _close_sockets(sockets) -> None:
@@ -342,13 +362,9 @@ def stop_lan_listener() -> bool:
             logger.info("LAN access stopped with its server loop")
             return True
         if _wait_until(lambda: all(sock.fileno() == -1 for sock in sockets), _STOP_TIMEOUT):
-            _release_listener_state(clear_trust = False)
-            threading.Thread(
-                target = _clear_trust_after_drain,
-                args = (server,),
-                name = "lan-access-drain",
-                daemon = True,
-            ).start()
+            # armed before the release so the flag is never briefly unowned
+            _arm_drain_watcher(server)
+            _release_listener_state()
             logger.info("LAN access stopped")
             return True
         # ownership is kept so a retry waits on these same sockets, and so a second
