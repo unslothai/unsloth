@@ -131,6 +131,9 @@ export const es = {
       deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
       deleteFilesDescription:
         "Se elimina del disco la carpeta de entorno aislado de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
+      deleteFilesLabel: "Eliminar archivos y carpeta de espacio aislado",
+      deleteChatFilesDescription:
+        "La carpeta de espacio aislado propia de este chat se elimina del disco. Los archivos que escribió dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
     },
     organize: {
       sidebarHeading: "Organizar la barra lateral",

@@ -128,6 +128,9 @@ export const en = {
       deleteDescription: "Delete {count} chats? This cannot be undone.",
       deleteFilesDescription:
         "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
+      deleteFilesLabel: "Delete files and sandbox folder",
+      deleteChatFilesDescription:
+        "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace.",
     },
     // Sidebar list headers: how chats are grouped and ordered.
     organize: {

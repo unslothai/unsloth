@@ -131,6 +131,9 @@ export const ptBR = {
       deleteDescription: "Excluir {count} conversas? Esta ação não pode ser desfeita.",
       deleteFilesDescription:
         "A pasta de sandbox de cada conversa é removida do disco. Os arquivos escritos dentro de um projeto permanecem no espaço de trabalho desse projeto.",
+      deleteFilesLabel: "Excluir arquivos e pasta de sandbox",
+      deleteChatFilesDescription:
+        "A pasta de sandbox deste chat é removida do disco. Os arquivos que ele gravou dentro de um projeto permanecem no espaço de trabalho do projeto.",
     },
     organize: {
       sidebarHeading: "Organizar a barra lateral",

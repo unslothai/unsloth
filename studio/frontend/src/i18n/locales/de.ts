@@ -132,6 +132,9 @@ export const de = {
       deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
       deleteFilesDescription:
         "Der eigene Sandbox-Ordner jedes Chats wird von der Festplatte entfernt. Dateien, die sie in einem Projekt erstellt haben, bleiben im Arbeitsbereich dieses Projekts.",
+      deleteFilesLabel: "Dateien und Sandbox-Ordner löschen",
+      deleteChatFilesDescription:
+        "Der eigene Sandbox-Ordner dieses Chats wird von der Festplatte entfernt. Dateien, die er in einem Projekt geschrieben hat, bleiben im Arbeitsbereich des Projekts.",
     },
     organize: {
       sidebarHeading: "Seitenleiste organisieren",

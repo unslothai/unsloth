@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   type SidebarItem,
+  DeleteChatFilesSwitch,
   deleteChatItem,
   unarchiveChatItem,
   useChatPreferencesStore,
@@ -61,6 +62,9 @@ export function ArchivedChatsView() {
   const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
     null,
   );
+  // Preselected from the preference, so the dialog shows what is about to
+  // happen and can still be turned off for this one chat.
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
   // Pagination: the view remounts with its settings tab, so plain state
   // restarts from the first page on each visit.
   const [visibleCount, setVisibleCount] = useState(ARCHIVED_PAGE_SIZE);
@@ -86,7 +90,7 @@ export function ArchivedChatsView() {
     }
   }
 
-  async function handleDelete(item: SidebarItem) {
+  async function handleDelete(item: SidebarItem, deleteFiles: boolean) {
     try {
       // Pass the open chat id (single or compare) so deleting it resets nav.
       await deleteChatItem(
@@ -100,7 +104,7 @@ export function ArchivedChatsView() {
               : { new: view.newThreadNonce },
           });
         },
-        { deleteFiles: alwaysDeleteChatFiles },
+        { deleteFiles },
       );
       toast.success("Chat deleted");
     } catch (err) {
@@ -111,8 +115,13 @@ export function ArchivedChatsView() {
   }
 
   function requestDelete(item: SidebarItem) {
-    if (confirmDeleteChats) setConfirmingDelete(item);
-    else void handleDelete(item);
+    if (confirmDeleteChats) {
+      setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+      setConfirmingDelete(item);
+      return;
+    }
+    // No confirmation to preselect, so the preference is the answer.
+    void handleDelete(item, alwaysDeleteChatFiles);
   }
 
   return (
@@ -207,14 +216,20 @@ export function ArchivedChatsView() {
               ? This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <DeleteChatFilesSwitch
+            id="archived-chat-delete-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
                 const item = confirmingDelete;
+                const deleteFiles = deleteFilesOnDelete;
                 setConfirmingDelete(null);
-                if (item) void handleDelete(item);
+                if (item) void handleDelete(item, deleteFiles);
               }}
             >
               Delete

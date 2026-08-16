@@ -129,6 +129,9 @@ export const ko = {
       deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
       deleteFilesDescription:
         "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
+      deleteFilesLabel: "파일 및 샌드박스 폴더 삭제",
+      deleteChatFilesDescription:
+        "이 채팅 전용 샌드박스 폴더가 디스크에서 제거됩니다. 프로젝트 안에 기록한 파일은 해당 프로젝트 작업 공간에 남습니다.",
     },
     organize: {
       sidebarHeading: "사이드바 정리",

@@ -64,6 +64,7 @@ import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
+import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
   type NativeIntent,
@@ -1266,6 +1267,9 @@ function ProjectLanding({
   const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
     null,
   );
+  // Preselected from the preference, so the dialog shows what is about to
+  // happen and can still be turned off for this one chat.
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
   // Landing has no active thread selected, so the onView callback here is a
   // no-op; the items list refreshes itself once storage emits its update.
@@ -1285,10 +1289,10 @@ function ProjectLanding({
   );
 
   const runDelete = useCallback(
-    async (item: SidebarItem) => {
+    async (item: SidebarItem, deleteFiles: boolean) => {
       try {
         await deleteChatItem(item, activeThreadId ?? undefined, noopView, {
-          deleteFiles: alwaysDeleteChatFiles,
+          deleteFiles,
         });
       } catch (err) {
         toast.error("Failed to delete chat", {
@@ -1296,15 +1300,20 @@ function ProjectLanding({
         });
       }
     },
-    [activeThreadId, noopView, alwaysDeleteChatFiles],
+    [activeThreadId, noopView],
   );
 
   const handleDelete = useCallback(
     (item: SidebarItem) => {
-      if (confirmDeleteChats) setConfirmingDelete(item);
-      else void runDelete(item);
+      if (confirmDeleteChats) {
+        setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+        setConfirmingDelete(item);
+        return;
+      }
+      // No confirmation to preselect, so the preference is the answer.
+      void runDelete(item, alwaysDeleteChatFiles);
     },
-    [confirmDeleteChats, runDelete],
+    [confirmDeleteChats, runDelete, alwaysDeleteChatFiles],
   );
 
   const handleMoveToProject = useCallback(
@@ -1776,13 +1785,19 @@ function ProjectLanding({
               be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <DeleteChatFilesSwitch
+            id="chat-landing-delete-files"
+            checked={deleteFilesOnDelete}
+            onCheckedChange={setDeleteFilesOnDelete}
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 const target = confirmingDelete;
+                const deleteFiles = deleteFilesOnDelete;
                 setConfirmingDelete(null);
-                if (target) void runDelete(target);
+                if (target) void runDelete(target, deleteFiles);
               }}
             >
               Delete

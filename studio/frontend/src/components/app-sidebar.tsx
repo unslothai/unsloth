@@ -3977,7 +3977,7 @@ export function AppSidebar() {
           <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
             <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
-                Delete files and sandbox folder
+                {t("shell.selection.deleteFilesLabel")}
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
                 {confirmingDelete?.kind === "project"
@@ -3987,14 +3987,14 @@ export function AppSidebar() {
                     ? t("shell.selection.deleteProjectsFilesDescription")
                     : confirmingDelete?.kind === "chats"
                       ? t("shell.selection.deleteFilesDescription")
-                    : "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace."}
+                    : t("shell.selection.deleteChatFilesDescription")}
               </span>
             </label>
             <Switch
               id="delete-files-on-delete"
               checked={deleteFilesOnDelete}
               onCheckedChange={setDeleteFilesOnDelete}
-              aria-label="Delete files and sandbox folder"
+              aria-label={t("shell.selection.deleteFilesLabel")}
             />
           </div>
         ) : null}

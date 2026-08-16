@@ -132,6 +132,9 @@ export const fr = {
       deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
       deleteFilesDescription:
         "Le dossier bac à sable propre à chaque discussion est supprimé du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
+      deleteFilesLabel: "Supprimer les fichiers et le dossier bac à sable",
+      deleteChatFilesDescription:
+        "Le dossier bac à sable propre à cette discussion est retiré du disque. Les fichiers écrits dans un projet restent dans l'espace de travail du projet.",
     },
     organize: {
       sidebarHeading: "Organiser la barre latérale",
