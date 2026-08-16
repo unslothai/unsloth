@@ -22,8 +22,8 @@ export type SentTextGuard = {
   readonly texts: readonly string[];
   /** Draft key the send cleared, so another thread's identical draft still restores. */
   readonly draftKey: string | null;
-  /** A key has been pressed since the send. See markSentTextGuardKeystroke. */
-  readonly typedSince: boolean;
+  /** A key has been pressed since the send. See markSentTextGuardUserInput. */
+  readonly userInputSince: boolean;
 };
 
 export function armSentTextGuard(
@@ -33,7 +33,7 @@ export function armSentTextGuard(
   return {
     texts: texts.filter((text) => text.length > 0),
     draftKey,
-    typedSince: false,
+    userInputSince: false,
   };
 }
 
@@ -56,18 +56,19 @@ export function isGuardRetiringKey(event: {
 }
 
 /**
- * Records that the user pressed a key after the send.
+ * Records that the user drove input after the send: a keydown, or a composition
+ * starting for dictation, handwriting or an IME.
  *
- * A write the send queued is delivered before any later keydown, so a keystroke
- * proves the stale writes have already drained and this composer is the user's
- * again. Only the equality check relaxes: the autocorrect rule and the draft
+ * A write the send queued is delivered before either of those, so one proves
+ * the stale writes have already drained and this composer is the user's again.
+ * Only the equality check relaxes: the autocorrect rule and the draft
  * suppression are unaffected, so this cannot widen into the original bug.
  */
-export function markSentTextGuardKeystroke(
+export function markSentTextGuardUserInput(
   guard: SentTextGuard | null,
 ): SentTextGuard | null {
-  if (guard === null || guard.typedSince) return guard;
-  return { ...guard, typedSince: true };
+  if (guard === null || guard.userInputSince) return guard;
+  return { ...guard, userInputSince: true };
 }
 
 /** Whether a draft restore is the sent text coming back under the same key. */
@@ -103,7 +104,7 @@ export function applySentTextGuard(
   // Re-typing the whole prompt is only one write when it is one character, so
   // equality alone would swallow every retry of a "?" or a single emoji.
   if (guard.texts.includes(write.value)) {
-    if (guard.typedSince) return { accept: true, guard: null };
+    if (guard.userInputSince) return { accept: true, guard: null };
     return { accept: false, guard };
   }
   if (write.replacesText && write.composerIsEmpty) {

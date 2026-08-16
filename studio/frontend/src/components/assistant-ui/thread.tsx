@@ -175,7 +175,7 @@ import {
   applySentTextGuard,
   armSentTextGuard,
   isGuardRetiringKey,
-  markSentTextGuardKeystroke,
+  markSentTextGuardUserInput,
   sentTextGuardBlocksDraft,
   type SentTextGuard,
 } from "@/features/chat/utils/composer-send-guard";
@@ -4005,8 +4005,13 @@ function useImeComposerInputHandlers({
   );
 
   const onCompositionStart = useCallback(() => {
+    // Dictation and handwriting insert without a keydown, but a composition
+    // that starts after the send cannot be a write the send queued.
+    if (justSentRef) {
+      justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
+    }
     setCompositionState(true);
-  }, [setCompositionState]);
+  }, [justSentRef, setCompositionState]);
 
   const onCompositionUpdate = useCallback(() => {
     refreshStuckTimer();
@@ -4044,7 +4049,7 @@ function useImeComposerInputHandlers({
       // Before the IME return: committing one character through an IME is the
       // same single write, and its keydown reports as composing.
       if (justSentRef && isGuardRetiringKey(e)) {
-        justSentRef.current = markSentTextGuardKeystroke(justSentRef.current);
+        justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
       }
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
         composingRef.current = true;

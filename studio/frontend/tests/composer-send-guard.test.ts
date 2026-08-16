@@ -8,7 +8,7 @@ import {
   applySentTextGuard,
   armSentTextGuard,
   isGuardRetiringKey,
-  markSentTextGuardKeystroke,
+  markSentTextGuardUserInput,
   sentTextGuardBlocksDraft,
 } from "../src/features/chat/utils/composer-send-guard.ts";
 
@@ -170,7 +170,7 @@ test("the raw pre-send value is guarded, not just its trimmed form", () => {
 // already differs. A one-character prompt arrives whole in a single write, so
 // equality alone swallowed it and kept the guard, blocking every retry.
 test("re-typing a one-character prompt is applied", () => {
-  const guard = markSentTextGuardKeystroke(armed(["?"]));
+  const guard = markSentTextGuardUserInput(armed(["?"]));
   assert.deepEqual(applySentTextGuard(guard, typed("?")), {
     accept: true,
     guard: null,
@@ -186,7 +186,7 @@ test("a stale write with no keystroke behind it is still refused", () => {
 // The keystroke relaxes equality only. An autocorrect commit into an empty
 // composer stays stale whatever the user pressed.
 test("a keystroke does not let an autocorrect commit through", () => {
-  const guard = markSentTextGuardKeystroke(armed());
+  const guard = markSentTextGuardUserInput(armed());
   assert.equal(
     applySentTextGuard(guard, replacement(`${PROMPT}!`)).accept,
     false,
@@ -194,12 +194,23 @@ test("a keystroke does not let an autocorrect commit through", () => {
 });
 
 test("a keystroke does not unblock the raced draft", () => {
-  const guard = markSentTextGuardKeystroke(armed());
+  const guard = markSentTextGuardUserInput(armed());
   assert.equal(sentTextGuardBlocksDraft(guard, PROMPT, KEY), true);
 });
 
+// Dictation, handwriting and IMEs insert without a keydown, so the composition
+// they start is the boundary instead. A one-emoji prompt is the case that needs
+// it, since the whole value arrives in a single committed write.
+test("a composition started after the send lets its commit through", () => {
+  const guard = markSentTextGuardUserInput(armed(["\u{1F642}"]));
+  assert.deepEqual(applySentTextGuard(guard, typed("\u{1F642}")), {
+    accept: true,
+    guard: null,
+  });
+});
+
 test("marking an unarmed guard is a no-op", () => {
-  assert.equal(markSentTextGuardKeystroke(null), null);
+  assert.equal(markSentTextGuardUserInput(null), null);
 });
 
 const key = (k: string, mods: { metaKey?: boolean; ctrlKey?: boolean } = {}) =>
