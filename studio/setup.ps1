@@ -5021,14 +5021,17 @@ def _verdict(d, d_record):
     if _edit:
         try:
             _u = urlparse(str(_durl.get('url') or ''))
-            # a UNC checkout is file://server/share/repo, and its authority is part of
-            # the path: dropping it would resolve \\server\share\repo as \share\repo and
-            # reject every real module origin under it
-            # Rebuilt by hand rather than fed to url2pathname with the authority
-            # attached, which refuses a non-local one outright on POSIX; UNC exists
-            # only on Windows, so the separator is fixed.
+            # a UNC checkout is file://server/share/repo, and its authority is part
+            # of the path: dropping the server resolves the share alone and rejects
+            # every real module origin under it. Rebuilt by hand rather than fed to
+            # url2pathname with the authority attached, which refuses a non-local one
+            # outright on POSIX; UNC exists only on Windows, so the separator is
+            # fixed. chr(92), never a literal backslash -- and none anywhere in this
+            # program: it is stored in a double-quoted shell string, where a doubled
+            # backslash collapses to one and breaks the source outright.
+            _bs = chr(92)
             if _u.netloc and _u.netloc.lower() != 'localhost':
-                _target = '\\\\' + _u.netloc + url2pathname(_u.path).replace('/', '\\')
+                _target = _bs + _bs + _u.netloc + url2pathname(_u.path).replace('/', _bs)
             else:
                 _target = url2pathname(_u.path)
         except Exception:
