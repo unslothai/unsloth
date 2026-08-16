@@ -32,6 +32,8 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    requested_device_map,
+    resolve_unsloth_device_map,
 )
 from ..utils.packing import (
     get_packed_info_from_kwargs,
@@ -2317,6 +2319,8 @@ class FastLlamaModel:
         load_in_4bit = True,
         token = None,
         device_map = "sequential",
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         rope_scaling = None,
         fix_tokenizer = True,
         model_patcher = None,
@@ -2596,6 +2600,21 @@ class FastLlamaModel:
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now that the effective bnb state is known
         # (the per-load env was built before remap/disable). gpt-oss only; no-op otherwise.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
+
+        # Here, not in loader.py: the mapper can still substitute the repo up there (a
+        # -bnb-4bit name resolving to its 16-bit twin), and a plan sized for the repo the
+        # caller named is the wrong plan for the one actually loaded.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            fast_inference = fast_inference,
+            planner_kwargs = device_map_planner_kwargs,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            revision = revision,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+        )
 
         bnb_config = None
         _ckpt_qcfg = getattr(model_config, "quantization_config", None)

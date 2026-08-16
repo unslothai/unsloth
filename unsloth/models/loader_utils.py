@@ -106,6 +106,86 @@ def prepare_device_map():
     return device_map, True
 
 
+UNSLOTH_DEVICE_MAP = "unsloth"
+
+
+def requested_device_map(device_map):
+    """`UNSLOTH_AUTO_DEVICE_MAP=1` asks for planning without touching any call site.
+
+    Only "sequential" is upgraded. An explicit dict, "auto", or "balanced" is a placement
+    the caller chose, and the env var is not a licence to override it.
+    """
+    if device_map == "sequential" and os.environ.get("UNSLOTH_AUTO_DEVICE_MAP", "0") == "1":
+        return UNSLOTH_DEVICE_MAP
+    return device_map
+
+
+def resolve_unsloth_device_map(
+    device_map,
+    model_name,
+    *,
+    fast_inference = False,
+    full_finetuning = False,
+    planner_kwargs = None,
+    **config_kwargs,
+):
+    """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is.
+
+    Opt-in only, so nothing an existing caller passes changes meaning: "sequential" stays
+    "sequential" and "auto" keeps accelerate's. The plan is built on the meta device, so
+    this costs no GPU memory and no weight download.
+
+    Falls back to "sequential" wherever a plan cannot apply, since a model that loads the
+    old way beats one that refuses to load at all. `DeviceMapInfeasible` is the exception:
+    the planner raises it rather than spilling a bitsandbytes model to CPU, and silently
+    undoing that would hand the user an OOM instead of a diagnosis.
+    """
+    if device_map != UNSLOTH_DEVICE_MAP:
+        return device_map
+
+    def _fallback(reason):
+        print(f"Unsloth: Not planning a device map; {reason}. Using `sequential`.")
+        return "sequential"
+
+    if fast_inference:
+        return _fallback("vLLM places its own weights")
+    if full_finetuning:
+        return _fallback("full finetuning does not use the quantized planner")
+    if is_distributed():
+        # torchrun/DDP/FSDP already give every rank the whole model on its own card.
+        # Splitting one model across the cards on top of that puts every rank on every
+        # card at once, which is a different execution model, not a bigger one.
+        return _fallback("each rank of a distributed launch owns its own device")
+    if DEVICE_TYPE_TORCH != "cuda":
+        return _fallback(f"the planner has no memory budgets for {DEVICE_TYPE_TORCH}")
+    if torch.cuda.device_count() < 2:
+        return "sequential"
+
+    try:
+        from unsloth_zoo.device_map_planner import plan_device_map_for_pretrained
+    except Exception as error:
+        return _fallback(f"the planner is unavailable ({error})")
+
+    # Free, not total: this process's CUDA context and anything else on the card are
+    # already resident, and planning against total memory overcommits every device.
+    max_memory = {
+        index: torch.cuda.mem_get_info(index)[0] for index in range(torch.cuda.device_count())
+    }
+    try:
+        plan = plan_device_map_for_pretrained(
+            model_name, max_memory = max_memory, **(planner_kwargs or {}), **config_kwargs
+        )
+    except Exception as error:
+        if type(error).__name__ == "DeviceMapInfeasible":
+            raise
+        return _fallback(f"planning failed ({error})")
+
+    if plan is None:
+        return "sequential"
+    print(plan.describe())
+    return plan.device_map
+
+
 def __get_model_name(
     model_name,
     load_in_4bit = True,

@@ -47,6 +47,8 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    requested_device_map,
+    resolve_unsloth_device_map,
 )
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
@@ -891,6 +893,8 @@ class FastBaseModel:
         full_finetuning = False,
         token = None,
         device_map = "sequential",
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         trust_remote_code = False,
         model_types = None,
         tokenizer_name = None,
@@ -1157,6 +1161,21 @@ class FastBaseModel:
             load_in_4bit = False
             load_in_8bit = False
             load_in_16bit = False
+
+        # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP).
+        # loader.py resolves it too, and returns an already-planned map unchanged, so
+        # calling FastBaseModel directly gets the same behaviour as going through FastModel.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            fast_inference = fast_inference,
+            full_finetuning = full_finetuning,
+            planner_kwargs = device_map_planner_kwargs,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+        )
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:
             raise RuntimeError(
