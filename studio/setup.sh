@@ -1889,10 +1889,10 @@ def _pep440_key(v):
     # exactly one optional v, not lstrip: vv999 is not a version, and eating both
     # would parse it as 999 and let it outrank a real release
     v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
-    em = re.match(r'(\d+)!', v)
+    em = re.match(r'([0-9]+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
-    m = re.match(r'\d+(\.\d+)*', v)
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
     if not m:
         return None
     rel = [int(n) for n in m.group(0).split('.')]
@@ -1911,13 +1911,13 @@ def _pep440_key(v):
         # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
         # is matched every pass rather than once up front. Only dev may follow a
         # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
-        im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
         if im:
             if _seen >= 2:
                 return None
             _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
             continue
-        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
         if not mm:
             break
         _t, _n = mm.group(1), int(mm.group(2) or 0)
@@ -2342,10 +2342,10 @@ def _pep440_key(v):
     # exactly one optional v, not lstrip: vv999 is not a version, and eating both
     # would parse it as 999 and let it outrank a real release
     v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
-    em = re.match(r'(\d+)!', v)
+    em = re.match(r'([0-9]+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
-    m = re.match(r'\d+(\.\d+)*', v)
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
     if not m:
         return None
     rel = [int(n) for n in m.group(0).split('.')]
@@ -2364,13 +2364,13 @@ def _pep440_key(v):
         # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
         # is matched every pass rather than once up front. Only dev may follow a
         # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
-        im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
         if im:
             if _seen >= 2:
                 return None
             _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
             continue
-        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
         if not mm:
             break
         _t, _n = mm.group(1), int(mm.group(2) or 0)

@@ -4931,10 +4931,10 @@ def _pep440_key(v):
     # exactly one optional v, not lstrip: vv999 is not a version, and eating both
     # would parse it as 999 and let it outrank a real release
     v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
-    em = re.match(r'(\d+)!', v)
+    em = re.match(r'([0-9]+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
-    m = re.match(r'\d+(\.\d+)*', v)
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
     if not m:
         return None
     rel = [int(n) for n in m.group(0).split('.')]
@@ -4953,13 +4953,13 @@ def _pep440_key(v):
         # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
         # is matched every pass rather than once up front. Only dev may follow a
         # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
-        im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
         if im:
             if _seen >= 2:
                 return None
             _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
             continue
-        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
         if not mm:
             break
         _t, _n = mm.group(1), int(mm.group(2) or 0)
@@ -5911,10 +5911,10 @@ def _pep440_key(v):
     # exactly one optional v, not lstrip: vv999 is not a version, and eating both
     # would parse it as 999 and let it outrank a real release
     v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
-    em = re.match(r'(\d+)!', v)
+    em = re.match(r'([0-9]+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
-    m = re.match(r'\d+(\.\d+)*', v)
+    m = re.match(r'[0-9]+(\.[0-9]+)*', v)
     if not m:
         return None
     rel = [int(n) for n in m.group(0).split('.')]
@@ -5933,13 +5933,13 @@ def _pep440_key(v):
         # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
         # is matched every pass rather than once up front. Only dev may follow a
         # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
-        im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
+        im = re.match(r'-([0-9]+)(?=$|[-._]|dev)', rest)
         if im:
             if _seen >= 2:
                 return None
             _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
             continue
-        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
+        mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)', rest)
         if not mm:
             break
         _t, _n = mm.group(1), int(mm.group(2) or 0)
@@ -5978,8 +5978,13 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
 '@
         $_pepProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_pepCode -ProbeEnv @{
             STUDIO_CMP_POST = $PostVer; STUDIO_CMP_LATEST = $LatestVer }
-        if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
-            $_updateOk = ($Matches[1] -eq "ge")
+        # The LAST anchored sentinel, like the POSTVER extraction: -I still runs site
+        # initialization, so a printing sitecustomize or .pth hook could emit its own
+        # PEPCMP= line ahead of the probe's authoritative one, and a scalar -match
+        # would take that first line.
+        $_cmpAll = if ($_pepProbe.Ok) { [regex]::Matches($_pepProbe.Output, '(?m)^PEPCMP=(ge|lt)\s*$') } else { $null }
+        if ($_cmpAll -and $_cmpAll.Count) {
+            $_updateOk = ($_cmpAll[$_cmpAll.Count - 1].Groups[1].Value -eq "ge")
         } else {
             # Last resort: python ran the probe above but could not run the comparator.
             # A full port of _pep440_key rather than another hand-rolled rank -- the
@@ -5993,8 +5998,10 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
                 $_s = "$_v".Trim()
                 $_s = ($_s -replace '^[vV]', '').ToLower()
                 $_ep = 0
-                if ($_s -match '^(\d+)!') { $_ep = [int]$Matches[1]; $_s = $_s.Substring($Matches[0].Length) }
-                if ($_s -notmatch '^\d+(\.\d+)*') { return $null }
+                if ($_s -match '^([0-9]+)!') { $_ep = [int]$Matches[1]; $_s = $_s.Substring($Matches[0].Length) }
+                # ASCII [0-9] throughout, never \d: .NET matches Unicode decimal digits
+                # with \d, and a non-version would parse as a release
+                if ($_s -notmatch '^[0-9]+(\.[0-9]+)*') { return $null }
                 $_relStr = $Matches[0]
                 $_s = $_s.Substring($_relStr.Length)
                 $_rel = [System.Collections.ArrayList]@()
@@ -6013,13 +6020,13 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
                 while ($_s) {
                     # the implicit post release: a bare -N, valid after the release and
                     # after a prerelease, with only dev allowed to follow it
-                    if ($_s -match '^-(\d+)($|[-._]|dev)') {
+                    if ($_s -match '^-([0-9]+)($|[-._]|dev)') {
                         if ($_seen -ge 2) { return $null }
                         $_seen = 2; $_post = [int]$Matches[1]
                         $_s = $_s.Substring(1 + $Matches[1].Length)
                         continue
                     }
-                    if ($_s -notmatch '^[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)') { break }
+                    if ($_s -notmatch '^[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)') { break }
                     $_tok = $Matches[1]
                     $_num = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
                     $_rank = if ($_tok -eq 'dev') { 3 } elseif ($_tok -in @('post', 'rev', 'r')) { 2 } else { 1 }
@@ -6154,7 +6161,9 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
 '@
                 $_bestProbe = Invoke-BoundedPythonStdinProbe -PythonExe "python" -Code $_bestCode -ProbeEnv @{
                     STUDIO_VERIFY_POST = $PostVer; STUDIO_VERIFY_LATEST = $LatestVer; STUDIO_VERIFY_TABLE = $_relPath }
-                if ($_bestProbe.Ok -and $_bestProbe.Output -match '(?m)^VERIFYVER=ok\s*$') {
+                # last sentinel again: a startup hook's line must not answer for the probe
+                $_verAll = if ($_bestProbe.Ok) { [regex]::Matches($_bestProbe.Output, '(?m)^VERIFYVER=(ok|stale)\s*$') } else { $null }
+                if ($_verAll -and $_verAll.Count -and $_verAll[$_verAll.Count - 1].Groups[1].Value -eq "ok") {
                     substep "$_PkgName $PostVer kept: no $LatestVer artifact installs on this environment"
                     $_updateOk = $true
                 }
