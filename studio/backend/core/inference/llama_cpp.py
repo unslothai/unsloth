@@ -14740,9 +14740,7 @@ class LlamaCppBackend:
                         # Identical on a uniform pool, where the totals cancel.
                         def _mm_ranked(with_drafter: bool) -> list:
                             _frac = _mm_mtp_frac if with_drafter else _vram_frac
-                            return sorted(
-                                gpus, key = lambda g: _gpu_usable(g, _frac), reverse = True
-                            )
+                            return sorted(gpus, key = lambda g: _gpu_usable(g, _frac), reverse = True)
 
                         def _mm_any(with_projector: bool, with_drafter: bool) -> bool:
                             _ranked = _mm_ranked(with_drafter)

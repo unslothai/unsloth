@@ -259,17 +259,12 @@ class TestTheGateActuallyExecutes:
     def test_keeps_every_covered_device(self, tmp_path, rocm_host):
         binary = rocm_host([_DGPU_TIGHT, _DGPU_ROOMY], ["gfx1100", "gfx1101"])
         gated = _probe(binary, for_llama_server = True)
-        assert gated == [
-            (0, _TIGHT_FREE_MIB, _TIGHT_TOTAL_MIB),
-            (1, 40_000, 48_000),
-        ]
+        assert gated == [(0, _TIGHT_FREE_MIB, _TIGHT_TOTAL_MIB), (1, 40_000, 48_000)]
         assert gated == _probe(binary, for_llama_server = False)
 
     def test_drops_the_uncovered_device_only(self, tmp_path, rocm_host):
         binary = rocm_host([_DGPU_TIGHT, _OLD_ROOMY], ["gfx1101"])
-        assert _probe(binary, for_llama_server = True) == [
-            (0, _TIGHT_FREE_MIB, _TIGHT_TOTAL_MIB)
-        ]
+        assert _probe(binary, for_llama_server = True) == [(0, _TIGHT_FREE_MIB, _TIGHT_TOTAL_MIB)]
         # The ungated probe still sees both: the gate answers "what can
         # llama-server run on", not "what GPUs exist".
         assert len(_probe(binary, for_llama_server = False)) == 2
@@ -392,12 +387,11 @@ class TestDiscreteVramFollowsTheSurvivors:
         # the survivor is a discrete card: the pin becomes available and fires.
         binary = rocm_host([_APU, _DGPU_TIGHT], ["gfx1101"])
         ungated = _probe(binary, for_llama_server = False)
-        assert [g[2] for g in ungated] == [0, _TIGHT_TOTAL_MIB], (
-            "the APU must report a total of 0, or this case is not about _discrete_vram"
-        )
-        assert _probe(binary, for_llama_server = True) == [
-            (1, _TIGHT_FREE_MIB, _TIGHT_TOTAL_MIB)
-        ]
+        assert [g[2] for g in ungated] == [
+            0,
+            _TIGHT_TOTAL_MIB,
+        ], "the APU must report a total of 0, or this case is not about _discrete_vram"
+        assert _probe(binary, for_llama_server = True) == [(1, _TIGHT_FREE_MIB, _TIGHT_TOTAL_MIB)]
 
         backend, gguf = _vision_backend(tmp_path)
         cmd = _launch(backend, gguf, is_vision = True)["cmd"]

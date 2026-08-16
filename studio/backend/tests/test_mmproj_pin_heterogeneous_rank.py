@@ -80,7 +80,13 @@ def _rank(pool, frac):
     return [g[0] for g in sorted(pool, key = lambda g: _usable(g[1], g[2], frac), reverse = True)]
 
 
-def _vision_backend(tmp_path, *, model_mib, pool, drafter = True):
+def _vision_backend(
+    tmp_path,
+    *,
+    model_mib,
+    pool,
+    drafter = True,
+):
     """A vision GGUF on a multi-GPU pool, with an UNSIZED GPU drafter.
 
     Unsized is the load-bearing half: ``_estimate_mtp_overhead_bytes`` returning
@@ -118,11 +124,17 @@ def _vision_backend(tmp_path, *, model_mib, pool, drafter = True):
     return backend, gguf
 
 
-def _run(tmp_path, *, model_mib, pool = _SKEWED_POOL, drafter = True):
+def _run(
+    tmp_path,
+    *,
+    model_mib,
+    pool = _SKEWED_POOL,
+    drafter = True,
+):
     backend, gguf = _vision_backend(tmp_path, model_mib = model_mib, pool = pool, drafter = drafter)
-    cmd = _launch(
-        backend, gguf, is_vision = True, speculative_type = "mtp" if drafter else "off"
-    )["cmd"]
+    cmd = _launch(backend, gguf, is_vision = True, speculative_type = "mtp" if drafter else "off")[
+        "cmd"
+    ]
     return {
         "cmd": cmd,
         "pin": _PIN in cmd,

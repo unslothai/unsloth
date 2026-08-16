@@ -81,8 +81,7 @@ def _non_gguf_sites() -> list[int]:
     """
     calls = _load_response_calls()
     return sorted(
-        lineno for lineno, (_kwargs, splats) in calls.items()
-        if _RUNTIME_FIELDS_CALL not in splats
+        lineno for lineno, (_kwargs, splats) in calls.items() if _RUNTIME_FIELDS_CALL not in splats
     )
 
 
@@ -115,7 +114,6 @@ def test_the_non_gguf_response_serializes_all_three_as_false():
     """Rebuilt from each site's OWN kwarg set, so the defaults are what a real
     MLX load returns and not a hand-written payload."""
     from models.inference import LoadResponse
-
     for lineno in _non_gguf_sites():
         kwargs, _splats = _load_response_calls()[lineno]
         payload = {name: None for name in kwargs}
@@ -151,7 +149,6 @@ def test_the_response_fields_default_to_false(field):
     seeds ``disableVision`` straight off ``disable_vision``), so a null would
     become an "unknown" state no consumer handles."""
     from models.inference import LoadResponse
-
     assert LoadResponse.model_fields[field].default is False
 
 
