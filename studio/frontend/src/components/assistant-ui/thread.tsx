@@ -6271,6 +6271,11 @@ const AssistantActionBar: FC = () => {
     <>
       <ActionBarPrimitive.Root
         hideWhenRunning={!speaking}
+        // Unmounts the bar on every message that is not hovered, as the user bar already does.
+        // Mounted, each one holds ~8 tooltips subscribed to the global modal-layer store, so
+        // every menu open fanned out across the whole thread. "never" while speaking because
+        // this bar carries the only Stop reading control, which hover must not take away.
+        autohide={speaking ? "never" : "always"}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
