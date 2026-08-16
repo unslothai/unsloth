@@ -1368,16 +1368,15 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
 
 
 # --- packed-boundary guard on the fused-CE path ---------------------------------------
-# mask_packed_sequence_boundaries needs already-shifted labels, so fused-CE paths (which
-# shift internally) call mask_packed_boundary_labels, the pre-shift equivalent.
+# mask_packed_sequence_boundaries needs shifted labels, so fused-CE paths (which shift
+# internally) call mask_packed_boundary_labels, the pre-shift equivalent.
 
 
 def test_mask_packed_boundary_labels_masks_next_document_first_token():
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     out = mask_packed_boundary_labels(labels, torch.tensor([2, 1, 3], dtype = torch.int32))
-    # Documents start at 0, 2, 3; masking their first token stops the previous
-    # document predicting it. Slot 0 is the out-of-range redirect: harmless, since the
-    # shift discards labels[0], and TRL's labels[position_ids == 0] = -100 masks it too.
+    # Docs start at 0, 2, 3; masking their first token stops the previous doc predicting
+    # it. Slot 0 is the out-of-range redirect: harmless, the shift discards labels[0].
     assert out.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
     # out-of-place
     assert labels.reshape(-1).tolist() == [0, 1, 2, 3, 4, 5]
@@ -1390,13 +1389,13 @@ def test_mask_packed_boundary_labels_matches_the_shifted_guard():
     labels = torch.arange(100, 112, dtype = torch.long).view(1, 12)
     lengths = torch.tensor([5, 4, 3], dtype = torch.int32)
 
-    # Route A: shift, then the original in-place guard.
+    # Route A: shift, then the in-place guard.
     shift_a = torch.empty_like(labels)
     shift_a[..., :-1] = labels[..., 1:]
     shift_a[..., -1] = -100
     mask_packed_sequence_boundaries(shift_a, lengths)
 
-    # Route B: the new guard on raw labels, then shift (what fused CE does).
+    # Route B: the raw-label guard, then shift (what fused CE does).
     masked = mask_packed_boundary_labels(labels, lengths)
     shift_b = torch.empty_like(masked)
     shift_b[..., :-1] = masked[..., 1:]
@@ -1406,8 +1405,7 @@ def test_mask_packed_boundary_labels_matches_the_shifted_guard():
 
 
 def test_mask_packed_boundary_labels_is_idempotent_on_trl_masked_labels():
-    """TRL already sets labels[position_ids == 0] = -100, so the guard must be a no-op
-    on its output."""
+    """TRL already sets labels[position_ids == 0] = -100, so the guard is a no-op on it."""
     lengths = torch.tensor([2, 1, 3], dtype = torch.int32)
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     position_ids = torch.tensor([[0, 1, 0, 0, 1, 2]], dtype = torch.long)
@@ -1428,7 +1426,7 @@ def test_mask_packed_boundary_labels_is_a_noop_without_packing():
 
 
 def test_mask_packed_boundary_labels_tolerates_pad_to_multiple_of():
-    # Trailing pad tokens beyond sum(seq_lengths) stay -100, and no index goes OOB.
+    # Trailing pad beyond sum(seq_lengths) stays -100, and no index goes OOB.
     labels = torch.tensor([[10, 11, 12, 13, -100, -100]], dtype = torch.long)
     out = mask_packed_boundary_labels(labels, torch.tensor([2, 2], dtype = torch.int32))
     assert out.reshape(-1).tolist() == [10, 11, -100, 13, -100, -100]
@@ -1443,7 +1441,7 @@ def test_mask_packed_boundary_labels_lengths_covering_whole_row():
 
 # ==========================================================================
 # Each test below fails when its production hunk is reverted.
-# 1 + 2. the two fused-CE call sites (llama.py / mistral.py)
+# 1 + 2. the fused-CE call sites (llama.py / mistral.py)
 # ==========================================================================
 class _StubInner(torch.nn.Module):
     def __init__(self, hidden):
@@ -1471,8 +1469,8 @@ def _make_stub_causal_lm(
     stub = SimpleNamespace(
         model = model,
         lm_head = lm_head,
-        # Mistral's `elif self.training:` mask branch is only reached when xformers
-        # is absent, so omitting this passes locally but AttributeErrors on CI.
+        # Mistral's `elif self.training:` mask branch is only reached without xformers,
+        # so omitting this passes locally but AttributeErrors on CI.
         training = True,
         config = SimpleNamespace(
             output_attentions = False,
@@ -1520,17 +1518,17 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     )
 
     got = seen["labels"].reshape(-1).tolist()
-    # slot 3 (first token of document 2) is dropped; slot 0 is the harmless redirect.
+    # slot 3 (first token of doc 2) is dropped; slot 0 is the harmless redirect.
     assert got == [-100, 1, 2, -100, 4, 5, 6, 7], got
     # out-of-place
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# 3. the collator wrappers must leave the boundary targets in place, because
-#    unsloth_zoo counts num_items_in_batch off this batch and already deducts them
+# 3. the collator wrappers must leave boundary targets in place: unsloth_zoo counts
+#    num_items_in_batch off this batch and already deducts them
 class _UnmaskedPackingCollator:
-    """A padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 -
-    a test built on TRL 0.24+ output would pass either way."""
+    """Padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 - a test
+    built on TRL 0.24+ output would pass either way."""
 
     def __init__(self):
         self.padding_free = True
@@ -1569,7 +1567,7 @@ def test_collator_keeps_boundary_targets_for_the_num_items_deduction(wrapper):
         ]
     )
     assert batch["labels"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
-    # docs [10,11] [12] [13,14,15] -> 1 + 0 + 2 real cross-entropy targets
+    # docs [10,11] [12] [13,14,15] -> 1 + 0 + 2 real CE targets
     assert _zoo_num_items_in_batch(batch) == 3
 
 

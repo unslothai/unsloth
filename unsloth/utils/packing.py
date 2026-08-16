@@ -170,10 +170,9 @@ def enable_sample_packing(
                         seq_lengths.append(len(ids))
             if seq_lengths:
                 # Boundary labels are NOT masked here: unsloth_zoo's
-                # _unsloth_get_batch_samples derives num_items_in_batch from this
-                # batch and already subtracts the N-1 boundary targets, so
-                # dropping them here too would deduct them twice on TRL < 0.24
-                # (which does not pre-mask). The guard runs in the forward.
+                # _unsloth_get_batch_samples counts num_items_in_batch off this batch and
+                # already subtracts the N-1 boundary targets, so masking here would deduct
+                # twice on TRL < 0.24 (no pre-masking). The guard runs in the forward.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -216,8 +215,8 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(examples)
         if seq_lengths:
-            # Labels are left alone here for the same reason as in
-            # enable_sample_packing: num_items_in_batch is counted off this batch.
+            # Labels left alone for the same reason as enable_sample_packing:
+            # num_items_in_batch is counted off this batch.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
@@ -680,23 +679,21 @@ def mask_packed_boundary_labels(
     *,
     ignore_index: int = -100,
 ) -> Optional[torch.Tensor]:
-    """Same guard as :func:`mask_packed_sequence_boundaries`, but on the RAW
-    (unshifted) labels and out-of-place, for fused cross-entropy paths that shift
-    internally and so can never call the shifted variant.
+    """Same guard as :func:`mask_packed_sequence_boundaries`, but on RAW (unshifted)
+    labels and out-of-place, for fused cross-entropy paths that shift internally.
 
     The shift maps target slot ``i`` to ``labels[i + 1]``, so masking shift slot
     ``cumsum - 1`` is exactly masking ``labels[cumsum]``, the first token of each
     following document.
 
-    Returns ``labels`` itself when ``seq_lengths`` is absent or empty (strict
-    no-op for non-packed callers), else a NEW tensor; the batch is never mutated.
-    Idempotent, and a no-op on TRL's padding-free collator output, which already
-    sets exactly these positions to -100 (``labels[position_ids == 0] = -100``).
+    Returns ``labels`` unchanged when ``seq_lengths`` is absent or empty, else a NEW
+    tensor; the caller's batch is never mutated. Idempotent, and a no-op on TRL's
+    padding-free collator output (``labels[position_ids == 0] = -100``).
 
-    Contract: ``sum(seq_lengths) <= labels.numel()``. Out-of-range entries (the
-    final cumulative sum, or malformed lengths) are redirected to index 0, which
-    the shift discards and so is never a cross-entropy target. This avoids device
-    syncs and data-dependent shapes inside the compiled fused-CE path.
+    Contract: ``sum(seq_lengths) <= labels.numel()``. Out-of-range entries (the final
+    cumsum, or malformed lengths) redirect to index 0, which the shift discards and so
+    is never a CE target; this avoids device syncs and data-dependent shapes in the
+    compiled fused-CE path.
     """
     if labels is None or not isinstance(labels, torch.Tensor):
         return labels

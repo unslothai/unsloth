@@ -335,8 +335,8 @@ def MistralForCausalLM_fast_forward(
                 n_items = kwargs.get("n_items", None)
             logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
 
-            # Packed-boundary guard, see llama.py. This branch returns, so the
-            # mask_packed_sequence_boundaries() call below is never reached.
+            # Packed-boundary guard, see llama.py. This branch returns, so
+            # mask_packed_sequence_boundaries() below is never reached.
             labels = mask_packed_boundary_labels(
                 labels,
                 kwargs.get("packed_seq_lengths"),
