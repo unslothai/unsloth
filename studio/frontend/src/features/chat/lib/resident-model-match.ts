@@ -4,6 +4,7 @@
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
   ggufVariantsMatch,
+  isHfCacheSnapshotPath,
   isStandaloneGgufPath,
   modelIdsMatch,
   residentModelIdMatches,
@@ -62,6 +63,20 @@ export function residentModelMatchesPick(
   // the public id names every snapshot of a repo, so only the raw identifier settles which weights are resident, as LlamaCppBackend.matches_load_source
   if (status.model_identifier) {
     return modelIdsMatch(status.model_identifier, pick.loadPath ?? pick.id);
+  }
+  // No raw identifier to settle it. A literal match on the name this pick would LOAD BY
+  // still names one revision, so take that first: an older backend put the raw path in
+  // active_model, and a pick with no pin is its own load id.
+  const loadName = pick.loadPath ?? pick.id;
+  if (modelIdsMatch(status.active_model, loadName)) {
+    return true;
+  }
+  // Anything further compares a public id, and every snapshot of one repo publishes the
+  // same one, so it cannot say WHICH revision is resident. For a pick pinned to a snapshot
+  // dir that is the difference between adopting the weights asked for and keeping the ones
+  // already there, so reload -- which is what happened before any of this existed.
+  if (isHfCacheSnapshotPath(loadName)) {
+    return false;
   }
   // a native-lease load withholds the raw path and reports its display label alone
   return residentModelIdMatches(status.active_model, pick.id, pick.loadPath);
