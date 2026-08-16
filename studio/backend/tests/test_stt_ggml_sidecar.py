@@ -1158,3 +1158,38 @@ def test_free_stt_frees_gguf_even_when_transformers_unload_raises(monkeypatch):
     # The Transformers failure must not skip GGUF eviction.
     assert ggml.unloaded is True
     assert any("small" in entry for entry in freed)
+
+
+def test_unload_without_a_resident_backend_does_not_crash(monkeypatch):
+    """Unload before anything has loaded used to raise TypeError, so the route 500'd.
+
+    _stt_lifecycle() hands back the orchestrator's unload_stt_model when a backend is
+    resident and stt_registry.unload when one is not. Only the first takes
+    expected_model positionally; on the registry it is keyword-only, and the route
+    passed it positionally. A fresh process is in exactly that state, so the two
+    unload tests above only passed because an earlier test in the full suite had left
+    a backend resident. Pin the no-backend path directly so neither the signature nor
+    the call site can drift back.
+    """
+    import routes.inference as ri
+    from core.inference import orchestrator, stt_registry
+
+    seen: dict = {}
+
+    def _unload(
+        engines = None,
+        *,
+        wait = True,
+        expected_model = None,
+    ):
+        seen["engines"] = engines
+        seen["expected_model"] = expected_model
+        return []
+
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
+    monkeypatch.setattr(stt_registry, "unload", _unload)
+
+    asyncio.run(ri.stt_unload(engine = None, model = "whisper-small", current_subject = "tester"))
+
+    assert seen["engines"] is None
+    assert seen["expected_model"] == "whisper-small"
