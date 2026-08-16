@@ -121,3 +121,16 @@ test("one live reservation among cancelled ones still counts", () => {
     true,
   );
 });
+
+// Reading a pasted-text attachment registers its intent in a plain list while
+// the read is in flight, so the same predicate has to work over that shape.
+test("concurrent pasted-text reads are tracked per thread", () => {
+  const reads = [pending("thread-1"), pending("thread-2")];
+  assert.equal(hasPendingPromptQueueStart(reads, "thread-1"), true);
+  assert.equal(hasPendingPromptQueueStart(reads, "thread-2"), true);
+  assert.equal(hasPendingPromptQueueStart(reads, "thread-3"), false);
+  // Finishing one read leaves the other counted.
+  reads.splice(0, 1);
+  assert.equal(hasPendingPromptQueueStart(reads, "thread-1"), false);
+  assert.equal(hasPendingPromptQueueStart(reads, "thread-2"), true);
+});

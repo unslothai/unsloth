@@ -2820,6 +2820,11 @@ const Composer: FC<{
       }
     >(),
   );
+  // Reading a pasted-text attachment happens before the queue start is
+  // registered, so the intent is recorded here for the length of the read.
+  const pastedTextQueuePendingRef = useRef<
+    Array<{ cancelled: boolean; threadId: string | null }>
+  >([]);
   useEffect(() => {
     promptQueueTargetMountedRef.current = true;
     return () => {
@@ -3195,6 +3200,10 @@ const Composer: FC<{
 
       const attachmentIds = attachments.map((attachment) => attachment.id);
       const textAtQueue = composer.getState().text.trim();
+      // Registered before the read, or a submit during it takes the send path
+      // and this queues the same text again once the read finishes.
+      const pendingRead = { cancelled: false, threadId: referenceThreadId };
+      pastedTextQueuePendingRef.current.push(pendingRead);
       void Promise.all(files.map((file) => file.text()))
         .then((texts) => {
           const queuedPrompt = [textAtQueue, ...texts]
@@ -3224,10 +3233,15 @@ const Composer: FC<{
           toast.error("Could not queue the pasted text.", {
             description: "Show it in the text field, then send it again.",
           });
+        })
+        .finally(() => {
+          const pendingReads = pastedTextQueuePendingRef.current;
+          const index = pendingReads.indexOf(pendingRead);
+          if (index !== -1) pendingReads.splice(index, 1);
         });
       return true;
     },
-    [aui, clearStoredDraft, startHydratedPromptQueue],
+    [aui, clearStoredDraft, referenceThreadId, startHydratedPromptQueue],
   );
 
   const dismissWaitToast = useCallback(() => {
@@ -3557,6 +3571,10 @@ const Composer: FC<{
         promptQueueActive ||
         hasPendingPromptQueueStart(
           promptQueueStartPendingRef.current.values(),
+          referenceThreadId,
+        ) ||
+        hasPendingPromptQueueStart(
+          pastedTextQueuePendingRef.current,
           referenceThreadId,
         ) ||
         Boolean(
