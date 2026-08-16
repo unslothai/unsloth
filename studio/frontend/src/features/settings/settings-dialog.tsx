@@ -13,6 +13,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
   Cancel01Icon,
@@ -31,7 +32,10 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  type ComponentType,
   type FC,
+  Suspense,
+  lazy,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -46,18 +50,41 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-import { AboutTab } from "./tabs/about-tab";
-import { AgentsTab } from "./tabs/agents-tab";
-import { ApiKeysTab } from "./tabs/api-keys-tab";
-import { AppearanceTab } from "./tabs/appearance-tab";
-import { ChatTab } from "./tabs/chat-tab";
-import { ConnectionsTab } from "./tabs/connections-tab";
-import { DataTab } from "./tabs/data-tab";
-import { DebuggingTab } from "./tabs/debugging-tab";
-import { GeneralTab } from "./tabs/general-tab";
-import { ProfileTab } from "./tabs/profile-tab";
-import { ResourcesTab } from "./tabs/resources-tab";
-import { VoiceTab } from "./tabs/voice-tab";
+// The dialog is rendered at the app root and is closed on launch, but its twelve tab
+// panels and everything they pull in were in the entry's static import closure, so the
+// browser fetched, parsed and executed all of it before the first paint. Each panel is
+// loaded when it is first shown instead. `loadTab` is also what prefetches the rest, so
+// there is no second list to keep in step.
+const TAB_LOADERS = {
+  general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
+  profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  appearance: () =>
+    import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
+  resources: () =>
+    import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
+  chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  voice: () => import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
+  connections: () =>
+    import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
+  data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
+  debugging: () =>
+    import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
+  about: () => import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
+} satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
+
+function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
+  loaders: T,
+): Record<keyof T, ComponentType> {
+  const out = {} as Record<keyof T, ComponentType>;
+  for (const id of Object.keys(loaders) as (keyof T)[]) {
+    out[id] = lazy(loaders[id]);
+  }
+  return out;
+}
+
+const LAZY_TABS = lazyTabs(TAB_LOADERS);
 
 interface TabDef {
   id: SettingsTab;
@@ -138,32 +165,8 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
 });
 
 function renderTab(tab: SettingsTab) {
-  switch (tab) {
-    case "general":
-      return <GeneralTab />;
-    case "profile":
-      return <ProfileTab />;
-    case "appearance":
-      return <AppearanceTab />;
-    case "resources":
-      return <ResourcesTab />;
-    case "chat":
-      return <ChatTab />;
-    case "voice":
-      return <VoiceTab />;
-    case "connections":
-      return <ConnectionsTab />;
-    case "data":
-      return <DataTab />;
-    case "api-keys":
-      return <ApiKeysTab />;
-    case "agents":
-      return <AgentsTab />;
-    case "debugging":
-      return <DebuggingTab />;
-    case "about":
-      return <AboutTab />;
-  }
+  const Tab = LAZY_TABS[tab];
+  return <Tab />;
 }
 
 export function SettingsDialog() {
@@ -179,6 +182,18 @@ export function SettingsDialog() {
   // from a deferred value so the nav updates first.
   const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
+
+  // Once the dialog has been opened, pull the other panels in on idle so a tab
+  // click never waits on a network round trip. Nothing here runs while it is
+  // closed, which is the state it is in for the whole launch.
+  useEffect(() => {
+    if (!open) return;
+    return scheduleIdleTask(() => {
+      for (const load of Object.values(TAB_LOADERS)) {
+        void load();
+      }
+    });
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -484,7 +499,9 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {renderTab(panelTab)}
+                {/* Only the first view of a panel waits, and the prefetch below
+                    usually gets there first, so switching tabs stays instant. */}
+                <Suspense fallback={null}>{renderTab(panelTab)}</Suspense>
               </div>
             </main>
           </div>
