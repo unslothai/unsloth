@@ -45,7 +45,11 @@ PAGE = FRONTEND / "smoke-code-block-flicker.html"
 CSS = FRONTEND / "src" / "index.css"
 
 
-def frame(heights: list[float], scroll_height: float | None = None, **overrides) -> dict:
+def frame(
+    heights: list[float],
+    scroll_height: float | None = None,
+    **overrides,
+) -> dict:
     """One sampled frame. Defaults are a still thread: nothing scrolls, nothing moves."""
     base = {
         "t": 0.0,
@@ -162,17 +166,13 @@ def test_blocks_appearing_and_disappearing_are_not_collapses() -> None:
     appearing = [frame([1700.0])] * 3 + [frame([1700.0, 900.0])] * 3
     assert analyse_stream(appearing)["collapses"] == 0
 
-    torn_down = (
-        [frame([1700.0, 1700.0])] * 3 + [frame([])] * 3 + [frame([1700.0, 1700.0])] * 3
-    )
+    torn_down = [frame([1700.0, 1700.0])] * 3 + [frame([])] * 3 + [frame([1700.0, 1700.0])] * 3
     assert analyse_stream(torn_down)["collapses"] == 0
 
 
 def test_scrolling_does_not_move_the_anchor() -> None:
     """The anchor is read in document space, so a scroll of 400px a frame is not a shift."""
-    frames = [
-        frame([1700.0], anchorTop = -400.0 * i, scrollTop = 400.0 * i) for i in range(10)
-    ]
+    frames = [frame([1700.0], anchorTop = -400.0 * i, scrollTop = 400.0 * i) for i in range(10)]
     assert analyse_stream(frames)["anchorShiftPx"] == 0.0
 
 
@@ -189,9 +189,7 @@ def test_content_relaid_out_above_the_anchor_is_a_shift() -> None:
 
 def test_a_sweep_over_a_thread_that_knows_its_own_size_reports_no_shift() -> None:
     tops = [0.0, 1700.0, 3400.0]
-    frames = [
-        {"tops": tops, "scrollHeight": 5100.0, "heights": [1700.0] * 3} for _ in range(20)
-    ]
+    frames = [{"tops": tops, "scrollHeight": 5100.0, "heights": [1700.0] * 3} for _ in range(20)]
     result = analyse_sweep(frames)
     assert result["shiftFrames"] == 0
     assert result["worstShiftPx"] == 0.0
@@ -295,12 +293,12 @@ def test_the_variant_stylesheets_are_checked_to_have_won_the_cascade() -> None:
     settled = module_assignment(source, "EXPECTED_COMPUTED")
     running = module_assignment(source, "EXPECTED_COMPUTED_RUNNING")
     assert settled is not None and getattr(settled, "keys", None), "no settled cascade check"
-    assert running is not None and getattr(running, "keys", None), (
-        "a settled-state cascade check alone passes on a variant that only loses while streaming"
-    )
-    assert "EXPECTED_COMPUTED_RUNNING.get(variant" in source, (
-        "the mid-stream expectation is declared but never compared against anything"
-    )
+    assert running is not None and getattr(
+        running, "keys", None
+    ), "a settled-state cascade check alone passes on a variant that only loses while streaming"
+    assert (
+        "EXPECTED_COMPUTED_RUNNING.get(variant" in source
+    ), "the mid-stream expectation is declared but never compared against anything"
 
 
 def test_the_page_and_its_entry_agree() -> None:

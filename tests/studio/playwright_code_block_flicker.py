@@ -104,7 +104,9 @@ OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-code-block-flicker"))
 OUT.mkdir(parents = True, exist_ok = True)
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 
-ENGINES = [e.strip() for e in os.environ.get("SMOKE_FLICKER_ENGINES", "chromium").split(",") if e.strip()]
+ENGINES = [
+    e.strip() for e in os.environ.get("SMOKE_FLICKER_ENGINES", "chromium").split(",") if e.strip()
+]
 VARIANTS = [
     v.strip()
     for v in os.environ.get("SMOKE_FLICKER_VARIANTS", "tree,legacy,released,streamdown").split(",")
@@ -221,9 +223,7 @@ def run_case(page, variant: str) -> dict:
         },
     )
     # Mid-stream, on the block being written: the cascade guard that the settled one cannot make.
-    page.wait_for_function(
-        "window.__flicker.results().streamStartedAt !== null", timeout = 120_000
-    )
+    page.wait_for_function("window.__flicker.results().streamStartedAt !== null", timeout = 120_000)
     page.wait_for_timeout(400)
     running_computed = page.evaluate(
         "() => window.__flicker.computedFor(window.__flicker.counts().codeBlocks - 1)"
