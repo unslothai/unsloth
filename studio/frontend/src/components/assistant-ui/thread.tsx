@@ -3955,9 +3955,20 @@ function isTextReplacement(event: Event | undefined) {
   return inputTypeOf(event) === "insertReplacementText";
 }
 
-// Undo is a user gesture: the previous value is what was asked for.
-function isUndoWrite(event: Event | undefined) {
-  return inputTypeOf(event) === "historyUndo";
+// Input types only a user gesture produces. A queued write never reports one,
+// so these are safe to apply even when they carry exactly what was sent. Paste
+// is here as well as in handleFilePaste: drag and drop and yank have no event
+// to hook the way paste does, and both can carry the sent text.
+const DELIBERATE_INPUT_TYPES = new Set([
+  "historyUndo",
+  "historyRedo",
+  "insertFromPaste",
+  "insertFromDrop",
+  "insertFromYank",
+]);
+
+function isDeliberateWrite(event: Event | undefined) {
+  return DELIBERATE_INPUT_TYPES.has(inputTypeOf(event) ?? "");
 }
 
 function inputTypeOf(event: Event | undefined): string | undefined {
@@ -4036,7 +4047,7 @@ function useImeComposerInputHandlers({
         const result = applySentTextGuard(justSentRef.current, {
           value,
           replacesText: isTextReplacement(nativeEvent),
-          isUndo: isUndoWrite(nativeEvent),
+          isDeliberate: isDeliberateWrite(nativeEvent),
           composerIsEmpty: composer.getState().text.length === 0,
         });
         justSentRef.current = result.guard;

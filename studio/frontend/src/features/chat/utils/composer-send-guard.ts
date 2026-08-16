@@ -92,15 +92,16 @@ export function applySentTextGuard(
      */
     replacesText: boolean;
     /**
-     * The user asked for the previous value back. Deliberate, like a paste, so
-     * it retires the guard even though it restores exactly what was sent.
+     * A gesture only the user can make: undo, redo, or text brought in from
+     * elsewhere. Retires the guard even when it restores exactly what was sent,
+     * because a queued write never reports one of these.
      */
-    isUndo: boolean;
+    isDeliberate: boolean;
     composerIsEmpty: boolean;
   },
 ): { accept: boolean; guard: SentTextGuard | null } {
   if (guard === null) return { accept: true, guard: null };
-  if (write.isUndo) return { accept: true, guard: null };
+  if (write.isDeliberate) return { accept: true, guard: null };
   // Re-typing the whole prompt is only one write when it is one character, so
   // equality alone would swallow every retry of a "?" or a single emoji.
   if (guard.texts.includes(write.value)) {

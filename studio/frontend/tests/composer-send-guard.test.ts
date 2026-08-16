@@ -18,19 +18,20 @@ const KEY = "chat-draft:thread-1";
 const typed = (value: string) => ({
   value,
   replacesText: false,
-  isUndo: false,
+  isDeliberate: false,
   composerIsEmpty: false,
 });
 const replacement = (value: string, composerIsEmpty = true) => ({
   value,
   replacesText: true,
-  isUndo: false,
+  isDeliberate: false,
   composerIsEmpty,
 });
-const undone = (value: string) => ({
+// Undo, redo, paste, drop and yank all arrive this way.
+const deliberate = (value: string) => ({
   value,
   replacesText: false,
-  isUndo: true,
+  isDeliberate: true,
   composerIsEmpty: true,
 });
 const armed = (texts: string[] = [PROMPT], key: string | null = KEY) =>
@@ -134,7 +135,7 @@ test("an unrelated draft is restored", () => {
 // restores exactly what was sent, so only the gesture tells it from a stale
 // write, and the gesture is deliberate.
 test("a deliberate undo restores the sent prompt and retires the guard", () => {
-  assert.deepEqual(applySentTextGuard(armed(), undone(PROMPT)), {
+  assert.deepEqual(applySentTextGuard(armed(), deliberate(PROMPT)), {
     accept: true,
     guard: null,
   });
@@ -142,7 +143,7 @@ test("a deliberate undo restores the sent prompt and retires the guard", () => {
 
 test("undo wins even over an armed wrapper pair", () => {
   const guard = armed([`Apply this edit: ${PROMPT}`, PROMPT]);
-  assert.equal(applySentTextGuard(guard, undone(PROMPT)).accept, true);
+  assert.equal(applySentTextGuard(guard, deliberate(PROMPT)).accept, true);
 });
 
 // Autocorrect is the engine, not the user, so it stays refused.
@@ -242,4 +243,19 @@ test("chords and bare modifiers are not keystroke boundaries", () => {
   assert.equal(key("Meta"), false);
   assert.equal(key("Escape"), false);
   assert.equal(key("Tab"), false);
+});
+
+// Dragging the sent prompt back in, or yanking it back, carries exactly what
+// was sent and fires no paste event, so the paste carve-out never sees it.
+// Both were measured swallowed in Chromium, Firefox and WebKit alike.
+test("a drop or a yank of the sent text is applied", () => {
+  assert.deepEqual(applySentTextGuard(armed(), deliberate(PROMPT)), {
+    accept: true,
+    guard: null,
+  });
+});
+
+test("a deliberate write wins over an armed wrapper pair", () => {
+  const guard = armed([`Apply this edit: ${PROMPT}`, PROMPT]);
+  assert.equal(applySentTextGuard(guard, deliberate(PROMPT)).accept, true);
 });
