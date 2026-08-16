@@ -152,9 +152,7 @@ def test_a_caller_that_vetoes_planning_is_obeyed():
     """Only the leaf knows when the config it is about to load is not the one the planner
     would rebuild from the repo, so it needs a way to say so."""
     ns = _load(planner = lambda *a, **k: pytest.fail("planned despite the veto"))
-    assert (
-        ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = "text_only") == "sequential"
-    )
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = "text_only") == "sequential"
     # A veto is not a licence to reinterpret a placement the caller chose.
     assert ns["resolve_unsloth_device_map"]("auto", "m", skip_reason = "text_only") == "auto"
 
@@ -208,8 +206,7 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     forwarded = [
         node
         for node in ast.walk(ast.parse(loader))
-        if isinstance(node, ast.Call)
-        and any(kw.arg == "text_only_decoder" for kw in node.keywords)
+        if isinstance(node, ast.Call) and any(kw.arg == "text_only_decoder" for kw in node.keywords)
     ]
     assert forwarded, "loader.py swaps the config but never tells the leaf"
 
@@ -242,9 +239,7 @@ def test_a_task_head_the_planner_cannot_see_declines_planning():
     assert mismatch(None, LlamaForCausalLM) is None
 
     ns = _load(planner = lambda *a, **k: pytest.fail("planned a head the plan does not name"))
-    assert (
-        ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = reason) == "sequential"
-    )
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = reason) == "sequential"
 
 
 def test_a_distributed_launch_never_gets_an_intra_model_split():
