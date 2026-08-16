@@ -163,17 +163,30 @@ def _called_name(node):
 _LIBC_NAMES = ("CDLL", "cdll", "ctypes", "libc", "LibC")
 
 
-def _is_libc_handle(node) -> bool:
+def _libc_aliases(tree):
+    """Names bound to a real libc handle, e.g. `lib = ctypes.CDLL(None)`."""
+    out = set()
+    for node in ast.walk(tree):
+        pair = _assigned_pair(node)
+        if pair is None:
+            continue
+        target, value = pair
+        if isinstance(value, ast.Call) and _is_libc_handle(value.func):
+            out.add(target.id)
+    return out
+
+
+def _is_libc_handle(node, aliases = ()) -> bool:
     """Whether this expression is a real libc handle, not a stand-in named like one."""
     for inner in ast.walk(node):
-        if isinstance(inner, ast.Name) and inner.id in _LIBC_NAMES:
+        if isinstance(inner, ast.Name) and (inner.id in _LIBC_NAMES or inner.id in aliases):
             return True
         if isinstance(inner, ast.Attribute) and inner.attr in _LIBC_NAMES:
             return True
     return False
 
 
-def _prctl_dumpable_value(node):
+def _prctl_dumpable_value(node, libc = ()):
     """The value a prctl(PR_SET_DUMPABLE, v, ...) call sets, else None.
 
     The value argument matters: prctl(4, 1) re-enables dumps, so treating any
@@ -183,7 +196,7 @@ def _prctl_dumpable_value(node):
         return None
     # The receiver matters: a test's `fake.prctl(4, 1)` mock touches no kernel state, and
     # crediting it let a mock override the real suppression on the line above.
-    if not isinstance(node.func, ast.Attribute) or not _is_libc_handle(node.func.value):
+    if not isinstance(node.func, ast.Attribute) or not _is_libc_handle(node.func.value, libc):
         return None
     cmd, value = node.args[0], node.args[1]
     cmd_ok = (isinstance(cmd, ast.Constant) and cmd.value == _PR_SET_DUMPABLE) or (
@@ -484,6 +497,7 @@ _BRANCHING = (
     ast.SetComp,
     ast.DictComp,
     ast.GeneratorExp,
+    ast.comprehension,
 )
 
 
@@ -496,8 +510,10 @@ def _child_paths(scope, certain):
         always = scope.values[:1]  # only the first operand of a short circuit
     elif isinstance(scope, (ast.If, ast.IfExp, ast.While)):
         always = (scope.test,)  # the condition is evaluated before either branch
-    elif isinstance(scope, (ast.For, ast.AsyncFor)):
+    elif isinstance(scope, (ast.For, ast.AsyncFor, ast.comprehension)):
         always = (scope.iter,)  # the iterable is evaluated before the first pass
+    elif isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        always = scope.generators[:1]  # the outermost clause runs; its body may not
     else:
         always = ()
     for child in ast.iter_child_nodes(scope):
@@ -522,6 +538,7 @@ def _dumpable_writes(
     certain = True,
     functions = None,
     shadowed = (),
+    libc = (),
 ):
     """`(position, value, certain)` for each prctl dumpability write on this path.
 
@@ -530,9 +547,9 @@ def _dumpable_writes(
     """
 
     def written(node):
-        value = _prctl_dumpable_value(node)
+        value = _prctl_dumpable_value(node, libc)
         if value is None and functions is not None:
-            value = _helper_leaves_dumpable(node, scope, functions, shadowed)
+            value = _helper_leaves_dumpable(node, scope, functions, shadowed, libc)
         return value
 
     for child, child_certain in _child_paths(scope, certain):
@@ -541,13 +558,13 @@ def _dumpable_writes(
             for part in _definition_time(child):
                 if isinstance(part, ast.Call) and written(part) is not None:
                     yield _position(part), written(part), child_certain
-                yield from _dumpable_writes(part, child_certain, functions, shadowed)
+                yield from _dumpable_writes(part, child_certain, functions, shadowed, libc)
             continue
         if isinstance(child, ast.Call):
             value = written(child)
             if value is not None:
                 yield _position(child), value, child_certain
-        yield from _dumpable_writes(child, child_certain, functions, shadowed)
+        yield from _dumpable_writes(child, child_certain, functions, shadowed, libc)
 
 
 def _helper_leaves_dumpable(
@@ -555,6 +572,7 @@ def _helper_leaves_dumpable(
     scope,
     functions,
     shadowed = (),
+    libc = (),
 ):
     """What a bare call to a local helper leaves dumpability at, else None."""
     # Bare calls only, as in _suppressed: `obj.restore()` shares its trailing name with
@@ -573,7 +591,10 @@ def _helper_leaves_dumpable(
     # Body only: a default or decorator on the helper ran at definition time, so it is
     # not something calling the helper does again.
     writes = [
-        w for statement in target.body for w in _dumpable_writes(statement) if w[2] or w[1] == 0
+        w
+        for statement in target.body
+        for w in _dumpable_writes(statement, libc = libc)
+        if w[2] or w[1] == 0
     ]
     return writes[-1][1] if writes else None
 
@@ -583,6 +604,7 @@ def _clears_dumpable_before(
     position,
     inherited = False,
     functions = None,
+    libc = (),
 ) -> bool:
     """A prctl(4, 0, ...) on this scope's own path that runs before `position`.
 
@@ -593,7 +615,7 @@ def _clears_dumpable_before(
     shadowed = _rebound_names(scope) if hasattr(scope, "body") else ()
     writes = sorted(
         w
-        for w in _dumpable_writes(scope, functions = functions, shadowed = shadowed)
+        for w in _dumpable_writes(scope, functions = functions, shadowed = shadowed, libc = libc)
         if w[0] < position
     )
     # Only a write that certainly runs decides: a conditional restore may never run.
@@ -609,10 +631,11 @@ def _suppressed(
     scope,
     functions,
     inherited = False,
+    libc = (),
 ) -> bool:
     """Whether this crash call is covered, directly or by a helper it calls first."""
     position = _position(node)
-    if _clears_dumpable_before(scope, position, inherited, functions):
+    if _clears_dumpable_before(scope, position, inherited, functions, libc):
         return True
     # Following one level of local helper covers `suppress_core()` then the fault,
     # which is the natural shape once more than one test needs this.
@@ -631,7 +654,7 @@ def _suppressed(
         # prctl never happens. Only an awaited one has actually cleared dumpability.
         if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(called, scope):
             continue
-        if _clears_dumpable_before(target, _AFTER_EVERYTHING):
+        if _clears_dumpable_before(target, _AFTER_EVERYTHING, libc = libc):
             return True
     return False
 
@@ -662,6 +685,7 @@ def _unsuppressed_crashes(tree, inherited = False):
     """Crash calls in this tree whose core dump is not suppressed first."""
     owner = _enclosing_scopes(tree)
     functions = None
+    libc = _libc_aliases(tree)
     aliases = _crash_aliases(tree)
     rebound = {}
     out = []
@@ -671,7 +695,7 @@ def _unsuppressed_crashes(tree, inherited = False):
             continue
         if functions is None:
             functions = _functions_by_name(tree)
-        if not _suppressed(node, scope, functions, inherited):
+        if not _suppressed(node, scope, functions, inherited, libc):
             out.append((node, scope))
     return out
 
@@ -769,7 +793,11 @@ def _nested_scripts(tree, inherited = False):
             # Same interpreter, so dumpability carries into the payload, including
             # a restore a helper made between the clear and the exec.
             carried = _clears_dumpable_before(
-                scope, _position(node), inherited = inherited, functions = functions
+                scope,
+                _position(node),
+                inherited = inherited,
+                functions = functions,
+                libc = _libc_aliases(tree),
             )
             payloads = []
             if argument is not None:
@@ -1351,6 +1379,22 @@ _FIXTURES = {
         "    restore()\n"
         "    ctypes.string_at(0)\n",
         False,  # the local binding is not the module-level helper
+    ),
+    "aliased_libc_handle_still_suppresses": (
+        "import ctypes\n"
+        "lib = ctypes.CDLL(None)\n"
+        "def child():\n"
+        "    lib.prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a handle bound to any name is still the real libc
+    ),
+    "outer_comprehension_iterable_is_certain": (
+        "import ctypes\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    xs = [i for i in [ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)]]\n"
+        "    ctypes.string_at(0)\n",
+        True,  # the outermost iterable is evaluated immediately
     ),
 }
 
