@@ -53,6 +53,12 @@ pub fn init(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     monitor::install_dismiss_monitors(handle.clone());
     if let Err(e) = apply_hotkey(&handle, &loaded) {
         warn!("ask: hotkey registration failed: {e}");
+        // Startup stays best-effort and the persisted intent is left alone, a
+        // clash can be transient. But the managed state must not claim a
+        // shortcut that is not installed: the startup sync compares the backend
+        // setting against pill_status, and an enabled-looking state is read as
+        // already applied, so nothing ever retries.
+        handle.state::<PillState>().config.lock().unwrap().enabled = false;
     }
     info!(
         "ask: initialized (enabled: {}, hotkey: {})",
@@ -75,7 +81,18 @@ pub fn apply_config(app: &AppHandle, config: &PillConfig) -> Result<(), String> 
     apply_hotkey(app, config).inspect_err(|e| {
         warn!("ask: hotkey registration failed: {e}");
     })?;
-    config::save_for_app(app, config)
+    config::save_for_app(app, config).inspect_err(|e| {
+        warn!("ask: config save failed, rolling the shortcut back: {e}");
+        // The registration above is already live. A failed save means
+        // pill_set_config skips its commit, so the state keeps the previous
+        // config; re-apply that one so a live shortcut cannot outlive the
+        // state that is supposed to describe it.
+        if let Some(state) = app.try_state::<PillState>() {
+            if let Ok(previous) = state.config.lock() {
+                let _ = apply_hotkey(app, &previous);
+            }
+        }
+    })
 }
 
 fn apply_hotkey(app: &AppHandle, config: &PillConfig) -> Result<(), String> {
