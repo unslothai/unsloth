@@ -2302,6 +2302,81 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
 });
 
+const PHASE10_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/advanced-dataset-api.test.ts",
+  "src/features/documents/document-library-page.test.tsx",
+  "src/features/documents/advanced-dataset-workspace.test.tsx",
+  "src/features/documents/advanced-dataset/shared.test.tsx (abort/stale/permission state)",
+  "src/features/documents/advanced-dataset/skills-panel.test.tsx (functional runtime-disabled boundary)",
+  "src/features/documents/advanced-dataset-workspace.tsx (lazy tab boundary)",
+  "docs/adr/0011-phase-10-advanced-dataset-runtime-boundary.md",
+  "scripts/rag-platform/phase-10-runtime-smoke.mjs (authenticated hybrid runtime + source-only 404 probes)",
+];
+
+function phase10UiPath(canonical) {
+  if (/\/skills\//.test(canonical) && !/\/datasets\//.test(canonical))
+    return "Documents → dataset → Gelişmiş → Beceriler → Global skill space";
+  if (/metadata|documents\/(metadatas|batch-update-status)/.test(canonical))
+    return "Documents → dataset → Gelişmiş → Metadata";
+  if (/\/tags/.test(canonical))
+    return "Documents → dataset → Gelişmiş → Etiketler";
+  if (/artifacts/.test(canonical))
+    return "Documents → dataset → Gelişmiş → Artifact (deneysel)";
+  if (/\/skills/.test(canonical))
+    return "Documents → dataset → Gelişmiş → Beceriler → Dataset-owned (deneysel)";
+  if (/index|embedding|ingestion/.test(canonical))
+    return "Documents → dataset → Gelişmiş → İndeks & ingestion";
+  return "Documents → dataset → Gelişmiş → Grafik (deneysel)";
+}
+
+for (const inventoryRoute of inventory.routes.flatMap((route) => [
+  route,
+  ...(route.alternates ?? []),
+])) {
+  if (inventoryRoute.runtime_enabled !== true) continue;
+  const canonical = canonicalPath(inventoryRoute.path);
+  if (phaseOf(inventoryRoute, canonical) !== 10) continue;
+  const classification = classifyRecord(inventoryRoute, canonical);
+  const key = `${inventoryRoute.service}|${inventoryRoute.method} ${canonical}`;
+  if (
+    classification.class === "frontend-action" ||
+    classification.class === "frontend-screen"
+  ) {
+    const globalSkillRuntimeGap = /^\/api\/v1\/skills\//.test(canonical);
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: globalSkillRuntimeGap ? "runtime-disabled" : "implemented",
+      uiPath: globalSkillRuntimeGap
+        ? "Documents → dataset → Gelişmiş → Beceriler → explicit global runtime-disabled notice"
+        : phase10UiPath(canonical),
+      typedService:
+        "src/integrations/platform-backend/advanced-dataset-api.ts (typed route function)",
+      evidence: globalSkillRuntimeGap
+        ? [
+            ...PHASE10_TEST_EVIDENCE,
+            "docs/rag-platform/runtime-disabled.md (Phase 10 functional runtime gap)",
+          ]
+        : PHASE10_TEST_EVIDENCE,
+    };
+  } else if (
+    classification.class === "api-only" &&
+    /\/(knowledge_graph|run_graphrag|run_raptor|trace_graphrag|trace_raptor)$/.test(
+      canonical,
+    )
+  ) {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "contract-verified",
+      uiPath:
+        "— (legacy graph protocol alias; canonical index/graph UI is exposed instead)",
+      typedService: null,
+      evidence: [
+        "../rag-backend/api/apps/restful_apis/dataset_api.py (auth decorators + exact alias contract)",
+        "../rag-backend/api/apps/services/dataset_api_service.py (legacy graph service contract)",
+        "docs/adr/0011-phase-10-advanced-dataset-runtime-boundary.md",
+      ],
+    };
+  }
+}
+
 /**
  * Per-route findings verified against the running backend that a reader of the
  * row needs in order to trust it. Keyed by canonical `METHOD path`.
@@ -2512,6 +2587,14 @@ function buildRecord(route, parent) {
   // often the very thing that qualifies its loss.
   if (ROUTE_FINDINGS[key]) {
     justification += ` ${ROUTE_FINDINGS[key]}`;
+  }
+  if (
+    phase === 10 &&
+    /^\/api\/v1\/skills\//.test(canonical) &&
+    implementation?.status === "runtime-disabled"
+  ) {
+    justification +=
+      " Phase 10 functional runtime gap: authenticated smoke reaches the Go handler but the deployed database has no skill_spaces table (MySQL 1146), while skill search/index operations fail because the configured Elasticsearch endpoint refuses connections. The UI exposes a retryable runtime-disabled notice and no mutation controls.";
   }
   if (parent) {
     justification += ` Second implementation of \`${parent.method} ${parent.path}\` (${parent.service}).`;

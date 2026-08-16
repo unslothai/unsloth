@@ -826,9 +826,71 @@ function scanForwardPipelineSourceOnly() {
 }
 
 const forwardPipelineSource = scanForwardPipelineSourceOnly();
+
+/**
+ * Phase 10 gained dataset compilation, artifact, navigation and expanded skill
+ * routes after the deployed v0.26.4 image. Scan the local normative backend
+ * worktree with the same parsers, then retain only Phase 10 method+paths absent
+ * from the deployed ref. They remain explicit runtime-disabled records until a
+ * matching image is deployed and the authenticated smoke probe stops returning
+ * 404. This is intentionally phase-scoped so later-phase source declarations do
+ * not leak into the Phase 10 inventory update.
+ */
+function scanForwardPhase10SourceOnly() {
+  if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
+  const commit = execFileSync(
+    "git",
+    ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
+    { encoding: "utf8" },
+  ).trim();
+  const known = new Set(rawRoutes.map((route) => `${route.method} ${route.path}`));
+  const deployedRoot = BACKEND_ROOT;
+  let currentRoutes;
+  try {
+    BACKEND_ROOT = BACKEND_REPO_ROOT;
+    currentRoutes = [...scanPythonRestfulApis(), ...scanGoApi()];
+  } finally {
+    BACKEND_ROOT = deployedRoot;
+  }
+  const phase10Path =
+    /^\/api\/v1\/datasets\/(?:<dataset_id>|:dataset_id)\/(?:compilation\/status|artifacts(?:\/|$)|navigation(?:\/|$)|skills(?:\/|$))/;
+  return {
+    commit,
+    routes: currentRoutes
+      .filter(
+        (route) =>
+          phase10Path.test(route.path) &&
+          !known.has(`${route.method} ${route.path}`),
+      )
+      .map((route) => {
+        const base = {
+          ...route,
+          notes:
+            `Phase 10 backend worktree-only contract at ${commit.slice(0, 12)}; ` +
+            `absent from deployed ${BACKEND_REF}`,
+        };
+        return {
+          ...base,
+          service_port: SERVICES[base.service].port,
+          service_started: serviceStarted(base.service),
+          ...resolveProxy(base),
+          runtime_enabled: false,
+          runtime_disabled_reason:
+            `declared only in backend worktree ${commit.slice(0, 12)}; absent from deployed ` +
+            `${BACKEND_REF} (${BACKEND_COMMIT.slice(0, 12)}); authenticated hybrid/direct smoke returns HTTP 404`,
+          source_scope: "backend-worktree-only",
+          source_commit: commit,
+          alternates: [],
+        };
+      }),
+  };
+}
+
+const forwardPhase10Source = scanForwardPhase10SourceOnly();
 const forwardSourceRoutes = [
   ...forwardAuthSource.routes,
   ...forwardPipelineSource.routes,
+  ...forwardPhase10Source.routes,
 ];
 
 /**
@@ -933,7 +995,7 @@ const inventory = {
     source_commit: BACKEND_COMMIT,
     source_image: readEnvValue(join(BACKEND_ROOT, "docker", ".env"), "RAGFLOW_IMAGE") || "unknown",
     api_version: "v1",
-    forward_source_commit: forwardAuthSource.commit,
+    forward_source_commit: forwardPhase10Source.commit || forwardAuthSource.commit,
   },
   proxy: {
     scheme: PROXY_SCHEME,
@@ -959,6 +1021,7 @@ const inventory = {
     runtime_enabled: routes.filter((r) => r.runtime_enabled === true).length,
     runtime_disabled: disabledRoutes.length,
     source_only_runtime_disabled: forwardSourceRoutes.length,
+    phase10_source_only_runtime_disabled: forwardPhase10Source.routes.length,
     not_proxied: routes.filter((r) => r.runtime_enabled === null).length,
     with_alternates: routes.filter((r) => r.alternates.length > 0).length,
     runtime_disabled_breakdown: {
@@ -1112,10 +1175,10 @@ function renderRuntimeDisabled(data) {
       `${data.totals.source_only_runtime_disabled} route(s) are separate forward-source cases: ` +
         `they are declared only at backend worktree \`${data.backend.forward_source_commit}\`, ` +
         `and are absent from deployed \`${data.backend.source_ref}\`. Nine auth handlers return ` +
-        "`CodeNotImplemented`; the two pipeline catalog handlers are implemented but absent from the pinned runtime. " +
+        "`CodeNotImplemented`; the two pipeline catalog handlers and the Phase 10 dataset compilation/artifact/navigation/skill handlers are implemented but absent from the pinned runtime. " +
         "Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; " +
         "GitHub and Lark callback URLs return 302 through the active parameterised callback. " +
-        "The auth UI uses live channels without a false captcha/OTP step, while the pipeline selector shows an explicit runtime-disabled reason.",
+        `The auth UI uses live channels without a false captcha/OTP step, the pipeline selector shows an explicit runtime-disabled reason, and ${data.totals.phase10_source_only_runtime_disabled} Phase 10 source-only routes remain hidden from product actions until the runtime image is upgraded.`,
     );
   }
   lines.push("");
@@ -1138,6 +1201,22 @@ function renderRuntimeDisabled(data) {
   );
   lines.push(
     "| `GET /api/v1/datasets/ingestion/tasks` | `internal/handler/document.go:1460` calls `ShouldBindJSON` for `dataset_id` on GET and never reads the query string. Browser Fetch forbids GET request bodies. | Generated hybrid map sends the route to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. Browser contract test uses no GET body; document polling plus Python `POST /datasets/{id}/documents/stop` is the safe product path. |",
+  );
+  lines.push("");
+  lines.push("## Phase 10 functional runtime gaps (registered route, unavailable prerequisites)");
+  lines.push("");
+  lines.push(
+    "The global skill routes are registered and selected by hybrid nginx, but the",
+    "deployed v0.26.4 data/search prerequisites are absent. They are classified",
+    "`runtime-disabled` in the coverage matrix and render one explicit disabled",
+    "notice; no create/update/delete/index action is offered.",
+  );
+  lines.push("");
+  lines.push("| Route family | Source / proxy evidence | Authenticated smoke result | Product result |");
+  lines.push("| --- | --- | --- | --- |");
+  lines.push(
+    "| `/api/v1/skills/spaces*`, `/skills/space/by-folder` | `internal/router/router.go` registers Go skill-space handlers; hybrid sends `/api/v1/skills/*` to Go `9384`. | `GET /skills/spaces` reaches the handler but returns HTTP 200/code 103, MySQL 1146: `rag_platform.skill_spaces` does not exist. | Global space CRUD and folder lookup controls are hidden behind a retryable runtime-disabled notice. |",
+    "| `/api/v1/skills/config`, `/skills/search`, `/skills/index`, `/skills/reindex` | `internal/handler/skill_search.go` registers config/search/index lifecycle; hybrid selects Go `9384`. | Authenticated search reaches the handler but returns code 103 because Elasticsearch `172.19.0.3:9200` refuses connections; write/index lifecycle also depends on the missing skill schema/search service. | Config/search/index/reindex/delete-index controls are hidden; dataset-owned compiled skill reads remain available separately. |",
   );
   lines.push("");
   lines.push("## Capability lost — no reachable route serves this method and path");

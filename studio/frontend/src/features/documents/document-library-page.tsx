@@ -79,13 +79,22 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   ShieldCheck,
   Square,
   Trash2,
   UploadCloud,
   X,
 } from "lucide-react";
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   DocumentAssetDialog,
   DocumentInlinePreview,
@@ -97,7 +106,11 @@ import {
 import { useDocumentLibrary } from "./use-document-library";
 
 type DocumentTab = "dataset" | "generic";
-type DatasetView = "documents" | DatasetQualityMode;
+type DatasetView = "documents" | DatasetQualityMode | "advanced";
+
+const AdvancedDatasetWorkspace = lazy(
+  () => import("./advanced-dataset-workspace"),
+);
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -224,6 +237,7 @@ function DatasetWorkspaceToggle({
     { value: "documents", label: "Belgeler", icon: FileText },
     { value: "chunks", label: "Chunks", icon: Blocks },
     { value: "retrieval", label: "Retrieval", icon: Binary },
+    { value: "advanced", label: "Gelişmiş", icon: SlidersHorizontal },
   ];
   return (
     <div
@@ -1475,396 +1489,416 @@ export function DocumentLibraryPage() {
         >
           {datasetView === "documents" ? (
             <section
-            className="relative flex h-full min-h-0 flex-col overflow-hidden"
-            onDragEnter={(event) => {
-              event.preventDefault();
-              setDragging(true);
-            }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={(event) => {
-              if (event.currentTarget === event.target) setDragging(false);
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              setDragging(false);
-              void submitFiles(Array.from(event.dataTransfer.files));
-            }}
-          >
-            {dragging ? (
-              <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl border border-dashed border-primary/40 bg-background/90 backdrop-blur-sm">
-                <div className="text-center">
-                  <UploadCloud className="mx-auto size-7" />
-                  <p className="mt-2 font-medium">
-                    Belgeleri yüklemek için bırakın
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Dosya başına en fazla 128 MB
-                  </p>
-                </div>
-              </div>
-            ) : null}
-            <div
-              className={cn(
-                "relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col",
-                layoutMode === "split" &&
-                  "lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row",
-              )}
+              className="relative flex h-full min-h-0 flex-col overflow-hidden"
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDragging(true);
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDragLeave={(event) => {
+                if (event.currentTarget === event.target) setDragging(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragging(false);
+                void submitFiles(Array.from(event.dataTransfer.files));
+              }}
             >
+              {dragging ? (
+                <div className="absolute inset-0 z-30 flex items-center justify-center rounded-2xl border border-dashed border-primary/40 bg-background/90 backdrop-blur-sm">
+                  <div className="text-center">
+                    <UploadCloud className="mx-auto size-7" />
+                    <p className="mt-2 font-medium">
+                      Belgeleri yüklemek için bırakın
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Dosya başına en fazla 128 MB
+                    </p>
+                  </div>
+                </div>
+              ) : null}
               <div
                 className={cn(
-                  "flex min-h-0 flex-1 flex-col",
+                  "relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col",
                   layoutMode === "split" &&
-                    "lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60",
+                    "lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row",
                 )}
               >
-                <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-                  <div
-                    aria-hidden="true"
-                    className="hub-scroll-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-7"
-                  />
-                  <div
-                    data-hub-scroll="true"
-                    className={cn(
-                      "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin]",
-                      layoutMode === "split"
-                        ? "[scrollbar-gutter:stable]"
-                        : "[scrollbar-gutter:stable_both-edges]",
-                    )}
-                  >
+                <div
+                  className={cn(
+                    "flex min-h-0 flex-1 flex-col",
+                    layoutMode === "split" &&
+                      "lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60",
+                  )}
+                >
+                  <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
                     <div
-                      className={
+                      aria-hidden="true"
+                      className="hub-scroll-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-7"
+                    />
+                    <div
+                      data-hub-scroll="true"
+                      className={cn(
+                        "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin]",
                         layoutMode === "split"
-                          ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
-                          : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8"
-                      }
-                    >
-                      <div className="flex flex-col gap-3 pt-6">
-                        {library.error ? (
-                          <div
-                            className={cn(
-                              "flex items-start gap-3 rounded-xl border p-3",
-                              library.error.kind === "permission"
-                                ? "border-amber-500/30 bg-amber-500/5"
-                                : "border-destructive/30 bg-destructive/5",
-                            )}
-                          >
-                            {library.error.kind === "permission" ? (
-                              <ShieldCheck className="mt-0.5 size-5 text-amber-600" />
-                            ) : (
-                              <CircleAlert className="mt-0.5 size-5 text-destructive" />
-                            )}
-                            <div className="flex-1">
-                              <p className="font-medium">
-                                {library.error.kind === "permission"
-                                  ? "Bu dataset için yetkiniz yok"
-                                  : library.error.kind === "timeout"
-                                    ? "İstek zaman aşımına uğradı"
-                                    : "Belge verileri alınamadı"}
-                              </p>
-                              <p className="mt-1 text-sm text-muted-foreground">
-                                {library.error.message}
-                              </p>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => void library.refresh()}
-                            >
-                              Yeniden dene
-                            </Button>
-                          </div>
-                        ) : null}
-                        <HubListHeader
-                          title={
-                            library.selectedDataset?.name ?? "Dataset seçin"
-                          }
-                          subtitle={
-                            selectedIds.length > 0
-                              ? `${selectedIds.length} belge seçili`
-                              : library.datasetId
-                                ? `${library.totalDocuments.toLocaleString("tr-TR")} belge · aktif dataset`
-                                : "Belge listesini görüntülemek için dataset seçin"
-                          }
-                          count={library.totalDocuments}
-                          view={layoutMode}
-                          onViewChange={setLayoutMode}
-                          actions={datasetHeaderActions}
-                        />
-                        {layoutMode === "grid" &&
-                        library.documents.length > 0 ? (
-                          <DocumentCompactHeader
-                            allChecked={allVisibleChecked}
-                            onAllCheckedChange={setAllVisibleChecked}
-                          />
-                        ) : null}
-                      </div>
-
-                      {library.loadingDocuments ? (
-                        <div className="flex min-h-64 items-center justify-center">
-                          <Spinner className="size-5" />
-                        </div>
-                      ) : !library.datasetId ? (
-                        <Empty>
-                          <EmptyHeader>
-                            <EmptyMedia variant="icon">
-                              <Database />
-                            </EmptyMedia>
-                            <EmptyTitle>Önce bir dataset oluşturun</EmptyTitle>
-                            <EmptyDescription>
-                              Belge yüklemek için erişebildiğiniz bir dataset
-                              bulunmalı.
-                            </EmptyDescription>
-                          </EmptyHeader>
-                        </Empty>
-                      ) : library.documents.length === 0 ? (
-                        <Empty className="min-h-64">
-                          <EmptyHeader>
-                            <EmptyMedia variant="icon">
-                              <FileText />
-                            </EmptyMedia>
-                            <EmptyTitle>
-                              {query ? "Eşleşen belge yok" : "Henüz belge yok"}
-                            </EmptyTitle>
-                            <EmptyDescription>
-                              {query
-                                ? "Arama ifadenizi değiştirin."
-                                : "Yukarıdaki alana dosya bırakarak başlayın."}
-                            </EmptyDescription>
-                          </EmptyHeader>
-                        </Empty>
-                      ) : layoutMode === "two" ? (
-                        <div
-                          className="grid grid-cols-1 gap-x-3 gap-y-2 md:grid-cols-2"
-                          role="list"
-                          aria-label="Belgeler iki sütun görünümü"
-                        >
-                          {library.documents.map((document) => (
-                            <DocumentSummaryCard
-                              key={document.id}
-                              document={document}
-                              mode="two"
-                              focused={focusedDocument?.id === document.id}
-                              checked={selected.has(document.id)}
-                              onActivate={() =>
-                                focusDocument(document.id, true)
-                              }
-                              onCheckedChange={(checked) =>
-                                setDocumentChecked(document.id, checked)
-                              }
-                            />
-                          ))}
-                        </div>
-                      ) : layoutMode === "split" ? (
-                        <div
-                          className="space-y-2"
-                          role="list"
-                          aria-label="Belgeler"
-                        >
-                          {library.documents.map((document) => (
-                            <DocumentSummaryCard
-                              key={document.id}
-                              document={document}
-                              mode="split"
-                              focused={focusedDocument?.id === document.id}
-                              checked={selected.has(document.id)}
-                              onActivate={() => focusDocument(document.id)}
-                              onCheckedChange={(checked) =>
-                                setDocumentChecked(document.id, checked)
-                              }
-                            />
-                          ))}
-                        </div>
-                      ) : (
-                        <div
-                          role="table"
-                          aria-label="Belgeler kompakt görünümü"
-                          className="space-y-2"
-                        >
-                          {library.documents.map((document) => (
-                            <DocumentCompactRow
-                              key={document.id}
-                              document={document}
-                              checked={selected.has(document.id)}
-                              renameValue={renameValue}
-                              renaming={renameId === document.id}
-                              onCheckedChange={(checked) =>
-                                setDocumentChecked(document.id, checked)
-                              }
-                              onActivate={() =>
-                                focusDocument(document.id, true)
-                              }
-                              onRenameValueChange={setRenameValue}
-                              onCancelRename={() => setRenameId(null)}
-                              onSaveRename={() =>
-                                void run(async () => {
-                                  await library.rename(
-                                    document.id,
-                                    renameValue.trim(),
-                                  );
-                                  setRenameId(null);
-                                }, "Belge yeniden adlandırıldı.")
-                              }
-                              onBeginRename={() => {
-                                setRenameId(document.id);
-                                setRenameValue(document.name);
-                              }}
-                              onPreview={() => openAsset(document, "preview")}
-                              onMedia={() => openAsset(document, "media")}
-                              onDownload={() => void download(document)}
-                              onProcess={() =>
-                                void run(
-                                  () => library.parse([document.id]),
-                                  "Belge işleme alındı.",
-                                )
-                              }
-                              onStop={() =>
-                                void run(
-                                  () => library.stop([document.id]),
-                                  "İşlem durduruldu.",
-                                )
-                              }
-                              onDelete={() => setDeleteIds([document.id])}
-                            />
-                          ))}
-                        </div>
+                          ? "[scrollbar-gutter:stable]"
+                          : "[scrollbar-gutter:stable_both-edges]",
                       )}
-
-                      {library.datasetId && library.totalDocuments > 0 ? (
-                        <footer className="mt-3 flex flex-col gap-2 border-t px-1 py-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="flex items-center gap-2 text-xs tabular-nums text-muted-foreground">
-                            <span>
-                              {firstVisibleDocument}–{lastVisibleDocument} /{" "}
-                              {library.totalDocuments.toLocaleString("tr-TR")}
-                            </span>
-                            <Select
-                              value={String(library.pageSize)}
-                              onValueChange={(value) => {
-                                library.setPageSize(Number(value));
-                                setSelected(new Set());
-                              }}
+                    >
+                      <div
+                        className={
+                          layoutMode === "split"
+                            ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
+                            : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8"
+                        }
+                      >
+                        <div className="flex flex-col gap-3 pt-6">
+                          {library.error ? (
+                            <div
+                              className={cn(
+                                "flex items-start gap-3 rounded-xl border p-3",
+                                library.error.kind === "permission"
+                                  ? "border-amber-500/30 bg-amber-500/5"
+                                  : "border-destructive/30 bg-destructive/5",
+                              )}
                             >
-                              <SelectTrigger
-                                className="field-soft h-7 w-[72px] rounded-full border-0 px-2 text-xs shadow-none"
-                                aria-label="Sayfa başına belge"
+                              {library.error.kind === "permission" ? (
+                                <ShieldCheck className="mt-0.5 size-5 text-amber-600" />
+                              ) : (
+                                <CircleAlert className="mt-0.5 size-5 text-destructive" />
+                              )}
+                              <div className="flex-1">
+                                <p className="font-medium">
+                                  {library.error.kind === "permission"
+                                    ? "Bu dataset için yetkiniz yok"
+                                    : library.error.kind === "timeout"
+                                      ? "İstek zaman aşımına uğradı"
+                                      : "Belge verileri alınamadı"}
+                                </p>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                  {library.error.message}
+                                </p>
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void library.refresh()}
                               >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent align="start">
-                                {[10, 20, 50].map((size) => (
-                                  <SelectItem key={size} value={String(size)}>
-                                    {size}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                                Yeniden dene
+                              </Button>
+                            </div>
+                          ) : null}
+                          <HubListHeader
+                            title={
+                              library.selectedDataset?.name ?? "Dataset seçin"
+                            }
+                            subtitle={
+                              selectedIds.length > 0
+                                ? `${selectedIds.length} belge seçili`
+                                : library.datasetId
+                                  ? `${library.totalDocuments.toLocaleString("tr-TR")} belge · aktif dataset`
+                                  : "Belge listesini görüntülemek için dataset seçin"
+                            }
+                            count={library.totalDocuments}
+                            view={layoutMode}
+                            onViewChange={setLayoutMode}
+                            actions={datasetHeaderActions}
+                          />
+                          {layoutMode === "grid" &&
+                          library.documents.length > 0 ? (
+                            <DocumentCompactHeader
+                              allChecked={allVisibleChecked}
+                              onAllCheckedChange={setAllVisibleChecked}
+                            />
+                          ) : null}
+                        </div>
+
+                        {library.loadingDocuments ? (
+                          <div className="flex min-h-64 items-center justify-center">
+                            <Spinner className="size-5" />
                           </div>
-                          <Pagination className="mx-0 w-auto justify-start sm:justify-end">
-                            <PaginationContent>
-                              <PaginationItem>
-                                <Button
-                                  size="icon-xs"
-                                  variant="ghost"
-                                  aria-label="Önceki sayfa"
-                                  disabled={
-                                    library.page <= 1 ||
-                                    library.loadingDocuments
-                                  }
-                                  onClick={() => changePage(library.page - 1)}
+                        ) : !library.datasetId ? (
+                          <Empty>
+                            <EmptyHeader>
+                              <EmptyMedia variant="icon">
+                                <Database />
+                              </EmptyMedia>
+                              <EmptyTitle>
+                                Önce bir dataset oluşturun
+                              </EmptyTitle>
+                              <EmptyDescription>
+                                Belge yüklemek için erişebildiğiniz bir dataset
+                                bulunmalı.
+                              </EmptyDescription>
+                            </EmptyHeader>
+                          </Empty>
+                        ) : library.documents.length === 0 ? (
+                          <Empty className="min-h-64">
+                            <EmptyHeader>
+                              <EmptyMedia variant="icon">
+                                <FileText />
+                              </EmptyMedia>
+                              <EmptyTitle>
+                                {query
+                                  ? "Eşleşen belge yok"
+                                  : "Henüz belge yok"}
+                              </EmptyTitle>
+                              <EmptyDescription>
+                                {query
+                                  ? "Arama ifadenizi değiştirin."
+                                  : "Yukarıdaki alana dosya bırakarak başlayın."}
+                              </EmptyDescription>
+                            </EmptyHeader>
+                          </Empty>
+                        ) : layoutMode === "two" ? (
+                          <div
+                            className="grid grid-cols-1 gap-x-3 gap-y-2 md:grid-cols-2"
+                            role="list"
+                            aria-label="Belgeler iki sütun görünümü"
+                          >
+                            {library.documents.map((document) => (
+                              <DocumentSummaryCard
+                                key={document.id}
+                                document={document}
+                                mode="two"
+                                focused={focusedDocument?.id === document.id}
+                                checked={selected.has(document.id)}
+                                onActivate={() =>
+                                  focusDocument(document.id, true)
+                                }
+                                onCheckedChange={(checked) =>
+                                  setDocumentChecked(document.id, checked)
+                                }
+                              />
+                            ))}
+                          </div>
+                        ) : layoutMode === "split" ? (
+                          <div
+                            className="space-y-2"
+                            role="list"
+                            aria-label="Belgeler"
+                          >
+                            {library.documents.map((document) => (
+                              <DocumentSummaryCard
+                                key={document.id}
+                                document={document}
+                                mode="split"
+                                focused={focusedDocument?.id === document.id}
+                                checked={selected.has(document.id)}
+                                onActivate={() => focusDocument(document.id)}
+                                onCheckedChange={(checked) =>
+                                  setDocumentChecked(document.id, checked)
+                                }
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <div
+                            role="table"
+                            aria-label="Belgeler kompakt görünümü"
+                            className="space-y-2"
+                          >
+                            {library.documents.map((document) => (
+                              <DocumentCompactRow
+                                key={document.id}
+                                document={document}
+                                checked={selected.has(document.id)}
+                                renameValue={renameValue}
+                                renaming={renameId === document.id}
+                                onCheckedChange={(checked) =>
+                                  setDocumentChecked(document.id, checked)
+                                }
+                                onActivate={() =>
+                                  focusDocument(document.id, true)
+                                }
+                                onRenameValueChange={setRenameValue}
+                                onCancelRename={() => setRenameId(null)}
+                                onSaveRename={() =>
+                                  void run(async () => {
+                                    await library.rename(
+                                      document.id,
+                                      renameValue.trim(),
+                                    );
+                                    setRenameId(null);
+                                  }, "Belge yeniden adlandırıldı.")
+                                }
+                                onBeginRename={() => {
+                                  setRenameId(document.id);
+                                  setRenameValue(document.name);
+                                }}
+                                onPreview={() => openAsset(document, "preview")}
+                                onMedia={() => openAsset(document, "media")}
+                                onDownload={() => void download(document)}
+                                onProcess={() =>
+                                  void run(
+                                    () => library.parse([document.id]),
+                                    "Belge işleme alındı.",
+                                  )
+                                }
+                                onStop={() =>
+                                  void run(
+                                    () => library.stop([document.id]),
+                                    "İşlem durduruldu.",
+                                  )
+                                }
+                                onDelete={() => setDeleteIds([document.id])}
+                              />
+                            ))}
+                          </div>
+                        )}
+
+                        {library.datasetId && library.totalDocuments > 0 ? (
+                          <footer className="mt-3 flex flex-col gap-2 border-t px-1 py-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex items-center gap-2 text-xs tabular-nums text-muted-foreground">
+                              <span>
+                                {firstVisibleDocument}–{lastVisibleDocument} /{" "}
+                                {library.totalDocuments.toLocaleString("tr-TR")}
+                              </span>
+                              <Select
+                                value={String(library.pageSize)}
+                                onValueChange={(value) => {
+                                  library.setPageSize(Number(value));
+                                  setSelected(new Set());
+                                }}
+                              >
+                                <SelectTrigger
+                                  className="field-soft h-7 w-[72px] rounded-full border-0 px-2 text-xs shadow-none"
+                                  aria-label="Sayfa başına belge"
                                 >
-                                  <ChevronLeft />
-                                </Button>
-                              </PaginationItem>
-                              {pageNumbers.map((pageNumber) => (
-                                <PaginationItem key={pageNumber}>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent align="start">
+                                  {[10, 20, 50].map((size) => (
+                                    <SelectItem key={size} value={String(size)}>
+                                      {size}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <Pagination className="mx-0 w-auto justify-start sm:justify-end">
+                              <PaginationContent>
+                                <PaginationItem>
                                   <Button
                                     size="icon-xs"
-                                    variant={
-                                      pageNumber === library.page
-                                        ? "outline"
-                                        : "ghost"
+                                    variant="ghost"
+                                    aria-label="Önceki sayfa"
+                                    disabled={
+                                      library.page <= 1 ||
+                                      library.loadingDocuments
                                     }
-                                    aria-current={
-                                      pageNumber === library.page
-                                        ? "page"
-                                        : undefined
-                                    }
-                                    onClick={() => changePage(pageNumber)}
+                                    onClick={() => changePage(library.page - 1)}
                                   >
-                                    {pageNumber}
+                                    <ChevronLeft />
                                   </Button>
                                 </PaginationItem>
-                              ))}
-                              <PaginationItem>
-                                <Button
-                                  size="icon-xs"
-                                  variant="ghost"
-                                  aria-label="Sonraki sayfa"
-                                  disabled={
-                                    library.page >= library.totalPages ||
-                                    library.loadingDocuments
-                                  }
-                                  onClick={() => changePage(library.page + 1)}
-                                >
-                                  <ChevronRight />
-                                </Button>
-                              </PaginationItem>
-                            </PaginationContent>
-                          </Pagination>
-                        </footer>
-                      ) : null}
+                                {pageNumbers.map((pageNumber) => (
+                                  <PaginationItem key={pageNumber}>
+                                    <Button
+                                      size="icon-xs"
+                                      variant={
+                                        pageNumber === library.page
+                                          ? "outline"
+                                          : "ghost"
+                                      }
+                                      aria-current={
+                                        pageNumber === library.page
+                                          ? "page"
+                                          : undefined
+                                      }
+                                      onClick={() => changePage(pageNumber)}
+                                    >
+                                      {pageNumber}
+                                    </Button>
+                                  </PaginationItem>
+                                ))}
+                                <PaginationItem>
+                                  <Button
+                                    size="icon-xs"
+                                    variant="ghost"
+                                    aria-label="Sonraki sayfa"
+                                    disabled={
+                                      library.page >= library.totalPages ||
+                                      library.loadingDocuments
+                                    }
+                                    onClick={() => changePage(library.page + 1)}
+                                  >
+                                    <ChevronRight />
+                                  </Button>
+                                </PaginationItem>
+                              </PaginationContent>
+                            </Pagination>
+                          </footer>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
 
-              {layoutMode === "split" && focusedDocument ? (
-                <div className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1">
-                  <DocumentDetailsPanel
-                    document={focusedDocument}
-                    mutating={library.mutating}
-                    renameValue={renameValue}
-                    renaming={renameId === focusedDocument.id}
-                    onRenameValueChange={setRenameValue}
-                    onBeginRename={() => {
-                      setRenameId(focusedDocument.id);
-                      setRenameValue(focusedDocument.name);
-                    }}
-                    onCancelRename={() => setRenameId(null)}
-                    onSaveRename={() =>
-                      void run(async () => {
-                        await library.rename(
-                          focusedDocument.id,
-                          renameValue.trim(),
-                        );
-                        setRenameId(null);
-                      }, "Belge yeniden adlandırıldı.")
-                    }
-                    onPreview={() => openAsset(focusedDocument, "preview")}
-                    onMedia={() => openAsset(focusedDocument, "media")}
-                    onDownload={() => void download(focusedDocument)}
-                    onProcess={() =>
-                      void run(
-                        () => library.parse([focusedDocument.id]),
-                        "Belge işleme alındı.",
-                      )
-                    }
-                    onStop={() =>
-                      void run(
-                        () => library.stop([focusedDocument.id]),
-                        "İşlem durduruldu.",
-                      )
-                    }
-                    onDelete={() => setDeleteIds([focusedDocument.id])}
-                    onBack={() => setLayoutMode("two")}
-                  />
-                </div>
-              ) : layoutMode === "split" ? (
-                <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-ui-13 text-muted-foreground lg:flex">
-                  Ayrıntılarını görmek için bir belge seçin.
-                </div>
-              ) : null}
-            </div>
+                {layoutMode === "split" && focusedDocument ? (
+                  <div className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1">
+                    <DocumentDetailsPanel
+                      document={focusedDocument}
+                      mutating={library.mutating}
+                      renameValue={renameValue}
+                      renaming={renameId === focusedDocument.id}
+                      onRenameValueChange={setRenameValue}
+                      onBeginRename={() => {
+                        setRenameId(focusedDocument.id);
+                        setRenameValue(focusedDocument.name);
+                      }}
+                      onCancelRename={() => setRenameId(null)}
+                      onSaveRename={() =>
+                        void run(async () => {
+                          await library.rename(
+                            focusedDocument.id,
+                            renameValue.trim(),
+                          );
+                          setRenameId(null);
+                        }, "Belge yeniden adlandırıldı.")
+                      }
+                      onPreview={() => openAsset(focusedDocument, "preview")}
+                      onMedia={() => openAsset(focusedDocument, "media")}
+                      onDownload={() => void download(focusedDocument)}
+                      onProcess={() =>
+                        void run(
+                          () => library.parse([focusedDocument.id]),
+                          "Belge işleme alındı.",
+                        )
+                      }
+                      onStop={() =>
+                        void run(
+                          () => library.stop([focusedDocument.id]),
+                          "İşlem durduruldu.",
+                        )
+                      }
+                      onDelete={() => setDeleteIds([focusedDocument.id])}
+                      onBack={() => setLayoutMode("two")}
+                    />
+                  </div>
+                ) : layoutMode === "split" ? (
+                  <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-ui-13 text-muted-foreground lg:flex">
+                    Ayrıntılarını görmek için bir belge seçin.
+                  </div>
+                ) : null}
+              </div>
             </section>
+          ) : datasetView === "advanced" ? (
+            <Suspense
+              fallback={
+                <div
+                  role="status"
+                  className="flex min-h-56 flex-1 items-center justify-center gap-2 text-sm text-muted-foreground"
+                >
+                  <Spinner /> Gelişmiş dataset araçları yükleniyor…
+                </div>
+              }
+            >
+              <AdvancedDatasetWorkspace
+                datasetId={library.datasetId}
+                datasetName={library.selectedDataset?.name ?? ""}
+              />
+            </Suspense>
           ) : (
             <DatasetQualityWorkspace
               mode={datasetView}

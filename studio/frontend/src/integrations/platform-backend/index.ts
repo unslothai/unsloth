@@ -15,6 +15,8 @@ export * from "./model-types";
 export * from "./model-readiness";
 export * from "./dataset-api";
 export * from "./dataset-types";
+export * from "./advanced-dataset-api";
+export * from "./advanced-dataset-types";
 export * from "./document-api";
 export * from "./document-types";
 export * from "./chunk-api";

@@ -23,6 +23,12 @@ vi.mock("./dataset-quality-workspace", () => ({
   ),
 }));
 
+vi.mock("./advanced-dataset-workspace", () => ({
+  default: ({ datasetName }: { datasetName: string }) => (
+    <div>Gelişmiş dataset: {datasetName}</div>
+  ),
+}));
+
 import { DocumentLibraryPage } from "./document-library-page";
 
 function renderPage() {
@@ -203,6 +209,14 @@ describe("Document Library Hub layouts", () => {
       within(scope).getByRole("radio", { name: "Genel belgeler" }),
     );
     expect(screen.getByText("Bağımsız dosya inceleme")).toBeInTheDocument();
+  });
+
+  it("lazy-loads the Phase 10 advanced dataset workspace through a real tab", async () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("radio", { name: "Gelişmiş" }));
+    expect(
+      await screen.findByText("Gelişmiş dataset: Ürün belgeleri"),
+    ).toBeInTheDocument();
   });
 
   it("opens chunk and retrieval tools inside the Documents dataset scope", () => {

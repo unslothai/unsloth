@@ -5,7 +5,7 @@
 
 - Backend source: `/Users/baran/Desktop/rag-backend` at `v0.26.4` (`cb93883f3f8c975eecb2fed81210effeb3bdb06f`)
 - Source image: `infiniflow/ragflow:v0.26.4` (API version `v1`)
-- Forward source audit: backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`; 11 source-only runtime-disabled route(s)
+- Forward source audit: backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`; 45 source-only runtime-disabled route(s)
 - Active proxy scheme: `hybrid` (from infra/rag-platform/.env.rag-platform)
 - Proxy config: `infra/rag-platform/rag-platform.hybrid.conf`
 
@@ -13,15 +13,15 @@
 
 | Metric | Count |
 | --- | --- |
-| routes | 711 |
+| routes | 745 |
 | go-admin (port 9383) | 114 |
 | python-admin (port 9381) | 34 |
-| python-api (port 9380) | 304 |
-| go-api (port 9384) | 254 |
+| python-api (port 9380) | 318 |
+| go-api (port 9384) | 274 |
 | mcp (port 9382) | 5 |
 | runtime-enabled | 516 |
-| runtime-disabled | 190 |
-| — source-only forward declarations | 11 |
+| runtime-disabled | 224 |
+| — source-only forward declarations | 45 |
 | not proxied by nginx | 5 |
 | method+path with alternate implementations | 110 |
 
@@ -756,6 +756,16 @@
 | GET | `/api/v1/datasets/:dataset_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:331` | — | — |
 | PUT | `/api/v1/datasets/:dataset_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:332` | — | — |
 | DELETE | `/api/v1/datasets/:dataset_id/:index_type` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:343` | — | — |
+| DELETE | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:361` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:360` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| HEAD | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:359` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:365` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| PUT | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:366` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/alteration` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:363` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/graph` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:364` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:368` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:367` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/topics` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:362` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | GET | `/api/v1/datasets/:dataset_id/changes` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:458` | — | — |
 | DELETE | `/api/v1/datasets/:dataset_id/chunks` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:381` | — | — |
 | POST | `/api/v1/datasets/:dataset_id/chunks` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:373` | — | — |
@@ -766,6 +776,7 @@
 | GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/files/:file_id/content` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:457` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/tree` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:456` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/commits/diff` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:453` | — | — |
+| GET | `/api/v1/datasets/:dataset_id/compilation/status` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:356` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | DELETE | `/api/v1/datasets/:dataset_id/documents` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:366` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/documents` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:362` | — | — |
 | POST | `/api/v1/datasets/:dataset_id/documents` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:363` | — | — |
@@ -794,7 +805,16 @@
 | PUT | `/api/v1/datasets/:dataset_id/metadata/config` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:359` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/metadata/summary` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:350` | — | — |
 | POST | `/api/v1/datasets/:dataset_id/metadata/update` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:384` | — | — |
+| DELETE | `/api/v1/datasets/:dataset_id/navigation` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:372` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/navigation` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:371` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/navigation/:name` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:373` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/navigation/:name/children` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:374` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | POST | `/api/v1/datasets/:dataset_id/search` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:348` | — | — |
+| DELETE | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:379` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:378` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| HEAD | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:377` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:381` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:380` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | DELETE | `/api/v1/datasets/:dataset_id/tags` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:336` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/tags` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:334` | — | — |
 | PUT | `/api/v1/datasets/:dataset_id/tags` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:335` | — | — |
@@ -805,9 +825,14 @@
 | GET | `/api/v1/datasets/<dataset_id>/any_skill` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:694` | — | — |
 | DELETE | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:643` | — | — |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:580` | — | — |
+| HEAD | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:584` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:667` | — | — |
 | PUT | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:770` | — | — |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/alteration` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:803` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts/graph` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:612` | — | — |
+| DELETE | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:762` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:715` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/topics` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:638` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | DELETE | `/api/v1/datasets/<dataset_id>/chunks` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/chunk_api.py:258` | — | — |
 | POST | `/api/v1/datasets/<dataset_id>/chunks` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/chunk_api.py:183` | — | — |
 | DELETE | `/api/v1/datasets/<dataset_id>/documents` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/document_api.py:1103` | — | — |
@@ -845,10 +870,19 @@
 | PUT | `/api/v1/datasets/<dataset_id>/metadata/config` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1000` | — | — |
 | GET | `/api/v1/datasets/<dataset_id>/metadata/summary` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/document_api.py:307` | — | — |
 | POST | `/api/v1/datasets/<dataset_id>/metadata/update` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/document_api.py:345` | — | — |
+| DELETE | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1052` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:962` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| POST | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1097` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/<dataset_id>/navigation/<path:name>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1074` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/navigation/<path:name>/children` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1029` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/navigation/search` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:984` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | POST | `/api/v1/datasets/<dataset_id>/run_graphrag` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/backward_compat.py:185` | — | backward-compat shim retained by upstream for older clients |
 | POST | `/api/v1/datasets/<dataset_id>/run_raptor` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/backward_compat.py:221` | — | backward-compat shim retained by upstream for older clients |
 | POST | `/api/v1/datasets/<dataset_id>/search` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:507` | — | — |
+| DELETE | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:917` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | GET | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:713` | — | — |
+| HEAD | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:881` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1129` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | GET | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:735` | — | — |
 | DELETE | `/api/v1/datasets/<dataset_id>/tags` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:435` | — | — |
 | GET | `/api/v1/datasets/<dataset_id>/tags` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:418` | — | — |
