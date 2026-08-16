@@ -16,6 +16,12 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^tauri_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_stream_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_clear_install_error()/,/^}/p' "$INSTALL_SH"
+    # #8805 put _uv_download_markers in the middle of run_install_cmd's pipeline.
+    # Taken from install.sh rather than stubbed, so this still exercises the real
+    # pipe the installer runs. Without it the last stage of that pipeline is
+    # "command not found", every wrapped command looks like it exited 127, and
+    # `set -e` ends this file with no output at all.
+    sed -n '/^_uv_download_markers()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
@@ -44,20 +50,29 @@ _redact_install_output() {
 echo "=== run_install_cmd_retry Tauri failure context ==="
 
 TAURI_MODE=true
-_test_attempt=0
+# The attempt counter lives in a file, not a shell variable. #8805 put the wrapped
+# command inside `{ ...; } | _uv_download_markers ...`, so it now runs in a subshell
+# and an assignment to a parent variable is discarded. That made this command fail on
+# every attempt instead of succeeding on the second, which is the retry path this
+# whole block is here to check.
+_test_attempt_file=$(mktemp)
+printf '0\n' > "$_test_attempt_file"
 _test_command() {
-    _test_attempt=$((_test_attempt + 1))
-    [ "$_test_attempt" -eq 2 ]
+    _attempt=$(($(cat "$_test_attempt_file") + 1))
+    printf '%s\n' "$_attempt" > "$_test_attempt_file"
+    [ "$_attempt" -eq 2 ]
 }
 
 UNSLOTH_INSTALL_RETRIES=3
 UNSLOTH_INSTALL_RETRY_DELAY=0
 _stdout_file=$(mktemp)
 _stderr_file=$(mktemp)
-trap 'rm -f "$_stdout_file" "$_stderr_file"' EXIT
+trap 'rm -f "$_stdout_file" "$_stderr_file" "$_test_attempt_file"' EXIT
 run_install_cmd_retry "install PyTorch" _test_command >"$_stdout_file" 2>"$_stderr_file"
-_stdout_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stdout_file")
-_stderr_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stderr_file")
+# `|| true`: grep -c reports 0 with status 1, and under set -e that aborts here with
+# no output, which is how a missing helper in the block above reads as silence.
+_stdout_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stdout_file" || true)
+_stderr_clear_count=$(grep -c '^\[TAURI:ERROR_CLEAR\] install PyTorch recovered$' "$_stderr_file" || true)
 if [ "$_stdout_clear_count" -ne 1 ] || [ "$_stderr_clear_count" -ne 1 ]; then
     echo "  FAIL: recovered retry emitted $_stdout_clear_count stdout and $_stderr_clear_count stderr clear markers"
     exit 1
