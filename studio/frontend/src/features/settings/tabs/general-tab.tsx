@@ -12,11 +12,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import {
-  PermissionModeDropdown,
-  SIDEBAR_ORGANIZATION_STORAGE_KEY,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+// Straight from the module, not through the @/features/chat barrel. This key is read at MODULE
+// scope by the storage-key list below, and the barrel is part of an import cycle that reaches
+// this file, so via the barrel the binding is still in its temporal dead zone when the list is
+// built: "Cannot access 'SIDEBAR_ORGANIZATION_STORAGE_KEY' before initialization", which kills
+// the whole module graph and renders nothing.
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-store";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,
