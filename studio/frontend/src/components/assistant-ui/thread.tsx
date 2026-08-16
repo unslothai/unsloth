@@ -2134,7 +2134,7 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
-  // Read by both writers that could put the sent text back: the input handlers
+  // Read by both writers that could put the sent text back, the input handlers
   // and the draft restore. Armed by every path that clears the composer.
   const justSentRef = useRef<SentTextGuard | null>(null);
   const { inputProps, isComposing, isComposingRef } =
@@ -2176,11 +2176,10 @@ const Composer: FC<{
           }),
         pastedTextMinChars,
       );
-      // A paste is a user gesture, unlike a queued stale write, so it retires
-      // the guard and re-pasting the prompt just sent goes through. Only once
-      // inline text is actually going in: a files-only paste, or long text that
-      // just became an attachment, writes nothing, and dropping the guard for
-      // it would leave the next queued write free to refill the composer.
+      // A paste is a gesture, so it retires the guard and re-pasting the sent
+      // prompt goes through. Only once inline text is actually going in: a
+      // files-only paste writes nothing, and dropping the guard for it would
+      // leave the next queued write free to refill the composer.
       if (pastedText.length > 0 && !attachedPastedText) {
         justSentRef.current = null;
       }
@@ -2729,8 +2728,7 @@ const Composer: FC<{
     draftKeyRef.current = draftKey;
     pasteDraftKeyRef.current = pasteDraftKey;
   }, [draftKey, pasteDraftKey]);
-  // Call wherever the composer is emptied because its text left as a message,
-  // whether it was sent or queued.
+  // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
   }, []);
@@ -3665,9 +3663,8 @@ const Composer: FC<{
             : {}),
           openaiReasoningItem: overlay.openaiReasoningItem,
         });
-        // Read live rather than from composerText, which is render-time state:
-        // a late DOM write carries exactly what the textarea held, whitespace
-        // and all, and that is the value the guard has to recognise.
+        // Live, not composerText: a late DOM write carries exactly what the
+        // textarea held, whitespace and all, and that is what must be armed.
         const visibleBeforeWrap = aui.composer().getState().text;
         flushResourcesSync(() => {
           aui
@@ -3960,10 +3957,8 @@ function isTextReplacement(event: Event | undefined) {
   return inputTypeOf(event) === "insertReplacementText";
 }
 
-// Input types only a user gesture produces. A queued write never reports one,
-// so these are safe to apply even when they carry exactly what was sent. Paste
-// is here as well as in handleFilePaste: drag and drop and yank have no event
-// to hook the way paste does, and both can carry the sent text.
+// Input types only a gesture produces, so they apply even when they carry the
+// sent text. Drag and drop and yank have no event to hook the way paste does.
 const DELIBERATE_INPUT_TYPES = new Set([
   "historyUndo",
   "historyRedo",
@@ -4069,8 +4064,8 @@ function useImeComposerInputHandlers({
   );
 
   const onCompositionStart = useCallback(() => {
-    // Dictation and handwriting insert without a keydown, but a composition
-    // that starts after the send cannot be a write the send queued.
+    // Dictation and handwriting insert without a keydown, and a composition
+    // starting after the send cannot be a write the send queued.
     if (justSentRef) {
       justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
     }
@@ -4110,8 +4105,8 @@ function useImeComposerInputHandlers({
   // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // Before the IME return: committing one character through an IME is the
-      // same single write, and its keydown reports as composing.
+      // Before the IME return: an IME committing one character is the same
+      // single write, and its keydown reports as composing.
       if (justSentRef && isGuardRetiringKey(e)) {
         justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
       }

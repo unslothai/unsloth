@@ -2,20 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Refuses writes that put a just-sent message back into the composer.
+ * Refuses writes that put a just-sent message back into the composer: an event
+ * the engine queued against the pre-send value (autocorrect commit, IME
+ * finalise) or a draft autosave that raced the send. The next autosave makes
+ * one stick, so the prompt sends and the text stays in the box.
  *
- * Sending clears the composer, but a write carrying the pre-send text can still
- * land after it: an input or compositionend event the engine queued against the
- * old value (autocorrect commit, IME finalise, undo), or a draft autosave that
- * raced the send. Applying it refills the composer and the next autosave makes
- * that stick, so the prompt sends and the text stays in the box.
- *
- * The guard is retired by user intent, not by a clock. Event queue latency has
- * no upper bound: a backgrounded page or a blocked main thread can deliver a
- * stale write seconds later, and any wall-clock window would have expired by
- * then. Typing retires it, since a typed value differs; a paste retires it
- * explicitly, since a deliberate re-paste of the same prompt is the one
- * legitimate write that is byte-identical to what was sent.
+ * Retired by user intent, never by a clock: queue latency has no upper bound, so
+ * a backgrounded page can deliver a stale write long after any window expired.
+ * Typing retires it since a typed value differs, and a paste retires it
+ * explicitly, being the one legitimate write identical to what was sent.
  */
 export type SentTextGuard = {
   /** Values to refuse. The overlay send arms the wrapper and what was on screen. */
@@ -56,13 +51,10 @@ export function isGuardRetiringKey(event: {
 }
 
 /**
- * Records that the user drove input after the send: a keydown, or a composition
- * starting for dictation, handwriting or an IME.
- *
- * A write the send queued is delivered before either of those, so one proves
- * the stale writes have already drained and this composer is the user's again.
- * Only the equality check relaxes: the autocorrect rule and the draft
- * suppression are unaffected, so this cannot widen into the original bug.
+ * A keydown, or a composition starting for dictation, handwriting or an IME.
+ * The send's queued writes are delivered before either, so one proves they have
+ * drained. Relaxes the equality check only, never the autocorrect rule or the
+ * draft suppression, so it cannot widen into the original bug.
  */
 export function markSentTextGuardUserInput(
   guard: SentTextGuard | null,
@@ -86,15 +78,13 @@ export function applySentTextGuard(
   write: {
     value: string;
     /**
-     * The engine replaced text rather than the user inserting it: an autocorrect
-     * commit. It cannot originate from an empty composer, so on one it is
-     * necessarily stale, mutated value and all.
+     * An autocorrect commit, the engine rather than the user. It cannot start
+     * from an empty composer, so on one it is stale, mutated value and all.
      */
     replacesText: boolean;
     /**
-     * A gesture only the user can make: undo, redo, or text brought in from
-     * elsewhere. Retires the guard even when it restores exactly what was sent,
-     * because a queued write never reports one of these.
+     * Undo, redo, or text brought in from elsewhere. A queued write never
+     * reports one, so it applies even when it restores what was sent.
      */
     isDeliberate: boolean;
     composerIsEmpty: boolean;
