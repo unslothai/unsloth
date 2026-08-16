@@ -81,10 +81,7 @@ def _write_layout(tmp_path, layout):
     return root
 
 
-# Load import_fixes.py by path rather than as unsloth.import_fixes: importing the
-# package runs unsloth/__init__.py, which refuses to import without an accelerator,
-# so `from unsloth.import_fixes import ...` cannot run on the CPU-only CI job. The
-# module is stdlib plus packaging at import time, so it loads standalone.
+# The same by-path load as _load_import_fixes, for the subprocess cases.
 _LOAD_MODULE = """
     import importlib.util, pathlib, sys
     _path = pathlib.Path(sys.argv[2]) / "unsloth" / "import_fixes.py"
@@ -108,15 +105,13 @@ _CLASSIFY = textwrap.dedent(
         ("absent", "absent"),
         ("flash_attn_2", "flash_attn_2"),
         ("flash_attn_4_only", "flash_attn_4_only"),
-        # Both installed: the regular flash-attn 2 package wins the path search and
-        # `flash_attn.flash_attn_interface` resolves, so there is nothing to repair.
+        # Both installed: the regular FA2 package wins the path search, so nothing to repair.
         ("both", "flash_attn_2"),
     ],
 )
 def test_layout_is_classified_correctly(tmp_path, layout, expected):
     root = _write_layout(tmp_path, layout)
-    # A subprocess per layout: `flash_attn` gets imported by find_spec on the submodule and
-    # cannot be un-imported cleanly between cases.
+    # A subprocess per layout: `flash_attn` cannot be un-imported cleanly between cases.
     out = subprocess.run(
         [sys.executable, "-c", _CLASSIFY, str(root), str(_REPO_ROOT)],
         capture_output = True,
@@ -127,8 +122,7 @@ def test_layout_is_classified_correctly(tmp_path, layout, expected):
 
 
 _NO_EAGER_IMPORT = textwrap.dedent(
-    # Load the module BEFORE the layout is visible, so this measures the classifier
-    # only and not some unrelated consumer of flash_attn further down the graph.
+    # Load the module BEFORE the layout is visible, so this measures the classifier only.
     _LOAD_MODULE
     + """
     sys.modules.pop("flash_attn", None)
@@ -205,8 +199,7 @@ def test_fix_is_a_noop_without_xformers(monkeypatch):
     monkeypatch.setattr(import_fixes.importlib.util, "find_spec", _find_spec)
     import_fixes._FA4_NAMESPACE_WARNED[0] = False
     import_fixes.fix_flash_attn_4_namespace_shadow()
-    # It asked once for xformers, got nothing, and stopped: no import, no warning, and the
-    # patched find_spec is still ours (never left swapped out).
+    # Asked once, got nothing, stopped: no import, no warning, find_spec never left swapped.
     assert asked == ["xformers"]
     assert import_fixes.importlib.util.find_spec is _find_spec
     assert import_fixes._FA4_NAMESPACE_WARNED[0] is False

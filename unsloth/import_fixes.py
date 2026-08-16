@@ -359,26 +359,18 @@ def fix_xformers_performance_issue():
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
-# flash-attn 4 (distribution `flash-attn-4`, the CuTe DSL build) ships its module tree at
-# `flash_attn/cute/` with NO `flash_attn/__init__.py`. `flash_attn` therefore resolves as an
-# implicit NAMESPACE package with no `flash_attn_func`, no `flash_attn_varlen_func`, no
-# `__version__` and, critically, no `flash_attn.flash_attn_interface` submodule.
-#
-# xformers' `ops/fmha/flash.py` gates on `importlib.util.find_spec("flash_attn")` and then does
-# an UNGUARDED `import flash_attn.flash_attn_interface`. The namespace package makes the gate
-# pass and the import raise, so the ModuleNotFoundError escapes `import xformers.ops`.
-# `unsloth/models/_utils.py` swallows that into `xformers = None`, `HAS_XFORMERS` goes False in
-# `unsloth/utils/attention_dispatch.py`, and every monkeypatched fast-path model silently drops
-# to plain SDPA. Measured on a B200 at seq_len 8192 with Qwen3-0.6B + LoRA: 547 ms/step and
-# 2.69 GB peak with xformers versus 2154 ms/step and 19.02 GB peak on SDPA -- a 3.9x slowdown
-# and 7x memory arriving with no message. flash-attn 2 publishes no wheel for torch 2.9 /
+# flash-attn 4 ships `flash_attn/cute/` with NO `flash_attn/__init__.py`, so `flash_attn`
+# resolves as a namespace package with no `flash_attn.flash_attn_interface`. xformers gates on
+# `find_spec("flash_attn")` and then imports that submodule unguarded, so `import xformers.ops`
+# raises, `models/_utils.py` swallows it into `xformers = None`, HAS_XFORMERS goes False and
+# every fast-path model silently drops to SDPA. Measured on a B200 at seq_len 8192 with
+# Qwen3-0.6B + LoRA: 547 ms/step / 2.69 GB peak with xformers versus 2154 ms/step / 19.02 GB
+# peak on SDPA -- 3.9x slower, 7x memory, no message. flash-attn 2 has no wheel for torch 2.9 /
 # cp313, so flash-attn 4 is what a Blackwell user reaches for.
 #
-# The repair imports xformers ONCE with `flash_attn` hidden from `find_spec`, which sends
-# xformers down the next branch of its own elif chain (its bundled `_C_flashattention`, else
-# torch's built-in flash) exactly as it would on a machine with no flash-attn at all. The
-# resulting module is cached in `sys.modules`, so `models/_utils.py` later gets a working
-# xformers. Nothing is written to any third-party package.
+# The repair imports xformers ONCE with `flash_attn` hidden from `find_spec`, so xformers takes
+# the next branch of its own elif chain exactly as it would with no flash-attn at all, and the
+# working module is cached in `sys.modules`. Nothing is written to any third-party package.
 _FLASH_ATTN_INTERFACE_NAME = "flash_attn_interface"
 _FLASH_ATTN_INTERFACE_MODULE = "flash_attn." + _FLASH_ATTN_INTERFACE_NAME
 _FA4_NAMESPACE_WARNED = [False]
@@ -472,15 +464,13 @@ def fix_flash_attn_4_namespace_shadow():
     if _flash_attn_layout() != "flash_attn_4_only":
         return
     if importlib.util.find_spec("xformers") is None:
-        # Nothing to protect: with no xformers this machine was on SDPA regardless, and the
-        # `attn_implementation=` delegation path never touches `flash_attn` unless
-        # transformers' own `is_flash_attn_2_available()` says yes, which it does not here
-        # (the distribution is named `flash-attn-4`, so the metadata lookup for `flash_attn`
-        # misses and the check returns False).
+        # Nothing to protect: no xformers means SDPA regardless, and transformers'
+        # `is_flash_attn_2_available()` is False here (the distribution is `flash-attn-4`, so
+        # the metadata lookup for `flash_attn` misses).
         return
     if "xformers.ops.fmha.flash" in sys.modules:
-        # Already imported, successfully, by someone else. A FAILED import leaves nothing in
-        # sys.modules, so this does not mask the case we are here to fix.
+        # Already imported successfully. A FAILED import leaves nothing in sys.modules, so this
+        # does not mask the case we are here to fix.
         return
 
     real_find_spec = importlib.util.find_spec
@@ -490,11 +480,9 @@ def fix_flash_attn_4_namespace_shadow():
             return None
         return real_find_spec(name, package)
 
-    # Scoped to this one import, and restored in `finally`. This is a process-global swap, so
-    # any OTHER thread calling find_spec("flash_attn*") inside the window is told the package is
-    # absent. Measured window: ~1.0s on a warm interpreter, and it is only ever entered on a
-    # machine where xformers is already broken, where the honest answer for `flash_attn` (the
-    # FA2 namespace xformers is asking about) is "absent" anyway.
+    # Process-global swap, scoped to this one import and restored in `finally`. Any other thread
+    # calling find_spec("flash_attn*") in the ~1.0s window is told the package is absent, which
+    # is the honest answer for the FA2 namespace xformers is asking about anyway.
     importlib.util.find_spec = _find_spec_without_flash_attn
     try:
         import xformers.ops  # noqa: F401

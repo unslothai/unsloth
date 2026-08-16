@@ -51,17 +51,15 @@ def test_guard_matches_the_measured_crash_threshold(n_heads, head_dim, doc_len, 
     def trips(n_docs):
         return ad._varlen_backward_overflows_int32(n_docs, n_docs * doc_len, n_heads, head_dim)
 
-    # Comfortably inside the safe region: never give up the fast kernel for nothing.
+    # Inside the safe region: never give up the fast kernel for nothing.
     assert not trips(last_ok // 2)
     assert not trips(last_ok - 2)
-    # At and beyond the observed crash the guard must be tripped.
     assert trips(last_ok + 1)
     assert trips(last_ok * 2)
 
 
 def test_head_dim_is_rounded_up_to_a_multiple_of_32():
-    # head_dim 96 rounds to 96, not 128: the 96 case above lands at 10838 rather than 8129,
-    # which is what fixed the rounding rule empirically.
+    # head_dim 96 rounds to 96, not 128, which is why that case lands at 10838 not 8129.
     assert ad._varlen_backward_dq_accum_elements(1, 0, 1, 96) == 128 * 96
     assert ad._varlen_backward_dq_accum_elements(1, 0, 1, 100) == 128 * 128
     assert ad._varlen_backward_dq_accum_elements(1, 0, 1, 64) == 128 * 64
@@ -239,6 +237,6 @@ def test_guard_warns_once_naming_the_cost(capsys):
     assert "illegal memory access" in first
     assert "SDPA" in first
     assert "20000 documents" in first
-    # Once per process: this fires per layer per step, so a repeat would be thousands of lines.
+    # Once per process: it fires per layer per step.
     ad._warn_varlen_int32_overflow_once(ad.XFORMERS, 20000, 20000, 2**32)
     assert capsys.readouterr().out == ""

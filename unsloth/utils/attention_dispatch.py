@@ -103,15 +103,14 @@ XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFOR
 #
 #     dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32), dtype = fp32)
 #
-# and indexes it with int32. Once that element count reaches 2**31 the indexing overflows and
-# the kernel faults with "CUDA error: an illegal memory access was encountered". That poisons
-# the CUDA context, so every later op in the process fails too and a training run dies with an
-# opaque error, hours in, far from the cause.
+# and indexes it with int32, so once that element count reaches 2**31 the kernel faults with
+# "CUDA error: an illegal memory access was encountered". That poisons the CUDA context, so the
+# run dies hours in, far from the cause.
 #
-# Measured on a B200 (bf16, 16 heads, head_dim 128, one flattened row, forward + backward), by
-# bisecting the number of documents in a packed row -- the last working document count and the
-# count at which (total_q + 128 * n_seqs) * n_heads * round_up(head_dim, 32) crosses 2**31
-# agree to within one document across every shape tried:
+# Measured on a B200 (bf16, one flattened row, forward + backward) by bisecting the document
+# count in a packed row: the last working count and the count at which
+# (total_q + 128 * n_seqs) * n_heads * round_up(head_dim, 32) crosses 2**31 agree to within one
+# document across every shape tried:
 #
 #   heads  head_dim  doc_len   predicted   last OK
 #      16       128        1        8128      8129
@@ -123,7 +122,7 @@ XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFOR
 #       4       128        1       32518     no failure up to 20000 (below the bound)
 #
 # Forward-only never allocates dq_accum and never faults (20000 documents ran clean), so the
-# guard is conditioned on a backward actually being possible. Plain SDPA is unaffected.
+# guard requires a backward to be possible. Plain SDPA is unaffected.
 _INT32_ELEMENTS = 2**31
 _VARLEN_INT32_GUARD_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
@@ -342,20 +341,15 @@ def run_attention(
     ):
         backend = SDPA
 
-    # Both remaining varlen-capable backends land in the same flash-attn 2 backward kernel:
-    # FLASH_VARLEN calls it directly, and XFORMERS dispatches a BlockDiagonal* bias to its
-    # flash-2 op. Guard both before the int32 overflow aborts the process (see
-    # _varlen_backward_overflows_int32 above). Pure integer arithmetic and no device sync.
+    # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both
+    # before the int32 overflow aborts the process. Integer arithmetic only, no device sync.
     if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
-        # Two terms, and both are needed.
-        #   Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v still yields a Q that
-        #     requires grad, so context.requires_grad alone would miss a real backward.
-        #   context.requires_grad: gradient checkpointing runs its FIRST forward under
-        #     no_grad (no dq_accum, no fault) and recomputes with grad on. Keying only on
-        #     the tensors would run xFormers in one pass and SDPA in the other, so the
-        #     activations the backward sees would not be the ones the loss came from. The
-        #     hidden state keeps requires_grad = True across both passes, which keeps the
-        #     backend choice identical. Genuine inference has it False under no_grad.
+        # Both terms are needed. Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v
+        # still yields a Q that requires grad, which context.requires_grad alone would miss.
+        # context.requires_grad: gradient checkpointing runs its FIRST forward under no_grad
+        # and recomputes with grad on, so keying only on the tensors would pick a different
+        # backend per pass and the backward would see activations the loss never came from.
+        # The hidden state keeps requires_grad = True across both passes; inference has it False.
         will_backward = context.requires_grad or (
             torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
         )
@@ -365,10 +359,9 @@ def run_attention(
             n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
             total_q = context.bsz * context.q_len
             if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
-                # SDPA cannot apply logit softcapping, so a softcapped model (Gemma 2) must
-                # NOT be quietly rerouted there: it would keep training, on wrong logits and
-                # wrong gradients, which is worse than the fault this guard exists to avoid.
-                # Stop with the two ways out instead.
+                # SDPA cannot apply logit softcapping, so rerouting a softcapped model (Gemma 2)
+                # would keep it training on wrong logits and gradients -- worse than the fault
+                # this guard avoids. Stop and name the ways out instead.
                 softcap = _configured_softcap(config)
                 if softcap:
                     raise RuntimeError(

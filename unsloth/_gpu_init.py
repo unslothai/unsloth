@@ -229,8 +229,8 @@ from .import_fixes import (
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 fix_xformers_performance_issue()
-# Must run AFTER fix_xformers_performance_issue (which rewrites xformers' cutlass.py on disk
-# and so must precede any xformers import) and BEFORE models/_utils.py imports xformers.ops.
+# Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk, so it
+# must precede any xformers import) and BEFORE models/_utils.py imports xformers.ops.
 fix_flash_attn_4_namespace_shadow()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
