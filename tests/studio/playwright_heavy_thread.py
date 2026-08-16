@@ -83,12 +83,25 @@ their own, and a SIGALRM does not help, because Playwright's sync API blocks the
 inside a greenlet and the exception lands in the driver rather than in the caller. The only
 bound that works is the process one, so drive the engines as separate invocations:
 
+    bounded() {                       # not `timeout`: macOS runners do not ship coreutils, and
+      local secs=$1; shift            # `timeout: command not found` fails the step instantly
+      "$@" & local pid=$!
+      ( sleep "$secs"; kill -TERM $pid 2>/dev/null; sleep 15; kill -KILL $pid 2>/dev/null ) &
+      local watcher=$!
+      wait $pid; local rc=$?
+      kill -TERM $watcher 2>/dev/null
+      return $rc
+    }
+    port=5215
     for engine in chromium webkit firefox; do
-      SMOKE_HEAVY_ENGINES=$engine SMOKE_LABEL=run-$engine timeout 1800 \\
-        python -u tests/studio/playwright_heavy_thread.py || echo "$engine did not finish"
+      SMOKE_HEAVY_ENGINES=$engine SMOKE_PORT=$port SMOKE_LABEL=run-$engine \\
+        bounded 1800 python -u tests/studio/playwright_heavy_thread.py \\
+        || echo "$engine did not finish"
+      port=$((port + 1))
     done
 
-One wedged engine then costs one engine's column instead of the whole matrix.
+One wedged engine then costs one engine's column instead of the whole matrix. Each invocation
+needs its own port: a killed run can leave its vite dev server holding the previous one.
 
 The dev server is deliberate and is a limitation to read the numbers against: React runs in
 development mode, nothing is minified, and vite serves unbundled modules. Absolute milliseconds
