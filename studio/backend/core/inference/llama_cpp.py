@@ -13855,19 +13855,18 @@ class LlamaCppBackend:
                 # launch, which reads it. Only the paravirtual reason is known this
                 # early; the fit probe below may add the automatic one, and it runs
                 # before every site that reads the charge.
-                # The user's own --no-mmproj-offload is the third reason, and it is
-                # known here too. Without it the planner charged ~1.4x the
-                # projector's bytes against a card the user had just told
-                # llama-server to keep it off, so a model that fits went out with
-                # `--fit on` and no layer plan -- strictly worse placement than
-                # the automatic pin gives for the identical argv. Read last-wins
-                # so a trailing --mmproj-offload takes it back.
+                # The user's own --no-mmproj-offload is a third reason the projector
+                # ends up on the CPU, and its token is readable here too -- but it is
+                # deliberately NOT folded in at this point. This early the GPU probe
+                # has not run, so `gpus` is unknown and the site cannot tell unified
+                # memory from a discrete card. Freeing the bytes here would therefore
+                # also free them on the one machine where the pin frees nothing (see
+                # the charge below). The hand-pin is honored further down instead,
+                # next to the automatic pin, once `gpus` has answered that question.
                 _mmproj_cpu_pinned = bool(
                     launch_mmproj_path
-                    and (
-                        (_paravirtual_cpu_forced and _paravirtual_mmproj_pinnable(server_caps))
-                        or _mmproj_offload_disabled(extra_args)
-                    )
+                    and _paravirtual_cpu_forced
+                    and _paravirtual_mmproj_pinnable(server_caps)
                 )
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
@@ -13878,9 +13877,10 @@ class LlamaCppBackend:
                     # memory, which a CPU-pinned projector still occupies. Dropping it
                     # there hands out a context sized against ~1.26 GB (the file plus
                     # the _MMPROJ_VRAM_SAFETY surcharge) that the machine does not
-                    # have, and the fit spends the difference on KV. The automatic pin
-                    # below is the one that genuinely frees VRAM, on a discrete device,
-                    # and it zeroes this itself once it has decided.
+                    # have, and the fit spends the difference on KV. The two pins that
+                    # genuinely free VRAM -- the automatic one and the user's own
+                    # --no-mmproj-offload -- both live below, behind a `gpus` check that
+                    # says the memory is discrete, and both zero this term themselves.
                     mmproj_size = (
                         self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
@@ -14515,6 +14515,43 @@ class LlamaCppBackend:
                         # dropped; restore the original cache type + extras (minus
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
+
+                    # The user pinned the projector themselves, and there IS a discrete
+                    # device for it to have left. Charging its bytes anyway priced ~1.4x
+                    # the file (the projector plus the _MMPROJ_VRAM_SAFETY surcharge)
+                    # against a card the user had just told llama-server to keep it off,
+                    # so a model that fits comfortably went out with `--fit on` and no
+                    # layer plan -- strictly worse placement than the identical argv
+                    # reached automatically, which zeroes the same term below.
+                    #
+                    # Deferred to here rather than answered at the charge site, where the
+                    # token is already readable: `gpus` is the whole question. It is empty
+                    # exactly on the machines where the pin frees nothing -- Metal, whose
+                    # memory is unified and whose budget (_apple_metal_memory_budget_bytes)
+                    # this same model_size feeds, and a CPU-only box where the projector
+                    # is in host RAM either way. Zeroing there hands out a context sized
+                    # against memory the machine does not have. Read last-wins, so a
+                    # trailing --mmproj-offload takes the placement back; and gated on the
+                    # capability like the automatic pin, since a build that conclusively
+                    # lacks the flag cannot honor the request.
+                    if (
+                        effective_is_vision
+                        and mmproj_size > 0
+                        and gpus
+                        and not _mmproj_cpu_pinned
+                        and _mmproj_offload_disabled(extra_args)
+                        and _paravirtual_mmproj_pinnable(server_caps)
+                    ):
+                        _mmproj_cpu_pinned = True
+                        # Everything downstream prices the projector off this, exactly
+                        # as it does for the automatic pin.
+                        mmproj_size = 0
+                        model_size = gguf_size
+                        logger.info(
+                            "Running the vision projector on the CPU as requested "
+                            "(--no-mmproj-offload in the advanced arguments); its VRAM "
+                            "is left for model layers."
+                        )
 
                     # The projector holds VRAM that would otherwise hold model layers.
                     # It runs once per image; layers run once per token, so when the
