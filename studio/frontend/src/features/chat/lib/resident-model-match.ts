@@ -36,6 +36,10 @@ export type ResidentModelStatus = {
  * A standalone `.gguf` is exempt from the variant comparison: it is one file with no quant to
  * choose between, and the backend labels the resident copy from its filename while the picker
  * row deliberately carries none.
+ *
+ * The public id is not enough on its own. Two snapshots of one cached repo report the same
+ * `active_model`, and the inventory repoints `load_id` at the newest, so a repo that advanced
+ * under a resident older snapshot would read as resident and keep serving stale weights.
  */
 export function residentModelMatchesPick(
   status: ResidentModelStatus,
@@ -55,9 +59,10 @@ export function residentModelMatchesPick(
   ) {
     return false;
   }
-  return (
-    residentModelIdMatches(status.active_model, pick.id, pick.loadPath) ||
-    modelIdsMatch(status.model_identifier, pick.id) ||
-    modelIdsMatch(status.model_identifier, pick.loadPath)
-  );
+  // the public id names every snapshot of a repo, so only the raw identifier settles which weights are resident, as LlamaCppBackend.matches_load_source
+  if (status.model_identifier) {
+    return modelIdsMatch(status.model_identifier, pick.loadPath ?? pick.id);
+  }
+  // a native-lease load withholds the raw path and reports its display label alone
+  return residentModelIdMatches(status.active_model, pick.id, pick.loadPath);
 }

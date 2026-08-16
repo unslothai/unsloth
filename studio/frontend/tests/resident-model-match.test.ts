@@ -102,6 +102,19 @@ test("a repo row still has to name the resident quant", () => {
   );
 });
 
+/** A repo that advanced to a newer snapshot reports the same public id for both, and the
+ * inventory repoints load_id at the newest, so matching on the id alone kept stale weights. */
+test("a newer snapshot of the resident repo is a real reload", () => {
+  assert.equal(
+    residentModelMatchesPick(pinnedStatus, {
+      id: REPO_ID,
+      loadPath: `${SNAPSHOT.slice(0, SNAPSHOT.lastIndexOf("\\"))}\\d4e5f6`,
+      ggufVariant: "Q4_K_M",
+    }),
+    false,
+  );
+});
+
 test("another model does not match the resident one", () => {
   assert.equal(
     residentModelMatchesPick(pinnedStatus, {
