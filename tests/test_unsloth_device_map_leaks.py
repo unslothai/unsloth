@@ -89,3 +89,44 @@ def test_the_planner_gets_the_same_ref_the_weights_do(name, expected):
                 f"{name}:{call.lineno} passes "
                 f"{ast.unparse(keyword.value)}, not the ref the load uses"
             )
+
+
+def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers():
+    """`FastSentenceTransformer.from_pretrained` has its own public `device_map`, and its
+    three `st_device` blocks pass it to `SentenceTransformer(device = ...)`, which ends in
+    `self.to(device)`:
+
+        RuntimeError: Expected one of cpu, cuda, ... device type at start of device string:
+        unsloth
+
+    It cannot plan either -- that same `.to()` would pull a split model back onto one card
+    -- so the sentinel has to be spent before the `st_device` blocks read it.
+    """
+    tree = ast.parse(_source("sentence_transformer.py"))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
+    )
+    assert any(
+        kw.arg == "device_map" for kw in function.args.kwonlyargs + function.args.args
+    ), "from_pretrained no longer takes device_map"
+
+    spends = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Compare)
+        and ast.unparse(node.left) == "device_map"
+        and any(ast.unparse(c) == "UNSLOTH_DEVICE_MAP" for c in node.comparators)
+    ]
+    assert spends, "the 'unsloth' sentinel reaches SentenceTransformer(device = ...) unresolved"
+
+    first_st_device = min(
+        node.lineno
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "st_device" for t in node.targets)
+    )
+    assert min(node.lineno for node in spends) < first_st_device, (
+        "the sentinel is spent after st_device is derived from device_map"
+    )

@@ -15,6 +15,7 @@
 import logging
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
+from .loader_utils import UNSLOTH_DEVICE_MAP
 from ._utils import (
     SUPPORTS_BFLOAT16,
     resolve_model_class,
@@ -1492,6 +1493,19 @@ class FastSentenceTransformer(FastModel):
                 "Unsloth: To use `FastSentenceTransformer`, you must install `sentence-transformers`.\n"
                 "Run `pip install sentence-transformers` to install it."
             )
+
+        # Every other leaf loader resolves the "unsloth" sentinel before it loads; this one
+        # cannot plan at all. The three `st_device` blocks below hand `device_map` straight to
+        # `SentenceTransformer(device = ...)`, which ends in `self.to(device)` and raises
+        # `RuntimeError: Expected one of cpu, cuda, ... device type at start of device string:
+        # unsloth`. Planning is no use here either: that same `.to()` would pull a split model
+        # back onto one card. So decline, exactly as resolve_unsloth_device_map does.
+        if device_map == UNSLOTH_DEVICE_MAP:
+            print(
+                "Unsloth: Not planning a device map; SentenceTransformer moves the assembled "
+                "model onto a single device. Using `sequential`."
+            )
+            device_map = "sequential"
 
         # Validate the load modes BEFORE the prefetch so a bad config fails without downloading weights.
         # Guard on not for_inference: that branch below never used these flags.
