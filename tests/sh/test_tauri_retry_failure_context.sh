@@ -267,7 +267,7 @@ echo "  PASS: Unix setup routes explicit exits through setup_fail"
 # Prove the exception behaves as claimed: a stubbed pinned-uv install, interrupted for real in
 # Tauri mode, must report 128+signal, leave no temporaries behind, and print no cancel failure.
 _signal_dir=$(mktemp -d)
-trap 'rm -f "$_stdout_file" "$_stderr_file"; rm -rf "$_signal_dir"' EXIT
+trap 'rm -f "$_stdout_file" "$_stderr_file" "$_test_attempt_file"; rm -rf "$_signal_dir"' EXIT
 {
     sed -n '/^_setup_uv_cleanup_temporaries()/,/^}/p' "$SETUP_SH"
     sed -n '/^_setup_uv_on_signal()/,/^}/p' "$SETUP_SH"
