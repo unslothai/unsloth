@@ -361,6 +361,9 @@ class ChatPresetLoadConfig(BaseModel):
     nBatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     nUbatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     tensorParallel: Optional[bool] = None
+    # Same reason as the batch pair above: the normalizer emits this key on every
+    # preset, and extra="forbid" would 400 the whole save without it.
+    disableVision: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
