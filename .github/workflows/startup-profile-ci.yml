@@ -9,8 +9,12 @@
 # the server can bind, dominated by eager module-level imports pulled in by routes:
 # torch ~1.9s self, unsloth_zoo ~0.8s, routes ~0.6s, transformers ~0.5s.
 #
-# Not a gate yet: --max-healthz-seconds exists, but a budget should come from
-# observed numbers rather than a guess.
+# Now a gate. The budgets below come from observed medians on this workflow rather
+# than a guess, set loose enough that runner noise cannot fail a PR and tight enough
+# to catch a regression of the size the ones already found were: the pandas edge in
+# routes.data_recipe.seed was 2.2s of 7.3s on Windows, torch was about 5s before that.
+# Raise a budget in the same PR as the import that needed it, with the run that shows
+# it, exactly as with the frontend startup budget.
 
 name: Startup profile
 
@@ -60,11 +64,19 @@ jobs:
     name: startup ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        # Budgets are medians observed on this workflow, rounded up with room for
+        # runner variance. Observed at 17363f8a2: ubuntu 2.99s, macos 3.33s,
+        # windows 5.21s.
+        include:
+          - os: ubuntu-latest
+            max_healthz_seconds: '5.0'
+          - os: macos-15
+            max_healthz_seconds: '6.0'
+          - os: windows-latest
+            max_healthz_seconds: '9.0'
 
     env:
       UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
@@ -94,6 +106,9 @@ jobs:
       - name: Profile startup
         shell: bash
         run: |
+          # Load-bearing now that the budget is a gate: the profiler's exit code
+          # reaches this step only through the pipe into tee.
+          set -o pipefail
           BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
           [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/unsloth.exe"
           [ -x "$BIN" ] || BIN=""
@@ -105,6 +120,7 @@ jobs:
             --python "$PY" \
             ${BIN:+--bin "$BIN"} \
             --repeats "${{ inputs.repeats || '3' }}" \
+            --max-healthz-seconds "${{ matrix.max_healthz_seconds }}" \
             --json "startup-${{ matrix.os }}.json" 2>&1 | tee logs/profile.log
 
       - name: Summary

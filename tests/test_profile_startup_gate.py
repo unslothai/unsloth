@@ -241,3 +241,47 @@ def test_terminate_tree_posix_uses_terminate():
     proc = _Proc()
     mod._terminate_tree(proc)
     assert proc.terminated
+
+
+# ---------------------------------------------------------------------------
+# The budget is only a gate if the workflow asks for it and can see it fail
+# ---------------------------------------------------------------------------
+
+
+def _profile_job() -> dict:
+    wf = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    return wf["jobs"]["profile"]
+
+
+def _profile_step() -> dict:
+    for step in _profile_job()["steps"]:
+        if step.get("name") == "Profile startup":
+            return step
+    raise AssertionError("no 'Profile startup' step in the workflow")
+
+
+def test_every_platform_carries_a_budget():
+    """A matrix entry without one would profile and assert nothing."""
+    entries = _profile_job()["strategy"]["matrix"]["include"]
+    assert entries, "the matrix no longer lists platforms by include"
+    for entry in entries:
+        budget = entry.get("max_healthz_seconds")
+        assert budget, f"{entry.get('os')} has no max_healthz_seconds"
+        assert float(budget) > 0
+
+
+def test_the_profile_step_passes_the_budget():
+    assert "--max-healthz-seconds" in _profile_step()["run"]
+
+
+def test_the_profile_step_sets_pipefail():
+    """The profiler pipes into tee, so without pipefail the step reports tee's 0
+    and a blown budget passes silently."""
+    run = _profile_step()["run"]
+    assert "| tee" in run, "no pipe left; this guard can go"
+    assert "set -o pipefail" in run
+
+
+def test_the_job_is_not_advisory():
+    """continue-on-error would let the gate fail without failing the check."""
+    assert _profile_job().get("continue-on-error") is not True
