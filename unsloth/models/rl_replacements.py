@@ -40,6 +40,13 @@ from trl import __version__ as trl_version_raw
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.log import logger
 from unsloth_zoo.device_type import device_synchronize
+try:
+    # The device map planner sizes the head's card from the same three values,
+    # so both read them here rather than each deriving its own.
+    from unsloth_zoo.device_map_planner import detect_logit_transforms
+except ImportError:
+    # Older unsloth_zoo. Fall back to reading the fields directly.
+    detect_logit_transforms = None
 import importlib.util
 from ..device_type import (
     is_hip,
@@ -1718,13 +1725,19 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             temperature = self.temperature
             model_config = _unsloth_get_model_config(model)
-            logit_softcapping = _unsloth_get_final_logit_softcapping(model)
-            logit_scale_multiply = getattr(model_config, "logit_scale", 0)
-            if logit_scale_multiply is None:
-                logit_scale_multiply = 0
-            logit_scale_divide = getattr(model_config, "logits_scaling", 0)
-            if logit_scale_divide is None:
-                logit_scale_divide = 0
+            if detect_logit_transforms is not None:
+                _transforms = detect_logit_transforms(model)
+                logit_softcapping = _transforms["logit_softcapping"]
+                logit_scale_multiply = _transforms["logit_scale_multiply"]
+                logit_scale_divide = _transforms["logit_scale_divide"]
+            else:
+                logit_softcapping = _unsloth_get_final_logit_softcapping(model)
+                logit_scale_multiply = getattr(model_config, "logit_scale", 0)
+                if logit_scale_multiply is None:
+                    logit_scale_multiply = 0
+                logit_scale_divide = getattr(model_config, "logits_scaling", 0)
+                if logit_scale_divide is None:
+                    logit_scale_divide = 0
 
             zipped_inputs = zip(
                 input_ids_chunks,

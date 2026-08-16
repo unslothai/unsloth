@@ -61,6 +61,12 @@ from unsloth_zoo.hf_utils import (
     fix_lora_auto_mapping,
 )
 from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+try:
+    # The same three values the device map planner sizes the head's card from.
+    from unsloth_zoo.device_map_planner import detect_logit_transforms
+except ImportError:
+    # Older unsloth_zoo. Fall back to reading the fields directly.
+    detect_logit_transforms = None
 from ..device_type import (
     is_hip,
     get_device_type,
@@ -1522,15 +1528,26 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
-        logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
-        logit_scaling = getattr(self.config, "logit_scale", 0)
-        if self.config.model_type == "granite":
-            # granite divides by logits_scaling (16) unlike cohere which multiplies by 0.125.
-            # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
-            # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
-            logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
-        elif self.config.model_type == "falcon_h1":
-            logit_scaling = self.config.lm_head_multiplier
+        # Which field carries the scale is per family: cohere multiplies by
+        # logit_scale (0.125), granite divides by logits_scaling (16), falcon_h1
+        # multiplies by lm_head_multiplier. detect_logit_transforms knows all of
+        # them, and the device map planner sizes the head's card from the same
+        # answer, so a new architecture is taught once instead of twice.
+        # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
+        # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
+        if detect_logit_transforms is not None:
+            _transforms = detect_logit_transforms(self.config)
+            logit_softcapping = _transforms["logit_softcapping"]
+            logit_scaling = _transforms["logit_scale_multiply"]
+            if not logit_scaling and _transforms["logit_scale_divide"]:
+                logit_scaling = 1 / _transforms["logit_scale_divide"]
+        else:
+            logit_softcapping = getattr(self.config, "final_logit_softcapping", 0)
+            logit_scaling = getattr(self.config, "logit_scale", 0)
+            if self.config.model_type == "granite":
+                logit_scaling = 1 / getattr(self.config, "logits_scaling", 1)
+            elif self.config.model_type == "falcon_h1":
+                logit_scaling = self.config.lm_head_multiplier
 
         if labels is not None:
             shift_logits = logits
