@@ -55,8 +55,17 @@ pub fn save_config(app_config_dir: &Path, config: &PillConfig) -> Result<(), Str
         .map_err(|e| format!("Failed to create config dir: {e}"))?;
     let raw = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize pill config: {e}"))?;
-    fs::write(config_path(app_config_dir), raw)
-        .map_err(|e| format!("Failed to write pill config: {e}"))
+    // Staged through a sibling temp file and renamed over the destination, the
+    // same way the backend owner file is written. fs::write truncates first, so
+    // a full disk or an interrupted write leaves a partial file, and
+    // load_config reads unparseable JSON as the default: a half-written save
+    // would silently discard the persisted configuration on the next launch.
+    let tmp = app_config_dir.join(format!(".selection-pill.{}.tmp", std::process::id()));
+    fs::write(&tmp, raw).map_err(|e| format!("Failed to write pill config: {e}"))?;
+    fs::rename(&tmp, config_path(app_config_dir)).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("Failed to replace pill config: {e}")
+    })
 }
 
 pub fn save_for_app(app: &tauri::AppHandle, config: &PillConfig) -> Result<(), String> {
@@ -95,6 +104,15 @@ mod tests {
         };
         save_config(&dir, &config).unwrap();
         assert_eq!(load_config(&dir), config);
+        // The save stages through a temp file; a successful one must leave none
+        // behind, or the config dir accumulates a file per process.
+        let strays: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "temp files left behind: {strays:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 
