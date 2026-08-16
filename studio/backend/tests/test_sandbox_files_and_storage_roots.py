@@ -13,6 +13,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2274,7 +2275,20 @@ def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
         "a chat moved into a project still owns the sandbox it wrote before the move, "
         "so the switch must not be gated on project membership"
     )
-    assert '"run"' in body, "a training run has no sandbox and must stay excluded"
+    # Negative checks alone did not establish this. `return target.kind === "run";` -- the exact
+    # inversion, hiding the switch for every chat and project -- mentions "run", mentions no
+    # projectId, and contains neither prohibited expression, so it passed all of them. Pin the
+    # DIRECTION: run is the kind that is excluded, never the one that is included.
+    assert re.search(r'kind\s*!==\s*"run"', body) or all(
+        f'"{kind}"' in body for kind in ("chat", "chats", "project", "projects")
+    ), (
+        "the body must either exclude run by negation or name every kind that keeps its sandbox; "
+        "as written it does neither, so it cannot say which targets reach the switch"
+    )
+    assert not re.search(r'return\s+target\.kind\s*===\s*"run"\s*;', body), (
+        "inverted: this returns the delete switch for training runs only, and hides it for "
+        "every chat and project"
+    )
     for kind in ('"chat"', '"project"'):
         assert (
             f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body

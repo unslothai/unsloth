@@ -49,6 +49,26 @@ def _read_backend(rel: str) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def _brace_matched_body(text: str, declaration: str) -> str:
+    """The body of `declaration`, ending at ITS closing brace rather than at end of file.
+
+    Splitting on a declaration and keeping the remainder looks like scoping but is not: the slice
+    runs to EOF, so an ordering assertion inside it is still satisfied by code that has been moved
+    out of the callback entirely. Match braces from the `{` that opens the body.
+    """
+    start = text.index(declaration)
+    open_brace = text.index("{", text.index("=>", start))
+    depth = 0
+    for i in range(open_brace, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace : i + 1]
+    raise AssertionError(f"unbalanced braces reading {declaration!r}")
+
+
 def _override_lookup_candidates(*args, **kwargs) -> list[str]:
     """The real override-key ladder, imported rather than grepped out of inference.py: #8702 moved
     it to another module unchanged and took four contract tests red with it. The module is
@@ -2027,9 +2047,7 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     # Scoped to selectWithConfig, because the hub auto-load path takes the same snapshot above the
     # only applyModelLoadConfigToRuntime call and would satisfy a whole-file comparison on its own.
     picker = " ".join(_read("features/chat/chat-page.tsx").split())
-    handoff = picker.split("const selectWithConfig = async (", 1)
-    assert len(handoff) == 2, "selectWithConfig is the handoff this test is about"
-    handoff = handoff[1]
+    handoff = _brace_matched_body(picker, "const selectWithConfig = async (")
     assert (
         "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, });"
         in handoff

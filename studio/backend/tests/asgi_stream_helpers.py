@@ -32,12 +32,18 @@ async def wait_for_frame(
         done, _ = await asyncio.wait(
             {waiter, task}, timeout = timeout, return_when = asyncio.FIRST_COMPLETED
         )
-        if waiter in done:
-            return
+        # The task is checked FIRST, even when the frame did go out. A send() that sets the event
+        # and then raises leaves both futures done, and returning on the frame there would drop the
+        # exception into the caller's gather(return_exceptions = True) -- the exact silence this
+        # helper exists to break.
         if task in done:
             exc = task.exception()
             if exc is not None:
-                raise AssertionError(f"the request failed before {what} was sent: {exc!r}") from exc
+                when = "after" if event.is_set() else "before"
+                raise AssertionError(f"the request failed {when} {what} was sent: {exc!r}") from exc
+        if waiter in done:
+            return
+        if task in done:
             raise AssertionError(f"the request completed without sending {what}")
         raise AssertionError(
             f"timed out after {timeout}s waiting for {what}, and the request task is still "
