@@ -1059,6 +1059,18 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "None when the requested strategy engaged or was not requested."
         ),
     )
+    spec_fallback_binary_changed: Optional[bool] = Field(
+        None,
+        description = (
+            "For a 'binary_no_mtp' / 'binary_outdated' stand-down only: whether a "
+            "different llama-server is installed than the live one launched from, "
+            "which is the necessary condition in "
+            "LlamaCppBackend.spec_binary_fallback_can_retry. False -> an identical "
+            "/load cannot repair the drafter and dedupes, so a client need not "
+            "reload for it. None for every other reason, and on a backend too old "
+            "to report it."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (

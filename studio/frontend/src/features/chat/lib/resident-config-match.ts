@@ -24,6 +24,7 @@ type ResidentRuntime = Pick<
   | "gpu_layers"
   | "n_cpu_moe"
   | "requested_gpu_ids"
+  | "gpu_ids"
   | "tensor_split"
   | "cpu_fallback_reason"
 >;
@@ -134,6 +135,9 @@ const RETRYABLE_SPEC_FALLBACKS = new Set([
   "binary_outdated",
 ]);
 
+/** The two of those the user is told to fix by updating llama.cpp. */
+const BINARY_SPEC_FALLBACKS = new Set(["binary_no_mtp", "binary_outdated"]);
+
 /** The modes the backend's retry arms are guarded on; anything else asked for no drafter. */
 const SPECULATIVE_MODES = new Set([
   "auto",
@@ -155,12 +159,26 @@ const SPECULATIVE_MODES = new Set([
  * which returns before any teardown.
  */
 export function residentSpeculativeNeedsRepair(
-  status: Pick<InferenceStatusResponse, "spec_fallback_reason">,
+  status: Pick<
+    InferenceStatusResponse,
+    "spec_fallback_reason" | "spec_fallback_binary_changed"
+  >,
   resolvedSpeculativeType: string | null,
 ): boolean {
-  return (
-    RETRYABLE_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") &&
-    SPECULATIVE_MODES.has(resolvedSpeculativeType ?? "auto")
+  if (
+    !RETRYABLE_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") ||
+    !SPECULATIVE_MODES.has(resolvedSpeculativeType ?? "auto")
+  ) {
+    return false;
+  }
+  // A binary stand-down repairs only once a different llama-server is installed, which is
+  // the necessary condition in spec_binary_fallback_can_retry. Without that the reload
+  // dedupes and the prompt was for nothing. Only an explicit false settles it: a backend
+  // too old to report it keeps the coarser answer rather than suppress a real repair, and
+  // the field says nothing about a stand-down that was never about the binary.
+  return !(
+    BINARY_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") &&
+    status.spec_fallback_binary_changed === false
   );
 }
 
@@ -275,14 +293,21 @@ const SETTING_CHECKS: SettingCheck[] = [
     // that was placed on a chosen GPU. Reconciled first, since that is what /load sends.
     placement: true,
     pinned: () => true,
-    agrees: (c, s, standing) =>
-      sameGpuSet(
-        standing.reconcileGpuIds(
-          c.selectedGpuIds ?? null,
-          c.selectedGpuIndexKind,
-        ),
-        s.requested_gpu_ids,
-      ),
+    agrees: (c, s, standing) => {
+      const pick = standing.reconcileGpuIds(
+        c.selectedGpuIds ?? null,
+        c.selectedGpuIndexKind,
+      );
+      if (sameGpuSet(pick, s.requested_gpu_ids)) {
+        return true;
+      }
+      // Either pool, as matches_gpu_ids accepts either: fitting may narrow the request to
+      // the smallest subset that holds the model, and asking for that subset does not
+      // reload. Comparing only the raw request prompted for a load that dedupes. Guarded on
+      // a non-empty echo, since an absent one is no placement rather than Automatic, and
+      // reading it as Automatic would make an unpinned pick match every pinned server.
+      return Boolean(s.gpu_ids?.length) && sameGpuSet(pick, s.gpu_ids);
+    },
   },
   {
     // The split is placement the config cannot carry: the applier clears splitRatio, so a

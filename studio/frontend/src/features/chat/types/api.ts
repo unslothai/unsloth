@@ -379,6 +379,8 @@ export interface InferenceStatusResponse {
    */
   spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
+  /** Only for a binary stand-down: whether a different llama-server is installed now. */
+  spec_fallback_binary_changed?: boolean | null;
 }
 
 export interface ApiMonitorEntry {

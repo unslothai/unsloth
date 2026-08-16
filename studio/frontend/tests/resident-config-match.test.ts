@@ -532,6 +532,95 @@ test("an unset slot count is the server default, not null", () => {
   );
 });
 
+test("a pick naming the fitted subset of a wider pool is not a reload", () => {
+  // matches_gpu_ids accepts the request or the effective pool: fitting narrows [0, 1] to
+  // [0] when that is the smallest subset holding the model, and asking for [0] dedupes.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_gpu_ids: [0, 1], gpu_ids: [0] },
+      { ...BLANK, selectedGpuIds: [0] },
+    ),
+    true,
+  );
+  // The raw request still answers for itself.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_gpu_ids: [0, 1], gpu_ids: [0] },
+      { ...BLANK, selectedGpuIds: [0, 1] },
+    ),
+    true,
+  );
+  // A pool neither of them names is still a reload.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_gpu_ids: [0, 1], gpu_ids: [0] },
+      { ...BLANK, selectedGpuIds: [1] },
+    ),
+    false,
+  );
+  // An absent echo is no placement, not Automatic: reading it as Automatic would let an
+  // unpinned pick adopt every pinned server.
+  assert.equal(
+    matches({ ...DEFAULTS, requested_gpu_ids: [0, 1] }, BLANK),
+    false,
+  );
+});
+
+test("a binary stand-down that cannot repair does not decline the shortcut", () => {
+  // spec_binary_fallback_can_retry needs a different llama-server installed before an
+  // identical /load repairs anything; without one it dedupes and the prompt was for nothing.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "binary_no_mtp",
+        spec_fallback_binary_changed: false,
+      },
+      "auto",
+    ),
+    false,
+  );
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "binary_outdated",
+        spec_fallback_binary_changed: false,
+      },
+      "mtp",
+    ),
+    false,
+  );
+  // Updated since launch: the repair the update was for must still go through.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "binary_no_mtp",
+        spec_fallback_binary_changed: true,
+      },
+      "auto",
+    ),
+    true,
+  );
+  // A backend too old to report it keeps the coarser answer rather than suppress a repair.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "binary_no_mtp" },
+      "auto",
+    ),
+    true,
+  );
+  // The flag says nothing about a reason that was never about the binary.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "drafter_not_found",
+        spec_fallback_binary_changed: false,
+      },
+      "auto",
+    ),
+    true,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.

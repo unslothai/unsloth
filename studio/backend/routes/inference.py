@@ -6992,6 +6992,28 @@ class _LoadPlacement(NamedTuple):
     diffusion_kind: Optional[bool]
 
 
+def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
+    """The cheap half of ``spec_binary_fallback_can_retry``, for the status poll.
+
+    Only the two binary stand-downs can be repaired by an identical reload, and only
+    once a different llama-server is installed, so a client that reloads for any
+    ``binary_*`` reason prompts to stop running chats for a load that would dedupe.
+    Answered only for those reasons: this is polled from first paint, and the binary
+    lookup has no business running on every poll of a healthy runtime. The capability
+    probe stays out of it, being a subprocess; a client declining on True at most
+    spends one round trip through already_loaded.
+    """
+    if getattr(llama_backend, "spec_fallback_reason", None) not in (
+        "binary_no_mtp",
+        "binary_outdated",
+    ):
+        return None
+    try:
+        return bool(llama_backend._binary_changed_since_launch())
+    except Exception:
+        return None
+
+
 class _NoParallelRequest:
     """A stand-in for a load that named no slot count, for reading the default."""
 
@@ -10505,6 +10527,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
+                spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
                 spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
