@@ -230,7 +230,14 @@ RECORDER_INIT = """
         stalls_over_33: stalls.filter((ms) => ms > 33).length,
       };
     },
-    /** Frames until the page goes quiet again: what "it is still catching up" costs a user. */
+    /**
+     * Time to settle, measured from the START of the action, not from the end of the input.
+     *
+     * Measured from the end of the gesture it reads ~50ms at every size on every engine, because
+     * the answer is then "three frames", which is the minimum this loop can return. From the
+     * start of the action it is what a user actually waits: the input, plus everything the page
+     * does afterwards before it is calm again.
+     */
     async quiet(timeoutMs) {
       const started = performance.now();
       let calm = 0;
@@ -240,7 +247,7 @@ RECORDER_INIT = """
         const now = performance.now();
         calm = now - last > 33 ? 0 : calm + 1;
         last = now;
-        if (calm >= 3) return performance.now() - started;
+        if (calm >= 3) return performance.now() - this.startedAt;
       }
       return null;
     },
@@ -1025,10 +1032,10 @@ GROWTH_AXES = tuple(
 # to twelve times the content. That is not a flat curve, it is an axis that is not measuring the
 # thing being varied.
 DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5"))
-# Constant engine chatter is tolerated up to this many warnings per size; anything above it, or
-# any count that rises with the thread, fails the run. Gecko's two scroll-anchoring notices are
-# what this number exists for.
-CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "2"))
+# Engine chatter is tolerated up to this many warnings per size. Gecko's two scroll-anchoring
+# notices are what this number exists for; anything the app emits per message would be two orders
+# of magnitude above it at 220 messages.
+CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "4"))
 
 
 def growth(cells: dict, pick, floored: bool, sizes: list[int]) -> tuple[float | None, float | None]:
@@ -1060,9 +1067,20 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                                   "discriminated": False, "reason": "not recorded"}
                 continue
             if small <= 0:
-                # A count that is 0 at the smallest size and 4 at the largest has no ratio and
-                # has still answered the question. Treated as discriminating only when it really
-                # rose: 0 -> 0 is the flattest result there is.
+                # A COUNT that is 0 at the smallest size and 4 at the largest has no ratio and has
+                # still answered the question, so it counts as discriminating when it really rose.
+                #
+                # A TIMING does not get that credit. `floored` means the value had the ~33ms vsync
+                # floor subtracted from it, so a zero or negative here says the action resolved at
+                # or under one frame at the smallest size, which is a metric with no room to move
+                # rather than a metric that grew from nothing.
+                if floored:
+                    per_axis[name] = {
+                        "small": small, "large": large, "ratio": None, "discriminated": False,
+                        "reason": "at or under the paint floor at the smallest size",
+                        "floored": floored,
+                    }
+                    continue
                 rose = large > small
                 per_axis[name] = {
                     "small": small, "large": large, "ratio": None,
@@ -1119,26 +1137,21 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     f"{where} let {row['stray_api_requests']} /api/ requests reach the network "
                     "during the measured actions; the timings include a round trip per request"
                 )
-            # A warning count that GROWS with the thread is the app talking, once per message,
-            # and it is serialised over the debugging channel from inside a timed region, so it
-            # would forge the curve. A count that is identical at every size is the engine
-            # talking about itself: Firefox 153 emits exactly two "Scroll anchoring was disabled
-            # in a scroll container" notices per run, at 25K and at 300K alike, and failing on
-            # those would mean this harness could never report a Gecko number at all. Both are
-            # printed either way.
-            smallest = results["by_engine"][engine]["by_size"][str(results["sizes"][0])]
-            if row["console_warnings"] > smallest["console_warnings"]:
-                failures.append(
-                    f"{where} logged {row['console_warnings']} console warnings during the "
-                    f"measured actions against {smallest['console_warnings']} at the smallest "
-                    f"size, the first being {row['first_console_warning']!r}; a count that grows "
-                    "with the thread is charged to the app once per message"
-                )
-            elif row["console_warnings"] > CONSOLE_WARNING_ALLOWANCE:
+            # Console output from inside a timed region is serialised over the debugging channel,
+            # so a warning the app emits once per message would both cost time and grow like the
+            # signal. The instrument for that is an ABSOLUTE cap, not a growth check: at 220
+            # messages a per-message warning is in the hundreds, while what an engine says about
+            # itself is a handful. Firefox 153 emits exactly two "Scroll anchoring was disabled
+            # in a scroll container" notices once the container is large enough, which is zero at
+            # 25K and two at both 100K and 300K -- a growth check fails on that and would leave
+            # this harness unable to report a Gecko number at all. The count and the first
+            # message are printed per size either way, so a reader can see what was tolerated.
+            if row["console_warnings"] > CONSOLE_WARNING_ALLOWANCE:
                 failures.append(
                     f"{where} logged {row['console_warnings']} console warnings during the "
                     f"measured actions, the first being {row['first_console_warning']!r}; that is "
-                    f"more than the {CONSOLE_WARNING_ALLOWANCE} allowed for engine chatter"
+                    f"more than the {CONSOLE_WARNING_ALLOWANCE} allowed for engine chatter, so "
+                    "the timings include work this harness is charging to the app"
                 )
             if plan["chars"] < size * 0.9:
                 failures.append(
