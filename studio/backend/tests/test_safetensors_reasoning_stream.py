@@ -25,6 +25,56 @@ from routes.inference import (
     _strip_tool_xml_for_display,
 )
 
+import importlib  # noqa: E402
+import types  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the backend pytest job does not install.
+
+    Same helper and reason as test_audio_type_inconclusive.py and
+    test_trainer_stdout_quiet.py: ``core.inference.inference`` imports ``unsloth``
+    (and through it ``unsloth_zoo``) at module scope, while the pytest matrix in
+    studio-backend-ci.yml installs studio.txt plus torch and transformers and
+    deliberately stops there. A real install is left alone.
+
+    This file used to have no stub at all. The three tests below reach
+    ``core.inference.inference`` through ``pytest.importorskip`` inside the test
+    body, which is lazy enough that the module-scope guard in
+    test_backend_tests_stub_heavy_imports.py does not look at it, so the omission
+    was invisible. They passed anyway, because some earlier file in the same
+    session had installed this stub and left the imported module in
+    ``sys.modules`` for them. Run this file first, or on its own, and the import
+    raises ``ImportError: Please install unsloth_zoo``, which pytest 8.2+ no
+    longer converts to a skip (only ``ModuleNotFoundError`` does that), so it is
+    a hard failure rather than the intended skip.
+
+    Stubbing here rather than switching to skipif keeps the coverage: the module
+    under test is the real ``core.inference.inference``, and only ``unsloth``
+    itself is faked.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
 
 _THINK_TPL = "...<think>...</think>..."
 _ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
