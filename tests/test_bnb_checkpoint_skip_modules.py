@@ -67,6 +67,7 @@ class _Config:
 
 # ------------------------------- rule one: nobody rewrites the checkpoint's own list
 
+
 def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
     """The regression this file exists for.
 
@@ -90,9 +91,9 @@ def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
             ), f"vision.py writes the checkpoint's skip list at line {node.lineno}: {written}"
         if isinstance(node.targets[0], ast.Subscript):
             written = ast.unparse(node.targets[0])
-            assert "llm_int8_skip_modules" not in written, (
-                f"vision.py writes a skip list by subscript at line {node.lineno}"
-            )
+            assert (
+                "llm_int8_skip_modules" not in written
+            ), f"vision.py writes a skip list by subscript at line {node.lineno}"
 
 
 def test_the_runtime_skip_list_is_still_built_for_on_the_fly_quantization():
@@ -122,14 +123,15 @@ def test_the_bnb_config_chain_is_still_one_piece():
             else:
                 break
         assert "load_in_8bit" in tests and "load_in_16bit" in tests, tests
-        assert any("full_finetuning" in test for test in tests), (
-            f"the 16bit-LoRA notice fell out of the chain: {tests}"
-        )
+        assert any(
+            "full_finetuning" in test for test in tests
+        ), f"the 16bit-LoRA notice fell out of the chain: {tests}"
         return
     raise AssertionError("could not find the bnb_config if/elif chain in vision.py")
 
 
 # ------------------------------------ rule two: the saved config matches the load
+
 
 def test_the_stamp_keeps_the_list_the_load_actually_used():
     """A dynamic-quant repo's per-layer entries have to survive into the saved config, or

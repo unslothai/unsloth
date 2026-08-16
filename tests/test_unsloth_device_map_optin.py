@@ -27,7 +27,11 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 
 
 class _FakeCuda:
-    def __init__(self, count, free = None):
+    def __init__(
+        self,
+        count,
+        free = None,
+    ):
         self._count = count
         self._free = free or {}
 
@@ -39,8 +43,14 @@ class _FakeCuda:
         return (self._free.get(index, 8 * 2**30), 16 * 2**30)
 
 
-def _load(*, devices = 2, device_type = "cuda", free = None, planner = None,
-          distributed = False):
+def _load(
+    *,
+    devices = 2,
+    device_type = "cuda",
+    free = None,
+    planner = None,
+    distributed = False,
+):
     """Rebuild the two functions over a fabricated CUDA and unsloth_zoo."""
     ns = {
         "os": os,
@@ -54,9 +64,10 @@ def _load(*, devices = 2, device_type = "cuda", free = None, planner = None,
             "resolve_unsloth_device_map",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
-        elif isinstance(node, ast.Assign) and getattr(
-            node.targets[0], "id", None
-        ) == "UNSLOTH_DEVICE_MAP":
+        elif (
+            isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", None) == "UNSLOTH_DEVICE_MAP"
+        ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
     if planner is not None:
@@ -76,13 +87,17 @@ class _Plan:
 
 # ------------------------------------------------- what an existing caller still gets
 
-@pytest.mark.parametrize("device_map", [
-    "sequential",       # today's default
-    "auto",             # accelerate's, which this must never reinterpret
-    "balanced",         # what Unsloth Studio passes
-    "balanced_low_0",
-    None,               # a single device
-])
+
+@pytest.mark.parametrize(
+    "device_map",
+    [
+        "sequential",  # today's default
+        "auto",  # accelerate's, which this must never reinterpret
+        "balanced",  # what Unsloth Studio passes
+        "balanced_low_0",
+        None,  # a single device
+    ],
+)
 def test_every_existing_device_map_is_returned_untouched(device_map):
     """The whole opt-in claim in one test. If any of these changed, every multi-GPU user
     who never asked for planning would silently get a different placement."""
@@ -111,10 +126,14 @@ def test_the_env_var_only_upgrades_the_default(monkeypatch):
 
 # ------------------------------------------------------- where planning cannot apply
 
-@pytest.mark.parametrize("kwargs,why", [
-    ({"fast_inference": True}, "vLLM places its own weights"),
-    ({"full_finetuning": True}, "no bnb layout to plan"),
-])
+
+@pytest.mark.parametrize(
+    "kwargs,why",
+    [
+        ({"fast_inference": True}, "vLLM places its own weights"),
+        ({"full_finetuning": True}, "no bnb layout to plan"),
+    ],
+)
 def test_planning_is_declined_where_something_else_owns_placement(kwargs, why):
     ns = _load(planner = lambda *a, **k: pytest.fail(f"must not plan: {why}"))
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
@@ -128,8 +147,9 @@ def test_a_distributed_launch_never_gets_an_intra_model_split():
     only when the load is quantized, so a 16-bit distributed run would still arrive here
     holding "unsloth". Hence the gate lives here too.
     """
-    ns = _load(distributed = True,
-               planner = lambda *a, **k: pytest.fail("planned inside a distributed launch"))
+    ns = _load(
+        distributed = True, planner = lambda *a, **k: pytest.fail("planned inside a distributed launch")
+    )
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
 
@@ -137,16 +157,17 @@ def test_a_distributed_launch_never_gets_an_intra_model_split():
 def test_a_non_cuda_backend_never_reaches_the_cuda_planner(device_type):
     """The planner sizes cards through torch.cuda. On XPU or MPS that is either absent or
     lying, so falling back beats planning against numbers from the wrong device."""
-    ns = _load(device_type = device_type,
-               planner = lambda *a, **k: pytest.fail("CUDA planner on a non-CUDA backend"))
+    ns = _load(
+        device_type = device_type,
+        planner = lambda *a, **k: pytest.fail("CUDA planner on a non-CUDA backend"),
+    )
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
 
 @pytest.mark.parametrize("devices", [0, 1])
 def test_one_gpu_or_none_falls_back_silently(devices):
     """Not a failure, just nothing to split across, so it prints nothing."""
-    ns = _load(devices = devices,
-               planner = lambda *a, **k: pytest.fail("nothing to plan across"))
+    ns = _load(devices = devices, planner = lambda *a, **k: pytest.fail("nothing to plan across"))
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
 
@@ -157,8 +178,10 @@ def test_a_planner_that_declines_falls_back():
 
 def test_a_planner_that_raises_falls_back_rather_than_failing_the_load():
     """A model that loads the old way beats one that will not load at all."""
+
     def _boom(*a, **k):
         raise RuntimeError("hub unreachable")
+
     ns = _load(planner = _boom)
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
@@ -166,6 +189,7 @@ def test_a_planner_that_raises_falls_back_rather_than_failing_the_load():
 def test_an_infeasible_plan_is_raised_not_swallowed():
     """The planner raises this instead of spilling a bitsandbytes model to CPU. Turning it
     back into "sequential" would hand the user an OOM in place of the diagnosis."""
+
     class DeviceMapInfeasible(RuntimeError):
         pass
 
@@ -179,6 +203,7 @@ def test_an_infeasible_plan_is_raised_not_swallowed():
 
 # ------------------------------------------------------------- when it does plan
 
+
 def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
     seen = {}
 
@@ -188,7 +213,9 @@ def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
 
     ns = _load(planner = _planner)
     result = ns["resolve_unsloth_device_map"](
-        "unsloth", "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit", load_in_4bit = True,
+        "unsloth",
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+        load_in_4bit = True,
     )
     assert result == {"": 0, "model.vision_tower": 1}
     assert seen["model_name"] == "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"
@@ -217,9 +244,9 @@ def test_planning_happens_only_where_the_model_name_is_final():
     """
     models = os.path.join(HERE, "unsloth", "models")
     loader = open(os.path.join(models, "loader.py"), encoding = "utf-8").read()
-    assert "resolve_unsloth_device_map(" not in loader, (
-        "loader.py plans before get_model_name has had its say"
-    )
+    assert (
+        "resolve_unsloth_device_map(" not in loader
+    ), "loader.py plans before get_model_name has had its say"
     for name in ("llama.py", "vision.py"):
         source = open(os.path.join(models, name), encoding = "utf-8").read()
         assert "resolve_unsloth_device_map(" in source, name
@@ -229,12 +256,15 @@ def test_every_entry_point_accepts_the_planner_kwargs():
     """FastLanguageModel and FastModel only forward what they were given, so a signature
     that quietly lacks the parameter turns the notebook's hint into a TypeError."""
     import ast as _ast
+
     models = os.path.join(HERE, "unsloth", "models")
     for name in ("loader.py", "llama.py", "vision.py"):
         source = open(os.path.join(models, name), encoding = "utf-8").read()
         found = [
-            node for node in _ast.walk(_ast.parse(source))
-            if isinstance(node, _ast.FunctionDef) and node.name == "from_pretrained"
+            node
+            for node in _ast.walk(_ast.parse(source))
+            if isinstance(node, _ast.FunctionDef)
+            and node.name == "from_pretrained"
             and any(a.arg == "device_map" for a in node.args.args + node.args.kwonlyargs)
         ]
         assert found, f"no from_pretrained taking device_map in {name}"
@@ -249,7 +279,8 @@ def test_planner_kwargs_reach_the_planner():
     seen = {}
     ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
     ns["resolve_unsloth_device_map"](
-        "unsloth", "m",
+        "unsloth",
+        "m",
         planner_kwargs = {"rows_per_chunk": 128, "retained_rows": 6144, "softcapped": True},
     )
     assert seen["rows_per_chunk"] == 128
