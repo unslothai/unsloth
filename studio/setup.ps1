@@ -1089,21 +1089,18 @@ function Invoke-BoundedPythonProbe {
         # the caller decides what to do with the venv based on it.
         $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
         if ($errTask.Wait($_errLeft)) { $result.Error = $errTask.Result } else { $_leaked = $true }
-        if ($_leaked) {
-            # python exited but something it spawned still holds the inherited handle,
-            # so the pipe never reached EOF and the teardown branches above never ran.
-            # Windows does not reparent an orphan: the descendant still records this
-            # (now dead) pid as its parent, so it can still be found and reaped. CIM
-            # rather than a kill-on-close job object -- that needs a native P/Invoke,
-            # which tests/studio/test_installer_av_shapes.py keeps out of these
-            # scripts. Best effort: off Windows there is no CIM and nothing to reap,
-            # because the shell probe writes to a file and never waits on a pipe.
-            try {
-                foreach ($_kid in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($proc.Id)" -ErrorAction SilentlyContinue)) {
-                    & taskkill.exe /PID $_kid.ProcessId /T /F 2>&1 | Out-Null
-                }
-            } catch {}
-        }
+        # $_leaked means python exited cleanly but something it spawned still holds
+        # the inherited handle, so the pipe never reached EOF. That descendant is
+        # deliberately NOT chased here. Reaping it needs the parent-child map, and
+        # every way to get it breaks something this helper or the release depends on:
+        # a kill-on-close job object needs a native P/Invoke that
+        # tests/studio/test_installer_av_shapes.py keeps out of these scripts, and a
+        # Win32_Process query has no timeout that holds locally -- see
+        # Invoke-BoundedVideoControllerScan below, which goes out of process with a
+        # wall-clock kill for exactly that reason. A cleanup that can hang forever
+        # would defeat the one guarantee this helper exists to make, so the bound
+        # wins: the answer is abandoned, the caller reads it as inconclusive, and the
+        # stray descendant is left to exit on its own.
 
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
@@ -1195,21 +1192,18 @@ function Invoke-BoundedPythonStdinProbe {
         if ($outTask.Wait($_readLeft)) { $result.Output = $outTask.Result } else { $_leaked = $true }
         $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
         if ($errTask.Wait($_errLeft)) { $result.Error = $errTask.Result } else { $_leaked = $true }
-        if ($_leaked) {
-            # python exited but something it spawned still holds the inherited handle,
-            # so the pipe never reached EOF and the teardown branches above never ran.
-            # Windows does not reparent an orphan: the descendant still records this
-            # (now dead) pid as its parent, so it can still be found and reaped. CIM
-            # rather than a kill-on-close job object -- that needs a native P/Invoke,
-            # which tests/studio/test_installer_av_shapes.py keeps out of these
-            # scripts. Best effort: off Windows there is no CIM and nothing to reap,
-            # because the shell probe writes to a file and never waits on a pipe.
-            try {
-                foreach ($_kid in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($proc.Id)" -ErrorAction SilentlyContinue)) {
-                    & taskkill.exe /PID $_kid.ProcessId /T /F 2>&1 | Out-Null
-                }
-            } catch {}
-        }
+        # $_leaked means python exited cleanly but something it spawned still holds
+        # the inherited handle, so the pipe never reached EOF. That descendant is
+        # deliberately NOT chased here. Reaping it needs the parent-child map, and
+        # every way to get it breaks something this helper or the release depends on:
+        # a kill-on-close job object needs a native P/Invoke that
+        # tests/studio/test_installer_av_shapes.py keeps out of these scripts, and a
+        # Win32_Process query has no timeout that holds locally -- see
+        # Invoke-BoundedVideoControllerScan below, which goes out of process with a
+        # wall-clock kill for exactly that reason. A cleanup that can hang forever
+        # would defeat the one guarantee this helper exists to make, so the bound
+        # wins: the answer is abandoned, the caller reads it as inconclusive, and the
+        # stray descendant is left to exit on its own.
 
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
