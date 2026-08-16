@@ -699,12 +699,22 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     }),
     false,
   );
-  // And a non-GGUF resident still answers for everything else it publishes.
+  // And a non-GGUF resident answers for the two fields the backend actually compares,
+  // which is all _mlx_runtime_settings_match looks at. cache_type_kv is deliberately not
+  // among them: it is a llama.cpp flag, and the non-GGUF branch never reads it.
   assert.equal(
-    matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK, {
-      ...STANDING,
-      resolveContextLength: () => 8192,
-    }),
+    matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK),
+    true,
+  );
+  assert.equal(
+    matches({ ...DEFAULTS, is_gguf: false, mlx_kv_bits_requested: 4 }, BLANK),
+    false,
+  );
+  assert.equal(
+    matches(
+      { ...DEFAULTS, is_gguf: false, chat_template_override: "{{ bos }}" },
+      BLANK,
+    ),
     false,
   );
 });
@@ -932,6 +942,74 @@ test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it",
     matches(
       { ...DEFAULTS, requested_gpu_ids: [1] },
       { ...BLANK, selectedGpuIds: [3, 1] },
+    ),
+    false,
+  );
+});
+
+test("no llama.cpp invocation field decides against a non-GGUF resident", () => {
+  // The non-GGUF branch of /load checks identity and _mlx_runtime_settings_match, then
+  // answers already_loaded. Every other field here is a llama.cpp flag it never reads, so
+  // a persisted Manual mode, tensor split, slot count or batch size raised the prompt for
+  // a load that could not have changed anything.
+  const resident = { ...DEFAULTS, is_gguf: false };
+  assert.equal(
+    matches(resident, {
+      ...BLANK,
+      gpuMemoryMode: "manual",
+      gpuLayers: 20,
+      nCpuMoe: 8,
+      tensorParallel: true,
+      nParallel: 4,
+      nBatch: 2048,
+      nUbatch: 512,
+      selectedGpuIds: [1],
+      llamaExtraArgs: ["--flash-attn", "on"],
+      kvCacheDtype: "q8_0",
+    }),
+    true,
+  );
+  // The same config against a GGUF resident is judged in full.
+  assert.equal(
+    matches({ ...resident, is_gguf: true }, { ...BLANK, nParallel: 4 }),
+    false,
+  );
+});
+
+test("a diffusion resident is judged on its NGL, not on the placement fields", () => {
+  // The diffusion branch of _runtime_matches_intent replaces the placement comparison with
+  // one _diffusion_manual_ngl check, and an older shim that dropped a manual NGL leaves
+  // the status reporting Auto while the request here still says Manual.
+  const diffusion = {
+    ...DEFAULTS,
+    is_diffusion: true,
+    gpu_memory_mode: "auto" as const,
+    diffusion_requested_ngl: null,
+  };
+  // Manual with Auto layers resolves to no explicit NGL, so it agrees with the runner's
+  // default even though the modes read differently.
+  assert.equal(
+    matches(diffusion, { ...BLANK, gpuMemoryMode: "manual", gpuLayers: -1 }),
+    true,
+  );
+  // A real manual pin against a runtime that launched with none is still a reload.
+  assert.equal(
+    matches(diffusion, { ...BLANK, gpuMemoryMode: "manual", gpuLayers: 12 }),
+    false,
+  );
+  // And it adopts when the pin is the one the runner was given.
+  assert.equal(
+    matches(
+      { ...diffusion, diffusion_requested_ngl: 12 },
+      { ...BLANK, gpuMemoryMode: "manual", gpuLayers: 12 },
+    ),
+    true,
+  );
+  // The NGL comparison has no meaning off diffusion, where the modes decide as before.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, gpu_memory_mode: "auto" },
+      { ...BLANK, gpuMemoryMode: "manual", gpuLayers: -1 },
     ),
     false,
   );

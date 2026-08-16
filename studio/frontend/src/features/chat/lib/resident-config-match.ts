@@ -27,6 +27,7 @@ type ResidentRuntime = Pick<
   | "gpu_ids"
   | "is_gguf"
   | "is_diffusion"
+  | "diffusion_requested_ngl"
   | "tensor_parallel_dropped_by_arch_gate"
   | "gpu_placement_paravirtual"
   | "tensor_split"
@@ -116,6 +117,19 @@ export type StandingConfigDefaults = {
 type SettingCheck = {
   /** Placement, which the backend rewrites wholesale on a preserved CPU fallback. */
   placement?: true;
+  /**
+   * One of the two fields `_mlx_runtime_settings_match` compares. The non-GGUF branch of
+   * /load checks identity and those, then answers already_loaded, so nothing else here
+   * may decide against a safetensors or MLX resident.
+   */
+  mlxComparable?: true;
+  /**
+   * Placement the diffusion branch of `_runtime_matches_intent` replaces wholesale with
+   * one `_diffusion_manual_ngl` comparison, rather than comparing field by field.
+   */
+  ggufPlacement?: true;
+  /** The diffusion branch's own comparison, which has no meaning off it. */
+  diffusionOnly?: true;
   /**
    * A chat-only invocation setting. `_runtime_matches_intent` guards these on
    * `not self._is_diffusion`, and the status nulls the ones it publishes at all, so
@@ -250,19 +264,18 @@ const SETTING_CHECKS: SettingCheck[] = [
     // cross-model GGUF pick and as the resident context when re-picking the same one.
     // Reading null as "no opinion" against a status echoing either number was a reload.
     pinned: () => true,
+    // A GGUF invocation field: a safetensors or MLX status never sets it, and the general
+    // non-GGUF rule below is what keeps this from reading that absence as 0.
     agrees: (c, s, standing) =>
-      // requested_context_length is a GGUF invocation field. A safetensors or MLX status
-      // never sets it, and reading that absence as 0 against a resolver answering the
-      // generation length rejected every re-pick of a non-GGUF resident.
-      s.is_gguf === false ||
       standing.resolveContextLength(c.customContextLength ?? null) ===
-        (s.requested_context_length ?? 0),
+      (s.requested_context_length ?? 0),
   },
   {
     pinned: () => true,
     agrees: (c, s) => (c.kvCacheDtype ?? null) === (s.cache_type_kv ?? null),
   },
   {
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
       (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
@@ -319,6 +332,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     // Blank-trimmed on both ends: the applier and the load both send "" as null.
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
       cleanTemplate(c.chatTemplateOverride) ===
@@ -334,6 +348,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // Standing preference, like the speculative mode above.
     placement: true,
+    ggufPlacement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       (c.gpuMemoryMode ?? standing.gpuMemoryMode) ===
@@ -344,6 +359,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     // Only under Manual, as _runtime_matches_intent compares it: under Auto the fitter
     // chooses the offload, so the layer count the load carries decides nothing.
     placement: true,
+    ggufPlacement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       requestedGpuMemoryMode(c, standing) !== "manual" ||
@@ -355,6 +371,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     // hidden nCpuMoe after the layer slider goes back to Auto, and llama.cpp records 0,
     // so comparing it there rejected an otherwise identical runtime.
     placement: true,
+    ggufPlacement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       requestedGpuMemoryMode(c, standing) !== "manual" ||
@@ -395,10 +412,33 @@ const SETTING_CHECKS: SettingCheck[] = [
     // remembered config asks for the default distribution while a resident manual load may
     // be running a custom one. Omitting it kept that custom split with nothing saying so.
     placement: true,
+    ggufPlacement: true,
     pinned: () => true,
     agrees: (_c, s, standing) => sameList(standing.splitRatio, s.tensor_split),
   },
+  {
+    // What the diffusion branch compares in place of the placement fields above:
+    // _diffusion_manual_ngl, the layer count only under Manual with a non-negative pin and
+    // the runner's own default otherwise. An older shim that dropped a manual NGL leaves
+    // the status reporting Auto while keeping the request here, so comparing the mode raw
+    // rejected a load that deduplicates.
+    diffusionOnly: true,
+    pinned: () => true,
+    agrees: (c, s, standing) =>
+      diffusionManualNgl(c, standing) === (s.diffusion_requested_ngl ?? null),
+  },
 ];
+
+/** `_diffusion_manual_ngl`: only an explicit manual count reaches the child. */
+function diffusionManualNgl(
+  config: PerModelConfig,
+  standing: StandingConfigDefaults,
+): number | null {
+  const layers = config.gpuLayers ?? standing.gpuLayers;
+  return requestedGpuMemoryMode(config, standing) === "manual" && layers >= 0
+    ? layers
+    : null;
+}
 
 /**
  * Whether the backend would rewrite this request into the resident CPU fallback.
@@ -473,7 +513,12 @@ export function residentRuntimeMatchesConfig(
   const diffusion = status.is_diffusion === true;
   return SETTING_CHECKS.every(
     (check) =>
-      (check.chatOnly && diffusion) ||
+      // The non-GGUF branch of /load checks identity and the MLX pair, then answers
+      // already_loaded, so no llama.cpp invocation field may decide against one.
+      (status.is_gguf === false && !check.mlxComparable) ||
+      (diffusion && check.chatOnly) ||
+      (diffusion && check.ggufPlacement) ||
+      (!diffusion && check.diffusionOnly) ||
       (check.placement && placementPreserved) ||
       !check.pinned(config) ||
       check.agrees(config, status, standing),
