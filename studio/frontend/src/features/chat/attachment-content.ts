@@ -67,8 +67,9 @@ const DOCX_RELATIONSHIP_TAG_RE =
 // mammoth reads child.attributes.Target, which a prefixed r:Target never
 // populates, so prefixed names are deliberately not accepted here.
 const XML_ATTRIBUTE_RE = /([^\s/>"'=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-/** Non-element markup: a `<Relationship>` inside a comment or CDATA is text to mammoth's parser, and both end at their first delimiter the way XML ends them. */
-const XML_NON_ELEMENT_RE = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g;
+/** Non-element markup: a `<Relationship>` inside a comment, CDATA section or processing instruction is text to mammoth's parser, and each ends at its first delimiter the way XML ends it. */
+const XML_NON_ELEMENT_RE =
+  /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>/g;
 const XML_ENTITY_RE = /&(?:#(\d+)|#[xX]([\da-fA-F]+)|([a-zA-Z]+));/g;
 const XML_NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
