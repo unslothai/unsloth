@@ -239,20 +239,20 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
         # published before the socket can accept: a request served in between would
         # still read the loopback-only trust defaults
         set_lan_connector_active(True)
-        future = asyncio.run_coroutine_threadsafe(server.serve(sockets = sockets), loop)
+        serving = server.serve(sockets = sockets)
+        try:
+            future = asyncio.run_coroutine_threadsafe(serving, loop)
+        except RuntimeError as exc:
+            # the loop can close between _server_loop validating it and this call
+            serving.close()
+            _fail_start(sockets, port, exc)
+            raise RuntimeError(_error) from exc
         started = _wait_until(lambda: server.started or future.done(), _START_TIMEOUT)
         if not started or not server.started:
             server.should_exit = True
             cause = future.exception(timeout = 0) if future.done() else None
             future.cancel()
-            _close_sockets(sockets)
-            _sync_lan_trust()
-            _error = "listener_start_failed"
-            logger.warning(
-                "LAN access listener did not start on port %s: %s",
-                port,
-                cause if cause is not None else "timed out",
-            )
+            _fail_start(sockets, port, cause if cause is not None else "timed out")
             raise RuntimeError(_error)
 
         _server, _serve_loop, _sockets = server, loop, tuple(sockets)
@@ -280,6 +280,16 @@ def _release_listener_state() -> None:
     _sockets = ()
     _port = None
     _sync_lan_trust()
+
+
+def _fail_start(sockets, port: int, cause) -> None:
+    """Undo a start that never came up. The caller holds ``_lock``."""
+    global _error
+
+    _close_sockets(sockets)
+    _sync_lan_trust()
+    _error = "listener_start_failed"
+    logger.warning("LAN access listener did not start on port %s: %s", port, cause)
 
 
 def _arm_drain_watcher(server) -> None:

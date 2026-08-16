@@ -596,6 +596,26 @@ def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(mon
         host_policy.set_lan_connector_active(False)
 
 
+@pytest.mark.allow_network
+def test_a_schedule_that_cannot_reach_the_loop_releases_the_bound_sockets(live_server, monkeypatch):
+    """The loop can close between _server_loop validating it and the schedule call;
+    the sockets are bound by then, so that path has to run the start cleanup too."""
+    _require_lan_address()
+
+    def _closed(*_args, **_kwargs):
+        raise RuntimeError("Event loop is closed")
+
+    monkeypatch.setattr(lan_access.asyncio, "run_coroutine_threadsafe", _closed)
+    with pytest.raises(RuntimeError, match = "listener_start_failed"):
+        lan_access.start_lan_listener(live_server.app, live_server.loop, live_server.port)
+
+    status = lan_access.lan_listener_status()
+    assert status["running"] is False and status["error"] == "listener_start_failed"
+    assert host_policy.remote_connector_active() is False, "trust left on with no listener"
+    # the port is free, so a later start is not locked out by the leaked sockets
+    assert _free_port_is_bindable(live_server.port)
+
+
 def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypatch):
     """An abnormal exit leaves nobody to run uvicorn's shutdown, so stop must close them."""
 
@@ -810,9 +830,9 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():
