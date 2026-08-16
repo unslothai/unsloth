@@ -111,12 +111,7 @@ def truncate_oldest_messages(
     kept: list[dict] = []
     for index, group in enumerate(groups):
         if index not in dropped_groups:
-            if (
-                kept
-                and kept[-1].get("role") == "user"
-                and group
-                and group[0].get("role") == "user"
-            ):
+            if kept and kept[-1].get("role") == "user" and group and group[0].get("role") == "user":
                 # Strict chat templates reject adjacent user turns. This occurs when
                 # an internal tool re-prompt follows an evicted exchange.
                 kept.append({"role": "assistant", "content": _OMITTED_TOOL_EXCHANGE})

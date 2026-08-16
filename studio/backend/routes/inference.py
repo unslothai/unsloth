@@ -659,9 +659,7 @@ def _overflow_truncation_requested(payload) -> bool:
     return _overflow_truncation_policy(payload) is not None
 
 
-def _context_truncated_sse_chunk(
-    completion_id: str, model_name: str, truncation: dict
-) -> str:
+def _context_truncated_sse_chunk(completion_id: str, model_name: str, truncation: dict) -> str:
     data = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -812,7 +810,9 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
 
 
 def _apply_overflow_truncation(
-    body: dict, err_text: str, policy: str = "truncate_middle"
+    body: dict,
+    err_text: str,
+    policy: str = "truncate_middle",
 ) -> bool:
     """Shrink a passthrough body after an upstream context overflow: drop
     middle turn-groups, clip still-oversized contents, clamp ``max_tokens``

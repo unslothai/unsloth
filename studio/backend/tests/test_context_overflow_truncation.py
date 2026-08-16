@@ -175,9 +175,7 @@ def test_rolling_truncation_drops_complete_oldest_turns():
     assert "old question" not in {message.get("content") for message in new}
     # The tool exchange is either retained as a whole or removed as a whole.
     surviving_call_ids = {
-        call["id"]
-        for message in new
-        for call in (message.get("tool_calls") or [])
+        call["id"] for message in new for call in (message.get("tool_calls") or [])
     }
     assert all(
         message.get("tool_call_id") in surviving_call_ids
