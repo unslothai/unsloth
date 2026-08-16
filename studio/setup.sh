@@ -1957,142 +1957,167 @@ def _vkey(c):
 if not cands:
     print('POSTVER=__MISSING__')
     sys.exit(0)
-d, d_record = max(cands, key=_vkey)
-try:
-    _durl = json.loads(d.read_text('direct_url.json') or '{}')
-    _edit = bool(_durl.get('dir_info', {}).get('editable'))
-except Exception:
-    _durl, _edit = {}, False
-# where an editable install actually points. Resolved once: the tops branch binds
-# editable specs to it, and the no-tops branch below validates it directly.
-_target = ''
-if _edit:
+# Ties are broken on HEALTH, not discovery order: an interrupted reinstall can
+# leave two dist-infos at the same version, and picking the stale one would fail
+# setup over an installation that is actually fine. The extra passes only happen
+# when a tie exists AND the first candidate looks damaged.
+_ranked = [(_vkey(_c), _c) for _c in cands]
+_topkey = max(_k for _k, _ in _ranked)
+_tied = [_c for _k, _c in _ranked if _k == _topkey]
+d, d_record = _tied[0]
+def _verdict(d, d_record):
     try:
-        _target = url2pathname(urlparse(str(_durl.get('url') or '')).path)
+        _durl = json.loads(d.read_text('direct_url.json') or '{}')
+        _edit = bool(_durl.get('dir_info', {}).get('editable'))
     except Exception:
-        _target = ''
-# importable payload, used for namespace specs and for an editable checkout. Suffixes
-# come from importlib itself rather than a hardcoded list, so an extension module
-# counts on every platform; __pycache__ does not, being what a quarantine leaves.
-_imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
-             + importlib.machinery.EXTENSION_SUFFIXES)
-def _has_module(_p, _depth):
-    try:
-        _entries = os.listdir(_p)
-    except OSError:
-        return False
-    _subs = []
-    for _e in _entries:
-        if _e == '__pycache__':
-            continue
-        _f = os.path.join(_p, _e)
-        if os.path.isdir(_f):
-            _subs.append(_f)
-        elif _e.endswith(_imp):
-            return True
-    # nested namespaces are legitimate, so recurse -- bounded, since the first
-    # module found answers and only a module-less tree walks to the bottom
-    return _depth > 0 and any(_has_module(_s, _depth - 1) for _s in _subs)
-rows = []
-selfrec = False
-flen = 3
-if not _edit:
-    for r in csv.reader(d_record.splitlines()):
-        if r:
-            flen = len(r)
-        rel = r[0] if r else ''
-        if not rel or rel.endswith('/'):
-            continue
-        if rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
-            selfrec = True
-        if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
-            continue
-        f = PurePosixPath(rel.replace(chr(92), '/'))
-        if f.is_absolute() or '..' in f.parts:
-            continue
-        if len(f.parts) > 1 and f.parts[0] in _shared:
-            continue
-        rows.append((f, os.path.normcase(str(d.locate_file(f)))))
-tops = (d.read_text('top_level.txt') or '').split()
-# a truncated RECORD can keep its self-entry when the writer ordered entries
-# lexicographically (dist-info sorts before the payload), so the final parsed
-# row must also carry RECORD's three fields: a mid-line cut leaves a short row,
-# while a valid wheel may legitimately omit the final newline (CSV allows it),
-# so the newline itself is not the signal. Declared-top coverage cannot serve as
-# one either: top_level.txt legitimately names tops the wheel never ships
-# (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
-# line boundary stays undetectable here.
-damaged = bool(d_record) and not _edit and (not selfrec or flen != 3)
-if not damaged:
-    for f, key in rows:
+        _durl, _edit = {}, False
+    # where an editable install actually points. Resolved once: the tops branch binds
+    # editable specs to it, and the no-tops branch below validates it directly.
+    _target = ''
+    if _edit:
         try:
-            st = d.locate_file(f).stat()
-        except (FileNotFoundError, NotADirectoryError):
-            damaged = True
-            break
+            _u = urlparse(str(_durl.get('url') or ''))
+            # a UNC checkout is file://server/share/repo, and its authority is part of
+            # the path: dropping it would resolve \\server\share\repo as \share\repo and
+            # reject every real module origin under it
+            # Rebuilt by hand rather than fed to url2pathname with the authority
+            # attached, which refuses a non-local one outright on POSIX; UNC exists
+            # only on Windows, so the separator is fixed.
+            if _u.netloc and _u.netloc.lower() != 'localhost':
+                _target = '\\\\' + _u.netloc + url2pathname(_u.path).replace('/', '\\')
+            else:
+                _target = url2pathname(_u.path)
+        except Exception:
+            _target = ''
+    # importable payload, used for namespace specs and for an editable checkout. Suffixes
+    # come from importlib itself rather than a hardcoded list, so an extension module
+    # counts on every platform; __pycache__ does not, being what a quarantine leaves.
+    _imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
+                 + importlib.machinery.EXTENSION_SUFFIXES)
+    def _has_module(_p, _depth):
+        try:
+            _entries = os.listdir(_p)
         except OSError:
-            # EACCES/ESTALE/EIO say the file could not be READ, never that it is
-            # gone, and a reinstall instruction cannot fix that: skip the row (the
-            # same distinction the sidecar scanner draws; its consequence matches
-            # this probe's, unlike the CLI mirror's advisory print).
-            continue
-        if not stat.S_ISREG(st.st_mode):
-            damaged = True
-            break
-        _min = sizes.get(key)
-        if _min is not None and f.name not in _rewritten and st.st_size < _min:
-            damaged = True
-            break
-def _spec(n, root):
-    # find_spec raises when a name's parent package is missing: a negative answer,
-    # not an error to propagate
-    try:
-        s = importlib.util.find_spec(n) if n else None
-    except Exception:
+            return False
+        _subs = []
+        for _e in _entries:
+            if _e == '__pycache__':
+                continue
+            _f = os.path.join(_p, _e)
+            if os.path.isdir(_f):
+                _subs.append(_f)
+            elif _e.endswith(_imp):
+                return True
+        # nested namespaces are legitimate, so recurse -- bounded, since the first
+        # module found answers and only a module-less tree walks to the bottom
+        return _depth > 0 and any(_has_module(_s, _depth - 1) for _s in _subs)
+    rows = []
+    selfrec = False
+    flen = 3
+    if not _edit:
+        for r in csv.reader(d_record.splitlines()):
+            if r:
+                flen = len(r)
+            rel = r[0] if r else ''
+            if not rel or rel.endswith('/'):
+                continue
+            if rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
+                selfrec = True
+            if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+                continue
+            f = PurePosixPath(rel.replace(chr(92), '/'))
+            if f.is_absolute() or '..' in f.parts:
+                continue
+            if len(f.parts) > 1 and f.parts[0] in _shared:
+                continue
+            rows.append((f, os.path.normcase(str(d.locate_file(f)))))
+    tops = (d.read_text('top_level.txt') or '').split()
+    # a truncated RECORD can keep its self-entry when the writer ordered entries
+    # lexicographically (dist-info sorts before the payload), so the final parsed
+    # row must also carry RECORD's three fields: a mid-line cut leaves a short row,
+    # while a valid wheel may legitimately omit the final newline (CSV allows it),
+    # so the newline itself is not the signal. Declared-top coverage cannot serve as
+    # one either: top_level.txt legitimately names tops the wheel never ships
+    # (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
+    # line boundary stays undetectable here.
+    damaged = bool(d_record) and not _edit and (not selfrec or flen != 3)
+    if not damaged:
+        for f, key in rows:
+            try:
+                st = d.locate_file(f).stat()
+            except (FileNotFoundError, NotADirectoryError):
+                damaged = True
+                break
+            except OSError:
+                # EACCES/ESTALE/EIO say the file could not be READ, never that it is
+                # gone, and a reinstall instruction cannot fix that: skip the row (the
+                # same distinction the sidecar scanner draws; its consequence matches
+                # this probe's, unlike the CLI mirror's advisory print).
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                damaged = True
+                break
+            _min = sizes.get(key)
+            if _min is not None and f.name not in _rewritten and st.st_size < _min:
+                damaged = True
+                break
+    def _spec(n, root):
+        # find_spec raises when a name's parent package is missing: a negative answer,
+        # not an error to propagate
+        try:
+            s = importlib.util.find_spec(n) if n else None
+        except Exception:
+            return False
+        if s is None:
+            return False
+        # The module must live under the root that owns it: the distribution's own
+        # directory normally, the recorded checkout for an editable install (which
+        # resolves THROUGH its finder into that tree). -I still runs site processing,
+        # so an executable .pth can put a same-named copy on sys.path and answer for a
+        # payload that is gone -- for a plain install and an editable one alike. An
+        # empty root means nothing can be bound and only presence is checked.
+        _base = os.path.abspath(root) if root else None
+        def _inside(p):
+            return _base is None or os.path.abspath(p).startswith(_base + os.sep)
+        if s.origin and s.origin != 'namespace':
+            return _inside(s.origin)
+        # A namespace spec is not payload on its own: an emptied package directory
+        # still answers find_spec with its own path, so require an importable module.
+        for _p in list(getattr(s, 'submodule_search_locations', None) or []):
+            if _p and _inside(_p) and _has_module(_p, 6):
+                return True
         return False
-    if s is None:
-        return False
-    # The module must live under the root that owns it: the distribution's own
-    # directory normally, the recorded checkout for an editable install (which
-    # resolves THROUGH its finder into that tree). -I still runs site processing,
-    # so an executable .pth can put a same-named copy on sys.path and answer for a
-    # payload that is gone -- for a plain install and an editable one alike. An
-    # empty root means nothing can be bound and only presence is checked.
-    _base = os.path.abspath(root) if root else None
-    def _inside(p):
-        return _base is None or os.path.abspath(p).startswith(_base + os.sep)
-    if s.origin and s.origin != 'namespace':
-        return _inside(s.origin)
-    # A namespace spec is not payload on its own: an emptied package directory
-    # still answers find_spec with its own path, so require an importable module.
-    for _p in list(getattr(s, 'submodule_search_locations', None) or []):
-        if _p and _inside(_p) and _has_module(_p, 6):
-            return True
-    return False
-if not rows and not damaged:
-    if tops:
-        damaged = not all(_spec(t, _target if _edit else str(d.locate_file(''))) for t in tops if t)
-    elif _edit:
-        # An editable install with no top_level.txt: its RECORD lists only the
-        # site-packages shims, so nothing above can speak for the checkout. Resolve
-        # the distribution's OWN module and bind it to the recorded target: any
-        # importable file under the checkout would otherwise do, and a checkout keeps
-        # a setup.py or noxfile.py long after its package directory is gone. The
-        # editable finder knows where the package really lives, so a src/ layout
-        # still resolves, while a deleted package or a same-named copy outside the
-        # checkout does not. Name-derived, like the RECORD-less branch below: without
-        # top_level.txt there is nothing better to key on.
-        damaged = not (_target and _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target))
-    elif not d_record:
-        # Nothing enumerates the payload: no RECORD at all (an interrupted install,
-        # or a distro/conda package that legitimately ships none, which the CLI
-        # mirror declines to judge) and no top_level.txt either. Rather than trust
-        # or condemn the metadata, validate positively through the distribution's
-        # own name as an import: an empty dist-info shell fails it, a package whose
-        # files are really on disk passes. Gated on the RECORD being ABSENT, not on
-        # rows being empty: a CLI-only wheel (py-spy) records just its console
-        # script and ships no importable module, and its RECORD already answered.
-        damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), str(d.locate_file('')))
+    if not rows and not damaged:
+        if tops:
+            damaged = not all(_spec(t, _target if _edit else str(d.locate_file(''))) for t in tops if t)
+        elif _edit:
+            # An editable install with no top_level.txt: its RECORD lists only the
+            # site-packages shims, so nothing above can speak for the checkout. Resolve
+            # the distribution's OWN module and bind it to the recorded target: any
+            # importable file under the checkout would otherwise do, and a checkout keeps
+            # a setup.py or noxfile.py long after its package directory is gone. The
+            # editable finder knows where the package really lives, so a src/ layout
+            # still resolves, while a deleted package or a same-named copy outside the
+            # checkout does not. Name-derived, like the RECORD-less branch below: without
+            # top_level.txt there is nothing better to key on.
+            damaged = not (_target and _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target))
+        elif not d_record:
+            # Nothing enumerates the payload: no RECORD at all (an interrupted install,
+            # or a distro/conda package that legitimately ships none, which the CLI
+            # mirror declines to judge) and no top_level.txt either. Rather than trust
+            # or condemn the metadata, validate positively through the distribution's
+            # own name as an import: an empty dist-info shell fails it, a package whose
+            # files are really on disk passes. Gated on the RECORD being ABSENT, not on
+            # rows being empty: a CLI-only wheel (py-spy) records just its console
+            # script and ships no importable module, and its RECORD already answered.
+            damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), str(d.locate_file('')))
+    return damaged
+damaged = _verdict(d, d_record)
+if damaged:
+    for _alt in _tied[1:]:
+        if not _verdict(_alt[0], _alt[1]):
+            d, d_record, damaged = _alt[0], _alt[1], False
+            break
 print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 "
 # Bounded like the PowerShell probe runner: the probe stats every recorded file,
