@@ -7252,6 +7252,8 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
     listed = asyncio.run(run())
     assert scans == [0, 1], scans
     assert [row.id for row in listed.models] == ["scan2"]
+
+
 def _write_sharded_safetensors(model_dir: Path, *, total: int, present: int) -> Path:
     """A model that declares *total* shards in its index and ships only *present* of them."""
     model_dir.mkdir(parents = True, exist_ok = True)
