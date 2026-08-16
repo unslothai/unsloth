@@ -2137,10 +2137,8 @@ const Composer: FC<{
   // Read by both writers that could put the sent text back, the input handlers
   // and the draft restore. Armed by every path that clears the composer.
   const justSentRef = useRef<SentTextGuard | null>(null);
-  // Thread on screen, tracked in a ref so the guard can tell whether a write
-  // belongs to the thread that sent. Without it the restore effect puts the
-  // sent text back when the runtime rebinds on the first message. Kept in step
-  // by the effect alongside pasteDraftKeyRef below.
+  // Thread on screen, so the guard can tell whether a write belongs to the
+  // thread that sent. Kept in step by the effect alongside pasteDraftKeyRef.
   const draftKeyRef = useRef<string | null>(null);
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true, justSentRef, draftKeyRef });
@@ -2195,10 +2193,9 @@ const Composer: FC<{
           }),
       );
       // A paste is a gesture, so it retires the guard and re-pasting the sent
-      // prompt goes through. Last, and only if the browser will really insert
-      // the text: a payload carrying files is preventDefaulted above, so it
-      // writes nothing, and retiring for it would leave the next queued write
-      // free to refill the composer.
+      // prompt goes through. Last, and only when the browser will really insert
+      // the text: a payload carrying files is preventDefaulted above, so
+      // retiring for it would just free the next queued write to refill.
       if (
         pastedText.length > 0 &&
         !event.defaultPrevented &&
@@ -3964,11 +3961,11 @@ function isTextReplacement(event: Event | undefined) {
   return inputTypeOf(event) === "insertReplacementText";
 }
 
-// A write carrying an IME composition. Finalisation converts the text, so
-// equality never matches it. Only stale when the composition began before the
-// send: one begun after raises compositionstart, which records user input.
-// compositionend counts because onCompositionEnd applies the value itself; the
-// browser raises no input event for it, so nothing else would classify it.
+// An IME composition write. Finalisation converts the text, so equality never
+// matches it, and it is stale only when the composition began before the send:
+// one begun after raises compositionstart, which records user input.
+// compositionend counts because onCompositionEnd applies that value itself and
+// the browser raises no input event for it.
 function isCompositionWrite(event: Event | undefined) {
   return (
     inputTypeOf(event) === "insertCompositionText" ||
@@ -4066,10 +4063,9 @@ function useImeComposerInputHandlers({
       if (!composer.getState().isEditing) {
         return false;
       }
-      // Refuse a write that is the sent message coming back. Only for the
+      // Refuse a write that is the sent message coming back, but only for the
       // thread that sent: typing in another thread must not retire a guard it
-      // does not own, or returning to the sending thread restores its raced
-      // draft after all.
+      // does not own, or its raced draft returns.
       const guardOwnsThread =
         justSentRef?.current == null ||
         draftKeyRef === undefined ||
