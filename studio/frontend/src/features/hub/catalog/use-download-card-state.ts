@@ -5,27 +5,15 @@ import type { DownloadJob } from "../download-manager";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DownloadStopMode } from "./download-cancel-indicator";
 
-/** Whether a partial written by `transport` can be picked up byte for byte.
- *
- * Two conditions, and both are needed. Xet rewrites the destination from
- * scratch, so only an HTTP partial is a candidate; and only a huggingface_hub
- * that still reopens `.incomplete` (<= 1.17) can append to it, which is what
- * `partialsResumable` reports. */
-export function partialIsResumable(
-  transport: string | null | undefined,
-  partialsResumable: boolean,
-): boolean {
-  return transport === "http" && partialsResumable;
-}
-
 /** What the button on a partial row does. Never "Redownload": whichever
  * transport wrote the partial, files already on disk are kept and only the
- * interrupted one is fetched again. */
-export function partialResumeLabel(
-  transport: string | null | undefined,
-  partialsResumable = false,
-): string {
-  return partialIsResumable(transport, partialsResumable) ? "Resume" : "Continue";
+ * interrupted one is fetched again.
+ *
+ * `partialResumable` is the backend's verdict on THIS partial, not on the
+ * installed writer: a cache shared with a newer environment holds partials that
+ * even a resuming huggingface_hub will not reopen. */
+export function partialResumeLabel(partialResumable = false): string {
+  return partialResumable ? "Resume" : "Continue";
 }
 
 /** Tooltip for a "Partial" badge. The badge is not a control, so it names the
@@ -35,12 +23,9 @@ export function partialResumeLabel(
  * shards it finished, but a one-file quant has nothing to keep and fetches
  * every byte again. Leading with what survives reads as a promise the
  * single-file case cannot honour. */
-export function partialDownloadHint(
-  transport: string | null | undefined,
-  partialsResumable = false,
-): string {
-  const label = partialResumeLabel(transport, partialsResumable);
-  return partialIsResumable(transport, partialsResumable)
+export function partialDownloadHint(partialResumable = false): string {
+  const label = partialResumeLabel(partialResumable);
+  return partialResumable
     ? `Partial download. Click ${label} to pick up where it stopped.`
     : `Partial download. Click ${label} to finish it. The interrupted file starts over; other files already on disk are kept.`;
 }
@@ -61,7 +46,9 @@ export function downloadStopMode(
   // HTTP still cancels into a restart-only partial, so Pause would promise a
   // resume the marker does not allow.
   const transport = cancelTransport ?? activeTransport ?? partialTransport;
-  return partialIsResumable(transport, partialsResumable) ? "pause" : "cancel";
+  // Capability, not a row verdict: the partial being written right now is this
+  // machine's own, so the installed writer decides whether stopping keeps it.
+  return transport === "http" && partialsResumable ? "pause" : "cancel";
 }
 
 export function downloadActionAriaLabel(
@@ -76,12 +63,9 @@ export function downloadActionAriaLabel(
 
 export function downloadActionLabel(
   isPartial: boolean,
-  partialTransport: string | null | undefined,
-  partialsResumable = false,
+  partialResumable = false,
 ): string {
-  return isPartial
-    ? partialResumeLabel(partialTransport, partialsResumable)
-    : "Download";
+  return isPartial ? partialResumeLabel(partialResumable) : "Download";
 }
 
 export function useDownloadCardState({
@@ -93,6 +77,7 @@ export function useDownloadCardState({
   disabled,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   partialsResumable = false,
 }: {
   job: DownloadJob;
@@ -103,7 +88,9 @@ export function useDownloadCardState({
   disabled: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
-  /** Backend capability: see partialIsResumable. */
+  /** This row's partial can be continued byte for byte (backend verdict). */
+  partialResumable?: boolean;
+  /** Whether the installed writer resumes at all, for the running job's stop control. */
   partialsResumable?: boolean;
 }) {
   const [starting, setStarting] = useState(false);
@@ -155,17 +142,13 @@ export function useDownloadCardState({
     starting,
     isPartial,
     partialTransport,
-    partialsResumable,
+    partialResumable,
     progressPercent,
     stopMode,
     disabled: effectiveDisabled,
     ariaLabel: downloadActionAriaLabel(downloading, cancelling, stopMode),
-    downloadLabel: downloadActionLabel(
-      isPartial,
-      partialTransport,
-      partialsResumable,
-    ),
-    partialHint: partialDownloadHint(partialTransport, partialsResumable),
+    downloadLabel: downloadActionLabel(isPartial, partialResumable),
+    partialHint: partialDownloadHint(partialResumable),
     onClick,
   };
 }

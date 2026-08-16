@@ -33,6 +33,7 @@ export function DatasetDownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   cachePath,
   knownBytes,
   onTrain,
@@ -42,6 +43,7 @@ export function DatasetDownloadSection({
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   cachePath?: string | null;
   knownBytes?: number | null;
   onTrain?: () => void;
@@ -97,6 +99,7 @@ export function DatasetDownloadSection({
     disabled: cancelling || deleting,
     isPartial,
     partialTransport,
+    partialResumable,
     partialsResumable,
   });
 
@@ -181,8 +184,7 @@ export function DatasetDownloadSection({
           cancelling={downloadAction.cancelling}
           loading={downloadAction.starting}
           isPartial={downloadAction.isPartial}
-          partialTransport={downloadAction.partialTransport}
-          partialsResumable={downloadAction.partialsResumable}
+          partialResumable={downloadAction.partialResumable}
           stopMode={downloadAction.stopMode}
           progressPercent={downloadAction.progressPercent}
           disabled={downloadAction.disabled}

@@ -233,8 +233,7 @@ export function DownloadActionButton({
   cancelling,
   loading = false,
   isPartial = false,
-  partialTransport = null,
-  partialsResumable = false,
+  partialResumable = false,
   stopMode = "cancel",
   progressPercent = null,
   disabled,
@@ -245,9 +244,8 @@ export function DownloadActionButton({
   cancelling: boolean;
   loading?: boolean;
   isPartial?: boolean;
-  partialTransport?: string | null;
-  /** Backend capability: see partialIsResumable. */
-  partialsResumable?: boolean;
+  /** This row's partial can be continued byte for byte (backend verdict). */
+  partialResumable?: boolean;
   /** What stopping the running job costs; see downloadStopMode. */
   stopMode?: DownloadStopMode;
   progressPercent?: number | null;
@@ -288,7 +286,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {downloadActionLabel(isPartial, partialTransport, partialsResumable)}
+          {downloadActionLabel(isPartial, partialResumable)}
         </>
       )}
     </button>

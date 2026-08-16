@@ -1989,3 +1989,24 @@ def partial_transport_for(
         hub_cache = hub_cache,
     )
     return manifest.transport if manifest is not None else None
+
+
+def partial_resume_available(
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str] = None,
+    repo_cache_dir: Optional[Path] = None,
+) -> bool:
+    """Whether THIS partial can be picked up byte for byte, rather than whether some partial
+    somewhere could be.
+
+    Both verdicts have to agree: the transport this row reports, and the registry's per-file
+    check, which rejects a 1.18+ nonce partial nothing will reopen. The installed
+    huggingface_hub cannot answer it alone, since a cache shared with a newer environment
+    holds partials this one can never continue.
+    """
+    from hub.utils import download_registry
+
+    if partial_transport_for(repo_type, repo_id, variant, repo_cache_dir) != "http":
+        return False
+    return download_registry.is_resumable_partial(repo_type, repo_id, variant)

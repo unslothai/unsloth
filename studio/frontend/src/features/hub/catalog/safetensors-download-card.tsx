@@ -58,6 +58,7 @@ export function SafetensorsDownloadCard({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
@@ -73,6 +74,7 @@ export function SafetensorsDownloadCard({
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
@@ -162,6 +164,7 @@ export function SafetensorsDownloadCard({
     disabled: isLoadingThisModel || cancelling || repoPeerActive,
     isPartial,
     partialTransport,
+    partialResumable,
     partialsResumable,
   });
   const showActionPair = isDownloaded && !downloading && (canRun || !!onTrain);
@@ -339,8 +342,7 @@ export function SafetensorsDownloadCard({
             cancelling={downloadAction.cancelling}
             loading={isLoadingThisModel || downloadAction.starting}
             isPartial={downloadAction.isPartial}
-            partialTransport={downloadAction.partialTransport}
-            partialsResumable={downloadAction.partialsResumable}
+            partialResumable={downloadAction.partialResumable}
             stopMode={downloadAction.stopMode}
             progressPercent={downloadAction.progressPercent}
             disabled={downloadAction.disabled}

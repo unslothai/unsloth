@@ -783,6 +783,7 @@ export function GgufDownloadCard({
         : ctaDisabled && !selectedIsActive,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
+    partialResumable: selected?.partial_resumable === true,
     partialsResumable,
   });
   const selectedLabel = selected ? ggufVariantDisplayLabel(selected) : null;
