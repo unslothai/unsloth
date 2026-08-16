@@ -728,6 +728,37 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     return policy if policy is not None else payload.enable_tools
 
 
+def _anthropic_reasoning_args(payload) -> dict:
+    """Reasoning kwargs for /v1/messages generators.
+
+    `/v1/messages` accepts Anthropic's `thinking` block plus the x-unsloth
+    reasoning fields; without this the request is parsed and silently dropped,
+    so the model can never be switched out of its load-time reasoning default.
+    """
+    return {
+        "enable_thinking": payload.resolved_enable_thinking(),
+        "reasoning_effort": payload.reasoning_effort,
+        "preserve_thinking": payload.preserve_thinking,
+    }
+
+
+def _reasoning_template_kwargs(
+    llama_backend, enable_thinking, reasoning_effort, preserve_thinking
+):
+    """chat_template_kwargs matching the loaded model's reasoning style.
+
+    The backend knows whether the template takes ``enable_thinking`` or
+    ``reasoning_effort`` and whether reasoning is always-on; fall back to the
+    plain flag when that introspection isn't available.
+    """
+    resolver = getattr(llama_backend, "_request_reasoning_kwargs", None)
+    if resolver is not None:
+        return resolver(enable_thinking, reasoning_effort, preserve_thinking)
+    if enable_thinking is None:
+        return None
+    return {"enable_thinking": bool(enable_thinking)}
+
+
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts so
 # is_disconnected() never fires. POST /inference/cancel looks up in-flight
 # cancel_events here by cancel_id (per-run) or session_id / completion_id
@@ -5453,6 +5484,7 @@ async def anthropic_messages(
                 session_id = payload.session_id,
                 cancel_id = payload.cancel_id,
                 disable_parallel_tool_use = _disable_parallel,
+                **_anthropic_reasoning_args(payload),
             )
         return await _anthropic_passthrough_non_streaming(
             llama_backend,
@@ -5470,6 +5502,7 @@ async def anthropic_messages(
             presence_penalty = presence_penalty,
             tool_choice = openai_tool_choice,
             disable_parallel_tool_use = _disable_parallel,
+            **_anthropic_reasoning_args(payload),
         )
 
     if server_tools:
@@ -5521,6 +5554,7 @@ async def anthropic_messages(
                 # Anthropic passthrough has no rag_scope field (RAG is local-only).
                 rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
+                **_anthropic_reasoning_args(payload),
             )
 
         if payload.stream:
@@ -5555,6 +5589,7 @@ async def anthropic_messages(
             max_tokens = payload.max_tokens,
             stop = stop,
             cancel_event = cancel_event,
+            **_anthropic_reasoning_args(payload),
         )
 
     if payload.stream:
@@ -6008,6 +6043,9 @@ async def _anthropic_passthrough_stream(
     session_id = None,
     cancel_id = None,
     disable_parallel_tool_use = False,
+    enable_thinking = None,
+    reasoning_effort = None,
+    preserve_thinking = None,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
@@ -6025,6 +6063,9 @@ async def _anthropic_passthrough_stream(
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
+        chat_template_kwargs = _reasoning_template_kwargs(
+            llama_backend, enable_thinking, reasoning_effort, preserve_thinking
+        ),
         backend_ctx = llama_backend.context_length,
         stream_options = {"include_usage": True},
     )
@@ -6185,6 +6226,9 @@ async def _anthropic_passthrough_non_streaming(
     presence_penalty = None,
     tool_choice = "auto",
     disable_parallel_tool_use = False,
+    enable_thinking = None,
+    reasoning_effort = None,
+    preserve_thinking = None,
 ):
     """Non-streaming client-side pass-through."""
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
@@ -6201,6 +6245,9 @@ async def _anthropic_passthrough_non_streaming(
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
         tool_choice = tool_choice,
+        chat_template_kwargs = _reasoning_template_kwargs(
+            llama_backend, enable_thinking, reasoning_effort, preserve_thinking
+        ),
         backend_ctx = llama_backend.context_length,
     )
 

@@ -1426,6 +1426,13 @@ class AnthropicTool(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class AnthropicThinkingConfig(BaseModel):
+    type: Literal["enabled", "disabled"] = "enabled"
+    # Accepted for wire compatibility; llama-server has no thinking budget.
+    budget_tokens: Optional[int] = None
+    model_config = {"extra": "allow"}
+
+
 class AnthropicMessagesRequest(BaseModel):
     model: str = "default"
     max_tokens: Optional[int] = None
@@ -1451,9 +1458,28 @@ class AnthropicMessagesRequest(BaseModel):
     )
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
+    # Anthropic's native extended-thinking control. Only `type` is honored:
+    # llama-server has no thinking-token budget, so `budget_tokens` is accepted
+    # and ignored rather than 400'd (Claude Code always sends it alongside).
+    thinking: Optional[AnthropicThinkingConfig] = None
+    # [x-unsloth] reasoning controls mirroring the OpenAI endpoint. These win
+    # over `thinking` when both are present, matching enable_tools precedence.
+    enable_thinking: Optional[bool] = None
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
+    ] = None
+    preserve_thinking: Optional[bool] = None
     session_id: Optional[str] = None
     cancel_id: Optional[str] = None
     model_config = {"extra": "allow"}
+
+    def resolved_enable_thinking(self) -> Optional[bool]:
+        """Effective on/off, preferring the x-unsloth field over `thinking`."""
+        if self.enable_thinking is not None:
+            return self.enable_thinking
+        if self.thinking is not None:
+            return self.thinking.type == "enabled"
+        return None
 
     @model_validator(mode = "before")
     @classmethod

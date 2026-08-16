@@ -1221,6 +1221,137 @@ class TestAnthropicPassthroughStreamAdapter:
         assert message_delta["usage"]["input_tokens"] == 2
         assert message_delta["usage"]["output_tokens"] == 4
 
+    @pytest.mark.parametrize(
+        "reasoning_kwargs, expected",
+        [
+            ({}, None),
+            ({"enable_thinking": True}, {"enable_thinking": True}),
+            ({"enable_thinking": False}, {"enable_thinking": False}),
+            (
+                {"enable_thinking": True, "reasoning_effort": "high"},
+                {"enable_thinking": True, "reasoning_effort": "high"},
+            ),
+        ],
+    )
+    def test_stream_forwards_reasoning_to_llama_server(
+        self, monkeypatch, reasoning_kwargs, expected
+    ):
+        """Without this the reasoning request is dropped and the model stays in
+        its load-time default -- thinking can never be switched on."""
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            content = 'data: {"choices": [{"delta": {"content": "hi"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            return real_async_client(
+                transport = transport, timeout = kwargs.get("timeout", 600)
+            )
+
+        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
+        # Echo the request kwargs back the way the real backend does, so the
+        # test covers the route wiring rather than the backend's style logic.
+        backend = SimpleNamespace(
+            base_url = "http://llama.test",
+            context_length = 4096,
+            count_chat_tokens = lambda *args, **kwargs: 2,
+            _request_reasoning_kwargs = lambda et, re_, pt: (
+                {
+                    k: v
+                    for k, v in (
+                        ("enable_thinking", et),
+                        ("reasoning_effort", re_),
+                        ("preserve_thinking", pt),
+                    )
+                    if v is not None
+                }
+                or None
+            ),
+        )
+
+        async def run():
+            response = await _anthropic_passthrough_stream(
+                self._Request(),
+                threading.Event(),
+                backend,
+                [{"role": "user", "content": "hi"}],
+                [{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
+                0.7,
+                0.95,
+                20,
+                16,
+                "msg_1",
+                "test-model",
+                **reasoning_kwargs,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+        assert captured["body"].get("chat_template_kwargs") == expected
+
+
+class TestAnthropicReasoningArgs:
+    """`/v1/messages` must accept Anthropic's `thinking` block and the
+    x-unsloth reasoning fields instead of silently swallowing them."""
+
+    @staticmethod
+    def _payload(**kwargs):
+        from models.inference import AnthropicMessagesRequest
+
+        return AnthropicMessagesRequest(
+            model = "m",
+            max_tokens = 16,
+            messages = [{"role": "user", "content": "hi"}],
+            **kwargs,
+        )
+
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            ({}, None),
+            ({"thinking": {"type": "enabled", "budget_tokens": 600}}, True),
+            ({"thinking": {"type": "disabled"}}, False),
+            ({"enable_thinking": True}, True),
+            ({"enable_thinking": False}, False),
+            # x-unsloth field wins, mirroring enable_tools precedence.
+            ({"thinking": {"type": "disabled"}, "enable_thinking": True}, True),
+        ],
+    )
+    def test_resolved_enable_thinking(self, kwargs, expected):
+        assert self._payload(**kwargs).resolved_enable_thinking() is expected
+
+    def test_reasoning_args_reach_the_generators(self):
+        from routes.inference import _anthropic_reasoning_args
+
+        payload = self._payload(
+            thinking = {"type": "enabled"},
+            reasoning_effort = "high",
+            preserve_thinking = True,
+        )
+        assert _anthropic_reasoning_args(payload) == {
+            "enable_thinking": True,
+            "reasoning_effort": "high",
+            "preserve_thinking": True,
+        }
+
+    def test_budget_tokens_accepted_not_rejected(self):
+        """Claude Code always sends budget_tokens; llama-server has no budget,
+        so it must be ignored rather than 400'd."""
+        payload = self._payload(thinking = {"type": "enabled", "budget_tokens": 4096})
+        assert payload.thinking.budget_tokens == 4096
+        assert payload.resolved_enable_thinking() is True
+
 
 # =====================================================================
 # Vision guard + PNG normalization (/v1/messages)
