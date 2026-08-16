@@ -127,6 +127,6 @@ def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers(
         if isinstance(node, ast.Assign)
         and any(getattr(t, "id", None) == "st_device" for t in node.targets)
     )
-    assert min(node.lineno for node in spends) < first_st_device, (
-        "the sentinel is spent after st_device is derived from device_map"
-    )
+    assert (
+        min(node.lineno for node in spends) < first_st_device
+    ), "the sentinel is spent after st_device is derived from device_map"
