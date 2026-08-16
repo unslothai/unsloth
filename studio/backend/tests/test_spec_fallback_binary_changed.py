@@ -52,7 +52,12 @@ def _load_helper():
 
 
 class _Backend:
-    def __init__(self, reason, changed = False, raises = False):
+    def __init__(
+        self,
+        reason,
+        changed = False,
+        raises = False,
+    ):
         self.spec_fallback_reason = reason
         self._changed = changed
         self._raises = raises
@@ -67,7 +72,13 @@ class _Backend:
 
 def test_answers_only_for_the_two_binary_reasons():
     helper = _load_helper()
-    for reason in (None, "drafter_not_found", "drafter_no_vram", "runtime_error", "mla_mtp_disabled"):
+    for reason in (
+        None,
+        "drafter_not_found",
+        "drafter_no_vram",
+        "runtime_error",
+        "mla_mtp_disabled",
+    ):
         backend = _Backend(reason)
         assert helper(backend) is None
         # The point of the gate: no binary lookup on a poll that cannot need one.
