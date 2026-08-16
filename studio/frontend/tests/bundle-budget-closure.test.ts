@@ -54,10 +54,15 @@ test("a classic script is charged to startup, but not as the entry", () => {
   });
 });
 
-test("a deferred or async classic script does not hold up the first screen", () => {
+test("a deferred script is on the startup path, an async one is not", () => {
+  // defer runs after parsing but before DOMContentLoaded, in document order with
+  // the module entry, which is deferred too. async has no such relationship, and
+  // async wins when a tag carries both.
   const html =
-    '<script defer src="/late.js"></script><script async src="/later.js"></script>';
-  assert.deepEqual(eagerChunksFromHtml(html), []);
+    '<script defer src="/late.js"></script>' +
+    '<script async src="/whenever.js"></script>' +
+    '<script async defer src="/also-whenever.js"></script>';
+  assert.deepEqual(eagerChunksFromHtml(html), ["late.js"]);
 });
 
 test("a script type is judged on whether the browser runs it", () => {
@@ -94,7 +99,7 @@ test("an unrecognisable document yields nothing, so the gate reports a shape cha
 });
 
 test("the budget is a real number, not a placeholder", () => {
-  assert.ok(BUDGET.gzipBytes > 0 && BUDGET.rawBytes > BUDGET.gzipBytes);
+  assert.ok(BUDGET.transferBytes > 0 && BUDGET.rawBytes > BUDGET.transferBytes);
 });
 
 test("the entry and its preloads stay distinguishable", () => {

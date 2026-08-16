@@ -31,13 +31,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = resolve(HERE, "..", "dist");
 
 /**
- * Measured on the build these were set from, plus a little headroom. Gzip is what
- * crosses the wire; raw is what the main thread has to parse and execute, which is
- * the part that shows up as a slow launch on a weak machine.
+ * Measured on the build these were set from, plus a little headroom.
+ *
+ * Transfer is what crosses the wire. Raw is what the main thread has to parse and
+ * execute, which is the part that shows up as a slow launch on a weak machine.
  */
 export const BUDGET = {
-  // Measured 1,496.2 KB gzip / 5,207.2 KB raw at 17363f8a2.
-  gzipBytes: 1_600_000,
+  // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2.
+  transferBytes: 1_600_000,
   rawBytes: 5_500_000,
 };
 
@@ -124,10 +125,13 @@ export function eagerSetFromHtml(html: string): EagerSet {
       // Vite's entry, always one of its own hashed assets.
       add(set.entry, attr(tag, "src"), "assets/");
     } else if (!type || CLASSIC_TYPES.has(type)) {
-      // A classic script blocks the parser wherever it sits, so it counts from
-      // anywhere in the build, not just assets/. `defer`/`async` do not: those
-      // do not hold up the first screen.
-      if (!(hasAttr(tag, "defer") || hasAttr(tag, "async"))) {
+      // Counts from anywhere in the build, not just assets/. `defer` is included:
+      // a deferred script runs after parsing but BEFORE DOMContentLoaded, in
+      // document order with the module entry, which is itself deferred -- so it is
+      // on exactly the timeline this budgets. Only `async` is out, having no
+      // ordering relationship to the first screen at all. `async` also wins when
+      // both are present, which is why it is the one tested.
+      if (!hasAttr(tag, "async")) {
         add(set.blocking, attr(tag, "src"));
       }
     }
@@ -146,7 +150,18 @@ export function eagerChunksFromHtml(html: string): string[] {
   return [...blocking, ...entry, ...preloads];
 }
 
-type Measured = { name: string; raw: number; gzip: number };
+type Measured = { name: string; raw: number; transfer: number };
+
+/**
+ * What the browser actually downloads. The backend gzips the `/assets` mount only
+ * (studio/backend/main.py mounts `_AssetGZipMiddleware` there); everything else
+ * goes out through a plain FileResponse, so its raw size IS its transfer size.
+ */
+function transferBytes(name: string, bytes: Buffer): number {
+  return name.startsWith("assets/")
+    ? gzipSync(bytes, { level: 6 }).byteLength
+    : bytes.byteLength;
+}
 
 function measure(names: string[]): Measured[] | string {
   const out: Measured[] = [];
@@ -163,7 +178,7 @@ function measure(names: string[]): Measured[] | string {
     out.push({
       name,
       raw: bytes.byteLength,
-      gzip: gzipSync(bytes, { level: 6 }).byteLength,
+      transfer: transferBytes(name, bytes),
     });
   }
   return out;
@@ -216,21 +231,21 @@ function main(): number {
   }
   const measured = sized.sort((a, b) => b.raw - a.raw);
   const raw = measured.reduce((sum, c) => sum + c.raw, 0);
-  const gzip = measured.reduce((sum, c) => sum + c.gzip, 0);
+  const transfer = measured.reduce((sum, c) => sum + c.transfer, 0);
 
   console.log(
-    `eager startup JS: ${kb(raw)} raw, ${kb(gzip)} gzip, ${measured.length} chunks`,
+    `eager startup JS: ${kb(raw)} raw, ${kb(transfer)} transfer, ${measured.length} chunks`,
   );
   console.log("largest:");
   for (const c of measured.slice(0, 8)) {
     console.log(
-      `  ${kb(c.raw).padStart(10)} raw  ${kb(c.gzip).padStart(9)} gzip  ${c.name}`,
+      `  ${kb(c.raw).padStart(10)} raw  ${kb(c.transfer).padStart(9)} transfer  ${c.name}`,
     );
   }
 
   const over: string[] = [];
-  if (gzip > BUDGET.gzipBytes) {
-    over.push(`gzip ${kb(gzip)} > ${kb(BUDGET.gzipBytes)}`);
+  if (transfer > BUDGET.transferBytes) {
+    over.push(`transfer ${kb(transfer)} > ${kb(BUDGET.transferBytes)}`);
   }
   if (raw > BUDGET.rawBytes) {
     over.push(`raw ${kb(raw)} > ${kb(BUDGET.rawBytes)}`);
@@ -247,7 +262,7 @@ function main(): number {
     return 1;
   }
   console.log(
-    `\nwithin budget (${kb(BUDGET.gzipBytes - gzip)} gzip, ${kb(BUDGET.rawBytes - raw)} raw to spare)`,
+    `\nwithin budget (${kb(BUDGET.transferBytes - transfer)} transfer, ${kb(BUDGET.rawBytes - raw)} raw to spare)`,
   );
   return 0;
 }

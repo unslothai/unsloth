@@ -41,7 +41,7 @@ const TS_FLAGS = process.execArgv.filter((flag) =>
   /^--(experimental-)?(strip-types|transform-types)/.test(flag),
 );
 
-const MEASURED_TWO = /eager startup JS: .* raw, .* gzip, 2 chunks/;
+const MEASURED_TWO = /eager startup JS: .* raw, .* transfer, 2 chunks/;
 
 const INDEX_HTML = `<!doctype html><html><head>
 <script type="module" crossorigin src="/assets/index-aaa.js"></script>
