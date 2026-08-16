@@ -87,6 +87,7 @@ export {
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
   reorderIds,
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "./stores/sidebar-organization-store";
 export type {

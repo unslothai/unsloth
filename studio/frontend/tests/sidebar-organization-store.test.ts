@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -13,6 +14,7 @@ import {
   RECENTS_ORDER_SCOPE,
   reorderIds,
   showsInRecents,
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "../src/features/chat/stores/sidebar-organization-store.ts";
 
@@ -141,4 +143,22 @@ test("Pinned sorts independently of the chat lists", () => {
   const state = useSidebarOrganizationStore.getState();
   assert.equal(state.chatSort, "updated");
   assert.equal(state.pinnedSort, "priority");
+});
+
+// Reset-all is the only in-app way back to the shipped sidebar layout, and it
+// only removes the keys it lists, so an unlisted one survives the reload.
+test("Reset all local preferences clears this key", async () => {
+  const source = await readFile(
+    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  const keys = source.slice(
+    source.indexOf("const PREFS_KEYS"),
+    source.indexOf("];", source.indexOf("const PREFS_KEYS")),
+  );
+  assert.ok(
+    keys.includes("SIDEBAR_ORGANIZATION_STORAGE_KEY") ||
+      keys.includes(`"${SIDEBAR_ORGANIZATION_STORAGE_KEY}"`),
+    `${SIDEBAR_ORGANIZATION_STORAGE_KEY} missing from PREFS_KEYS`,
+  );
 });

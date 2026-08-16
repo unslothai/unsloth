@@ -1385,10 +1385,14 @@ export function AppSidebar() {
   async function archiveSelected() {
     const items = selectedChatItems;
     clearSelection();
-    try {
-      // Sequential: each archive can reset the active thread, and two of those
-      // racing would fight over where the chat pane lands.
-      for (const item of items) {
+    // Sequential: each archive can reset the active thread, and two of those
+    // racing would fight over where the chat pane lands.
+    let archived = 0;
+    let failure: unknown;
+    for (const item of items) {
+      // Per item, so one bad chat does not strand the rest of the batch
+      // unarchived with the selection already gone.
+      try {
         await archiveChatItem(item, activeThreadId, (view) => {
           navigate({
             to: "/chat",
@@ -1397,12 +1401,17 @@ export function AppSidebar() {
               : { new: view.newThreadNonce },
           });
         });
+        archived += 1;
+      } catch (err) {
+        failure = err;
       }
-      // One notice for the batch, not one per chat.
-      showArchivedChatsToast();
-    } catch (err) {
+    }
+    // One notice for the batch, not one per chat. A partial batch gets both:
+    // where the archived ones went, and that the rest did not make it.
+    if (archived > 0) showArchivedChatsToast();
+    if (archived < items.length) {
       toast.error(translate("settings.data.failedToArchiveChats"), {
-        description: err instanceof Error ? err.message : undefined,
+        description: failure instanceof Error ? failure.message : undefined,
       });
     }
   }

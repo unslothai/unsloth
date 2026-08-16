@@ -12,7 +12,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+import {
+  PermissionModeDropdown,
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,
@@ -89,6 +93,8 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  // Grouping, sort and the manual row order.
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
   // Chat runtime prefs

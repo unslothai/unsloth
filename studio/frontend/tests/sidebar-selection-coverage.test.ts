@@ -105,6 +105,24 @@ test("the bulk archive failure reads a translated string", async () => {
   assert.match(archive[1], /translate\("settings\.data\.failedToArchiveChats"\)/);
 });
 
+test("one failed archive does not abandon the rest of the batch", async () => {
+  // The selection is cleared up front, so chats skipped by an early exit are
+  // left unarchived with nothing left highlighted to retry from. The other two
+  // bulk loops catch per item; this one has to as well.
+  const source = await sidebarSource();
+  const archive = /async function archiveSelected\(([\s\S]*?)\n  \}/.exec(source);
+  assert.ok(archive, "no archiveSelected");
+  const body = archive[1];
+  const loopAt = body.indexOf("for (const item of items)");
+  const tryAt = body.indexOf("try {");
+  assert.ok(loopAt >= 0, "no batch loop");
+  assert.ok(tryAt > loopAt, "archiveSelected catches around the loop, not in it");
+  // Reported on what got through, not on whether the loop threw.
+  assert.match(body, /archived \+= 1/);
+  assert.match(body, /if \(archived > 0\) showArchivedChatsToast\(\)/);
+  assert.match(body, /if \(archived < items\.length\)/);
+});
+
 test("deleting folders in bulk cleans up like deleting one", async () => {
   // Both branches end the same way, or a batch leaves stale chat rows behind
   // and strands the user on a page whose project is gone.

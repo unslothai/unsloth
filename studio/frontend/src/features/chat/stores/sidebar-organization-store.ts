@@ -9,6 +9,9 @@ export type SidebarOrganizeBy = "project" | "list";
 /** How chat rows are ordered inside whichever list they land in. */
 export type SidebarChatSort = "priority" | "updated" | "manual";
 
+// Exported so the preference reset clears the same key this store writes.
+export const SIDEBAR_ORGANIZATION_STORAGE_KEY = "unsloth_sidebar_organization";
+
 // Manual order is per list: dragging a chat in one project must not move it in
 // another list showing the same chat. Each list gets its own key.
 export const RECENTS_ORDER_SCOPE = "recents";
@@ -133,7 +136,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
         })),
     }),
     {
-      name: "unsloth_sidebar_organization",
+      name: SIDEBAR_ORGANIZATION_STORAGE_KEY,
       merge: (persisted, current) => {
         const saved = persisted as
           | Partial<SidebarOrganizationState>
