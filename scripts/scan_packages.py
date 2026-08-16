@@ -279,18 +279,11 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    # Shell / REPL history files. This was `\bhistory\b.*\bread\b`, and with re.DOTALL
-    # that `.*` spans the whole file: any module containing the word "history" anywhere
-    # before the word "read" anywhere matched. That is httpx's `Response.history`,
-    # IPython's history module, urllib3's `retries.history`, torch's CUDA memory
-    # history -- nine of the eleven baselined CRITICALs under this check were that one
-    # alternative, and each had to be allowlisted, which suppresses the whole file for
-    # the check. Name the files instead: a stealer reading history reads a history
-    # FILE, and the two literals below were already the precise half of this pattern.
+    # Shell / REPL history FILES. Replaces `\bhistory\b.*\bread\b`, whose re.DOTALL `.*` spanned
+    # the whole file and produced 9 of the 11 baselined CRITICALs here (httpx, urllib3, IPython,
+    # torch) -- each allowlisted, which suppressed this check for the whole file.
     r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli)_history\b"
-    # fish is the exception: it writes $XDG_DATA_HOME/fish/fish_history, with no leading dot
-    # (https://fishshell.com/docs/current/cmds/history.html), so the dotted form above would
-    # never match the real path.
+    # fish writes fish_history with no leading dot, so the dotted form above cannot match it.
     r"|(?:^|[/\\])fish_history\b"
     r"|['\"~/]\.history\b"
     r"|\bHISTFILE\b"

@@ -50,13 +50,9 @@ def _read_backend(rel: str) -> str:
 
 
 def _override_lookup_candidates(*args, **kwargs) -> list[str]:
-    """The real override-key ladder, imported rather than grepped.
-
-    A text assertion over inference.py cannot survive the ladder being moved to another module,
-    which is exactly what #8702 did (unchanged, but four contract tests went red for it). The
-    module is import-cheap -- stdlib only at import time, with the quant-label helper imported
-    lazily inside the function -- so this costs nothing the source read did not already cost.
-    """
+    """The real override-key ladder, imported rather than grepped out of inference.py: #8702 moved
+    it to another module unchanged and took four contract tests red with it. The module is
+    import-cheap (stdlib only at import time)."""
     import sys
 
     backend = str(WORKDIR / "studio" / "backend")
@@ -67,11 +63,9 @@ def _override_lookup_candidates(*args, **kwargs) -> list[str]:
     try:
         return override_lookup_candidates(*args, **kwargs)
     except ModuleNotFoundError as missing:
-        # The standalone-.gguf branch lazily imports hub.utils.gguf, which pulls in loggers and
-        # then structlog. CI installs studio.txt so this runs there; a bare `pytest
-        # tests/studio/...` does not, and the rest of this file is source-only by design. Skip
-        # on a missing THIRD-PARTY package only -- a missing first-party module is a real break
-        # and must still fail.
+        # The standalone-.gguf branch lazily imports hub.utils.gguf, which reaches structlog. CI
+        # installs studio.txt; a bare `pytest tests/studio/...` does not. Skip on a missing
+        # third-party package only -- a missing first-party module is a real break.
         if (missing.name or "").split(".")[0] in {"hub", "loggers", "utils", "core", "models"}:
             raise
         import pytest as _pytest
@@ -2001,7 +1995,7 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
 
     # The backend applies the same model's override by the same alias, which is why the
     # echo the adoption gate compares against carries the saved count at all. Driven through the
-    # real ladder rather than grepped out of inference.py, for the reason given in
+    # real ladder rather than grepped, for the reason in
     # test_a_standalone_gguf_has_one_settings_identity_everywhere.
     candidates = _override_lookup_candidates("/models/m.gguf", "org/repo", "Q8_0")
     assert candidates[:2] == [
@@ -2028,15 +2022,10 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     assert runtime.index("const previousNParallel") < runtime.index(
         "applyPerModelConfigToRuntime(pendingLoadConfig,"
     ), "a config staged on the selection must not replace it either"
-    # Ordering, not adjacency, exactly as the use-chat-model-runtime.ts check above does it. The
-    # concatenated form demanded the two statements be neighbours, so #8702 broke it by inserting
-    # `const remembered = rememberedConfigFor(selection);` between them -- which changes nothing
-    # about the contract, since the snapshot is still taken first.
-    #
-    # Scoped to selectWithConfig, not the whole file. chat-page.tsx takes the same snapshot in the
-    # hub auto-load path, and that one sits ABOVE the only applyModelLoadConfigToRuntime call, so
-    # a whole-file index comparison is satisfied by the unrelated occurrence and stays green even
-    # if the snapshot this test is about is deleted outright.
+    # Ordering, not adjacency: the concatenated form required the two statements to be neighbours,
+    # so #8702 broke it by inserting a line between them without changing the contract.
+    # Scoped to selectWithConfig, because the hub auto-load path takes the same snapshot above the
+    # only applyModelLoadConfigToRuntime call and would satisfy a whole-file comparison on its own.
     picker = " ".join(_read("features/chat/chat-page.tsx").split())
     handoff = picker.split("const selectWithConfig = async (", 1)
     assert len(handoff) == 2, "selectWithConfig is the handoff this test is about"
@@ -2756,10 +2745,9 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     row_identity = _read("features/hub/inventory/settings-identity.ts")
     assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
 
-    # The precedence that makes the bare path the one that wins. Asserted on the real function
-    # rather than on the text of inference.py: #8702 moved this ladder out into
-    # utils/openai_auto_switch_settings.py unchanged, and the grep that used to live here went red
-    # for a pure refactor while the behaviour it guards never moved.
+    # The precedence that makes the bare path win, asserted on the real function rather than on
+    # inference.py's text: #8702 moved this ladder to utils/openai_auto_switch_settings.py
+    # unchanged, and the grep that used to live here went red for a pure refactor.
     candidates = _override_lookup_candidates("/models/m-Q4_K_M.gguf", "org/repo", None)
     assert candidates == [
         "/models/m-Q4_K_M.gguf",
@@ -3022,10 +3010,9 @@ def test_run_settings_page_keeps_its_identifying_controls():
     # The button, not the word: "Reset" also appears in this file's own comments, so a
     # raw source search passes with the control deleted and the Playwright reset gate
     # only finds out 25 minutes later.
-    # Whole elements, then the one that is both, the same way
-    # test_the_primary_action_keeps_its_four_labels does it. The old single-line regex pinned the
-    # handler body exactly, so #8702 broke it by adding `llamaExtraArgs: null` and reflowing the
-    # call across lines -- while the button itself is untouched and still named Reset.
+    # Whole elements, like test_the_primary_action_keeps_its_four_labels. The old single-line regex
+    # pinned the handler body exactly, so #8702 broke it by reflowing that call across lines while
+    # the button itself stayed untouched.
     reset = any(
         "DEFAULT_PER_MODEL_CONFIG" in el.group(0)
         and ">\n          Reset\n        <" in el.group(0)

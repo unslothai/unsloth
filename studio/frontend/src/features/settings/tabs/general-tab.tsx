@@ -13,11 +13,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
-// Straight from the module, not through the @/features/chat barrel. This key is read at MODULE
-// scope by the storage-key list below, and the barrel is part of an import cycle that reaches
-// this file, so via the barrel the binding is still in its temporal dead zone when the list is
-// built: "Cannot access 'SIDEBAR_ORGANIZATION_STORAGE_KEY' before initialization", which kills
-// the whole module graph and renders nothing.
+// Direct import, not via the @/features/chat barrel: the barrel is in an import cycle with this
+// file, so this key would still be in its temporal dead zone when the module-scope list below
+// reads it ("Cannot access ... before initialization"), killing the whole module graph.
 import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-store";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,

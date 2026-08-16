@@ -1,21 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The shared backend double keeps up with the real backend.
+"""The shared backend double keeps up with the real backend, in both directions.
 
-Two directions, because the double can rot either way.
+Downward: the double must not claim attributes ``LlamaCppBackend`` lacks, or the tests pass against
+a backend that cannot exist.
 
-Downward: the double must not claim attributes the real ``LlamaCppBackend`` does not have, or the
-tests pass against a backend that cannot exist.
-
-Upward, which is the one that actually bit: the route must still serve a request when driven with a
-bare double. #8700 added an unguarded ``llama_backend.context_length`` read to the chat-completions
-path and updated five test files, missing three. That produced 19 failures in two unrelated-looking
-shapes -- a plain ``AttributeError`` under TestClient, and a 20-second timeout in the slot-release
-tests, where the same error is swallowed into the response task and reads as "the slot was never
-released". Neither shape names the missing attribute.
-
-The canary below fails in ONE place, at the point of the change, with the attribute in the message.
+Upward, the one that bit: the route must still serve a request driven by a bare double. #8700 added
+an unguarded ``context_length`` read and updated five of eight test files, giving 19 failures split
+between ``AttributeError`` and 20-second timeouts, neither naming the attribute. The canary below
+fails in one place instead, with the attribute in the message.
 """
 
 from __future__ import annotations
@@ -39,8 +33,7 @@ def test_the_double_claims_nothing_the_real_backend_lacks():
         for name in vars(FakeLlamaCppBackend)
         if not name.startswith("__") and name != "_abc_impl"
     }
-    # Instance attributes set in __init__ are not on the class, so check the source too: the
-    # question is "does the real backend have this concept", not "is it a class attribute".
+    # Attributes set in __init__ are not on the class, so check the source too.
     import inspect
 
     source = inspect.getsource(LlamaCppBackend)
@@ -56,11 +49,8 @@ def test_the_double_claims_nothing_the_real_backend_lacks():
 
 
 def test_a_bare_double_can_still_serve_a_chat_completion(monkeypatch):
-    """The canary: drive the real route with nothing but the shared double.
-
-    If production starts reading a new attribute off ``llama_backend``, this fails here with the
-    attribute named, instead of scattering AttributeErrors and timeouts across five files.
-    """
+    """The canary: drive the real route with nothing but the shared double, so a newly read
+    attribute fails here by name rather than scattering errors across five files."""
 
     class _Backend(FakeLlamaCppBackend):
         def generate_chat_completion(self, **kwargs):

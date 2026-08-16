@@ -326,10 +326,9 @@ def test_proc_self_status_pattern_is_live():
 
 
 def test_fs_enum_does_not_flag_the_word_history():
-    # `\bhistory\b.*\bread\b` under re.DOTALL spanned the whole file, so any module
-    # mentioning "history" anywhere before "read" anywhere was filesystem enumeration.
-    # Combined with a network call that is a CRITICAL, which is how httpx, urllib3,
-    # IPython and torch all ended up in the baseline for reasons unrelated to files.
+    # `\bhistory\b.*\bread\b` under re.DOTALL spanned the whole file, so any module mentioning
+    # "history" before "read" was filesystem enumeration -- and a CRITICAL alongside a network
+    # call. That is how httpx, urllib3, IPython and torch got baselined.
     for s in (
         "history: list[Response] | None = None\n\ndef read(self): pass\n",
         "from IPython.core.history import HistoryManager\n\ndef read(): pass\n",
@@ -340,10 +339,9 @@ def test_fs_enum_does_not_flag_the_word_history():
 
 
 def test_fs_enum_still_flags_real_history_file_reads():
-    # And the half that matters must fire. The two literals this replaces were
-    # `\b\.bash_history\b` / `\b\.zsh_history\b`: \b sits between two non-word
-    # characters in "~/.bash_history", so neither could ever match -- the same
-    # unsatisfiable-\b bug as /proc/self/status above. Every form below was missed.
+    # The half that matters must fire. The old `\b\.bash_history\b` / `\b\.zsh_history\b` could
+    # never match ("~/.bash_history" puts \b between two non-word chars, the same unsatisfiable-\b
+    # bug as /proc/self/status above), so every form below was missed.
     for s in (
         'open(os.path.expanduser("~/.bash_history")).read()',
         "p = Path.home() / '.zsh_history'",

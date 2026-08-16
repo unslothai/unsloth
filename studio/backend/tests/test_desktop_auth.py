@@ -782,11 +782,9 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
 
 
 def _routers_main_imports() -> set[str]:
-    """Every ``*_router`` name in main.py's ``from routes import (...)`` block.
-
-    Read from the source rather than by importing ``routes``: importing it would pull in torch,
-    transformers and llama.cpp, which is precisely what the stub below exists to avoid.
-    """
+    """Every ``*_router`` name in main.py's ``from routes import (...)`` block, read textually:
+    importing ``routes`` would pull in torch, transformers and llama.cpp, which is what the stub
+    below exists to avoid."""
     import re
     from pathlib import Path
 
@@ -815,16 +813,14 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
 
-    # Derived from main.py's own import block, not hand-listed. A hardcoded dict went stale twice:
-    # openai_codex_auth_router after #8511 and youtube_router after #8648, each time taking every
-    # test in this file out with an ImportError. Reading the names out of the source keeps the
-    # stub complete by construction, and still costs nothing at import time -- which is the whole
-    # point of stubbing `routes` here rather than importing the real package and its ML stack.
+    # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
+    # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every
+    # test in this file with an ImportError.
     for name in _routers_main_imports():
         setattr(
             routes_module,
             name,
-            # settings is a real module above because the health payload reads its router.
+            # The health payload reads the real settings router.
             settings_module.router if name == "settings_router" else APIRouter(),
         )
     routes_module.settings = settings_module
@@ -1076,12 +1072,10 @@ def test_desktop_auth_provision_has_bounded_timeout():
 
 
 def test_the_router_stub_covers_every_router_main_imports():
-    """The stub is now derived from main.py rather than hand-listed, so it cannot go stale the way
-    it did for ``openai_codex_auth_router`` after #8511 and ``youtube_router`` after #8648, each of
-    which killed every test in this file with an ImportError. What still can break is the
-    derivation itself: a reshaped import block in main.py would silently yield a short list, and
-    the stub would be incomplete again with no hint why. So pin the derivation against the real
-    package's ``__all__``, read textually for the same no-import reason."""
+    """The stub is derived from main.py, so it cannot go stale as it did for #8511's
+    ``openai_codex_auth_router`` and #8648's ``youtube_router``. What can still break is the
+    derivation: a reshaped import block would silently yield a short list. So pin it against the
+    real package's ``__all__``, read textually for the same no-import reason."""
     import re
     from pathlib import Path
 
@@ -1100,8 +1094,7 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"the app itself would fail to start"
     )
 
-    # Same drift for submodule imports, which need a sys.modules entry rather than an attribute,
-    # and are still registered by hand -- so this half of the check keeps earning its keep.
+    # Same drift for submodule imports, which need a sys.modules entry and are still hand-listed.
     import inspect
 
     main_src = (backend / "main.py").read_text(encoding = "utf-8")

@@ -107,14 +107,11 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     after_entry, after_kwargs = _entry_point(monkeypatch, policy = policy, opt_out = True)
 
     assert (before_entry, after_entry) == ("plain", "plain")
-    # Both are fresh objects per request, so identity differences say nothing about the payload:
-    # cancel_event is a new Event, and perf_callback is the closure the monitor builds per request
-    # to carry llama.cpp timings back for the tok/s readout. Comparing either by identity would
-    # fail for every pair of requests, opt-out or not.
+    # Both are fresh per request (a new Event, and the monitor's per-request tok/s closure), so
+    # comparing them by identity would fail for any pair of requests.
     drop = {"cancel_event", "perf_callback"}
-    # Identity is what differs, not presence: dropping the key outright would also pass if the
-    # opt-out stopped supplying the callback on one of the two requests, which would silently
-    # cost that path its tok/s readout. Compare presence first, then exclude.
+    # But dropping perf_callback outright would also pass if the opt-out stopped supplying it at
+    # all, silently costing that path its tok/s readout. Compare presence first, then exclude.
     assert callable(before_kwargs.get("perf_callback")) == callable(
         after_kwargs.get("perf_callback")
     ), "the opt-out must not decide whether llama.cpp timings are collected"

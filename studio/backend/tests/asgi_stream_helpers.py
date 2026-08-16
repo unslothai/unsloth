@@ -3,19 +3,11 @@
 
 """Wait for an SSE frame without swallowing the reason it never arrived.
 
-These slot-release tests drive the real ASGI app in a task and wait on an ``asyncio.Event`` that a
-fake ``send()`` sets when the frame of interest goes out. If the request path raises before that
-frame, the event never fires, the wait hits its timeout, and the ``finally`` clause's
-``gather(task, return_exceptions = True)`` throws the real exception away. What CI then prints is a
-bare ``TimeoutError`` with no traceback and no attribute name.
-
-That is not hypothetical. #8700 added an unguarded ``llama_backend.context_length`` read to the
-chat-completions path; the doubles here did not have the attribute, and four tests spent 20 seconds
-each waiting for a frame that an ``AttributeError`` had already prevented. Read as a timing flake,
-the obvious "fixes" are to raise the timeout or mark them flaky, and both would have buried a real
-one-line bug.
-
-So: if the driving task has already failed, raise ITS exception, not the timeout.
+The slot-release tests drive the ASGI app in a task and wait on an event a fake ``send()`` sets. If
+the request path raises first, the wait times out and the ``finally``'s ``gather(...,
+return_exceptions = True)`` discards the real exception, leaving a bare ``TimeoutError``. That is
+how #8700's unguarded ``llama_backend.context_length`` read surfaced: four 20-second "flakes"
+hiding an ``AttributeError``. So if the driving task has failed, raise ITS exception.
 """
 
 from __future__ import annotations
@@ -32,9 +24,8 @@ async def wait_for_frame(
 ) -> None:
     """Wait for *event*, surfacing *task*'s exception if it died first.
 
-    The timeout stays generous on purpose: it is a deadlock backstop, not a performance assertion.
-    These tests take tens of milliseconds when they pass, so a timeout never means "too slow", it
-    means "never happened" -- and this makes the request path say why.
+    The timeout is a deadlock backstop, not a performance assertion: these tests take milliseconds
+    when they pass, so a timeout means "never happened", not "too slow".
     """
     waiter = asyncio.ensure_future(event.wait())
     try:
@@ -44,7 +35,6 @@ async def wait_for_frame(
         if waiter in done:
             return
         if task in done:
-            # Re-raises inside the test, with the original traceback.
             exc = task.exception()
             if exc is not None:
                 raise AssertionError(f"the request failed before {what} was sent: {exc!r}") from exc
