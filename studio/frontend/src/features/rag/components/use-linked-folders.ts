@@ -10,6 +10,7 @@ import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  announceProjectSourcesUpdated,
   createLinkedFolder,
   deleteLinkedFolder,
   getFolderSyncJob,
@@ -351,8 +352,13 @@ export function useLinkedFolders(
       setFolders((current) =>
         current.filter((folder) => folder.id !== folderId),
       );
+      const unlinkedProjectId = projectWorkScopeId;
       try {
         await withProjectWork(() => deleteLinkedFolder(folderId, removeIndex));
+        // The rows are gone whatever this hook is showing by now, and every
+        // other composer on that project is still listing them. Announce for
+        // the project the unlink was for, not for the scope on screen.
+        if (unlinkedProjectId) announceProjectSourcesUpdated(unlinkedProjectId);
         if (currentScopeKey.current !== operationScopeKey) return;
         onSourcesChanged?.();
         setJobs((current) => {
@@ -384,6 +390,7 @@ export function useLinkedFolders(
       refresh,
       withProjectWork,
       onSourcesChanged,
+      projectWorkScopeId,
     ],
   );
 

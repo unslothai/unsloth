@@ -610,7 +610,13 @@ export async function reconcileProjectFolderJobs(
 ): Promise<void> {
   const now = Date.now();
   if ((folderReconcileNotBefore.get(projectId) ?? 0) > now) return;
+  // The first look is the one with nothing else gating: a job that scans before
+  // it writes any row leaves the composer's own list legitimately empty, so the
+  // gate would open for the length of this request. Later looks run beside a
+  // list the composer already has.
+  const gateThisLook = !folderReconcileNotBefore.has(projectId);
   folderReconcileNotBefore.set(projectId, now + FOLDER_RECONCILE_MIN_GAP_MS);
+  if (gateThisLook) noteProjectWork(projectId, 1);
   try {
     const folders = await listLinkedFolders({ type: "project", id: projectId });
     for (const folder of folders) {
@@ -622,6 +628,10 @@ export async function reconcileProjectFolderJobs(
     // RAG unavailable or a transient failure. Allow another look rather than
     // recording a project as reconciled on an answer that never came.
     folderReconcileNotBefore.delete(projectId);
+  } finally {
+    // After the watchers above, which take their own leases, so the two overlap
+    // rather than leaving a gap.
+    if (gateThisLook) noteProjectWork(projectId, -1);
   }
 }
 

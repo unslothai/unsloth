@@ -746,7 +746,7 @@ test("a project composer picks up a folder sync already running", () => {
   // an answer, but the project is never closed to a later one.
   assert.match(
     api,
-    /if \(\(folderReconcileNotBefore\.get\(projectId\) \?\? 0\) > now\) return;\s*folderReconcileNotBefore\.set\(projectId, now \+ FOLDER_RECONCILE_MIN_GAP_MS\);/,
+    /if \(\(folderReconcileNotBefore\.get\(projectId\) \?\? 0\) > now\) return;[\s\S]{0,400}?folderReconcileNotBefore\.set\(projectId, now \+ FOLDER_RECONCILE_MIN_GAP_MS\);/,
   );
   assert.match(api, /folderReconcileNotBefore\.delete\(projectId\);/);
 
@@ -844,4 +844,23 @@ test("a queue in a chat with no row still waits on its project", () => {
   );
   // And the thread-document read is still only made when there is a thread.
   assert.match(src, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
+});
+
+// Unlinking a folder deletes its rows whatever this hook is showing by the time the
+// DELETE returns, so an announcement gated on the scope still being current leaves
+// every other composer, and every other tab, listing files that are gone.
+test("unlinking a folder announces for the project it was for", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-linked-folders.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /const unlinkedProjectId = projectWorkScopeId;/);
+  // Announced before the scope guard, so navigating mid-DELETE cannot skip it.
+  assert.match(
+    hook,
+    /if \(unlinkedProjectId\) announceProjectSourcesUpdated\(unlinkedProjectId\);\s*if \(currentScopeKey\.current !== operationScopeKey\) return;/,
+  );
 });

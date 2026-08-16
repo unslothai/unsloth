@@ -223,3 +223,35 @@ test("a failed look leaves the project open to the next one", async () => {
     fetched.restore();
   }
 });
+
+// A durable job that scans before it writes any row leaves the composer's own list
+// legitimately empty, so the send gate is open for however long the lookup takes.
+test("the first look for folder jobs gates the composer while it runs", async () => {
+  let release!: () => void;
+  const answered = new Promise<void>((done) => { release = done; });
+  const urls: string[] = [];
+  setAuthFetchHandler(async (input: string) => {
+    urls.push(input);
+    await answered;
+    return { ok: true, status: 200, json: async () => ({ linkedFolders: [] }) } as Response;
+  });
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const looking = rag.reconcileProjectFolderJobs("p-folder-gate");
+    assert.equal(rag.projectWorkCount("p-folder-gate"), 1, "a send must wait for the answer");
+    release();
+    await looking;
+    assert.equal(rag.projectWorkCount("p-folder-gate"), 0, "and must not wait past it");
+    // A periodic look afterwards runs beside a list the composer already has, so it
+    // must not flicker the gate every interval.
+    clock += 60_000;
+    await rag.reconcileProjectFolderJobs("p-folder-gate");
+    assert.equal(urls.length, 2);
+    assert.equal(rag.projectWorkCount("p-folder-gate"), 0);
+  } finally {
+    Date.now = realNow;
+    setAuthFetchHandler(null);
+  }
+});
