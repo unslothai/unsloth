@@ -317,9 +317,7 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
 
     def test_the_last_draft_flag_wins(self):
-        b = self._backend(
-            {"/d/mla.gguf": (512, "deepseek2"), "/d/plain.gguf": (None, "llama")}
-        )
+        b = self._backend({"/d/mla.gguf": (512, "deepseek2"), "/d/plain.gguf": (None, "llama")})
         cmd = [
             "llama-server",
             "--model-draft",
@@ -356,6 +354,4 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "self._draft_kv_symmetry()" not in src
-        assert src.count("self._draft_kv_symmetry(") == src.count(
-            "self._target_kv_symmetry()"
-        )
+        assert src.count("self._draft_kv_symmetry(") == src.count("self._target_kv_symmetry()")
