@@ -33,6 +33,7 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
+from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
 from core.inference.tool_stream_exec import (
     TOOL_OUTPUT_STREAM_MAX_CHARS,
     stream_tool_execution,
@@ -771,11 +772,15 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
     # The role=tool message fed to the model is byte-identical: streaming is purely
     # observational and must not perturb parsing/nudging/healing.
     assert _tool_messages(payloads_streaming) == _tool_messages(payloads_plain)
+    # The tool's own output is still verbatim and still leads the message. What
+    # follows it is the budget-exhausted instruction, which now rides the last tool
+    # result instead of opening a newer user turn: templates gate replayed reasoning
+    # on the newest user turn, so a nudge there hides this turn's thinking.
     assert _tool_messages(payloads_streaming) == [
         {
             "role": "tool",
             "name": "python",
-            "content": result_text,
+            "content": f"{result_text}\n\n{BUDGET_EXHAUSTED_NUDGE}",
             "tool_call_id": "call_1",
         }
     ]

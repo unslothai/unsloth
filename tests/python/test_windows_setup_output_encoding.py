@@ -623,12 +623,17 @@ def _console_less_probe(path: Path) -> str:
 
 
 @lru_cache(maxsize = None)
-def _run_console_less(path: Path) -> tuple[int, bytes, str]:
-    """Spawn the probe the way install.rs spawns the installer, and read bytes."""
+def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes, str]:
+    """Spawn the probe the way install.rs spawns the installer, and read bytes.
+
+    `source` is for the VT parity case, which runs this file's own function beside the one it
+    replaced. A str keeps the lru_cache above workable; a dict would not hash.
+    """
     with tempfile.TemporaryDirectory() as workdir:
         # A file written here has no Zone.Identifier, so RemoteSigned admits it.
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
-        probe.write_bytes(_console_less_probe(path).replace("\n", "\r\n").encode("ascii"))
+        text = _console_less_probe(path) if source is None else source
+        probe.write_bytes(text.replace("\n", "\r\n").encode("ascii"))
         proc = subprocess.run(
             [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
             stdout = subprocess.PIPE,
@@ -726,4 +731,59 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     assert "??" not in text, "the sloth was transcoded to '?' by a non-UTF-8 code page" + detail
     assert text.count(RULE_CHAR * 52) == 1, (
         f"expected one 52-char U+2500 rule, found {text.count(RULE_CHAR * 52)}" + detail
+    )
+
+
+# Sliced back out to rebuild the function this replaced, so parity is measured against the real
+# predecessor. The comments go with the guard: they do not execute, but leaving them behind
+# would make the reconstruction something this test invented rather than the merge-base function.
+_VT_FAST_PATH = re.compile(
+    r"(?m)^[ \t]*# A redirected stdout is not a console.*?\n"
+    r"(?:^[ \t]*#.*\n)*"
+    r"^[ \t]*if \(\$script:StudioStdoutRedirected\) \{ return \$false \}\n"
+)
+
+
+def _probe_without_the_vt_fast_path(path: Path) -> str:
+    probe = _console_less_probe(path)
+    stripped, count = _VT_FAST_PATH.subn("", probe, count = 1)
+    assert count == 1, (
+        f"{path.name}: the VT fast path is not in the sliced probe in the shape this test "
+        f"removes, so nothing was being compared. Update _VT_FAST_PATH."
+    )
+    return stripped
+
+
+def _vt_verdict(err: str) -> str:
+    for line in err.splitlines():
+        if line.startswith("studio_vt_ok="):
+            return line.split("=", 1)[1].strip()
+    raise AssertionError(f"the probe printed no studio_vt_ok line:\n{err}")
+
+
+@windows_only
+@powershell_51_only
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+def test_vt_fast_path_decides_exactly_as_the_compile_did(path: Path) -> None:
+    """Skipping csc.exe must not change one byte the user sees.
+
+    This probe is the changed branch, not a bystander: install.rs spawns with a pipe, so
+    `$script:StudioStdoutRedirected` is true here and the early return is what runs. The
+    reconstructed predecessor reaches Add-Type instead, and has to land on the same verdict.
+    """
+    new_code, new_raw, new_err = _run_console_less(path)
+    old_code, old_raw, old_err = _run_console_less(
+        path, source = _probe_without_the_vt_fast_path(path)
+    )
+    assert new_code == old_code == 0, (
+        f"probe exit codes {new_code} (with the fast path) and {old_code} (without)"
+        f"{_explain(path, new_code, new_raw, new_err)}"
+    )
+    assert _vt_verdict(new_err) == _vt_verdict(old_err) == "False", (
+        f"a redirected stream cannot render VT: the fast path returned "
+        f"{_vt_verdict(new_err)} where the compile returned {_vt_verdict(old_err)}"
+    )
+    assert new_raw == old_raw, (
+        "the banner bytes moved. Same verdict in, same bytes out is the whole contract of "
+        "this change" + _explain(path, new_code, new_raw, new_err)
     )

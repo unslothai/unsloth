@@ -739,6 +739,12 @@ class ModelOverridePayload(BaseModel):
 
 class ModelOverridesResponse(BaseModel):
     overrides: dict[str, dict]
+    # Filled only when the caller named a model: the entry ITS load would apply,
+    # resolved here rather than in the browser. The folding rules are Python's
+    # (casefold is not toLowerCase, and an ambiguous fold matches nothing on
+    # purpose), so a client mirroring them can only approximate.
+    resolved: Optional[dict] = None
+    resolved_key: Optional[str] = None
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -1072,9 +1078,26 @@ def update_openai_auto_switch(
 
 @router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def get_openai_auto_switch_overrides(
+    model_id: Optional[str] = None,
+    alias_id: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
 ) -> ModelOverridesResponse:
-    return ModelOverridesResponse(overrides = get_model_overrides())
+    """Every stored override, and optionally the one a named model's load would use.
+
+    The resolution is the loader's own (``resolve_override_for_load``), so what a
+    panel shows and what a load applies cannot disagree.
+    """
+    resolved_key: Optional[str] = None
+    resolved: Optional[dict] = None
+    if model_id:
+        from utils.openai_auto_switch_settings import resolve_override_for_load
+        resolved_key, resolved = resolve_override_for_load(model_id, alias_id, gguf_variant)
+    return ModelOverridesResponse(
+        overrides = get_model_overrides(),
+        resolved = resolved,
+        resolved_key = resolved_key,
+    )
 
 
 def _bare_model_id(model_id: str) -> Optional[str]:
@@ -1084,6 +1107,35 @@ def _bare_model_id(model_id: str) -> Optional[str]:
     # Must look like a quant, not a short path segment; a bpw modifier and stem label both count.
     split = split_quant_suffix(model_id)
     return split[0] if split is not None else None
+
+
+def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
+    """Whether a load for this model would still pick flags off another entry.
+
+    The carry-over copies a legacy bare ``repo`` row's flags onto the first
+    ``repo:QUANT`` save and leaves the bare row in place, and a load reads the
+    qualified key first and the bare one after it. So clearing the box for the quant
+    is only a clear while the quant keeps a row of its own: an all-default save
+    stores nothing, and the next load falls through to a row no page can show.
+
+    Answered rather than repaired. Stripping the flags off the bare row was the first
+    fix and it is too broad: that row is the fallback for every quant that has no row,
+    so forgetting Q4's flags took Q6's with them, and it did nothing at all when a
+    sibling quant had a row of its own.
+    """
+    from utils.openai_auto_switch_settings import get_model_override
+
+    for candidate in (
+        _bare_model_id(model_id),
+        _legacy_standalone_gguf_key(model_id),
+    ):
+        if (
+            candidate
+            and candidate != target_id
+            and get_model_override(candidate).get("llama_extra_args")
+        ):
+            return True
+    return False
 
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
@@ -1194,7 +1246,7 @@ def _serialized_override_write(func):
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
-    from core.inference.llama_server_args import validate_extra_args
+    from core.inference.llama_server_args import drop_managed_flags, validate_extra_args
     from utils.openai_auto_switch_settings import get_model_override
 
     try:
@@ -1241,7 +1293,22 @@ def update_openai_auto_switch_override(
                         if requested_extra_args is not None:
                             break
         # Not validated on an explicit remove: a 400 would only leave the override in place.
-        extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
+        if payload.remove is True:
+            extra_args = []
+        elif payload.llama_extra_args is None:
+            # Carried over, not sent: the caller is saving some other field and this
+            # value predates the request. A flag denylisted since it was written is
+            # dropped rather than refused, or an unrelated save fails naming a flag
+            # the user may not remember writing (and cannot fix from this payload).
+            extra_args, dropped_flags = drop_managed_flags(requested_extra_args)
+            if dropped_flags:
+                logger.warning(
+                    "model_override.dropped_managed_flags model_id=%s flags=%s",
+                    payload.model_id,
+                    ", ".join(dropped_flags),
+                )
+        else:
+            extra_args = validate_extra_args(requested_extra_args)
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to,
             # not the literal one sent (the browser normalizes casing), and every spelling:
@@ -1292,9 +1359,19 @@ def update_openai_auto_switch_override(
                 # A fill retires nothing below, so it must not create the higher-priority
                 # spelling of a row the server already holds.
                 target_id = _fill_target_id(target_id)
+            # An explicit clear keeps a row even when nothing else is set, so long as a
+            # fallback would otherwise answer for this model: "no launch flags" and
+            # "nothing stored" are the same thing everywhere else, and different here.
+            # Written on the quant's own key, so no other quant is touched.
+            keep_empty = (
+                payload.llama_extra_args == []
+                and not payload.fill_absent_fields
+                and _fallback_supplies_extra_args(payload.model_id, target_id)
+            )
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
+                keep_empty_extra_args = keep_empty,
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,

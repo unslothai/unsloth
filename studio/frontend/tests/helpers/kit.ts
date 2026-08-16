@@ -28,10 +28,14 @@ export type StorageFake = {
 /**
  * An in-memory localStorage, installed on globalThis under both names the app reads it
  * by. The returned map is the backing store, so a test can stage records before import.
+ *
+ * The window it installs keeps the listeners registered against it, so `fireWindowEvent`
+ * can deliver a cross-tab "storage" event to a store that subscribed on construction.
  */
 export function installLocalStorageFake(): {
   store: Map<string, string>;
   storage: StorageFake;
+  fireWindowEvent: (type: string, event: unknown) => number;
 } {
   const store = new Map<string, string>();
   const storage: StorageFake = {
@@ -43,18 +47,36 @@ export function installLocalStorageFake(): {
       store.delete(key);
     },
   };
+  const listeners = new Map<string, Set<(event: unknown) => void>>();
   Object.assign(globalThis, {
     // A location too: lib/api-base reads its protocol, pulled in transitively.
     // Stores that sync across tabs subscribe to "storage" on construction.
     window: {
       localStorage: storage,
       location: { protocol: "http:" },
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
+      addEventListener: (type: string, fn: (event: unknown) => void) => {
+        const set = listeners.get(type) ?? new Set<(event: unknown) => void>();
+        set.add(fn);
+        listeners.set(type, set);
+      },
+      removeEventListener: (type: string, fn: (event: unknown) => void) => {
+        listeners.get(type)?.delete(fn);
+      },
     },
     localStorage: storage,
   });
-  return { store, storage };
+  return {
+    store,
+    storage,
+    /** Deliver `event` to every window listener for `type`. Returns how many ran. */
+    fireWindowEvent: (type: string, event: unknown) => {
+      const set = listeners.get(type);
+      for (const fn of set ?? []) {
+        fn(event);
+      }
+      return set?.size ?? 0;
+    },
+  };
 }
 
 /** The chat-runtime store as it stands before anything has hydrated it. */
