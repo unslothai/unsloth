@@ -18,12 +18,11 @@ import re
 import tempfile
 from typing import Any, Optional
 
-# Slack on the row bound. Rows are consumed by things that never produce a step:
-# the eval split carved off the train set, and the rows train_on_responses_only
-# drops when the response template is missing. Running short is not an error --
-# max_steps just re-reads the subset -- but it trains on the same rows twice, so
-# the bound is deliberately loose. Even 4x is three orders of magnitude under the
-# datasets this exists for.
+# Deliberately loose: rows are consumed by things that never produce a step (the
+# eval split carved off the train set, rows train_on_responses_only drops when the
+# response template is missing). Running short only means re-reading the subset,
+# but that repeats rows, and 4x is still orders of magnitude under the datasets
+# this exists for.
 MAX_STEPS_ROW_SLACK = 4
 # Below this a subset is small enough to skew a run for no meaningful saving.
 MIN_MAX_STEPS_ROWS = 1024
@@ -35,29 +34,22 @@ _CHECKPOINT_DIR_RE = re.compile(r"^checkpoint-\d+$")
 
 
 def _int_or(value: Any, default: int) -> int:
-    """Coerce a config value to an int, falling back on anything unusable.
-
-    Studio's request schema validates these, but the worker is also driven from
-    the DB, from resumed-run records and by direct callers, any of which can hand
-    over a None or a string. A row bound is an optimization; it must never be the
-    thing that raises.
-    """
+    """Coerce a config value to an int; a row bound must never be what raises."""
     try:
-        # OverflowError: json accepts Infinity without a flag, so a config column
-        # or a request body can carry one.
+        # OverflowError: json accepts Infinity, so a config or request can carry one.
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _positive_int(value: Any, default: int) -> int:
-    """_int_or for counts, where zero and negatives are as unusable as None."""
+    """_int_or for counts, where zero and negatives are unusable."""
     number = _int_or(value, default)
     return number if number > 0 else default
 
 
 def _seed_int(value: Any, default: int) -> int:
-    """_int_or for seeds, where 0 is legitimate but numpy rejects negatives."""
+    """_int_or for seeds, where 0 is legitimate but negatives are not."""
     number = _int_or(value, default)
     return number if number >= 0 else default
 
@@ -79,20 +71,17 @@ def max_steps_dataset_rows(
 def effective_packing(config: dict, branch_never_packs: bool = False) -> bool:
     """Whether the trainer will actually pack, not merely what was requested.
 
-    Packing opts the bound out because one packed sample spans an unknown number
-    of source rows, and the requested value is the answer unless the caller has
-    established that the branch this run takes sets no packing at all: the
-    vision and audio-VLM branches, and every audio codec, which train on a
-    Trainer that has no packing argument to give.
+    Packing opts the bound out, since one packed sample spans an unknown number of
+    source rows. The requested value is the answer unless the caller establishes
+    that this run's branch never packs: the vision and audio-VLM branches, and
+    every audio codec, train on a Trainer with no packing argument.
 
-    The dataset flags do NOT establish that, though they look like they should.
-    `is_dataset_image` and `is_dataset_audio` are client-supplied and true on a
-    column-NAME match, so a text model with a column called "audio" carries the
-    flag and still trains on the text path, which honours packing. Pass the
-    branch the model probe actually detected instead, which the caller works out:
-    the two branches differ on raw-text and CPT, since the vision one is gated on
-    `not raw_text_mode` while audio preprocessing is chosen before the raw-text
-    bypass and so holds either way.
+    Do NOT pass the client-supplied dataset flags: `is_dataset_image` /
+    `is_dataset_audio` are true on a column-NAME match, so a text model with an
+    "audio" column carries the flag yet trains on the text path, which packs. Pass
+    the branch the model probe detected. The branches differ on raw-text and CPT:
+    vision is gated on `not raw_text_mode`, while audio preprocessing is chosen
+    before the raw-text bypass and so holds either way.
     """
     if not config.get("packing", False):
         return False
@@ -117,12 +106,10 @@ def max_train_rows_for_config(config: dict, branch_never_packs: bool = False) ->
 def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
     """The run directory a checkpoint lives in, or None when there is none.
 
-    Trainer writes ``<output_dir>/checkpoint-<global_step>`` (transformers'
-    PREFIX_CHECKPOINT_DIR, always followed by the step number), so only that
-    exact shape is a checkpoint. Matching the bare prefix would take the parent
-    of a RUN directory that happens to start with it, and the marker would then
-    be written one level above where a later resume looks for it. A caller that
-    names the run directory itself gets it back unchanged.
+    Only ``<output_dir>/checkpoint-<global_step>`` counts. Matching the bare
+    prefix would take the parent of a RUN directory that happens to start with it,
+    writing the marker one level above where a resume looks. A caller that names
+    the run directory itself gets it back unchanged.
     """
     if not checkpoint_path:
         return None
@@ -131,8 +118,7 @@ def run_dir_for_checkpoint(checkpoint_path: Any) -> Optional[str]:
         return None
     head, tail = os.path.split(path)
     if _CHECKPOINT_DIR_RE.match(tail):
-        # A bare "checkpoint-30" splits to an empty head, and its run directory is
-        # the working directory rather than itself.
+        # A bare "checkpoint-30" splits to an empty head; its run dir is the cwd.
         return head or os.curdir
     return path
 
@@ -144,24 +130,18 @@ def record_row_bound(
 ) -> bool:
     """Record the bound a run started with, beside its checkpoints.
 
-    The subset a run trains on is training state: it has to be fixed at the first
-    start and read back on every resume, because both loaders fast-forward to a
-    batch *index* and the ordering is a function of the bound. Deriving it again
-    on resume cannot work -- the config it is derived from is editable between
-    runs, and a checkpoint written before this feature existed leaves no
-    arithmetic that distinguishes it reliably.
+    The subset is training state: fixed at the first start and read back on every
+    resume, because both loaders fast-forward to a batch *index* and the ordering
+    is a function of the bound. Re-deriving on resume cannot work, since the config
+    is editable between runs and a pre-feature checkpoint is indistinguishable.
 
-    Best effort by design, and it answers whether it succeeded so the caller can
-    say so. A run must never fail over a marker, and by the time this is called
-    the dataset has already been bounded, so there is nothing to fall back to
-    either; what an unwritable marker costs is a later resume reading the run as
-    unbounded.
+    Best effort, and it reports whether it succeeded so the caller can say so: a
+    run must never fail over a marker, and the dataset is already bounded by now,
+    so an unwritable marker only costs a later resume reading the run as unbounded.
 
-    Written through a temporary file and moved into place, because a resume
-    rewrites a marker that is already valid: truncating in place and then failing
-    -- a full disk is the ordinary way -- would leave an empty file, which reads
-    as "no marker" and resumes the run over the whole dataset. os.replace is
-    atomic on POSIX and on Windows.
+    Written to a temp file and os.replace'd (atomic on POSIX and Windows) because a
+    resume rewrites an already valid marker: truncating in place then failing (a
+    full disk) would leave an empty file, read as "no marker".
     """
     run_dir = run_dir_for_checkpoint(output_dir)
     if not run_dir:
@@ -202,18 +182,14 @@ def row_bound_for_resume(
 
     Not resuming: the caller's own values, which record_row_bound then pins.
 
-    Resuming a run recorded by record_row_bound: that run's values, so the rows
-    and their order are exactly the ones it was training on, whatever the config
-    now says about max_steps, batch size or accumulation.
+    Resuming a marked run: that run's values, so the rows and their order match
+    what it trained on, whatever the config now says.
 
-    Resuming anything with no marker -- a checkpoint written before the bound
-    existed, or one whose marker is unreadable: no bound. Such a checkpoint
-    trained on the whole corpus in its natural order, and both trainers resume by
-    batch index rather than by remembering which rows they saw (HF Trainer
-    replays the current dataloader, `ignore_data_skip` defaulting to False;
-    unsloth_zoo's MLXTrainer jumps a cursor into a schedule rebuilt from the
-    current dataset), so a shuffled subset would silently continue on unrelated
-    rows.
+    Resuming with no readable marker: no bound. Such a checkpoint trained on the
+    whole corpus in its natural order, and both trainers resume by batch index
+    rather than by remembering rows (HF Trainer replays the current dataloader,
+    `ignore_data_skip` defaults to False; MLXTrainer jumps a cursor into a schedule
+    rebuilt from the current dataset), so a subset would continue on unrelated rows.
     """
     fallback_seed = _seed_int(seed, 3407)
     if not checkpoint_path:
@@ -239,23 +215,22 @@ def bound_dataset_rows(
 ):
     """Cut a map-style dataset to max_train_rows rows, or return it untouched.
 
-    Shuffled, not the head. A corpus ordered by source or difficulty would
-    otherwise make a short run train on one homogeneous slab. shuffle() builds an
-    indices mapping; it does not rewrite the table.
+    Shuffled, not the head: a corpus ordered by source or difficulty would
+    otherwise make a short run train on one homogeneous slab. shuffle() only builds
+    an indices mapping.
 
     Callers apply this before the formatting, template and tokenization passes,
-    all of which map over every row: that is the cost this avoids.
+    which map over every row: that is the cost this avoids.
     """
     if not max_train_rows or max_train_rows <= 0:
         return dataset
-    # A DatasetDict answers len() with its split count, so guard on the ops this
-    # needs rather than on the type: anything else is left alone.
+    # A DatasetDict answers len() with its split count, so guard on ops, not type.
     if not hasattr(dataset, "shuffle") or not hasattr(dataset, "select"):
         return dataset
     try:
         total_rows = len(dataset)
     except TypeError:
-        # No __len__ means a streaming dataset, which is bounded lazily instead.
+        # No __len__ means streaming, which is bounded lazily instead.
         return dataset
     if total_rows <= max_train_rows:
         return dataset

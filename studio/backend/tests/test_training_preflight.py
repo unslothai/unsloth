@@ -510,18 +510,18 @@ def test_max_steps_dataset_rows_bounds_the_run():
         max_steps_dataset_rows,
     )
 
-    # An epoch-bounded run reads its whole dataset, so there is nothing to bound.
+    # An epoch-bounded run reads its whole dataset.
     assert max_steps_dataset_rows(0, 2, 4) is None
     assert max_steps_dataset_rows(None, 2, 4) is None
 
     assert max_steps_dataset_rows(2000, 8, 16) == 2000 * 8 * 16 * MAX_STEPS_ROW_SLACK
-    # Small runs land on the floor rather than a statistically useless handful.
+    # Small runs land on the floor, not a statistically useless handful.
     assert max_steps_dataset_rows(30, 2, 4) == MIN_MAX_STEPS_ROWS
     assert max_steps_dataset_rows(1, 1, 1) == MIN_MAX_STEPS_ROWS
 
 
 def test_max_steps_bound_subsets_before_formatting(monkeypatch):
-    # The whole point: 30 steps must not tokenize a corpus of 500k rows.
+    # 30 steps must not tokenize a corpus of 500k rows.
     trainer = _cached_only_loader(monkeypatch, _SizedDataset(500_000))
 
     result = trainer.load_and_format_dataset(
@@ -535,7 +535,7 @@ def test_max_steps_bound_subsets_before_formatting(monkeypatch):
     assert result is not None
     bounded = result[0]["dataset"]
     assert len(bounded) == 1024
-    # Shuffled first: the head of a corpus ordered by source is not a sample of it.
+    # Shuffled: the head of a corpus ordered by source is not a sample of it.
     assert bounded.shuffle_seeds == [99]
 
 
@@ -551,7 +551,7 @@ def test_max_steps_bound_leaves_a_small_dataset_alone(monkeypatch):
     )
 
     assert result is not None
-    # Untouched, so no shuffle cost and no reordering for a run that reads it all.
+    # Untouched: no shuffle cost or reordering for a run that reads it all.
     assert result[0]["dataset"] is train
 
 
@@ -587,8 +587,7 @@ def test_max_steps_bound_defers_to_a_split_instruction(monkeypatch):
     )
 
     assert result is not None
-    # A bracketed split names rows exactly as the numeric slice fields do, so the
-    # bound must not resample a selection the user already made.
+    # A bracketed split names rows like the numeric slice fields do.
     assert result[0]["dataset"] is train
 
 
@@ -609,14 +608,13 @@ def test_max_steps_bound_is_off_without_it(monkeypatch):
 def test_max_steps_dataset_rows_survives_unusable_numbers():
     from core.training.dataset_bounds import MIN_MAX_STEPS_ROWS, max_steps_dataset_rows
 
-    # The worker is also driven from the DB and by direct callers, so a None or a
-    # string reaches this. A row bound is an optimization; it must never raise.
+    # The DB and direct callers hand over Nones and strings; this must never raise.
     assert max_steps_dataset_rows(30, None, None) == MIN_MAX_STEPS_ROWS
     assert max_steps_dataset_rows(30, "2", "4") == MIN_MAX_STEPS_ROWS
     assert max_steps_dataset_rows("30", 2, 4) == MIN_MAX_STEPS_ROWS
     assert max_steps_dataset_rows(-5, 2, 4) is None
     assert max_steps_dataset_rows("not a number", 2, 4) is None
-    # A bound this far past any corpus is a no-op at the apply site, not an error.
+    # A bound past any corpus is a no-op at the apply site, not an error.
     assert max_steps_dataset_rows(10**9, 2, 4) == 10**9 * 8 * 4
 
 
@@ -625,18 +623,16 @@ def test_effective_packing_decides_the_opt_out():
 
     text = {"max_steps": 30, "batch_size": 2, "gradient_accumulation_steps": 4}
 
-    # Packing spans an unknown number of rows per sample, so text runs opt out.
+    # Packing spans unknown rows per sample, so text runs opt out.
     assert effective_packing({**text, "packing": True}) is True
     assert max_train_rows_for_config({**text, "packing": True}) is None
 
-    # A caller that probed the model and landed on the vision branch knows the run
-    # cannot pack, so a stale flag does not cost it the bound.
+    # A caller that probed a never-packing branch keeps the bound despite the flag.
     assert effective_packing({**text, "packing": True}, branch_never_packs = True) is False
     assert max_train_rows_for_config({**text, "packing": True}, branch_never_packs = True) == 1024
 
-    # The dataset flags alone establish nothing: they are client-supplied and true
-    # on a column-NAME match, so a text model with a column called "audio" or
-    # "image" still trains on the text path, which honours packing.
+    # The dataset flags establish nothing: client-supplied and true on a column-NAME
+    # match, so a text model with an "audio" column still trains on the packing path.
     assert effective_packing({**text, "packing": True, "is_dataset_image": True}) is True
     assert effective_packing({**text, "packing": True, "is_dataset_audio": True}) is True
     assert max_train_rows_for_config({**text, "packing": True, "is_dataset_audio": True}) is None
@@ -645,13 +641,11 @@ def test_effective_packing_decides_the_opt_out():
     assert max_train_rows_for_config({"max_steps": 0, "packing": False}) is None
 
     # Raw-text and CPT do not enter into it here: the caller decides the branch,
-    # because the two differ on raw mode. The vision branch is gated on
-    # `not raw_text_mode` and gives way to the text path, while audio
-    # preprocessing is chosen before the raw-text bypass and holds either way.
+    # since vision is gated on `not raw_text_mode` while audio holds either way.
     for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
         assert effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is False
         assert effective_packing({**text, **raw, "packing": True}) is True
-        # Without packing they are bounded like anything else.
+        # Without packing they bound like anything else.
         assert effective_packing({**text, **raw}, branch_never_packs = True) is False
         assert max_train_rows_for_config({**text, **raw}, branch_never_packs = True) == 1024
 
@@ -660,7 +654,7 @@ def test_bound_dataset_rows_edges():
     from core.training.dataset_bounds import bound_dataset_rows
 
     class _Streaming:
-        """No __len__, like an IterableDataset: bounded lazily elsewhere."""
+        """No __len__, like an IterableDataset."""
 
         def shuffle(self, seed = None):
             raise AssertionError("a streaming dataset must not be shuffled eagerly")
@@ -669,7 +663,7 @@ def test_bound_dataset_rows_edges():
     assert bound_dataset_rows(exact, 1024, 3407) is exact
     assert len(bound_dataset_rows(_SizedDataset(1025), 1024, 3407)) == 1024
 
-    # A non-positive bound from a direct caller would select an empty dataset.
+    # A non-positive bound would otherwise select an empty dataset.
     untouched = _SizedDataset(500_000)
     assert bound_dataset_rows(untouched, 0, 3407) is untouched
     assert bound_dataset_rows(untouched, -5, 3407) is untouched
@@ -678,7 +672,7 @@ def test_bound_dataset_rows_edges():
     streaming = _Streaming()
     assert bound_dataset_rows(streaming, 1024, 3407) is streaming
 
-    # A seed the config could not coerce still has to produce a subset.
+    # An uncoercible seed still has to produce a subset.
     assert len(bound_dataset_rows(_SizedDataset(500_000), 1024, None)) == 1024
 
 
@@ -689,8 +683,7 @@ def test_bound_dataset_rows_keeps_seed_zero():
 
     source = Dataset.from_dict({"row": list(range(5000))})
 
-    # 0 is a legitimate seed, not a missing one: it must not collapse onto the
-    # default, or every run configured with it trains on the same other subset.
+    # 0 is a legitimate seed and must not collapse onto the default.
     assert (
         bound_dataset_rows(source, 1024, 0)["row"] != bound_dataset_rows(source, 1024, 3407)["row"]
     )
@@ -704,9 +697,8 @@ def test_bound_dataset_rows_survives_a_hostile_seed():
 
     source = Dataset.from_dict({"row": list(range(3000))})
 
-    # numpy rejects a negative seed, and -1 is a common "pick one for me"
-    # sentinel; json accepts Infinity with no flag, so a stored config can hold
-    # one. Neither may take a training run down.
+    # numpy rejects negative seeds and -1 is a common sentinel; json accepts
+    # Infinity, so a stored config can hold one. Neither may take a run down.
     for seed in (-1, -3407, float("inf"), float("nan"), "3407", None, "seed"):
         assert len(bound_dataset_rows(source, 1024, seed)) == 1024
 
@@ -725,8 +717,7 @@ def test_bound_dataset_rows_leaves_a_dataset_dict_alone():
 
     from core.training.dataset_bounds import bound_dataset_rows
 
-    # len() on a DatasetDict is the split count, so the row comparison is
-    # meaningless there; it has no select() either.
+    # len() on a DatasetDict is the split count, and it has no select().
     splits = DatasetDict(
         {
             "train": Dataset.from_dict({"row": list(range(5000))}),
@@ -744,14 +735,14 @@ def test_row_bound_marker_round_trips_through_a_resume(tmp_path):
     checkpoint = run_dir / "checkpoint-30"
     checkpoint.mkdir()
 
-    # Not resuming: the freshly computed pair, which is what gets recorded.
+    # Not resuming: the freshly computed pair.
     assert row_bound_for_resume(None, 4096, 3407) == (4096, 3407)
 
     record_row_bound(str(run_dir), 4096, 3407)
-    # Resuming reads back the bound the run started with, so the rows and their
-    # order do not move when max_steps or the batch size are edited in between.
+    # Resuming reads back the original bound, so edits to max_steps or batch size
+    # do not move the rows or their order.
     assert row_bound_for_resume(str(checkpoint), 40960, 99) == (4096, 3407)
-    # The run directory itself is accepted as well as a checkpoint inside it.
+    # The run directory is accepted as well as a checkpoint inside it.
     assert row_bound_for_resume(str(run_dir), 40960, 99) == (4096, 3407)
 
     # A run that was never bounded stays unbounded on resume.
@@ -764,9 +755,8 @@ def test_row_bound_marker_round_trips_through_a_resume(tmp_path):
 def test_row_bound_marker_survives_a_run_directory_named_like_a_checkpoint(tmp_path):
     from core.training.dataset_bounds import record_row_bound, row_bound_for_resume
 
-    # Trainer writes checkpoint-<global_step>. A run directory whose own name
-    # merely starts with the prefix is not one, and taking its parent would file
-    # the marker one level above where the resume looks for it.
+    # A run directory whose name merely starts with the checkpoint prefix is not a
+    # checkpoint; taking its parent would file the marker one level too high.
     run_dir = tmp_path / "checkpoint-model__project-x"
     (run_dir / "checkpoint-30").mkdir(parents = True)
     record_row_bound(str(run_dir), 4096, 3407)
@@ -781,9 +771,8 @@ def test_row_bound_marker_is_replaced_atomically(tmp_path):
 
     from core.training.dataset_bounds import record_row_bound, row_bound_for_resume
 
-    # A resume rewrites a marker that is already valid. Truncating in place and
-    # then failing -- a full disk is the ordinary way -- would leave an empty
-    # file, which reads as "no marker" and resumes over the whole dataset.
+    # A resume rewrites an already valid marker: truncating in place then failing
+    # would leave an empty file, read as "no marker".
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     record_row_bound(str(run_dir), 4096, 3407)
@@ -800,7 +789,7 @@ def test_row_bound_marker_is_replaced_atomically(tmp_path):
         os.replace = real_replace
 
     assert row_bound_for_resume(str(run_dir), 40960, 99) == (4096, 3407)
-    # And the temporary file it wrote instead is cleaned up.
+    # And the temporary file is cleaned up.
     assert [p.name for p in run_dir.iterdir()] == ["unsloth_row_bound.json"]
 
 
@@ -811,9 +800,8 @@ def test_run_dir_for_a_bare_relative_checkpoint(tmp_path, monkeypatch):
         run_dir_for_checkpoint,
     )
 
-    # "checkpoint-30" splits to an empty head; its run directory is the working
-    # directory, not itself, or the marker is looked for one level too deep and
-    # the bounded run reads as legacy.
+    # "checkpoint-30" splits to an empty head; its run dir is the cwd, not itself,
+    # or the marker is looked for one level too deep and the run reads as legacy.
     assert run_dir_for_checkpoint("checkpoint-30") == os.curdir
     assert run_dir_for_checkpoint("run/checkpoint-30") == "run"
     # A relative run directory is still itself.
@@ -829,8 +817,8 @@ def test_run_dir_for_a_bare_relative_checkpoint(tmp_path, monkeypatch):
 def test_record_row_bound_reports_whether_it_wrote():
     from core.training.dataset_bounds import record_row_bound
 
-    # The caller logs a failure rather than failing the run: by the time this is
-    # called the dataset is already bounded, so there is nothing to fall back to.
+    # The caller logs a failure rather than failing the run: the dataset is already
+    # bounded by now, so there is nothing to fall back to.
     assert record_row_bound(None, 1024, 3407) is False
     assert record_row_bound("/definitely/not/a/directory/here", 1024, 3407) is False
 
@@ -838,15 +826,14 @@ def test_record_row_bound_reports_whether_it_wrote():
 def test_row_bound_is_dropped_for_a_checkpoint_that_predates_it(tmp_path):
     from core.training.dataset_bounds import record_row_bound, row_bound_for_resume
 
-    # A checkpoint written before the marker existed trained on the whole corpus
-    # in its natural order. Both trainers resume by batch index, so a shuffled
-    # subset would continue on unrelated rows: no bound, whatever its size.
+    # A checkpoint written before the marker trained on the whole corpus in natural
+    # order. Both trainers resume by batch index, so a subset would continue on
+    # unrelated rows: no bound, whatever its size.
     legacy = tmp_path / "legacy"
     (legacy / "checkpoint-30").mkdir(parents = True)
     assert row_bound_for_resume(str(legacy / "checkpoint-30"), 1024, 3407) == (None, 3407)
 
-    # Including the range the arithmetic estimate could not tell apart: a legacy
-    # dataset only slightly larger than the bound still gets shrunk by it.
+    # Including the range an arithmetic estimate could not tell apart.
     (legacy / "checkpoint-30" / "trainer_state.json").write_text(
         json.dumps({"global_step": 15, "epoch": 120 / 1500, "train_batch_size": 2})
     )
@@ -859,8 +846,7 @@ def test_row_bound_is_dropped_for_a_checkpoint_that_predates_it(tmp_path):
         (run_dir / "unsloth_row_bound.json").write_text(body)
         assert row_bound_for_resume(str(run_dir), 1024, 3407) == (None, 3407)
 
-    # A marker that cannot be written leaves the resume unbounded rather than
-    # failing the run that was trying to record it.
+    # An unwritable marker leaves the resume unbounded rather than failing the run.
     record_row_bound(str(tmp_path / "does" / "not" / "exist"), 1024, 3407)
     record_row_bound(None, 1024, 3407)
 
@@ -879,9 +865,9 @@ def test_bound_dataset_rows_is_deterministic_and_seed_sensitive():
     assert len(first) == 1024
     assert first == second
     assert first != other
-    # The head of a corpus ordered by source or difficulty is not a sample of it.
+    # The head of a corpus ordered by source is not a sample of it.
     assert first != list(range(1024))
-    # Features survive the shuffle+select, so the formatting passes still work.
+    # Features survive shuffle+select, so the formatting passes still work.
     assert bound_dataset_rows(source, 1024, 3407).column_names == ["row", "text"]
 
 
@@ -898,8 +884,8 @@ def test_bound_leaves_enough_rows_after_the_eval_carve():
     bounded = bound_dataset_rows(source, rows, 3407)
     train, _eval = split_dataset_for_evaluation(bounded)
 
-    # The eval carve is what MAX_STEPS_ROW_SLACK is budgeted for: the run must
-    # still reach max_steps without re-reading rows.
+    # The eval carve is what MAX_STEPS_ROW_SLACK budgets for: the run must still
+    # reach max_steps without re-reading rows.
     needed = config["max_steps"] * config["batch_size"] * config["gradient_accumulation_steps"]
     assert len(train) >= needed
 
@@ -907,8 +893,8 @@ def test_bound_leaves_enough_rows_after_the_eval_carve():
 def test_both_loaders_apply_the_row_bound():
     """Guards the wiring: the helpers are useless if a loader stops calling them.
 
-    Read from source because driving the CUDA worker needs a GPU and the MLX one
-    needs Apple hardware, so neither call site is otherwise reachable in CI.
+    Read from source: the CUDA worker needs a GPU and the MLX one Apple hardware,
+    so neither call site is otherwise reachable in CI.
     """
     import ast
     from pathlib import Path
@@ -931,20 +917,19 @@ def test_both_loaders_apply_the_row_bound():
     # The CUDA worker derives the bound and hands it to load_and_format_dataset.
     assert "max_train_rows_for_config" in calls["run_training_process"]
     assert "max_train_rows = max_train_rows" in worker_src
-    # The MLX worker loads its own dataset, so it has to bound its own rows.
+    # The MLX worker loads its own dataset, so it bounds its own rows.
     assert "bound_dataset_rows" in calls["_slice"]
     assert "max_train_rows_for_config" in calls["_run_mlx_training"]
-    # Both loaders resume on the recorded bound and both record their own, or a
-    # resume silently trains on rows the checkpoint never saw.
+    # Both must resume on the recorded bound and record their own, or a resume
+    # silently trains on rows the checkpoint never saw.
     for loader in ("run_training_process", "_run_mlx_training"):
         assert "row_bound_for_resume" in calls[loader]
         assert "record_row_bound" in calls[loader]
 
-    # Both pass the branch they detected, rather than letting it default: the
-    # dataset flags are client-supplied and cannot stand in for it.
+    # Both pass the detected branch rather than defaulting: the client-supplied
+    # dataset flags cannot stand in for it.
     assert worker_src.count("branch_never_packs = ") >= 2
-    # And the CUDA one computes it only after the model probe has set it, which is
-    # what makes the value real.
+    # And the CUDA one computes it only after the model probe has set it.
     assert worker_src.index("_pre_detect_training_model(\n") < worker_src.index(
         "branch_never_packs = bool("
     )
@@ -956,8 +941,8 @@ def test_mlx_adapter_keeps_one_source_of_truth_for_the_bound():
     config = _build_training_worker_config(
         {"model_name": "org/model", "max_steps": 30, "batch_size": 2}
     )
-    # The normalized worker config is a whitelist: a forwarded copy of the bound
-    # would be dropped here and silently disagree with what the worker computes.
+    # The normalized config is a whitelist: a forwarded copy of the bound would be
+    # dropped here and silently disagree with what the worker computes.
     assert "max_train_rows" not in config
     assert "max_train_rows_seed" not in config
     # Everything the worker needs to recompute it does survive.

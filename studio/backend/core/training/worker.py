@@ -55,8 +55,8 @@ activate_native_tls()
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 
-# Light module on purpose: the MLX branch below runs on hosts that have no torch,
-# so it cannot reach these through core.training.trainer.
+# Light module on purpose: the MLX branch below runs on torch-less hosts, so it
+# cannot reach these through core.training.trainer.
 from core.training.dataset_bounds import (
     bound_dataset_rows,
     max_train_rows_for_config,
@@ -2788,12 +2788,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     slice_end = config.get("dataset_slice_end")
     config["_dataset_loaded_from_exact_snapshot"] = False
 
-    # A max_steps run cannot reach the whole dataset, and everything below this
-    # point -- formatting, chat templating, tokenization -- maps over every row.
-    # Recomputed from the config rather than carried over from the parent so an
-    # MLX run can never train against a bound derived from stale values.
-    # The vision branch is gated on `not raw_text_mode`, so a raw or CPT run
-    # takes the text path and that path honours the requested packing.
+    # A max_steps run cannot reach the whole dataset, and everything below here
+    # (formatting, templating, tokenization) maps over every row. Recomputed from
+    # the config, never carried over from the parent, so a bound can never be stale.
+    # The vision branch is gated on `not raw_text_mode`, so a raw or CPT run takes
+    # the text path, which honours the requested packing.
     mlx_raw_text_mode = (
         training_type == "Continued Pretraining" or config.get("format_type") == "raw"
     )
@@ -2801,14 +2800,13 @@ def _run_mlx_training(event_queue, stop_queue, config):
         config, branch_never_packs = is_vlm and not mlx_raw_text_mode
     )
     # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
-    # whatever dataset it is handed, so a bound applied to a checkpoint that was
-    # written without one continues on unrelated rows. Same marker, same rule as
-    # the CUDA path.
+    # whatever dataset it is handed, so bounding a checkpoint written without one
+    # continues on unrelated rows. Same marker, same rule as the CUDA path.
     mlx_max_train_rows, mlx_max_train_rows_seed = row_bound_for_resume(
         resume_from_checkpoint, mlx_max_train_rows, random_seed
     )
 
-    # A bracketed split instruction names rows the same way the numeric fields do.
+    # A bracketed split names rows the same way the numeric fields do.
     mlx_split_names_rows = "[" in (config.get("train_split") or "")
 
     def _slice(ds):
@@ -4138,8 +4136,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
 
-        # Filled in below, after the model probe: the closure reads them when it
-        # runs, which is after both.
+        # Filled in below, after the model probe; the closure runs after both.
         max_train_rows = None
         max_train_rows_seed = config.get("random_seed", 3407)
 
@@ -4226,25 +4223,23 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
 
-        # Now that 4a has probed the model, the branch this run takes is known, so
-        # the packing opt-out can read it instead of guessing from the client's
-        # dataset flags. Streaming and an explicit train-split range opt out inside
-        # load_and_format_dataset, where they live.
-        # Audio codecs are chosen before the raw-text bypass and use plain
-        # Trainers with no packing argument, so they hold either way; the vision
-        # and audio-VLM branches are gated on `not raw_text_mode` and give the
-        # text path, which honours packing, when the run is raw or CPT.
+        # 4a has probed the model, so the packing opt-out can read the real branch
+        # instead of guessing from the client's dataset flags. Streaming and explicit
+        # train-split ranges opt out inside load_and_format_dataset.
+        # Audio codecs are chosen before the raw-text bypass and use plain Trainers
+        # with no packing argument, so they hold either way; the vision and audio-VLM
+        # branches are gated on `not raw_text_mode`, so a raw or CPT run takes the
+        # text path, which honours packing.
         raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"
         branch_never_packs = bool(getattr(trainer, "_audio_type", None)) or (
             bool(getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False))
             and not raw_text_mode
         )
         max_train_rows = max_train_rows_for_config(config, branch_never_packs = branch_never_packs)
-        # A resume trains on the rows its first start chose, read back from the
-        # marker written beside the checkpoints. A checkpoint with no marker
-        # predates the bound: it trained on the whole dataset, and the trainer
-        # fast-forwards by batch count over the current dataloader, so bounding it
-        # now would continue into unrelated rows.
+        # A resume trains on the rows its first start chose, read back from the marker
+        # beside the checkpoints. No marker means the checkpoint predates the bound and
+        # trained on the whole dataset; since the trainer fast-forwards by batch count
+        # over the current dataloader, bounding it now would continue on unrelated rows.
         resumed_rows, max_train_rows_seed = row_bound_for_resume(
             config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
         )
@@ -4553,13 +4548,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
-        # Pin the subset this run trains on before any checkpoint lands in here,
-        # so a later resume reads it back rather than deriving it from a config
-        # the user may have edited in between.
+        # Pin the subset before any checkpoint lands here, so a resume reads it back
+        # rather than deriving it from a config the user may have edited in between.
         if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
-            # Not fatal, and nothing to fall back to at this point: the dataset is
-            # already bounded. Say it, so a later resume reading this run as
-            # unbounded is explainable.
+            # Not fatal, and nothing to fall back to: the dataset is already bounded.
+            # Say it, so a later resume reading this run as unbounded is explainable.
             logger.warning(
                 f"Could not record the max_steps row bound in {output_dir}: "
                 "resuming this run later will read it as unbounded\n"

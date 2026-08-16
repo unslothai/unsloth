@@ -3024,13 +3024,10 @@ class UnslothTrainer:
                     status_message = f"Sliced dataset to {len(dataset)} rows (indices {start}-{end})"
                 )
 
-            # Before the formatting, template and tokenization passes, all of which map
-            # over every row: that is the cost this avoids. Skipped when the user named
-            # an explicit range, which is already the rows they asked for, and when
-            # streaming, which was bounded lazily above.
-            # A bracketed split instruction names rows the same way the numeric
-            # fields do: train[1000:2000] is the user's selection, not a corpus to
-            # sample from.
+            # Bound before the formatting/template/tokenization passes, which map over
+            # every row. Skipped when streaming (bounded lazily above) or when the user
+            # named an explicit range, including a bracketed split like train[1000:2000]:
+            # those are already the rows they asked for, not a corpus to sample from.
             if (
                 (not dataset_streaming)
                 and dataset_slice_start is None

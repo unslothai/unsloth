@@ -800,11 +800,10 @@ class _MLXTrainerAdapter:
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
-        # UnslothTrainer.__new__ hands back this adapter on an MLX host, so the
-        # signature has to match. The MLX worker does its own loading and derives
-        # the max_steps row bound from the config it is handed, so the two bound
-        # arguments are accepted and deliberately not forwarded: a copy here would
-        # be a second source of truth that _build_training_worker_config drops.
+        # Signature must match UnslothTrainer, which hands back this adapter on an
+        # MLX host. The MLX worker loads its own data and derives the row bound from
+        # its config, so the two bound arguments are accepted and deliberately not
+        # forwarded: a copy here would be a second source of truth.
         self._dataset_config = {
             "hf_dataset": dataset_source or "",
             "local_datasets": local_datasets,
