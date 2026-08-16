@@ -1844,6 +1844,8 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 _PKG_PROBE_PY="
 import csv, importlib.machinery, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
 from pathlib import PurePosixPath
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
 _shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
@@ -1957,9 +1959,32 @@ if not cands:
     sys.exit(0)
 d, d_record = max(cands, key=_vkey)
 try:
-    _edit = bool(json.loads(d.read_text('direct_url.json') or '{}').get('dir_info', {}).get('editable'))
+    _durl = json.loads(d.read_text('direct_url.json') or '{}')
+    _edit = bool(_durl.get('dir_info', {}).get('editable'))
 except Exception:
-    _edit = False
+    _durl, _edit = {}, False
+# importable payload, used for namespace specs and for an editable checkout. Suffixes
+# come from importlib itself rather than a hardcoded list, so an extension module
+# counts on every platform; __pycache__ does not, being what a quarantine leaves.
+_imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
+             + importlib.machinery.EXTENSION_SUFFIXES)
+def _has_module(_p, _depth):
+    try:
+        _entries = os.listdir(_p)
+    except OSError:
+        return False
+    _subs = []
+    for _e in _entries:
+        if _e == '__pycache__':
+            continue
+        _f = os.path.join(_p, _e)
+        if os.path.isdir(_f):
+            _subs.append(_f)
+        elif _e.endswith(_imp):
+            return True
+    # nested namespaces are legitimate, so recurse -- bounded, since the first
+    # module found answers and only a module-less tree walks to the bottom
+    return _depth > 0 and any(_has_module(_s, _depth - 1) for _s in _subs)
 rows = []
 selfrec = False
 flen = 3
@@ -2030,30 +2055,7 @@ def _spec(n, bind):
     if s.origin and s.origin != 'namespace':
         return _inside(s.origin)
     # A namespace spec is not payload on its own: an emptied package directory
-    # still answers find_spec with its own path. A real PEP 420 namespace holds
-    # importable modules, so look for one -- data left behind by a quarantine
-    # (py.typed, a README, the bytecode cache) is not an importable payload.
-    # Suffixes come from importlib itself rather than a hardcoded list, so an
-    # extension module counts on every platform.
-    _imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
-                 + importlib.machinery.EXTENSION_SUFFIXES)
-    def _has_module(_p, _depth):
-        try:
-            _entries = os.listdir(_p)
-        except OSError:
-            return False
-        _subs = []
-        for _e in _entries:
-            if _e == '__pycache__':
-                continue
-            _f = os.path.join(_p, _e)
-            if os.path.isdir(_f):
-                _subs.append(_f)
-            elif _e.endswith(_imp):
-                return True
-        # nested namespaces are legitimate, so recurse -- bounded, since the first
-        # module found answers and only a module-less tree walks to the bottom
-        return _depth > 0 and any(_has_module(_s, _depth - 1) for _s in _subs)
+    # still answers find_spec with its own path, so require an importable module.
     for _p in list(getattr(s, 'submodule_search_locations', None) or []):
         if _p and _inside(_p) and _has_module(_p, 6):
             return True
@@ -2061,6 +2063,16 @@ def _spec(n, bind):
 if not rows and not damaged:
     if tops:
         damaged = not all(_spec(t, not _edit) for t in tops if t)
+    elif _edit:
+        # An editable install with no top_level.txt: its RECORD lists only the
+        # site-packages shims, so nothing above can speak for the checkout. Validate
+        # the target directly -- direct_url.json records where it points, and a
+        # moved or emptied checkout has no importable module under it.
+        try:
+            _target = url2pathname(urlparse(str(_durl.get('url') or '')).path)
+        except Exception:
+            _target = ''
+        damaged = not (_target and _has_module(_target, 6))
     elif not d_record:
         # Nothing enumerates the payload: no RECORD at all (an interrupted install,
         # or a distro/conda package that legitimately ships none, which the CLI
@@ -2090,18 +2102,25 @@ _bounded_pkg_probe() {
     _bpp_i=0
     while kill -0 "$_bpp_pid" 2>/dev/null; do
         if [ "$_bpp_i" -ge 300 ]; then
+            # Children are listed BEFORE the interpreter is signalled: once it exits
+            # they are reparented to init and -P can no longer find them. A
+            # sitecustomize or .pth hook can spawn one, and it would keep the
+            # redirected handle open after the interpreter is gone. Direct children
+            # only, best effort -- pgrep is not guaranteed to exist, and this is
+            # teardown, not a contract.
+            _bpp_kids=""
+            if command -v pgrep >/dev/null 2>&1; then
+                _bpp_kids=$(pgrep -P "$_bpp_pid" 2>/dev/null || true)
+            fi
             kill "$_bpp_pid" 2>/dev/null || true
             # KILL after a grace period: a probe wedged in an interruptible stall
             # exits on TERM, one ignoring it must not outlive this function. A
             # D-state process survives both, which is why it is abandoned rather
             # than waited on.
             sleep 0.5
-            # children too: a sitecustomize or .pth hook can spawn one, and it would
-            # keep the redirected handle open after the interpreter is gone. Direct
-            # children only, best effort -- pkill is not guaranteed to exist, and
-            # this is teardown, not a contract. Mirrors Stop-StudioProbeTree.
-            command -v pkill >/dev/null 2>&1 && pkill -9 -P "$_bpp_pid" 2>/dev/null || true
             kill -9 "$_bpp_pid" 2>/dev/null || true
+            # unquoted on purpose: pgrep returns one pid per line
+            [ -n "$_bpp_kids" ] && kill -9 $_bpp_kids 2>/dev/null || true
             rm -f "$_bpp_out"
             return 0
         fi
