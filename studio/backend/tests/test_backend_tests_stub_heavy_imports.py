@@ -287,6 +287,96 @@ def _offenders() -> list[str]:
     ]
 
 
+def _importorskip_targets(tree: ast.Module, heavy: frozenset[str]) -> list[str]:
+    """Heavy backend modules this file reaches through ``pytest.importorskip``, any scope."""
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if getattr(node.func, "attr", "") != "importorskip":
+            continue
+        target = node.args[0]
+        if (
+            isinstance(target, ast.Constant)
+            and isinstance(target.value, str)
+            and target.value in heavy
+        ):
+            found.append(target.value)
+    return sorted(set(found))
+
+
+def _importorskip_offenders() -> list[str]:
+    heavy = _heavy_backend_modules()
+    offenders: list[str] = []
+    for path in sorted(_TESTS_DIR.glob("test_*.py")):
+        try:
+            tree = _parse(path.read_text(encoding = "utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        if not _importorskip_targets(tree, heavy):
+            continue
+        # Anywhere at module scope, not "before line N": the call runs at test time, so a
+        # stub installed anywhere above it in the module body is in place by then.
+        end = max((statement.lineno for statement in tree.body), default = 0) + 1
+        if not _stubs_before(tree, end):
+            offenders.append(path.name)
+    return offenders
+
+
+def test_no_test_module_reaches_a_heavy_module_through_importorskip_unstubbed():
+    """The lazy-import exemption above has a hole, and this closes it.
+
+    The guard beside this one only looks at module-scope imports, because those fail
+    COLLECTION and take the whole job down. An import inside a test body is deliberately
+    exempt: it is lazy, and a lazy import of an uninstallable module is normally written to
+    degrade into a skip.
+
+    ``pytest.importorskip`` is that idiom, and since pytest 8.2 it no longer covers this
+    case: it skips on ``ModuleNotFoundError`` only, and ``unsloth/_gpu_init.py`` raises a
+    plain ``ImportError`` when unsloth_zoo is absent, which is exactly the backend matrix's
+    situation. So the call raises instead of skipping and the test fails.
+
+    test_safetensors_reasoning_stream.py sat in that hole. It never stubbed anything, and
+    passed only when an earlier file in the session had installed the stub and left the
+    imported module in ``sys.modules`` for it, which makes it a pass that depends on
+    collection order.
+    """
+    offenders = _importorskip_offenders()
+    assert not offenders, (
+        f"{len(offenders)} test module(s) reach a backend module that needs unsloth through "
+        f"pytest.importorskip without installing the stub, so they fail (not skip) on the "
+        f"backend pytest matrix whenever they run before whichever file stubs it: {offenders}. "
+        f"Copy the _stub_if_missing block from test_audio_type_inconclusive.py."
+    )
+
+
+def test_the_importorskip_guard_would_catch_an_unstubbed_module():
+    """Pin both answers, so the check above cannot pass by matching nothing."""
+    heavy = _heavy_backend_modules()
+    assert "core.inference.inference" in heavy
+
+    unstubbed = _parse(
+        "import pytest\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _importorskip_targets(unstubbed, heavy) == ["core.inference.inference"]
+    end = max((s.lineno for s in unstubbed.body), default = 0) + 1
+    assert not _stubs_before(unstubbed, end)
+
+    stubbed = _parse(
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _stubs_before(stubbed, max(s.lineno for s in stubbed.body) + 1)
+
+    # A module that importorskips something harmless is not an offence.
+    harmless = _parse("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n")
+    assert _importorskip_targets(harmless, heavy) == []
+
+
 def test_the_heavy_module_set_is_derived_from_the_backend_sources():
     """A derivation that quietly returned nothing would make the guard below pass on anything."""
     heavy = _heavy_backend_modules()
