@@ -178,6 +178,7 @@ import {
 } from "@/features/chat/utils/prompt-queue-reorder";
 import {
   PROMPT_QUEUE_DRAG_TYPE,
+  hasPendingPromptQueueStart,
   isPromptQueueChord,
   isPromptQueueDragTypes,
 } from "@/features/chat/utils/prompt-queue-input";
@@ -2813,6 +2814,7 @@ const Composer: FC<{
       {
         temporary: boolean;
         cancelled: boolean;
+        threadId: string | null;
         localModelBoundaryGeneration: number;
         queuedSettingsEpoch: number;
       }
@@ -3118,6 +3120,7 @@ const Composer: FC<{
       const reservation = {
         temporary: useChatRuntimeStore.getState().incognito,
         cancelled: false,
+        threadId: referenceThreadId,
         localModelBoundaryGeneration:
           localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch:
@@ -3552,6 +3555,10 @@ const Composer: FC<{
         threadIsRunning || aui.thread().getState().isRunning;
       const livePromptQueueActive =
         promptQueueActive ||
+        hasPendingPromptQueueStart(
+          promptQueueStartPendingRef.current.values(),
+          referenceThreadId,
+        ) ||
         Boolean(
           findPromptQueueEntry(
             usePromptQueueUI.getState(),

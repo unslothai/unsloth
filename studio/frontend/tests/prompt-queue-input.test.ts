@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   PROMPT_QUEUE_DRAG_TYPE,
+  hasPendingPromptQueueStart,
   isPromptQueueChord,
   isPromptQueueDragTypes,
 } from "../src/features/chat/utils/prompt-queue-input.ts";
@@ -69,4 +70,54 @@ test("file and foreign drags are not claimed", () => {
 test("the drag type is private to the queue", () => {
   // A generic type would collide with drags from other panes.
   assert.match(PROMPT_QUEUE_DRAG_TYPE, /^application\/x-unsloth-/);
+});
+
+const pending = (threadId: string | null, cancelled = false) => ({
+  cancelled,
+  threadId,
+});
+
+// Starting a queue awaits settings hydration. During that gap nothing else
+// marks the thread as queueing, so a plain Enter took the send path and the
+// pending queue then dispatched its own copy of the same prompt.
+test("a pending start counts as queueing for its own thread", () => {
+  assert.equal(
+    hasPendingPromptQueueStart([pending("thread-1")], "thread-1"),
+    true,
+  );
+});
+
+test("another thread's pending start does not block this one", () => {
+  assert.equal(
+    hasPendingPromptQueueStart([pending("thread-2")], "thread-1"),
+    false,
+  );
+});
+
+test("a cancelled reservation stops counting", () => {
+  assert.equal(
+    hasPendingPromptQueueStart([pending("thread-1", true)], "thread-1"),
+    false,
+  );
+});
+
+test("nothing pending is not queueing", () => {
+  assert.equal(hasPendingPromptQueueStart([], "thread-1"), false);
+});
+
+// A new chat has no id until it persists, so null has to match null rather
+// than being treated as "no thread".
+test("a new chat's pending start is matched on null", () => {
+  assert.equal(hasPendingPromptQueueStart([pending(null)], null), true);
+  assert.equal(hasPendingPromptQueueStart([pending(null)], "thread-1"), false);
+});
+
+test("one live reservation among cancelled ones still counts", () => {
+  assert.equal(
+    hasPendingPromptQueueStart(
+      [pending("thread-1", true), pending("thread-1")],
+      "thread-1",
+    ),
+    true,
+  );
 });

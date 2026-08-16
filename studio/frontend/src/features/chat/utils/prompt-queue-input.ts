@@ -34,3 +34,21 @@ export function isPromptQueueChord(event: {
   if (event.key !== "Enter" || event.shiftKey) return false;
   return event.metaKey || event.ctrlKey;
 }
+
+/**
+ * Whether a queue start for this thread is already registered but has not yet
+ * reached the queue store. Starting one awaits settings hydration, and during
+ * that gap nothing else marks the thread as queueing, so a plain Enter would
+ * take the send path and the pending queue would then dispatch its own copy of
+ * the same prompt. Treat the thread as queueing until the start resolves.
+ */
+export function hasPendingPromptQueueStart(
+  reservations: Iterable<{ cancelled: boolean; threadId: string | null }>,
+  threadId: string | null,
+): boolean {
+  for (const reservation of reservations) {
+    if (reservation.cancelled) continue;
+    if (reservation.threadId === threadId) return true;
+  }
+  return false;
+}
