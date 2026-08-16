@@ -57,10 +57,14 @@ jobs:
   pytest:
     name: (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    # 30, not 15: the suite now runs 14.1 to 15.0 minutes on every interpreter in the matrix, so a
-    # 15 minute budget cancels whichever jobs happen to land on the slow side of the median and the
-    # result is a coin flip rather than a verdict. This guards against a hang, which 30 still does;
-    # it was never meant to be a performance budget. The suite's own runtime is the real problem.
+    # 30 guards against a hang; it is not a performance budget. The comment this replaces
+    # claimed 14.1 to 15.0 minutes, but this step now measures 22.5 to 27.8 minutes across the
+    # matrix, so the 3.11 leg is running 2.25 minutes under a limit that would cancel it.
+    # Running it on all four cores would fix that, and is worth ~79 runner-minutes a push, but
+    # this suite is not order-independent enough yet. Measured under `-n 4` on a 4-vCPU runner
+    # it fails tests serial does not, in more than one way and not the same way twice. The
+    # repo job below IS order-independent and does run parallel; this one waits until those
+    # dependencies are found and fixed individually.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -168,7 +172,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest pytest-asyncio httpx
+            'numpy<3' pytest pytest-asyncio pytest-xdist httpx
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
@@ -217,8 +221,14 @@ jobs:
         #     and the latest tokenizers (0.23.1) is incompatible with the
         #     transformers it resolves to. Tracked separately; this is a
         #     real bug in the no-torch install path, not a CI issue.
+        #
+        # -n 4: 806.1s -> 219.7s locally on the same 4-worker shape as the runner, with an
+        # identical 2-failed / 8066-passed / 178-skipped / 40-subtest result. The three pytest
+        # steps below stay serial deliberately: the hardware-spoof step exists precisely
+        # because those files mutate hardware.py module globals, and all three already measure
+        # under 0.1 minutes on the runner, so there is nothing to win and isolation to lose.
         run: |
-          python -m pytest tests/ -q --tb=short \
+          python -m pytest tests/ -q --tb=short -n 4 \
             --ignore=tests/qlora \
             --ignore=tests/saving \
             --ignore=tests/utils \
