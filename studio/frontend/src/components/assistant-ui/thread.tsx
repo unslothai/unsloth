@@ -3391,10 +3391,9 @@ const Composer: FC<{
         );
       };
 
-      // The body is already in memory: createPastedTextFile records it under
-      // the File identity isPastedTextFile just matched. Queue from that rather
-      // than reading the File back, because a gesture that awaits joins the
-      // queue behind any later one that does not, which reverses the two.
+      // createPastedTextFile records the body under the File identity matched
+      // above, so read it from there: a gesture that awaits the File joins the
+      // queue behind any later one that does not, reversing the two.
       const cachedTexts: string[] = [];
       for (const file of files) {
         const text = pastedTextOf(file);
@@ -3413,11 +3412,9 @@ const Composer: FC<{
         textAtQueue,
         attachmentIds,
       );
-      // Already reading this exact prompt: the submit is the same intent, so
-      // report it handled rather than starting a second read that would queue
-      // a duplicate once the first reservation has been released. A read whose
-      // baselines have already gone stale is going to abort, so it must not
-      // absorb the retry as well, or neither gesture queues anything.
+      // The same intent as a read already running: report it handled rather
+      // than queue a duplicate. A read whose baselines have gone stale will
+      // abort, so it must not absorb the retry either.
       const inFlight = pastedTextQueuePendingRef.current.get(pendingKey);
       if (inFlight && !pendingQueueStartIsStale(inFlight)) return true;
       // Every baseline the reservation would otherwise take after the read, so
@@ -3427,9 +3424,8 @@ const Composer: FC<{
         temporary: chatState.incognito,
         cancelled: false,
         threadId: referenceThreadId,
-        // Which chat the composer showed when the read began. The target is
-        // anchored where createPromptQueueTarget is CALLED, which here is after
-        // the read, so a switch mid-read would dispatch into the new chat.
+        // The chat the read began in. The target is anchored after the read,
+        // so a switch mid-read would otherwise dispatch into the new chat.
         composerIdentity: composerIdentityRef.current,
         localModelBoundaryGeneration: localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch: chatState.queuedSettingsEpoch,

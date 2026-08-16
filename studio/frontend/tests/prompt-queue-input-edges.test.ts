@@ -208,10 +208,9 @@ test("the pasted-text key handles unicode and long prompts", () => {
 });
 
 /**
- * Where this branch meets main's composer send guard (#8849): one `onKeyDown`
- * now consults both predicates, so a key the chord claims must not also be read
- * as the typing that retires the guard, and vice versa. Both sides handle AltGr
- * separately, so pin that they agree on it.
+ * One `onKeyDown` consults the chord and the composer send guard (#8849), so a
+ * key the chord claims must not also read as the typing that retires the guard.
+ * Each has its own AltGr rule, so pin that the two agree.
  */
 test("no key is both a queue chord and a guard-retiring keystroke", () => {
   const keys = ["Enter", "a", "1", "é", "Escape", "Tab", "Shift", "Control",
@@ -237,8 +236,8 @@ test("no key is both a queue chord and a guard-retiring keystroke", () => {
 });
 
 test("AltGr reads the same way to the chord and to the guard", () => {
-  // Windows reports AltGr as Ctrl+Alt, so it must type a character rather than
-  // queue: not a chord, and deliberate enough to retire the guard.
+  // Windows reports AltGr as Ctrl+Alt, so it types rather than queues: not a
+  // chord, and deliberate enough to retire the guard.
   const altGrChar = { key: "é", ctrlKey: true, altKey: true, metaKey: false,
     shiftKey: false };
   assert.equal(isPromptQueueChord(altGrChar), false);
