@@ -94,7 +94,13 @@ def _blocks(intent) -> bool:
 
     seen: dict = {}
 
-    def _fake_blocks(hf_repo, hf_variant, *, require_mmproj = False, hf_token = None):
+    def _fake_blocks(
+        hf_repo,
+        hf_variant,
+        *,
+        require_mmproj = False,
+        hf_token = None,
+    ):
         seen["require_mmproj"] = require_mmproj
         # The shape this item is about: another variant of the same repo is
         # downloading and the cached copy has the weights but no projector.
@@ -105,7 +111,11 @@ def _blocks(intent) -> bool:
     try:
 
         @llama_cpp._with_gguf_load_marker
-        def _load(self, intent, load_cancel_event = None):
+        def _load(
+            self,
+            intent,
+            load_cancel_event = None,
+        ):
             return "loaded"
 
         try:
@@ -119,7 +129,6 @@ def _blocks(intent) -> bool:
 
 def test_a_vision_off_load_is_not_refused_over_an_uncached_projector():
     from core.inference.llama_cpp import GgufLoadIntent
-
     assert (
         _blocks(
             GgufLoadIntent(
@@ -136,7 +145,6 @@ def test_a_vision_off_load_is_not_refused_over_an_uncached_projector():
 
 def test_a_vision_on_load_still_waits_for_the_projector():
     from core.inference.llama_cpp import GgufLoadIntent
-
     assert (
         _blocks(
             GgufLoadIntent(
