@@ -43,7 +43,14 @@ def truncate_oldest_messages(
         starts_tool_exchange = message.get("role") == "assistant" and bool(
             message.get("tool_calls")
         )
-        if message.get("role") in ("system", "developer", "user") or starts_tool_exchange:
+        follows_instruction = bool(
+            groups and groups[-1][0].get("role") in ("system", "developer")
+        )
+        if (
+            message.get("role") in ("system", "developer", "user")
+            or starts_tool_exchange
+            or follows_instruction
+        ):
             groups.append([message])
         elif not groups:
             groups.append([message])

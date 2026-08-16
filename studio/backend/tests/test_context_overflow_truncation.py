@@ -250,6 +250,20 @@ def test_rolling_truncation_preserves_nonleading_system_messages():
     assert later_system in new
 
 
+@pytest.mark.parametrize("instruction_role", ["system", "developer"])
+def test_rolling_truncation_can_drop_assistant_after_instruction(instruction_role):
+    instruction = {"role": instruction_role, "content": "keep this instruction"}
+    greeting = {"role": "assistant", "content": "historical greeting" * 1000}
+    latest = {"role": "user", "content": "latest question"}
+
+    new, dropped = _truncate_oldest_messages(
+        [instruction, greeting, latest], keep_ratio = 0.1
+    )
+
+    assert dropped == 1
+    assert new == [instruction, latest]
+
+
 def test_rolling_fit_recounts_until_the_real_template_fits():
     messages = [
         {"role": "system", "content": "system"},
