@@ -8,9 +8,9 @@ identical /load can repair a binary stand-down. The chat UI cannot see that, so 
 reloaded (and prompted to stop running chats) for every re-pick of a model whose drafter
 stood down, for a load the backend would have deduplicated.
 
-``_spec_fallback_binary_changed`` publishes the cheap half of that predicate. It is
-answered ONLY for the two binary reasons: /api/inference/status is polled from first
-paint, and the binary lookup has no business running on every poll of a healthy runtime.
+``_spec_fallback_binary_changed`` publishes it. It is answered ONLY for the two binary
+reasons: /api/inference/status is polled from first paint, and neither the binary lookup
+nor the capability probe has business running on every poll of a healthy runtime.
 
 Two more arms of ``_runtime_matches_intent`` reject an identical load while leaving
 ``spec_fallback_reason`` null entirely, so a client reading only the reason adopts a
@@ -69,7 +69,7 @@ class _Backend:
         self._raises = raises
         self.calls = 0
 
-    def _binary_changed_since_launch(self):
+    def spec_binary_fallback_can_retry(self):
         self.calls += 1
         if self._raises:
             raise RuntimeError("binary lookup failed")
@@ -91,7 +91,10 @@ def test_answers_only_for_the_two_binary_reasons():
         assert backend.calls == 0
 
 
-def test_reports_whether_the_binary_moved():
+def test_reports_the_whole_retry_predicate():
+    # The predicate, not just its revision half: binary_no_mtp also asks whether the
+    # replacement advertises what the drafter kind needs, and a replacement that still
+    # lacks it never repairs, so a half answer would prompt on every later re-pick.
     helper = _load_helper()
     for reason in ("binary_no_mtp", "binary_outdated"):
         assert helper(_Backend(reason, changed = False)) is False

@@ -6993,15 +6993,19 @@ class _LoadPlacement(NamedTuple):
 
 
 def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
-    """The cheap half of ``spec_binary_fallback_can_retry``, for the status poll.
+    """``spec_binary_fallback_can_retry``, for the status poll.
 
-    Only the two binary stand-downs can be repaired by an identical reload, and only
-    once a different llama-server is installed, so a client that reloads for any
-    ``binary_*`` reason prompts to stop running chats for a load that would dedupe.
-    Answered only for those reasons: this is polled from first paint, and the binary
-    lookup has no business running on every poll of a healthy runtime. The capability
-    probe stays out of it, being a subprocess; a client declining on True at most
-    spends one round trip through already_loaded.
+    Only the two binary stand-downs can be repaired by an identical reload, so a client
+    that reloads for any ``binary_*`` reason prompts to stop running chats for a load
+    that would dedupe. Answered only for those reasons: this is polled from first paint,
+    and neither the binary lookup nor the capability probe has business running on every
+    poll of a healthy runtime.
+
+    The whole predicate, not just its revision half. ``binary_no_mtp`` also asks whether
+    the replacement advertises what the drafter kind needs, and a replacement that still
+    lacks it never repairs: the live process keeps its launch revision, so a half answer
+    would prompt on every later re-pick and never stop. The probe caches on the binary's
+    revision, and this route already relies on that elsewhere.
     """
     if getattr(llama_backend, "spec_fallback_reason", None) not in (
         "binary_no_mtp",
@@ -7009,7 +7013,7 @@ def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
     ):
         return None
     try:
-        return bool(llama_backend._binary_changed_since_launch())
+        return bool(llama_backend.spec_binary_fallback_can_retry())
     except Exception:
         return None
 

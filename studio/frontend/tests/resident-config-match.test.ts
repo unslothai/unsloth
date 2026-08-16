@@ -669,6 +669,35 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
   );
 });
 
+test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
+  // requested_context_length is set only by the llama.cpp path. A safetensors or MLX
+  // status never carries it, and the resolver answers the generation length for a
+  // non-GGUF pick, so reading the absence as 0 rejected every one of these re-picks.
+  assert.equal(
+    matches({ ...DEFAULTS, is_gguf: false }, BLANK, {
+      ...STANDING,
+      resolveContextLength: () => 8192,
+    }),
+    true,
+  );
+  // The GGUF side is unchanged: there the absence really is Auto.
+  assert.equal(
+    matches({ ...DEFAULTS, is_gguf: true }, BLANK, {
+      ...STANDING,
+      resolveContextLength: () => 8192,
+    }),
+    false,
+  );
+  // And a non-GGUF resident still answers for everything else it publishes.
+  assert.equal(
+    matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK, {
+      ...STANDING,
+      resolveContextLength: () => 8192,
+    }),
+    false,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.

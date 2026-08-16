@@ -25,6 +25,7 @@ type ResidentRuntime = Pick<
   | "n_cpu_moe"
   | "requested_gpu_ids"
   | "gpu_ids"
+  | "is_gguf"
   | "tensor_split"
   | "cpu_fallback_reason"
 >;
@@ -218,8 +219,12 @@ const SETTING_CHECKS: SettingCheck[] = [
     // Reading null as "no opinion" against a status echoing either number was a reload.
     pinned: () => true,
     agrees: (c, s, standing) =>
+      // requested_context_length is a GGUF invocation field. A safetensors or MLX status
+      // never sets it, and reading that absence as 0 against a resolver answering the
+      // generation length rejected every re-pick of a non-GGUF resident.
+      s.is_gguf === false ||
       standing.resolveContextLength(c.customContextLength ?? null) ===
-      (s.requested_context_length ?? 0),
+        (s.requested_context_length ?? 0),
   },
   {
     pinned: () => true,
