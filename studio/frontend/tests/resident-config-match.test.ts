@@ -916,6 +916,27 @@ test("a diffusion resident is not judged on the chat-only invocation fields", ()
   assert.equal(matches({ ...diffusion, cache_type_kv: "q8_0" }, BLANK), false);
 });
 
+test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it", () => {
+  // matches_gpu_ids takes [sorted(gpu_ids)[0]] for a diffusion runner, which drives one
+  // device, and the status reports only that id. Comparing the configured set rejected a
+  // runtime the backend would have called identical.
+  const diffusion = { ...DEFAULTS, is_diffusion: true, requested_gpu_ids: [1] };
+  assert.equal(matches(diffusion, { ...BLANK, selectedGpuIds: [3, 1] }), true);
+  assert.equal(matches(diffusion, { ...BLANK, selectedGpuIds: [1] }), true);
+  // A pool whose lowest is a different device is still a reload.
+  assert.equal(matches(diffusion, { ...BLANK, selectedGpuIds: [2, 3] }), false);
+  // Automatic is unchanged: nothing to reduce, and it does not adopt a pinned runtime.
+  assert.equal(matches(diffusion, BLANK), false);
+  // Chat is judged on the whole set, as before.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_gpu_ids: [1] },
+      { ...BLANK, selectedGpuIds: [3, 1] },
+    ),
+    false,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.

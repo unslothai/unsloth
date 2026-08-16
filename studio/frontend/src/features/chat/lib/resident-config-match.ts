@@ -368,10 +368,17 @@ const SETTING_CHECKS: SettingCheck[] = [
     placement: true,
     pinned: () => true,
     agrees: (c, s, standing) => {
-      const pick = standing.reconcileGpuIds(
+      const reconciled = standing.reconcileGpuIds(
         c.selectedGpuIds ?? null,
         c.selectedGpuIndexKind,
       );
+      // The diffusion runner drives one device, so matches_gpu_ids reduces the request to
+      // its lowest id and the status reports only that. Comparing the configured set
+      // rejected a runtime the backend would have called identical.
+      const pick =
+        s.is_diffusion === true && reconciled?.length
+          ? [Math.min(...reconciled)]
+          : reconciled;
       if (sameGpuSet(pick, s.requested_gpu_ids)) {
         return true;
       }
