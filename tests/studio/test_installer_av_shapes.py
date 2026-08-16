@@ -88,6 +88,10 @@ def test_no_remote_script_is_piped_into_a_shell_first(name: str) -> None:
     assert pinned < fallback, f"{name} reaches the piped fallback before the pinned release"
 
 
+# Spellings PowerShell accepts for -EncodedCommand that are not prefixes of it.
+ENCODED_COMMAND_ALIASES = frozenset(("ec",))
+
+
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_no_encoded_or_base64_command_payloads(name: str) -> None:
     # ToBase64String / b64decode: an encoded python payload came back once (#8505, reverted
@@ -131,8 +135,11 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
         if "powershell" not in line and "pwsh" not in line:
             continue
         for match in re.finditer(r"(?<![\w-])-(e[a-z]*)\b", line):
-            assert not "encodedcommand".startswith(
-                match.group(1)
+            flag = match.group(1)
+            # `ec` is not a prefix of the full name but IS a documented alias, next to
+            # `e` and the ordinary prefixes: see about_pwsh, -EncodedCommand | -e | -ec.
+            assert not (
+                "encodedcommand".startswith(flag) or flag in ENCODED_COMMAND_ALIASES
             ), f"{name}:{number} passes an -EncodedCommand prefix to PowerShell: {line.strip()}"
 
 
