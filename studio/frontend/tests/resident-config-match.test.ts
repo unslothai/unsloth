@@ -22,6 +22,20 @@ const { residentRuntimeMatchesConfig, residentSpeculativeNeedsRepair } =
   await import("../src/features/chat/lib/resident-config-match.ts");
 
 /** Every field unset: what a model the user never configured would carry. */
+const DEFAULT_ISH = {
+  customContextLength: null,
+  maxSeqLength: null,
+  kvCacheDtype: null,
+  mlxKvBits: null,
+  speculativeType: null,
+  specDraftNMax: null,
+  nParallel: null,
+  nBatch: null,
+  nUbatch: null,
+  tensorParallel: false,
+  chatTemplateOverride: null,
+} as const;
+
 const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
@@ -1015,6 +1029,42 @@ test("a diffusion resident is judged on its NGL, not on the placement fields", (
   );
 });
 
+test("a model switch is judged on the defaults it resets to, not the outgoing settings", () => {
+  // The two directions the outgoing snapshot got wrong. performLoad clears the per-model
+  // fields on a switch, so the request is the defaults: a resident running them should
+  // adopt even when the outgoing model was configured, and a resident matching the
+  // outgoing settings must NOT adopt, since the load would not have asked for them.
+  const outgoing = { ...BLANK, nParallel: 4 };
+  const reset = {
+    ...DEFAULT_ISH,
+    kvCacheDtype: null,
+    tensorParallel: false,
+  };
+  assert.equal(
+    matches({ ...DEFAULTS, requested_parallel_slots: 1 }, reset, {
+      ...STANDING,
+      parallelSlots: 1,
+    }),
+    true,
+  );
+  assert.equal(
+    matches({ ...DEFAULTS, requested_parallel_slots: 4 }, reset, {
+      ...STANDING,
+      parallelSlots: 1,
+    }),
+    false,
+  );
+  // The same resident against the outgoing snapshot answers the other way round, which is
+  // what made the choice of config the whole question.
+  assert.equal(
+    matches({ ...DEFAULTS, requested_parallel_slots: 4 }, outgoing, {
+      ...STANDING,
+      parallelSlots: 1,
+    }),
+    true,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.
@@ -1349,12 +1399,13 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
 
 /**
  * The comparison must be against what /load would send, and with no saved config that is
- * the live runtime store: the caller ran applyModelLoadConfigToRuntime(null) first, which
- * resets it to DEFAULT_PER_MODEL_CONFIG, and performLoad reads the store for every field
- * the config does not carry. Passing the absent config straight through made the gate a
- * wildcard, adopting whatever another tab or API client had left running.
+ * one of two things. performLoad treats a different checkpoint or variant as a model
+ * switch and clears the per-model fields first, so on that door the request is the
+ * defaults; where nothing switches, it reads the live runtime store. Passing the absent
+ * config straight through made the gate a wildcard, adopting whatever another tab or API
+ * client had left running.
  */
-test("with no saved config the gate compares the live runtime, not nothing", () => {
+test("with no saved config the gate compares what the load would send", () => {
   const source = readFileSync(
     fileURLToPath(
       new URL(
@@ -1365,10 +1416,21 @@ test("with no saved config the gate compares the live runtime, not nothing", () 
     "utf8",
   );
   const configCheck = source.search(/residentRuntimeMatchesConfig\(\s*status/);
-  assert.match(
-    source.slice(configCheck, configCheck + 200),
-    /pendingConfig\s*\?\?\s*currentRuntimePerModelConfig\(\)/,
+  assert.ok(
+    configCheck > 0 &&
+      /const comparedConfig =\s*\n\s*pendingConfig \?\?/.test(source),
     "the gate takes an absent config as a wildcard again",
+  );
+  // Both doors, and the reset one must not be the live store.
+  assert.match(
+    source,
+    /resetsPerModelSettings\s*\?\s*\{\s*\n\s*\.\.\.DEFAULT_PER_MODEL_CONFIG/,
+    "a model switch no longer compares against the defaults it would send",
+  );
+  assert.match(
+    source,
+    /: currentRuntimePerModelConfig\(\)\)/,
+    "a re-pick that switches nothing no longer compares against the live runtime",
   );
 });
 

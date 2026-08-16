@@ -84,6 +84,7 @@ import {
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
+  DEFAULT_PER_MODEL_CONFIG,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   normalizeMaxSeqLength,
@@ -703,6 +704,30 @@ export function useChatModelRuntime() {
         if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {
           await ensureGpuDeviceCache().catch(() => {});
         }
+        // What /load would carry for a pick with no saved config, which is not always the
+        // live runtime: performLoad treats a different checkpoint or variant as a model
+        // switch and clears the per-model fields first (resetsPerModelSettings), so on that
+        // door the request is the defaults, and comparing the outgoing model's settings
+        // would both prompt for a load that dedupes and adopt one that does not.
+        // gpuMemoryMode is standing and kvCacheDtype and tensorParallel are not reset, so
+        // those three still come from the store.
+        const live = useChatRuntimeStore.getState();
+        const resetsPerModelSettings = Boolean(
+          live.params.checkpoint &&
+            (live.params.checkpoint !== modelId ||
+              (live.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
+            !keepSpeculative,
+        );
+        const comparedConfig =
+          pendingConfig ??
+          (resetsPerModelSettings
+            ? {
+                ...DEFAULT_PER_MODEL_CONFIG,
+                kvCacheDtype: live.kvCacheDtype ?? null,
+                tensorParallel: live.tensorParallel ?? false,
+                gpuMemoryMode: live.gpuMemoryMode,
+              }
+            : currentRuntimePerModelConfig());
         // The slot count an unset --parallel resolves to. Session-cached, and 0 is the
         // catalogue's own "unknown", which the comparison reads as a reload.
         const managedFlags = residentStatus
@@ -735,47 +760,46 @@ export function useChatModelRuntime() {
           // config does not carry. The live store is therefore what /load would send, on
           // both doors: reset to defaults after a hub or handoff pick, and still the
           // resident values where nothing reset it.
-          residentRuntimeMatchesConfig(
-            status,
-            pendingConfig ?? currentRuntimePerModelConfig(),
-            {
-              // What the applier fills an unset field with, so the comparison is against
-              // what /load would send rather than against silence.
-              speculativeType: readPersistedSpeculativeType(),
-              gpuMemoryMode: readPersistedGpuMemoryMode(),
-              gpuLayers: GPU_LAYERS_AUTO,
-              nCpuMoe: 0,
-              // The n_ctx /load would send. Built from the live store, as performLoad
-              // builds it, so an unset length resolves the same way on both sides.
-              resolveContextLength: (customContextLength) => {
-                const live = useChatRuntimeStore.getState();
-                return resolveLoadMaxSeqLength({
-                  modelId,
-                  ggufVariant,
-                  // Identity matched above, so the resident model is this pick.
-                  isGguf: status.is_gguf,
-                  customContextLength,
-                  ggufContextLength: live.ggufContextLength,
-                  currentCheckpoint: live.params.checkpoint,
-                  activeGgufVariant: live.activeGgufVariant,
-                  maxSeqLength: live.params.maxSeqLength,
-                  presetSource: live.activePresetSource,
-                });
-              },
-              parallelSlots: managedFlags?.defaultParallelSlots || null,
-              // Never a config field, so the store is the only place it can come from.
-              splitRatio: useChatRuntimeStore.getState().splitRatio,
-              // What /load sends: a pick saved in another index namespace, or naming GPUs
-              // that are gone, is reconciled to Automatic before it leaves.
-              reconcileGpuIds: (ids, savedIndexKind) =>
-                reconcilePersistedGpuIds(
-                  ids,
-                  savedIndexKind,
-                  status.is_diffusion ?? false,
-                ),
-              normalizeSpeculative: normalizeSpeculativeType,
+          residentRuntimeMatchesConfig(status, comparedConfig, {
+            // What the applier fills an unset field with, so the comparison is against
+            // what /load would send rather than against silence.
+            speculativeType: readPersistedSpeculativeType(),
+            gpuMemoryMode: readPersistedGpuMemoryMode(),
+            gpuLayers: GPU_LAYERS_AUTO,
+            nCpuMoe: 0,
+            // The n_ctx /load would send. Built from the live store, as performLoad
+            // builds it, so an unset length resolves the same way on both sides.
+            resolveContextLength: (customContextLength) => {
+              const live = useChatRuntimeStore.getState();
+              return resolveLoadMaxSeqLength({
+                modelId,
+                ggufVariant,
+                // Identity matched above, so the resident model is this pick.
+                isGguf: status.is_gguf,
+                customContextLength,
+                ggufContextLength: live.ggufContextLength,
+                currentCheckpoint: live.params.checkpoint,
+                activeGgufVariant: live.activeGgufVariant,
+                maxSeqLength: live.params.maxSeqLength,
+                presetSource: live.activePresetSource,
+              });
             },
-          );
+            parallelSlots: managedFlags?.defaultParallelSlots || null,
+            // Never a config field, so the store is the only place it can come from,
+            // and the reset clears it before the load reads it.
+            splitRatio: resetsPerModelSettings
+              ? null
+              : useChatRuntimeStore.getState().splitRatio,
+            // What /load sends: a pick saved in another index namespace, or naming GPUs
+            // that are gone, is reconciled to Automatic before it leaves.
+            reconcileGpuIds: (ids, savedIndexKind) =>
+              reconcilePersistedGpuIds(
+                ids,
+                savedIndexKind,
+                status.is_diffusion ?? false,
+              ),
+            normalizeSpeculative: normalizeSpeculativeType,
+          });
         if (
           residentStatus &&
           adoptable(residentStatus) &&
