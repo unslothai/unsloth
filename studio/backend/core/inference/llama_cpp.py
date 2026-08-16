@@ -2733,6 +2733,20 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     )
 
 
+def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
+    """True when the pass-through extras name either projector-placement spelling.
+
+    Both are real flags a user can pass, and llama.cpp is last-wins, so an
+    automatic pin would either be overridden silently or fight a deliberate
+    --mmproj-offload. Either spelling hands the placement to the user.
+    """
+    if not extra_args:
+        return False
+    return any(
+        str(a) in ("--mmproj-offload", "--no-mmproj-offload") for a in extra_args
+    )
+
+
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
     {
         "-ot",
@@ -14454,6 +14468,90 @@ class LlamaCppBackend:
                         # dropped; restore the original cache type + extras (minus
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
+
+                    # The projector holds VRAM that would otherwise hold model layers.
+                    # It runs once per image; layers run once per token, so when the
+                    # projector's presence is what pushes layers onto the CPU, moving
+                    # the projector to host RAM instead is the better trade: a bounded
+                    # per-image cost against a per-token one. Auto therefore pins it
+                    # rather than shrink the GPU-resident stack.
+                    #
+                    # Never a reason to disable vision. Silently dropping the projector
+                    # turns a pasted screenshot into a confident text-only answer, which
+                    # is a correctness failure with no in-band signal; the pin is only
+                    # ever slower, and says so.
+                    #
+                    # Gated on `gpus` rather than on --fit, which starts on and is NOT
+                    # evidence the model does not fit. That also excludes the two
+                    # machines the pin cannot help: Metal enumerates no GPU and its
+                    # memory is unified, so pinning frees nothing and only moves the
+                    # encoder off the faster device, and a CPU-only box has the
+                    # projector on the CPU already.
+                    if (
+                        effective_is_vision
+                        and mmproj_size > 0
+                        and gpus
+                        and not _mmproj_cpu_pinned
+                        and gpu_memory_mode != "manual"
+                        and _paravirtual_mmproj_pinnable(server_caps)
+                        # llama.cpp is last-wins and Studio appends its own flags before
+                        # the extras, so a user who named either spelling owns the
+                        # placement; do not race them for it.
+                        and not _extra_args_set_mmproj_offload(extra_args)
+                    ):
+
+                        def _mmproj_fits(with_projector: bool, n: int, subset: list) -> bool:
+                            _mm = mmproj_size if with_projector else 0
+                            _soft = self._CUDA_CONTEXT_RESERVE_BYTES
+                            if _mm > 0:
+                                _soft += int(_mm * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                            _need = (
+                                gguf_size
+                                + _mm
+                                + _compute_buffer_pipeline
+                                + _soft
+                                + max(0, n - 1) * _pipeline_overhead_bytes
+                            )
+                            # Auto's context is capped later, so price KV only when the
+                            # context is already fixed. Omitting it makes "fits" the
+                            # optimistic answer, which pins less often -- the direction
+                            # that leaves today's behaviour alone when unsure.
+                            if effective_ctx > 0:
+                                _need += _kv_bytes(effective_ctx) + _cc_bytes(effective_ctx, n)
+                            return _need / (1024 * 1024) <= _pool_budget_mib(subset, _vram_frac)
+
+                        # Fewest GPUs first over the same ranking the placement loop
+                        # walks, so the answer is about placements it could choose.
+                        _mm_ranked = sorted(gpus, key = lambda g: _gpu_usable(g), reverse = True)
+                        _mm_subsets = [_mm_ranked[:_n] for _n in range(1, len(_mm_ranked) + 1)]
+                        _mm_fits_on_gpu = any(
+                            _mmproj_fits(True, _n + 1, _s) for _n, _s in enumerate(_mm_subsets)
+                        )
+                        # Only when moving it actually buys full residency. The
+                        # projector is then demonstrably the thing tipping the model
+                        # over, and the trade is a clean win: every layer on the GPU
+                        # against a slower image encode.
+                        #
+                        # A model too large to fit either way is deliberately left
+                        # alone. The freed bytes would still hold a layer or two, but
+                        # on a stack that is mostly on the CPU already that is a couple
+                        # of percent per token bought with a silent 3.6x on every
+                        # image, and being wrong in that direction is expensive.
+                        _mm_fits_pinned = any(
+                            _mmproj_fits(False, _n + 1, _s) for _n, _s in enumerate(_mm_subsets)
+                        )
+                        if not _mm_fits_on_gpu and _mm_fits_pinned:
+                            _mmproj_cpu_pinned = True
+                            # Everything downstream prices the projector off this.
+                            mmproj_size = 0
+                            model_size = gguf_size
+                            logger.info(
+                                "Auto: running the vision projector on the CPU "
+                                "(--no-mmproj-offload) so every model layer fits in "
+                                "VRAM. Image encoding gets slower; text generation is "
+                                "unaffected. Pass --mmproj-offload in the advanced "
+                                "arguments to keep it on the GPU."
+                            )
 
                     # Target pins but the drafter's reserve tips it over: Auto drops the
                     # drafter rather than pay for speed with context (or a --fit offload,
