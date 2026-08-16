@@ -171,10 +171,9 @@ def enable_sample_packing(
             if seq_lengths:
                 packed_seq_lengths = torch.tensor(seq_lengths, dtype = torch.int32)
                 batch["packed_seq_lengths"] = packed_seq_lengths
-                # Boundary guard at the point the metadata is created, so every
-                # downstream loss path benefits - including compiled forwards for
-                # non-Llama architectures, which never reach the guard in
-                # unsloth/models/llama.py. No-op on TRL's collator output, which
+                # Guard here so every downstream loss path benefits, including
+                # compiled forwards for non-Llama architectures that never reach
+                # the guard in llama.py. No-op on TRL's collator output, which
                 # already sets these positions to -100.
                 if batch.get("labels") is not None:
                     batch["labels"] = mask_packed_boundary_labels(
@@ -227,8 +226,8 @@ def enable_padding_free_metadata(model, trainer):
                 dtype = torch.int32,
             )
             batch["packed_seq_lengths"] = packed_seq_lengths
-            # See the note in enable_sample_packing: padding-free flattens whole
-            # examples into one row, so the same cross-document boundaries exist.
+            # Padding-free flattens whole examples into one row, so the same
+            # cross-document boundaries exist. See enable_sample_packing.
             if batch.get("labels") is not None:
                 batch["labels"] = mask_packed_boundary_labels(
                     batch["labels"],
@@ -692,30 +691,23 @@ def mask_packed_boundary_labels(
     *,
     ignore_index: int = -100,
 ) -> Optional[torch.Tensor]:
-    """Same guard as :func:`mask_packed_sequence_boundaries`, expressed on the
-    RAW (unshifted) labels, and out-of-place.
+    """Same guard as :func:`mask_packed_sequence_boundaries`, but on the RAW
+    (unshifted) labels and out-of-place, for fused cross-entropy paths that shift
+    internally and so can never call the shifted variant.
 
-    ``mask_packed_sequence_boundaries`` needs a tensor that has already been
-    shifted, so it can only be used by loss paths that build ``shift_labels``
-    themselves. Every fused cross-entropy path shifts *internally* and is handed
-    the raw ``labels``, so it could never call it. Because the shift maps target
-    slot ``i`` to ``labels[i + 1]``, masking shift slot ``cumsum - 1`` is exactly
-    masking ``labels[cumsum]`` - the first token of each following document.
+    The shift maps target slot ``i`` to ``labels[i + 1]``, so masking shift slot
+    ``cumsum - 1`` is exactly masking ``labels[cumsum]``, the first token of each
+    following document.
 
-    Returns ``labels`` unchanged (the identical object) when ``seq_lengths`` is
-    absent or empty, so non-packed callers are a strict no-op. Otherwise returns
-    a NEW tensor; the caller's batch is never mutated.
+    Returns ``labels`` itself when ``seq_lengths`` is absent or empty (strict
+    no-op for non-packed callers), else a NEW tensor; the batch is never mutated.
+    Idempotent, and a no-op on TRL's padding-free collator output, which already
+    sets exactly these positions to -100 (``labels[position_ids == 0] = -100``).
 
-    Idempotent: TRL's padding-free collator already sets exactly these positions
-    to ``-100`` (``labels[position_ids == 0] = -100``), so on the default TRL
-    path the returned values are bit-identical to the input.
-
-    Contract: ``sum(seq_lengths) <= labels.numel()``. Entries that fall outside
-    the tensor (the final cumulative sum, or malformed lengths) are redirected to
-    index 0, whose label is discarded by the shift and is therefore never a
-    cross-entropy target - so the redirect is a no-op. That keeps this function
-    free of device syncs and data-dependent shapes, which matters because it runs
-    inside the compiled fused-CE path.
+    Contract: ``sum(seq_lengths) <= labels.numel()``. Out-of-range entries (the
+    final cumulative sum, or malformed lengths) are redirected to index 0, which
+    the shift discards and so is never a cross-entropy target. This avoids device
+    syncs and data-dependent shapes inside the compiled fused-CE path.
     """
     if labels is None or not isinstance(labels, torch.Tensor):
         return labels
