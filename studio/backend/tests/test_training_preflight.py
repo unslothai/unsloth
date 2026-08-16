@@ -618,6 +618,98 @@ def test_max_steps_dataset_rows_survives_unusable_numbers():
     assert max_steps_dataset_rows(10**9, 2, 4) == 10**9 * 8 * 4
 
 
+def _single_process_launch(monkeypatch):
+    """Clear every launcher variable, so a bound reads as Studio's own launch."""
+    from core.training.dataset_bounds import WORLD_SIZE_ENV_VARS
+    for name in WORLD_SIZE_ENV_VARS:
+        monkeypatch.delenv(name, raising = False)
+
+
+def test_max_steps_dataset_rows_scales_with_world_size(monkeypatch):
+    from core.training.dataset_bounds import (
+        MAX_STEPS_ROW_SLACK,
+        MIN_MAX_STEPS_ROWS,
+        max_steps_dataset_rows,
+    )
+
+    _single_process_launch(monkeypatch)
+
+    # One process is what the bound has always assumed: identical to omitting it.
+    assert max_steps_dataset_rows(2000, 8, 16, world_size = 1) == max_steps_dataset_rows(2000, 8, 16)
+    assert max_steps_dataset_rows(2000, 8, 16) == 2000 * 8 * 16 * MAX_STEPS_ROW_SLACK
+    assert max_steps_dataset_rows(30, 2, 4, world_size = 1) == MIN_MAX_STEPS_ROWS
+
+    # Every replica draws its own batch per step, so the subset grows with them.
+    for world_size in (2, 4, 8):
+        assert (
+            max_steps_dataset_rows(2000, 8, 16, world_size = world_size)
+            == 2000 * 8 * 16 * world_size * MAX_STEPS_ROW_SLACK
+        )
+        # The slack is what stops a run recycling rows, so it must survive the scaling.
+        rows = max_steps_dataset_rows(60, 2, 4, world_size = world_size)
+        assert rows >= 60 * 2 * 4 * world_size * MAX_STEPS_ROW_SLACK
+
+    # An unbounded run stays unbounded however many replicas read it.
+    assert max_steps_dataset_rows(0, 2, 4, world_size = 8) is None
+
+
+def test_max_steps_dataset_rows_survives_an_unusable_world_size(monkeypatch):
+    from core.training.dataset_bounds import MIN_MAX_STEPS_ROWS, max_steps_dataset_rows
+
+    _single_process_launch(monkeypatch)
+
+    # A launcher that reports nothing, or nonsense, must read as one process rather
+    # than raise or collapse the subset to nothing.
+    baseline = max_steps_dataset_rows(2000, 8, 16)
+    for world_size in (None, 0, -4, "", "auto", "not a number", float("inf"), object()):
+        assert max_steps_dataset_rows(2000, 8, 16, world_size = world_size) == baseline
+    assert max_steps_dataset_rows(30, 2, 4, world_size = None) == MIN_MAX_STEPS_ROWS
+
+    # A string count is what an env carries, and it still has to scale.
+    assert max_steps_dataset_rows(2000, 8, 16, world_size = "4") == baseline * 4
+
+
+def test_world_size_comes_from_the_launcher_env(monkeypatch):
+    from core.training.dataset_bounds import (
+        MAX_STEPS_ROW_SLACK,
+        max_steps_dataset_rows,
+        world_size_from_env,
+    )
+
+    _single_process_launch(monkeypatch)
+    assert world_size_from_env() == 1
+
+    # torchrun and accelerate set WORLD_SIZE; mlx.launch and mpirun set their own.
+    for name, size in (("WORLD_SIZE", 4), ("MLX_WORLD_SIZE", 2), ("OMPI_COMM_WORLD_SIZE", 8)):
+        _single_process_launch(monkeypatch)
+        monkeypatch.setenv(name, str(size))
+        assert world_size_from_env() == size
+        assert max_steps_dataset_rows(2000, 8, 16) == 2000 * 8 * 16 * size * MAX_STEPS_ROW_SLACK
+
+    # A multi-node torchrun sets both, and the global count is the one that sizes rows.
+    _single_process_launch(monkeypatch)
+    monkeypatch.setenv("WORLD_SIZE", "16")
+    monkeypatch.setenv("LOCAL_WORLD_SIZE", "8")
+    assert world_size_from_env() == 16
+
+    # Junk in the env reads as a single process, not as a crash.
+    for junk in ("", "auto", "0", "-2", "3.5"):
+        _single_process_launch(monkeypatch)
+        monkeypatch.setenv("WORLD_SIZE", junk)
+        assert world_size_from_env() == 1
+
+    # An explicit count is the caller's own detection and outranks the env, which
+    # cannot see the visible CUDA devices DataParallel would also split a batch over.
+    _single_process_launch(monkeypatch)
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    assert max_steps_dataset_rows(2000, 8, 16, world_size = 8) == 2000 * 8 * 16 * 8 * (
+        MAX_STEPS_ROW_SLACK
+    )
+    # A mapping can be passed instead of the process env.
+    assert world_size_from_env({"WORLD_SIZE": "4"}) == 4
+    assert world_size_from_env({}) == 1
+
+
 def test_effective_packing_decides_the_opt_out():
     from core.training.dataset_bounds import effective_packing, max_train_rows_for_config
 
@@ -890,6 +982,168 @@ def test_bound_leaves_enough_rows_after_the_eval_carve():
     assert len(train) >= needed
 
 
+def test_bound_leaves_enough_rows_for_every_rank_after_the_eval_carve(monkeypatch):
+    from datasets import Dataset
+
+    from core.training.dataset_bounds import bound_dataset_rows, max_train_rows_for_config
+    from core.training.eval_dataset import split_dataset_for_evaluation
+
+    _single_process_launch(monkeypatch)
+
+    config = {"max_steps": 60, "batch_size": 2, "gradient_accumulation_steps": 4}
+    source = Dataset.from_dict({"text": [f"t{i}" for i in range(500_000)]})
+
+    for world_size in (1, 2, 4, 8):
+        rows = max_train_rows_for_config(config, world_size = world_size)
+        bounded = bound_dataset_rows(source, rows, 3407)
+        train, _eval = split_dataset_for_evaluation(bounded)
+
+        # Each rank draws its own batch, so the corpus a step consumes is the batch
+        # times the ranks; without the factor the eval carve alone tips ws=4 into
+        # re-reading rows it has already trained on.
+        needed = (
+            config["max_steps"]
+            * config["batch_size"]
+            * config["gradient_accumulation_steps"]
+            * world_size
+        )
+        assert len(train) >= needed
+
+    # Packing still opts out, whatever the launch looks like.
+    assert max_train_rows_for_config({**config, "packing": True}, world_size = 8) is None
+
+
+def test_row_bound_marker_round_trips_a_world_size_scaled_bound(tmp_path, monkeypatch):
+    from core.training.dataset_bounds import (
+        max_train_rows_for_config,
+        record_row_bound,
+        row_bound_for_resume,
+    )
+
+    _single_process_launch(monkeypatch)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    checkpoint = run_dir / "checkpoint-60"
+    checkpoint.mkdir()
+
+    config = {"max_steps": 60, "batch_size": 2, "gradient_accumulation_steps": 4}
+    rows = max_train_rows_for_config(config, world_size = 4)
+    assert rows == 60 * 2 * 4 * 4 * 4
+    assert record_row_bound(str(run_dir), rows, 3407) is True
+
+    # The marker records rows, not the launch that sized them, so a resume on a
+    # differently sized machine still trains on the rows the run started with.
+    assert row_bound_for_resume(str(checkpoint), max_train_rows_for_config(config), 99) == (
+        rows,
+        3407,
+    )
+
+    # A marker written before this change carries a single-process bound and is
+    # still read back verbatim, rather than being rescaled under the run.
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    (legacy_dir / "checkpoint-60").mkdir()
+    legacy_rows = 60 * 2 * 4 * 4
+    record_row_bound(str(legacy_dir), legacy_rows, 3407)
+    assert row_bound_for_resume(str(legacy_dir / "checkpoint-60"), rows, 3407) == (
+        legacy_rows,
+        3407,
+    )
+
+    # And a checkpoint with no marker at all stays unbounded.
+    unmarked = tmp_path / "unmarked"
+    (unmarked / "checkpoint-60").mkdir(parents = True)
+    assert row_bound_for_resume(str(unmarked / "checkpoint-60"), rows, 3407) == (None, 3407)
+
+
+def test_both_loaders_size_the_bound_for_the_world():
+    """The factor is only worth having if both loaders actually pass it.
+
+    Read from source for the same reason as the wiring test below: neither call
+    site is reachable without a GPU or Apple hardware.
+    """
+    import ast
+    from pathlib import Path
+
+    worker_src = (Path(__file__).resolve().parents[1] / "core/training/worker.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(worker_src)
+    calls = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        calls[node.name] = {
+            sub.func.id
+            for sub in ast.walk(node)
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+        }
+
+    for loader in ("run_training_process", "_run_mlx_training"):
+        assert "_data_parallel_world_size" in calls[loader]
+    assert worker_src.count("world_size = _data_parallel_world_size()") == 2
+    # The count is a property of this launch, so it must never be read back out of a
+    # config that was built on the parent and shipped across a spawn.
+    assert 'config.get("world_size")' not in worker_src
+
+
+def test_data_parallel_world_size_counts_ranks_and_devices(monkeypatch):
+    import types
+
+    from core.training import worker as training_worker
+
+    _single_process_launch(monkeypatch)
+
+    # No torch in sys.modules is the MLX host: the env is all there is.
+    monkeypatch.setitem(sys.modules, "torch", None)
+    assert training_worker._data_parallel_world_size() == 1
+    monkeypatch.setenv("MLX_WORLD_SIZE", "4")
+    assert training_worker._data_parallel_world_size() == 4
+
+    def _torch(devices, world_size = None):
+        distributed = types.SimpleNamespace(
+            is_available = lambda: world_size is not None,
+            is_initialized = lambda: world_size is not None,
+            get_world_size = lambda: world_size,
+        )
+        return types.SimpleNamespace(
+            cuda = types.SimpleNamespace(device_count = lambda: devices),
+            distributed = distributed,
+        )
+
+    _single_process_launch(monkeypatch)
+    # One visible GPU and no launcher is today's single-process run, unchanged.
+    monkeypatch.setitem(sys.modules, "torch", _torch(1))
+    assert training_worker._data_parallel_world_size() == 1
+
+    # transformers wraps a non-distributed multi-GPU run in DataParallel and scales
+    # the train batch by the visible device count, which no env reports.
+    monkeypatch.setitem(sys.modules, "torch", _torch(4))
+    assert training_worker._data_parallel_world_size() == 4
+
+    # A torchrun rank sees the whole node but trains on its own shard: the larger of
+    # the two, never the product, since a distributed run pins n_gpu to 1.
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    monkeypatch.setitem(sys.modules, "torch", _torch(8, world_size = 8))
+    assert training_worker._data_parallel_world_size() == 8
+
+    # CPU-only and a torch whose CUDA probe raises both read as one process.
+    _single_process_launch(monkeypatch)
+    monkeypatch.setitem(sys.modules, "torch", _torch(0))
+    assert training_worker._data_parallel_world_size() == 1
+
+    def _raises():
+        raise RuntimeError("no CUDA driver")
+
+    broken = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(device_count = _raises),
+        distributed = types.SimpleNamespace(is_available = _raises, is_initialized = _raises),
+    )
+    monkeypatch.setitem(sys.modules, "torch", broken)
+    assert training_worker._data_parallel_world_size() == 1
+
+
 def test_both_loaders_apply_the_row_bound():
     """Guards the wiring: the helpers are useless if a loader stops calling them.
 
@@ -1052,9 +1306,9 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "core.training.trainer.load_dataset",
-        lambda **kwargs: stream
-        if kwargs.get("streaming")
-        else pytest.fail("eager download should not run"),
+        lambda **kwargs: (
+            stream if kwargs.get("streaming") else pytest.fail("eager download should not run")
+        ),
     )
 
     result = trainer.load_and_format_dataset(
