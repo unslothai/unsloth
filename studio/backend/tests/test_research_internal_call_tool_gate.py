@@ -32,6 +32,7 @@ class _Backend:
 
     is_loaded = True
     model_identifier = "test/model.gguf"
+    context_length = None
     _is_audio = False
     is_vision = False
     supports_tools = True
@@ -110,8 +111,9 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     after_entry, after_kwargs = _entry_point(monkeypatch, policy = policy, opt_out = True)
 
     assert (before_entry, after_entry) == ("plain", "plain")
-    # cancel_event is a fresh object per request, so identity differences say nothing.
-    drop = {"cancel_event"}
+    # cancel_event and perf_callback are built fresh per request, so their identities
+    # differ between the two hops and say nothing about what the model is handed.
+    drop = {"cancel_event", "perf_callback"}
     assert {k: v for k, v in before_kwargs.items() if k not in drop} == {
         k: v for k, v in after_kwargs.items() if k not in drop
     }

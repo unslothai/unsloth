@@ -13,6 +13,7 @@ import routes.inference as inference_route
 class _GgufBackend:
     is_loaded = True
     model_identifier = "test/model.gguf"
+    context_length = None
     _is_audio = False
     is_vision = False
     supports_tools = False
