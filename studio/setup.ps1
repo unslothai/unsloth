@@ -5908,6 +5908,14 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
         if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
             $_updateOk = ($Matches[1] -eq "ge")
         } else {
+            # PEP 440's public-version grammar. The probe above rejects anything that
+            # is not a version, and its rejection lands here, so this fallback has to
+            # refuse it too: stripping the tail off 999garbage would compare it as
+            # 999.0 and confirm a malformed distribution. A version that fails this
+            # leaves $_updateOk false, which is the warning outcome below, not a pass.
+            $_pep440 = '^(\d+!)?\d+(\.\d+)*([-._]?(a|b|c|rc|alpha|beta|pre|preview)[-._]?\d*)?' +
+                       '([-._]?(post|rev|r)[-._]?\d*|-\d+)?([-._]?dev[-._]?\d*)?' +
+                       '(\+[a-z0-9]+([-._][a-z0-9]+)*)?$'
             # the epoch orders above everything in the release: 1!0.1 > 2.0
             # PEP 440 allows a leading v: v2.0 == 2.0
             $_postTrim = $PostVer.Trim() -replace '^[vV]', ''
@@ -5925,7 +5933,8 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
             $_latestNum = $_latestNum -replace '(\.0)+$', ''
             if ($_postNum -and $_postNum -notmatch '\.') { $_postNum = "$_postNum.0" }
             if ($_latestNum -and $_latestNum -notmatch '\.') { $_latestNum = "$_latestNum.0" }
-            if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+') {
+            if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+' -and
+                ($_postTrim -imatch $_pep440) -and ($_latestTrim -imatch $_pep440)) {
                 try {
                     if ($_postEpoch -ne $_latestEpoch) {
                         $_updateOk = ($_postEpoch -gt $_latestEpoch)
