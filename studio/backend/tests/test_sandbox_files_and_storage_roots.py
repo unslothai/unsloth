@@ -242,7 +242,7 @@ def test_tool_description_says_files_are_kept():
     print(f"\nsandbox note = {note!r}")
     assert "download link" in note
     assert "name the files you created" in note
-    assert "absolute path" in note
+    assert "system message" in note
 
 
 # ---------------------------------------------------------------------------

@@ -3254,10 +3254,13 @@ def _build_tool_action_nudge(
     model_name: str,
     full_access: bool = False,
     full_access_only: bool = False,
+    session_id: str | None = None,
 ) -> str:
     """``full_access_only`` returns the Full access sentence alone, for a caller
     that wants to state the environment without also introducing the general
     tool guidance (and the date) to a path that has never carried it."""
+    from core.inference.tools import build_sandbox_workdir_nudge
+
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -3279,6 +3282,9 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
     if has_code:
         tool_tip_parts.append(_TOOL_CODE_TIP)
+        workdir_tip = build_sandbox_workdir_nudge(session_id)
+        if workdir_tip:
+            tool_tip_parts.append(workdir_tip)
         if full_access:
             tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
@@ -13761,6 +13767,7 @@ async def openai_chat_completions(
                 tools = tools_to_use,
                 model_name = model_name,
                 full_access = bool(payload.bypass_permissions),
+                session_id = payload.session_id,
             )
 
             # Nudge the model to ground in attached documents instead of memory.
@@ -15275,6 +15282,7 @@ async def openai_chat_completions(
             tools = _sf_tools_to_use,
             model_name = model_name,
             full_access = bool(payload.bypass_permissions),
+            session_id = payload.session_id,
         )
 
         # RAG nudge, mirroring the GGUF path.
@@ -19398,6 +19406,7 @@ async def chat_count_tokens(
                         tools = tools_to_use,
                         model_name = _llama_public_model_id(llama_backend, payload.model),
                         full_access = bool(payload.bypass_permissions),
+                        session_id = payload.session_id,
                     ),
                     tools_to_use,
                     rag_scope = payload.rag_scope,
@@ -20135,6 +20144,7 @@ async def anthropic_messages(
             tools = openai_tools,
             model_name = model_name,
             full_access = _full_access,
+            session_id = payload.session_id,
         )
 
         if _nudge:

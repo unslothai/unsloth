@@ -6773,9 +6773,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
+    shell_workdir = _shell_visible_workdir(workdir)
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
+        "PWD": shell_workdir,
         "TMPDIR": workdir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
@@ -6974,6 +6976,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         and not _is_cred_location_env_name(k)
     }
     env["HOME"] = workdir
+    env["PWD"] = _shell_visible_workdir(workdir)
     env["TMPDIR"] = workdir
     # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR; repoint all three so
     # the bypassed tool writes under the per-session sandbox dir on every OS.
@@ -7151,6 +7154,38 @@ def _windows_bash() -> "str | None":
         if os.path.isfile(candidate) and _is_trusted_windows_bash(candidate):
             return candidate
     return None
+
+
+def _msys_path(path: str) -> str:
+    """Convert a native Win32 path to the MSYS form Git Bash reports as pwd."""
+    norm = os.path.normpath(path)
+    if norm.startswith("\\\\"):
+        return "/" + norm.replace("\\", "/").lstrip("/")
+    if len(norm) >= 2 and norm[1] == ":":
+        drive = norm[0].lower()
+        rest = norm[2:].replace("\\", "/")
+        return f"/{drive}{rest}"
+    return norm.replace("\\", "/")
+
+
+def _shell_visible_workdir(workdir: str) -> str:
+    """Path form a sandbox shell reports (pwd / ``$PWD``)."""
+    resolved = os.path.realpath(workdir)
+    if sys.platform == "win32" and _windows_bash():
+        return _msys_path(resolved)
+    return resolved
+
+
+def _bash_wrap_for_workdir(workdir: str, command: str) -> str:
+    """Ensure a Win32 ``bash -c`` script starts in the sandbox workdir.
+
+    ``CreateProcess`` cwd is not always honoured by Git Bash; an explicit ``cd``
+    keeps ``pwd`` and relative writes aligned with the per-chat folder (#8892).
+    """
+    if sys.platform != "win32" or not _windows_bash():
+        return command
+    shell_dir = _shell_visible_workdir(workdir).replace("'", "'\"'\"'")
+    return f"cd '{shell_dir}' && {command}"
 
 
 def _windows_bash_userland_dirs() -> list[str]:
@@ -8923,8 +8958,9 @@ def _build_sandbox_paths_note() -> str:
     # says so, which reads as "the file was not really created".
     created = (
         " Any file you create here is kept and shown to the user with a download "
-        "link, so name the files you created in your reply -- by file name only, "
-        "since you do not know their absolute path."
+        "link, so name the files you created in your reply. Your working directory "
+        "path is provided in the system message; use relative paths for reads and "
+        "writes."
     )
     if sys.platform != "win32":
         return (
@@ -9094,6 +9130,28 @@ def _build_terminal_shell_note() -> str:
 
 _SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
 _TERMINAL_SHELL_NOTE = _build_terminal_shell_note()
+
+
+def build_sandbox_workdir_nudge(session_id: str | None = None) -> str:
+    """Tell the model which directory python/terminal tools run in.
+
+    Read-only: does not create a sandbox directory for ids that have never run
+    a tool. The path matches ``GET /sandbox/{session_id}`` and where users can
+    drop files for the model to read.
+    """
+    try:
+        workdir = resolve_sandbox_workdir(session_id)
+    except Exception:  # noqa: BLE001 - nudge is best effort
+        return ""
+    if not workdir:
+        return ""
+    visible = _shell_visible_workdir(workdir)
+    return (
+        f"Your code working directory for this conversation is: {visible}. "
+        "Use relative paths there for reads and writes; files you create are "
+        "kept for the user."
+    )
+
 
 PYTHON_TOOL = {
     "type": "function",
@@ -12842,7 +12900,10 @@ def _bash_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        proc = subprocess.Popen(
+            _get_shell_cmd(_bash_wrap_for_workdir(workdir, command)),
+            **popen_kwargs,
+        )
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.

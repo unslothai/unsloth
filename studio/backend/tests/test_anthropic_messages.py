@@ -157,6 +157,15 @@ class TestToolActionNudge:
         assert "Use code execution for math" in nudge
         assert "render_html" not in nudge
 
+    def test_code_nudge_includes_workdir_when_session_id_given(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+        nudge = _build_tool_action_nudge(
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            model_name = "Llama-3.1-70B-Instruct",
+            session_id = "__LOCALID_nudge02",
+        )
+        assert "Your code working directory for this conversation is:" in nudge
+
     def test_balanced_nudge_preserves_compact_web_tip_and_canvas_gate(self):
         nudge = _build_tool_action_nudge(
             tools = [

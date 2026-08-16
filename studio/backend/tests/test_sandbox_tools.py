@@ -625,6 +625,7 @@ class TestSandboxEnvIsolation:
 
         env = _build_safe_env(str(tmp_path))
         assert env["HOME"] == str(tmp_path)
+        assert env["PWD"] == str(tmp_path)
         assert env["TMPDIR"] == str(tmp_path)
 
     def test_term_is_dumb(self, tmp_path):
@@ -1972,3 +1973,31 @@ class TestHfUploadEnvAndSecretLeakBlock:
             ' operations=[], token="hf_xxx")',
             expect_phrase = "HF upload token= cannot be set",
         )
+
+
+class TestSandboxWorkdirVisibility:
+    def test_msys_path_maps_drive_letters(self):
+        from core.inference.tools import _msys_path
+
+        assert _msys_path("C:\\Users\\foo\\sandbox") == "/c/Users/foo/sandbox"
+
+    def test_bash_wrap_prepends_cd_on_windows(self, monkeypatch):
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _bash_wrap_for_workdir
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            tools_mod,
+            "_windows_bash",
+            lambda: r"C:\Program Files\Git\bin\bash.exe",
+        )
+        wrapped = _bash_wrap_for_workdir("C:\\Users\\foo\\chat", "pwd")
+        assert wrapped.startswith("cd '/c/Users/foo/chat' && pwd")
+
+    def test_build_sandbox_workdir_nudge_names_the_folder(self, tmp_path, monkeypatch):
+        from core.inference.tools import build_sandbox_workdir_nudge
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+        nudge = build_sandbox_workdir_nudge("__LOCALID_nudge01")
+        assert "Your code working directory for this conversation is:" in nudge
+        assert "__LOCALID_nudge01" in nudge or "nudge01" in nudge
