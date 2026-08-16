@@ -999,6 +999,9 @@ export const en = {
         compareChat: "Compare chat",
         exportChat: "Export chat",
       },
+      pastedTextThreshold: "Condense long pastes",
+      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box.",
+      pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:
         "Show model metadata in assistant responses.",

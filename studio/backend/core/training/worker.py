@@ -62,6 +62,7 @@ from core.training.dataset_bounds import (
     max_train_rows_for_config,
     record_row_bound,
     row_bound_for_resume,
+    world_size_from_env,
 )
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
@@ -78,6 +79,50 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
         return None
     path = Path(resume_from_checkpoint)
     return str(path.parent if path.name.startswith("checkpoint-") else path)
+
+
+def _data_parallel_world_size() -> int:
+    """Replicas that each draw a full batch of rows per optimizer step.
+
+    Two things multiply row consumption and only one of them is in the env: a
+    distributed launch (torchrun, accelerate, mpirun, mlx.launch), and plain
+    DataParallel, which transformers reaches for whenever a non-distributed run
+    sees more than one CUDA device -- it sets n_gpu to the visible device count and
+    scales the train batch by it, so an extra visible GPU eats rows exactly as an
+    extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
+
+    The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
+    model-parallel one (device_map="balanced", which is what Studio's own multi-GPU
+    load uses) forces it to 1 as well. Rounding up when the model turns out to be
+    sharded rather than replicated only tokenizes a larger subset of a corpus this
+    bound is orders of magnitude below anyway; rounding down means the run silently
+    re-reads rows it has already trained on.
+
+    torch is read out of sys.modules rather than imported: this also runs on the MLX
+    path, on hosts where no torch exists, and a process that never imported it has
+    no CUDA devices to count either.
+    """
+    sizes = [world_size_from_env()]
+    torch_module = sys.modules.get("torch")
+    if torch_module is not None:
+        try:
+            distributed = getattr(torch_module, "distributed", None)
+            if (
+                distributed is not None
+                and distributed.is_available()
+                and distributed.is_initialized()
+            ):
+                sizes.append(int(distributed.get_world_size()))
+        except Exception:
+            # A stubbed or half-initialised torch.distributed must not fail a run.
+            pass
+        try:
+            sizes.append(int(torch_module.cuda.device_count()))
+        except Exception:
+            # A CPU-only build answers 0, which the filter below drops; a broken or
+            # stubbed torch.cuda raises instead, and that must not fail a run either.
+            pass
+    return max([size for size in sizes if size > 0], default = 1)
 
 
 def _model_local_files_only(config: dict) -> bool:
@@ -2796,8 +2841,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
     mlx_raw_text_mode = (
         training_type == "Continued Pretraining" or config.get("format_type") == "raw"
     )
+    # An mlx.launch run shards the batch across its processes the same way DDP does,
+    # and it advertises the count in the env this reads.
     mlx_max_train_rows = max_train_rows_for_config(
-        config, branch_never_packs = is_vlm and not mlx_raw_text_mode
+        config,
+        branch_never_packs = is_vlm and not mlx_raw_text_mode,
+        world_size = _data_parallel_world_size(),
     )
     # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
     # whatever dataset it is handed, so bounding a checkpoint written without one
@@ -4235,7 +4284,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             bool(getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False))
             and not raw_text_mode
         )
-        max_train_rows = max_train_rows_for_config(config, branch_never_packs = branch_never_packs)
+        # Every replica draws its own batch per step, so the subset has to cover all of
+        # them; sized here rather than in the config because it is a property of this
+        # machine's launch. Model probing is done, so torch and the GPU mask are settled.
+        max_train_rows = max_train_rows_for_config(
+            config,
+            branch_never_packs = branch_never_packs,
+            world_size = _data_parallel_world_size(),
+        )
         # A resume trains on the rows its first start chose, read back from the marker
         # beside the checkpoints. No marker means the checkpoint predates the bound and
         # trained on the whole dataset; since the trainer fast-forwards by batch count
@@ -4248,6 +4304,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 "Resuming with the row bound recorded at the original start "
                 f"({resumed_rows} rows) instead of {max_train_rows}\n"
             )
+            if resumed_rows and max_train_rows and resumed_rows < max_train_rows:
+                # Sized for fewer replicas than this machine has: the recorded subset
+                # is what the run trained on and re-deriving it would continue on
+                # unrelated rows, so it stays, but say that the extra ranks may reach
+                # the end of it and start over.
+                logger.info(
+                    "That subset was sized for a smaller data-parallel world than this "
+                    "one, so the added replicas may re-read rows; start a new run "
+                    "instead of resuming to size it for this machine\n"
+                )
         max_train_rows = resumed_rows
 
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──

