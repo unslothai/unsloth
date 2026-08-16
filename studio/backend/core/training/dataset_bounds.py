@@ -34,13 +34,28 @@ MIN_MAX_STEPS_ROWS = 1024
 WORLD_SIZE_ENV_VARS = (
     "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed
     "LOCAL_WORLD_SIZE",  # torchrun, and the only one it sets per node
-    "MLX_WORLD_SIZE",
+    "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend, which is CUDA-only
     "OMPI_COMM_WORLD_SIZE",
     "PMI_SIZE",
     "PMIX_SIZE",
     "MPI_WORLD_SIZE",
     "MV2_COMM_WORLD_SIZE",
 )
+# The count an mlx.launch on Apple silicon advertises, which is not a number in the
+# env: of its four backends only NCCL (CUDA) exports MLX_WORLD_SIZE. Ring and JACCL
+# export a path to a JSON file with one entry per rank instead, and MLX documents the
+# world size as exactly the length of that list. Without these two an mlx.launch reads
+# as one process and the MLX loader under-counts, which is the direction that recycles
+# rows, so the Apple path -- the only one MLX training actually runs on -- would keep
+# the bug this module's world size exists to fix.
+WORLD_SIZE_ENV_FILES = (
+    "MLX_HOSTFILE",  # ring backend: one "ip:port" list per rank
+    "MLX_IBV_DEVICES",  # jaccl backend: the RDMA matrix, one row per rank
+)
+# A hostfile is a few hundred bytes per rank. Read a bounded prefix so a wrong path
+# (an env var pointed at something enormous) cannot pull a file into memory; a
+# truncated read fails to parse as JSON and is discarded, which is the safe answer.
+MAX_WORLD_SIZE_FILE_BYTES = 1 << 20
 # Written into a run's output directory at its first start; read back on resume.
 # Its absence is the signal that a checkpoint predates the bound.
 ROW_BOUND_MARKER_FILE = "unsloth_row_bound.json"
@@ -69,6 +84,30 @@ def _seed_int(value: Any, default: int) -> int:
     return number if number >= 0 else default
 
 
+def world_size_from_rank_files(environ: Any = None) -> int:
+    """Ranks an mlx.launch listed in a hostfile, or 1 when there is no readable one.
+
+    Only a list counts, and its length is the count. Anything else -- no such file, a
+    truncated or malformed one, a JSON object, an empty ring hostfile (which is what
+    mlx.launch writes for a single host) -- reads as 1, the count of Studio's own
+    launch. Never raises: a row bound must not be what fails a run.
+    """
+    source = os.environ if environ is None else environ
+    sizes = [1]
+    for name in WORLD_SIZE_ENV_FILES:
+        try:
+            path = source.get(name)
+            if not path:
+                continue
+            with open(path, encoding = "utf-8") as handle:
+                payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(payload, list):
+            sizes.append(len(payload))
+    return max(sizes)
+
+
 def world_size_from_env(environ: Any = None) -> int:
     """Data-parallel processes the launcher advertises, or 1 when none does.
 
@@ -76,9 +115,13 @@ def world_size_from_env(environ: Any = None) -> int:
     one node they agree, while a multi-node one must be sized by the global count.
     Anything unusable (unset, empty, a stray "auto", 0, negative) reads as 1, which
     is the count Studio's own single-process launch has.
+
+    Some launchers advertise the count as a file rather than a number; see
+    WORLD_SIZE_ENV_FILES.
     """
     source = os.environ if environ is None else environ
-    return max(_positive_int(source.get(name), 1) for name in WORLD_SIZE_ENV_VARS)
+    numbers = max(_positive_int(source.get(name), 1) for name in WORLD_SIZE_ENV_VARS)
+    return max(numbers, world_size_from_rank_files(source))
 
 
 def max_steps_dataset_rows(

@@ -620,8 +620,8 @@ def test_max_steps_dataset_rows_survives_unusable_numbers():
 
 def _single_process_launch(monkeypatch):
     """Clear every launcher variable, so a bound reads as Studio's own launch."""
-    from core.training.dataset_bounds import WORLD_SIZE_ENV_VARS
-    for name in WORLD_SIZE_ENV_VARS:
+    from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
+    for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
         monkeypatch.delenv(name, raising = False)
 
 
@@ -708,6 +708,83 @@ def test_world_size_comes_from_the_launcher_env(monkeypatch):
     # A mapping can be passed instead of the process env.
     assert world_size_from_env({"WORLD_SIZE": "4"}) == 4
     assert world_size_from_env({}) == 1
+
+
+def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
+    """An Apple silicon mlx.launch advertises its ranks as a file, not a number.
+
+    Of mlx.launch's four backends only NCCL (CUDA) exports MLX_WORLD_SIZE. Ring and
+    JACCL -- everything a Mac runs -- export a path to a JSON file with one entry per
+    rank, so reading only the numeric variables sizes a four-way launch as one process
+    and the run re-reads rows it has already trained on.
+    """
+    import json
+
+    from core.training.dataset_bounds import (
+        MAX_STEPS_ROW_SLACK,
+        max_steps_dataset_rows,
+        world_size_from_env,
+        world_size_from_rank_files,
+    )
+
+    _single_process_launch(monkeypatch)
+    assert world_size_from_rank_files() == 1
+
+    # The ring backend writes one "ip:port" list per rank; mlx.launch --hostfile ring-4.
+    ring = tmp_path / "ring.json"
+    ring.write_text(
+        json.dumps([[f"10.0.0.{rank}:5000"] for rank in range(4)]), encoding = "utf-8"
+    )
+    _single_process_launch(monkeypatch)
+    monkeypatch.setenv("MLX_RANK", "0")
+    monkeypatch.setenv("MLX_HOSTFILE", str(ring))
+    assert world_size_from_env() == 4
+    assert max_steps_dataset_rows(60, 2, 4) == 60 * 2 * 4 * 4 * MAX_STEPS_ROW_SLACK
+
+    # The jaccl backend writes the RDMA matrix, one row per rank.
+    rdma = tmp_path / "rdma.json"
+    rdma.write_text(
+        json.dumps([[None if a == b else "mlx5_0" for b in range(3)] for a in range(3)]),
+        encoding = "utf-8",
+    )
+    _single_process_launch(monkeypatch)
+    monkeypatch.setenv("MLX_IBV_DEVICES", str(rdma))
+    assert world_size_from_env() == 3
+
+    # A single host is not a distributed launch: mlx.launch writes an empty hostfile.
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding = "utf-8")
+    _single_process_launch(monkeypatch)
+    monkeypatch.setenv("MLX_HOSTFILE", str(empty))
+    assert world_size_from_env() == 1
+
+    # Nothing about a hostfile may fail a run: unreadable, not JSON, not a list.
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("[[\"10.0.0.1:5000\"],", encoding = "utf-8")
+    not_a_list = tmp_path / "object.json"
+    not_a_list.write_text(json.dumps({"hosts": 4}), encoding = "utf-8")
+    a_directory = tmp_path / "adir"
+    a_directory.mkdir()
+    for value in (
+        str(tmp_path / "missing.json"),
+        str(bad_json),
+        str(not_a_list),
+        str(a_directory),
+        json.dumps([[1], [2]]),  # the JSON itself, not a path to it
+        "",
+        "   ",
+    ):
+        _single_process_launch(monkeypatch)
+        monkeypatch.setenv("MLX_HOSTFILE", value)
+        assert world_size_from_env() == 1
+
+    # A mapping works the same way, and the largest count still wins.
+    assert world_size_from_rank_files({"MLX_HOSTFILE": str(ring)}) == 4
+    assert world_size_from_env({"MLX_HOSTFILE": str(ring), "WORLD_SIZE": "8"}) == 8
+    assert world_size_from_env({"MLX_HOSTFILE": str(ring), "WORLD_SIZE": "2"}) == 4
+    assert world_size_from_rank_files({"MLX_HOSTFILE": None}) == 1
+    assert world_size_from_rank_files({"MLX_HOSTFILE": 17}) == 1
+    assert world_size_from_rank_files({}) == 1
 
 
 def test_effective_packing_decides_the_opt_out():

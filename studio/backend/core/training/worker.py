@@ -119,7 +119,8 @@ def _data_parallel_world_size() -> int:
         try:
             sizes.append(int(torch_module.cuda.device_count()))
         except Exception:
-            # No driver, no CUDA build: device_count raises rather than returning 0.
+            # A CPU-only build answers 0, which the filter below drops; a broken or
+            # stubbed torch.cuda raises instead, and that must not fail a run either.
             pass
     return max([size for size in sizes if size > 0], default = 1)
 
@@ -4303,6 +4304,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 "Resuming with the row bound recorded at the original start "
                 f"({resumed_rows} rows) instead of {max_train_rows}\n"
             )
+            if resumed_rows and max_train_rows and resumed_rows < max_train_rows:
+                # Sized for fewer replicas than this machine has: the recorded subset
+                # is what the run trained on and re-deriving it would continue on
+                # unrelated rows, so it stays, but say that the extra ranks may reach
+                # the end of it and start over.
+                logger.info(
+                    "That subset was sized for a smaller data-parallel world than this "
+                    "one, so the added replicas may re-read rows; start a new run "
+                    "instead of resuming to size it for this machine\n"
+                )
         max_train_rows = resumed_rows
 
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
