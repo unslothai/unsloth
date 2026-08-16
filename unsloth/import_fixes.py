@@ -359,6 +359,130 @@ def fix_xformers_performance_issue():
             logger.info(f"Unsloth: Failed patching Xformers with error = {str(e)}")
 
 
+# flash-attn 4 (distribution `flash-attn-4`, the CuTe DSL build) ships its module tree at
+# `flash_attn/cute/` with NO `flash_attn/__init__.py`. `flash_attn` therefore resolves as an
+# implicit NAMESPACE package with no `flash_attn_func`, no `flash_attn_varlen_func`, no
+# `__version__` and, critically, no `flash_attn.flash_attn_interface` submodule.
+#
+# xformers' `ops/fmha/flash.py` gates on `importlib.util.find_spec("flash_attn")` and then does
+# an UNGUARDED `import flash_attn.flash_attn_interface`. The namespace package makes the gate
+# pass and the import raise, so the ModuleNotFoundError escapes `import xformers.ops`.
+# `unsloth/models/_utils.py` swallows that into `xformers = None`, `HAS_XFORMERS` goes False in
+# `unsloth/utils/attention_dispatch.py`, and every monkeypatched fast-path model silently drops
+# to plain SDPA. Measured on a B200 at seq_len 8192 with Qwen3-0.6B + LoRA: 547 ms/step and
+# 2.69 GB peak with xformers versus 2154 ms/step and 19.02 GB peak on SDPA -- a 3.9x slowdown
+# and 7x memory arriving with no message. flash-attn 2 publishes no wheel for torch 2.9 /
+# cp313, so flash-attn 4 is what a Blackwell user reaches for.
+#
+# The repair imports xformers ONCE with `flash_attn` hidden from `find_spec`, which sends
+# xformers down the next branch of its own elif chain (its bundled `_C_flashattention`, else
+# torch's built-in flash) exactly as it would on a machine with no flash-attn at all. The
+# resulting module is cached in `sys.modules`, so `models/_utils.py` later gets a working
+# xformers. Nothing is written to any third-party package.
+_FLASH_ATTN_INTERFACE_MODULE = "flash_attn.flash_attn_interface"
+_FA4_NAMESPACE_WARNED = [False]
+
+
+def _flash_attn_layout():
+    """Classify the installed `flash_attn` module tree.
+
+    Returns ``"absent"`` (no `flash_attn` at all), ``"flash_attn_2"`` (a real flash-attn 2/3
+    layout -- `flash_attn.flash_attn_interface` resolves, which is precisely what xformers
+    imports, so it works whether or not flash-attn 4 is installed ALONGSIDE it), or
+    ``"flash_attn_4_only"`` (importable `flash_attn` with no FA2 entry points).
+    """
+    try:
+        if importlib.util.find_spec("flash_attn") is None:
+            return "absent"
+        # The exact import xformers performs. `find_spec` does not execute the module, so a
+        # real flash-attn 2 whose extension fails to load is still classified as FA2 here and
+        # is left completely alone -- that breakage is separate and already reported by
+        # `models/_utils.py`.
+        if importlib.util.find_spec(_FLASH_ATTN_INTERFACE_MODULE) is not None:
+            return "flash_attn_2"
+    except Exception:
+        # A parent package that explodes on import is not something to second-guess.
+        return "absent"
+    return "flash_attn_4_only"
+
+
+def _flash_attn_4_present():
+    try:
+        return importlib.util.find_spec("flash_attn.cute") is not None
+    except Exception:
+        return False
+
+
+def _warn_flash_attn_4_shadow_once(detail):
+    if _FA4_NAMESPACE_WARNED[0]:
+        return
+    _FA4_NAMESPACE_WARNED[0] = True
+    if _flash_attn_4_present():
+        head = (
+            "Unsloth: flash-attn 4 is installed as the namespace package `flash_attn` (only "
+            "`flash_attn.cute`), which has no `flash_attn_func` / `flash_attn_varlen_func` and "
+            "no `flash_attn.flash_attn_interface`."
+        )
+    else:
+        head = (
+            "Unsloth: `flash_attn` resolves to a namespace package with no "
+            "`flash_attn.flash_attn_interface` (a partial or shadowed flash-attn install)."
+        )
+    logger.warning(
+        head + "\n"
+        f"xFormers imports that module unconditionally, so it is unusable here ({detail}), and "
+        "Unsloth has fallen back to PyTorch SDPA. Measured cost on a B200 at seq_len 8192 "
+        "(Qwen3-0.6B + LoRA): 547 ms/step -> 2154 ms/step (3.9x slower) and 2.69 GB -> 19.02 GB "
+        "peak (7x more memory).\n"
+        "Unsloth cannot use flash-attn 4 either: its entry point is "
+        "`from flash_attn.cute import flash_attn_func` and it returns a (out, softmax_lse) "
+        "tuple rather than a tensor.\n"
+        "To get the fast path back, install flash-attn 2 (`pip install --no-build-isolation "
+        '"flash-attn>=2.6.3"`) or uninstall flash-attn 4 (`pip uninstall flash-attn-4`) so '
+        "xFormers can load."
+    )
+
+
+def fix_flash_attn_4_namespace_shadow():
+    """Keep xFormers importable when only flash-attn 4 is installed."""
+    if _flash_attn_layout() != "flash_attn_4_only":
+        return
+    if importlib.util.find_spec("xformers") is None:
+        # Nothing to protect: with no xformers this machine was on SDPA regardless, and the
+        # `attn_implementation=` delegation path never touches `flash_attn` unless
+        # transformers' own `is_flash_attn_2_available()` says yes, which it does not here
+        # (the distribution is named `flash-attn-4`, so the metadata lookup for `flash_attn`
+        # misses and the check returns False).
+        return
+    if "xformers.ops.fmha.flash" in sys.modules:
+        # Already imported, successfully, by someone else. A FAILED import leaves nothing in
+        # sys.modules, so this does not mask the case we are here to fix.
+        return
+
+    real_find_spec = importlib.util.find_spec
+
+    def _find_spec_without_flash_attn(name, package = None):
+        if name == "flash_attn" or name.startswith("flash_attn."):
+            return None
+        return real_find_spec(name, package)
+
+    # Scoped to this one import, and restored in `finally`. Single-threaded at unsloth import
+    # time, before any worker/dataloader process exists.
+    importlib.util.find_spec = _find_spec_without_flash_attn
+    try:
+        import xformers.ops  # noqa: F401
+    except Exception as error:
+        _warn_flash_attn_4_shadow_once(f"xFormers still failed to import: {error}")
+        return
+    finally:
+        importlib.util.find_spec = real_find_spec
+
+    logger.info(
+        "Unsloth: Hid the flash-attn 4 namespace package from xFormers' import so xFormers "
+        "keeps working. Unsloth cannot use flash-attn 4 itself."
+    )
+
+
 def patch_vllm_for_notebooks():
     import sys
 

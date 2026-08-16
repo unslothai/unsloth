@@ -97,6 +97,74 @@ SDPA = "sdpa"
 XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
+# ---- flash-attn 2 varlen backward int32 overflow guard -------------------------------------
+# The varlen BACKWARD kernel (used by flash-attn 2 directly and by the flash-2 op xFormers
+# dispatches a BlockDiagonal* bias to) allocates
+#
+#     dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32), dtype = fp32)
+#
+# and indexes it with int32. Once that element count reaches 2**31 the indexing overflows and
+# the kernel faults with "CUDA error: an illegal memory access was encountered". That poisons
+# the CUDA context, so every later op in the process fails too and a training run dies with an
+# opaque error, hours in, far from the cause.
+#
+# Measured on a B200 (bf16, 16 heads, head_dim 128, one flattened row, forward + backward), by
+# bisecting the number of documents in a packed row -- the last working document count and the
+# count at which (total_q + 128 * n_seqs) * n_heads * round_up(head_dim, 32) crosses 2**31
+# agree to within one document across every shape tried:
+#
+#   heads  head_dim  doc_len   predicted   last OK
+#      16       128        1        8128      8129
+#      16        96        1       10837     10838
+#      16        64        1       16257     16257
+#       8       128        1       16257     >= 16257, fails by 16400
+#      16       128        2        8065     8060 OK, 8200 fails
+#      16       128        4        7944      7944
+#       4       128        1       32518     no failure up to 20000 (below the bound)
+#
+# Forward-only never allocates dq_accum and never faults (20000 documents ran clean), so the
+# guard is conditioned on a backward actually being possible. Plain SDPA is unaffected.
+_INT32_ELEMENTS = 2**31
+_VARLEN_INT32_GUARD_DISABLED = os.environ.get("UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_VARLEN_INT32_WARNED = [False]
+
+
+def _varlen_backward_dq_accum_elements(n_seqs: int, total_q: int, n_heads: int, head_dim: int) -> int:
+    """Element count of flash-attn 2's varlen-backward ``dq_accum`` for these shapes."""
+    head_dim_rounded = ((head_dim + 31) // 32) * 32
+    return (total_q + 128 * n_seqs) * n_heads * head_dim_rounded
+
+
+def _varlen_backward_overflows_int32(n_seqs: int, total_q: int, n_heads: int, head_dim: int) -> bool:
+    if n_seqs <= 0:
+        return False
+    return (
+        _varlen_backward_dq_accum_elements(n_seqs, total_q, n_heads, head_dim) >= _INT32_ELEMENTS
+    )
+
+
+def _warn_varlen_int32_overflow_once(backend: str, n_seqs: int, total_q: int, elements: int):
+    if _VARLEN_INT32_WARNED[0]:
+        return
+    _VARLEN_INT32_WARNED[0] = True
+    print(
+        f"Unsloth: A packed row holds {n_seqs} documents over {total_q} tokens. The "
+        f"{backend} backward kernel would index a {elements:,}-element buffer with int32 "
+        f"(limit {_INT32_ELEMENTS:,}), which faults with 'CUDA error: an illegal memory "
+        "access was encountered' and poisons the CUDA context for the rest of the process.\n"
+        "Unsloth has fallen back to SDPA for these batches, which is CORRECT but far slower "
+        "and far heavier: SDPA's packed path materialises a dense mask and can use ~10x the "
+        "memory, so it may OOM instead.\n"
+        "To keep the fast kernel, pack fewer documents per row -- lower the packing length, or "
+        "filter out very short documents so one row cannot collect thousands of them."
+    )
+
+
 @dataclass
 class AttentionConfig:
     """
@@ -248,6 +316,41 @@ def run_attention(
         XFORMERS,
     ):
         backend = SDPA
+
+    # Both remaining varlen-capable backends land in the same flash-attn 2 backward kernel:
+    # FLASH_VARLEN calls it directly, and XFORMERS dispatches a BlockDiagonal* bias to its
+    # flash-2 op. Guard both before the int32 overflow aborts the process (see
+    # _varlen_backward_overflows_int32 above). Pure integer arithmetic and no device sync.
+    if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
+        # Two terms, and both are needed.
+        #   Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v still yields a Q that
+        #     requires grad, so context.requires_grad alone would miss a real backward.
+        #   context.requires_grad: gradient checkpointing runs its FIRST forward under
+        #     no_grad (no dq_accum, no fault) and recomputes with grad on. Keying only on
+        #     the tensors would run xFormers in one pass and SDPA in the other, so the
+        #     activations the backward sees would not be the ones the loss came from. The
+        #     hidden state keeps requires_grad = True across both passes, which keeps the
+        #     backend choice identical. Genuine inference has it False under no_grad.
+        will_backward = context.requires_grad or (
+            torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
+        )
+        if will_backward:
+            seq_info = context.seq_info
+            # seq_info[0] is the per-document length tensor; .numel() needs no D2H copy.
+            n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
+            total_q = context.bsz * context.q_len
+            if _varlen_backward_overflows_int32(
+                n_seqs, total_q, context.n_heads, context.head_dim
+            ):
+                _warn_varlen_int32_overflow_once(
+                    backend,
+                    n_seqs,
+                    total_q,
+                    _varlen_backward_dq_accum_elements(
+                        n_seqs, total_q, context.n_heads, context.head_dim
+                    ),
+                )
+                backend = SDPA
 
     flash_dense_kwargs = config.flash_dense_kwargs or {}
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
