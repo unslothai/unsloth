@@ -22,11 +22,15 @@ let cachedSettings: PillSettings | null = null;
 
 // Boot race: the pill can fire before the desktop auth handshake finishes;
 // a 401 is "not yet", so retry briefly instead of showing an empty pill.
-async function authFetchBootTolerant(path: string): Promise<Response> {
-  let response = await authFetch(path);
+async function authFetchBootTolerant(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let response = await authFetch(path, { signal });
   for (let attempt = 0; response.status === 401 && attempt < 5; attempt++) {
+    if (signal?.aborted) return response;
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    response = await authFetch(path);
+    response = await authFetch(path, { signal });
   }
   return response;
 }
@@ -44,8 +48,10 @@ export function getCachedSettings(): PillSettings | null {
   return cachedSettings;
 }
 
-export async function fetchInferenceStatus(): Promise<InferenceStatus> {
-  const response = await authFetchBootTolerant("/api/inference/status");
+export async function fetchInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatus> {
+  const response = await authFetchBootTolerant("/api/inference/status", signal);
   if (!response.ok) {
     throw new Error(`Failed to read inference status (${response.status})`);
   }

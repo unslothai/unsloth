@@ -28,7 +28,9 @@ export async function ensureModelLoaded(
   signal: AbortSignal,
   onLoading: (model: string) => void,
 ): Promise<void> {
-  let status = await fetchInferenceStatus();
+  // Abortable so Escape during the pre-flight check cancels it rather than
+  // leaving the panel waiting on a stalled request.
+  let status = await fetchInferenceStatus(signal);
   if (modelMatchesLoaded(model, status)) return;
 
   const settings = getCachedSettings();
@@ -41,25 +43,30 @@ export async function ensureModelLoaded(
   // bound the request: a load that never finishes would otherwise park on this
   // await forever, leaving the panel loading until the user gives up.
   const deadline = Date.now() + MODEL_LOAD_TIMEOUT_MS;
+  // One budget for the load AND the confirmation polls. Disposing it before the
+  // loop left those polls unbounded, so a stalled status request parked on the
+  // await and the wall-clock deadline was never re-checked.
   const budget = pollSignal(signal, MODEL_LOAD_TIMEOUT_MS);
   try {
     // Resolves only once the load itself finished, so the poll loop below just
     // confirms which model ended up active.
     await requestModelLoad(model, ggufVariant, budget.signal);
+
+    // Two consecutive polls with nothing loading means the load never
+    // registered or already failed; one idle poll is grace for registration lag.
+    let idlePolls = 0;
+    while (Date.now() < deadline) {
+      if (signal.aborted) throw new DOMException("aborted", "AbortError");
+      await new Promise((resolve) => setTimeout(resolve, STATUS_POLL_MS));
+      // A timed-out poll resolves to the previous status rather than throwing,
+      // and the deadline above then ends the loop on the next turn.
+      status = await fetchInferenceStatus(budget.signal).catch(() => status);
+      if (modelMatchesLoaded(model, status)) return;
+      idlePolls = status.loading.length === 0 ? idlePolls + 1 : 0;
+      if (idlePolls >= 2) break;
+    }
   } finally {
     budget.dispose();
-  }
-
-  // Two consecutive polls with nothing loading means the load never
-  // registered or already failed; one idle poll is grace for registration lag.
-  let idlePolls = 0;
-  while (Date.now() < deadline) {
-    if (signal.aborted) throw new DOMException("aborted", "AbortError");
-    await new Promise((resolve) => setTimeout(resolve, STATUS_POLL_MS));
-    status = await fetchInferenceStatus().catch(() => status);
-    if (modelMatchesLoaded(model, status)) return;
-    idlePolls = status.loading.length === 0 ? idlePolls + 1 : 0;
-    if (idlePolls >= 2) break;
   }
   throw new PillRunError("loadFailed", model);
 }
