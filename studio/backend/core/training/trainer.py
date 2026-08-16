@@ -3561,12 +3561,20 @@ class UnslothTrainer:
             if isinstance(dataset, dict):
                 dataset["dataset"] = view
             if eval_dataset is not None:
+                # Probe the eval split's own first row. TRL calls _prepare_dataset
+                # once per split, so the eager path derives this separately for
+                # train and eval; reusing the train answer would tokenize eval
+                # differently from the map it stands in for whenever the two
+                # splits disagree about a leading BOS.
+                eval_add_special_tokens = resolve_add_special_tokens(
+                    self.tokenizer, first_sample_text(eval_dataset, text_field)
+                )
                 self._online_eval_dataset = attach_online_tokenization(
                     eval_dataset,
                     tokenizer = self.tokenizer,
                     text_field = text_field,
                     max_length = max_length,
-                    add_special_tokens = add_special_tokens,
+                    add_special_tokens = eval_add_special_tokens,
                 )
             config_args.update(online_config_args(decision))
             self._online_prewarm_batches = decision.prewarm_batches
@@ -3619,8 +3627,17 @@ class UnslothTrainer:
         On the online path this doubles as the prewarm barrier: enough
         microbatches for the first optimizer step and for the DataLoader's whole
         in-flight depth are pulled through tokenization and collation here, so
-        step 1 never waits on a cold worker. Plain prefetch only promises the
-        work was queued, not that the first ``__next__`` is ready."""
+        step 1 never waits on a *cold* worker.
+
+        What survives is the workers, not the batches. ``train()`` calls
+        ``iter()`` on the memoized loader a second time, and torch answers that
+        on a persistent-workers loader by calling ``_iterator._reset(...)``,
+        which restarts the sampler at row 0 and discards whatever is in flight
+        -- so these batches are tokenized again. That costs a little duplicate
+        work and loses no rows; what it buys is worker processes that are
+        already forked, already past their first import and first tokenizer
+        touch, and a warm page cache, which is the part step 1 would otherwise
+        pay for."""
         prewarm = int(getattr(self, "_online_prewarm_batches", 0) or 0)
         if prewarm:
             from utils.datasets.online_tokenization import memoize_train_dataloader

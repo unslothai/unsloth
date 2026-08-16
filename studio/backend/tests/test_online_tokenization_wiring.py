@@ -198,6 +198,46 @@ def test_an_eval_split_is_transformed_with_the_same_settings(monkeypatch):
     assert "input_ids" in trainer._online_eval_dataset[0]
 
 
+def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
+    """TRL runs `_prepare_dataset` once per split, so the eager path derives
+    `add_special_tokens` from each split's own first row. Reusing the train
+    answer would shift every eval sequence by a token whenever the two splits
+    disagree about a leading BOS."""
+
+    class _Recording(_Tokenizer):
+        def __init__(self):
+            self.seen = []
+
+        def __call__(self, texts, truncation = True, max_length = 8, add_special_tokens = True):
+            self.seen.append(add_special_tokens)
+            return super().__call__(
+                texts,
+                truncation = truncation,
+                max_length = max_length,
+                add_special_tokens = add_special_tokens,
+            )
+
+    # train rows are plain; the eval split already carries the BOS token.
+    eval_split = datasets.Dataset.from_dict(
+        {"text": [f"{_Tokenizer.bos_token}row {i}" for i in range(64)]}
+    )
+    tokenizer = _Recording()
+    decision, _, wrapper, trainer = _run(
+        monkeypatch,
+        self_overrides = {"tokenizer": tokenizer},
+        eval_dataset = eval_split,
+    )
+    assert decision.enabled, decision.reason
+
+    tokenizer.seen.clear()
+    wrapper["dataset"][0]
+    assert tokenizer.seen == [True], "plain train rows keep the tokenizer's specials"
+
+    tokenizer.seen.clear()
+    trainer._online_eval_dataset[0]
+    assert tokenizer.seen == [False], "an eval split that already has BOS must not get a second"
+
+
 # ---------------------------------------------------- degradation: nothing touched
 
 
