@@ -625,9 +625,7 @@ def test_get_fork_count(monkeypatch):
 
 
 def test_get_thread_fork_counts(monkeypatch):
-    monkeypatch.setattr(
-        chat_history, "fork_counts_for_thread", lambda _t: {"m1": 2, "m2": 1}
-    )
+    monkeypatch.setattr(chat_history, "fork_counts_for_thread", lambda _t: {"m1": 2, "m2": 1})
     response = chat_history.get_thread_fork_counts(
         thread_id = "t",
         current_subject = "test-user",
