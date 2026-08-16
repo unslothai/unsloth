@@ -2733,18 +2733,38 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     )
 
 
+# Both spellings of the projector-placement boolean. llama.cpp pairs them as one
+# option, so naming either one is the user taking ownership of the placement.
+_MMPROJ_OFFLOAD_FLAGS: frozenset = frozenset({"--mmproj-offload", "--no-mmproj-offload"})
+
+
+def _mmproj_offload_disabled(args: Optional[Iterable[str]]) -> bool:
+    """True when the LAST projector-placement token in ``args`` pins it to CPU.
+
+    llama.cpp pairs --mmproj-offload / --no-mmproj-offload as one boolean and
+    takes the last occurrence, so the argv about to be spawned -- not the flag
+    Studio set on itself -- is what decides where the encoder runs. Reading the
+    argv also answers for a placement Studio did not choose: a user spelling in
+    the advanced arguments, or the CPU replay's own pin.
+    """
+    seen = [a for a in (str(x) for x in (args or ())) if _flag_name(a) in _MMPROJ_OFFLOAD_FLAGS]
+    return bool(seen) and _flag_name(seen[-1]) == "--no-mmproj-offload"
+
+
 def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
     """True when the pass-through extras name either projector-placement spelling.
 
     Both are real flags a user can pass, and llama.cpp is last-wins, so an
     automatic pin would either be overridden silently or fight a deliberate
     --mmproj-offload. Either spelling hands the placement to the user.
+
+    Matched through _flag_name, not by string equality: arg.cpp folds underscores
+    to dashes before matching, so --mmproj_offload is the same flag to
+    llama-server. A raw compare misses it, and since Studio's own pin is appended
+    AFTER the extras it would then win the last-wins race and move the projector
+    to the CPU against an explicit request to keep it on the GPU.
     """
-    if not extra_args:
-        return False
-    return any(
-        str(a) in ("--mmproj-offload", "--no-mmproj-offload") for a in extra_args
-    )
+    return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
 
 
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
@@ -12515,6 +12535,12 @@ class LlamaCppBackend:
         self._layer_preserves_tensor_intent = False
         self._is_vision = is_vision
         self._mmproj_has_audio = mmproj_has_audio
+        # The replay pins every projector it carries (_cpu_isolated_replay refuses
+        # outright when it cannot), so a surviving vision load is a CPU-encoding
+        # one whether or not the fit probe had already decided to pin. Without
+        # this the UI reports a GPU projector for a server running with
+        # --device none, on any load that fit comfortably before the crash.
+        self._vision_on_cpu = bool(is_vision)
         self._cpu_fallback_reason = "vulkan_startup_crash"
         return intent
 
@@ -12560,6 +12586,14 @@ class LlamaCppBackend:
                 env.pop(name, None)
         replay.extend(["--gpu-layers", "0", "--fit", "off", "--device", "none"])
         if has_mmproj:
+            # Drop any placement token already in the argv before adding ours.
+            # The automatic pin puts --no-mmproj-offload in the launched command
+            # whenever the projector's VRAM was what kept layers off the GPU, and
+            # this replay is built from that command, so appending unconditionally
+            # emitted the flag twice on exactly the Vulkan hosts where both fire.
+            # Harmless to llama.cpp (last-wins, same value) and confusing in the
+            # log, which is reason enough not to ship it.
+            replay = [a for a in replay if _flag_name(a) not in _MMPROJ_OFFLOAD_FLAGS]
             replay.append("--no-mmproj-offload")
         if has_draft:
             replay.extend([str(draft_ngl_flag), "0", "--device-draft", "none"])
@@ -16915,7 +16949,16 @@ class LlamaCppBackend:
                 # text-only GGUF carrying a stale toggle must fall through to the
                 # generic "cannot accept images", not to "turn Vision back on".
                 self._vision_disabled_by_user = bool(is_vision and disable_vision)
-                self._vision_on_cpu = bool(effective_is_vision and _mmproj_cpu_pinned)
+                # From the argv the child receives, not from Studio's own pin
+                # flag: --mmproj-offload is a real flag a user can put in the
+                # advanced arguments, and llama.cpp takes the last one. Reading
+                # _mmproj_cpu_pinned reported "projector on GPU" for a user who
+                # had just pinned it by hand, which is the opposite of what the
+                # UI note is for. Covers both automatic reasons too, since both
+                # write the flag into this same argv.
+                self._vision_on_cpu = bool(
+                    effective_is_vision and _mmproj_offload_disabled(cmd)
+                )
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do
@@ -18324,9 +18367,9 @@ class LlamaCppBackend:
         _args = [str(a) for a in cmd]
         if any(a.startswith("--mmproj") for a in _args):
             # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole
-            # GPU backend on it, so the projector holds no VRAM. Last flag wins.
-            _off = [a for a in _args if a in ("--mmproj-offload", "--no-mmproj-offload")]
-            if not _off or _off[-1] != "--no-mmproj-offload":
+            # GPU backend on it, so the projector holds no VRAM. Last flag wins,
+            # and the underscore spelling is the same flag to arg.cpp.
+            if not _mmproj_offload_disabled(_args):
                 return True
         if _extra_args_mtp_draft_path(cmd, env) is None:
             return False
