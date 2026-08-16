@@ -83,8 +83,25 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
 
 
 def _backend(tmp_path: Path, *, vulkan: bool, memory):
-    backend = LlamaCppBackend()
+    # ``LlamaCppBackend.__init__`` reaps orphaned llama-servers, which enumerates
+    # every process on the host (/proc on Linux, psutil elsewhere) on the way to
+    # a set these tests always want empty: the harness never spawns a real
+    # server, and conftest's studio-home isolation means there is no recorded
+    # PID to reap either. It is the single most expensive thing a placement test
+    # does -- ~46 ms per construction here and far worse on the Windows/macOS
+    # psutil path, which is what put this suite over the CI job cap -- and it is
+    # a host-wide side effect no assertion in any placement test reads. Reaping
+    # itself is covered directly, against a fabricated /proc, in
+    # test_llama_cpp_wait_for_vram_settle.py.
+    with patch.object(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0)):
+        backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
+    # The post-launch /props readback. No server is listening on the port the
+    # fake Popen "started", so the real call builds an httpx client (and with it
+    # a fresh SSL context off the system CA bundle, ~16 ms), fails to connect and
+    # returns None. Same answer, none of the cost; ``_query_server_n_ctx`` and
+    # its reconciliation are covered directly in test_llama_cpp_props_readback.py.
+    backend._query_server_n_ctx = lambda: None
     backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: [
         (index, free) for index, free, _total in memory
