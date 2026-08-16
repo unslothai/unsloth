@@ -435,11 +435,16 @@ test("the refresh an invalidation triggers is counted as work", () => {
     ),
     "utf8",
   );
+  // The listener hands off to the shared loader, which takes the lease for as
+  // long as the list (and its retries) run.
   assert.match(
     hook,
-    /noteProjectWork\(projectScopeId, 1\);\s*void \(async \(\) => \{/,
+    /void loadProjectSources\(projectScopeId, \{ quiet: true \}\);/,
   );
-  assert.match(hook, /\} finally \{\s*noteProjectWork\(projectScopeId, -1\);/);
+  assert.match(
+    hook,
+    /noteProjectWork\(projectId, 1\);\s*try \{[\s\S]{0,600}?\} finally \{\s*noteProjectWork\(projectId, -1\);/,
+  );
 });
 
 // One failed read is not a finished job. A backend restart answers a tick or
@@ -543,7 +548,7 @@ test("dropping the scope clears the flags no request will", () => {
   );
   assert.match(
     hook,
-    /if \(scope\) \{[\s\S]{0,160}?void refresh\(\);\s*\} else \{[\s\S]{0,300}?refreshInFlight\.current = false;[\s\S]{0,200}?setLoading\(false\);/,
+    /if \(scope\) \{[\s\S]{0,300}?: refresh\(\)\);\s*\} else \{[\s\S]{0,300}?refreshInFlight\.current = false;[\s\S]{0,200}?setLoading\(false\);/,
   );
 
   // The guard that leaves them set: the ticket has already moved on.
@@ -684,10 +689,19 @@ test("a failed reconciling refresh is retried before the gate drops", () => {
   assert.match(hook, /const REFRESH_RETRIES = 3;/);
   assert.match(
     hook,
-    /if \(await refresh\(\{ quiet: true, silentErrors: !last \}\)\) return;/,
+    /if \(await refresh\(\{ quiet: opts\?\.quiet, silentErrors: !last \}\)\) return;/,
   );
   // The release is still guaranteed, retries or not.
-  assert.match(hook, /\} finally \{\s*noteProjectWork\(projectScopeId, -1\);/);
+  assert.match(
+    hook,
+    /\} finally \{\s*noteProjectWork\(projectId, -1\);/,
+  );
+  // And the first list of a project takes the same path, so a transient failure
+  // there does not leave an empty list reporting nothing to wait for.
+  assert.match(
+    hook,
+    /scope\.type === "project"\s*\? loadProjectSources\(scope\.projectId\)\s*: refresh\(\)/,
+  );
   // A superseded request reports the list as known: the newer one owns it.
   assert.match(hook, /if \(refreshSeq\.current !== requestId\) return true;/);
 });

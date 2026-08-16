@@ -283,6 +283,32 @@ export function useRagDocuments(
     [scopeKey, lister],
   );
 
+  // Retry a project list that came back empty because the request failed. One
+  // failed read leaves the composer with no rows, nothing indexing and nothing
+  // polling, while the source it is missing is still being chunked. Counted as
+  // work throughout, so a send waits for the answer rather than for the toast.
+  const loadProjectSources = useCallback(
+    async (projectId: string, opts?: { quiet?: boolean }) => {
+      noteProjectWork(projectId, 1);
+      try {
+        for (let attempt = 0; attempt < REFRESH_RETRIES; attempt += 1) {
+          const last = attempt === REFRESH_RETRIES - 1;
+          // True for a request that published, and for one a newer request has
+          // already outranked.
+          if (await refresh({ quiet: opts?.quiet, silentErrors: !last })) return;
+          if (!last) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, 1000 * (attempt + 1)),
+            );
+          }
+        }
+      } finally {
+        noteProjectWork(projectId, -1);
+      }
+    },
+    [refresh],
+  );
+
   // A real switch (thread/KB swap) resets + reloads; first acquiring a scope just
   // loads. Skip both during materialization mid-upload (scope null -> new thread
   // while upload() runs) so we don't abort tracking or wipe optimistic chips.
@@ -304,7 +330,9 @@ export function useRagDocuments(
       setDocuments([]);
       if (scope) {
         // eslint-disable-next-line react-hooks/set-state-in-effect
-        void refresh();
+        void (scope.type === "project"
+          ? loadProjectSources(scope.projectId)
+          : refresh());
       } else {
         // Nothing is coming for the scope just dropped, and the request that
         // was is now behind the sequence, so it will not clear these itself.
@@ -315,7 +343,9 @@ export function useRagDocuments(
         setLoading(false);
       }
     } else if (prev === null && scope && !uploadInFlightRef.current) {
-      void refresh();
+      void (scope.type === "project"
+        ? loadProjectSources(scope.projectId)
+        : refresh());
     }
     return () => {
       // Preserve in-flight tracking when cleanup is the materialization flip,
@@ -392,26 +422,7 @@ export function useRagDocuments(
       // own. Count it as work for as long as it runs, or between the two this
       // instance reports nothing indexing and lets a send go out ahead of the
       // rows it is about to receive.
-      noteProjectWork(projectScopeId, 1);
-      void (async () => {
-        try {
-          // Releasing on a failed list would leave the composer with no rows,
-          // nothing indexing and nothing polling, while the source the
-          // mutation just added is still being chunked. Retry first; only the
-          // last attempt is worth a toast.
-          for (let attempt = 0; attempt < REFRESH_RETRIES; attempt += 1) {
-            const last = attempt === REFRESH_RETRIES - 1;
-            if (await refresh({ quiet: true, silentErrors: !last })) return;
-            if (!last) {
-              await new Promise((resolve) =>
-                setTimeout(resolve, 1000 * (attempt + 1)),
-              );
-            }
-          }
-        } finally {
-          noteProjectWork(projectScopeId, -1);
-        }
-      })();
+      void loadProjectSources(projectScopeId, { quiet: true });
     };
     subscribeProjectSourcesBroadcast();
     window.addEventListener(PROJECT_SOURCES_CHANGED_EVENT, onChanged);
