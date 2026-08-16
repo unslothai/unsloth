@@ -66,5 +66,14 @@ export default defineConfig({
     commonjsOptions: {
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
     },
+    rollupOptions: {
+      input: {
+        // Keyed "index" so the entry chunk stays dist/assets/index-*.js: the
+        // wheel content check locates the main bundle by that name and greps
+        // it for the unstable_Provider regression.
+        index: path.resolve(__dirname, "index.html"),
+        ask: path.resolve(__dirname, "ask.html"),
+      },
+    },
   },
 });

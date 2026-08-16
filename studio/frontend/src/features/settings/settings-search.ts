@@ -148,6 +148,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
   ],
+  system: [
+    "systemPill.settings.title",
+    "systemPill.settings.enable",
+    "systemPill.settings.defaultModel",
+  ],
   debugging: [
     "settings.debugging.logSection",
     "settings.debugging.source",

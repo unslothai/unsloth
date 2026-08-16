@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0 -->
+
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Unsloth</title>
+    <style>
+      html,
+      body,
+      #root {
+        background: transparent !important;
+        margin: 0;
+        overflow: hidden;
+      }
+      @keyframes ask-pop {
+        from {
+          opacity: 0;
+          transform: scale(0.97) translateY(-6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .ask-pop {
+        animation: ask-pop 140ms cubic-bezier(0.2, 0.9, 0.3, 1);
+      }
+      @keyframes ask-caret {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.15;
+        }
+      }
+      .ask-caret {
+        display: inline-block;
+        width: 7px;
+        height: 1.05em;
+        margin-left: 2px;
+        vertical-align: text-bottom;
+        border-radius: 2px;
+        background: currentColor;
+        animation: ask-caret 1s ease-in-out infinite;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/ask/main.tsx"></script>
+  </body>
+</html>

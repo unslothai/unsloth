@@ -20,6 +20,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod selection_pill;
 mod update;
 mod windows_job;
 mod x11_threads;
@@ -1805,10 +1806,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
                 .skip_initial_state("main")
+                .with_denylist(&[selection_pill::ASK_WINDOW_LABEL])
                 .build(),
         )
         .manage(diagnostics::new_diagnostics_state())
@@ -1818,6 +1821,7 @@ fn main() {
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
+        .manage(selection_pill::new_pill_state())
         .manage(update::new_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
@@ -1868,6 +1872,11 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            selection_pill::commands::pill_status,
+            selection_pill::commands::pill_set_config,
+            selection_pill::commands::pill_server_port,
+            selection_pill::commands::ask_hide,
+            selection_pill::commands::ask_resize,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
@@ -1913,6 +1922,9 @@ fn main() {
             setup_tray(app)?;
             #[cfg(unix)]
             setup_unix_termination_signals(app)?;
+            if let Err(e) = selection_pill::init(app) {
+                log::warn!("selection pill init failed: {e}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1924,8 +1936,16 @@ fn main() {
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Never close directly: the only window, so closing exits before the reap.
+                // Never close directly: closing the main window exits before the reap.
                 api.prevent_close();
+                // This handler is registered for every window. The ask panel is
+                // transient, so Cmd+W over it must hide the panel, not run the
+                // main window's close policy and quit the app under it.
+                #[cfg(target_os = "macos")]
+                if window.label() == selection_pill::ASK_WINDOW_LABEL {
+                    selection_pill::hide_ask_window(window);
+                    return;
+                }
                 let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);
                 match main_window_close_action(close_to_tray) {
                     MainWindowCloseAction::Hide => {
@@ -1939,11 +1959,20 @@ fn main() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
+            // Keyed on the main window, not has_visible_windows: the ask panel
+            // counts as a visible window, so a Dock click while only the panel
+            // is up would otherwise restore nothing and the activation monitor
+            // would then hide the panel too, leaving no window at all.
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen {
-                has_visible_windows: false,
-                ..
-            } => show_main_window(app),
+            tauri::RunEvent::Reopen { .. } => {
+                let main_hidden = app
+                    .get_webview_window("main")
+                    .map(|window| !window.is_visible().unwrap_or(false))
+                    .unwrap_or(true);
+                if main_hidden {
+                    show_main_window(app);
+                }
+            }
             tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
                 // cleanup, this blocks the main event-loop thread until that path is done.

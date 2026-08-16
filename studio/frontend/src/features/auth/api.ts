@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { apiUrl, isTauri } from "@/lib/api-base";
+import { apiBaseReady, apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -191,6 +191,8 @@ export async function authFetch(
   init?: RequestInit,
   options?: { retryNetworkErrors?: boolean },
 ): Promise<Response> {
+  // Never fetch the ':0' placeholder: WKWebView hangs such requests forever.
+  await apiBaseReady();
   const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   const accessToken = getAuthToken();

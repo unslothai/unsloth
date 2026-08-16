@@ -14,6 +14,7 @@ export type SettingsTab =
   | "data"
   | "api-keys"
   | "agents"
+  | "system"
   | "debugging"
   | "about";
 
@@ -76,6 +77,7 @@ function loadInitialTab(): SettingsTab {
     "data",
     "api-keys",
     "agents",
+    "system",
     "debugging",
     "about",
   ];

@@ -438,8 +438,12 @@ def test_mac_dock_reopens_hidden_main_window():
     for action in ("window.show()", "window.unminimize()", "window.set_focus()"):
         assert action in show_helper
     assert "tauri::RunEvent::Reopen" in run_handler
-    assert "has_visible_windows: false" in run_handler
-    reopen_handler = run_handler.split("tauri::RunEvent::Reopen", 1)[1].split("=>", 1)[1]
+    reopen_handler = run_handler.split("tauri::RunEvent::Reopen", 1)[1]
+    # Keyed on the main window itself, not has_visible_windows: the ask panel
+    # is a second window, so the Dock click that must restore a hidden main
+    # window arrives with the window count already non-zero.
+    assert 'get_webview_window("main")' in reopen_handler
+    assert "is_visible()" in reopen_handler
     assert "show_main_window(app)" in reopen_handler
 
 

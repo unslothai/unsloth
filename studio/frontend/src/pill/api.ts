@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// The auth barrel drags the login/change-password pages (~156 kB) into the
+// pill window's load graph, so import the leaf module directly.
+// eslint-disable-next-line no-restricted-imports
+import { authFetch } from "@/features/auth/api";
+import { assertCompletedPaddedBody } from "@/features/chat/api/padded-response";
+import type { PillSettings } from "@/features/system-pill";
+
+export type { PillSettings };
+
+export type InferenceStatus = {
+  active_model: string | null;
+  model_identifier: string | null;
+  is_gguf: boolean;
+  gguf_variant: string | null;
+  loading: string[];
+};
+
+let cachedSettings: PillSettings | null = null;
+
+// Boot race: the pill can fire before the desktop auth handshake finishes;
+// a 401 is "not yet", so retry briefly instead of showing an empty pill.
+async function authFetchBootTolerant(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let response = await authFetch(path, { signal });
+  for (let attempt = 0; response.status === 401 && attempt < 5; attempt++) {
+    if (signal?.aborted) return response;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    response = await authFetch(path, { signal });
+  }
+  return response;
+}
+
+export async function fetchPillSettings(): Promise<PillSettings> {
+  const response = await authFetchBootTolerant("/api/pill/settings");
+  if (!response.ok) {
+    throw new Error(`Failed to load pill settings (${response.status})`);
+  }
+  cachedSettings = (await response.json()) as PillSettings;
+  return cachedSettings;
+}
+
+export function getCachedSettings(): PillSettings | null {
+  return cachedSettings;
+}
+
+export async function fetchInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatus> {
+  const response = await authFetchBootTolerant("/api/inference/status", signal);
+  if (!response.ok) {
+    throw new Error(`Failed to read inference status (${response.status})`);
+  }
+  return (await response.json()) as InferenceStatus;
+}
+
+export async function requestModelLoad(
+  modelPath: string,
+  ggufVariant: string | null,
+  signal?: AbortSignal,
+): Promise<void> {
+  // The route pads its body past a 15s keepalive, committing the 200 while the
+  // load is still running, so the body is the only thing that reports the load
+  // finished and a late failure arrives in-band as _deferred_error. /status
+  // cannot stand in for it: its `loading` list covers the transformers backend
+  // only and stays empty for a llama.cpp load in progress.
+  const response = await authFetch("/api/inference/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: modelPath,
+      gguf_variant: ggufVariant ?? undefined,
+      max_seq_length: 0,
+      load_in_4bit: true,
+    }),
+    signal,
+  });
+  const body = (await response.json().catch(() => null)) as {
+    _deferred_error?: { status_code?: unknown; detail?: unknown };
+  } | null;
+  if (!response.ok) {
+    throw new Error(`Model load failed (${response.status})`);
+  }
+  assertCompletedPaddedBody(body, "Model load");
+  const deferred = body?._deferred_error;
+  if (deferred) {
+    throw new Error(
+      `Model load failed (${
+        typeof deferred.status_code === "number" ? deferred.status_code : 500
+      })`,
+    );
+  }
+}

@@ -19,6 +19,7 @@ import {
   CloudIcon,
   ComputerTerminal01Icon,
   CpuIcon,
+  Cursor01Icon,
   DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
@@ -57,7 +58,9 @@ import { DebuggingTab } from "./tabs/debugging-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
+import { SystemPillTab } from "./tabs/system-pill-tab";
 import { VoiceTab } from "./tabs/voice-tab";
+import { isMacPlatform } from "@/lib/pill-native";
 
 interface TabDef {
   id: SettingsTab;
@@ -120,12 +123,22 @@ const TABS: TabDef[] = [
     badgeKey: "common.new",
   },
   {
+    id: "system",
+    labelKey: "systemPill.settings.tab",
+    icon: Cursor01Icon,
+    badgeKey: "common.new",
+  },
+  {
     id: "debugging",
     labelKey: "settings.tabs.debugging",
     icon: ComputerTerminal01Icon,
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
+
+const VISIBLE_TABS = TABS.filter(
+  (tab) => tab.id !== "system" || (isTauri && isMacPlatform()),
+);
 
 const clientPlatform = getClientPlatform();
 const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
@@ -159,6 +172,8 @@ function renderTab(tab: SettingsTab) {
       return <ApiKeysTab />;
     case "agents":
       return <AgentsTab />;
+    case "system":
+      return <SystemPillTab />;
     case "debugging":
       return <DebuggingTab />;
     case "about":
@@ -183,7 +198,7 @@ export function SettingsDialog() {
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return null;
-    return TABS.map((tab) => {
+    return VISIBLE_TABS.map((tab) => {
       const tabLabel = t(tab.labelKey);
       const entries = SETTINGS_SEARCH_INDEX[tab.id]
         .filter((key) => {
@@ -273,6 +288,7 @@ export function SettingsDialog() {
     data: null,
     "api-keys": null,
     agents: null,
+    system: null,
     debugging: null,
     about: null,
   });
@@ -409,7 +425,7 @@ export function SettingsDialog() {
                   results !== null && "max-sm:flex hidden",
                 )}
               >
-                {TABS.map((tab) => {
+                {VISIBLE_TABS.map((tab) => {
                   const active = activeTab === tab.id;
                   return (
                     <button

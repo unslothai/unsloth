@@ -1,0 +1,12 @@
+{
+  "identifier": "pill",
+  "description": "Minimal capabilities for the ask window",
+  "windows": ["ask"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "clipboard-manager:allow-write-text"
+  ]
+}
