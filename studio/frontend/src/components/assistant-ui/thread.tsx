@@ -37,6 +37,7 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   attachmentsPastedText,
+  isAttachmentRejectionAlreadyToasted,
   isPastedTextFile,
   pasteClipboardFiles,
   extractYoutubeVideoId,
@@ -2168,9 +2169,23 @@ const Composer: FC<{
       pasteClipboardFiles(
         event,
         async (files) => {
-          await Promise.all(
+          const settled = await Promise.allSettled(
             files.map((file) => aui.composer().addAttachment(file)),
           );
+          // Rejections the adapter has already explained are swallowed here. Letting
+          // them through fires the generic message below on top of the adapter's own,
+          // so pasting a screenshot with Vision switched off used to answer with both
+          // "Vision is turned off for <model>" and a flat contradiction of it -- that
+          // the clipboard item was unsupported, unreadable or too big. The page-wide
+          // drop handler already swallows per-file rejections for the same reason.
+          const unexplained = settled.filter(
+            (result) =>
+              result.status === "rejected" &&
+              !isAttachmentRejectionAlreadyToasted(result.reason),
+          );
+          if (unexplained.length > 0) {
+            throw (unexplained[0] as PromiseRejectedResult).reason;
+          }
         },
         () =>
           toast.error("Could not paste files.", {
