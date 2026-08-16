@@ -15,6 +15,7 @@ Runs against an already-booted, already-bootstrapped Unsloth:
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PWTimeout
@@ -51,6 +52,33 @@ if _BASE is None:
         "[font-scale] FAIL: no UI_FONT_SIZE_CSS_BASE in appearance-custom-store.ts"
     )
 CSS_BASE = int(_BASE.group(1))
+
+
+def settled_scroll_top(
+    page,
+    quiet_ms = 200,
+    timeout_ms = 5_000,
+):
+    """The select viewport's scrollTop once it has stopped moving.
+
+    Radix scrolls the highlighted item into view off the back of the keypress, so
+    a scrollTop read straight after `keyboard.press` is a mid-scroll sample, not
+    where the viewport ends up. Poll until it holds the same value for `quiet_ms`.
+    Falls back to the last value seen rather than raising: this only establishes
+    the floor for the wheel check, and that check reports its own failure.
+    """
+    last = page.evaluate(SCROLL_TOP_JS)
+    quiet_since = time.monotonic()
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+        now = page.evaluate(SCROLL_TOP_JS)
+        if now != last:
+            last = now
+            quiet_since = time.monotonic()
+        elif (time.monotonic() - quiet_since) * 1000 >= quiet_ms:
+            return now
+    return last
 
 
 def step(s):
@@ -226,17 +254,44 @@ def main():
         if not kb_top > 0:
             fail(f"keyboard did not scroll the select viewport after 40 presses: {kb_top}")
 
+        # That value is read the instant the press registers, while the scroll it
+        # started is still running, so it reads low. Instrumented on the ubuntu CI
+        # image the viewport went on to settle 24-35px further down in 20 runs out
+        # of 20, and using it as it stands breaks the wheel check twice over: it is
+        # not the floor the wheel actually has to beat, and a wheel dispatched into
+        # a scroll Chromium is still animating gets swallowed. Let the keyboard
+        # scroll finish and re-read instead of racing it.
+        kb_top = settled_scroll_top(page)
+        # Guard the comparison below rather than let it become unsatisfiable: at 0
+        # nothing can be under it, so the wheel would be reported as broken no
+        # matter what it did.
+        if not kb_top > 0:
+            fail(f"select viewport returned to the top once the keyboard scroll settled: {kb_top}")
+
         vp_box = viewport.bounding_box()
-        page.mouse.move(vp_box["x"] + vp_box["width"] / 2, vp_box["y"] + 40)
-        page.mouse.wheel(0, -400)
-        try:
-            page.wait_for_function(
-                "top => document.querySelector('[data-radix-select-viewport]').scrollTop < top",
-                arg = kb_top,
-                timeout = 10_000,
-            )
-        except PWTimeout:
-            wheel_top = page.evaluate(SCROLL_TOP_JS)
+        # Keep the pointer inside the viewport. A fixed 40px offset lands outside
+        # it whenever the box is shorter than that, and the wheel then goes to
+        # whatever is underneath.
+        page.mouse.move(
+            vp_box["x"] + vp_box["width"] / 2,
+            vp_box["y"] + min(40, vp_box["height"] / 2),
+        )
+        # A single wheel event can still be dropped, so re-send on a bounded retry
+        # rather than reporting the first miss. A viewport that genuinely refuses
+        # the wheel never moves and still fails, just after more tries.
+        wheel_top = kb_top
+        for _ in range(5):
+            page.mouse.wheel(0, -400)
+            try:
+                page.wait_for_function(
+                    "top => document.querySelector('[data-radix-select-viewport]').scrollTop < top",
+                    arg = kb_top,
+                    timeout = 2_000,
+                )
+                break
+            except PWTimeout:
+                wheel_top = page.evaluate(SCROLL_TOP_JS)
+        else:
             fail(f"wheel did not scroll the select viewport: {kb_top} -> {wheel_top}")
         page.keyboard.press("Escape")
         page.set_viewport_size({"width": 1440, "height": 900})
