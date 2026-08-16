@@ -4907,7 +4907,7 @@ def _pep440_key(v):
     rel = [int(n) for n in m.group(0).split('.')]
     while rel and rel[-1] == 0:
         rel.pop()
-    rest, _, loc = v[m.end():].partition('+')
+    rest, _plus, loc = v[m.end():].partition('+')
     pre = post = dev = None
     # the implicit post release: a bare -N right after the release (1.0-1)
     # only dev may follow a post, so the lookahead admits it: 1.0-2dev1 is the
@@ -4929,6 +4929,12 @@ def _pep440_key(v):
         else:
             pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
         rest = rest[mm.end():]
+    # anything the tokenizer could not consume means this is not a PEP 440 version
+    # at all (999garbage), and a parsed key would let it outrank a real release
+    if rest:
+        return None
+    if _plus and not re.match(r'^[a-z0-9]+([-._][a-z0-9]+)*$', loc):
+        return None
     if pre is None:
         pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
     lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
@@ -5001,16 +5007,30 @@ if not damaged:
         if _min is not None and f.name not in _rewritten and st.st_size < _min:
             damaged = True
             break
-def _spec(n):
+def _spec(n, bind):
     # find_spec raises when a name's parent package is missing: a negative answer,
     # not an error to propagate
     try:
-        return bool(n) and importlib.util.find_spec(n) is not None
+        s = importlib.util.find_spec(n) if n else None
     except Exception:
         return False
+    if s is None:
+        return False
+    if not bind:
+        # an editable install resolves THROUGH its finder into the checkout, which
+        # is the whole point there, so location cannot bind
+        return True
+    # otherwise the module must live under the selected distribution's own root:
+    # -I still runs site processing, so an executable .pth can put a same-named
+    # copy on sys.path and answer for a payload that is gone
+    _where = [x for x in list(getattr(s, 'submodule_search_locations', None) or []) if x]
+    if s.origin:
+        _where.append(s.origin)
+    _base = os.path.abspath(str(d.locate_file('')))
+    return any(os.path.abspath(x).startswith(_base + os.sep) for x in _where)
 if not rows and not damaged:
     if tops:
-        damaged = not all(_spec(t) for t in tops if t)
+        damaged = not all(_spec(t, not _edit) for t in tops if t)
     elif not d_record:
         # Nothing enumerates the payload: no RECORD at all (an interrupted install,
         # or a distro/conda package that legitimately ships none, which the CLI
@@ -5020,7 +5040,7 @@ if not rows and not damaged:
         # files are really on disk passes. Gated on the RECORD being ABSENT, not on
         # rows being empty: a CLI-only wheel (py-spy) records just its console
         # script and ships no importable module, and its RECORD already answered.
-        damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower())
+        damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), True)
 print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 '@
 $SkipPythonDeps = $false
@@ -5809,7 +5829,7 @@ def _pep440_key(v):
     rel = [int(n) for n in m.group(0).split('.')]
     while rel and rel[-1] == 0:
         rel.pop()
-    rest, _, loc = v[m.end():].partition('+')
+    rest, _plus, loc = v[m.end():].partition('+')
     pre = post = dev = None
     # the implicit post release: a bare -N right after the release (1.0-1)
     # only dev may follow a post, so the lookahead admits it: 1.0-2dev1 is the
@@ -5831,6 +5851,12 @@ def _pep440_key(v):
         else:
             pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
         rest = rest[mm.end():]
+    # anything the tokenizer could not consume means this is not a PEP 440 version
+    # at all (999garbage), and a parsed key would let it outrank a real release
+    if rest:
+        return None
+    if _plus and not re.match(r'^[a-z0-9]+([-._][a-z0-9]+)*$', loc):
+        return None
     if pre is None:
         pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
     lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
