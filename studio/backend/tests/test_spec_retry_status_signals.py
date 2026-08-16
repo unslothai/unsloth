@@ -108,7 +108,14 @@ def test_an_unreadable_binary_is_unknown_not_false():
 class _SpecBackend:
     """The three attributes the other two helpers read."""
 
-    def __init__(self, *, dflash = False, inconclusive = False, probe = None, raises = False):
+    def __init__(
+        self,
+        *,
+        dflash = False,
+        inconclusive = False,
+        probe = None,
+        raises = False,
+    ):
         self._dflash_retry_needed = dflash
         self._capability_probe_inconclusive = inconclusive
         self._is_diffusion = False
