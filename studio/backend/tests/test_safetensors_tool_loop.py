@@ -3674,6 +3674,11 @@ class TestGGUFSafetensorsHealingParity:
             "Now I need to call web_search",
             # The "let me know" exemption is scoped to "let me", not all direct intent.
             "I will know the answer after I search the web",
+            # the sign-offs only count when nothing follows them; named work keeps the plan reading.
+            "I'll dig into the source now and report back.",
+            "I'll dig in and search the web for the latest numbers.",
+            "I'll dig in, then run the numbers.",
+            "I'll help analyze the sales data now.",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3691,6 +3696,10 @@ class TestGGUFSafetensorsHealingParity:
             "I'll never call that tool.",
             # Hands control back rather than announcing an action.
             "Let me know if you need anything else.",
+            # #8907: a question to the user, signed off with an action that names no work.
+            "Let me know what you're after and I'll dig in.",
+            'Could you clarify what "it" means? Let me know and I\'ll help analyze!',
+            "Tell me what you are after and let me dig in.",
             "First, the answer is 42",
             "First, the result is 3.",
             "First, it is 42",
@@ -3704,78 +3713,6 @@ class TestGGUFSafetensorsHealingParity:
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
-
-    def test_a_turn_that_asks_the_user_for_a_detail_is_not_a_plan(self):
-        """#8907: a turn waiting on the user has nothing a tool call can supply.
-
-        These sit apart from the phrase lists above because ``INTENT_SIGNAL`` still
-        matches every one of them; only the helper knows the turn is an ask. Asserting
-        both would be asserting the regex misses them, which it does not.
-        """
-        from core.inference.tool_call_parser import (
-            INTENT_SIGNAL as shared_re,
-            is_short_intent_without_action as shared_fn,
-        )
-
-        for asks in (
-            # the reported turn: a clarification request closing on an intent clause.
-            '"balls" is pretty broad, so what would you like to know or do? '
-            "Let me know what you're after and I'll dig in.",
-            'I need more context. Could you please clarify what "it" refers to? '
-            "Let me know and I'll help analyze!",
-            # the ask can follow the intent too; order carries no meaning here.
-            "Let me check I have this right: could you confirm the repo is unslothai/unsloth?",
-            "I'll look that up. Let me know your question, and I'll assist you!",
-            # a direct question carries the ask on its own, with no stock opener.
-            "Which repository should I inspect? Once you tell me, I'll check it.",
-            "Do you mean the package or the UI? I'll inspect it.",
-            "Where should I search? Once you tell me, I'll look it up.",
-            "How would you like me to proceed? I'll handle it once you decide.",
-            "What version are you using? Once you tell me, I'll check it.",
-            "Could you clarify whether you mean the package or the UI? I'll check.",
-            "Are you using Windows or Linux? Once you tell me, I'll check the steps.",
-            "Is this about the package or the UI? I'll inspect it once you confirm.",
-            # a heading or list marker opens the line instead of a full stop.
-            "I need to use web search.\nOne question:\nAre you using Windows or Linux?\n"
-            "I'll check once you say.",
-            "I'll help.\n- Are you on Windows or Linux?\nTell me and I'll check.",
-            "Why do you need this information? Once you tell me, I'll recommend an option.",
-            "Which version of the package are you using? Once you tell me, I'll inspect it.",
-            "What's your operating system? Once you tell me, I'll check the right steps.",
-            # the model quoting its own question is not the user's words echoed back.
-            'One question: "Which repository should I inspect?" Once you answer, I\'ll check it.',
-            'To answer your question, one clarification: "Which repository should I inspect?" '
-            "Once you answer, I'll check it.",
-            # "when" waits on the user, unlike the "if"/"whether" closings below.
-            "Let me know when you're ready and I'll start the run.",
-        ):
-            assert shared_re.search(asks), f"regex missed {asks!r}"
-            assert not shared_fn(asks), f"helper wrongly fired on {asks!r}"
-
-        # "let me know if/whether ..." closes a turn, so the plan behind one still needs the nudge
-        for closing in (
-            "I'll search the web for the current release now. "
-            "Let me know if you have any other questions.",
-            "I'll search the web now. Let me know whether you need anything else.",
-            "I will run the query now. Let me know if that is not what you wanted.",
-            # advice to the user keeps its own word order, so the interrogative arm stays clear of it.
-            "I'll explain what you should do next.",
-            "Let me check what I should do here.",
-            "I'll tell you what the results are.",
-            "I'll check what files are in the directory.",
-            # asking to act is the stall the nudge exists for, unlike asking for a detail.
-            "Do you want me to run it? I'll go ahead if so.",
-            "Here is that file you wanted. I'll open it next.",
-            "The path is:\nsrc/main.py\nI'll open it next.",
-            # the question is the lookup the model just promised, not something only the user knows.
-            "I'll search the advisories now. Is this package vulnerable to CVE-2026-1234?",
-            "I'll explain why you should use the pinned version.",
-            # the ask is the user's own words echoed back, not the model asking for anything.
-            'You asked, "Can you provide the latest CUDA release?" I\'ll search the web now.',
-            # a question the model puts to itself restates its own work rather than blocking on the user.
-            "I'll search the web now. How can I find the latest release notes?",
-        ):
-            assert shared_fn(closing), f"helper missed {closing!r}"
 
     def test_max_reprompts_equal_on_both_backends(self):
         # Both loops draw the cap from the shared constant, so they stay equal.

@@ -179,7 +179,9 @@ _ACTION_VERB = (
 # action follows it ("I'll help you search the web").
 _HELP_OFFER = (
     r"(?:do(?:ing)?\s+my\s+best|try\s+my\s+best|be\s+(?:able|happy|glad)\s+to\b"
-    r"|assist\b|help\s+you\b(?!\s+" + _ACTION_VERB + r")|give\s+you\s+accurate\b)"
+    r"|assist\b|help\s+you\b(?!\s+" + _ACTION_VERB + r")|give\s+you\s+accurate\b"
+    # name no work of their own, so they only ever sign off a question to the user (#8907)
+    r"|(?:dig\s+in|help\s+analy[sz]e)\b(?![\s,;:]*\w))"
 )
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
@@ -189,7 +191,7 @@ INTENT_SIGNAL = re.compile(
     r"(?!\s+(?:not|never)\b)(?!\s+" + _HELP_OFFER + r")"
     r"|"
     # "let me know" hands control back rather than announcing an action.
-    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)(?!\s+to\s+" + _HELP_OFFER + r")"
+    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)(?!\s+(?:to\s+)?" + _HELP_OFFER + r")"
     r"|"
     # Step/plan framing. "first" must open a sentence and be followed by a plan
     # (pronoun, "my/our plan", or an action verb); otherwise it is prose ("The
@@ -204,30 +206,6 @@ INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
-# a turn that asks the user for a missing detail waits on the reply, so no tool call can serve it
-_CLARIFICATION_REQUEST = re.compile(
-    # each arm carries its own \b, since a leading one would never match the newline anchor below
-    r"(?i)(?:"
-    r"\blet\s+me\s+know(?!\s+(?:if|whether)\b)"  # if/whether closes a turn, when waits on the user
-    r"|\b(?:could|can|would)\s+you\s+(?:please\s+)?"
-    r"(?:clarify|specify|confirm|provide|share|tell\s+me)\b"
-    r"|\bd(?:o|id)\s+you\s+mean\b"
-    r"|\b(?:what|which|where|who|how)(?:['’]s|\s+is|\s+are)\s+your\b"
-    # an interrogative putting the choice on the user; "how can i ..." is the model's own task, so only should takes i
-    r"|\b(?:what|which|where|when|who|why|how)\s+(?:\w+\s+){0,4}?"
-    r"(?:should\s+i\b|(?:should|would|shall|do|did|is|are|was|were|can|could|have)\s+you\b)"
-    # copular question opening a line; a bare "is this ..." is as often the lookup the model just promised
-    r"|(?:^|[.!?:]\s+|\n\s*[-*]?\s*)"
-    r"(?:(?:is|are|was|were)\s+you\b|(?:is|are|was|were)\s+(?:this|that|it)\s+about\b)"
-    r")"
-)
-# a quote the model attributes to the user is the prompt echoed back, so an ask inside it is not the model asking
-_ECHOED_USER_QUOTE = re.compile(
-    r"(?i)(?:(?:you|the\s+user)\s+(?:asked|said|wrote|mentioned)"
-    r"|your\s+(?:question|request|message|prompt)(?:\s+(?:was|is))?)"
-    # only light punctuation may sit between the attribution and the quote, else it reaches past the clause it belongs to
-    r"[,:\s]{0,3}[\"“][^\"”]{0,300}[\"”]"
-)
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
 # times since #5620); safetensors and MLX inherit the same cap from here.
 MAX_ACT_REPROMPTS = 3
@@ -239,11 +217,7 @@ NUDGE_TOOL_CALLS_STATUS = "Nudging tool calls"
 
 def is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
-    if not 0 < len(stripped) < REPROMPT_MAX_CHARS:
-        return False
-    if _CLARIFICATION_REQUEST.search(_ECHOED_USER_QUOTE.sub(" ", stripped)):
-        return False
-    return INTENT_SIGNAL.search(stripped) is not None
+    return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
 
 
 # Leading marks are kept unless they are quotes or brackets, so ".NET" survives;
