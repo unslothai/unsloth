@@ -7,6 +7,7 @@ import {
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
+  useSidebarOrganizationStore,
 } from "@/features/chat";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
@@ -161,6 +162,8 @@ export function ChatTab() {
   const setShowAllQuantizations = useChatRuntimeStore(
     (state) => state.setShowAllQuantizations,
   );
+  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
+  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
   );
@@ -242,6 +245,17 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.projectsSection")}
+          description={t("settings.chat.projectsSectionDescription")}
+        >
+          <Switch
+            checked={organizeBy === "project"}
+            onCheckedChange={(checked) =>
+              setOrganizeBy(checked ? "project" : "list")
+            }
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.thinking.collapseByDefault")}
           description={t("settings.chat.thinking.collapseByDefaultDescription")}

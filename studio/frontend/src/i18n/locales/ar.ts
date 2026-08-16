@@ -94,6 +94,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      showMore: "عرض المزيد",
+      showLess: "عرض أقل",
       settings: "الإعدادات",
       api: "API",
       lightMode: "الوضع الفاتح",
@@ -107,6 +109,44 @@ export const ar = {
       title: "الصفحة غير موجودة",
       description: "{path} غير موجود.",
       backToChat: "العودة إلى المحادثة",
+    },
+    selection: {
+      pinProjects: "تثبيت المشاريع",
+      unpinProjects: "إلغاء تثبيت المشاريع",
+      deleteProjects: "حذف المشاريع",
+      deleteProjectsTitle: "حذف المشاريع",
+      deleteProjectsDescription:
+        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+      deleteProjectsFilesDescription:
+        "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
+      countSelected: "{count} محددة",
+      pinChats: "تثبيت المحادثات",
+      unpinChats: "إلغاء تثبيت المحادثات",
+      archiveChats: "أرشفة المحادثات",
+      markUnread: "وضع علامة كغير مقروءة",
+      deleteChats: "حذف المحادثات",
+      deleteTitle: "حذف المحادثات",
+      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteFilesDescription:
+        "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+      deleteFilesLabel: "حذف الملفات ومجلد بيئة العزل",
+      deleteChatFilesDescription:
+        "يُزال مجلد بيئة العزل الخاص بهذه المحادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+    },
+    organize: {
+      sidebarHeading: "تنظيم الشريط الجانبي",
+      byProject: "حسب المشروع",
+      inOneList: "في قائمة واحدة",
+      sortChatsBy: "ترتيب المحادثات حسب",
+      sortPinnedBy: "ترتيب المثبتة حسب",
+      priority: "الأولوية",
+      lastUpdated: "آخر تحديث",
+      manualOrder: "ترتيب يدوي",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+      organizeChats: "تنظيم المحادثات",
+      organizeProjects: "تنظيم المشاريع",
+      sortPinnedChats: "ترتيب المحادثات المثبتة",
     },
     dialog: {
       deleteChat: {
@@ -939,6 +979,9 @@ export const ar = {
       },
     },
     chat: {
+      projectsSection: "إظهار قسم المشاريع",
+      projectsSectionDescription:
+        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {
@@ -1078,6 +1121,9 @@ export const ar = {
       confirmBeforeDeleting: "التأكيد قبل الحذف",
       confirmBeforeDeletingDescription:
         "يطلب تأكيدًا قبل حذف أي محادثة. عطّله للحذف الفوري.",
+      alwaysDeleteFiles: "حذف الملفات دائمًا",
+      alwaysDeleteFilesDescription:
+        "حذف المحادثة يزيل أيضًا مجلد بيئة العزل الخاص بها من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       filesSection: "الملفات",
       uploadedFiles: "الملفات المرفوعة",
       uploadedFilesDescription:

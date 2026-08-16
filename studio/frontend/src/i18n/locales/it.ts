@@ -61,6 +61,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      showMore: "Mostra altro",
+      showLess: "Mostra meno",
       settings: "Impostazioni",
       api: "API",
       lightMode: "Tema chiaro",
@@ -74,6 +76,44 @@ export const it = {
       title: "Pagina non trovata",
       description: "{path} non esiste.",
       backToChat: "Torna alla chat",
+    },
+    selection: {
+      pinProjects: "Fissa i progetti",
+      unpinProjects: "Rimuovi i progetti fissati",
+      deleteProjects: "Elimina i progetti",
+      deleteProjectsTitle: "Elimina i progetti",
+      deleteProjectsDescription:
+        "Eliminare {count} progetti? Le loro chat vengono eliminate definitivamente.",
+      deleteProjectsFilesDescription:
+        "La cartella dello spazio di lavoro di ogni progetto viene rimossa dal disco.",
+      countSelected: "{count} selezionate",
+      pinChats: "Fissa le chat",
+      unpinChats: "Rimuovi le chat fissate",
+      archiveChats: "Archivia le chat",
+      markUnread: "Segna come non letta",
+      deleteChats: "Elimina le chat",
+      deleteTitle: "Elimina le chat",
+      deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
+      deleteFilesDescription:
+        "La cartella sandbox di ogni chat viene rimossa dal disco. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
+      deleteFilesLabel: "Elimina i file e la cartella sandbox",
+      deleteChatFilesDescription:
+        "La cartella sandbox di questa chat viene rimossa dal disco. I file scritti all'interno di un progetto restano nello spazio di lavoro del progetto.",
+    },
+    organize: {
+      sidebarHeading: "Organizza la barra laterale",
+      byProject: "Per progetto",
+      inOneList: "In un solo elenco",
+      sortChatsBy: "Ordina le chat per",
+      sortPinnedBy: "Ordina i fissati per",
+      priority: "Priorità",
+      lastUpdated: "Ultimo aggiornamento",
+      manualOrder: "Ordine manuale",
+      moveUp: "Sposta su",
+      moveDown: "Sposta giù",
+      organizeChats: "Organizza le chat",
+      organizeProjects: "Organizza i progetti",
+      sortPinnedChats: "Ordina le chat fissate",
     },
     dialog: {
       deleteChat: {
@@ -938,6 +978,9 @@ export const it = {
       },
     },
     chat: {
+      projectsSection: "Mostra la sezione Progetti",
+      projectsSectionDescription:
+        "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       title: "Chat",
       description:
         "Personalizza il comportamento della chat su questo dispositivo.",
@@ -1080,6 +1123,9 @@ export const it = {
       confirmBeforeDeleting: "Chiedi conferma prima di eliminare",
       confirmBeforeDeletingDescription:
         "Richiedi una conferma prima di eliminare una chat. Disattiva l'opzione per eliminarla subito.",
+      alwaysDeleteFiles: "Elimina sempre i file",
+      alwaysDeleteFilesDescription:
+        "L'eliminazione di una chat rimuove dal disco anche la sua cartella sandbox. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
       filesSection: "File",
       uploadedFiles: "File caricati",
       uploadedFilesDescription:
