@@ -14,8 +14,7 @@ const CHAT_SEARCH_HAS_ROWS_KEY = "unsloth_chat_search_has_rows";
 const EMPTY_HINT_TTL_MS = 12 * 60 * 60 * 1000;
 
 function storage(): Storage | null {
-  // Guarded like features/auth/session.ts: no window under node, and localStorage throws
-  // outright in some privacy modes.
+  // no window under node, and the localStorage getter itself throws in some privacy modes
   try {
     if (typeof window === "undefined") return null;
     return window.localStorage;

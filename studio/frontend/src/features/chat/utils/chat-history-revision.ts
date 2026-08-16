@@ -12,8 +12,7 @@ export const CROSS_TAB_REVISION_DEBOUNCE_MS = 500;
 let revisionWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
 function storage(): Storage | null {
-  // Guarded like features/auth/session.ts: no window under node, and localStorage throws
-  // outright in some privacy modes.
+  // no window under node, and the localStorage getter itself throws in some privacy modes
   try {
     if (typeof window === "undefined") return null;
     return window.localStorage;
