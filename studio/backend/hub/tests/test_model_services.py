@@ -7280,9 +7280,7 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
 
     def _scan_response(tag: str):
         row = SimpleNamespace(id = tag, path = tag)
-        row.model_copy = lambda update, tag = tag: SimpleNamespace(
-            id = tag, path = tag, **update
-        )
+        row.model_copy = lambda update, tag = tag: SimpleNamespace(id = tag, path = tag, **update)
         response = SimpleNamespace(models = [row])
         response.model_copy = lambda update: SimpleNamespace(models = update["models"])
         return response

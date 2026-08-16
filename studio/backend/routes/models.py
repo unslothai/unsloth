@@ -1085,7 +1085,6 @@ async def _shared_compat_local_inventory_scan(
         # Inside the shared flight so overlapping callers reuse one classified result
         # instead of each repeating the GGUF header reads.
         from core.inference.native_audio import native_audio_type_from_local_path
-
         return [
             model.model_copy(
                 update = {
