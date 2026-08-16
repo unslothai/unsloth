@@ -73,21 +73,21 @@ def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
 
 
 def test_stream_pacing_asserts_its_long_task_probe_measured_something() -> None:
-    # longTaskMs is the metric the budgets actually turn on, and it is 0 both when the render
-    # is free and when the observer never ran -- `observe({type: "longtask"})` aborts silently
-    # on an engine without the entry type instead of throwing. Without these, a firefox or
-    # webkit run, or a broken observer, scores a perfect zero and exits 0.
+    # longTaskMs is the metric the budgets turn on, and it is 0 both when the render is free
+    # and when the observer never ran: `observe({type: "longtask"})` aborts silently on an
+    # engine without the entry type. Without these, a firefox or webkit run, or a broken
+    # observer, scores a perfect zero and exits 0.
     main = verdict("playwright_stream_pacing.py")
     assert 'results.get("longTaskSupported")' in main
     assert 'results["longTasks"] <= 0' in main
-    # And an unthrottled run: the renderer keeps up with any rate this can feed, so every
-    # budget below passes on any tree.
+    # Same for an unthrottled run: the renderer keeps up with any rate this can feed, so
+    # every budget passes on any tree.
     assert 'results["cpu_throttle"] <= 1' in main
 
 
 def test_stream_pacing_asserts_the_reply_was_actually_painted() -> None:
-    # A page that rendered nothing measures a perfect zero on every budget, so the workload
-    # itself has to be asserted before the numbers mean anything.
+    # A page that rendered nothing scores a perfect zero on every budget, so the workload
+    # has to be asserted before the numbers mean anything.
     main = verdict("playwright_stream_pacing.py")
     assert 'results["paintedChars"] < floor' in main
     assert 'results["arrivals"]' in main

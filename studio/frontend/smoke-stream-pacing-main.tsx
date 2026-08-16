@@ -12,22 +12,19 @@
 // longest the bubble stops growing while text is still arriving.
 //
 // A local runtime rather than a bare component: MarkdownText reads its message part from
-// assistant-ui context, and its custom BlockComponent reads `useAuiState`, so mounting it
-// outside a provider throws instead of rendering. Driving the real runtime also puts
-// assistant-ui's own update scheduling inside the measurement, which is where #7892's
-// starvation actually lived.
+// assistant-ui context and its BlockComponent reads `useAuiState`, so mounting it outside a
+// provider throws. The real runtime also puts assistant-ui's own update scheduling inside
+// the measurement, which is where #7892's starvation lived.
 //
-// The reply is a fixed string rather than a model's output. #8845's first measurement
-// attempts failed because free-form sampling gave the two sides different essays, and the
-// renderer's cost is superlinear in length, so a comparison across different text says
-// nothing.
+// The reply is a fixed string, not a model's output. #8845's first measurement attempts
+// failed because free-form sampling gave the two sides different essays, and the renderer's
+// cost is superlinear in length, so comparing across different text says nothing.
 
 /* eslint-disable no-restricted-imports -- a measurement entry point, not app code. */
-// This store first, and deliberately. MarkdownText's import graph reaches the chat barrel,
-// and the settings General tab reaches back into it for SIDEBAR_ORGANIZATION_STORAGE_KEY,
-// so entering that cycle from the renderer leaves the constant in its temporal dead zone
-// and the harness renders nothing at all. Evaluating the store module first breaks the tie
-// the same way the app's own entry order does.
+// This store first, deliberately. MarkdownText's import graph reaches the chat barrel and the
+// settings General tab reaches back for SIDEBAR_ORGANIZATION_STORAGE_KEY, so entering that
+// cycle from the renderer leaves the constant in its temporal dead zone and the harness
+// renders nothing. Evaluating the store first breaks the tie, as the app's entry order does.
 import "@/features/chat/stores/sidebar-organization-store";
 /* eslint-enable no-restricted-imports */
 
@@ -45,9 +42,8 @@ import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
 /**
- * Deterministic, and shaped like what the renderer is actually slow on: prose to lay
- * out, a fenced block for Shiki, and display math for KaTeX. Built by repetition so the
- * length is a knob rather than a new fixture per size.
+ * Deterministic, and shaped like what the renderer is slow on: prose to lay out, a fenced
+ * block for Shiki, display math for KaTeX. Repeated so length is a knob, not a new fixture.
  */
 export function buildReply(totalChars: number): string {
   const units = [
@@ -132,8 +128,8 @@ const sleep = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
-// Stands in for the network, not for the renderer: it yields the same growing
-// cumulative text the chat adapter yields, at a fixed rate.
+// Stands in for the network, not the renderer: the same growing cumulative text the chat
+// adapter yields, at a fixed rate.
 const adapter: ChatModelAdapter = {
   async *run() {
     const reply = buildReply(config.totalChars);
@@ -169,8 +165,8 @@ function Harness(): ReactElement {
   const aui = useAui({});
 
   useEffect(() => {
-    // Painted, not published: read the DOM, because "the bubble stopped growing" is
-    // the complaint, and a store update that never reaches paint does not answer it.
+    // Painted, not published: "the bubble stopped growing" is the complaint, and a store
+    // update that never reaches paint does not answer it. So read the DOM.
     const paintedChars = (): number => {
       const node = document.querySelector("[data-status]");
       return node ? (node.textContent ?? "").length : 0;
@@ -198,14 +194,12 @@ function Harness(): ReactElement {
           state.paintedChars = painted;
           lastGrowthAt = now;
         }
-        // Settled is counted in FRAMES without growth, not in wall-clock time.
-        // #8845's last failed attempt used a 1.5s quiet window and declared a
-        // reply finished in the middle of a freeze. A freeze blocks the frame
-        // loop as well, so a frame counter cannot tick through one, which is
-        // exactly the property that window lacked. Rendered length is compared
-        // against itself rather than against the bytes sent, because Markdown
-        // syntax (fences, list markers, math delimiters) never reaches
-        // textContent.
+        // Settled is counted in FRAMES without growth, not wall clock: #8845's last
+        // failed attempt used a 1.5s quiet window and called a reply finished mid
+        // freeze. A freeze blocks the frame loop too, so a frame counter cannot tick
+        // through one. Rendered length is compared against itself, not the bytes sent,
+        // because Markdown syntax (fences, list markers, math delimiters) never
+        // reaches textContent.
         if (state.streamEndedAtMs !== null && state.timeToFullyPaintedMs === null) {
           if (painted > settledChars) {
             settledChars = painted;
@@ -223,14 +217,13 @@ function Harness(): ReactElement {
       handle = requestAnimationFrame(watch);
     });
 
-    // `observe({type})` is specified to abort silently on an entry type the engine does not
-    // support, not to throw, so a try/catch around it never fires and the long-task total
-    // stays at its initial 0 -- a perfect score on the budget that matters most. Only
-    // supportedEntryTypes actually answers the question, and the answer is recorded so the
-    // driver can fail the run rather than report the zero. Chromium is the only engine that
-    // ships longtask (Gecko bug 1348405 open, WebKit never shipped it).
-    // Long tasks are only counted from here on. run() moves it to the moment the stream is
-    // asked for, so nothing the page did while loading lands in the budget.
+    // `observe({type})` aborts silently on an unsupported entry type instead of throwing,
+    // so a try/catch never fires and the long-task total stays 0, a perfect score on the
+    // budget that matters most. Only supportedEntryTypes answers the question, and the
+    // answer is recorded so the driver can fail the run instead of reporting the zero.
+    // Chromium alone ships longtask (Gecko bug 1348405 open, WebKit never shipped it).
+    // run() moves measureFrom to the moment the stream is asked for, so nothing the page
+    // did while loading lands in the budget.
     let measureFrom = Number.POSITIVE_INFINITY;
     let observer: PerformanceObserver | null = null;
     state.longTaskSupported =
@@ -239,11 +232,10 @@ function Harness(): ReactElement {
     if (state.longTaskSupported) {
       observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          // Only tasks belonging to the stream. `buffered: true` replays whatever the
-          // timeline already held, which on a dev server is module evaluation and the
-          // first React render: measured at ~140ms in one entry, ~2.6% of the total,
-          // and larger on a cold or loaded runner. That is page startup, not the render
-          // under test, and budgeting it makes a cold run look like a slow renderer.
+          // Only tasks belonging to the stream. `buffered: true` replays what the timeline
+          // already held, on a dev server module evaluation and the first React render:
+          // ~140ms in one entry, ~2.6% of the total, and larger on a cold or loaded runner.
+          // That is page startup, and budgeting it makes a cold run look like a slow renderer.
           if (entry.startTime < measureFrom) continue;
           state.longTasks += 1;
           state.longTaskMs += entry.duration;
@@ -256,9 +248,8 @@ function Harness(): ReactElement {
       ready: true,
       run(options: RunOptions = {}) {
         config = { ...config, ...options };
-        // Open the window here, and drop anything the buffered replay already banked.
-        // A straddling entry is discarded rather than prorated: it began before the
-        // stream did, so it is not the renderer's.
+        // Open the window and drop what the buffered replay banked. A straddling entry is
+        // discarded, not prorated: it began before the stream, so it is not the renderer's.
         measureFrom = performance.now();
         state.longTaskMs = 0;
         state.longTasks = 0;
