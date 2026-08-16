@@ -1807,13 +1807,6 @@ class FastSentenceTransformer(FastModel):
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
 
-        # The decline above only spends the sentinel on our copy: FastModel re-reads
-        # UNSLOTH_AUTO_DEVICE_MAP and upgrades the "sequential" we hand it back to
-        # "unsloth", splitting the model across cards while `st_device` below still says
-        # "sequential" and SentenceTransformer pulls it onto one. Pin the switch off.
-        old_auto_device_map = os.environ.get("UNSLOTH_AUTO_DEVICE_MAP")
-        os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = "0"
-
         is_distilbert = "distilbert" == model_type.lower()
         is_mpnet = "mpnet" == model_type.lower()
 
@@ -1855,7 +1848,15 @@ class FastSentenceTransformer(FastModel):
         if _st_cache_dir is not None and "cache_dir" not in kwargs:
             kwargs["cache_dir"] = _st_cache_dir
 
+        # The decline above only spends the sentinel on our copy: FastModel re-reads
+        # UNSLOTH_AUTO_DEVICE_MAP and upgrades the "sequential" we hand it back to
+        # "unsloth", splitting the model across cards while `st_device` below still says
+        # "sequential" and SentenceTransformer pulls it onto one. Pin the switch off.
+        # Set inside the try so the finally always restores it: the patch helpers above
+        # can raise, and a leaked "0" would disable the opt-in for the whole process.
+        old_auto_device_map = os.environ.get("UNSLOTH_AUTO_DEVICE_MAP")
         try:
+            os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = "0"
             model, tokenizer = FastModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
