@@ -150,6 +150,25 @@ def test_the_two_fractions_really_do_rank_this_pool_differently():
     assert _rank(_UNIFORM_POOL, default) == _rank(_UNIFORM_POOL, drafter) == [0, 1]
 
 
+@pytest.mark.parametrize(
+    "label, pool",
+    [
+        # Ordinary consumer and workstation mixes, not just the 80 GB case the
+        # launch tests use. The window is 0.05 * (difference in total), so it is
+        # wider the more the cards differ, and 24 + 8 is already 819 MiB of free
+        # memory wide.
+        ("24+8", [(0, 5_000, 24_576), (1, 4_000, 8_192)]),
+        ("48+8", [(0, 6_000, 49_152), (1, 4_200, 8_192)]),
+        # Three cards, and the order reverses completely.
+        ("24+16+8", [(0, 5_000, 24_576), (1, 4_400, 16_384), (2, 4_000, 8_192)]),
+    ],
+)
+def test_other_ordinary_pools_invert_too(label, pool):
+    """The 80 GB pool is not a special case constructed to break this."""
+    default = llama_cpp._CTX_FIT_VRAM_FRACTION
+    assert _rank(pool, default) != _rank(pool, default - llama_cpp._MTP_VRAM_RESERVE_FRAC), label
+
+
 def test_the_pin_finds_the_card_only_the_drafter_ranking_leads_with(tmp_path):
     """The regression.
 
