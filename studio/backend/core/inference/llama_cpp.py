@@ -13828,14 +13828,18 @@ class LlamaCppBackend:
                 )
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
-                    # Include GPU-loaded mmproj in the fit budget (#5825). A CPU-pinned
-                    # projector is not GPU-loaded, so it drops out of the budget here --
-                    # which also clears the _MMPROJ_VRAM_SAFETY surcharge, since both
-                    # sites that add it are gated on a non-zero mmproj_size.
+                    # Include GPU-loaded mmproj in the fit budget (#5825). Charged
+                    # here whatever the placement: the only pin known this early is
+                    # the paravirtual Metal one, and Metal enumerates no GPU, so the
+                    # budget this feeds is _apple_metal_memory_budget_bytes -- UNIFIED
+                    # memory, which a CPU-pinned projector still occupies. Dropping it
+                    # there hands out a context sized against ~1.26 GB (the file plus
+                    # the _MMPROJ_VRAM_SAFETY surcharge) that the machine does not
+                    # have, and the fit spends the difference on KV. The automatic pin
+                    # below is the one that genuinely frees VRAM, on a discrete device,
+                    # and it zeroes this itself once it has decided.
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path)
-                        if effective_is_vision and not _mmproj_cpu_pinned
-                        else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
