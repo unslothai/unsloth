@@ -1058,6 +1058,7 @@ function Invoke-BoundedPythonProbe {
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $proc = [System.Diagnostics.Process]::Start($psi)
         $outTask = $proc.StandardOutput.ReadToEndAsync()
         $errTask = $proc.StandardError.ReadToEndAsync()
@@ -1076,14 +1077,17 @@ function Invoke-BoundedPythonProbe {
             $result.Error = "python did not answer within $TimeoutSec seconds"
             return $result
         }
-        # Bounded like the wait: python can exit while a descendant it spawned still
-        # holds the inherited handle, so the pipe reaches no EOF and an unbounded read
-        # would hang past TimeoutSec. An abandoned reader leaves the field empty, which
+        # Bounded by what is LEFT of the deadline, not a fresh one: python can exit
+        # while a descendant it spawned still holds the inherited handle, so the pipe
+        # never reaches EOF, and restarting the clock here would let a nominal 30s
+        # probe run past a minute. An abandoned reader leaves the field empty, which
         # every caller already treats as "no answer".
-        $result.Output = if ($outTask.Wait($TimeoutSec * 1000)) { $outTask.Result } else { "" }
+        $_readLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        $result.Output = if ($outTask.Wait($_readLeft)) { $outTask.Result } else { "" }
         # Kept, not discarded: the only place a failed probe's OSError / WinError text exists, and
         # the caller decides what to do with the venv based on it.
-        $result.Error = if ($errTask.Wait(2000)) { $errTask.Result } else { "" }
+        $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        $result.Error = if ($errTask.Wait($_errLeft)) { $errTask.Result } else { "" }
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
     } catch {
@@ -1171,7 +1175,8 @@ function Invoke-BoundedPythonStdinProbe {
         # TimeoutSec. An abandoned reader leaves the field empty = "no answer".
         $_readLeft = [Math]::Max(1000, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
         $result.Output = if ($outTask.Wait($_readLeft)) { $outTask.Result } else { "" }
-        $result.Error = if ($errTask.Wait(2000)) { $errTask.Result } else { "" }
+        $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
+        $result.Error = if ($errTask.Wait($_errLeft)) { $errTask.Result } else { "" }
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
     } catch {
@@ -5000,6 +5005,14 @@ try:
     _edit = bool(_durl.get('dir_info', {}).get('editable'))
 except Exception:
     _durl, _edit = {}, False
+# where an editable install actually points. Resolved once: the tops branch binds
+# editable specs to it, and the no-tops branch below validates it directly.
+_target = ''
+if _edit:
+    try:
+        _target = url2pathname(urlparse(str(_durl.get('url') or '')).path)
+    except Exception:
+        _target = ''
 # importable payload, used for namespace specs and for an editable checkout. Suffixes
 # come from importlib itself rather than a hardcoded list, so an extension module
 # counts on every platform; __pycache__ does not, being what a quarantine leaves.
@@ -5072,7 +5085,7 @@ if not damaged:
         if _min is not None and f.name not in _rewritten and st.st_size < _min:
             damaged = True
             break
-def _spec(n, bind):
+def _spec(n, root):
     # find_spec raises when a name's parent package is missing: a negative answer,
     # not an error to propagate
     try:
@@ -5081,12 +5094,13 @@ def _spec(n, bind):
         return False
     if s is None:
         return False
-    # bind=False for an editable install: it resolves THROUGH its finder into the
-    # checkout, which is the whole point there, so location cannot bind. Otherwise
-    # the module must live under the selected distribution's own root -- -I still
-    # runs site processing, so an executable .pth can put a same-named copy on
-    # sys.path and answer for a payload that is gone.
-    _base = os.path.abspath(str(d.locate_file(''))) if bind else None
+    # The module must live under the root that owns it: the distribution's own
+    # directory normally, the recorded checkout for an editable install (which
+    # resolves THROUGH its finder into that tree). -I still runs site processing,
+    # so an executable .pth can put a same-named copy on sys.path and answer for a
+    # payload that is gone -- for a plain install and an editable one alike. An
+    # empty root means nothing can be bound and only presence is checked.
+    _base = os.path.abspath(root) if root else None
     def _inside(p):
         return _base is None or os.path.abspath(p).startswith(_base + os.sep)
     if s.origin and s.origin != 'namespace':
@@ -5099,16 +5113,12 @@ def _spec(n, bind):
     return False
 if not rows and not damaged:
     if tops:
-        damaged = not all(_spec(t, not _edit) for t in tops if t)
+        damaged = not all(_spec(t, _target if _edit else str(d.locate_file(''))) for t in tops if t)
     elif _edit:
         # An editable install with no top_level.txt: its RECORD lists only the
         # site-packages shims, so nothing above can speak for the checkout. Validate
         # the target directly -- direct_url.json records where it points, and a
         # moved or emptied checkout has no importable module under it.
-        try:
-            _target = url2pathname(urlparse(str(_durl.get('url') or '')).path)
-        except Exception:
-            _target = ''
         damaged = not (_target and _has_module(_target, 6))
     elif not d_record:
         # Nothing enumerates the payload: no RECORD at all (an interrupted install,
@@ -5119,7 +5129,7 @@ if not rows and not damaged:
         # files are really on disk passes. Gated on the RECORD being ABSENT, not on
         # rows being empty: a CLI-only wheel (py-spy) records just its console
         # script and ships no importable module, and its RECORD already answered.
-        damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), True)
+        damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), str(d.locate_file('')))
 print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 '@
 $SkipPythonDeps = $false
