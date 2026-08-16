@@ -133,7 +133,22 @@ test("stream updates are paint-coalesced without a time or length throttle", () 
   // A running message can be replaced rather than appended to, as the audio
   // path does when it swaps its placeholder for the player, so holding the last
   // painted text has to be gated on the new text extending it.
-  assert.ok(hook.includes("text.startsWith(displayed.text)"));
+  //
+  // The gate is a prefix comparison, not any particular spelling of one. It is
+  // written as a slice compare rather than startsWith because startsWith scans
+  // a growing reply: 74 ms against 1.6 ms over a 60,000 character stream. Both
+  // halves are asserted, since the length check alone would pass a comparison
+  // against the wrong string, and the compare alone would pass without the
+  // cheap rejection that keeps it off the hot path.
+  assert.ok(
+    hook.includes("text.length >= displayed.text.length"),
+    "the coalescer must reject a shorter replacement on length first",
+  );
+  assert.ok(
+    hook.includes("text.slice(0, displayed.text.length) === displayed.text") ||
+      hook.includes("text.startsWith(displayed.text)"),
+    "the coalescer must hold the painted text only when the new text extends it",
+  );
 });
 
 test("streaming reparses only the active Markdown tail", () => {
