@@ -1487,11 +1487,12 @@ class ChatCompletionRequest(BaseModel):
     context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = Field(
         None,
         description = (
-            "[x-unsloth] Local GGUF behavior when the prompt exceeds the real "
-            "context window. 'error' (default) returns a 400 with "
-            "code=context_length_exceeded. 'truncate_middle' keeps the first and "
-            "recent turns. 'truncate_oldest' provides a rolling window by dropping "
-            "complete oldest turns. Both preserve system messages and tool-call groups."
+            "[x-unsloth] Local GGUF context-overflow behavior. 'error' (default) "
+            "returns a 400 with code=context_length_exceeded. 'truncate_middle' is "
+            "limited to client-tool or response_format passthrough and retries after "
+            "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
+            "window for plain and Studio-tool chats by dropping complete oldest turns. "
+            "Both truncation policies preserve system messages and tool-call groups."
         ),
     )
     max_tool_calls_per_message: Optional[int] = Field(

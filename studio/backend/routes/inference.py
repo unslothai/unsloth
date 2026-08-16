@@ -653,6 +653,11 @@ def _overflow_truncation_policy(payload) -> Optional[str]:
     return server_default if server_default in ("truncate_middle", "truncate_oldest") else None
 
 
+def _rolling_context_policy(payload) -> Optional[str]:
+    policy = _overflow_truncation_policy(payload)
+    return policy if policy == "truncate_oldest" else None
+
+
 def _overflow_truncation_requested(payload) -> bool:
     """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
     for clients that cannot send custom fields) opted into truncation."""
@@ -13874,7 +13879,7 @@ async def openai_chat_completions(
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
-                    context_overflow = _overflow_truncation_policy(payload),
+                    context_overflow = _rolling_context_policy(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -14565,7 +14570,7 @@ async def openai_chat_completions(
                 continue_final_message = _continue_final_message(payload),
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
-                context_overflow = _overflow_truncation_policy(payload),
+                context_overflow = _rolling_context_policy(payload),
             )
 
         _gguf_sentinel = object()

@@ -31,6 +31,7 @@ from routes.inference import (
     _estimate_message_tokens,
     _openai_model_objects,
     _overflow_truncation_requested,
+    _rolling_context_policy,
     _parse_overflow_counts,
     _truncate_middle_messages,
     _truncate_oldest_messages,
@@ -492,6 +493,9 @@ def test_overflow_truncation_requested_reads_field(monkeypatch):
     assert _overflow_truncation_requested(_R()) is True
     assert _overflow_truncation_requested(object()) is False
 
+    assert _rolling_context_policy(_P()) is None
+    assert _rolling_context_policy(_R()) == "truncate_oldest"
+
 
 def test_overflow_truncation_server_default_env(monkeypatch):
     """UNSLOTH_CONTEXT_OVERFLOW enables the policy for clients that cannot
@@ -506,10 +510,12 @@ def test_overflow_truncation_server_default_env(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CONTEXT_OVERFLOW", "truncate_middle")
     assert _overflow_truncation_requested(_Unset()) is True
     assert _overflow_truncation_requested(_ExplicitError()) is False
+    assert _rolling_context_policy(_Unset()) is None
     monkeypatch.setenv("UNSLOTH_CONTEXT_OVERFLOW", "error")
     assert _overflow_truncation_requested(_Unset()) is False
     monkeypatch.setenv("UNSLOTH_CONTEXT_OVERFLOW", "truncate_oldest")
     assert _overflow_truncation_requested(_Unset()) is True
+    assert _rolling_context_policy(_Unset()) == "truncate_oldest"
 
 
 # ---------------------------------------------------------------------------
