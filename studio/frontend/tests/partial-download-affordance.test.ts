@@ -59,10 +59,14 @@ test("the badge tooltip names the button, since the badge is not one", () => {
   }
 });
 
-test("a restart-only partial says what survives it", () => {
+test("a restart-only partial leads with the file that starts over", () => {
+  // A one-file quant has nothing to keep, so "files are kept" must not come first.
   const hint = partialDownloadHint("xet", RESUMABLE);
   assert.match(hint, /Click Continue/);
-  assert.match(hint, /Files already downloaded are kept/);
+  assert.match(
+    hint,
+    /The interrupted file starts over; other files already on disk are kept\.$/,
+  );
 });
 
 test("a resumable partial promises the bytes on disk, and nothing more", () => {

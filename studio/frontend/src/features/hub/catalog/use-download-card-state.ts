@@ -29,7 +29,12 @@ export function partialResumeLabel(
 }
 
 /** Tooltip for a "Partial" badge. The badge is not a control, so it names the
- * button that is, and says what continuing actually costs. */
+ * button that is, and says what continuing actually costs.
+ *
+ * The restart leads, because the unit is the FILE: a sharded repo keeps the
+ * shards it finished, but a one-file quant has nothing to keep and fetches
+ * every byte again. Leading with what survives reads as a promise the
+ * single-file case cannot honour. */
 export function partialDownloadHint(
   transport: string | null | undefined,
   partialsResumable = false,
@@ -37,7 +42,7 @@ export function partialDownloadHint(
   const label = partialResumeLabel(transport, partialsResumable);
   return partialIsResumable(transport, partialsResumable)
     ? `Partial download. Click ${label} to pick up where it stopped.`
-    : `Partial download. Click ${label} to finish it. Files already downloaded are kept; the interrupted one starts over.`;
+    : `Partial download. Click ${label} to finish it. The interrupted file starts over; other files already on disk are kept.`;
 }
 
 /** Stopping a download that can be resumed is a pause; anything else is a
