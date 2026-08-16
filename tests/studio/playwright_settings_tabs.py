@@ -66,7 +66,7 @@ report: dict = {
 
 
 def log(msg: str) -> None:
-    print(f"[settings-tabs] {msg}", flush=True)
+    print(f"[settings-tabs] {msg}", flush = True)
 
 
 def fail(msg: str) -> None:
@@ -116,7 +116,7 @@ def settle(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
 def click_tab_and_observe(page, tab: str) -> dict:
     """Click a tab; record how long the panel keeps the old content and whether it blanks."""
     before = snapshot(page)
-    page.locator(f'[data-testid="settings-tab-{tab}"]').click(force=True, timeout=15000)
+    page.locator(f'[data-testid="settings-tab-{tab}"]').click(force = True, timeout = 15000)
     started = time.time()
     changed_ms = None
     blank_frames = 0
@@ -143,16 +143,16 @@ def click_tab_and_observe(page, tab: str) -> dict:
 
 def open_dialog(page, tab: str | None = None) -> None:
     page.evaluate("(t) => window.__settingsSmoke.open(t || undefined)", tab)
-    page.wait_for_selector('div[role="dialog"]', timeout=15000)
+    page.wait_for_selector('div[role="dialog"]', timeout = 15000)
 
 
 def run_chunk_fail(page) -> None:
     """One panel's module is blocked. The dialog must survive it, and so must the app."""
     open_dialog(page)
     settle(page)
-    page.locator('[data-testid="settings-tab-general"]').click(force=True, timeout=15000)
+    page.locator('[data-testid="settings-tab-general"]').click(force = True, timeout = 15000)
     settle(page)
-    page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]').click(force=True, timeout=15000)
+    page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]').click(force = True, timeout = 15000)
     page.wait_for_timeout(3000)
     state = page.evaluate(
         """() => ({
@@ -177,7 +177,7 @@ def run_chunk_fail(page) -> None:
     else:
         log("the dialog and its twelve nav entries survived")
     # Another tab must still work.
-    page.locator('[data-testid="settings-tab-about"]').click(force=True, timeout=15000)
+    page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
     after = settle(page)
     report["chunk_fail_recovery"] = after
     if not after.get("present") or after.get("elements", 0) < 5:
@@ -194,7 +194,7 @@ def run(page) -> None:
     open_dialog(page)
     settle(page)
     # Start from a tab that is not the persisted one, so the first iteration is a real switch.
-    page.locator('[data-testid="settings-tab-about"]').click(force=True, timeout=15000)
+    page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
     settle(page)
     for tab in TABS:
         obs = click_tab_and_observe(page, tab)
@@ -256,7 +256,7 @@ def run(page) -> None:
     if index is None:
         fail(f"search '{query}': '{target_label}' not among results {texts}")
     else:
-        entries.nth(index).click(force=True)
+        entries.nth(index).click(force = True)
         flashed = None
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -302,8 +302,8 @@ def main() -> int:
                 kwargs["args"] = chromium_launch_args()
             browser = launcher.launch(**kwargs)
             ctx = browser.new_context(
-                viewport={"width": 1440, "height": 900},
-                reduced_motion="reduce",
+                viewport = {"width": 1440, "height": 900},
+                reduced_motion = "reduce",
             )
             page = ctx.new_page()
             if CHUNK_DELAY_MS or CHUNK_FAIL:
@@ -324,18 +324,18 @@ def main() -> int:
             page.on("pageerror", lambda e: console.append(f"pageerror: {e}"))
             for attempt in range(40):
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    page.goto(url, wait_until = "domcontentloaded", timeout = 30000)
                     break
                 except Exception:
                     if attempt == 39:
                         raise
                     time.sleep(2)
-            page.wait_for_function("() => !!window.__settingsSmoke", timeout=120000)
+            page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
             # Vite dev re-optimizes deps on first sight and full-reloads; let that settle, then
             # reload once so every module is served from a stable dep graph.
             page.wait_for_timeout(4000)
-            page.reload(wait_until="domcontentloaded")
-            page.wait_for_function("() => !!window.__settingsSmoke", timeout=120000)
+            page.reload(wait_until = "domcontentloaded")
+            page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
             page.wait_for_timeout(1500)
             try:
                 run(page)
@@ -348,17 +348,15 @@ def main() -> int:
                     and "403" not in c
                 ][:40]
                 boundary = page.locator('[data-testid="harness-error-boundary"]')
-                report["error_boundary"] = (
-                    boundary.inner_text() if boundary.count() else None
-                )
+                report["error_boundary"] = boundary.inner_text() if boundary.count() else None
                 if report["error_boundary"] and not CHUNK_FAIL:
                     fail(f"error boundary tripped: {report['error_boundary']}")
             browser.close()
     finally:
         stop_process(vite)
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(report, indent=2))
+    OUT.parent.mkdir(parents = True, exist_ok = True)
+    OUT.write_text(json.dumps(report, indent = 2))
     log(f"report -> {OUT}")
     if report["failures"]:
         log(f"{len(report['failures'])} FAILURES")
