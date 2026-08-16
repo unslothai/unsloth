@@ -112,8 +112,14 @@ OUT.mkdir(parents = True, exist_ok = True)
 # Characters of thread content, not messages. Sorted: the growth check reads the first and last
 # entries as smallest and largest, so an unsorted override would invert every ratio and report a
 # good run as measuring nothing.
-SIZES = sorted(int(n) for n in os.environ.get("SMOKE_HEAVY_CHARS", "25000,100000,300000").split(","))
-ENGINES = [e.strip() for e in os.environ.get("SMOKE_HEAVY_ENGINES", "chromium,webkit,firefox").split(",") if e.strip()]
+SIZES = sorted(
+    int(n) for n in os.environ.get("SMOKE_HEAVY_CHARS", "25000,100000,300000").split(",")
+)
+ENGINES = [
+    e.strip()
+    for e in os.environ.get("SMOKE_HEAVY_ENGINES", "chromium,webkit,firefox").split(",")
+    if e.strip()
+]
 # Every action set is run this many times on the seeded page and the table reports the MEDIAN.
 # The first repetition is systematically the slowest (cold Shiki cache, cold layout), which is
 # exactly why the headline is a median rather than a mean or a single shot.
@@ -563,8 +569,11 @@ def cdp_counters(before: dict[str, float], after: dict[str, float]) -> dict[str,
     """CHROMIUM-ONLY. Empty dicts off Chromium, and every consumer prints `-` for that."""
     if not before or not after:
         return {
-            "layout_count": None, "recalc_style_count": None,
-            "layout_ms": None, "recalc_style_ms": None, "task_ms": None,
+            "layout_count": None,
+            "recalc_style_count": None,
+            "layout_ms": None,
+            "recalc_style_ms": None,
+            "task_ms": None,
         }
 
     def d(name: str) -> float:
@@ -668,7 +677,11 @@ def one_repetition(page, cdp) -> dict[str, dict]:
         )
     rep["keystroke"] = run_action(page, cdp, "keystroke", KEYSTROKE_JS, KEYSTROKES)
     rep["scroll"] = run_action(
-        page, cdp, "scroll", SCROLL_JS, [SCROLL_STEPS, SCROLL_STEP_PX, SETTLE_TIMEOUT_MS],
+        page,
+        cdp,
+        "scroll",
+        SCROLL_JS,
+        [SCROLL_STEPS, SCROLL_STEP_PX, SETTLE_TIMEOUT_MS],
     )
     rep["jump"] = run_action(page, cdp, "jump", JUMP_JS, SETTLE_TIMEOUT_MS)
 
@@ -695,7 +708,11 @@ def one_repetition(page, cdp) -> dict[str, dict]:
     rep["delete"] = run_action(page, cdp, "delete", DELETE_JS, SETTLE_TIMEOUT_MS)
 
     rep["reopen"] = run_action(
-        page, cdp, "reopen", REOPEN_JS, [SETTLE_TIMEOUT_MS, SETTLE_TIMEOUT_MS],
+        page,
+        cdp,
+        "reopen",
+        REOPEN_JS,
+        [SETTLE_TIMEOUT_MS, SETTLE_TIMEOUT_MS],
     )
     return rep
 
@@ -786,9 +803,7 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Radix unmounts collapsed content, so a thread of closed tool cards carries no result
         # panes at all. Open them before the census: a user who has just watched those tools run
         # is looking at them open, and the closed thread is a different fixture.
-        result["tool_triggers_expanded"] = page.evaluate(
-            "() => window.__heavyThread.expandTools()"
-        )
+        result["tool_triggers_expanded"] = page.evaluate("() => window.__heavyThread.expandTools()")
         page.wait_for_function(
             "(n) => window.__heavyThread.counts().collapsibleOutputs >= n",
             arg = max(1, result["tool_triggers_expanded"]),
@@ -861,7 +876,9 @@ def run() -> dict:
             context.route(
                 re.compile(rf"^{re.escape(BASE)}/api/"),
                 lambda route: route.fulfill(
-                    status = 200, content_type = "application/json", body = "{}",
+                    status = 200,
+                    content_type = "application/json",
+                    body = "{}",
                 ),
             )
             for size in SIZES:
@@ -940,21 +957,26 @@ for _name in ACTIONS:
 TABLE_ROWS = TABLE_ROWS + (
     ("keystroke median ms", _action("keystroke", "median_sample_ms")),
     ("keystroke worst ms", _action("keystroke", "worst_sample_ms")),
-    ("keystroke per repetition", lambda r: "/".join(
-        str(v) for v in r["actions"]["keystroke"]["per_repetition"]
-    )),
-    ("scroll per repetition", lambda r: "/".join(
-        str(v) for v in r["actions"]["scroll"]["per_repetition"]
-    )),
-    ("menu per repetition", lambda r: "/".join(
-        str(v) for v in r["actions"]["menu"]["per_repetition"]
-    )),
-    ("delete per repetition", lambda r: "/".join(
-        str(v) for v in r["actions"]["delete"]["per_repetition"]
-    )),
-    ("reopen per repetition", lambda r: "/".join(
-        str(v) for v in r["actions"]["reopen"]["per_repetition"]
-    )),
+    (
+        "keystroke per repetition",
+        lambda r: "/".join(str(v) for v in r["actions"]["keystroke"]["per_repetition"]),
+    ),
+    (
+        "scroll per repetition",
+        lambda r: "/".join(str(v) for v in r["actions"]["scroll"]["per_repetition"]),
+    ),
+    (
+        "menu per repetition",
+        lambda r: "/".join(str(v) for v in r["actions"]["menu"]["per_repetition"]),
+    ),
+    (
+        "delete per repetition",
+        lambda r: "/".join(str(v) for v in r["actions"]["delete"]["per_repetition"]),
+    ),
+    (
+        "reopen per repetition",
+        lambda r: "/".join(str(v) for v in r["actions"]["reopen"]["per_repetition"]),
+    ),
     ("keystroke dom text", _action("keystroke", "domText")),
     ("keystroke runtime text", _action("keystroke", "runtimeText")),
     ("scroll gesture ms", _action("scroll", "gestureMs")),
@@ -984,9 +1006,7 @@ TABLE_ROWS = TABLE_ROWS + (
 
 def print_table(results: dict) -> None:
     """Every recorded metric, printed, one column per (engine, size)."""
-    columns = [
-        (engine, str(size)) for engine in results["engines"] for size in results["sizes"]
-    ]
+    columns = [(engine, str(size)) for engine in results["engines"] for size in results["sizes"]]
     rows = []
     for name, pick in TABLE_ROWS:
         cells = []
@@ -1063,8 +1083,13 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
         for name, pick, floored in GROWTH_AXES:
             small, large = growth(cells, pick, floored, results["sizes"])
             if small is None or large is None:
-                per_axis[name] = {"small": None, "large": None, "ratio": None,
-                                  "discriminated": False, "reason": "not recorded"}
+                per_axis[name] = {
+                    "small": None,
+                    "large": None,
+                    "ratio": None,
+                    "discriminated": False,
+                    "reason": "not recorded",
+                }
                 continue
             if small <= 0:
                 # A COUNT that is 0 at the smallest size and 4 at the largest has no ratio and has
@@ -1076,14 +1101,19 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 # rather than a metric that grew from nothing.
                 if floored:
                     per_axis[name] = {
-                        "small": small, "large": large, "ratio": None, "discriminated": False,
+                        "small": small,
+                        "large": large,
+                        "ratio": None,
+                        "discriminated": False,
                         "reason": "at or under the paint floor at the smallest size",
                         "floored": floored,
                     }
                     continue
                 rose = large > small
                 per_axis[name] = {
-                    "small": small, "large": large, "ratio": None,
+                    "small": small,
+                    "large": large,
+                    "ratio": None,
                     "discriminated": rose,
                     "reason": "rose from zero" if rose else "zero at both ends",
                     "floored": floored,
@@ -1091,7 +1121,9 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 continue
             ratio = round(large / small, 2)
             per_axis[name] = {
-                "small": small, "large": large, "ratio": ratio,
+                "small": small,
+                "large": large,
+                "ratio": ratio,
                 "discriminated": ratio > DISCRIMINATION_RATIO,
                 "reason": "-",
                 "floored": floored,
@@ -1103,20 +1135,25 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
 def print_growth(results: dict, report: dict) -> None:
     for engine, per_axis in report.items():
         info("")
-        info(f"growth on {engine} ({results['sizes'][0]} -> {results['sizes'][-1]} chars, "
-             f"median of {results['repetitions']} repetitions)")
+        info(
+            f"growth on {engine} ({results['sizes'][0]} -> {results['sizes'][-1]} chars, "
+            f"median of {results['repetitions']} repetitions)"
+        )
         for name, row in per_axis.items():
             if row["ratio"] is None:
                 mark = "DISCRIMINATES" if row["discriminated"] else "flat"
                 small = "-" if row["small"] is None else row["small"]
                 large = "-" if row["large"] is None else row["large"]
-                info(f"  {name:<34} {small:>10} -> {large:>10}       -  "
-                     f"{mark} ({row['reason']})")
+                info(
+                    f"  {name:<34} {small:>10} -> {large:>10}       -  " f"{mark} ({row['reason']})"
+                )
                 continue
             mark = "DISCRIMINATES" if row["discriminated"] else "flat"
             floor_note = " (paint floor removed)" if row.get("floored") else ""
-            info(f"  {name:<34} {row['small']:>10} -> {row['large']:>10}  "
-                 f"{row['ratio']:>6.2f}x  {mark}{floor_note}")
+            info(
+                f"  {name:<34} {row['small']:>10} -> {row['large']:>10}  "
+                f"{row['ratio']:>6.2f}x  {mark}{floor_note}"
+            )
 
 
 def harness_failures(results: dict, report: dict) -> list[str]:
@@ -1183,7 +1220,9 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 failures.append(f"{where} highlighted nothing; Shiki never ran")
             viewport = row["viewport"]
             if viewport["scrollHeight"] <= viewport["clientHeight"]:
-                failures.append(f"{where} does not overflow its viewport; the scroll measures nothing")
+                failures.append(
+                    f"{where} does not overflow its viewport; the scroll measures nothing"
+                )
 
             actions = row["actions"]
             for name in ACTIONS:
@@ -1237,7 +1276,9 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 elif menu["closeMs"] is None:
                     failures.append(f"{where} opened the action menu and it never closed")
                 elif menu["bodyPointerEventsAfterClose"] == "none":
-                    failures.append(f"{where} left the body on the modal layer after closing the menu")
+                    failures.append(
+                        f"{where} left the body on the modal layer after closing the menu"
+                    )
                 # An empty popover satisfies "the menu opened" and costs nothing to render.
                 elif not menu["itemsWhileOpen"]:
                     failures.append(f"{where} opened an action menu with no items in it")
